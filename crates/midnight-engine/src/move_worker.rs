@@ -37,6 +37,8 @@ pub(super) struct MoveWork {
     pub(super) metadata_policy: TransferMetadataPolicy,
     pub(super) stages: HashMap<TransferIdentity, Box<dyn StagedTransferFile>>,
     pub(super) proofs: Vec<VerifiedFileProof>,
+    /// Where the file of the active proof was published.
+    pub(super) published: Option<std::path::PathBuf>,
     phase: Phase,
     finalizer: Option<Box<dyn TransferMoveFinalizer>>,
     active: Option<(std::path::PathBuf, TransferRecovery)>,
@@ -355,6 +357,7 @@ fn prepare_sources_inner(
         metadata_policy: metadata,
         stages: HashMap::new(),
         proofs: vec![],
+        published: None,
         phase: Phase::Copying,
         finalizer: None,
         active: None,
@@ -727,9 +730,20 @@ impl MoveWork {
             let matched = item.identity == Some(original);
             record_source(job, entry.item.path.clone(), item, matched);
         }
-        if let Some(failure) = failure {
-            job.record_cleanup_error(failure);
-            job.halt = true;
+        if let Some(error) = failure {
+            // The link and its recovery data stay where they are; the job asks
+            // whether to go on.
+            let destination = job.stack.last().map_or_else(
+                || job.progress.destination_directory.clone(),
+                |frame| frame.destination.path().to_owned(),
+            );
+            job.pause_committed(failures::Committed {
+                error,
+                stage: CopyErrorStage::RemovingSource,
+                source: Some(entry.item.path.clone()),
+                destination,
+                entry: None,
+            });
         }
         Ok(())
     }
@@ -964,6 +978,10 @@ impl MoveWork {
                     job.progress.source_removal_durability_unconfirmed += 1;
                 }
                 let identity = self.proofs[0].source_entry().identity;
+                let destination = self
+                    .published
+                    .take()
+                    .unwrap_or_else(|| job.progress.destination_directory.clone());
                 let cleanup = self
                     .captures
                     .iter()
@@ -979,19 +997,36 @@ impl MoveWork {
                 self.buffer = Vec::new();
                 self.phase = Phase::Copying;
                 self.active = None;
-                if let Some(cleanup) = cleanup {
+                // The source is gone and its copy verified: what fails now leaves only
+                // an empty private folder, or the removal's durability, uncertain. The
+                // job asks whether to go on (a provider that omits the cleanup still
+                // ends it).
+                let uncertain = if let Some(cleanup) = cleanup {
                     let path = cleanup.path().to_owned();
-                    if let Err(error) = cleanup.cleanup() {
-                        record_source(
-                            job,
-                            source.clone(),
-                            TransferRecovery {
-                                path,
-                                identity: None,
-                            },
-                            false,
-                        );
-                        return Err(error);
+                    match cleanup.cleanup() {
+                        Err(error) => {
+                            record_source(
+                                job,
+                                source.clone(),
+                                TransferRecovery {
+                                    path,
+                                    identity: None,
+                                },
+                                false,
+                            );
+                            Some((error, CopyErrorStage::Cleanup))
+                        }
+                        Ok(())
+                            if state == TransferSourceRemoval::Unlinked
+                                && !durability_confirmed =>
+                        {
+                            let error = unsupported(
+                                &source,
+                                "Verified source was removed, but temporary-directory sync failed; removal durability is unconfirmed.",
+                            );
+                            Some((error, CopyErrorStage::RemovingSource))
+                        }
+                        Ok(()) => None,
                     }
                 } else {
                     record_source(job, source.clone(), recovery, false);
@@ -999,12 +1034,15 @@ impl MoveWork {
                         &source,
                         "Move provider omitted temporary-directory cleanup authority after source removal.",
                     ));
-                }
-                if state == TransferSourceRemoval::Unlinked && !durability_confirmed {
-                    return Err(unsupported(
-                        &source,
-                        "Verified source was removed, but temporary-directory sync failed; removal durability is unconfirmed. Remaining sources retained.",
-                    ));
+                };
+                if let Some((error, stage)) = uncertain {
+                    job.pause_committed(failures::Committed {
+                        error,
+                        stage,
+                        source: Some(source),
+                        destination,
+                        entry: None,
+                    });
                 }
             }
         }

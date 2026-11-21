@@ -615,6 +615,31 @@ impl TransferSource for LeasedSource {
                 child.map(|entry| lease_move_entry(entry, &self.lease, |source| self.child(source)))
             })
     }
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferMoveChild>, FsError> {
+        self.source
+            .next_move_child_or_failure(links, cancel)
+            .map(|child| {
+                child.map(|child| {
+                    child.map(|entry| {
+                        lease_move_entry(entry, &self.lease, |source| self.child(source))
+                    })
+                })
+            })
+    }
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        self.source
+            .prepare_move_child(name, links, cancel)
+            .map(|entry| lease_move_entry(entry, &self.lease, |source| self.child(source)))
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,

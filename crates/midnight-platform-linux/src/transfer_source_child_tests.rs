@@ -102,3 +102,87 @@ fn a_replaced_folder_is_the_folder_s_failure_not_a_child_s() {
         .expect("the folder itself changed");
     assert_eq!(failure.path, folder);
 }
+
+/// A folder selected for Move as the Linux Move dialog prepares it (links move
+/// themselves), with the policy it enumerates its children under.
+fn prepared_move_folder(folder: &Path) -> (Box<dyn TransferSource>, CopyLinkPolicy) {
+    let policy = CopyLinkPolicy::Preserve;
+    let midnight_core::PreparedTransferMoveEntry::Ordinary(prepared) =
+        crate::LinuxFileSystem::new(None)
+            .prepare_move_source_with_policy(
+                folder,
+                policy,
+                TransferRevisionPolicy::AcceptChangeTimeOnly,
+                &Cancellation::default(),
+            )
+            .unwrap()
+    else {
+        panic!("an ordinary Move folder");
+    };
+    (prepared.source, policy)
+}
+
+#[test]
+fn a_move_child_that_cannot_be_prepared_fails_alone_and_can_be_prepared_again_by_name() {
+    let temp = crate::test_support::temporary("move-child-failure-");
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    for file in ["first", "last"] {
+        fs::write(folder.join(file), file).unwrap();
+    }
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        folder.join("pipe"),
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    let cancel = Cancellation::default();
+    let (mut source, policy) = prepared_move_folder(&folder);
+    let (mut prepared, mut failed) = (Vec::new(), Vec::new());
+    while let Some(child) = source.next_move_child_or_failure(policy, &cancel).unwrap() {
+        match child {
+            Ok(entry) => prepared.push(entry.source().entry().item.path.clone()),
+            Err(failure) => {
+                // A special file cannot be moved by copying: no Retry can change that.
+                assert_eq!(
+                    failure.error.kind,
+                    io::ErrorKind::Unsupported,
+                    "{failure:?}"
+                );
+                assert_eq!(failure.error.path, folder.join(&failure.name));
+                failed.push(failure.name);
+            }
+        }
+    }
+    prepared.sort();
+    assert_eq!(prepared, [folder.join("first"), folder.join("last")]);
+    assert_eq!(failed, ["pipe"]);
+    // Retry prepares the child by its name: refused while it is a pipe, prepared once
+    // it is an ordinary file.
+    let pipe = OsStr::new("pipe");
+    assert!(source.prepare_move_child(pipe, policy, &cancel).is_err());
+    fs::remove_file(folder.join("pipe")).unwrap();
+    fs::write(folder.join("pipe"), b"now a file").unwrap();
+    let entry = source.prepare_move_child(pipe, policy, &cancel).unwrap();
+    assert_eq!(entry.source().entry().item.path, folder.join("pipe"));
+}
+
+#[test]
+fn a_move_folder_whose_entries_cannot_leave_it_fails_once_as_itself() {
+    let temp = crate::test_support::temporary("move-child-failure-");
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    for file in ["first", "second"] {
+        fs::write(folder.join(file), file).unwrap();
+    }
+    let cancel = Cancellation::default();
+    let (mut source, policy) = prepared_move_folder(&folder);
+    // Other users may change names in it, so it cannot hold an entry's private stage:
+    // its entries can be listed and opened, yet the folder fails once, as itself.
+    chmod(&folder, 0o777);
+    let failure = source.next_move_child_or_failure(policy, &cancel).err();
+    chmod(&folder, 0o755);
+    let failure = failure.expect("the folder itself fails");
+    assert_eq!(failure.kind, io::ErrorKind::Unsupported, "{failure:?}");
+    assert_eq!(failure.path, folder);
+}

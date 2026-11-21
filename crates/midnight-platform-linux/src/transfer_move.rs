@@ -17,6 +17,32 @@ mod link_capture;
 mod link_move;
 #[path = "transfer_native_move.rs"]
 mod native;
+#[path = "transfer_move_writable.rs"]
+mod writable;
+
+/// The folder that a Move source leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Folder {
+    /// The folder that contains a selected item. A Move never changes it, so it must
+    /// let entries leave it.
+    ContainsSelection,
+    /// A folder of the moved tree: the selected folder or a folder below it. One that
+    /// the current user owns and that lacks owner write gets it while an entry leaves
+    /// it (`writable::OwnerWrite`), as Delete does inside its confirmed tree.
+    Moved,
+}
+
+impl Folder {
+    /// Owner write for `folder` while one of its entries leaves it or comes back, when
+    /// it is an owned folder of the moved tree.
+    fn writable(self, folder: &File) -> Option<writable::OwnerWrite<'_>> {
+        if self == Self::Moved {
+            writable::OwnerWrite::grant(folder)
+        } else {
+            None
+        }
+    }
+}
 
 pub(super) fn supports_native_replacement(
     destination: &destination::Directory,
@@ -64,15 +90,14 @@ pub(super) fn prepare_with_links(
         return prepare(path, revisions, cancel).map(PreparedTransferMoveEntry::Ordinary);
     };
     let (parent_file, parent_path, name) = move_parent(path, cancel)?;
-    prepare_child_with_links(
+    SourceFolder::open(
         parent_file,
         parent_path,
-        &name,
         None,
-        traversal,
-        revisions,
+        Folder::ContainsSelection,
         cancel,
-    )
+    )?
+    .prepare_entry(&name, Some(traversal), revisions, cancel)
 }
 
 /// The exact Move capture, as Rename's replacement uses it.
@@ -90,7 +115,14 @@ fn prepare_native_with(
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let (parent_file, parent_path, name) = move_parent(path, cancel)?;
-    prepare_native_child(parent_file, parent_path, &name, None, revisions, cancel)
+    SourceFolder::open(
+        parent_file,
+        parent_path,
+        None,
+        Folder::ContainsSelection,
+        cancel,
+    )?
+    .prepare_native(&name, revisions, cancel)
 }
 
 fn move_parent(
@@ -111,7 +143,8 @@ fn move_parent(
     Ok((parent_file, parent_path.to_owned(), name.to_owned()))
 }
 
-/// `namespace` is the parent directory's bindings, shared by all of its children.
+/// A child of a folder of the moved tree, without links; `namespace` is the folder's
+/// bindings, shared by all of its children.
 pub(super) fn prepare_child(
     parent_file: Arc<File>,
     parent_path: PathBuf,
@@ -120,20 +153,21 @@ pub(super) fn prepare_child(
     revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMove, FsError> {
-    let (source, capture) = prepare_native_child(
+    let (source, capture) = SourceFolder::open(
         parent_file,
         parent_path,
-        name,
         Some(namespace),
-        revisions,
+        Folder::Moved,
         cancel,
-    )?;
+    )?
+    .prepare_native(name, revisions, cancel)?;
     Ok(PreparedTransferMove {
         source: Box::new(source),
         capture,
     })
 }
 
+/// A child of a folder of the moved tree under the job's link `traversal`.
 pub(super) fn prepare_child_with_links(
     parent_file: Arc<File>,
     parent_path: PathBuf,
@@ -143,56 +177,36 @@ pub(super) fn prepare_child_with_links(
     revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
-    let (source, parent) = prepare_candidate(
+    prepare_child_or_failure(
         parent_file,
         parent_path,
         name,
         namespace,
         Some(traversal),
+        revisions,
         cancel,
-    )?;
-    let source = source.with_revisions(revisions);
-    if let Some(original) = source.original_link() {
-        let capture = Arc::new(link_capture::Capture::prepare(original, parent, cancel)?);
-        return Ok(PreparedTransferMoveEntry::DirectoryLink {
-            source: Box::new(source),
-            capture,
-        });
-    }
-    if let Some(original) = source.link_leaf() {
-        // A preserved link is moved itself: its own rename or recreation.
-        let capture = Arc::new(link_move::Capture::prepare(original, parent, cancel)?);
-        return Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
-            source: Box::new(source),
-            capture,
-        }));
-    }
-    let (source, capture) = prepare_ordinary(source, parent, name, revisions, cancel)?;
-    Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
-        source: Box::new(source),
-        capture,
-    }))
+    )?
 }
 
-fn prepare_native_child(
+/// A child of a folder of the moved tree, under the job's link `traversal` if any, with
+/// the folder's own failure apart from the child's: `Err` is a failure of the folder
+/// itself, which every one of its entries would meet alike (`check_moved_folder`), and
+/// `Ok(Err)` is this child's own, after which the folder goes on with its next entry.
+pub(super) fn prepare_child_or_failure(
     parent_file: Arc<File>,
     parent_path: PathBuf,
     name: &OsStr,
     namespace: Option<Arc<namespace::Bindings>>,
+    traversal: Option<directory_links::Traversal>,
     revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
-) -> Result<(source::Source, Arc<Capture>), FsError> {
-    let (source, parent) =
-        prepare_candidate(parent_file, parent_path, name, namespace, None, cancel)?;
-    prepare_ordinary(
-        source.with_revisions(revisions),
-        parent,
-        name,
-        revisions,
-        cancel,
-    )
+) -> Result<Result<PreparedTransferMoveEntry, FsError>, FsError> {
+    let folder = SourceFolder::open(parent_file, parent_path, namespace, Folder::Moved, cancel)?;
+    Ok(folder.prepare_entry(name, traversal, revisions, cancel))
 }
 
+/// The preparation of the folder that contains `name`, as a selected item has it.
+#[cfg(test)]
 fn prepare_candidate(
     parent_file: Arc<File>,
     parent_path: PathBuf,
@@ -201,64 +215,243 @@ fn prepare_candidate(
     traversal: Option<directory_links::Traversal>,
     cancel: &Cancellation,
 ) -> Result<(source::Source, destination::Directory), FsError> {
-    let path = parent_path.join(name);
-    // The parent directory and the source share one computation of its bindings.
-    let namespace = match namespace {
-        Some(namespace) => namespace,
-        None => namespace::Bindings::for_parent(&parent_file, &parent_path)?,
-    };
-    let parent = destination::Directory::from_file_with(
-        parent_file.try_clone().map_err(|e| error(&path, e))?,
-        parent_path.to_owned(),
-        Some(namespace.clone()),
-    )?;
-    native::qualify(&parent)?;
-    let check_parent = |parent: &destination::Directory| {
-        parent.check_recovery_parent(cancel)?;
-        rustix::fs::accessat(parent.native_file(), ".",
-        rustix::fs::Access::WRITE_OK | rustix::fs::Access::EXEC_OK, rustix::fs::AtFlags::EACCESS)
-            .map_err(|failure| move_error(&path, io::Error::new(io::ErrorKind::Unsupported,
-                format!("The source parent cannot create temporary staging: {failure}. Choose Copy to retain the source; no fallback is performed."))))
-    };
-    let projects_links = traversal.is_some();
-    if !projects_links {
-        check_parent(&parent)?;
-    }
-    let source = source::Source::open_below(
+    SourceFolder::open(
         parent_file,
-        parent_path.to_owned(),
-        name,
-        Some(namespace),
-        traversal,
+        parent_path,
+        namespace,
+        Folder::ContainsSelection,
         cancel,
-    )?;
-    let original_link = source.original_link();
-    let parent = match &original_link {
-        Some(original) => parent.with_link_source(original)?,
-        None => parent,
+    )?
+    .candidate(name, traversal, cancel)
+}
+
+/// A folder whose entries a Move prepares, with what each of them shares: the
+/// descriptor they are opened below, the folder's bindings and the folder itself as
+/// their parent. A folder of the moved tree is checked once, before its entries.
+struct SourceFolder {
+    file: Arc<File>,
+    parent: destination::Directory,
+    namespace: Arc<namespace::Bindings>,
+    folder: Folder,
+}
+
+impl SourceFolder {
+    fn open(
+        file: Arc<File>,
+        path: PathBuf,
+        namespace: Option<Arc<namespace::Bindings>>,
+        folder: Folder,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        // The folder and its entries share one computation of its bindings.
+        let namespace = match namespace {
+            Some(namespace) => namespace,
+            None => namespace::Bindings::for_parent(&file, &path)?,
+        };
+        let parent = destination::Directory::from_file_with(
+            file.try_clone().map_err(|e| error(&path, e))?,
+            path,
+            Some(namespace.clone()),
+        )?;
+        native::qualify(&parent)?;
+        if folder == Folder::Moved {
+            check_moved_folder(&parent, cancel)?;
+        }
+        Ok(Self {
+            file,
+            parent,
+            namespace,
+            folder,
+        })
+    }
+
+    /// The entry `name` under the job's link `traversal` if any.
+    fn prepare_entry(
+        &self,
+        name: &OsStr,
+        traversal: Option<directory_links::Traversal>,
+        revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        if traversal.is_none() {
+            let (source, capture) = self.prepare_native(name, revisions, cancel)?;
+            return Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+                source: Box::new(source),
+                capture,
+            }));
+        }
+        let (source, parent) = self.candidate(name, traversal, cancel)?;
+        let source = source.with_revisions(revisions);
+        if let Some(original) = source.original_link() {
+            let capture =
+                link_capture::Capture::prepare(original, parent, cancel)?.leaving(self.folder);
+            return Ok(PreparedTransferMoveEntry::DirectoryLink {
+                source: Box::new(source),
+                capture: Arc::new(capture),
+            });
+        }
+        if let Some(original) = source.link_leaf() {
+            // A preserved link is moved itself: its own rename or recreation.
+            let capture =
+                link_move::Capture::prepare(original, parent, cancel)?.leaving(self.folder);
+            return Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+                source: Box::new(source),
+                capture: Arc::new(capture),
+            }));
+        }
+        let (source, capture) =
+            prepare_ordinary(source, parent, name, revisions, self.folder, cancel)?;
+        Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+            source: Box::new(source),
+            capture,
+        }))
+    }
+
+    /// The ordinary entry `name`, without links.
+    fn prepare_native(
+        &self,
+        name: &OsStr,
+        revisions: TransferRevisionPolicy,
+        cancel: &Cancellation,
+    ) -> Result<(source::Source, Arc<Capture>), FsError> {
+        let (source, parent) = self.candidate(name, None, cancel)?;
+        prepare_ordinary(
+            source.with_revisions(revisions),
+            parent,
+            name,
+            revisions,
+            self.folder,
+            cancel,
+        )
+    }
+
+    /// Opens the entry `name` and checks what moving it out of this folder needs.
+    fn candidate(
+        &self,
+        name: &OsStr,
+        traversal: Option<directory_links::Traversal>,
+        cancel: &Cancellation,
+    ) -> Result<(source::Source, destination::Directory), FsError> {
+        let parent = self.parent.clone();
+        let path = parent.path().join(name);
+        let projects_links = traversal.is_some();
+        if self.folder == Folder::ContainsSelection && !projects_links {
+            check_containing_folder(&parent, &path, cancel)?;
+        }
+        let source = source::Source::open_below(
+            self.file.clone(),
+            parent.path().to_owned(),
+            name,
+            Some(self.namespace.clone()),
+            traversal,
+            cancel,
+        )?;
+        let original_link = source.original_link();
+        let parent = match &original_link {
+            Some(original) => parent.with_link_source(original)?,
+            None => parent,
+        };
+        if projects_links {
+            match self.folder {
+                Folder::ContainsSelection => check_containing_folder(&parent, &path, cancel)?,
+                // Checked before its entries; the original of a directory link binds the
+                // folder again through the link's mount.
+                Folder::Moved if original_link.is_some() => parent.check_recovery_parent(cancel)?,
+                Folder::Moved => {}
+            }
+        }
+        let parent_metadata = parent
+            .native_file()
+            .metadata()
+            .map_err(|e| error(&path, e))?;
+        let original_file =
+            original_link.map_or_else(|| source.native_file(), |original| original.native_file());
+        let source_metadata = original_file.metadata().map_err(|e| error(&path, e))?;
+        let caller = rustix::process::geteuid().as_raw();
+        if parent_metadata.mode() & 0o1000 != 0
+            && caller != 0
+            && parent_metadata.uid() != caller
+            && source_metadata.uid() != caller
+        {
+            return Err(unsupported(
+                &path,
+                "The sticky source parent does not permit this identity to relocate the source. Choose Copy to retain it; no fallback is performed.",
+            ));
+        }
+        Ok((source, parent))
+    }
+}
+
+/// The folder that contains the selected item `path`, checked for that item: it is still
+/// the bound, protected recovery parent, and it lets a private stage be made in it and the
+/// item leave it. A Move never changes this folder's permissions.
+fn check_containing_folder(
+    parent: &destination::Directory,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<(), FsError> {
+    use rustix::fs::{Access, AtFlags, accessat};
+    parent.check_recovery_parent(cancel)?;
+    accessat(
+        parent.native_file(),
+        ".",
+        Access::WRITE_OK | Access::EXEC_OK,
+        AtFlags::EACCESS,
+    )
+    .map_err(|failure| {
+        move_error(
+            path,
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "The source parent cannot create temporary staging: {failure}. Choose Copy \
+                     to retain the source; no fallback is performed."
+                ),
+            ),
+        )
+    })
+}
+
+/// A folder of the moved tree, checked once before its entries for what each of them
+/// needs to leave it: it is still the bound, protected recovery parent, and it lets a
+/// private stage be made in it and entries leave it, which takes write and search
+/// permission. A folder the current user owns that lacks owner write gets it for each
+/// such change (`writable::OwnerWrite`), so it needs search permission only. Every entry
+/// would fail these checks alike, so the error names the folder.
+fn check_moved_folder(
+    parent: &destination::Directory,
+    cancel: &Cancellation,
+) -> Result<(), FsError> {
+    use rustix::fs::{Access, AtFlags, accessat};
+    parent.check_recovery_parent(cancel)?;
+    let folder = parent.native_file();
+    let needed = if writable::lacking_owner_write(folder).is_some() {
+        Access::EXEC_OK
+    } else {
+        Access::WRITE_OK | Access::EXEC_OK
     };
-    if projects_links {
-        check_parent(&parent)?;
-    }
-    let parent_metadata = parent
-        .native_file()
-        .metadata()
-        .map_err(|e| error(&path, e))?;
-    let original_file =
-        original_link.map_or_else(|| source.native_file(), |original| original.native_file());
-    let source_metadata = original_file.metadata().map_err(|e| error(&path, e))?;
-    let caller = rustix::process::geteuid().as_raw();
-    if parent_metadata.mode() & 0o1000 != 0
-        && caller != 0
-        && parent_metadata.uid() != caller
-        && source_metadata.uid() != caller
-    {
-        return Err(unsupported(
-            &path,
-            "The sticky source parent does not permit this identity to relocate the source. Choose Copy to retain it; no fallback is performed.",
-        ));
-    }
-    Ok((source, parent))
+    accessat(folder, ".", needed, AtFlags::EACCESS).map_err(|failure| {
+        let owned = rustix::fs::fstat(folder)
+            .is_ok_and(|stat| stat.st_uid == rustix::process::geteuid().as_raw());
+        let reason = if failure != rustix::io::Errno::ACCESS {
+            format!("Nothing can be moved out of this folder: {failure}.")
+        } else if owned {
+            "Permission denied: nothing can be moved out of this folder, because its entries \
+             cannot be opened (it lacks search permission)."
+                .into()
+        } else {
+            "Permission denied: this folder belongs to another user, who does not allow moving \
+             anything out of it."
+                .into()
+        };
+        move_error(
+            parent.path(),
+            io::Error::new(
+                io::Error::from(failure).kind(),
+                format!("{reason} What is still in it stays there; copy it instead."),
+            ),
+        )
+    })
 }
 
 fn prepare_ordinary(
@@ -266,6 +459,7 @@ fn prepare_ordinary(
     parent: destination::Directory,
     name: &OsStr,
     revisions: TransferRevisionPolicy,
+    folder: Folder,
     cancel: &Cancellation,
 ) -> Result<(source::Source, Arc<Capture>), FsError> {
     let path = &source.entry().item.path;
@@ -284,6 +478,7 @@ fn prepare_ordinary(
         _file: source.native_file(),
         name: name.to_owned(),
         parent,
+        folder,
         state: Mutex::new(State::default()),
         lease: Mutex::new(None),
         native: Mutex::new(None),
@@ -309,6 +504,8 @@ struct Capture {
     _file: Arc<File>,
     name: OsString,
     parent: destination::Directory,
+    /// Which folder `parent` is: only a folder of the moved tree gets owner write.
+    folder: Folder,
     state: Mutex<State>,
     lease: Mutex<Option<Arc<lease::ReadLease>>>,
     native: Mutex<Option<midnight_core::TransferNativeMoveOutcome>>,
@@ -385,12 +582,14 @@ impl TransferMoveCapture for Capture {
         let stage = state.retained.take().or_else(|| state.unused.take())?;
         Some(Box::new(StageCleanup {
             parent: self.parent.clone(),
+            folder: self.folder,
             stage,
         }))
     }
 }
 struct StageCleanup {
     parent: destination::Directory,
+    folder: Folder,
     stage: destination::Directory,
 }
 impl midnight_core::TransferMoveStageCleanup for StageCleanup {
@@ -398,7 +597,13 @@ impl midnight_core::TransferMoveStageCleanup for StageCleanup {
         self.stage.path()
     }
     fn cleanup(self: Box<Self>) -> Result<(), FsError> {
-        self.parent.remove_empty_stage(self.stage)
+        let Self {
+            parent,
+            folder,
+            stage,
+        } = *self;
+        let _writable = folder.writable(parent.native_file());
+        parent.remove_empty_stage(stage)
     }
 }
 impl Capture {
@@ -475,6 +680,10 @@ mod native_tests;
 #[path = "transfer_move_permission_tests.rs"]
 mod permission_tests;
 
+#[cfg(test)]
+#[path = "transfer_move_child_tests.rs"]
+mod child_tests;
+
 impl Capture {
     fn remove_empty_directory_in(
         &self,
@@ -503,6 +712,7 @@ impl Capture {
             change,
             cancel,
         )?;
+        let _writable = self.folder.writable(self.parent.native_file());
         // Empty-only, directory-relative removal. Linux has no inode-CAS rmdir;
         // retain the documented live-validation namespace threat boundary.
         rustix::fs::unlinkat(
@@ -561,6 +771,7 @@ impl Capture {
             &cleanup,
         )?;
         stage.namespace_announce(&self.name, change, &cleanup)?;
+        let _writable = self.folder.writable(self.parent.native_file());
         renameat_with(
             stage.native_file(),
             &self.name,
@@ -611,6 +822,8 @@ impl Capture {
             change,
             cancel,
         )?;
+        // For the stage, the capture, and the restoration or stage removal of a failure.
+        let _writable = self.folder.writable(self.parent.native_file());
         let recovery = match state.unused.take() {
             // Kept by an earlier attempt: announce it in this turn, as its creation
             // did, before the source is renamed into it. Nothing follows a refusal.

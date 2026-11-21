@@ -946,6 +946,23 @@ impl TransferSource for SharedSource {
         self.source()?.next_move_child_with_links(links, cancel)
     }
 
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferMoveChild>, FsError> {
+        self.source()?.next_move_child_or_failure(links, cancel)
+    }
+
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        self.source()?.prepare_move_child(name, links, cancel)
+    }
+
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,

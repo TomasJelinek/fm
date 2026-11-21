@@ -123,6 +123,8 @@ struct Original {
     pin: Mutex<Option<Box<dyn TransferSource>>>,
     entry: TransferEntry,
     expected_outputs: Vec<std::path::PathBuf>,
+    /// The removal leaves its private stage behind and reports that.
+    uncertain: bool,
 }
 
 impl TransferDirectoryLinkMoveCapture for Original {
@@ -147,6 +149,22 @@ impl TransferDirectoryLinkMoveCapture for Original {
         }
         drop(self.pin.lock().unwrap().take());
         std::fs::remove_dir(&self.entry.item.path).unwrap();
+        if self.uncertain {
+            let stage = self.entry.item.path.with_file_name(".midnight-move-stage");
+            return Ok(TransferDirectoryLinkRemoval::Removed {
+                state: TransferSourceRemoval::Unlinked,
+                durability_confirmed: false,
+                recovery: vec![TransferRecovery {
+                    path: stage.clone(),
+                    identity: None,
+                }],
+                error: Some(error(
+                    &stage,
+                    io::ErrorKind::PermissionDenied,
+                    "injected stage cleanup refusal",
+                )),
+            });
+        }
         Ok(TransferDirectoryLinkRemoval::Removed {
             state: TransferSourceRemoval::Unlinked,
             durability_confirmed: true,
@@ -216,6 +234,17 @@ impl Fixture {
         make_source: impl FnOnce(TransferIdentity) -> Box<dyn TransferSource>,
         expected_outputs: Vec<std::path::PathBuf>,
     ) -> PreparedTransferMoveEntry {
+        self.prepare_link_removal(logical, make_source, expected_outputs, false)
+    }
+
+    /// `prepare_link`, whose original's removal is `uncertain` when asked.
+    fn prepare_link_removal(
+        &self,
+        logical: &Path,
+        make_source: impl FnOnce(TransferIdentity) -> Box<dyn TransferSource>,
+        expected_outputs: Vec<std::path::PathBuf>,
+        uncertain: bool,
+    ) -> PreparedTransferMoveEntry {
         std::fs::create_dir(logical).unwrap();
         let original = self
             .native
@@ -230,6 +259,7 @@ impl Fixture {
                 pin: Mutex::new(Some(original)),
                 entry,
                 expected_outputs,
+                uncertain,
             }),
         }
     }
@@ -349,6 +379,73 @@ fn selected_links_to_the_same_target_each_copy_and_remove_only_its_original() {
         std::fs::read(fixture.referent.join("contents")).unwrap(),
         DATA
     );
+}
+
+#[test]
+fn an_uncertain_original_link_removal_asks_skip_only_and_skip_moves_the_next_link() {
+    let fixture = Fixture::new();
+    let originals = [
+        fixture.folder.path().join("first"),
+        fixture.folder.path().join("second"),
+    ];
+    let entries = originals
+        .iter()
+        .enumerate()
+        .map(|(index, logical)| {
+            let output = fixture
+                .destination
+                .join(logical.file_name().unwrap())
+                .join("contents");
+            fixture.prepare_link_removal(
+                logical,
+                |original| fixture.alias(logical, Some(original)),
+                vec![output],
+                index == 0,
+            )
+        })
+        .collect();
+    let mut job = fixture.prepare(entries);
+    let mut asked = Vec::new();
+    let mut done = None;
+    for _ in 0..400 {
+        match job.step() {
+            Step::Continue => {}
+            Step::Failure(failure) => {
+                for (choice, accepted) in [(CopyChoice::Retry, false), (CopyChoice::Skip, true)] {
+                    assert_eq!(
+                        job.accept_decision(CopyDecision {
+                            id: failure.id,
+                            version: failure.version,
+                            choice,
+                        }),
+                        accepted
+                    );
+                }
+                asked.push(failure);
+            }
+            Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+            Step::Done => {
+                done = Some(job.finish());
+                break;
+            }
+        }
+    }
+    let done = done.expect("the Move ends within bounded steps");
+    let [failure] = asked.as_slice() else {
+        panic!("one question: {asked:?}");
+    };
+    assert_eq!(failure.stage, CopyErrorStage::RemovingSource, "{failure:?}");
+    assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+    assert_eq!(failure.source.as_deref(), Some(originals[0].as_path()));
+    assert_eq!(
+        done.state,
+        CopyOperationState::CompletedWithErrors,
+        "{done:?}"
+    );
+    assert_eq!((done.failed, done.skipped), (1, 0), "{done:?}");
+    assert_eq!(done.files_completed, 2);
+    assert_eq!(done.source_residual_count, 1, "{done:?}");
+    assert!(originals.iter().all(|original| !original.exists()));
 }
 
 #[test]

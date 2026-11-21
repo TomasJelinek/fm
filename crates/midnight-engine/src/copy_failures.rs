@@ -6,11 +6,31 @@ pub(super) enum Context {
     Entry,
     /// The top folder itself cannot be read further; Skip leaves out the rest of it.
     Enumeration,
-    /// One child of the top folder cannot be opened (`Job::failed_child`); Skip
-    /// leaves out only that child and the folder continues with the next one.
+    /// One child of the top folder cannot be opened, or in a Move prepared for Move
+    /// (`Job::failed_child`); Skip leaves out only that child and the folder continues
+    /// with the next one.
     Child,
     DirectoryRemoval,
     Move,
+    /// An uncertain commit or cleanup of one entry (`Job::committed`). Its error and
+    /// recovery facts are already in the job's results and its data stays where it
+    /// is; Skip goes on with the next entry, and there is no Retry, which could
+    /// replay the commit.
+    Committed,
+}
+
+/// An entry whose change committed, or whose cleanup failed, without certainty: a
+/// publication that needs recovery or whose durability is unconfirmed, a link stage
+/// that cannot be cleaned up, a native Move rename that needs recovery, or the
+/// cleanup or durability of a verified source removal. `Job::pause_committed`
+/// records the error at once; the job then asks only whether to go on.
+pub(super) struct Committed {
+    pub(super) error: FsError,
+    pub(super) stage: CopyErrorStage,
+    pub(super) source: Option<std::path::PathBuf>,
+    pub(super) destination: std::path::PathBuf,
+    /// A Move entry whose source authority Skip releases.
+    pub(super) entry: Option<(EntryRemoval, TransferIdentity)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -26,9 +46,34 @@ impl Job {
         self.version = version;
     }
 
+    /// Records `committed`'s error with the job's results, and pauses on it before the
+    /// next step (`Context::Committed`). A second one before that pause is only
+    /// recorded: one question covers the entry.
+    pub(super) fn pause_committed(&mut self, committed: Committed) {
+        retain_error(&mut self.progress, committed.error.clone(), true);
+        if self.committed.is_none() {
+            self.committed = Some(committed);
+        }
+    }
+
+    /// Asks about the pending uncertain commit or cleanup.
+    pub(super) fn wait_for_committed(&mut self) -> Step {
+        let error = self
+            .committed
+            .as_ref()
+            .expect("pending committed failure")
+            .error
+            .clone();
+        self.wait_for_failure(error, Context::Committed)
+    }
+
     pub(super) fn wait_for_failure(&mut self, error: FsError, context: Context) -> Step {
+        // A committed failure is already in the job's results.
+        let recorded = matches!(context, Context::Committed);
         if self.cancel.is_cancelled() {
-            if error.kind != io::ErrorKind::Interrupted {
+            if recorded {
+                self.committed = None;
+            } else if error.kind != io::ErrorKind::Interrupted {
                 self.record_cleanup_error(error);
             }
             return Step::Done;
@@ -82,9 +127,14 @@ impl Job {
             Context::Child => {
                 let frame = self.stack.last().expect("failed child's folder");
                 let child = self.failed_child.as_ref().expect("failed child");
-                // Retry opens the child again by its name.
+                // Retry opens (or prepares for Move) the child again by its name. A Move
+                // could not take the child from its folder before copying anything.
                 (
-                    CopyErrorStage::Reading,
+                    if frame.removal == EntryRemoval::Ordinary {
+                        CopyErrorStage::MovingSource
+                    } else {
+                        CopyErrorStage::Reading
+                    },
                     Some(frame.source.entry().item.path.join(child)),
                     true,
                     true,
@@ -111,20 +161,34 @@ impl Job {
                     .as_ref()
                     .is_some_and(move_job::MoveWork::can_skip_failure),
             ),
+            Context::Committed => {
+                let committed = self.committed.as_ref().expect("committed failure");
+                (committed.stage, committed.source.clone(), false, true)
+            }
         };
         let can_retry = can_retry && retryable_error(&error);
-        // There is no useful retry/skip after an uncertain native commit or cleanup.
+        // A Move invariant failure has neither: the job ends.
         if !can_retry && !can_skip {
             self.record(error);
             return Step::Done;
         }
         let Some(version) = self.version.checked_add(1) else {
-            self.record(error);
+            if recorded {
+                self.committed = None;
+            } else {
+                self.record(error);
+            }
             return Step::Done;
         };
         self.version = version;
         let destination = match (context, &self.failed_child, self.stack.last()) {
             (Context::Child, Some(child), Some(frame)) => frame.destination.path().join(child),
+            (Context::Committed, _, _) => self
+                .committed
+                .as_ref()
+                .expect("committed failure")
+                .destination
+                .clone(),
             _ => self.current.as_ref().map_or_else(
                 || self.progress.destination_directory.clone(),
                 |work| work.destination.path().join(&work.name),
@@ -156,9 +220,14 @@ impl Job {
             return Step::Failure(Arc::new(self.failure.as_ref().unwrap().clone()));
         };
         let failure = self.failure.take().expect("pending error decision");
+        let recorded = matches!(self.failure_context, Context::Committed);
         match choice {
             CopyChoice::Cancel => {
-                self.record_decided_error(failure.error);
+                if recorded {
+                    self.committed = None;
+                } else {
+                    self.record_decided_error(failure.error);
+                }
                 self.cancel.cancel();
                 Step::Done
             }
@@ -189,6 +258,7 @@ impl Job {
                         result
                     }
                     Context::Enumeration => unreachable!("enumeration cannot advertise retry"),
+                    Context::Committed => unreachable!("a committed failure cannot be retried"),
                     Context::Child => self.reopen_failed_child(),
                     Context::DirectoryRemoval => Ok(()),
                 };
@@ -202,9 +272,12 @@ impl Job {
                 if matches!(choice, CopyChoice::SkipAllErrors) {
                     self.skipped_errors.insert(Scope::from(&failure));
                 }
-                self.record_decided_error(failure.error);
+                if !recorded {
+                    self.record_decided_error(failure.error);
+                }
                 self.progress.message.clear();
                 match self.failure_context {
+                    Context::Committed => self.go_on_after_committed(),
                     Context::Entry => self.skip_current(),
                     Context::Child => {
                         self.failed_child = None;
@@ -240,8 +313,17 @@ impl Job {
                         );
                         let result = work.skip_failed(self);
                         self.move_work = Some(work.into_inner());
-                        if let Err(error) = result {
-                            self.record(error);
+                        match result {
+                            Ok(None) => {}
+                            // The source is back; a cleanup after it failed.
+                            Ok(Some(error)) => self.pause_committed(Committed {
+                                error,
+                                stage: CopyErrorStage::Cleanup,
+                                source: failure.source,
+                                destination: failure.destination,
+                                entry: None,
+                            }),
+                            Err(error) => self.record(error),
                         }
                         self.progress.skipped += 1;
                     }
@@ -255,12 +337,47 @@ impl Job {
         }
     }
 
-    /// Retry of a child that could not be opened: open it again by name. While it
-    /// still fails, it stays the pending child.
+    /// Skip of an uncertain commit or cleanup: the entry stays as it is, and the job goes
+    /// on with the next one. A Move keeps the folders above it, which can hold its
+    /// recovery data, and releases the entry's source authority; a cleanup that then
+    /// fails is asked about the same way.
+    fn go_on_after_committed(&mut self) {
+        let Some(committed) = self.committed.take() else {
+            return;
+        };
+        let Some(move_work) = self.move_work.as_mut() else {
+            return;
+        };
+        for frame in &mut self.stack {
+            frame.retain_source = true;
+        }
+        let Some((removal, identity)) = committed.entry else {
+            return;
+        };
+        if let Err(error) = move_work.discard_entry(removal, identity) {
+            self.pause_committed(Committed {
+                error,
+                stage: CopyErrorStage::Cleanup,
+                entry: None,
+                ..committed
+            });
+        }
+    }
+
+    /// Retry of a child that could not be opened, or prepared for Move: open or prepare
+    /// it again by name. While it still fails, it stays the pending child.
     fn reopen_failed_child(&mut self) -> Result<(), FsError> {
         let child = self.failed_child.as_ref().expect("failed child");
         let frame = self.stack.last().expect("failed child's folder");
-        self.reopened_child = Some(frame.source.open_child(child, &self.cancel)?);
+        if frame.removal == EntryRemoval::Ordinary {
+            self.reprepared_child = Some(frame.source.prepare_move_child(
+                child,
+                self.links,
+                &self.cancel,
+            )?);
+        } else {
+            self.reopened_child = Some(frame.source.open_child(child, &self.cancel)?);
+        }
         self.failed_child = None;
         Ok(())
     }

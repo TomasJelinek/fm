@@ -130,6 +130,24 @@ fn prepared() -> (tempfile::TempDir, Job, Arc<AtomicUsize>, std::path::PathBuf) 
 fn prepared_with_read_control(
     fail_read: Arc<AtomicBool>,
 ) -> (tempfile::TempDir, Job, Arc<AtomicUsize>, std::path::PathBuf) {
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let counted = prepared.clone();
+    let (temp, job, source) = prepared_with(fail_read, move |inner| {
+        Arc::new(FailRemoval {
+            inner,
+            remaining: Arc::new(AtomicUsize::new(1)),
+            prepared: counted,
+            receipt: Arc::new(Mutex::new(None)),
+        })
+    });
+    (temp, job, prepared, source)
+}
+/// A Move of `first` and `second` whose first file is published and its proof pending;
+/// `wrap` replaces the first file's capture.
+fn prepared_with(
+    fail_read: Arc<AtomicBool>,
+    wrap: impl FnOnce(Arc<dyn TransferMoveCapture>) -> Arc<dyn TransferMoveCapture>,
+) -> (tempfile::TempDir, Job, std::path::PathBuf) {
     let base = std::env::temp_dir().join("midnight-move-retry/_build/tmp");
     fs::create_dir_all(&base).unwrap();
     let temp = tempfile::tempdir_in(base).unwrap();
@@ -183,13 +201,7 @@ fn prepared_with_read_control(
         fail: fail_read,
     }));
     let work = job.move_work.as_mut().unwrap();
-    let prepared = Arc::new(AtomicUsize::new(0));
-    work.captures[0] = Arc::new(FailRemoval {
-        inner: work.captures[0].clone(),
-        remaining: Arc::new(AtomicUsize::new(1)),
-        prepared: prepared.clone(),
-        receipt: Arc::new(Mutex::new(None)),
-    });
+    work.captures[0] = wrap(work.captures[0].clone());
     let mut discovery = OperationDiscovery::scanning(DiscoveryScope::Recursive);
     let mut budget = work_budget::Budget::discovery();
     for source in &job.roots {
@@ -201,7 +213,7 @@ fn prepared_with_read_control(
     job.work_budget = budget;
     for _ in 0..100 {
         if job.move_work.as_ref().unwrap().has_pending() {
-            return (temp, job, prepared, source);
+            return (temp, job, source);
         }
         assert!(matches!(job.step(), Step::Continue));
     }
@@ -267,7 +279,7 @@ fn skip_failed_removal_restores_only_this_source_and_retains_future_work() {
     let (_temp, mut job, _, source) = prepared();
     let mut work = job.move_work.take().unwrap();
     fail(&mut work, &mut job);
-    work.skip_failed(&mut job).unwrap();
+    assert!(work.skip_failed(&mut job).unwrap().is_none());
     assert_eq!(fs::read(&source).unwrap(), b"verified first bytes");
     assert_eq!(
         fs::read(job.progress.destination_directory.join("first")).unwrap(),
@@ -312,8 +324,247 @@ fn move_proof_read_error_has_a_different_skip_all_stage_from_source_removal() {
     assert_eq!(work.failure_stage(), CopyErrorStage::Verifying);
     assert!(!work.can_retry());
     assert!(work.can_skip_failure());
-    work.skip_failed(&mut job).unwrap();
+    assert!(work.skip_failed(&mut job).unwrap().is_none());
     assert_eq!(fs::read(source).unwrap(), b"verified first bytes");
     assert_eq!(job.progress.source_files_removed, 0);
     assert!(work.cleanup(&mut job).is_empty());
+}
+
+/// Removes the verified source, then refuses to remove its empty private stage.
+struct RefusedStageCleanup(Arc<dyn TransferMoveCapture>);
+impl TransferMoveCapture for RefusedStageCleanup {
+    fn entry(&self) -> &TransferEntry {
+        self.0.entry()
+    }
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.revalidate(cancel)
+    }
+    fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.preflight_finalization(cancel)
+    }
+    fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
+        self.0.capture(cancel)
+    }
+    fn prepare_finalization(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferMoveFinalizer>, FsError> {
+        self.0.prepare_finalization(cancel)
+    }
+    fn restore(&self) -> Result<(), FsError> {
+        self.0.restore()
+    }
+    fn restoration_completed(&self) -> bool {
+        self.0.restoration_completed()
+    }
+    fn take_stage_cleanup(&self) -> Option<Box<dyn midnight_core::TransferMoveStageCleanup>> {
+        let cleanup = self.0.take_stage_cleanup()?;
+        Some(Box::new(RefusedCleanup(cleanup)))
+    }
+}
+struct RefusedCleanup(Box<dyn midnight_core::TransferMoveStageCleanup>);
+impl midnight_core::TransferMoveStageCleanup for RefusedCleanup {
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+    fn cleanup(self: Box<Self>) -> Result<(), FsError> {
+        Err(error(
+            self.0.path(),
+            io::ErrorKind::PermissionDenied,
+            "injected stage cleanup refusal",
+        ))
+    }
+}
+
+/// Removes the verified source, then reports that its removal may not be durable.
+struct UnconfirmedRemoval(Arc<dyn TransferMoveCapture>);
+impl TransferMoveCapture for UnconfirmedRemoval {
+    fn entry(&self) -> &TransferEntry {
+        self.0.entry()
+    }
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.revalidate(cancel)
+    }
+    fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.preflight_finalization(cancel)
+    }
+    fn capture(&self, cancel: &Cancellation) -> Result<TransferMoveCaptureOutcome, FsError> {
+        self.0.capture(cancel)
+    }
+    fn prepare_finalization(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferMoveFinalizer>, FsError> {
+        Ok(Box::new(UnconfirmedFinalizer(
+            self.0.prepare_finalization(cancel)?,
+        )))
+    }
+    fn restore(&self) -> Result<(), FsError> {
+        self.0.restore()
+    }
+    fn restoration_completed(&self) -> bool {
+        self.0.restoration_completed()
+    }
+    fn take_stage_cleanup(&self) -> Option<Box<dyn midnight_core::TransferMoveStageCleanup>> {
+        self.0.take_stage_cleanup()
+    }
+}
+struct UnconfirmedFinalizer(Box<dyn TransferMoveFinalizer>);
+impl TransferMoveFinalizer for UnconfirmedFinalizer {
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.revalidate(cancel)
+    }
+    fn finalize(&mut self, cancel: &Cancellation) -> TransferMoveFinalizeOutcome {
+        match self.0.finalize(cancel) {
+            TransferMoveFinalizeOutcome::Removed {
+                source, recovery, ..
+            } => TransferMoveFinalizeOutcome::Removed {
+                source,
+                recovery,
+                state: TransferSourceRemoval::Unlinked,
+                durability_confirmed: false,
+            },
+            retained => retained,
+        }
+    }
+}
+
+fn refused_stage_cleanup(capture: Arc<dyn TransferMoveCapture>) -> Arc<dyn TransferMoveCapture> {
+    Arc::new(RefusedStageCleanup(capture))
+}
+fn unconfirmed_removal(capture: Arc<dyn TransferMoveCapture>) -> Arc<dyn TransferMoveCapture> {
+    Arc::new(UnconfirmedRemoval(capture))
+}
+
+/// The next question of `job`, failing if it ends first.
+fn question(job: &mut Job) -> Arc<CopyFailure> {
+    for _ in 0..200 {
+        match job.step() {
+            Step::Continue => {}
+            Step::Failure(failure) => return failure,
+            Step::Done => panic!("the job ended without a question"),
+            Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+        }
+    }
+    panic!("no question within bounded steps");
+}
+
+#[test]
+fn an_uncertain_end_of_a_verified_removal_asks_skip_only_and_skip_moves_the_next_file() {
+    for (wrap, stage) in [
+        (refused_stage_cleanup as fn(_) -> _, CopyErrorStage::Cleanup),
+        (unconfirmed_removal, CopyErrorStage::RemovingSource),
+    ] {
+        let (_temp, mut job, source) = prepared_with(Arc::new(AtomicBool::new(false)), wrap);
+        let failure = question(&mut job);
+        assert_eq!(failure.stage, stage, "{failure:?}");
+        assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+        assert_eq!(failure.source, Some(source.clone()));
+        assert_eq!(
+            failure.destination,
+            job.progress.destination_directory.join("first")
+        );
+        // The verified source is gone and its copy in place, recorded as it happened.
+        assert!(!source.exists());
+        assert_eq!(job.progress.source_files_removed, 1);
+        assert_eq!(job.progress.failed, 1);
+        for (choice, accepted) in [(CopyChoice::Retry, false), (CopyChoice::Skip, true)] {
+            assert_eq!(
+                job.accept_decision(CopyDecision {
+                    id: failure.id,
+                    version: failure.version,
+                    choice,
+                }),
+                accepted
+            );
+        }
+        for _ in 0..200 {
+            match job.step() {
+                Step::Continue => {}
+                Step::Done => break,
+                Step::Failure(failure) => panic!("asked again: {failure:?}"),
+                Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+            }
+        }
+        let destination = job.progress.destination_directory.clone();
+        let done = job.finish();
+        assert_eq!(
+            done.state,
+            CopyOperationState::CompletedWithErrors,
+            "{done:?}"
+        );
+        assert_eq!((done.failed, done.skipped), (1, 0), "{done:?}");
+        // The second file moves too (by its own rename on this one volume).
+        assert_eq!(
+            done.source_files_removed + done.native_entries_moved,
+            2,
+            "{done:?}"
+        );
+        assert_eq!(
+            fs::read(destination.join("first")).unwrap(),
+            b"verified first bytes"
+        );
+        assert_eq!(
+            fs::read(destination.join("second")).unwrap(),
+            b"untouched future bytes"
+        );
+        assert!(!source.with_file_name("second").exists());
+    }
+}
+
+#[test]
+fn a_skipped_removal_whose_stage_remains_after_restoration_asks_only_whether_to_go_on() {
+    let (_temp, mut job, source) = prepared_with(Arc::new(AtomicBool::new(false)), |inner| {
+        refused_stage_cleanup(Arc::new(FailRemoval {
+            inner,
+            remaining: Arc::new(AtomicUsize::new(1)),
+            prepared: Arc::new(AtomicUsize::new(0)),
+            receipt: Arc::new(Mutex::new(None)),
+        }))
+    });
+    let failure = question(&mut job);
+    assert_eq!(failure.stage, CopyErrorStage::RemovingSource, "{failure:?}");
+    assert!(job.accept_decision(CopyDecision {
+        id: failure.id,
+        version: failure.version,
+        choice: CopyChoice::Skip,
+    }));
+    // The source is back under its name, but its private stage cannot be removed.
+    let cleanup = question(&mut job);
+    assert_eq!(cleanup.stage, CopyErrorStage::Cleanup, "{cleanup:?}");
+    assert!(!cleanup.can_retry && cleanup.can_skip, "{cleanup:?}");
+    assert_eq!(cleanup.source, Some(source.clone()));
+    assert_eq!(fs::read(&source).unwrap(), b"verified first bytes");
+    assert!(job.accept_decision(CopyDecision {
+        id: cleanup.id,
+        version: cleanup.version,
+        choice: CopyChoice::Skip,
+    }));
+    for _ in 0..200 {
+        match job.step() {
+            Step::Continue => {}
+            Step::Done => break,
+            Step::Failure(failure) => panic!("asked again: {failure:?}"),
+            Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+        }
+    }
+    let destination = job.progress.destination_directory.clone();
+    let done = job.finish();
+    assert_eq!(
+        done.state,
+        CopyOperationState::CompletedWithErrors,
+        "{done:?}"
+    );
+    assert_eq!(done.skipped, 1, "{done:?}");
+    // The skipped file stays, next to its copy; the second file moves.
+    assert_eq!(fs::read(&source).unwrap(), b"verified first bytes");
+    assert_eq!(
+        fs::read(destination.join("first")).unwrap(),
+        b"verified first bytes"
+    );
+    assert_eq!(
+        fs::read(destination.join("second")).unwrap(),
+        b"untouched future bytes"
+    );
+    assert!(!source.with_file_name("second").exists());
 }

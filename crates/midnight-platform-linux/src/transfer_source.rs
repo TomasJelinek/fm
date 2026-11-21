@@ -388,6 +388,61 @@ impl TransferSource for Source {
             })
             .transpose()
     }
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::TransferMoveChild>, FsError> {
+        let traversal = self.move_traversal(links)?;
+        let Some(name) = self.next_name(cancel)? else {
+            return Ok(None);
+        };
+        // The folder's own checks failing ends its enumeration; only preparing the
+        // child is the child's failure.
+        let prepared = super::move_source::prepare_child_or_failure(
+            self.file.clone(),
+            self.entry.item.path.clone(),
+            &name,
+            Some(self.child_namespace()?),
+            traversal,
+            self.revisions,
+            cancel,
+        )?;
+        Ok(Some(prepared.map_err(|error| {
+            midnight_core::TransferChildFailure { name, error }
+        })))
+    }
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        let traversal = self.move_traversal(links)?;
+        self.revalidate(cancel)?;
+        if self.entry.item.kind != EntryKind::Directory {
+            return Err(invalid(
+                &self.entry.item.path,
+                "named child requires a directory",
+            ));
+        }
+        // Children are prepared below the folder's readable descriptor, which its
+        // enumeration opened before any child could fail.
+        let file = if self.readable {
+            self.file.clone()
+        } else {
+            Arc::new(open_retained(&self.file, &self.entry.item.path)?)
+        };
+        super::move_source::prepare_child_or_failure(
+            file,
+            self.entry.item.path.clone(),
+            name,
+            Some(self.child_namespace()?),
+            traversal,
+            self.revisions,
+            cancel,
+        )?
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,
@@ -613,6 +668,33 @@ impl Source {
             rustix::fs::AtFlags::EACCESS,
         )
         .map_err(|e| error(&self.entry.item.path, e.into()))
+    }
+    /// The link traversal that a Move child of this folder is prepared under for
+    /// `links` (none for `Reject`); only a source prepared for Move has one.
+    fn move_traversal(
+        &self,
+        links: CopyLinkPolicy,
+    ) -> Result<Option<directory_links::Traversal>, FsError> {
+        if !self.move_enabled {
+            return Err(unsupported(
+                &self.entry.item.path,
+                "Copy sources have no Move authority",
+            ));
+        }
+        if links == CopyLinkPolicy::Reject {
+            return Ok(None);
+        }
+        self.traversal
+            .as_ref()
+            .filter(|traversal| traversal.matches_policy(links))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.entry.item.path,
+                    "this source has no Move authority for the requested directory link policy",
+                )
+            })
     }
     fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<OsString>, FsError> {
         self.revalidate(cancel)?;

@@ -140,3 +140,57 @@ fn failures_of_the_folder_itself_end_its_enumeration() {
     assert_eq!(failure.kind, io::ErrorKind::Interrupted, "{failure:?}");
     assert_eq!(failure.path, folder);
 }
+
+#[test]
+fn a_move_child_that_cannot_be_prepared_fails_alone_and_can_be_prepared_again_by_name() {
+    let temp = build_temp("move-child-failure-");
+    let folder = temp.path().join("folder");
+    fs::create_dir(&folder).unwrap();
+    for name in ["first", "written", "last"] {
+        fs::write(folder.join(name), name).unwrap();
+    }
+    // Another program writes this file, so a Move cannot hold it for its removal.
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(folder.join("written"))
+        .unwrap();
+    let cancel = Cancellation::default();
+    let policy = CopyLinkPolicy::Reject;
+    let midnight_core::PreparedTransferMoveEntry::Ordinary(prepared) =
+        crate::WindowsFileSystem::new(None)
+            .prepare_move_source_with_policy(
+                &folder,
+                policy,
+                TransferRevisionPolicy::AcceptChangeTimeOnly,
+                &cancel,
+            )
+            .unwrap()
+    else {
+        panic!("an ordinary Move folder");
+    };
+    let mut source = prepared.source;
+    let (mut moved, mut failed) = (Vec::new(), Vec::new());
+    while let Some(child) = source.next_move_child_or_failure(policy, &cancel).unwrap() {
+        match child {
+            Ok(entry) => moved.push(entry.source().entry().item.path.clone()),
+            Err(failure) => {
+                assert!(
+                    failure.error.message.contains("(os error 32)"),
+                    "{failure:?}"
+                );
+                assert_eq!(failure.error.path, folder.join(&failure.name));
+                failed.push(failure.name);
+            }
+        }
+    }
+    moved.sort();
+    assert_eq!(moved, [folder.join("first"), folder.join("last")]);
+    assert_eq!(failed, ["written"]);
+    // Retry prepares the child by its name once nothing else holds it.
+    let written = OsStr::new("written");
+    assert!(source.prepare_move_child(written, policy, &cancel).is_err());
+    drop(writer);
+    let entry = source.prepare_move_child(written, policy, &cancel).unwrap();
+    assert_eq!(entry.source().entry().item.path, folder.join("written"));
+}

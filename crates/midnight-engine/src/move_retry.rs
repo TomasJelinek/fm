@@ -104,7 +104,15 @@ impl MoveWork {
         self.failed_capture_index().is_some()
     }
 
-    pub(in super::super) fn skip_failed(&mut self, job: &mut Job) -> Result<(), FsError> {
+    /// Puts the failed file's source back and cleans up after it. `Err` when the source
+    /// could not be put back (it waits in its private stage, reported at the end) or the
+    /// provider broke its contract: the job ends. `Ok(Some)` when the source is back but
+    /// a cleanup failed, or the restoration may not be durable: the job asks about it as
+    /// an uncertain cleanup, and the next file can proceed.
+    pub(in super::super) fn skip_failed(
+        &mut self,
+        job: &mut Job,
+    ) -> Result<Option<FsError>, FsError> {
         let index = self.failed_capture_index().ok_or_else(|| {
             unsupported(
                 &job.progress.destination_directory,
@@ -119,6 +127,7 @@ impl MoveWork {
             .as_ref()
             .and_then(|(_, recovery)| recovery.path.parent().map(Path::to_owned));
         self.proofs.clear();
+        self.published = None;
         self.finalizer = None;
         self.retryable_failure = false;
         self.failed_phase = None;
@@ -127,15 +136,19 @@ impl MoveWork {
         let restored = capture.restore();
         if restored.is_err() && !capture.restoration_completed() {
             // Preserve the capture/receipt for terminal cleanup and residual reporting.
-            return restored;
+            return restored.map(|()| None);
         }
         let cleanup = capture.take_stage_cleanup();
         self.captures.remove(index);
         drop(capture);
         self.active = None;
         self.record_parents(job, &source);
+        // The source is back under its name: what follows only cleans up.
+        self.phase = Phase::Copying;
+        let mut failures = Vec::new();
+        failures.extend(restored.err());
         if let Some(mut stage) = self.stages.remove(&identity) {
-            stage.cleanup()?;
+            failures.extend(stage.cleanup().err());
         }
         if let Some(cleanup) = cleanup {
             let path = cleanup.path().to_owned();
@@ -149,7 +162,7 @@ impl MoveWork {
                     },
                     false,
                 );
-                return Err(error);
+                failures.push(error);
             }
         } else if let Some(path) = staged_directory {
             record_source(
@@ -166,8 +179,12 @@ impl MoveWork {
                 "Move provider omitted temporary-directory cleanup authority after source restoration.",
             ));
         }
-        restored?;
-        self.phase = Phase::Copying;
-        Ok(())
+        let mut failures = failures.into_iter();
+        let first = failures.next();
+        // One question covers the file; any further failure is only reported.
+        for failure in failures {
+            retain_error(&mut job.progress, failure, true);
+        }
+        Ok(first)
     }
 }

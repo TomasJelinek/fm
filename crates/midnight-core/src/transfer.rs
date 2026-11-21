@@ -293,6 +293,9 @@ pub struct TransferChildFailure {
 /// One child from `TransferSource::next_child_or_failure`.
 pub type TransferChild = Result<Box<dyn TransferSource>, TransferChildFailure>;
 
+/// One child from `TransferSource::next_move_child_or_failure`.
+pub type TransferMoveChild = Result<crate::PreparedTransferMoveEntry, TransferChildFailure>;
+
 /// A retained source for a file, directory, or explicitly preserved link.
 /// Iteration opens at most one child per call. Directory sources stay on the traversal stack.
 /// Directory-link projections grant read-only authority over any followed contents.
@@ -412,6 +415,35 @@ pub trait TransferSource: Send {
         Err(transfer_unsupported(
             &self.entry().item.path,
             "recursive Move with directory links is unsupported",
+        ))
+    }
+    /// `next_move_child_with_links`, except that a child which cannot be prepared for
+    /// Move once its name is read (a special file or a mount point, for example) comes
+    /// back as `Ok(Some(Err(..)))`: the caller can leave out that child alone, which
+    /// stays in this folder, or prepare it again with `prepare_move_child`, and then
+    /// continue with the next one. `Err` remains a failure of this folder itself, such as
+    /// one that does not let its entries leave it, which ends its enumeration. The
+    /// default reports every failure as the folder's; wrappers that forward
+    /// `next_move_child_with_links` forward this and `prepare_move_child`.
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferMoveChild>, FsError> {
+        self.next_move_child_with_links(links, cancel)
+            .map(|child| child.map(Ok))
+    }
+    /// Prepare the child `name` of this Move folder again, under `links`, as
+    /// `next_move_child_or_failure` prepared it: the Retry of that child's failure.
+    fn prepare_move_child(
+        &self,
+        _name: &OsStr,
+        _links: CopyLinkPolicy,
+        _cancel: &Cancellation,
+    ) -> Result<crate::PreparedTransferMoveEntry, FsError> {
+        Err(transfer_unsupported(
+            &self.entry().item.path,
+            "preparing a named Move child is unsupported",
         ))
     }
     fn prepare_modified_time(

@@ -238,8 +238,8 @@ filesystem without POSIX delete (FAT32, exFAT, some redirectors) cannot ignore i
 Delete clears Read-only on the entry itself, through a second handle to that entry
 and never by path, and sets it again if the entry still cannot be removed. A file
 with other names (hard links), which may lie outside the confirmed tree, is not
-changed: its removal pauses the job with the same choices. Move's
-removal of its source after a cross-volume copy does not yet apply this rule.
+changed: its removal pauses the job with the same choices. Move applies the same
+rule to the tree it moves (below).
 
 A same-volume Move on Linux renames a folder into another folder, which changes its
 `..` entry and so needs write permission on the folder itself. A folder the current
@@ -247,7 +247,18 @@ user owns that lacks owner write gets it only for these renames, through the
 descriptor retained when the Move was prepared (its `/proc/self/fd` entry, since
 `fchmod` refuses that path-only descriptor), never through a path, and gets its
 original mode back as soon as the native Move returns, wherever the folder then is.
-Folders owned by another user, links and any other item are never changed. A
+Entries leave a folder only while it is writable, so a Move, like Delete, changes
+permissions only inside the tree the user moves: a folder of that tree (the selected
+folder or a folder below it) that the current user owns and that lacks owner write
+gets owner write through the descriptor the Move retained for it, never through a
+path, only for each change that takes one of its entries out or puts one back (its
+private stage, the capture of an entry after a cross-volume copy, the stage's and an
+emptied folder's removal, an entry's own rename on one volume, a restoration), and
+gets its original mode back as soon as that change returns. The folder that contains
+the selection is never changed: a Move out of one that does not let the item leave
+stops at preparation, before anything is copied. Folders owned by another user,
+links and any other item are never changed. On Windows a folder's read-only
+attribute does not stop entries from leaving it, so nothing is changed there. A
 prepared Move source is rechecked by identity, size and modified time before each
 attempt; its permissions and change time may differ, because the user may fix them
 to retry.

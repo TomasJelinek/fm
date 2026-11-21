@@ -38,6 +38,14 @@ impl TransferService for CrossDeviceService {
         self.0.prepare_move_source(path, cancel).map(wrap)
     }
 }
+fn wrap_entry(entry: PreparedTransferMoveEntry) -> PreparedTransferMoveEntry {
+    match entry {
+        PreparedTransferMoveEntry::Ordinary(prepared) => {
+            PreparedTransferMoveEntry::Ordinary(wrap(prepared))
+        }
+        link => link,
+    }
+}
 fn wrap(prepared: PreparedTransferMove) -> PreparedTransferMove {
     PreparedTransferMove {
         source: Box::new(Source(prepared.source)),
@@ -73,6 +81,25 @@ impl TransferSource for Source {
         cancel: &Cancellation,
     ) -> Result<Option<PreparedTransferMove>, FsError> {
         self.0.next_move_child(cancel).map(|child| child.map(wrap))
+    }
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferMoveChild>, FsError> {
+        self.0
+            .next_move_child_or_failure(links, cancel)
+            .map(|child| child.map(|child| child.map(wrap_entry)))
+    }
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        self.0
+            .prepare_move_child(name, links, cancel)
+            .map(wrap_entry)
     }
     fn rewind_for_validation(
         &mut self,

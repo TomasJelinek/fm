@@ -17,6 +17,8 @@ mod tests;
 pub(super) struct Capture {
     original: Arc<directory_links::OriginalLink>,
     parent: destination::Directory,
+    /// Which folder `parent` is: only a folder of the moved tree gets owner write.
+    folder: Folder,
     outcome: Mutex<Option<TransferNativeMoveOutcome>>,
 }
 
@@ -31,10 +33,17 @@ impl Capture {
         let capture = Self {
             original,
             parent,
+            folder: Folder::ContainsSelection,
             outcome: Mutex::new(None),
         };
         capture.revalidate(cancel)?;
         Ok(capture)
+    }
+
+    /// The link leaves `folder` (by default the folder that contains the selection).
+    pub(super) fn leaving(mut self, folder: Folder) -> Self {
+        self.folder = folder;
+        self
     }
 
     fn path(&self) -> &Path {
@@ -166,7 +175,11 @@ impl Capture {
             self.parent.clone(),
             &Cancellation::default(),
         )
-        .and_then(|capture| capture.remove_original(&Cancellation::default()));
+        .and_then(|capture| {
+            capture
+                .leaving(self.folder)
+                .remove_original(&Cancellation::default())
+        });
         Ok(match removal {
             Ok(TransferDirectoryLinkRemoval::Removed {
                 durability_confirmed,
@@ -303,7 +316,7 @@ impl TransferMoveCapture for Capture {
         }
         let outcome = match native::attempt_link(
             &self.original,
-            &self.parent,
+            (&self.parent, self.folder),
             destination,
             name,
             replace.clone(),

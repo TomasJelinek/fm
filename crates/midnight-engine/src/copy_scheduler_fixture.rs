@@ -236,6 +236,31 @@ impl TransferSource for Source {
             .next_move_child(cancel)
             .map(|next| next.map(|next| wrap_move(next, &self.control)))
     }
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferMoveChild>, FsError> {
+        if links != CopyLinkPolicy::Reject {
+            // As `next_move_child_with_links`, which this fixture leaves unsupported.
+            return self
+                .next_move_child_with_links(links, cancel)
+                .map(|next| next.map(Ok));
+        }
+        self.inner
+            .next_move_child_or_failure(links, cancel)
+            .map(|next| next.map(|next| next.map(|entry| wrap_move_entry(entry, &self.control))))
+    }
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        self.inner
+            .prepare_move_child(name, links, cancel)
+            .map(|entry| wrap_move_entry(entry, &self.control))
+    }
     fn link_representation(
         &self,
         cancel: &Cancellation,
@@ -395,6 +420,17 @@ impl TransferService for Service {
     }
 }
 
+fn wrap_move_entry(
+    entry: PreparedTransferMoveEntry,
+    control: &Arc<Control>,
+) -> PreparedTransferMoveEntry {
+    match entry {
+        PreparedTransferMoveEntry::Ordinary(prepared) => {
+            PreparedTransferMoveEntry::Ordinary(wrap_move(prepared, control))
+        }
+        link => link,
+    }
+}
 fn wrap_move(prepared: PreparedTransferMove, control: &Arc<Control>) -> PreparedTransferMove {
     PreparedTransferMove {
         source: Source::wrap(prepared.source, control),

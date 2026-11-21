@@ -205,6 +205,18 @@ Retry retains native identities and the original source/stage handles:
   and traverse access, so unlike Linux no folder lists names that cannot be opened.
   Cancellation, a changed folder binding and a broken listing remain the folder's
   failure. Archive sources report every failure as the folder's.
+- In a Move, a child of a moved folder that cannot be prepared for Move (a special
+  file, a mount point, an entry that vanished or that another user owns in a sticky
+  folder) is likewise that child's failure (`TransferSource::next_move_child_or_failure`,
+  stage Moving the source): Retry prepares it again by name with `prepare_move_child`,
+  and Skip leaves only that child, which stays with its folder and every folder above
+  it. What all entries of a moved folder need (on Linux `check_moved_folder`: the
+  bound, protected local folder lets entries leave it) is checked once per folder,
+  before its entries, so a folder that does not let them leave fails once as Reading
+  folder contents. The Linux and Windows sources report such children (on Windows
+  typically a file that another program holds, which a Move cannot hold for its
+  removal; a Windows child has no folder-level checks to separate). Sources that keep
+  the default report every failure as the folder's.
 - File-source deletion Retry keeps the verified destination, obtains a fresh
   native finalizer and rehashes both held objects before another removal attempt.
   It never recopies the file. Directory removal retries the exhausted frame,
@@ -218,12 +230,16 @@ Skip All is scoped by phase, native error kind and operation name within one job
 A Move that cannot take its source before anything is copied (the native rename,
 or a Move-only check of the source) stops at the "Moving the source" phase with
 the operation `move`. Linux moves a folder into another folder only when the
-folder itself is writable, because its link to its parent changes; a read-only
-folder is reported as such and left in place.
+folder itself is writable, because its link to its parent changes: one the user
+owns gets owner write for that rename, and a read-only folder of another user is
+reported as such and left in place.
 Successful retries do not increment failed counts; skipped errors and cleanup or
 restoration failures remain in history. A source-name restoration conflict retains
-both objects and reports the residual path. Unsafe cleanup/commit failures stop
-the job instead of offering an optimistic Retry.
+both objects and reports the residual path. An uncertain commit or cleanup is never
+retried: where its data stays in place, the job records it with its recovery facts
+and asks only whether to go on (Skip, Skip all errors, Cancel); a capture that does
+not match, Move invariant failures and a failed restore during Skip end the job
+([audit](OPERATION_PROGRESS.md)).
 
 The error dialog has Retry/Skip/Skip All/Cancel only when supported. Decide later,
 Escape, the window's close button (X) and the dialog's header close button close
@@ -347,9 +363,11 @@ delete recovery data during cleanup:
 
 For regular files as for links, a `PublishedDurabilityUnconfirmed` file and a
 `RecoveryRequired` outcome with a published path count as completed files (and
-bytes), but never as Move proofs; the failure is recorded, and either outcome stops
-the job: later files would otherwise keep publishing into a destination whose state
-is uncertain.
+bytes), but never as Move proofs. The failure is recorded at once with its recovery
+facts, and the job then asks whether to go on, with Skip, Skip all errors and Cancel
+only (never Retry, which could replay the commit): Skip leaves the file as it is (a
+Move keeps its source and the folders above it) and later files publish under their
+own no-replace checks; Cancel stops the job.
 
 Before mutation, an ordinary error leaves the existing target untouched. After
 recovery ownership transfers, Drop closes handles but never removes retained
@@ -385,11 +403,21 @@ authority and exceeded root budgets are rejected before writes. Preparation pins
 all root authorities and root-file stages. Recursive traversal admits one child
 at a time, with at most 128 active directory frames and 100,000 admitted entries;
 the child's native authority and file proof support are checked before its copy.
-A later unsupported child or exceeded traversal budget stops unfinished work and
-retains earlier completed moves. Windows source DELETE authority is obtained
+A later child that cannot be prepared for Move pauses alone (see the I/O errors
+above); an exceeded traversal budget stops unfinished work and retains earlier
+completed moves. Windows source DELETE authority is obtained
 before each source's copy, separately from Copy's unchanged read-only pin.
 Protected source parents and qualified local NTFS/ext semantics are mandatory;
 unsupported parents suggest Copy, never permission weakening or silent fallback.
+Inside the moved tree Linux follows Delete's rule instead: a folder of that tree
+(the selected folder or a folder below it) that the user owns and that lacks owner
+write gets it, through the descriptor the Move retains for it, only for each change
+that takes an entry out of it or puts one back (its private stage, a capture, a
+restoration, the stage's and an emptied folder's removal, an entry's own rename on
+one volume), and its own mode back as soon as that change returns. The folder that
+contains the selection is never changed, so a write-protected one still stops the
+Move at preparation ([security](../../SECURITY.md)). Windows needs nothing here: a
+folder's read-only attribute does not keep entries from leaving it.
 
 Optional contracts default to Unsupported:
 
@@ -397,6 +425,7 @@ Optional contracts default to Unsupported:
 | --- | --- |
 | `prepare_move_source` | Retain the actual source reader plus opaque root authority, without changing source names. |
 | `TransferSource::next_move_child` | Open one child relative to the held directory without following links, returning explicit Move authority. Ordinary Copy sources refuse this method. |
+| `TransferSource::next_move_child_or_failure` / `prepare_move_child` | The next Move child, or that child's own failure apart from its folder's (the default reports every failure as the folder's); prepare a failed child again by name for Retry. Wrappers that forward `next_move_child_with_links` forward both. |
 | `prepare_move_destination` | Qualify retained stage read and final-name proof support before copying. |
 | `rewind_for_validation` | Rewind the existing source/stage file object and obtain a fresh handle-only revision guard; no old source pathname reopen. |
 | `revalidate_publication` | Check held destination directory/final basename against the exact held stage identity, without following replacement links. |
@@ -468,7 +497,12 @@ An unresolved terminal failure or cancellation stops unfinished Move work;
 earlier successful moves remain completed, and later source names stay in place.
 At a supported failure pause, explicit Skip retains that source and allows later
 siblings to continue. Retry is offered only for a failed source removal and
-repeats the complete post-capture proof before removing the source.
+repeats the complete post-capture proof before removing the source. An uncertain
+end of an entry (a native rename that needs recovery, a stage that cannot be removed
+after the verified source was, an unconfirmed removal durability, a moved directory
+link's original that needs recovery) asks Skip, Skip all errors or Cancel instead,
+never Retry; Skip leaves the entry as it is and keeps its source folders, which can
+hold its recovery data.
 Every pre-deletion failure or cancellation after staging attempts a no-replace
 restore to the original name, even when the user cancellation token is set.
 The transient path is `.midnight-move-<random>/<original raw basename>`. A
@@ -954,7 +988,8 @@ streams need their declared metadata capability matrix. Without an explicit link
 policy (`CopyLinkPolicy::Reject`) existing source link/special entries are refused;
 the Copy/Move dialog always sends one, see [links](#links-in-copy-and-move).
 Special entries stay unsupported. A link cleanup failure or an uncertain link
-publication (durability unconfirmed or recovery required) stops the job.
+publication (durability unconfirmed or recovery required) asks whether to go on
+(Skip, Skip all errors, Cancel), never Retry.
 Recursive directory Move uses the per-file proof and postorder empty-directory
 removal contract above. It does not infer descendant verification from root
 metadata. Skips retain ancestors; failures/cancellation preserve unfinished

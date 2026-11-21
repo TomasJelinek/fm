@@ -244,6 +244,7 @@ impl Fixture {
             metadata_policy: TransferMetadataPolicy::ContentOnly,
             stages: HashMap::new(),
             proofs: Vec::new(),
+            published: None,
             phase: Phase::Halted,
             finalizer: None,
             active: Some((PathBuf::from("source/original"), recovery())),

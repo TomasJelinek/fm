@@ -15,6 +15,8 @@ mod tests;
 pub(super) struct Capture {
     original: Arc<directory_links::OriginalLink>,
     parent: destination::Directory,
+    /// Which folder `parent` is: only a folder of the moved tree gets owner write.
+    folder: Folder,
     outcome: Mutex<Option<Completed>>,
 }
 
@@ -57,7 +59,7 @@ impl TransferDirectoryLinkMoveCapture for Capture {
         }
         let outcome = native::attempt_link(
             &self.original,
-            &self.parent,
+            (&self.parent, self.folder),
             destination,
             name,
             replace,
@@ -86,10 +88,17 @@ impl Capture {
         let capture = Self {
             original,
             parent,
+            folder: Folder::ContainsSelection,
             outcome: Mutex::new(None),
         };
         capture.revalidate(cancel)?;
         Ok(capture)
+    }
+
+    /// The link leaves `folder` (by default the folder that contains the selection).
+    pub(super) fn leaving(mut self, folder: Folder) -> Self {
+        self.folder = folder;
+        self
     }
 
     fn remove_with(
@@ -130,6 +139,8 @@ impl Capture {
         let path = &self.entry().item.path;
         let name = self.original.name();
         self.parent.namespace_announce(name, change, cancel)?;
+        // For the stage, the capture, and the restoration or stage removal of a failure.
+        let _writable = self.folder.writable(self.parent.native_file());
         let stage = match self.parent.source_stage_in(cancel, change) {
             Ok(stage) => stage,
             Err(failure) => return self.stage_creation_failure(failure),

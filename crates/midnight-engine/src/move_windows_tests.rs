@@ -522,50 +522,73 @@ fn cancellation_restore_conflict_reports_exact_residual_without_touching_new_win
 
 #[test]
 fn post_removal_cleanup_failure_reports_residual_and_never_deletes_unexpected_children() {
-    let (_temp, parent) = protected_fixture();
-    let paths = [parent.join("first"), parent.join("second")];
-    let destination = parent.join("destination");
-    fs::create_dir(&destination).unwrap();
-    for path in &paths {
-        fs::write(path, b"original").unwrap();
-    }
-    let (mut job, status) = prepare_move(&paths, &destination, Cancellation::default());
-    for _ in 0..1000 {
-        assert!(matches!(job.step(), worker::Step::Continue));
-        if snapshot(&status).source_names_staged == 1 {
-            break;
+    for choice in [CopyChoice::Cancel, CopyChoice::Skip] {
+        let (_temp, parent) = protected_fixture();
+        let paths = [parent.join("first"), parent.join("second")];
+        let destination = parent.join("destination");
+        fs::create_dir(&destination).unwrap();
+        for path in &paths {
+            fs::write(path, b"original").unwrap();
         }
+        let (mut job, status) = prepare_move(&paths, &destination, Cancellation::default());
+        for _ in 0..1000 {
+            assert!(matches!(job.step(), worker::Step::Continue));
+            if snapshot(&status).source_names_staged == 1 {
+                break;
+            }
+        }
+        let stage = fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".midnight-move-")
+            })
+            .unwrap();
+        fs::write(stage.join("unexpected"), b"preserve this child").unwrap();
+        // The source is already removed: the job asks only whether to go on.
+        let failure = (0..1000)
+            .find_map(|_| match job.step() {
+                worker::Step::Continue => None,
+                worker::Step::Failure(failure) => Some(failure),
+                worker::Step::Done => panic!("the job ended without a question"),
+                worker::Step::Conflict(conflict) => panic!("unexpected conflict: {conflict:?}"),
+            })
+            .expect("a question within bounded steps");
+        assert_eq!(failure.stage, CopyErrorStage::Cleanup, "{failure:?}");
+        assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+        assert!(job.accept_decision(CopyDecision {
+            id: failure.id,
+            version: failure.version,
+            choice: choice.clone(),
+        }));
+        drive(&mut job);
+        let done = job.finish();
+        let skipped = matches!(choice, CopyChoice::Skip);
+        let state = if skipped {
+            CopyOperationState::CompletedWithErrors
+        } else {
+            CopyOperationState::Cancelled
+        };
+        assert_eq!(done.state, state, "{done:?}");
+        assert_eq!(done.failed, 1, "{done:?}");
+        assert_eq!(
+            done.source_files_removed,
+            1 + u64::from(skipped),
+            "removal already happened, never claim rollback"
+        );
+        assert_eq!(done.source_residual_count, 1);
+        assert_eq!(done.source_residuals[0].temporary.path, stage);
+        assert!(!done.source_residuals[0].matched_source);
+        assert!(!paths[0].exists());
+        assert_eq!(
+            fs::read(stage.join("unexpected")).unwrap(),
+            b"preserve this child"
+        );
+        // Skip goes on with the next file; Cancel leaves it in place.
+        assert_eq!(paths[1].exists(), !skipped);
+        assert_eq!(destination.join("second").exists(), skipped);
     }
-    let stage = fs::read_dir(&parent)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with(".midnight-move-")
-        })
-        .unwrap();
-    fs::write(stage.join("unexpected"), b"preserve this child").unwrap();
-    drive(&mut job);
-    let done = job.finish();
-    assert_eq!(
-        done.state,
-        CopyOperationState::CompletedWithErrors,
-        "{done:?}"
-    );
-    assert_eq!(
-        done.source_files_removed, 1,
-        "removal already happened, never claim rollback"
-    );
-    assert_eq!(done.source_residual_count, 1);
-    assert_eq!(done.source_residuals[0].temporary.path, stage);
-    assert!(!done.source_residuals[0].matched_source);
-    assert!(!paths[0].exists());
-    assert_eq!(
-        fs::read(stage.join("unexpected")).unwrap(),
-        b"preserve this child"
-    );
-    assert_eq!(fs::read(&paths[1]).unwrap(), b"original");
-    assert!(!destination.join("second").exists());
 }

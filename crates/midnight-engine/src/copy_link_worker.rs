@@ -137,7 +137,8 @@ impl Diagnostics {
             .recovery_count
             .saturating_add(std::mem::take(&mut pending.omitted_recovery));
         for failure in pending.failures.drain(..) {
-            retain_link_cleanup(progress, failure);
+            let error = retain_link_recovery(progress, failure);
+            retain_error(progress, error, true);
         }
     }
 }
@@ -601,6 +602,8 @@ impl Job {
                 self.progress.files_completed += 1;
                 self.record_recovery(recovery.path);
             }
+            // An uncertain commit is never repeated: the job asks whether to go on, and
+            // the link and its recovery data stay where they are.
             TransferPublication::RecoveryRequired {
                 published,
                 recovery,
@@ -612,8 +615,8 @@ impl Job {
                 for residual in recovery {
                     self.record_recovery(residual.path);
                 }
-                self.halt = true;
-                self.record(error);
+                let committed = self.committed_entry(work, error, CopyErrorStage::Publishing);
+                self.pause_committed(committed);
             }
             TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
                 self.progress.files_completed += 1;
@@ -622,23 +625,32 @@ impl Job {
                     path.display(),
                     error.message
                 );
-                self.halt = true;
-                self.record(error);
+                let committed = self.committed_entry(work, error, CopyErrorStage::Publishing);
+                self.pause_committed(committed);
             }
         }
+        let copy = work.link.as_mut().expect("started link copy");
         if let Err(failure) = copy.cleanup() {
-            self.record_link_cleanup(failure);
+            // The link is in place; only its private stage remains.
+            let error = retain_link_recovery(&mut self.progress, failure);
+            let committed = self.committed_entry(work, error, CopyErrorStage::Cleanup);
+            self.pause_committed(committed);
         }
         Ok(Action::Done)
     }
 
     pub(super) fn record_link_cleanup(&mut self, failure: TransferLinkCleanupError) {
         self.halt = true;
-        retain_link_cleanup(&mut self.progress, failure);
+        let error = retain_link_recovery(&mut self.progress, failure);
+        retain_error(&mut self.progress, error, true);
     }
 }
 
-fn retain_link_cleanup(progress: &mut CopyProgress, mut failure: TransferLinkCleanupError) {
+/// Records the residue of a link stage that could not be cleaned up and returns its error.
+pub(super) fn retain_link_recovery(
+    progress: &mut CopyProgress,
+    mut failure: TransferLinkCleanupError,
+) -> FsError {
     if failure.cleanup_unconfirmed || failure.recovery.is_empty() {
         failure
             .error
@@ -651,5 +663,5 @@ fn retain_link_cleanup(progress: &mut CopyProgress, mut failure: TransferLinkCle
             progress.recovery_paths.push(residual.path);
         }
     }
-    retain_error(progress, failure.error, true);
+    failure.error
 }

@@ -1,6 +1,6 @@
 //! Post-copy outcomes of regular files through the engine: a published file counts as
-//! completed, an uncertain commit stops the job (the same policy as for links), and a
-//! corrupted readback never publishes.
+//! completed, an uncertain commit asks whether to go on with Skip, Skip all errors and
+//! Cancel only (the same policy as for links), and a corrupted readback never publishes.
 use super::*;
 use std::{
     ffi::OsStr,
@@ -177,14 +177,24 @@ impl StagedTransferFile for Stage {
     }
 }
 
-async fn first_publication(outcome: u8) -> (Arc<CopyProgress>, PathBuf, tempfile::TempDir) {
+/// Copies `first` and `second`; the first publication reports `outcome`, and the one
+/// question it may raise is answered with `choice`.
+async fn first_publication(
+    outcome: u8,
+    choice: CopyChoice,
+) -> (
+    Arc<CopyProgress>,
+    Option<Arc<CopyFailure>>,
+    PathBuf,
+    tempfile::TempDir,
+) {
     let temp = fixture();
     let destination = temp.path().join("destination");
     fs::create_dir(&destination).unwrap();
     let first = temp.path().join("first");
     let second = temp.path().join("second");
     fs::write(&first, b"first published bytes").unwrap();
-    fs::write(&second, b"never reached").unwrap();
+    fs::write(&second, b"second bytes").unwrap();
     let mut h = Harness::new(Some(Arc::new(Service {
         inner: midnight_platform::LocalFileSystem::new(None),
         outcome: Arc::new(AtomicU8::new(outcome)),
@@ -192,51 +202,98 @@ async fn first_publication(outcome: u8) -> (Arc<CopyProgress>, PathBuf, tempfile
     h.controller
         .enqueue(request(1, &[first, second], &destination))
         .await;
-    let done = h.terminal(1).await;
+    let mut asked = None;
+    let done = loop {
+        match h.next().await {
+            CopyEvent::Failure(failure) if failure.id == OperationId(1) => {
+                assert!(asked.is_none(), "asked again: {failure:?}");
+                h.controller
+                    .decide(CopyDecision {
+                        id: failure.id,
+                        version: failure.version,
+                        choice: choice.clone(),
+                    })
+                    .await;
+                asked = Some(failure);
+            }
+            CopyEvent::Progress(progress)
+                if progress.id == OperationId(1) && progress.state.is_terminal() =>
+            {
+                break progress;
+            }
+            _ => {}
+        }
+    };
     h.close().await;
-    (done, destination, temp)
+    (done, asked, destination, temp)
+}
+
+/// The question of an uncertain commit: Skip, Skip all errors and Cancel, never Retry.
+fn assert_skip_only(asked: Option<Arc<CopyFailure>>, destination: &Path) -> Arc<CopyFailure> {
+    let failure = asked.expect("an uncertain commit asks whether to go on");
+    assert_eq!(failure.stage, CopyErrorStage::Publishing, "{failure:?}");
+    assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+    assert_eq!(failure.destination, destination.join("first"));
+    failure
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn published_file_with_unconfirmed_durability_counts_and_stops_the_job() {
-    let (done, destination, _temp) = first_publication(DURABILITY_UNCONFIRMED).await;
+async fn published_file_with_unconfirmed_durability_counts_and_skip_goes_on() {
+    let (done, asked, destination, _temp) =
+        first_publication(DURABILITY_UNCONFIRMED, CopyChoice::Skip).await;
+    assert_skip_only(asked, &destination);
     assert_eq!(
         done.state,
         CopyOperationState::CompletedWithErrors,
         "{done:?}"
     );
-    assert_eq!(done.files_completed, 1);
-    assert_eq!(done.completed_bytes, b"first published bytes".len() as u64);
+    assert_eq!(done.files_completed, 2);
     assert_eq!(done.failed, 1);
+    assert_eq!(done.skipped, 0, "the file was copied, not left out");
     assert!(done.errors[0].message.contains("durability is unconfirmed"));
     assert_eq!(
         fs::read(destination.join("first")).unwrap(),
         b"first published bytes"
     );
-    assert!(
-        !destination.join("second").exists(),
-        "an uncertain commit stops the job"
+    assert_eq!(
+        fs::read(destination.join("second")).unwrap(),
+        b"second bytes"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recovery_required_publication_keeps_its_facts_and_stops_the_job() {
-    let (done, destination, _temp) = first_publication(RECOVERY_REQUIRED).await;
+async fn recovery_required_publication_keeps_its_facts_and_cancel_stops_the_job() {
+    let (done, asked, destination, _temp) =
+        first_publication(RECOVERY_REQUIRED, CopyChoice::Cancel).await;
+    assert_skip_only(asked, &destination);
+    assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+    assert_eq!(done.files_completed, 1);
+    assert_eq!(done.recovery_count, 1);
+    assert_eq!(done.recovery_paths, vec![destination.join("first")]);
+    assert_eq!(done.failed, 1, "recorded once: {done:?}");
+    assert!(!destination.join("second").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_required_publication_keeps_its_facts_and_skip_goes_on() {
+    let (done, asked, destination, _temp) =
+        first_publication(RECOVERY_REQUIRED, CopyChoice::Skip).await;
+    assert_skip_only(asked, &destination);
     assert_eq!(
         done.state,
         CopyOperationState::CompletedWithErrors,
         "{done:?}"
     );
-    assert_eq!(done.files_completed, 1);
-    assert_eq!(done.recovery_count, 1);
+    assert_eq!(done.files_completed, 2);
     assert_eq!(done.recovery_paths, vec![destination.join("first")]);
-    assert_eq!(done.failed, 1);
-    assert!(!destination.join("second").exists());
+    assert_eq!(done.failed, 1, "recorded once: {done:?}");
+    assert!(destination.join("second").exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_publications_continue_with_the_next_root() {
-    let (done, destination, _temp) = first_publication(PUBLISHED).await;
+    let (done, asked, destination, _temp) = first_publication(PUBLISHED, CopyChoice::Cancel).await;
+    assert!(asked.is_none(), "{asked:?}");
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
     assert_eq!(done.files_completed, 2);
     assert!(destination.join("second").exists());

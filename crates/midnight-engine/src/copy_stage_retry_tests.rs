@@ -11,6 +11,7 @@ struct Control {
     probes: AtomicUsize,
     fail_probe: AtomicBool,
     refuse_cleanup: AtomicBool,
+    refuse_writes: AtomicBool,
     writes: AtomicUsize,
     cancel_discovery: AtomicBool,
     discovery_entered: Notify,
@@ -189,6 +190,12 @@ impl Read for Stage {
 impl Write for Stage {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.control.writes.fetch_add(1, Ordering::SeqCst);
+        if self.control.refuse_writes.load(Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "stage write refusal",
+            ));
+        }
         self.file.as_mut().unwrap().write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -471,6 +478,79 @@ fn stage_probe_skip_reports_cleanup_refusal_without_removing_source() {
         b"original retained source"
     );
     assert!(fixture.first_stage().exists());
+}
+
+#[test]
+fn a_move_asks_only_whether_to_go_on_when_a_skipped_file_s_stage_remains() {
+    let mut fixture = Fixture::with_sources(2);
+    let failure = fixture.failure();
+    fixture.answer(&failure, CopyChoice::Skip);
+    // The skipped file's stage cannot be removed: Skip, Skip all errors or Cancel.
+    let cleanup = fixture.failure();
+    assert_eq!(cleanup.stage, CopyErrorStage::Cleanup, "{cleanup:?}");
+    assert!(!cleanup.can_retry && cleanup.can_skip, "{cleanup:?}");
+    assert_eq!(cleanup.source, Some(fixture.source.clone()));
+    assert_eq!(cleanup.error.path, fixture.first_stage());
+    fixture.answer(&cleanup, CopyChoice::Skip);
+    // The Move goes on with the next file, whose own stage probe fails in turn.
+    let next = fixture.failure();
+    assert_eq!(next.source, Some(fixture.source.with_file_name("source-1")));
+    fixture.answer(&next, CopyChoice::Cancel);
+    assert!(matches!(
+        fixture.job.as_mut().unwrap().step(),
+        worker::Step::Done
+    ));
+    let done = fixture.finish();
+    assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+    assert_eq!(done.skipped, 1, "{done:?}");
+    assert!(
+        done.errors
+            .iter()
+            .any(|error| error.path == fixture.first_stage()
+                && error.message.contains("owned stage retained")),
+        "{done:?}"
+    );
+    assert_eq!(done.source_files_removed, 0);
+    assert!(fixture.first_stage().exists());
+    assert_eq!(
+        fs::read(&fixture.source).unwrap(),
+        b"original retained source"
+    );
+}
+
+#[test]
+fn a_move_asks_only_whether_to_go_on_when_a_skipped_copy_s_stage_remains() {
+    let mut fixture = Fixture::with_sources(2);
+    // Each stage passes its probe and takes its file's copy, which then cannot write.
+    fixture.control.fail_probe.store(false, Ordering::SeqCst);
+    fixture.control.refuse_writes.store(true, Ordering::SeqCst);
+    let failure = fixture.failure();
+    assert_eq!(failure.source, Some(fixture.source.clone()));
+    fixture.answer(&failure, CopyChoice::Skip);
+    // The copy's own stage cannot be removed: Skip, Skip all errors or Cancel.
+    let cleanup = fixture.failure();
+    assert_eq!(cleanup.stage, CopyErrorStage::Cleanup, "{cleanup:?}");
+    assert!(!cleanup.can_retry && cleanup.can_skip, "{cleanup:?}");
+    assert_eq!(cleanup.source, Some(fixture.source.clone()));
+    assert_eq!(cleanup.error.path, fixture.first_stage());
+    fixture.answer(&cleanup, CopyChoice::Skip);
+    // The Move goes on with the next file, whose own copy cannot write either.
+    let next = fixture.failure();
+    assert_eq!(next.source, Some(fixture.source.with_file_name("source-1")));
+    fixture.answer(&next, CopyChoice::Cancel);
+    assert!(matches!(
+        fixture.job.as_mut().unwrap().step(),
+        worker::Step::Done
+    ));
+    let done = fixture.finish();
+    assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+    assert_eq!(done.skipped, 1, "{done:?}");
+    assert_eq!(done.source_files_removed, 0);
+    assert!(fixture.first_stage().exists());
+    assert_eq!(
+        fs::read(&fixture.source).unwrap(),
+        b"original retained source"
+    );
 }
 
 #[test]

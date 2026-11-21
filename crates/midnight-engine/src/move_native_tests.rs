@@ -605,6 +605,62 @@ async fn native_mutation_failure_cannot_retry_copy_or_restore_the_capture() {
     }
 }
 
+/// A rename that needs recovery is never repeated: the job asks whether to go on, with
+/// Skip, Skip all errors and Cancel only, and Skip goes on with the next selected item.
+#[tokio::test]
+async fn an_uncertain_native_rename_asks_only_whether_to_go_on() {
+    for (result, moved) in [
+        (NativeResult::RestoredFailure, 0),
+        (NativeResult::CommittedFailure, 2),
+    ] {
+        let counts = Counts::new(EntryKind::File, result);
+        let root = std::env::current_dir().unwrap();
+        let sources = [root.join("source"), root.join(PENDING)];
+        let mut harness = Harness::new(Some(Arc::new(Service(counts.clone()))));
+        harness
+            .controller
+            .enqueue_move(request(1, &sources, &root.join("destination")))
+            .await;
+        let mut asked = Vec::new();
+        let done = loop {
+            match harness.next().await {
+                CopyEvent::Failure(failure) => {
+                    asked.push((
+                        failure.stage,
+                        failure.can_retry,
+                        failure.can_skip,
+                        failure.source.clone(),
+                    ));
+                    harness
+                        .controller
+                        .decide(CopyDecision {
+                            id: failure.id,
+                            version: failure.version,
+                            choice: CopyChoice::Skip,
+                        })
+                        .await;
+                }
+                CopyEvent::Progress(progress) if progress.state.is_terminal() => break progress,
+                _ => {}
+            }
+        };
+        harness.close().await;
+        let question = |source: &PathBuf| {
+            (
+                CopyErrorStage::MovingSource,
+                false,
+                true,
+                Some(source.clone()),
+            )
+        };
+        assert_eq!(asked, sources.iter().map(question).collect::<Vec<_>>());
+        assert_eq!(counts.native.load(Ordering::SeqCst), 2);
+        assert_eq!(done.native_entries_moved, moved, "{done:?}");
+        assert_eq!((done.failed, done.skipped), (2, 0), "{done:?}");
+        assert_no_content(&counts, &done);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_native_move_keeps_capacity_and_reports_late_commit_after_cancel() {
     let counts = Counts::new(EntryKind::File, NativeResult::BlockedCommit);

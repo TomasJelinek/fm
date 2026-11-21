@@ -1,6 +1,8 @@
 //! Ordinary verified Move: native files, recursive directories and failure retention.
 use super::*;
 use std::ffi::OsStr;
+#[path = "move_child_failure_tests.rs"]
+pub(super) mod child_failures;
 #[path = "move_cross_device_fixture.rs"]
 mod cross_device;
 #[path = "move_directory_tests.rs"]

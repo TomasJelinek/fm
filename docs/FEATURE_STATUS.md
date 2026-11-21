@@ -1454,8 +1454,11 @@ POSIX delete gets it cleared on the entry and set again if the entry stays (a fi
 with other hard links is refused instead). Covered by engine, Linux and Windows
 platform and presenter tests and the Windows native Delete UI tests, without
 installed qualification; the filesystems without POSIX delete are tested on NTFS
-entries only. Move's cross-volume source removal does not yet make protected folders
-writable. A Delete question that waits (deferred with Decide later or behind another
+entries only. Since 21 November a Linux Move follows the same rule inside the tree
+it moves: an owned write-protected folder of that tree gets owner write only while an
+entry leaves it (or comes back) and keeps its own mode, so a cross-volume Move empties
+it without a question; the folder that contains the selection is never changed
+(engine and Linux platform tests). A Delete question that waits (deferred with Decide later or behind another
 question) marks its job for attention, so Jobs and the Delete's progress window offer
 Resolve for it, and the most recent Resolve decides which question shows (presenter
 and window tests, 21 November); its Jobs row still shows no attention glyph.
@@ -1475,9 +1478,19 @@ opened as a failure of its folder. One of several selected items that
 cannot be prepared (for example a folder nobody may read) offers Skip and Skip all
 besides Retry, and the other items are copied; captured tree and archive sources,
 a single item and a job that requires the exact modified time keep Retry and Cancel
-only. Ordinary cross-volume Move children
-that cannot be prepared and halts after an uncertain commit or cleanup remain as
-recorded in [the Copy/Move audit](developer/OPERATION_PROGRESS.md).
+only. A Move child that cannot be prepared for Move (a special file, a mount point)
+is reported apart from its folder through `next_move_child_or_failure`: stage Moving
+the source, Skip leaves only that child, Retry prepares it again; Linux checks a
+moved folder once, before its entries, so a folder that does not let them leave asks
+once (engine tests through the queued preparation, Linux and Windows source tests).
+Since 21 November an uncertain commit or cleanup whose data stays in place
+(a publication that needs recovery or whose durability is unconfirmed, a link stage
+left after its publication, a native Move rename that needs recovery, the stage
+cleanup or durability of a verified source removal, a moved directory link's
+original, a cleanup while a Skip is carried out) asks Skip, Skip all errors or
+Cancel instead of ending the job, never Retry; a capture that does not match, Move
+invariant failures and a failed restore during Skip still end it (engine tests;
+[Copy/Move audit](developer/OPERATION_PROGRESS.md)).
 The 11 November retry correction retains one owned pre-copy stage across Move
 retries, keeps failed-cleanup paths in bounded history, and refuses a fresh
 metadata preparation attempt after cleanup failure. Ordinary recoverable errors

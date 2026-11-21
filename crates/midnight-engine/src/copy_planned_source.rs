@@ -283,6 +283,25 @@ impl TransferSource for Source {
             active.source.next_move_child_with_links(links, cancel)
         })
     }
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<TransferMoveChild>, FsError> {
+        self.0.with_active(cancel, |active| {
+            active.source.next_move_child_or_failure(links, cancel)
+        })
+    }
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<PreparedTransferMoveEntry, FsError> {
+        self.0.with_active(cancel, |active| {
+            active.source.prepare_move_child(name, links, cancel)
+        })
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,

@@ -1356,10 +1356,15 @@ fn changed_published_identity_keeps_actual_publication_and_reports_failed_proof(
         .substitute_publication
         .store(true, Ordering::SeqCst);
     let (mut job, _, _) = fixture.prepare();
+    // The publication needs recovery: the job asks only whether to go on.
+    let failure = next_failure(&mut job);
+    assert_eq!(failure.stage, CopyErrorStage::Publishing, "{failure:?}");
+    assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+    decide_failure(&mut job, &failure, CopyChoice::Skip);
     finish(&mut job);
     let done = job.finish();
     assert_eq!(done.files_completed, 1);
-    assert!(done.failed > 0, "{done:?}");
+    assert_eq!(done.failed, 1, "{done:?}");
     assert_eq!(fixture.output(), Some(relative_representation()));
     assert_eq!(done.completed_roots, 0);
     assert_eq!(done.source_files_removed, 0);
@@ -1498,25 +1503,45 @@ fn cancellation_after_actual_link_publication_keeps_the_publication_fact() {
 }
 
 #[test]
-fn structured_post_publication_failures_keep_actual_destinations_and_recovery_facts() {
+fn structured_post_publication_failures_keep_their_facts_and_ask_only_whether_to_go_on() {
     for outcome in [1, 2] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::with_two_roots();
         fixture
             .control
             .publication_outcome
             .store(outcome, Ordering::SeqCst);
         let (mut job, _, _) = fixture.prepare();
+        // Each uncertain publication asks once; Skip goes on with the next link.
+        for _ in 0..2 {
+            let failure = next_failure(&mut job);
+            assert_eq!(failure.stage, CopyErrorStage::Publishing, "{failure:?}");
+            assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+            assert!(!job.accept_decision(CopyDecision {
+                id: failure.id,
+                version: failure.version,
+                choice: CopyChoice::Retry,
+            }));
+            decide_failure(&mut job, &failure, CopyChoice::Skip);
+        }
         finish(&mut job);
         let done = job.finish();
-        assert_eq!(done.files_completed, 1, "{done:?}");
-        assert!(done.failed > 0, "{done:?}");
+        assert_eq!(done.files_completed, 2, "{done:?}");
+        assert_eq!(done.failed, 2, "{done:?}");
+        assert_eq!(done.skipped, 0, "{done:?}");
         assert_eq!(fixture.output(), Some(relative_representation()));
+        assert_eq!(
+            fixture.control.output(&fixture.destination.join("second")),
+            Some(relative_representation())
+        );
         assert_eq!(done.source_files_removed, 0);
-        assert_eq!(done.recovery_count, u64::from(outcome == 2));
+        assert_eq!(done.recovery_count, 2 * u64::from(outcome == 2));
         if outcome == 2 {
             assert_eq!(
                 done.recovery_paths,
-                vec![fixture.destination.join(".owned-link-100")]
+                vec![
+                    fixture.destination.join(".owned-link-100"),
+                    fixture.destination.join(".owned-link-101"),
+                ]
             );
         }
     }
@@ -1653,6 +1678,11 @@ fn refused_link_cleanup_stops_automatic_progress_and_reports_only_verified_resid
         let failure = next_failure(&mut job);
         assert!(!failure.can_retry);
         decide_failure(&mut job, &failure, CopyChoice::Skip);
+        // The stage that the Skip could not clean up asks once more, without Retry.
+        let cleanup = next_failure(&mut job);
+        assert_eq!(cleanup.stage, CopyErrorStage::Cleanup, "{cleanup:?}");
+        assert!(!cleanup.can_retry && cleanup.can_skip, "{cleanup:?}");
+        decide_failure(&mut job, &cleanup, CopyChoice::Cancel);
         finish(&mut job);
         let done = job.finish();
         assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 1);

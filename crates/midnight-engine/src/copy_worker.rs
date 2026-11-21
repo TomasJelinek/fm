@@ -114,14 +114,20 @@ pub(super) struct Job {
     protected_roots: HashSet<TransferIdentity>,
     stack: Vec<Frame>,
     /// The name of a child that the top folder's enumeration reached but could not
-    /// open, while its failure waits for a decision (`failures::Context::Child`).
+    /// open (or, in a Move, prepare for Move), while its failure waits for a decision
+    /// (`failures::Context::Child`).
     failed_child: Option<OsString>,
     /// The child that Retry opened again; the top folder's enumeration takes it next.
     reopened_child: Option<Box<dyn TransferSource>>,
+    /// The Move child that Retry prepared again; the top folder takes it next.
+    reprepared_child: Option<PreparedTransferMoveEntry>,
     current: Option<EntryWork>,
     conflict: Option<CopyConflict>,
     failure: Option<CopyFailure>,
     failure_context: failures::Context,
+    /// An uncertain commit or cleanup, already recorded, that the job asks about before
+    /// its next step and while that question waits (`failures::Context::Committed`).
+    committed: Option<failures::Committed>,
     skipped_errors: HashSet<failures::Scope>,
     halt: bool,
     decision: Option<CopyChoice>,
@@ -581,10 +587,12 @@ impl Job {
             stack: vec![],
             failed_child: None,
             reopened_child: None,
+            reprepared_child: None,
             current: None,
             conflict: None,
             failure: None,
             failure_context: failures::Context::Entry,
+            committed: None,
             skipped_errors: HashSet::new(),
             halt: false,
             decision: None,
@@ -747,6 +755,9 @@ impl Job {
         if self.failure.is_some() {
             return self.advance_failure();
         }
+        if self.committed.is_some() {
+            return self.wait_for_committed();
+        }
         if let Some(choice) = self.decision.take() {
             let conflict = self.conflict.take();
             if conflict.is_some() {
@@ -907,33 +918,33 @@ impl Job {
                 Ok(None)
             } else if frame.removal == EntryRemoval::Ordinary {
                 let move_work = self.move_work.as_mut().expect("ordinary Move frame");
-                frame
-                    .source
-                    .next_move_child_with_links(self.links, &self.cancel)
-                    .and_then(|child| {
-                        child
-                            .map(|prepared| {
-                                if !self.links.materializes_directory_links()
-                                    && matches!(
-                                        &prepared,
-                                        PreparedTransferMoveEntry::DirectoryLink { .. }
-                                    )
-                                {
-                                    return Err(error(
-                                        &frame.source.entry().item.path,
-                                        io::ErrorKind::InvalidData,
-                                        "Provider offered link removal without an explicit policy.",
-                                    ));
-                                }
-                                move_work.admit_entry(
-                                    prepared,
-                                    &frame.source.entry().item.path,
-                                    &self.cancel,
-                                )
-                            })
-                            .transpose()
-                    })
-                    .map(|child| child.map(Ok))
+                // Retry prepared the child whose failure paused this folder again.
+                let child = match self.reprepared_child.take() {
+                    Some(prepared) => Ok(Some(Ok(prepared))),
+                    None => frame
+                        .source
+                        .next_move_child_or_failure(self.links, &self.cancel),
+                };
+                child.and_then(|child| match child {
+                    None => Ok(None),
+                    // A child that cannot be prepared for Move fails alone; the folder's
+                    // own failures (`Err`) still end its enumeration.
+                    Some(Err(failed)) => Ok(Some(Err(failed))),
+                    Some(Ok(prepared)) => {
+                        if !self.links.materializes_directory_links()
+                            && matches!(&prepared, PreparedTransferMoveEntry::DirectoryLink { .. })
+                        {
+                            return Err(error(
+                                &frame.source.entry().item.path,
+                                io::ErrorKind::InvalidData,
+                                "Provider offered link removal without an explicit policy.",
+                            ));
+                        }
+                        move_work
+                            .admit_entry(prepared, &frame.source.entry().item.path, &self.cancel)
+                            .map(|child| Some(Ok(child)))
+                    }
+                })
             } else {
                 // Retry opened the child whose failure paused this folder again.
                 let child = match self.reopened_child.take() {
@@ -1521,8 +1532,9 @@ impl Job {
                     self.progress.files_completed += 1;
                     self.record_recovery(recovery.path);
                 }
-                // An uncertain commit stops the job, as for links: later files would
-                // otherwise keep publishing into a destination whose state is unknown.
+                // An uncertain commit is never repeated. The job asks whether to go on:
+                // the file and its recovery data stay where they are, and a Move keeps
+                // its source.
                 TransferPublication::RecoveryRequired {
                     published,
                     recovery,
@@ -1534,8 +1546,8 @@ impl Job {
                     for item in recovery {
                         self.record_recovery(item.path);
                     }
-                    self.record(error);
-                    self.halt = true;
+                    let committed = self.committed_entry(work, error, CopyErrorStage::Publishing);
+                    self.pause_committed(committed);
                 }
                 TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
                     // The file was published, so it counts as completed (never as a
@@ -1547,8 +1559,8 @@ impl Job {
                         path.display(),
                         error.message
                     );
-                    self.record(error);
-                    self.halt = true;
+                    let committed = self.committed_entry(work, error, CopyErrorStage::Publishing);
+                    self.pause_committed(committed);
                 }
             }
             if self.progress.files_completed > completed_before {
@@ -1577,6 +1589,7 @@ impl Job {
                     .into_published_proof(&self.cancel)?;
                 self.protected_roots.insert(proof.destination_identity());
                 move_work.proofs.push(proof);
+                move_work.published = Some(work.destination.path().join(&work.name));
             }
             return Ok(Action::Done);
         }
@@ -1750,6 +1763,24 @@ impl Job {
             }
         }
     }
+    /// The uncertain commit `error` of `work`'s entry, at `stage`.
+    fn committed_entry(
+        &self,
+        work: &EntryWork,
+        error: FsError,
+        stage: CopyErrorStage,
+    ) -> failures::Committed {
+        failures::Committed {
+            error,
+            stage,
+            source: Some(work.entry.item.path.clone()),
+            destination: work.destination.path().join(&work.name),
+            entry: self
+                .move_work
+                .is_some()
+                .then_some((work.removal, work.entry.identity)),
+        }
+    }
     fn record(&mut self, error: FsError) {
         self.halt |= self.move_work.is_some();
         self.record_decided_error(error);
@@ -1767,16 +1798,32 @@ impl Job {
             self.progress.recovery_paths.push(path);
         }
     }
+    /// Cleans up an entry that the job leaves (Skip, or a refused choice). What remains
+    /// is reported with its recovery data; a Move, and a link's stage, then ask whether
+    /// to go on instead of ending the job.
     fn cleanup_work(&mut self, work: &mut EntryWork) {
         if let Some(copy) = &mut work.copy
             && let Err(error) = copy.cleanup()
         {
-            self.record_cleanup_error(error);
+            if self.move_work.is_some() {
+                let committed = failures::Committed {
+                    entry: None,
+                    ..self.committed_entry(work, error, CopyErrorStage::Cleanup)
+                };
+                self.pause_committed(committed);
+            } else {
+                self.record_cleanup_error(error);
+            }
         }
         if let Some(link) = &mut work.link
             && let Err(failure) = link.cleanup()
         {
-            self.record_link_cleanup(failure);
+            let error = link_job::retain_link_recovery(&mut self.progress, failure);
+            let committed = failures::Committed {
+                entry: None,
+                ..self.committed_entry(work, error, CopyErrorStage::Cleanup)
+            };
+            self.pause_committed(committed);
         }
     }
     fn drop_current(&mut self) {
@@ -1796,7 +1843,12 @@ impl Job {
                 && let Err(error) =
                     move_work.discard_entry(current.removal, current.entry().identity)
             {
-                self.record_cleanup_error(error);
+                // A stage of the skipped entry that remains; nothing else changed.
+                let committed = failures::Committed {
+                    entry: None,
+                    ..self.committed_entry(current, error, CopyErrorStage::Cleanup)
+                };
+                self.pause_committed(committed);
             }
         }
         self.drop_current();
@@ -1822,9 +1874,13 @@ impl Job {
         }
         // A panicking cleanup is never retried; its surrounding Scope retains it.
         self.finish_started = true;
-        if let Some(failure) = self.failure.take() {
+        if let Some(failure) = self.failure.take()
+            && !matches!(self.failure_context, failures::Context::Committed)
+        {
             self.record_decided_error(failure.error);
         }
+        // Its error is already recorded.
+        self.committed = None;
         // Clean and drop the active native object in the same order as normal
         // disposal. Keep only its diagnostic until the unused stages and Move
         // recovery finish, so they cannot evict the current partial's path.

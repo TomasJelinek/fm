@@ -120,8 +120,41 @@ application delivery remain pending.
   for its renames (a folder's ".." entry changes) and its own mode back afterwards; a
   prepared Move source is rechecked by identity, size and modified time, so a
   permission change made to fix a failure does not stop its Retry.
+- A Move takes the entries of its own folders (a selected folder and the folders
+  below it, which it removes once they are empty) with
+  `TransferSource::next_move_child_or_failure`. A child that cannot be prepared for
+  Move once its name is read (a special file, a mount point, an entry that vanished
+  or that another user owns in a sticky folder) pauses for that child only, at stage
+  Moving the source: Retry prepares it again with `prepare_move_child` (offered when
+  the cause can change, not for a special file or a mount point), Skip and Skip all
+  leave it where it is, with its folder and every folder above it, and the folder goes
+  on with its next child. What every entry of such a folder would fail alike is
+  checked once per folder, before its entries (on Linux `check_moved_folder`: the
+  folder is still the bound, protected local folder, and it lets entries leave it,
+  which takes write and search permission), so a folder another user owns that does
+  not let this user write, or a folder without search permission, pauses once as
+  Reading folder contents (Skip leaves out the rest of it) instead of once per child.
+  The Linux and Windows sources report child failures (on Windows typically a file
+  that another program holds, which a Move cannot hold for its removal; a Windows
+  child has no folder-level checks to separate); sources that keep the default
+  report every failure as the folder's.
+  Under Delete's rule a folder of the moved tree that the user owns and that lacks
+  owner write passes that check: on Linux it gets owner write through the descriptor
+  the Move retains for it, only for each change that needs it (making the private
+  stage, taking an entry into it, removing the stage, removing an emptied folder,
+  putting an entry back, and on one volume an entry's own rename out of it), and its
+  own mode back as soon as that change returns. So a cross-volume Move empties an
+  owned write-protected folder without asking, and a folder that stays (it keeps a
+  skipped entry) keeps its mode. The folder that contains the selection is never
+  changed: when it does not let the selected item leave (write-protected, or owned by
+  another user who does not allow it), the Move stops at preparation, before anything
+  is copied. Windows needs nothing for this rule: a folder's read-only attribute does
+  not stop entries from leaving it. A Windows cross-volume Move still refuses a source
+  file or folder that itself has the read-only attribute, before copying it, because
+  its removal does not override the attribute (unlike Delete's POSIX disposition);
+  that is a separate gap ([transfers](TRANSFERS.md)).
 - Copy/Move stages that still end the job, or the rest of a folder, without an
-  item-level Skip (20 November audit), and why:
+  item-level Skip (20 November audit, revised 21 November), and why:
   - Preparation (stage Preparing) of captured (tree) or archive sources, and of a
     single selected item: a failure blocks the whole job before anything is copied,
     with Retry and Cancel only (no Retry when retrying cannot help). One of several
@@ -132,21 +165,38 @@ application delivery remain pending.
     virtual roots without a downgrade (`MetadataTransferRequest`), so leaving one out
     would turn that refusal into a partial transfer. A preparation failure after
     recorded cleanup residuals still ends the job.
-  - A folder that fails itself (above): its listing cannot resume where it stopped,
-    so there is no Retry and Skip leaves out the rest of that folder.
-  - Ordinary cross-volume Move children that cannot be prepared for Move (special
-    files, mount points): Skip leaves out the rest of their folder, which stays in
-    the source. A per-child variant needs the folder-level checks of the Move
-    preparation separated first, or a read-only folder would ask once per child.
-  - After an uncertain commit or cleanup the job ends without a question: a
-    publication that needs recovery or whose durability is unconfirmed, a link stage
-    that cannot be cleaned up, a native Move rename that needs recovery, a failed
-    cleanup after a verified source was removed, a capture that does not match, and
-    Move invariant failures. Most leave the data in place (only a private stage may
-    remain), so a Skip-only pause would be safe for them, but they are deliberately
-    never retried; that change is a follow-up. A Move also ends on any error it records
-    without a question, such as a failed restore or cleanup during Skip, or folder
-    permissions that could not be applied.
+  - A folder that fails itself (above), a Move's own folder included: its listing
+    cannot resume where it stopped, so there is no Retry and Skip leaves out the rest
+    of that folder.
+  - After an uncertain commit or cleanup whose data stays in place, the job records
+    the error and its recovery facts at once and then asks whether to go on, with
+    Skip, Skip all errors and Cancel only (`failures::Context::Committed`): never
+    Retry, which could replay the commit. Skip leaves the entry as it is (it is not
+    counted as skipped: its error is), keeps the folders above it in a Move (they can
+    hold its recovery data) and goes on with the next entry. This covers a publication
+    that needs recovery or whose durability is unconfirmed (stage Putting the item in
+    place; files, and links in a Copy; the source stays, a Move keeps it), a link stage
+    that cannot be cleaned up after its publication, a native Move rename that needs
+    recovery (stage Moving the source; the entry waits in its private stage or at the
+    destination, with receipts), the cleanup of the private stage or the durability of
+    a verified source removal (the source is gone and its copy verified; stage
+    Cleaning up or Removing the verified source), a moved directory link whose
+    original needs recovery, and a cleanup that fails while the job carries out a Skip
+    (a link stage, a Move's retained copy stage, or a stage left after a failed
+    file's source was put back; a Copy reports a copy stage and goes on, as before).
+    These still end the job, because continuing would be unsafe:
+    - a capture that does not match: an object other than the selected source was
+      taken from its name, so the provider's results can no longer be trusted;
+    - Move invariant failures: a provider result that breaks its contract (an
+      unexpected committed destination or retained receipt, a missing cleanup
+      authority after a source was removed or put back) or the engine's own
+      bookkeeping (more than one active verified file, a missing capture or
+      finalizer), where the job cannot know what it would change next;
+    - a failed restore during Skip: the source could not be put back and waits in
+      its private stage, reported with the job's results; the job stops so that
+      nothing else changes before the user sees where it is.
+    Folder permissions that could not be given to a copied folder are reported and the
+    job goes on; they never ended it.
 - A completed or completed-with-errors Copy, Move, Delete, Rename, New file, New
   folder or Properties job refreshes every native panel showing an affected folder as
   soon as its terminal progress is applied, without waiting for a watch notification.

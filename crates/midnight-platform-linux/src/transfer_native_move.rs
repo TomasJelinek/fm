@@ -66,9 +66,10 @@ fn execute(
     })
 }
 
+/// The native Move of a link `original` out of `parent`, which is the `folder` it leaves.
 pub(super) fn attempt_link(
     original: &directory_links::OriginalLink,
-    parent: &destination::Directory,
+    (parent, folder): (&destination::Directory, Folder),
     destination: &dyn TransferDirectory,
     name: &OsStr,
     replace: Replacement,
@@ -76,7 +77,11 @@ pub(super) fn attempt_link(
 ) -> Result<TransferNativeMoveOutcome, FsError> {
     namespace::change(cancel, |mut change| {
         execute_in(
-            MoveSource::Link { original, parent },
+            MoveSource::Link {
+                original,
+                parent,
+                folder,
+            },
             (destination, name),
             replace,
             cancel,
@@ -101,6 +106,7 @@ enum MoveSource<'a> {
     Link {
         original: &'a directory_links::OriginalLink,
         parent: &'a destination::Directory,
+        folder: Folder,
     },
 }
 
@@ -119,6 +125,16 @@ impl<'a> MoveSource<'a> {
         }
     }
 
+    /// Owner write for the folder the source leaves, while it leaves or comes back,
+    /// when that folder is an owned folder of the moved tree.
+    fn writable_parent(self) -> Option<writable::OwnerWrite<'a>> {
+        let folder = match self {
+            Self::Ordinary(capture) => capture.folder,
+            Self::Link { folder, .. } => folder,
+        };
+        folder.writable(self.parent().native_file())
+    }
+
     fn name(self) -> &'a OsStr {
         match self {
             Self::Ordinary(capture) => &capture.name,
@@ -133,7 +149,9 @@ impl<'a> MoveSource<'a> {
     fn revalidate(self, cancel: &Cancellation) -> Result<(), FsError> {
         match self {
             Self::Ordinary(capture) => capture.revalidate(cancel),
-            Self::Link { original, parent } => {
+            Self::Link {
+                original, parent, ..
+            } => {
                 original.qualify_removal()?;
                 parent.check_recovery_parent(cancel)?;
                 original.verify_original(cancel)
@@ -235,6 +253,8 @@ fn execute_in(
     checked(cancel, &entry.item.path)?;
     parent.namespace_announce(original_name, change, cancel)?;
     target.namespace_announce(name, change, cancel)?;
+    // For the stage, the capture and its publication, restoration or stage removal.
+    let _writable_parent = source.writable_parent();
     let stage = match parent.source_stage_in(cancel, change) {
         Ok(stage) => stage,
         Err(mut failure) => {
@@ -337,7 +357,13 @@ pub(super) fn bind_link_destination(
     parent: &destination::Directory,
     cancel: &Cancellation,
 ) -> Result<destination::Directory, FsError> {
-    let target = bind_destination(expected, MoveSource::Link { original, parent }, cancel)?;
+    let source = MoveSource::Link {
+        original,
+        parent,
+        // Binding the destination changes nothing in the folder the link leaves.
+        folder: Folder::ContainsSelection,
+    };
+    let target = bind_destination(expected, source, cancel)?;
     qualify(&target)?;
     Ok(target)
 }
@@ -735,21 +761,8 @@ fn capture_error(source: MoveSource<'_>, failure: rustix::io::Errno) -> FsError 
     move_error(&entry.item.path, failure)
 }
 
-/// Owner write added to an owned folder for its renames (see `execute_in`). Dropping
-/// it gives the folder its own mode back, wherever the folder is by then.
-struct WritableForRename {
-    folder: Arc<File>,
-    mode: rustix::fs::RawMode,
-}
-
-impl Drop for WritableForRename {
-    fn drop(&mut self) {
-        // The folder is ours and its mode was just changed the same way.
-        let _ = chmod_retained(&self.folder, self.mode);
-    }
-}
-
-fn writable_for_rename(source: MoveSource<'_>) -> Option<WritableForRename> {
+/// Owner write for an owned folder that moves, for its renames (see `execute_in`).
+fn writable_for_rename(source: MoveSource<'_>) -> Option<writable::OwnerWrite<'_>> {
     let MoveSource::Ordinary(capture) = source else {
         return None;
     };
@@ -757,24 +770,7 @@ fn writable_for_rename(source: MoveSource<'_>) -> Option<WritableForRename> {
         return None;
     }
     // The retained descriptor is the captured folder itself, not its name.
-    let folder = capture._file.clone();
-    let stat = rustix::fs::fstat(&*folder).ok()?;
-    let mode = stat.st_mode & 0o7777;
-    if stat.st_uid != rustix::process::geteuid().as_raw() || mode & 0o200 != 0 {
-        return None;
-    }
-    chmod_retained(&folder, mode | 0o200).ok()?;
-    Some(WritableForRename { folder, mode })
-}
-
-/// `fchmod` refuses the retained O_PATH descriptor. Its /proc entry names exactly
-/// that inode, never a path that another process could replace.
-fn chmod_retained(file: &File, mode: rustix::fs::RawMode) -> rustix::io::Result<()> {
-    use std::os::fd::AsRawFd;
-    rustix::fs::chmod(
-        format!("/proc/self/fd/{}", file.as_raw_fd()).as_str(),
-        Mode::from_raw_mode(mode),
-    )
+    writable::OwnerWrite::grant(&capture._file)
 }
 
 #[cfg(test)]

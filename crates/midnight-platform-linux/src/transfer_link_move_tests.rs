@@ -134,6 +134,48 @@ fn recreation_publishes_the_verified_link_before_removing_the_original() {
 }
 
 #[test]
+fn recreation_removes_the_original_from_an_owned_write_protected_folder_of_the_tree() {
+    use std::os::unix::fs::PermissionsExt;
+    if rustix::process::geteuid().is_root() {
+        eprintln!("SKIP: permissions do not apply to the superuser");
+        return;
+    }
+    let fixture = fixture();
+    let source = fixture.path().join("source");
+    let destination = fixture.path().join("destination");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let link = source.join("link");
+    symlink("target", &link).unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o555)).unwrap();
+    let cancel = Cancellation::default();
+    let directory = LinuxFileSystem::new(None)
+        .prepare_move_destination(&destination, &cancel)
+        .unwrap();
+    // `source` is a folder of the moved tree, as for a link below a selected folder.
+    let outcome = concrete(&link).leaving(Folder::Moved).recreate(
+        directory.as_ref(),
+        OsStr::new("link"),
+        None,
+        &cancel,
+    );
+    let mode = fs::metadata(&source).unwrap().permissions().mode() & 0o7777;
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+    let outcome = outcome.unwrap();
+    assert!(
+        matches!(&outcome, TransferNativeMoveOutcome::Moved { recovery, .. } if recovery.is_empty()),
+        "{outcome:?}"
+    );
+    assert_eq!(mode, 0o555);
+    assert!(fs::symlink_metadata(&link).is_err());
+    assert_eq!(
+        fs::read_link(destination.join("link")).unwrap(),
+        Path::new("target")
+    );
+    assert!(private_names(&source).is_empty());
+}
+
+#[test]
 fn recreation_never_replaces_an_existing_name_without_consent() {
     let fixture = fixture();
     let source = fixture.path().join("source");

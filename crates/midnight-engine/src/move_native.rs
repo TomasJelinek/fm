@@ -47,12 +47,15 @@ impl Job {
             }
             EntryRemoval::Copy => unreachable!("read-only entries have no native Move identity"),
         };
-        let (moved, recovery, failure) = match outcome {
+        // `failure` breaks the provider's contract and ends the job; `uncertain` is a
+        // rename that needs recovery, whose names stay where they are: the job asks
+        // whether to go on, and never repeats it.
+        let (moved, recovery, failure, uncertain) = match outcome {
             TransferNativeMoveOutcome::CrossDevice | TransferNativeMoveOutcome::Unsupported => {
                 work.native_fallback = true;
                 return Ok(false);
             }
-            TransferNativeMoveOutcome::SameEntry => (false, vec![], None),
+            TransferNativeMoveOutcome::SameEntry => (false, vec![], None, None),
             TransferNativeMoveOutcome::Moved {
                 destination,
                 recovery,
@@ -70,13 +73,13 @@ impl Job {
                 } else {
                     None
                 };
-                (true, recovery, failure)
+                (true, recovery, failure, None)
             }
             TransferNativeMoveOutcome::RecoveryRequired {
                 destination,
                 recovery,
                 error,
-            } => (destination.is_some(), recovery, Some(error)),
+            } => (destination.is_some(), recovery, None, Some(error)),
         };
         // Every terminal native outcome consumes this attempt. Never run proof
         // finalization, automatic restoration or content-copy Retry after commit.
@@ -87,7 +90,7 @@ impl Job {
             self.progress.native_entries_moved += 1;
             self.protected_roots.insert(identity);
         }
-        if moved || failure.is_some() {
+        if moved || failure.is_some() || uncertain.is_some() {
             // Reconcile the captured source parents after publication or recovery.
             move_work.record_parents(self, &work.entry().item.path);
         }
@@ -109,6 +112,14 @@ impl Job {
         }
         if let Some(failure) = failure {
             self.record(failure);
+        }
+        if let Some(error) = uncertain {
+            // The entry's authority was released above.
+            let committed = failures::Committed {
+                entry: None,
+                ..self.committed_entry(work, error, CopyErrorStage::MovingSource)
+            };
+            self.pause_committed(committed);
         }
         if let Err(failure) = completion {
             self.record(failure);

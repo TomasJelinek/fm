@@ -438,6 +438,32 @@ impl TransferSource for Source {
             })
             .transpose()
     }
+    fn next_move_child_or_failure(
+        &mut self,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::TransferMoveChild>, FsError> {
+        self.check_move_children(links)?;
+        let Some((name, listed)) = self.next_name(cancel)? else {
+            return Ok(None);
+        };
+        // A Windows child is prepared below the folder's held handle with nothing that
+        // every child would fail alike, so each preparation failure is the child's.
+        Ok(Some(
+            self.prepare_move_entry(&name, Some(listed), links, cancel)
+                .map_err(|error| midnight_core::TransferChildFailure { name, error }),
+        ))
+    }
+    fn prepare_move_child(
+        &self,
+        name: &OsStr,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        self.check_move_children(links)?;
+        self.revalidate(cancel)?;
+        self.prepare_move_entry(name, None, links, cancel)
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,
@@ -658,6 +684,53 @@ impl Source {
         }
         self.readable = Some(readable);
         Ok(())
+    }
+
+    /// The refusals of `next_move_child` and `next_move_child_with_links` for `links`.
+    fn check_move_children(&self, links: CopyLinkPolicy) -> Result<(), FsError> {
+        if links == CopyLinkPolicy::Reject {
+            if !matches!(self.access, Access::Move(_)) {
+                return Err(unsupported(
+                    &self.entry.item.path,
+                    "Copy sources have no Move authority",
+                ));
+            }
+        } else if !matches!(self.access, Access::Move(_)) || !Access::Copy(links).projects_links() {
+            return Err(unsupported(
+                &self.entry.item.path,
+                "recursive Move with directory links is unsupported",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The Move child `name` (`listed` as its folder's listing read it), under `links`.
+    fn prepare_move_entry(
+        &self,
+        name: &OsStr,
+        listed: Option<Native>,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::PreparedTransferMoveEntry, FsError> {
+        if links == CopyLinkPolicy::Reject {
+            return super::move_source::prepare_child(
+                self.file.clone(),
+                self.entry.item.path.clone(),
+                name,
+                self.move_revisions,
+                cancel,
+            )
+            .map(midnight_core::PreparedTransferMoveEntry::Ordinary);
+        }
+        super::move_source::prepare_child_with_links(
+            self.file.clone(),
+            self.entry.item.path.clone(),
+            name,
+            listed,
+            links,
+            self.move_revisions,
+            cancel,
+        )
     }
 
     fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<(OsString, Native)>, FsError> {
