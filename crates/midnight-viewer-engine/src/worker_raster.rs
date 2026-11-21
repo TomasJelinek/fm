@@ -1,5 +1,6 @@
 //! Bounded retained pixels and a camera that survives source-fragment rebasing.
 use super::*;
+use crate::viewport::GUARD;
 
 #[path = "worker_raster_rebase.rs"]
 mod rebase;
@@ -8,7 +9,6 @@ mod rebase;
 #[path = "worker_raster_syntax_tests.rs"]
 mod syntax_tests;
 
-const GUARD: u32 = 256;
 const MAX_PIXELS: u64 = VIEWER_RETAINED_RASTER_PIXELS as u64;
 
 /// A zeroed frame buffer in a single allocation. It is painted while still
@@ -149,6 +149,16 @@ pub(super) fn guard(geometry: ViewerGeometry, horizontal: bool) -> [u32; 2] {
 }
 
 impl Worker {
+    /// The retained camera's vertical range over `page` (`viewport::camera_span`).
+    pub(super) fn camera_span(&self, page: &Page, shaped: &TextPage) -> crate::viewport::Span {
+        crate::viewport::camera_span(
+            page,
+            shaped,
+            self.geometry,
+            matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
+        )
+    }
+
     pub(super) fn retained_active(&self) -> bool {
         self.raster.enabled
             && matches!(
@@ -163,12 +173,7 @@ impl Worker {
                 .as_ref()
                 .zip(self.shaped.as_ref())
                 .is_some_and(|(page, shaped)| {
-                    let maximum = (crate::viewport::available_height(
-                        page,
-                        shaped,
-                        self.geometry.height as f32,
-                    ) - self.geometry.height as f32)
-                        .max(0.0);
+                    let maximum = self.camera_span(page, shaped).span;
                     // A retained refill must preserve the displayed frontier and
                     // advance a complete source row. Tiny bounded fragments use
                     // the viewport path until sufficient context is available.
@@ -322,15 +327,7 @@ impl Worker {
             |(page, shaped)| {
                 let maximum = [
                     self.raster.base[0] + f64::from((shaped.width() - self.text_width()).max(0.0)),
-                    self.raster.base[1]
-                        + f64::from(
-                            (crate::viewport::available_height(
-                                page,
-                                shaped,
-                                self.geometry.height as f32,
-                            ) - self.geometry.height as f32)
-                                .max(0.0),
-                        ),
+                    self.raster.base[1] + f64::from(self.camera_span(page, shaped).span),
                 ];
                 inside(origin, self.raster.base, maximum)
             },
@@ -455,9 +452,7 @@ impl Worker {
         };
         let maximum = [
             (shaped.width() - self.text_width()).max(0.0),
-            (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
-                - self.geometry.height as f32)
-                .max(0.0),
+            self.camera_span(page, shaped).span,
         ];
         let mut local: [f32; 2] =
             std::array::from_fn(|axis| (self.raster.target[axis] - self.raster.base[axis]) as f32);
@@ -473,17 +468,30 @@ impl Worker {
         let backwards = local[1] < guard_y && page.before;
         let forwards = local[1] + guard_y > maximum[1] && page.after;
         let covered = local[1] >= 0.0 && local[1] <= maximum[1];
+        let backwards = backwards && (!forwards || local[1] < self.origin[1]);
+        let refill = |guard: f32| {
+            crate::viewport::Continuation::retained_refill(
+                page,
+                shaped,
+                self.geometry,
+                local,
+                guard,
+                backwards,
+                matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
+            )
+            .filter(|next| {
+                if backwards {
+                    next.anchor < page.end
+                } else {
+                    next.anchor > page.start
+                }
+            })
+        };
         let refill = ((backwards || forwards) && (!covered || (prefetch && !self.raster.exact)))
             .then(|| {
-                crate::viewport::Continuation::retained_refill(
-                    page,
-                    shaped,
-                    self.geometry,
-                    local,
-                    guard_y,
-                    backwards && (!forwards || local[1] < self.origin[1]),
-                    matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
-                )
+                // A camera past the page reaches a page holding it even when its guard
+                // would keep the rows the page starts (or ends) with: these read nothing new.
+                refill(guard_y).or_else(|| (!covered).then(|| refill(0.0)).flatten())
             })
             .flatten()
             // A camera outside this page must reach the next one even when a reply cannot
@@ -537,10 +545,9 @@ impl Worker {
         if (0..2).any(|axis| (origin[axis] - self.raster.target[axis]).abs() > 1e-4) {
             return Ok(None);
         }
-        let height = crate::viewport::available_height(page, shaped, self.geometry.height as f32);
         let maximum = [
             (shaped.width() - self.text_width()).max(0.0),
-            (height - self.geometry.height as f32).max(0.0),
+            self.camera_span(page, shaped).span,
         ];
         let local_min = self.raster.base;
         let local_max: [f64; 2] =

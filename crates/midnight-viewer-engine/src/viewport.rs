@@ -49,6 +49,105 @@ pub(crate) fn available_height(
     }
 }
 
+/// Retained pixels a refill keeps beyond each side of the window, in logical pixels.
+pub(crate) const GUARD: u32 = 256;
+/// The most bytes one text page lays out, and the most color spans it takes
+/// (`worker_chain.rs`).
+pub(crate) const PAGE_BYTES: usize = 64 * 1024;
+pub(crate) const PAGE_SPANS: usize = 4096;
+
+/// How far a retained camera moves over a page: from 0 to `span`, with `view` pixels of the
+/// page below it that a refill keeps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Span {
+    pub span: f32,
+    pub view: f32,
+}
+
+/// The camera's [`Span`] over `page` in a window of `geometry`. While the page fills the
+/// window and a guard below it, the camera moves until the page's end meets the window's
+/// bottom, and a refill keeps the window's height below it.
+///
+/// Text and Source `rows` too long for one page to hold the window and a guard on each side
+/// (their bytes or spans over those pixels exceed a page's) give pages that hold less. One
+/// that barely fills the window, or does not, left its camera too little room for the
+/// guard a refill keeps above it, or none: no refill advanced, or the camera fell between
+/// two pages that each covered only one side of it. Such a page lets its camera move a
+/// guard's height, as far as its last row's top, and the window shows blank space below
+/// the page's rows; a refill keeps the rest of the page below the camera. A page that ends
+/// the file keeps its end at the window's bottom unless it is shorter than the window. The
+/// camera always passes the page's first row, so that a refill advances. Pages of shorter
+/// rows, and a piece of an enormous row without a row break, keep the window's range.
+pub(crate) fn camera_span(
+    page: &crate::page::Page,
+    shaped: &midnight_viewer_render::TextPage,
+    geometry: ViewerGeometry,
+    rows: bool,
+) -> Span {
+    let viewport = geometry.height as f32;
+    let available = available_height(page, shaped, viewport);
+    let full = Span {
+        span: (available - viewport).max(0.0),
+        view: viewport,
+    };
+    let guard = GUARD as f32 * geometry.scale;
+    if !rows
+        || full.span >= guard
+        || !(page.before || page.after)
+        || (!page.after && available >= viewport)
+        || !page.document_blocks.is_empty()
+        || !page.tables.is_empty()
+    {
+        return full;
+    }
+    let Some(second) = first_row_end(page)
+        .and_then(|end| shaped.caret_geometry(end).ok())
+        .map(|caret| caret.y0 as f32)
+        .filter(|second| *second > 0.0)
+    else {
+        return full;
+    };
+    // The last line of a page with more after it may be cut, as in `available_height`.
+    let content = if page.after {
+        shaped
+            .line_at_y(shaped.height())
+            .map_or(available, |(_, top)| top)
+    } else {
+        available
+    };
+    // How much of one page the rows over the window and its guards would fill.
+    let filled = f64::from(viewport + 2.0 * guard) / f64::from(content)
+        * (page.text.len() as f64 / PAGE_BYTES as f64)
+            .max(page.spans.len() as f64 / PAGE_SPANS as f64);
+    if content <= 0.0 || filled <= 1.0 {
+        return full;
+    }
+    let last = shaped
+        .line_at_y((content - 0.5).max(0.0))
+        .map_or(0.0, |(_, top)| top);
+    let span = (available - viewport)
+        .max(guard.min(last))
+        .max(second)
+        .min(content);
+    if span <= full.span {
+        return full;
+    }
+    Span {
+        span,
+        view: content - span,
+    }
+}
+
+/// The text offset at which the page's second logical row starts.
+fn first_row_end(page: &crate::page::Page) -> Option<usize> {
+    let (at, character) = page
+        .text
+        .char_indices()
+        .find(|(_, character)| logical_break(*character))?;
+    let end = at + character.len_utf8();
+    Some(end + usize::from(character == '\r' && page.text[end..].starts_with('\n')))
+}
+
 /// Lowest Source camera with complete leading logical-line context. A packet's
 /// partial flag describes either edge, so its first logical line is uncertain
 /// until a decoded hard break, even after some wrapped visual rows have passed.
@@ -166,17 +265,22 @@ impl Continuation {
         }
     }
 
+    /// Where a camera moving by `delta` from `origin` continues when it leaves the page:
+    /// the page holding its new top (forward) or bottom (backward). Text and Source `rows`
+    /// keep their camera span ([`camera_span`]).
     pub fn capture(
         page: &crate::page::Page,
         shaped: &midnight_viewer_render::TextPage,
         geometry: ViewerGeometry,
         origin: [f32; 2],
         delta: f32,
+        rows: bool,
     ) -> Option<Self> {
         let wanted = origin[1] + delta;
-        let maximum = (available_height(page, shaped, geometry.height as f32)
-            - geometry.height as f32)
-            .max(0.0);
+        let Span {
+            span: maximum,
+            view,
+        } = camera_span(page, shaped, geometry, rows);
         let backwards = if wanted > maximum && page.after {
             false
         } else if wanted < 0.0 && page.before {
@@ -184,16 +288,10 @@ impl Continuation {
         } else {
             return None;
         };
-        let at = if backwards {
-            wanted + geometry.height as f32
-        } else {
-            wanted
-        };
+        let at = if backwards { wanted + view } else { wanted };
         let mut continuation = Self::at(page, shaped, [origin[0], wanted], at, backwards)?;
-        if page.document_blocks.is_empty()
-            && page.tables.is_empty()
-            && shaped.height() <= geometry.height as f32
-        {
+        // A piece of an enormous row, shorter than the window, advances to its neighbour.
+        if page.document_blocks.is_empty() && page.tables.is_empty() && shaped.height() <= view {
             if !backwards && continuation.anchor <= page.start && page.end > page.start {
                 continuation.anchor = page.end;
             } else if backwards && continuation.anchor >= page.end && page.end > page.start {
@@ -213,8 +311,9 @@ impl Continuation {
         backwards: bool,
         logical_context: bool,
     ) -> Option<Self> {
+        let view = camera_span(page, shaped, geometry, logical_context).view;
         let at = if backwards {
-            origin[1] + geometry.height as f32 + guard
+            origin[1] + view + guard
         } else {
             origin[1] - guard
         };
@@ -223,7 +322,7 @@ impl Continuation {
             value.anchor = complete_line_anchor(page, value.anchor, backwards)?;
         }
         // Byte-limited logical lines must advance even when they cannot fill a viewport.
-        if shaped.height() <= geometry.height as f32 {
+        if shaped.height() <= view {
             value.anchor = if backwards { page.start } else { page.end };
         }
         Some(value)
@@ -459,7 +558,8 @@ mod tests {
             height: 100,
             scale: 1.0,
         };
-        let pending = Continuation::capture(&old, &shaped, geometry, [0.0; 2], wanted).unwrap();
+        let pending =
+            Continuation::capture(&old, &shaped, geometry, [0.0; 2], wanted, false).unwrap();
         let reference = pending.reference;
         let full = document_fragment(0..5);
         // Match semantic_window's strict forward end > anchor crop boundary.
@@ -506,7 +606,8 @@ mod tests {
             scale: 1.0,
         };
         let wanted = caret.y1 as f32 + 6.0 - geometry.height as f32;
-        let pending = Continuation::capture(&old, &shaped, geometry, [0.0; 2], wanted).unwrap();
+        let pending =
+            Continuation::capture(&old, &shaped, geometry, [0.0; 2], wanted, false).unwrap();
         let reference = pending.reference;
         let full = document_fragment(0..5);
         // Match semantic_window's strict backward start < anchor crop boundary.
@@ -666,7 +767,7 @@ mod tests {
             ([111.0, 0.0], -line_height * 2.0, true),
         ] {
             let pending =
-                Continuation::capture(&old, &old_layout, geometry, origin, delta).unwrap();
+                Continuation::capture(&old, &old_layout, geometry, origin, delta, true).unwrap();
             assert_eq!(pending.backwards, backwards);
             assert!(
                 pending.anchor > old.start && pending.anchor < old.end,

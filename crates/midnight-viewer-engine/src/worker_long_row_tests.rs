@@ -1,0 +1,162 @@
+//! Travel over rows too long for one page to hold the window's rows and its guards: the
+//! co-simulation of `worker_frontier_tests.rs`, in which the real worker shows rows of
+//! 1200, 2400 and 8000 bytes, or a file mixing them with short rows, from a simulated basic
+//! or Source viewer that answers one frame later. One page is one layout, at most 64 KiB
+//! (`worker_chain.rs`): 54 rows of 1200 bytes, 27 of 2400 and 8 of 8000, while a 720-pixel
+//! window shows 44 rows (76 with its guards). Every gesture must still move its whole
+//! distance, wrapped or not.
+use super::frontier::{Engine, NOTCH, Window, rest, rows, settle, try_gesture};
+use super::*;
+use std::fmt::Write as _;
+
+/// An arrow key (`scrolling::keyboard`).
+const ARROW: f64 = 28.0;
+/// The window of the acceptance runs and of `measure_page_reads_by_row_width`.
+const SIZE: ViewerGeometry = ViewerGeometry {
+    width: 1312,
+    height: 720,
+    scale: 1.0,
+};
+
+/// Blocks of rows, `(count, width)` each, repeated until `total` bytes, numbered as
+/// [`rows`] numbers them.
+fn mixed(blocks: &[(usize, usize)], total: usize) -> String {
+    let mut text = String::new();
+    let mut row = 0;
+    'fill: loop {
+        for &(count, width) in blocks {
+            for _ in 0..count {
+                let prefix = format!("row {row:07} ");
+                let _ = writeln!(text, "{prefix}{}", "x".repeat(width - prefix.len() - 1));
+                row += 1;
+                if text.len() >= total {
+                    break 'fill;
+                }
+            }
+        }
+    }
+    text
+}
+
+/// The problems of three scrollbar positions and of the gestures of the measurement after
+/// them, a quarter into `source`, in `mode`, wrapped or not: a position that is not
+/// acknowledged or, with a `landing` tolerance, shows the thumb farther than that from
+/// where it was released; a gesture whose travel differs from its distance by more than a
+/// pixel, or that never comes to rest. The gestures move down 3,732 pixels, then up 2,796.
+fn problems(source: String, mode: u16, wrap: bool, landing: Option<f64>) -> Vec<String> {
+    let mut engine = Engine::open(source, mode, SIZE, 1);
+    if wrap {
+        engine = engine.wrapped();
+    }
+    let mut window = Window::default();
+    rest(&mut engine, &mut window);
+    let mut problems = Vec::new();
+    for position in [0.5, 0.75, 0.25] {
+        window.seek(&mut engine, position);
+        if !settle(&mut engine, &mut window) {
+            problems.push(format!("the scrollbar at {position} never came to rest"));
+            return problems;
+        }
+        if window.acknowledged != window.position_sequence()
+            || landing.is_some_and(|landing| (window.position - position).abs() > landing)
+        {
+            problems.push(format!(
+                "the scrollbar at {position} shows {} (request {} of {})",
+                window.position,
+                window.acknowledged,
+                window.position_sequence()
+            ));
+        }
+    }
+    let screen = f64::from(SIZE.height);
+    for (name, inputs, burst, repeat) in [
+        ("PageDown", vec![(screen, true)], false, 3),
+        ("5 notches", vec![(NOTCH, false); 5], false, 2),
+        ("a burst of 5 notches", vec![(NOTCH, false); 5], true, 1),
+        ("12 Down", vec![(ARROW, true); 12], false, 1),
+        ("a burst of 12 Down", vec![(ARROW, true); 12], true, 1),
+        ("PageUp", vec![(-screen, true)], false, 3),
+        ("5 notches up", vec![(-NOTCH, false); 5], false, 1),
+        ("a burst of 12 Up", vec![(-ARROW, true); 12], true, 1),
+    ] {
+        let expected: f64 = inputs.iter().map(|(pixels, _)| pixels).sum();
+        for index in 0..repeat {
+            let dropped = window.dropped.len();
+            match try_gesture(&mut engine, &mut window, &inputs, burst) {
+                Some(moved) if (moved - expected).abs() <= 1.0 => {}
+                Some(moved) => problems.push(format!(
+                    "{name} #{index} moved {moved:.1} of {expected}; dropped {:?}",
+                    &window.dropped[dropped..]
+                )),
+                None => {
+                    problems.push(format!(
+                        "{name} #{index} never came to rest: {:?}",
+                        window.log.last()
+                    ));
+                    return problems;
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// Every gesture over `source` moves its whole distance in Text and Source, wrapped or not.
+fn keeps_travel(name: &str, source: &str, landing: Option<f64>) {
+    let mut report = Vec::new();
+    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
+        for wrap in [false, true] {
+            for problem in problems(source.to_owned(), mode, wrap, landing) {
+                report.push(format!("mode {mode} wrap {wrap}: {problem}"));
+            }
+        }
+    }
+    assert!(report.is_empty(), "{name}: {report:#?}");
+}
+
+/// 54 rows fill a page, more than the window's 44 but fewer than its 76 with guards. Text
+/// pages of the basic viewer's 8 KiB ranges reached 73,584 bytes, past what one layout
+/// places right: the caret of each backward refill's last row fell a row low, and every
+/// PageUp stopped three rows (49 px) short.
+#[test]
+fn rows_of_1200_bytes_keep_every_gesture_s_travel() {
+    keeps_travel("1200-byte rows", &rows(1_500_000 / 1200, 1200), Some(0.002));
+}
+
+/// 27 rows fill a page, fewer than the window shows: the page left the retained camera,
+/// whose relative scrolling clamped each step to the next page's top. PageDown moved 27
+/// rows (443 px) in Source and 3 in Text, and an arrow key one row.
+#[test]
+fn rows_of_2400_bytes_keep_every_gesture_s_travel() {
+    keeps_travel("2400-byte rows", &rows(1_500_000 / 2400, 2400), Some(0.002));
+}
+
+/// Eight rows fill a page, and PageDown moved at most those eight (131 px), in Text one row
+/// or none. A Source position lands on a whole row (`source_minimum_origin`): two rows are
+/// 0.4 % of this file.
+#[test]
+fn rows_of_8000_bytes_keep_every_gesture_s_travel() {
+    keeps_travel("8000-byte rows", &rows(4_000_000 / 8000, 8000), Some(0.004));
+}
+
+/// Short rows whose pages end by their line budget meet rows that no page holds a window
+/// of, both ways: gestures dropped their travel with a failed handoff or never came to rest.
+/// A scrollbar position here lands within the one correction read its estimate of the
+/// rows' density allows (`refine_position`), up to 1.6 % from the released thumb, as it
+/// did before; only its acknowledgement is checked.
+#[test]
+fn rows_mixing_short_and_very_long_ones_keep_every_gesture_s_travel() {
+    let source = mixed(
+        &[
+            (120, 60),
+            (30, 2400),
+            (90, 120),
+            (12, 8000),
+            (60, 830),
+            (24, 1200),
+            (80, 250),
+        ],
+        1_500_000,
+    );
+    keeps_travel("mixed rows", &source, None);
+}

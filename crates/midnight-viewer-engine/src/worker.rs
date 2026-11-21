@@ -1250,14 +1250,15 @@ impl Worker {
             y
         };
         if let Some(page) = &self.page {
-            let height = self.shaped.as_ref().map_or(0.0, |p| {
+            let max_y = self.shaped.as_ref().map_or(0.0, |p| {
+                // A page too short for the window keeps its camera span (`camera_span`).
+                let span = self.camera_span(page, p).span;
                 if fallback {
-                    crate::viewport::available_height(page, p, self.geometry.height as f32)
+                    span
                 } else {
-                    p.height()
+                    (p.height() - self.geometry.height as f32).max(span)
                 }
             });
-            let max_y = (height - self.geometry.height as f32).max(0.0);
             let next = self.origin[1] + y;
             let continuation = self.shaped.as_ref().and_then(|shaped| {
                 crate::viewport::Continuation::capture(
@@ -1266,6 +1267,7 @@ impl Worker {
                     self.geometry,
                     [self.origin[0] + x, self.origin[1]],
                     y,
+                    matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
                 )
                 .map(|continuation| continuation.bounded_by(page))
             });
@@ -2125,10 +2127,16 @@ impl Worker {
     }
 
     fn clamp_origin(&mut self) {
-        if let Some(page) = &self.shaped {
-            self.origin[0] = self.origin[0].clamp(0.0, (page.width() - self.text_width()).max(0.0));
-            self.origin[1] =
-                self.origin[1].clamp(0.0, (page.height() - self.geometry.height as f32).max(0.0));
+        if let Some(shaped) = &self.shaped {
+            // A page too short for the window keeps its camera span (`camera_span`).
+            let span = self
+                .page
+                .as_ref()
+                .map_or(0.0, |page| self.camera_span(page, shaped).span);
+            let maximum = (shaped.height() - self.geometry.height as f32).max(span);
+            self.origin[0] =
+                self.origin[0].clamp(0.0, (shaped.width() - self.text_width()).max(0.0));
+            self.origin[1] = self.origin[1].clamp(0.0, maximum);
         }
     }
 }

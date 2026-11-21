@@ -12,6 +12,9 @@ mod color_tests;
 #[cfg(test)]
 #[path = "page_document_tests.rs"]
 mod document_tests;
+#[cfg(test)]
+#[path = "page_text_range_tests.rs"]
+mod text_range_tests;
 
 #[derive(Clone)]
 pub(crate) struct Page {
@@ -165,25 +168,33 @@ impl Page {
             .ok()?;
         let text = self.text.get(range.clone())?;
         let shift = u32::try_from(range.start).ok()?;
-        let flags = |span: &std::ops::Range<usize>| {
-            self.styles
-                .iter()
-                .find(|style| style.range == *span)
-                .map_or(0, |style| {
-                    u8::from(style.weight >= 700)
-                        | u8::from(style.italic) << 1
-                        | u8::from(style.underline) << 2
-                })
-        };
+        // A text page's styles are its flagged spans: both lists follow the text, as the
+        // wire orders spans, so one cursor walks the styles along the roles.
+        let mut styles = self.styles.iter().peekable();
         let spans = self
             .roles
             .iter()
             .filter(|span| span.range.start < range.end && span.range.end > range.start)
-            .map(|span| viewer::Span {
-                start: (span.range.start.max(range.start) - range.start) as u32,
-                end: (span.range.end.min(range.end) - range.start) as u32,
-                role: span.role,
-                flags: flags(&span.range),
+            .map(|span| {
+                let key = |range: &std::ops::Range<usize>| (range.start, range.end);
+                while styles
+                    .next_if(|style| key(&style.range) < key(&span.range))
+                    .is_some()
+                {}
+                let flags = styles
+                    .peek()
+                    .filter(|style| style.range == span.range)
+                    .map_or(0, |style| {
+                        u8::from(style.weight >= 700)
+                            | u8::from(style.italic) << 1
+                            | u8::from(style.underline) << 2
+                    });
+                viewer::Span {
+                    start: (span.range.start.max(range.start) - range.start) as u32,
+                    end: (span.range.end.min(range.end) - range.start) as u32,
+                    role: span.role,
+                    flags,
+                }
             })
             .collect();
         let start = self.anchors[first].source_offset;

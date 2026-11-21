@@ -7,13 +7,19 @@
 //! `plugins/midnight-viewer-basic/src/window.rs`): at most about 8 KiB and the request's
 //! line budget from the anchor, or the same before it, some frames later. It also prepares
 //! highlighting and answers the refresh that restyles the shown page (`worker_syntax.rs`).
-//! The viewer window's side is a model of the retained camera of `midnight-viewer-ui`
-//! (`raster_camera.rs`): it shows covered pixels at once, waits at a coverage edge until a
-//! refill arrives, asks the worker for its camera with `PanTo`, refuses pixels that do not
-//! cover it, and hands its travel over across a `RasterRebase`. A slow window presents
-//! every `ui_period` worker turns, while the worker's mailbox keeps only the newest frame.
-//! Every gesture is measured as the document distance the shown content moved, from the
-//! row and offset of the first whole row of the worker's page.
+//! The viewer window's side is a hand-written model of `midnight-viewer-ui`, which this
+//! crate cannot depend on. Each of its steps names the code it mirrors, and the window's
+//! own tests pin those decisions on the real code: `Window::tick` moves the camera within
+//! coverage and asks for it with `PanTo` and its lookahead (`raster_camera::Camera::tick`
+//! and `request`; `raster_camera_tests`); `Window::receive` adopts a new surface's camera
+//! and drops travel that no handoff carries, keeps its own camera on the same surface,
+//! refuses pixels that do not cover it and asks again without lookahead
+//! (`Camera::receive`; `raster_frontier_tests`), and hands travel over across a
+//! `RasterRebase` (`raster_rebase.rs`). Without retained pixels a key moves by relative
+//! input and the wheel glides it (`raster_motion.rs`). A slow window presents every
+//! `ui_period` worker turns, while the worker's mailbox keeps only the newest frame.
+//! Every gesture is measured as the document distance the shown content moved: the top of
+//! the first whole row of the worker's page, as the rows before it lay out one by one.
 use super::text_position::edge_page;
 use super::*;
 use midnight_plugin_host::HostEvent;
@@ -22,7 +28,7 @@ use std::fmt::Write as _;
 /// The Source viewer's page budget (`max_bytes.min(8192)` in its paging).
 const SOURCE_BYTES: usize = 8192;
 /// A wheel notch, as Slint's winit backend delivers a line (`image_motion::route`).
-const NOTCH: f64 = 60.0;
+pub(super) const NOTCH: f64 = 60.0;
 /// An arrow key (`scrolling::keyboard`).
 const ARROW: f64 = 28.0;
 /// The retained camera's request lookahead (`raster_camera::PREFETCH`).
@@ -161,7 +167,9 @@ pub(super) struct Engine {
     pub tick: u32,
     /// Ranges the simulated plugin read and answered.
     pub reads: usize,
-    line_height: f64,
+    /// Each row's start, and the document y of its top as its own layout stacks it.
+    row_starts: Vec<usize>,
+    row_tops: Vec<f64>,
     inbox: Vec<ViewerInput>,
     /// The worker takes its inputs and paints every `period` frames of the window.
     pub period: u32,
@@ -201,7 +209,8 @@ impl Engine {
             delay,
             tick: 0,
             reads: 0,
-            line_height: 0.0,
+            row_starts: Vec::new(),
+            row_tops: Vec::new(),
             inbox: Vec::new(),
             period: 1,
             highlight: false,
@@ -214,6 +223,13 @@ impl Engine {
         engine.worker.request_page(0, false, &engine.output);
         engine.collect();
         engine
+    }
+
+    /// Lay rows out wrapped at the window's width, as the wrap toggle does before the
+    /// opened page arrives.
+    pub fn wrapped(mut self) -> Self {
+        self.worker.wrap = true;
+        self
     }
 
     /// Highlighting starts with the opened view, as the first request's demand does
@@ -391,6 +407,7 @@ impl Engine {
 
     /// Document y of the worker camera, from the first whole row its page shows.
     pub fn document_y(&mut self) -> Option<f64> {
+        self.lay_out_rows()?;
         let (page, shaped) = self.worker.page.as_ref().zip(self.worker.shaped.as_ref())?;
         let start = page.start as usize;
         let whole = if start == 0 || self.source.as_bytes()[start - 1] == b'\n' {
@@ -399,20 +416,41 @@ impl Engine {
             page.text.find('\n')? + 1
         };
         let top = shaped.caret_geometry(whole).ok()?.y0;
-        if self.line_height == 0.0 {
-            let second = whole + page.text[whole..].find('\n')? + 1;
-            self.line_height = shaped.caret_geometry(second).ok()?.y0 - top;
-        }
         let source = page
             .anchors
             .iter()
             .find(|anchor| anchor.text_offset as usize == whole)?
             .source_offset as usize;
-        let row = self.source.as_bytes()[..source]
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count();
-        Some(row as f64 * self.line_height - top + f64::from(self.worker.origin[1]))
+        let row = self.row_starts.binary_search(&source).ok()?;
+        Some(self.row_tops[row] - top + f64::from(self.worker.origin[1]))
+    }
+
+    /// The tops of all rows, from the height each length of row takes laid out alone with
+    /// the worker's options: rows of one length differ only in their digits.
+    fn lay_out_rows(&mut self) -> Option<()> {
+        if !self.row_tops.is_empty() {
+            return Some(());
+        }
+        let mut heights = std::collections::HashMap::new();
+        let (mut starts, mut tops) = (vec![0], vec![0.0]);
+        for (at, _) in self.source.match_indices('\n') {
+            let start = *starts.last()?;
+            let row = &self.source[start..=at];
+            let height = match heights.get(&row.len()) {
+                Some(height) => *height,
+                None => {
+                    let page = Page::text(edge_page(row, 0, row.len()), &self.worker.appearance);
+                    let shaped = self.worker.layout_page(&page).ok()?;
+                    let height = shaped.caret_geometry(row.len()).ok()?.y0;
+                    heights.insert(row.len(), height);
+                    height
+                }
+            };
+            tops.push(tops.last()? + height);
+            starts.push(at + 1);
+        }
+        (self.row_starts, self.row_tops) = (starts, tops);
+        Some(())
     }
 }
 
@@ -448,15 +486,22 @@ pub(super) struct Window {
     /// Frames on which the camera waited at a coverage edge with travel left.
     pub edge_waits: usize,
     position_sequence: u64,
+    /// The scrollbar position the last presented frame showed, and the position request
+    /// it acknowledged.
+    pub position: f64,
+    pub acknowledged: u64,
     /// Pixels of the shown surface that did not reach the shown camera were refused; the
     /// camera then asks for itself without lookahead (`raster_camera::Camera::receive`).
     uncovered: bool,
-    /// As before that request was made: a refused frame left the camera waiting.
-    pub wait_after_refusal: bool,
     pub refused: usize,
 }
 
 impl Window {
+    /// The newest scrollbar position request (`seek`).
+    pub fn position_sequence(&self) -> u64 {
+        self.position_sequence
+    }
+
     pub fn shown(&self) -> f64 {
         if self.retained {
             self.origin + self.offset
@@ -633,13 +678,18 @@ impl Window {
                             self.pending = 0.0;
                         }
                         if rebased {
+                            // The handoff's travel glides on (`raster_rebase::presented`).
                             self.unsent_raw += self.pending;
                             self.pending = 0.0;
+                            self.rebase = None;
+                            self.accepted_rebase = frame.raster_rebase;
                         }
                         self.retained = false;
                         self.info = None;
                         self.offset = offset;
                         self.plain_frames += 1;
+                        (self.position, self.acknowledged) =
+                            (frame.position, frame.position_sequence[0]);
                     }
                     Some(mut info) => {
                         info.gutter = None;
@@ -664,7 +714,7 @@ impl Window {
                                 info.coverage_min[1], info.coverage_max[1]
                             ));
                             self.refused += 1;
-                            if !changed && !self.wait_after_refusal {
+                            if !changed {
                                 self.uncovered = true;
                                 self.last_request = None;
                             }
@@ -697,6 +747,8 @@ impl Window {
                         self.offset = offset;
                         self.retained = true;
                         self.info = Some(info);
+                        (self.position, self.acknowledged) =
+                            (frame.position, frame.position_sequence[0]);
                     }
                 }
             }
@@ -838,124 +890,6 @@ pub(super) fn try_gesture(
     settle(engine, window).then(|| window.shown() - before)
 }
 
-/// Exploration: the acceptance scenario's gestures from many scrollbar positions, window
-/// sizes and plugin delays.
-#[test]
-#[ignore = "exploration; prints a travel table"]
-fn explore_rust_frontier_travel() {
-    let source = rust(6000);
-    let mut report = String::new();
-    for (size, delay, period, burst, ui_period, wait) in [
-        (geometry(1312, 720, 1.0), 0, 1, false, 1, false),
-        (geometry(1312, 720, 1.0), 3, 1, true, 1, false),
-        (geometry(1312, 720, 1.0), 2, 3, true, 1, false),
-        (geometry(1312, 720, 1.0), 12, 6, false, 1, false),
-        (geometry(1000, 560, 1.0), 1, 2, true, 1, false),
-        (geometry(1640, 900, 1.25), 3, 4, true, 1, false),
-        (geometry(2624, 1440, 2.0), 2, 1, false, 1, false),
-        (geometry(1312, 720, 1.0), 0, 1, false, 4, true),
-        (geometry(1312, 720, 1.0), 0, 1, false, 4, false),
-        (geometry(1312, 720, 1.0), 1, 1, true, 6, true),
-        (geometry(1312, 720, 1.0), 1, 1, true, 6, false),
-        (geometry(1312, 720, 1.0), 2, 1, false, 12, true),
-        (geometry(1312, 720, 1.0), 2, 1, false, 12, false),
-    ] {
-        let mut engine =
-            Engine::open(source.clone(), viewer::MODE_SOURCE, size, delay).highlighted();
-        engine.period = period;
-        engine.ui_period = ui_period;
-        engine.prepare_delay = (ui_period > 1).then_some(0);
-        let mut window = Window {
-            wait_after_refusal: wait,
-            ..Window::default()
-        };
-        rest(&mut engine, &mut window);
-        let scale = f64::from(size.scale);
-        let screen = f64::from(size.height);
-        let notch = NOTCH * scale;
-        let arrow = ARROW * scale;
-        let back = (screen / 2.0 / arrow).floor() as usize;
-        let mut failures = 0;
-        for start in 0..40 {
-            let position = 0.02 + start as f64 * 0.024;
-            window.seek(&mut engine, position);
-            rest(&mut engine, &mut window);
-            let mut checks: Vec<(String, f64, f64)> = Vec::new();
-            let mut stuck = None;
-            let mut run = |engine: &mut Engine, window: &mut Window, inputs: &[(f64, bool)]| {
-                if stuck.is_some() {
-                    return 0.0;
-                }
-                try_gesture(engine, window, inputs, burst).unwrap_or_else(|| {
-                    stuck = Some(format!(
-                        "stuck at {:.1} with {:.1} left: {:?}",
-                        window.shown(),
-                        window.pending,
-                        window.log.last()
-                    ));
-                    0.0
-                })
-            };
-            for (name, inputs) in [
-                ("notch down", vec![(notch, false)]),
-                ("notch up", vec![(-notch, false)]),
-                ("5 notches", vec![(notch, false); 5]),
-                ("Down", vec![(arrow, true)]),
-                ("Up", vec![(-arrow, true)]),
-            ] {
-                let expected: f64 = inputs.iter().map(|(pixels, _)| pixels).sum();
-                let moved = run(&mut engine, &mut window, &inputs);
-                checks.push((name.into(), moved, expected));
-            }
-            for (name, page, arrow) in [("PageDown", screen, -arrow), ("PageUp", -screen, arrow)] {
-                let mut moved = run(&mut engine, &mut window, &[(page, true)]);
-                for group in 0..back.div_ceil(4) {
-                    let count = (back - group * 4).min(4);
-                    moved += run(&mut engine, &mut window, &vec![(arrow, true); count]);
-                }
-                checks.push((name.into(), moved, page + back as f64 * arrow));
-            }
-            let moved = run(&mut engine, &mut window, &vec![(arrow, true); 20]);
-            checks.push(("20 × Down".into(), moved, 20.0 * arrow));
-            if let Some(stuck) = stuck {
-                failures += 1;
-                let _ = writeln!(
-                    report,
-                    "{}x{}@{} delay {delay} period {period} burst {burst} ui {ui_period} wait {wait} from {position:.3}: {stuck}",
-                    size.width, size.height, size.scale
-                );
-                break;
-            }
-            for (name, moved, expected) in checks {
-                if (moved - expected).abs() > 1.0 {
-                    failures += 1;
-                    let _ = writeln!(
-                        report,
-                        "{}x{}@{} delay {delay} period {period} burst {burst} ui {ui_period} wait {wait} from {position:.3}: {name} moved {moved:.1}, expected {expected:.1}",
-                        size.width, size.height, size.scale
-                    );
-                }
-            }
-        }
-        let _ = writeln!(
-            report,
-            "{}x{}@{} delay {delay} period {period} burst {burst} ui {ui_period} wait {wait}: {failures} short gestures, reads {} ({} refreshes), refused {}, dropped {:?}, plain frames {}, surfaces {}, rebases {}, edge waits {}",
-            size.width,
-            size.height,
-            size.scale,
-            engine.reads,
-            engine.refreshes,
-            window.refused,
-            window.dropped,
-            window.plain_frames,
-            window.surfaces,
-            window.rebases,
-            window.edge_waits
-        );
-    }
-    println!("{report}");
-}
-
 /// `count` rows of `width` bytes each, newline included.
 pub(super) fn rows(count: usize, width: usize) -> String {
     (0..count)
@@ -983,8 +917,9 @@ fn measure_page_reads_by_row_width() {
     ] {
         unsent::read_whole(whole);
         let _ = writeln!(report, "-- whole reads {whole}");
-        for width in [60, 120, 250, 500, 830, 1200, 2400] {
-            let source = rows(3_000_000 / width, width);
+        for width in [60, 120, 250, 500, 830, 1200, 2400, 8000] {
+            // At least 1,500 rows: the gestures move down 4,640 pixels from the middle.
+            let source = rows((3_000_000 / width).max(1500), width);
             let started = std::time::Instant::now();
             let mut engine = Engine::open(source, mode, size, 1);
             let mut window = Window::default();
@@ -1050,121 +985,40 @@ fn measure_page_reads_by_row_width() {
 /// the worker (its mailbox keeps only the newest frame), the worker restyles its page for
 /// the camera the window asked for, which runs the request's lookahead ahead of the camera
 /// the window shows. That page starts at the requested camera's row, so its pixels do not
-/// reach the shown camera: the window refuses them and, waiting for pixels nothing would
-/// paint, stops 44 px short. Asking for the shown camera itself after a refused frame
-/// (`raster_camera::Camera::receive` in the viewer window) completes every gesture.
+/// reach the shown camera and the window refuses them; it then asks for its shown camera
+/// itself, without lookahead (`raster_camera::Camera::receive`, whose regression test is
+/// `raster_frontier_tests::a_page_restyled_around_the_lookahead_does_not_stop_a_burst`),
+/// and the burst and the gestures after it move their whole distance.
 #[test]
 fn a_burst_over_a_page_restyled_for_its_lookahead_keeps_its_whole_travel() {
-    let source = rust(6000);
-    for wait_after_refusal in [true, false] {
-        let mut engine = Engine::open(
-            source.clone(),
-            viewer::MODE_SOURCE,
-            geometry(1312, 720, 1.0),
-            1,
-        )
-        .highlighted();
-        engine.ui_period = 6;
-        engine.prepare_delay = Some(0);
-        let mut window = Window {
-            wait_after_refusal,
-            ..Window::default()
-        };
-        rest(&mut engine, &mut window);
-        window.seek(&mut engine, 0.02);
-        rest(&mut engine, &mut window);
-        let near = |moved: Option<f64>, expected: f64| {
-            moved.is_some_and(|moved| (moved - expected).abs() < 0.01)
-        };
-        let notch = [(NOTCH, false)];
-        let up = [(-NOTCH, false)];
-        assert!(near(
-            try_gesture(&mut engine, &mut window, &notch, true),
-            NOTCH
-        ));
-        assert!(near(
-            try_gesture(&mut engine, &mut window, &up, true),
-            -NOTCH
-        ));
-        let before = window.shown();
-        let burst = try_gesture(&mut engine, &mut window, &[(NOTCH, false); 5], true);
-        if wait_after_refusal {
-            assert_eq!(burst, None, "the burst waits for pixels nothing paints");
-            let moved = window.shown() - before;
-            assert!(
-                (moved - 256.0).abs() < 0.01,
-                "the reported 256 of 300 px: {moved}"
-            );
-            assert!(window.refused > 0);
-        } else {
-            assert!(
-                near(burst, 5.0 * NOTCH),
-                "{burst:?}; refused frames: {}",
-                window.refused
-            );
-            for (inputs, expected) in [
-                (vec![(720.0, true)], 720.0),
-                (vec![(-720.0, true)], -720.0),
-                (vec![(ARROW, true); 20], 20.0 * ARROW),
-            ] {
-                let moved = try_gesture(&mut engine, &mut window, &inputs, true);
-                assert!(near(moved, expected), "{moved:?} of {expected}");
-            }
-        }
-    }
-}
-
-/// Exploration: short and stuck gestures over long rows, whole reads or reads of new rows,
-/// and a window that waits after a refused frame or asks again.
-#[test]
-#[ignore = "exploration; prints a comparison"]
-fn compare_long_row_variants() {
-    let size = geometry(1312, 720, 1.0);
-    let mut report = String::new();
-    for (mode, width) in [
-        (viewer::MODE_SOURCE, 1200),
-        (viewer::MODE_TEXT, 1200),
-        (viewer::MODE_TEXT, 830),
+    let mut engine =
+        Engine::open(rust(6000), viewer::MODE_SOURCE, geometry(1312, 720, 1.0), 1).highlighted();
+    engine.ui_period = 6;
+    engine.prepare_delay = Some(0);
+    let mut window = Window::default();
+    rest(&mut engine, &mut window);
+    window.seek(&mut engine, 0.02);
+    rest(&mut engine, &mut window);
+    let near = |moved: Option<f64>, expected: f64| {
+        moved.is_some_and(|moved| (moved - expected).abs() < 0.01)
+    };
+    for (inputs, expected) in [
+        (vec![(NOTCH, false)], NOTCH),
+        (vec![(-NOTCH, false)], -NOTCH),
+        (vec![(NOTCH, false); 5], 5.0 * NOTCH),
+        (vec![(720.0, true)], 720.0),
+        (vec![(-720.0, true)], -720.0),
+        (vec![(ARROW, true); 20], 20.0 * ARROW),
     ] {
-        for whole in [true, false] {
-            for wait in [true, false] {
-                unsent::read_whole(whole);
-                let mut engine = Engine::open(rows(3_000_000 / width, width), mode, size, 1);
-                let mut window = Window {
-                    wait_after_refusal: wait,
-                    ..Window::default()
-                };
-                rest(&mut engine, &mut window);
-                window.seek(&mut engine, 0.5);
-                rest(&mut engine, &mut window);
-                let screen = f64::from(size.height);
-                let (mut short, mut stuck) = (0, 0);
-                for (inputs, repeat) in [
-                    (vec![(screen, true)], 4),
-                    (vec![(NOTCH, false); 5], 4),
-                    (vec![(ARROW, true); 20], 1),
-                    (vec![(-screen, true)], 4),
-                ] {
-                    let expected: f64 = inputs.iter().map(|(pixels, _)| pixels).sum();
-                    for _ in 0..repeat {
-                        match try_gesture(&mut engine, &mut window, &inputs, false) {
-                            Some(moved) if (moved - expected).abs() > 1.0 => short += 1,
-                            Some(_) => {}
-                            None => stuck += 1,
-                        }
-                        if stuck > 0 {
-                            break;
-                        }
-                    }
-                }
-                let _ = writeln!(
-                    report,
-                    "mode {mode} rows {width} whole {whole} wait {wait}: {short} short, {stuck} stuck, {} reads, {} refused",
-                    engine.reads, window.refused
-                );
-            }
-        }
+        let moved = try_gesture(&mut engine, &mut window, &inputs, true);
+        assert!(
+            near(moved, expected),
+            "{moved:?} of {expected}; refused frames: {}",
+            window.refused
+        );
     }
-    unsent::read_whole(false);
-    println!("{report}");
+    assert!(
+        window.refused > 0,
+        "the restyled page's pixels were refused"
+    );
 }

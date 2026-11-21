@@ -27,6 +27,8 @@ mod source_continuity;
 mod chain;
 #[path = "worker_frontier_tests.rs"]
 mod frontier;
+#[path = "worker_long_row_tests.rs"]
+mod long_rows;
 #[path = "worker_nearest_edge_tests.rs"]
 mod nearest_edge;
 #[path = "worker_overlap_tests.rs"]

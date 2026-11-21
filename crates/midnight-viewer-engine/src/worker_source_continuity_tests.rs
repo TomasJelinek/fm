@@ -40,16 +40,28 @@ fn source_unwrapped_bounded_fragment_navigation_always_makes_progress() {
     let page = source_page(&source, 6, 6 + 8192);
     let shaped = worker.layout_page(&page).unwrap();
     assert!(shaped.height() < worker.geometry.height as f32);
-    let forward =
-        crate::viewport::Continuation::capture(&page, &shaped, worker.geometry, [0.0; 2], 17.0)
-            .unwrap();
+    let forward = crate::viewport::Continuation::capture(
+        &page,
+        &shaped,
+        worker.geometry,
+        [0.0; 2],
+        17.0,
+        true,
+    )
+    .unwrap();
     assert_eq!(
         forward.anchor, page.end,
         "a huge logical line must not reload its first fragment"
     );
-    let backward =
-        crate::viewport::Continuation::capture(&page, &shaped, worker.geometry, [0.0; 2], -17.0)
-            .unwrap();
+    let backward = crate::viewport::Continuation::capture(
+        &page,
+        &shaped,
+        worker.geometry,
+        [0.0; 2],
+        -17.0,
+        true,
+    )
+    .unwrap();
     assert_eq!(
         backward.anchor, page.start,
         "backward endpoint excludes the current bounded fragment"
@@ -75,12 +87,14 @@ fn source_page_refills_before_exposing_its_unloaded_last_visual_line() {
         };
         let origin = [0.0, last_top - geometry.height as f32 - 1.0];
         assert!(
-            crate::viewport::Continuation::capture(&page, &shaped, geometry, origin, 2.0).is_some(),
+            crate::viewport::Continuation::capture(&page, &shaped, geometry, origin, 2.0, true)
+                .is_some(),
             "a not-yet-loaded row must not enter the displayed viewport (newline={trailing_newline})"
         );
         page.after = false;
         assert!(
-            crate::viewport::Continuation::capture(&page, &shaped, geometry, origin, 2.0).is_none(),
+            crate::viewport::Continuation::capture(&page, &shaped, geometry, origin, 2.0, true)
+                .is_none(),
             "real EOF keeps its ordinary final line"
         );
     }
@@ -786,9 +800,15 @@ fn source_enormous_partial_line_exhausts_bounded_prefix_reads_without_acknowledg
         &worker.appearance,
     );
     let shaped = worker.layout_page(&page).unwrap();
-    let step =
-        crate::viewport::Continuation::capture(&page, &shaped, worker.geometry, [0.0; 2], 17.0)
-            .unwrap();
+    let step = crate::viewport::Continuation::capture(
+        &page,
+        &shaped,
+        worker.geometry,
+        [0.0; 2],
+        17.0,
+        true,
+    )
+    .unwrap();
     assert_eq!(step.anchor, page.end);
 }
 

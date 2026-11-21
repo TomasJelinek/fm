@@ -109,10 +109,7 @@ impl Worker {
             .as_ref()
             .zip(self.shaped.as_ref())
             .is_some_and(|(page, shaped)| {
-                let maximum =
-                    (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
-                        - self.geometry.height as f32)
-                        .max(0.0);
+                let maximum = self.camera_span(page, shaped).span;
                 (origin[1] >= -0.001 || !page.before)
                     && (origin[1] <= maximum + 0.001 || !page.after)
             })
@@ -144,9 +141,7 @@ impl Worker {
         };
         let maximum = [
             (shaped.width() - self.text_width()).max(0.0),
-            (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
-                - self.geometry.height as f32)
-                .max(0.0),
+            self.camera_span(page, shaped).span,
         ];
         let continuation = crate::viewport::Continuation::capture(
             page,
@@ -154,6 +149,7 @@ impl Worker {
             self.geometry,
             [local[0], self.origin[1]],
             local[1] - self.origin[1],
+            matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
         );
         if let Some(continuation) = continuation {
             let progresses = if continuation.backwards {

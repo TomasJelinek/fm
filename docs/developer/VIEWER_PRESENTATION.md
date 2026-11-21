@@ -149,15 +149,16 @@ for byte/heap measurements, native versus archive preparation, and timing limits
 The basic and Source plugins answer a Text or Source viewport with at most about 8 KiB.
 One anchor per character and the wire item budget limit a reply to about 13,000
 characters, so larger plugin pages are not possible within the current API. The engine
-joins byte-capped replies up to the request's line budget, at most 64 KiB and 16 reads
-(`worker_chain.rs`). A retained refill asks for the rows around the camera, and the
-shown page already holds most of them: the page moves a little each time the camera
-nears its edge. When the rows of the shown page end it by its line budget (its rows
-times the request's line budget stay below 64 KiB, rows up to about 870 bytes at a
-720-pixel window), such a request reads only the rows past the shown page's edge (before
-its start, backwards) and joins its reply to the rows the page holds; the joined page is
-the one a whole read gives. A reply that does not continue those rows makes the engine
-read the request whole. Scrollbar positions and longer rows keep whole reads.
+joins byte-capped replies up to the request's line budget, in at most 16 reads and one
+text layout: 64 KiB laid out, a tab counted at its widest (four bytes), and 4,096 styled
+spans (`worker_chain.rs`; see below). A retained refill asks for the rows around the
+camera, and the shown page already holds most of them: the page moves a little each time
+the camera nears its edge. Such a request reads only the rows past the shown page's edge
+(before its start, backwards) and joins its reply to the rows the page holds. The joined
+page is the one a whole read gives: both end at the line budget or, with longer rows,
+where one layout is full (to within a character, as each read stops before a character
+that does not fit). A reply that does not continue those rows makes the engine read the
+request whole. Scrollbar positions keep whole reads.
 
 Method: the engine's deterministic co-simulation (`worker_frontier_tests.rs`, ignored
 measurement `measure_page_reads_by_row_width`) runs the real worker, a simulated basic or
@@ -180,15 +181,79 @@ reads every request whole for "before". Text and Source gave the same counts up 
 Bursts take 112 frames before and after; twenty Down presses read 5 → 2 times over
 500-byte rows and 16 → 2 over 830-byte rows. Opening reads are unchanged (1 read for
 60-byte rows, 8 for 830-byte rows), no short file reads more, and every gesture still
-moves its whole distance. Rows of 1200 and 2400 bytes read exactly as before.
+moves its whole distance. The rerun after the long-row change below gave every count of
+this table again, in Text and Source.
 
-Those long rows still lose travel in the co-simulation, before and after this change: over
-1200-byte rows four of the gestures above stop short in Text (none in Source), and over
-2400-byte rows, whose 64 KiB pages are shorter than the viewport and fall back to relative
-scrolling by rows, 13 of them, in Text and Source alike. Raising the join bound to
-128 KiB, or reading on until a page fills the viewport, made these cases worse in the
-co-simulation (the camera jumped to the file start or stopped), so neither was kept; very
-long rows need a separate design decision.
+**Rows longer than a page holds.** A joined page is one text layout, and the renderer's
+layout (parley 0.11) keeps a glyph cluster's offset inside its shaping run in 16 bits
+(`ClusterData::text_offset`); uniformly styled text is one shaping run, so no byte past
+64 KiB of a page had the right caret, hit test or line range. The chain read on until a
+page reached 64 KiB, and Text pages of the basic viewer's 8,176-byte ranges grew to 73,584
+bytes: the caret of offset 72,000 of a 73,200-byte page lay on the page's end, a row too
+low. A backward refill restores the camera on the last row of its page, so each one
+shifted the camera's world by a row, and every PageUp over 1200-byte rows stopped three
+rows (49 px) short. Source pages, of 8,192-byte ranges, stopped at exactly 64 KiB and kept
+their travel. The earlier attempt with pages of 128 KiB, rerun in the co-simulation,
+failed the same way. Backward restores of rows past 64 KiB landed 160 px above their new
+page, which the camera therefore never reached, and each retry read the page before it,
+back to the file start: PageUp over 1200-byte rows jumped 24,359 px. Refills placed on
+rows past 64 KiB anchored at their page's start instead (24 times over 2400-byte rows),
+and new surfaces arrived while the window still moved, which drops its remaining gesture:
+PageUp over 2400-byte rows stopped after 148 to 247 of 720 px. Reading on until a page
+fills the window would make pages longer than 64 KiB too (44 rows of 2400 bytes are
+105 KB). A joined page now stays within one layout (`fit`): a chained read asks only for
+the room left, and a reply is cut at an anchor to fit. 54 rows of 1200 bytes fill a
+page, 27 of 2400 and 8 of 8000, while a 720-pixel window shows 44 rows, 76 with its
+guards.
+
+A page whose rows did not fill the window left the retained camera, and the relative
+scrolling that took over clamped each step to the next page's top: PageDown over
+2400-byte rows moved 27 rows (443 px) in Source and 3 in Text, an arrow key one row. A
+page that barely filled it let its camera move a few pixels, too few for the guard a
+refill keeps above the camera: no refill advanced, or the camera stopped between two
+pages that each covered one side of it. A page whose rows are too long for it to hold the
+window and a guard on each side (its bytes or styled spans over those pixels would exceed
+a page's 64 KiB or 4,096) now keeps the retained camera and lets it move at least a guard
+(256 logical pixels), as far as its last row's top and past its first row, while the
+window shows blank space below the page's rows; a refill keeps the rest of the page
+below the camera (`viewport::camera_span`). A page that ends the file keeps its end at the window's bottom
+unless it is shorter than the window. A refill that would read no new row is not sent,
+and a camera outside its page asks for a page holding it without a guard when a guarded
+one cannot advance. Pages that fill the window and a guard below it, and pages of shorter
+rows, those up to 830 bytes among them, keep their range: a small fragment of short rows
+still takes the viewport path when its camera cannot pass a row.
+
+Verified in the co-simulation (`worker_long_row_tests.rs`, Windows, 21 November 2026):
+rows of 1200, 2400 and 8000 bytes, and a file mixing them with rows of 60 to 830 bytes,
+in Text and Source, wrapped and unwrapped. After three scrollbar positions, every one of
+three PageDown, five notches (one per frame, twice, and in one burst), twelve Down presses
+(one per frame, and in one burst), three PageUp, five notches up and a burst of twelve Up
+presses moves its whole distance, to within a pixel of the document's rows as they lay
+out one by one. With the change undone, every one of these four tests fails: PageUp
+over 1200-byte rows moved −670.8 of −720 px in Text, PageDown over 2400-byte rows 49.2
+(Text) or 442.6 px (Source), over 8000-byte rows 0 to 147.5 px, and in the mixed file
+gestures dropped their travel with a failed handoff or never came to rest. The
+measurement gives, before (the code of 21 November) → after:
+
+| Rows | Four PageDown | Four bursts of five notches | Twenty Down | Four PageUp |
+| --- | --- | --- | --- | --- |
+| 1200 bytes, Text | 108 reads, 862 KiB, 136 frames → 34, 201 KiB, 62 frames | 108, 862 KiB → 32, 86 KiB | 27, 215 KiB → 8, 39 KiB | 108, 862 KiB, all four short → 35, 213 KiB |
+| 1200 bytes, Source | 144, 1152 KiB, 178 frames → 34, 201 KiB, 62 frames | 136, 1088 KiB → 32, 86 KiB | 32, 256 KiB → 8, 39 KiB | 136, 1088 KiB → 35, 213 KiB |
+| 2400 bytes | 36 (Text) or 32 reads, all short → 55, 385 KiB, 82 frames | 180 or 160, short → 36, 175 KiB | 180 or 160, short → 12, 72 KiB | 36 or 32, short → 58, 409 KiB |
+| 8000 bytes | not measured → 169, 1321 KiB, 210 frames | → 74, 578 KiB, 123 frames | → 35, 273 KiB | → 202, 1395 KiB |
+
+Text and Source read the same after; no gesture stops short. A page holds at most 64 KiB
+of laid-out text and 4,096 spans, with one 16-byte anchor per character (at most 1 MiB);
+a chain holds one such page besides the shown one, and pages grew to 73,584 bytes before.
+Joins, cuts and layouts stay on the viewer worker, and the window's camera is unchanged.
+
+A scrollbar position lands within 0.2 % of the released thumb over rows of 1200 and 2400
+bytes and within 0.4 % over 8000-byte rows, where Source places its camera on a whole row
+(`source_minimum_origin`). In the mixed file it lands up to 1.6 % away, as it did before
+this change: its first read estimates the target from the shown page's density, and one
+correction read is allowed (`refine_position`). A piece of a row longer than one layout,
+without a row break, keeps the viewport path: such a row shows as pieces, one per line,
+which these tests do not cover.
 
 A frame of the shown surface whose pixels do not reach the camera the window shows is
 refused. This happens when the engine pages or restyles for the camera a request asked
@@ -201,14 +266,17 @@ every sixth worker turn and its mailbox keeps only the newest frame
 (`a_burst_over_a_page_restyled_for_its_lookahead_keeps_its_whole_travel`). The camera now
 asks again for the shown camera itself, without lookahead (`raster_camera::Camera::receive`),
 and every gesture completes; the window's own regression test is
-`raster_frontier_tests::a_page_restyled_around_the_lookahead_does_not_stop_a_burst`. The
-ignored exploration `explore_rust_frontier_travel` runs the highlighted Rust file in 13
-configurations (windows from 1000×560 to 2624×1440 at 100–200 %, plugin delays of 0–12
-frames, bursts and single inputs, 40 scrollbar positions each) through wheel notches, Up
-and Down, PageDown and PageUp each followed by grouped arrows, and twenty Down presses,
-each to within 1 px. With the camera asking again, no gesture loses travel. Before, only
-the windows presenting every sixth or twelfth worker turn stopped, 44 px short on Windows
-and Linux alike; a window presenting every fourth did not. The window's tests over
+`raster_frontier_tests::a_page_restyled_around_the_lookahead_does_not_stop_a_burst`. An
+exploration of that change ran the highlighted Rust file in 13 configurations (windows
+from 1000×560 to 2624×1440 at 100–200 %, plugin delays of 0–12 frames, bursts and single
+inputs, 40 scrollbar positions each) through wheel notches, Up and Down, PageDown and
+PageUp each followed by grouped arrows, and twenty Down presses, each to within 1 px. With
+the camera asking again, no gesture lost travel. Before, only the windows presenting
+every sixth or twelfth worker turn stopped, 44 px short on Windows and Linux alike; a
+window presenting every fourth did not. That exploration only printed its table, and the
+model's variant of a window that waited after a refused frame only showed the old stop:
+both were removed with the long-row change above, and the co-simulation's window now
+always asks again, as the real camera does. The window's tests over
 continuing and corrected refills without restyling
 (`raster_frontier_tests::keys_and_wheel_keep_their_travel_*`) pass with and without the
 fix: they did not reproduce the report and stay as guards. The reported PageUp of −792 px

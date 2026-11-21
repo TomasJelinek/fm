@@ -1,7 +1,7 @@
 //! Byte-capped Text replies joined to the line budget of their request (`worker_chain.rs`).
 //! Replies follow the basic viewer's selection: at most 8176 bytes, cut inside a row,
 //! and ended earlier at the request's line budget.
-use super::super::chain::{JOIN_BYTES, adjacent, join, trim_cut_start};
+use super::super::chain::{JOIN_BYTES, adjacent, fit, join, layout_bytes, trim_cut_start};
 use super::text_position::edge_page;
 use super::*;
 use midnight_plugin_host::HostEvent;
@@ -229,7 +229,7 @@ fn a_bounded_backward_join_drops_its_cut_first_row() {
         reads > 1 && page.text.len() >= JOIN_BYTES - 3000,
         "{reads} reads"
     );
-    assert!(page.text.len() <= JOIN_BYTES + PROVIDER_BYTES);
+    assert!(page.text.len() <= JOIN_BYTES, "one layout");
     assert!(
         source[..page.start as usize].ends_with('\n'),
         "the cut row is dropped"
@@ -301,4 +301,93 @@ fn adjacent_text_pages_join_and_a_cut_first_row_is_dropped() {
     let line = edge_page("x".repeat(64).as_str(), 3, 40);
     let (kept, cut) = trim_cut_start(line.clone());
     assert!(!cut && kept.text == line.text);
+}
+
+/// One joined page is one layout, and its renderer places no byte past 64 KiB of a shaping
+/// run right: a forward chain over 1200-byte rows read nine 8176-byte ranges, 73,584 bytes,
+/// and the caret of its last rows fell on the page's end. Its last read now takes only the
+/// room left, tabs counted at their widest, and the page's last whole row lies where the
+/// rows above it end.
+#[test]
+fn a_joined_page_fills_one_layout_and_places_its_last_row() {
+    for tab in [false, true] {
+        let source: String = rows(400, Some(1200))
+            .lines()
+            .map(|row| {
+                let row = if tab {
+                    row.replacen('x', "\t", 100)
+                } else {
+                    row.into()
+                };
+                format!("{row}\n")
+            })
+            .collect();
+        let (mut worker, output) = text_worker(&source);
+        let viewport = worker.page_viewport(0, false);
+        admit(&mut worker, 91, &viewport);
+        let (mut request, mut id) = (viewport.clone(), 91);
+        while worker.page.is_none() {
+            reply(&mut worker, &output, id, reply_to(&source, &request));
+            if worker.page.is_none() {
+                (request, id) = chained(&worker, 91);
+                assert!(request.max_bytes <= viewport.max_bytes);
+            }
+        }
+        let page = worker.page.as_ref().unwrap();
+        let laid_out = layout_bytes(&page.text);
+        assert!(
+            laid_out <= JOIN_BYTES && laid_out > JOIN_BYTES - 4,
+            "{laid_out} bytes laid out (tabs {tab})"
+        );
+        let shaped = worker.shaped.as_ref().unwrap();
+        let row = |index: usize| {
+            let start = page.text.match_indices('\n').nth(index).unwrap().0 + 1;
+            shaped.caret_geometry(start).unwrap().y0
+        };
+        let whole = page.text.matches('\n').count();
+        let line = row(0);
+        assert!(
+            (row(whole - 1) - whole as f64 * line).abs() < 0.01,
+            "the last row of a full page (tabs {tab})"
+        );
+    }
+}
+
+/// A reply joins the pages before it as far as one layout has room: from its start, or up
+/// to its end backwards, at one of its anchors, a tab counted at its widest and each span.
+#[test]
+fn a_reply_keeps_what_one_layout_has_room_for() {
+    let source = "ab\tcd\nef\tgh\nij\tkl\n";
+    let mut page = edge_page(source, 0, source.len());
+    page.spans = (0..9)
+        .map(|index| viewer::Span {
+            start: 2 * index,
+            end: 2 * index + 2,
+            role: viewer::STYLE_KEYWORD,
+            flags: 0,
+        })
+        .collect();
+    assert_eq!(layout_bytes(source), source.len() + 9);
+    let forward = fit(page.clone(), 12, usize::MAX, false);
+    assert_eq!(forward.text, "ab\tcd\nef");
+    assert!(forward.has_after && forward.partial_line);
+    assert_eq!(forward.source.offset + forward.source.length, 8);
+    let backward = fit(page.clone(), 12, usize::MAX, true);
+    assert_eq!(backward.text, "gh\nij\tkl\n");
+    assert!(backward.has_before && backward.partial_line);
+    assert_eq!(backward.source.offset, 9);
+    assert_eq!(
+        backward.spans[0].start, 0,
+        "a span over the cut keeps its rest"
+    );
+    let spans = fit(page.clone(), usize::MAX, 4, false);
+    assert_eq!((spans.text.as_str(), spans.spans.len()), (&source[..8], 4));
+    for part in [forward, backward, spans] {
+        midnight_plugin_host::api::codec::Model::validate(&part).unwrap();
+    }
+    assert_eq!(
+        fit(page.clone(), 27, 9, false),
+        page,
+        "a page that fits stays whole"
+    );
 }
