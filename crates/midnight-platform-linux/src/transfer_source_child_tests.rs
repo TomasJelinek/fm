@@ -211,3 +211,67 @@ fn a_move_folder_is_checked_once_for_all_of_its_children() {
         "the folder is checked once, before its first child"
     );
 }
+
+#[test]
+fn a_listing_describes_children_it_is_not_asked_to_open_without_opening_them() {
+    use midnight_core::ListedChild;
+    let temp = crate::test_support::temporary("listed-children-");
+    let folder = temp.path().join("folder");
+    fs::create_dir_all(folder.join("sub")).unwrap();
+    fs::write(folder.join("file"), b"eight by").unwrap();
+    std::os::unix::fs::symlink("file", folder.join("link")).unwrap();
+    fs::write(folder.join("unreadable"), b"ten bytes!").unwrap();
+    // Permissions do not bind the superuser: there the file opens.
+    let binds = !privileged();
+    if binds {
+        chmod(&folder.join("unreadable"), 0o000);
+    }
+    let service = crate::LinuxFileSystem::new(None);
+    let cancel = Cancellation::default();
+    // Children not asked for are described by their no-follow status, on the folder's
+    // device, without opening any of them: the unreadable file too.
+    let mut source = service.prepare_transfer_source(&folder, &cancel).unwrap();
+    let mut listed = Vec::new();
+    while let Some(child) = source.next_listed_child(&|_| false, &cancel).unwrap() {
+        let ListedChild::Entry(entry) = child else {
+            panic!("a child not asked for is described, not opened");
+        };
+        assert_eq!(entry.identity.device, source.entry().identity.device);
+        listed.push((entry.item.path, entry.item.kind, entry.item.metadata.size));
+    }
+    listed.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        listed,
+        [
+            (folder.join("file"), EntryKind::File, Some(8)),
+            (folder.join("link"), EntryKind::Symlink, None),
+            (folder.join("sub"), EntryKind::Directory, None),
+            (folder.join("unreadable"), EntryKind::File, Some(10)),
+        ]
+    );
+    // A kind asked for is opened as `next_child` opens it, and fails as it does: the
+    // link is refused, and the unreadable file where permissions bind.
+    let mut source = service.prepare_transfer_source(&folder, &cancel).unwrap();
+    let (mut opened, mut failed) = (Vec::new(), Vec::new());
+    loop {
+        match source.next_listed_child(&|_| true, &cancel) {
+            Ok(Some(ListedChild::Source(child))) => opened.push(child.entry().item.path.clone()),
+            Ok(Some(ListedChild::Entry(entry))) => panic!("{entry:?} was asked for"),
+            Ok(None) => break,
+            Err(error) => failed.push(error.path),
+        }
+    }
+    opened.sort();
+    failed.sort();
+    let mut wanted_open = vec![folder.join("file"), folder.join("sub")];
+    let mut wanted_failed = vec![folder.join("link")];
+    if binds {
+        wanted_failed.push(folder.join("unreadable"));
+    } else {
+        wanted_open.push(folder.join("unreadable"));
+    }
+    wanted_open.sort();
+    wanted_failed.sort();
+    assert_eq!((opened, failed), (wanted_open, wanted_failed));
+    chmod(&folder.join("unreadable"), 0o644);
+}

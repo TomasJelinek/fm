@@ -30,10 +30,13 @@ from the selection bitset and the displayed rows, looking at no more selected ro
 than one calculation could hold (16,384), never by scanning the folder's index.
 Neither action automatically verifies a manifest or follows its entries.
 A selected folder contributes its own files; Include subfolders adds the levels
-below it, whose folders are otherwise left out without rows, a subfolder that is a
-mount point of another volume (`~/nas`, `/media/<user>/stick`) included. With
-Include subfolders a walk does not cross into another volume: such a subfolder is a
-Skipped row and the run is Incomplete. Links and special entries are skipped.
+below it, whose folders are otherwise left out without rows and without being opened
+(they are known by their listed kind), so a subfolder that is a mount point of another
+volume (`~/nas`, `/media/<user>/stick`) or that cannot be read is left out too. With
+Include subfolders a walk does not cross into another volume: a folder on another
+device is never entered, it is a Skipped row and the run is Incomplete. Links and
+special entries are skipped; a Windows volume mount point is a directory link and is
+skipped as links are.
 Verification names files only, so a folder in a manifest entry's place stays a
 skipped entry. Provider/archive content is not silently interpreted as a native
 pathname.
@@ -75,10 +78,18 @@ in between at most every 250 ms, because each check reopens the parent and name
 replaced or rewritten source keeps streaming; the final check decides the row.
 
 `ChecksumEvent` carries Queued, Started, Verifying, Planned, bounded Batch, Progress or
-Finished. A calculation first lists the files it will read (a walk that opens entries
-and lists folders, within the same depth, volume, link and size limits, but reads no
-contents) and sends them in Planned batches, then reads them in the same order.
-Unreadable entries are reported only by the reading walk. Progress carries the listed
+Finished. A calculation first lists the files it will read and sends them in Planned
+batches, then reads them in the same order. The listing walks the same folders within
+the same depth, volume, link and size limits, but opens no file and reads no contents:
+each folder's `TransferSource::next_listed_child` describes the children the walk does
+not open, from the directory records on Windows (attributes, reparse tag, length) and
+from a no-follow `statx` relative to the held folder on Linux, and opens only the
+folders it enters. A share or a disk therefore no longer pays one guarded open per file
+before the first digest. The reading walk opens each file it reads, and each link or
+special entry to report its refusal, as before. Unreadable entries are reported only by
+the reading walk: a listed file that cannot be opened gets its error row in its planned
+place. Sources that cannot describe a child without opening it (archives, wrappers)
+keep the default, which opens every child as `next_child` does. Progress carries the listed
 count and total length, whether listing is still going on, and the file being read
 with its bytes read so far. A finished file's row is sent at once unless many finish
 quickly, and then within 100 ms; progress also goes out every 100 ms. Each directory's

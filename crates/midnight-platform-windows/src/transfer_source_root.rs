@@ -261,4 +261,11 @@ impl TransferSource for Prepared {
     ) -> Result<Option<midnight_core::TransferChild>, FsError> {
         self.with_active(cancel, |source| source.next_child_or_failure(cancel))
     }
+    fn next_listed_child(
+        &mut self,
+        open: &dyn Fn(EntryKind) -> bool,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::ListedChild>, FsError> {
+        self.with_active(cancel, |source| source.next_listed_child(open, cancel))
+    }
 }

@@ -131,7 +131,7 @@ fn fallback_metadata(path: &Path) -> Result<EntryMetadata, FsError> {
     })
 }
 
-fn timestamp(seconds: i64, nanoseconds: u32) -> Option<SystemTime> {
+pub(crate) fn timestamp(seconds: i64, nanoseconds: u32) -> Option<SystemTime> {
     if nanoseconds >= 1_000_000_000 {
         return None;
     }

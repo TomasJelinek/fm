@@ -511,13 +511,25 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
     fn walk(&mut self, source: Box<dyn TransferSource>) {
         let root_device = source.entry().identity.device;
         let mut stack = Vec::<Box<dyn TransferSource>>::new();
-        let mut current = Some(source);
+        let mut current = Some(ListedChild::Source(source));
+        // The children a pass opens: the folders it enters (only with Include
+        // subfolders) and, when reading, the files it reads, and links and special
+        // entries, whose rows then carry the provider's own refusal. The listing pass
+        // opens no file; neither pass opens a subfolder it leaves out.
+        let (recursive, reading) = (self.request.recursive, !self.listing);
+        let open = move |kind: EntryKind| {
+            if kind == EntryKind::Directory {
+                recursive
+            } else {
+                reading
+            }
+        };
         loop {
             if self.stopped() {
                 break;
             }
-            if let Some(source) = current.take() {
-                let entry = source.entry().clone();
+            if let Some(child) = current.take() {
+                let entry = child.entry().clone();
                 // A selected folder contributes its own files; Include subfolders adds
                 // the levels below, whose folders are otherwise left out without rows,
                 // also one that is a mount point of another volume.
@@ -543,10 +555,17 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                     continue;
                 }
                 match entry.item.kind {
-                    EntryKind::File => self.file(source),
+                    EntryKind::File => self.file(child),
                     EntryKind::Directory if self.request.recursive
                         || (self.settings.folders && stack.is_empty()) => {
                         if stack.len() >= self.request.limits.max_depth { self.budget(ChecksumBudget::Depth); break; }
+                        let ListedChild::Source(source) = child else {
+                            // A folder to enter is always opened (`open`); a source
+                            // that only described it leaves its contents unread.
+                            self.open_failed(failure(&entry.item.path, io::ErrorKind::InvalidData,
+                                "The folder was listed but not opened."), Some(EntryKind::Directory));
+                            continue;
+                        };
                         if !self.directories.insert(entry.identity) { continue; }
                         if let Err(error) = with_io(self.admission, self.cancel,&entry.item.path, || source.revalidate(self.cancel)) {
                             self.failed(&entry.item.path, Some(&entry), ChecksumRowState::ReadError, error);
@@ -563,7 +582,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             };
             let parent_path = parent.entry().item.path.clone();
             let next = with_io(self.admission, self.cancel, &parent_path, || {
-                parent.next_child(self.cancel)
+                parent.next_listed_child(&open, self.cancel)
             });
             match next {
                 Ok(Some(child)) => {
@@ -587,8 +606,8 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             }
         }
     }
-    fn file(&mut self, mut source: Box<dyn TransferSource>) {
-        let entry = source.entry().clone();
+    fn file(&mut self, child: ListedChild) {
+        let entry = child.entry().clone();
         if self.listing {
             self.plan(ChecksumPlannedFile {
                 path: entry.item.path,
@@ -596,6 +615,25 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             });
             return;
         }
+        let mut source = match child {
+            ListedChild::Source(source) => source,
+            // The reading pass opens every file it is given (`walk`); a source that
+            // only described one leaves it unread.
+            ListedChild::Entry(_) => {
+                let error = failure(
+                    &entry.item.path,
+                    io::ErrorKind::InvalidData,
+                    "The file was listed but not opened.",
+                );
+                self.failed(
+                    &entry.item.path,
+                    Some(&entry),
+                    ChecksumRowState::ReadError,
+                    error,
+                );
+                return;
+            }
+        };
         self.progress.current = Some(entry.item.path.clone());
         self.progress.current_read = 0;
         self.progress.current_size = entry.item.metadata.size;

@@ -265,6 +265,57 @@ fn entry(file: &File, path: &Path) -> Result<TransferEntry, FsError> {
         },
     })
 }
+/// `name` in `directory` as its no-follow status describes it, without opening it (an
+/// automount point is not mounted for it): the identity, kind, length and times that
+/// `entry` reads from a descriptor of it.
+fn listed_entry(directory: &File, name: &OsStr, path: &Path) -> Result<TransferEntry, FsError> {
+    use rustix::fs::{AtFlags, FileType, StatxFlags, makedev, statx};
+    validate_name(name, path)?;
+    let stat = statx(
+        directory,
+        name,
+        AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
+        StatxFlags::BASIC_STATS,
+    )
+    .map_err(|e| error(path, e.into()))?;
+    let mask = StatxFlags::from_bits_retain(stat.stx_mask);
+    if !mask.contains(StatxFlags::TYPE | StatxFlags::MODE | StatxFlags::INO) {
+        return Err(invalid(
+            path,
+            "the folder's listing does not identify this entry",
+        ));
+    }
+    let kind = match FileType::from_raw_mode(u32::from(stat.stx_mode)) {
+        FileType::RegularFile => EntryKind::File,
+        FileType::Directory => EntryKind::Directory,
+        FileType::Symlink => EntryKind::Symlink,
+        _ => EntryKind::Other,
+    };
+    let mut object = [0; 16];
+    object[..8].copy_from_slice(&stat.stx_ino.to_le_bytes());
+    Ok(TransferEntry {
+        identity: TransferIdentity {
+            device: makedev(stat.stx_dev_major, stat.stx_dev_minor),
+            object,
+        },
+        item: MutationItem {
+            path: path.to_owned(),
+            kind,
+            metadata: EntryMetadata {
+                size: (kind == EntryKind::File && mask.contains(StatxFlags::SIZE))
+                    .then_some(stat.stx_size),
+                modified: mask
+                    .contains(StatxFlags::MTIME)
+                    .then(|| {
+                        crate::metadata::timestamp(stat.stx_mtime.tv_sec, stat.stx_mtime.tv_nsec)
+                    })
+                    .flatten(),
+                unix_mode: Some(u32::from(stat.stx_mode)),
+                ..EntryMetadata::default()
+            },
+        },
+    })
+}
 fn checked(cancel: &Cancellation, path: &Path) -> Result<(), FsError> {
     if cancel.is_cancelled() {
         Err(error(path, io::ErrorKind::Interrupted.into()))

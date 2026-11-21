@@ -640,6 +640,49 @@ impl TransferSource for Source {
                 .map_err(|error| midnight_core::TransferChildFailure { name, error }),
         ))
     }
+    /// A child that is not opened is described by its no-follow status, read relative to
+    /// this folder's descriptor: no file is opened to be listed. A folder on another
+    /// device (a mount point, which `RESOLVE` would refuse to enter) is described too.
+    fn next_listed_child(
+        &mut self,
+        open: &dyn Fn(EntryKind) -> bool,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::ListedChild>, FsError> {
+        use midnight_core::ListedChild;
+        use rustix::fs::FileType;
+        if self.traversal.is_some() {
+            // A directory-link traversal decides a child by following it.
+            return self
+                .next_child(cancel)
+                .map(|child| child.map(ListedChild::Source));
+        }
+        let Some((name, typed)) = self.next_typed_name(cancel)? else {
+            return Ok(None);
+        };
+        // Opened as `next_child` opens it, with no status read first, when the type its
+        // directory entry records already decides it (a folder's device is still read).
+        let typed = match typed {
+            FileType::RegularFile => Some(EntryKind::File),
+            FileType::Symlink => Some(EntryKind::Symlink),
+            FileType::Directory | FileType::Unknown => None,
+            _ => Some(EntryKind::Other),
+        };
+        if typed.is_some_and(open) {
+            return self
+                .child_source(&name, cancel)
+                .map(|source| Some(ListedChild::Source(Box::new(source))));
+        }
+        let path = self.entry.item.path.join(&name);
+        let listed = super::listed_entry(&self.file, &name, &path)?;
+        let mount = listed.item.kind == EntryKind::Directory
+            && listed.identity.device != self.entry.identity.device;
+        if open(listed.item.kind) && !mount {
+            return self
+                .child_source(&name, cancel)
+                .map(|source| Some(ListedChild::Source(Box::new(source))));
+        }
+        Ok(Some(ListedChild::Entry(listed)))
+    }
 }
 impl Source {
     /// A folder that lists its names but does not let them be opened (read without
@@ -704,6 +747,14 @@ impl Source {
             })
     }
     fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<OsString>, FsError> {
+        Ok(self.next_typed_name(cancel)?.map(|(name, _)| name))
+    }
+    /// The next name and the type its directory entry gives (`Unknown` where the
+    /// filesystem does not record types in its directories).
+    fn next_typed_name(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<(OsString, rustix::fs::FileType)>, FsError> {
         self.revalidate(cancel)?;
         if self.entry.item.kind != EntryKind::Directory {
             return Err(invalid(&self.entry.item.path, "source is not a directory"));
@@ -728,7 +779,7 @@ impl Source {
             if name == "." || name == ".." {
                 continue;
             }
-            return Ok(Some(name.to_owned()));
+            return Ok(Some((name.to_owned(), next.file_type())));
         }
     }
 }

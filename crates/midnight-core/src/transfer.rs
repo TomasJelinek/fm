@@ -293,6 +293,27 @@ pub struct TransferChildFailure {
 /// One child from `TransferSource::next_child_or_failure`.
 pub type TransferChild = Result<Box<dyn TransferSource>, TransferChildFailure>;
 
+/// One child from `TransferSource::next_listed_child`.
+pub enum ListedChild {
+    /// The child as its folder's listing describes it, not opened: its path, its kind (a
+    /// link is a link, never followed), a file's length and the device it is on. The
+    /// object part of its identity is zero where the listing does not carry it. The
+    /// description proves nothing about the child: whatever reads it opens it, which
+    /// checks it then.
+    Entry(TransferEntry),
+    /// The child opened, exactly as `next_child` opens it.
+    Source(Box<dyn TransferSource>),
+}
+
+impl ListedChild {
+    pub fn entry(&self) -> &TransferEntry {
+        match self {
+            Self::Entry(entry) => entry,
+            Self::Source(source) => source.entry(),
+        }
+    }
+}
+
 /// One child from `TransferSource::next_move_child_or_failure`.
 pub type TransferMoveChild = Result<crate::PreparedTransferMoveEntry, TransferChildFailure>;
 
@@ -517,6 +538,26 @@ pub trait TransferSource: Send {
         cancel: &Cancellation,
     ) -> Result<Option<TransferChild>, FsError> {
         self.next_child(cancel).map(|child| child.map(Ok))
+    }
+    /// `next_child` for a walk that does not read every child, such as a checksum run
+    /// listing the files it will read before it reads any. The child is opened, exactly
+    /// as `next_child` opens it, only when `open` accepts the kind its folder's listing
+    /// gives it; otherwise it comes back as that listing's description, without a handle,
+    /// so listing a folder opens none of its files. A source that describes children
+    /// never opens a folder on another device than this one (a mount point), whatever
+    /// `open` says: walks do not cross into another volume, so it comes back described,
+    /// with that device. Errors are those of `next_child`. The default opens every child,
+    /// as `next_child` does (each child still shows its device), so a source that cannot
+    /// describe a child without opening it lists as it reads; wrappers that forward
+    /// `next_child` forward this.
+    fn next_listed_child(
+        &mut self,
+        open: &dyn Fn(crate::EntryKind) -> bool,
+        cancel: &Cancellation,
+    ) -> Result<Option<ListedChild>, FsError> {
+        let _ = open;
+        self.next_child(cancel)
+            .map(|child| child.map(ListedChild::Source))
     }
 }
 

@@ -76,8 +76,17 @@ impl Access {
 
 #[derive(Default)]
 struct Listing {
-    names: VecDeque<(OsString, Native)>,
+    names: VecDeque<Listed>,
     cursor: Cursor,
+}
+
+/// A child as its directory record describes it.
+struct Listed {
+    name: OsString,
+    native: Native,
+    /// End of file; meaningful for files.
+    size: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 impl Listing {
@@ -85,7 +94,12 @@ impl Listing {
         let names = &mut self.names;
         self.cursor
             .next_batch(directory, &mut |record| {
-                names.push_back((OsString::from_wide(record.name), record.native));
+                names.push_back(Listed {
+                    name: OsString::from_wide(record.name),
+                    native: record.native,
+                    size: record.size,
+                    modified: record.modified(),
+                });
                 Ok(())
             })
             .map_err(|e| error(path, e))
@@ -634,6 +648,48 @@ impl TransferSource for Source {
                 .map_err(|error| midnight_core::TransferChildFailure { name, error }),
         ))
     }
+    /// A child that is not opened is described from its directory record, which already
+    /// carries its attributes, reparse tag, length and time: no file is opened to be
+    /// listed. Every listed child is on this folder's volume: another volume's folder is
+    /// a mount point, a directory link, and only ever opened (and refused) as a link is.
+    fn next_listed_child(
+        &mut self,
+        open: &dyn Fn(EntryKind) -> bool,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::ListedChild>, FsError> {
+        use midnight_core::ListedChild;
+        if self.access.projects_links() {
+            // A projected directory link is described only by following it.
+            return self
+                .next_child(cancel)
+                .map(|child| child.map(ListedChild::Source));
+        }
+        let Some(listed) = self.next_listed(cancel)? else {
+            return Ok(None);
+        };
+        let kind = listed.native.kind();
+        if open(kind) {
+            return self
+                .open_listed(&listed.name, listed.native, cancel)
+                .map(|source| Some(ListedChild::Source(Box::new(source))));
+        }
+        Ok(Some(ListedChild::Entry(TransferEntry {
+            identity: TransferIdentity {
+                device: self.entry.identity.device,
+                object: [0; 16],
+            },
+            item: MutationItem {
+                path: self.entry.item.path.join(&listed.name),
+                kind,
+                metadata: EntryMetadata {
+                    size: (!listed.native.directory()).then_some(listed.size),
+                    modified: listed.modified,
+                    native_attributes: Some(listed.native.attributes),
+                    ..EntryMetadata::default()
+                },
+            },
+        })))
+    }
 }
 impl Source {
     fn read_file(&self) -> &File {
@@ -734,6 +790,12 @@ impl Source {
     }
 
     fn next_name(&mut self, cancel: &Cancellation) -> Result<Option<(OsString, Native)>, FsError> {
+        Ok(self
+            .next_listed(cancel)?
+            .map(|listed| (listed.name, listed.native)))
+    }
+
+    fn next_listed(&mut self, cancel: &Cancellation) -> Result<Option<Listed>, FsError> {
         if self.entry.item.kind != EntryKind::Directory {
             return Err(invalid(&self.entry.item.path, "source is not a directory"));
         }
@@ -891,7 +953,7 @@ impl Source {
         let mut stack = vec![DiscoveryFrame::open(self, cancel)?];
         while let Some(frame) = stack.last_mut() {
             checked(cancel, &frame.parent.path)?;
-            if let Some((name, native)) = frame.listing.names.pop_front() {
+            if let Some(Listed { name, native, .. }) = frame.listing.names.pop_front() {
                 let child = Self::open_with_access(
                     frame.parent.clone(),
                     &name,

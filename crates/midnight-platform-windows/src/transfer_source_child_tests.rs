@@ -105,6 +105,64 @@ fn a_child_that_cannot_be_opened_fails_alone_and_can_be_opened_again_by_name() {
 }
 
 #[test]
+fn a_listing_describes_children_it_is_not_asked_to_open_without_opening_them() {
+    use midnight_core::ListedChild;
+    let temp = build_temp("listed-children-");
+    let folder = temp.path().join("folder");
+    fs::create_dir_all(folder.join("sub")).unwrap();
+    fs::write(folder.join("unreadable"), b"unreadable").unwrap();
+    fs::write(folder.join("written"), b"written!").unwrap();
+    let _unreadable = Unreadable::new(&folder.join("unreadable"));
+    // Another program writes this file: it cannot be opened for reading now.
+    let _writer = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(folder.join("written"))
+        .unwrap();
+    let cancel = Cancellation::default();
+    let service = crate::WindowsFileSystem::new(None);
+    let mut source = service.prepare_transfer_source(&folder, &cancel).unwrap();
+    let (opened, failed) = children(&mut *source, &cancel);
+    assert_eq!(opened, [folder.join("sub")]);
+    assert_eq!(failed.len(), 2, "{failed:?}");
+    // Yet both files are listed, with their lengths, as is the folder: from the
+    // directory records, on the folder's volume, without opening any of them.
+    let mut source = service.prepare_transfer_source(&folder, &cancel).unwrap();
+    let mut listed = Vec::new();
+    while let Some(child) = source.next_listed_child(&|_| false, &cancel).unwrap() {
+        let ListedChild::Entry(entry) = child else {
+            panic!("a child not asked for is described, not opened");
+        };
+        assert_eq!(entry.identity.device, source.entry().identity.device);
+        listed.push((entry.item.path, entry.item.kind, entry.item.metadata.size));
+    }
+    listed.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        listed,
+        [
+            (folder.join("sub"), EntryKind::Directory, None),
+            (folder.join("unreadable"), EntryKind::File, Some(10)),
+            (folder.join("written"), EntryKind::File, Some(8)),
+        ]
+    );
+    // A kind asked for is opened as `next_child` opens it, and fails as it does.
+    let mut source = service.prepare_transfer_source(&folder, &cancel).unwrap();
+    let (mut folders, mut files) = (Vec::new(), 0);
+    loop {
+        match source.next_listed_child(&|_| true, &cancel) {
+            Ok(Some(ListedChild::Source(child))) => folders.push(child.entry().item.path.clone()),
+            Ok(Some(ListedChild::Entry(entry))) => panic!("{entry:?} was asked for"),
+            Ok(None) => break,
+            Err(error) => {
+                assert!(error.path.starts_with(&folder), "{error:?}");
+                files += 1;
+            }
+        }
+    }
+    assert_eq!((folders, files), (vec![folder.join("sub")], 2));
+}
+
+#[test]
 fn failures_of_the_folder_itself_end_its_enumeration() {
     let temp = build_temp("child-failure-");
     let folder = temp.path().join("folder");

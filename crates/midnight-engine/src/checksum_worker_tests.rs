@@ -996,3 +996,399 @@ fn a_subfolder_mounted_from_another_volume_is_left_out_unless_subfolders_are_inc
         );
     }
 }
+
+/// A child of [`Tree`]: a three-byte file, a folder of `children`, a link or a special
+/// entry, on `device`, with a distinct object identity.
+struct Node {
+    name: &'static str,
+    kind: EntryKind,
+    device: u64,
+    object: u8,
+    children: Vec<Node>,
+}
+fn node(name: &'static str, kind: EntryKind, object: u8) -> Node {
+    Node {
+        name,
+        kind,
+        device: 1,
+        object,
+        children: Vec::new(),
+    }
+}
+
+/// What a [`Tree`] opened, by kind: files, folders, and links or special entries.
+#[derive(Default)]
+struct Opens {
+    files: AtomicUsize,
+    folders: AtomicUsize,
+    others: AtomicUsize,
+}
+impl Opens {
+    fn snapshot(&self) -> (usize, usize, usize) {
+        (
+            self.files.load(Ordering::SeqCst),
+            self.folders.load(Ordering::SeqCst),
+            self.others.load(Ordering::SeqCst),
+        )
+    }
+}
+
+/// A selected folder (device 1) whose folders either describe the children they are
+/// not asked to open, as native sources do, or open every child as `next_child` does,
+/// which is the default listing and the one before it. Links and special entries are
+/// refused when opened, as native sources refuse them.
+struct Tree {
+    root: fn() -> Vec<Node>,
+    describes: bool,
+    opens: Arc<Opens>,
+}
+struct TreeFolder {
+    entry: TransferEntry,
+    children: std::collections::VecDeque<Node>,
+    describes: bool,
+    opens: Arc<Opens>,
+}
+impl TreeFolder {
+    fn entry_of(&self, node: &Node) -> TransferEntry {
+        TransferEntry {
+            item: MutationItem {
+                path: self.entry.item.path.join(node.name),
+                kind: node.kind,
+                metadata: EntryMetadata {
+                    size: (node.kind == EntryKind::File).then_some(3),
+                    ..EntryMetadata::default()
+                },
+            },
+            identity: TransferIdentity {
+                device: node.device,
+                object: [node.object; 16],
+            },
+        }
+    }
+    fn open(&self, node: Node) -> Result<Box<dyn TransferSource>, FsError> {
+        let entry = self.entry_of(&node);
+        let path = &entry.item.path;
+        match node.kind {
+            EntryKind::File => {
+                self.opens.files.fetch_add(1, Ordering::SeqCst);
+                Provider::new(b"abc").prepare_transfer_source(path, &Cancellation::default())
+            }
+            EntryKind::Directory => {
+                self.opens.folders.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(TreeFolder {
+                    entry,
+                    children: node.children.into(),
+                    describes: self.describes,
+                    opens: self.opens.clone(),
+                }))
+            }
+            _ => {
+                self.opens.others.fetch_add(1, Ordering::SeqCst);
+                Err(failure(
+                    path,
+                    io::ErrorKind::Unsupported,
+                    "copying links and special entries is not supported",
+                ))
+            }
+        }
+    }
+}
+impl TransferService for Tree {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        Ok(Box::new(TreeFolder {
+            entry: TransferEntry {
+                item: MutationItem {
+                    path: path.to_owned(),
+                    kind: EntryKind::Directory,
+                    metadata: EntryMetadata::default(),
+                },
+                identity: TransferIdentity {
+                    device: 1,
+                    object: [100; 16],
+                },
+            },
+            children: (self.root)().into(),
+            describes: self.describes,
+            opens: self.opens.clone(),
+        }))
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        _: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        Err(failure(path, io::ErrorKind::Unsupported, "read-only tree"))
+    }
+}
+impl TransferSource for TreeFolder {
+    fn entry(&self) -> &TransferEntry {
+        &self.entry
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn read_chunk(&mut self, _: &mut [u8], _: &Cancellation) -> Result<usize, FsError> {
+        Err(failure(
+            &self.entry.item.path,
+            io::ErrorKind::Unsupported,
+            "a directory",
+        ))
+    }
+    fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        self.children
+            .pop_front()
+            .map(|node| self.open(node))
+            .transpose()
+    }
+    fn next_listed_child(
+        &mut self,
+        open: &dyn Fn(EntryKind) -> bool,
+        cancel: &Cancellation,
+    ) -> Result<Option<ListedChild>, FsError> {
+        if !self.describes {
+            return self
+                .next_child(cancel)
+                .map(|child| child.map(ListedChild::Source));
+        }
+        let Some(node) = self.children.pop_front() else {
+            return Ok(None);
+        };
+        let mount = node.kind == EntryKind::Directory && node.device != self.entry.identity.device;
+        if open(node.kind) && !mount {
+            return self
+                .open(node)
+                .map(|source| Some(ListedChild::Source(source)));
+        }
+        Ok(Some(ListedChild::Entry(self.entry_of(&node))))
+    }
+}
+
+/// Files, a link, a folder with a file and a mount point of another volume with a file.
+fn tree() -> Vec<Node> {
+    let mut sub = node("sub", EntryKind::Directory, 2);
+    sub.children.push(node("deep.txt", EntryKind::File, 3));
+    let mut mount = node("mnt", EntryKind::Directory, 4);
+    mount.device = 2;
+    mount.children.push(node("far.txt", EntryKind::File, 5));
+    vec![
+        node("a.txt", EntryKind::File, 6),
+        node("link", EntryKind::Symlink, 7),
+        sub,
+        mount,
+        node("b.txt", EntryKind::File, 8),
+    ]
+}
+
+/// What one calculation of [`tree`] planned and reported, and what it opened while
+/// listing (counted when the reading pass starts) and in all.
+struct Listed {
+    planned: Vec<PathBuf>,
+    rows: Vec<(PathBuf, ChecksumRowState, String)>,
+    completion: ChecksumCompletion,
+    listing_opens: (usize, usize, usize),
+    opens: (usize, usize, usize),
+}
+fn list_tree(describes: bool, recursive: bool) -> Listed {
+    let opens = Arc::new(Opens::default());
+    let service = Tree {
+        root: tree,
+        describes,
+        opens: opens.clone(),
+    };
+    let mut request = request();
+    request.recursive = recursive;
+    let (mut planned, mut listing_opens) = (Vec::new(), None);
+    let run = calculate(
+        request,
+        &service,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        |update| {
+            match &update {
+                ChecksumUpdate::Planned(files) => {
+                    planned.extend(files.iter().map(|file| file.path.clone()))
+                }
+                ChecksumUpdate::Progress(progress) if !progress.listing => {
+                    listing_opens.get_or_insert_with(|| opens.snapshot());
+                }
+                _ => {}
+            }
+            true
+        },
+    );
+    Listed {
+        planned,
+        rows: run
+            .rows
+            .iter()
+            .map(|row| {
+                let message = row.error.as_ref().map(|error| error.message.clone());
+                (row.path.clone(), row.state, message.unwrap_or_default())
+            })
+            .collect(),
+        completion: run.summary.completion,
+        listing_opens: listing_opens.expect("the reading pass started"),
+        opens: opens.snapshot(),
+    }
+}
+
+#[test]
+fn listing_opens_no_file_and_plans_the_rows_it_planned_before() {
+    for recursive in [false, true] {
+        let before = list_tree(false, recursive);
+        let after = list_tree(true, recursive);
+        let root = request().targets[0].path.clone();
+        let mut planned = vec![root.join("a.txt")];
+        if recursive {
+            planned.push(root.join("sub").join("deep.txt"));
+        }
+        planned.push(root.join("b.txt"));
+        // The same files are listed, in reading order, and the same rows follow: the
+        // link refused as it was, the mount point skipped (with Include subfolders) or
+        // left out with the other subfolder (without).
+        assert_eq!(before.planned, planned, "recursive: {recursive}");
+        assert_eq!(after.planned, planned, "recursive: {recursive}");
+        assert_eq!(after.rows, before.rows, "recursive: {recursive}");
+        assert_eq!(
+            after.completion, before.completion,
+            "recursive: {recursive}"
+        );
+        let mut states: Vec<_> = after
+            .rows
+            .iter()
+            .map(|(path, state, _)| (path.clone(), *state))
+            .collect();
+        states.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut wanted: Vec<_> = planned
+            .iter()
+            .map(|path| (path.clone(), ChecksumRowState::Calculated))
+            .chain([(root.join("link"), ChecksumRowState::Skipped)])
+            .chain(recursive.then(|| (root.join("mnt"), ChecksumRowState::Skipped)))
+            .collect();
+        wanted.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(states, wanted, "recursive: {recursive}");
+        // Listing opens no file and no link; only a folder it enters. Reading opens each
+        // file once, and the link to report its refusal. A subfolder left out, and
+        // another volume's folder, are never opened.
+        let folders = usize::from(recursive);
+        assert_eq!(
+            after.listing_opens,
+            (0, folders, 0),
+            "recursive: {recursive}"
+        );
+        assert_eq!(
+            after.opens,
+            (planned.len(), 2 * folders, 1),
+            "recursive: {recursive}"
+        );
+        // Before, listing opened every file, the link and both subfolders.
+        assert_eq!(
+            before.listing_opens,
+            (planned.len(), 2, 1),
+            "recursive: {recursive}"
+        );
+    }
+}
+
+/// The native service with the listing of before: every child opened as `next_child`
+/// opens it (the default `next_listed_child`).
+struct OpensEveryChild(midnight_platform::LocalFileSystem);
+struct Opened(Box<dyn TransferSource>);
+impl TransferService for OpensEveryChild {
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.0
+            .prepare_transfer_source(path, cancel)
+            .map(|source| Box::new(Opened(source)) as Box<dyn TransferSource>)
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        self.0.prepare_transfer_destination(path, cancel)
+    }
+}
+impl TransferSource for Opened {
+    fn entry(&self) -> &TransferEntry {
+        self.0.entry()
+    }
+    fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        self.0.revalidate(cancel)
+    }
+    fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
+        self.0.read_chunk(buffer, cancel)
+    }
+    fn next_child(
+        &mut self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        Ok(self
+            .0
+            .next_child(cancel)?
+            .map(|child| Box::new(Opened(child)) as Box<dyn TransferSource>))
+    }
+}
+
+/// A timing, not a check (run it explicitly): the listing pass of a folder of small files
+/// on the native filesystem, as before (every file opened) and now, alternately, with
+/// budgets large enough for all of them. The count is `MIDNIGHT_CHECKSUM_LISTING_FILES`
+/// (20,000 by default).
+#[test]
+#[ignore = "times a native folder of many files; run explicitly"]
+fn native_listing_pass_timing() {
+    let count = std::env::var("MIDNIGHT_CHECKSUM_LISTING_FILES")
+        .ok()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(20_000usize);
+    let folder = tempfile::tempdir().unwrap();
+    for index in 0..count {
+        std::fs::write(
+            folder.path().join(format!("{index:06}.txt")),
+            b"0123456789abcdef",
+        )
+        .unwrap();
+    }
+    let native = midnight_platform::LocalFileSystem::new(None);
+    let before = OpensEveryChild(midnight_platform::LocalFileSystem::new(None));
+    let time = |service: &dyn TransferService| {
+        let mut request = request();
+        request.targets = vec![folder.path().to_owned().into()];
+        // Room for every file: the default budgets stop near 6,000 such paths.
+        request.limits.max_rows = count + 1;
+        request.limits.max_retained_bytes = 1 << 30;
+        let started = Instant::now();
+        let mut listed = None;
+        let run = calculate(
+            request,
+            service,
+            &UNCLASSIFIED,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |update| {
+                if matches!(&update, ChecksumUpdate::Progress(progress) if !progress.listing) {
+                    listed.get_or_insert_with(|| started.elapsed());
+                }
+                true
+            },
+        );
+        assert_eq!(run.summary.progress.calculated, count as u64);
+        (listed.unwrap(), started.elapsed())
+    };
+    for round in 1..=3 {
+        let (old_listing, old_total) = time(&before);
+        let (new_listing, new_total) = time(&native);
+        eprintln!(
+            "round {round}, {count} files: listing {old_listing:?} before, {new_listing:?} now; \
+             whole run {old_total:?} before, {new_total:?} now"
+        );
+    }
+}
