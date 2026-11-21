@@ -129,7 +129,7 @@ fn network_hot_path_restart_keeps_unavailable_and_stale_locations_typed() {
         update: Box::new(NetworkUpdate::Listing {
             listing: NetworkListing {
                 address: address(99, "late reply"),
-                parent: None,
+                ancestors: Arc::default(),
                 entries: Arc::default(),
                 index: Arc::default(),
             },

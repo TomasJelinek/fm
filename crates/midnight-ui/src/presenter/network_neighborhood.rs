@@ -4,7 +4,9 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct NetworkPane {
     pub(super) address: NetworkAddress,
-    pub(super) parent: Option<NetworkAddress>,
+    /// The published ancestors of `address`, the outermost first and the parent last
+    /// (`NetworkListing::ancestors`); empty until the provider publishes them.
+    pub(super) ancestors: Arc<[NetworkAddress]>,
     pub(super) origin: PathBuf,
     pub(super) history: Vec<NetworkAddress>,
     pub(super) history_index: usize,
@@ -20,13 +22,17 @@ impl NetworkPane {
     pub(super) fn restored(address: NetworkAddress, origin: PathBuf) -> Self {
         Self {
             address: address.clone(),
-            parent: None,
+            ancestors: Arc::from([]),
             origin,
             history: vec![address],
             history_index: 0,
             requested_history: None,
             wanted_cursor: None,
         }
+    }
+    /// The provider's parent, which Up opens.
+    pub(super) fn parent(&self) -> Option<&NetworkAddress> {
+        self.ancestors.last()
     }
 }
 
@@ -155,20 +161,33 @@ impl Presenter {
         let Some(network) = &self.panes[pane.index()].network else {
             return false;
         };
-        if let Some(parent) = &network.parent {
-            let address = network.address.clone();
-            let result = self.network_navigate(pane, NetworkAction::Browse(parent.clone()), send);
-            if result {
-                self.panes[pane.index()]
-                    .network
-                    .as_mut()
-                    .expect("existing network pane")
-                    .wanted_cursor = Some(address);
-            }
-            result
+        if let Some(parent) = network.parent() {
+            let action = NetworkAction::Browse(parent.clone());
+            let child = Some(network.address.clone());
+            self.network_visit(pane, action, child, send)
         } else {
             self.navigate(pane, network.origin.clone(), None, send)
         }
+    }
+    /// Request a location for Up or a path bar part. When it is an ancestor of the shown
+    /// one, `child` is the next location toward that, and the cursor rests on it once
+    /// the ancestor is listed.
+    pub(super) fn network_visit(
+        &mut self,
+        pane: PaneId,
+        action: NetworkAction,
+        child: Option<NetworkAddress>,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        if !self.network_navigate(pane, action, send) {
+            return false;
+        }
+        if child.is_some()
+            && let Some(network) = &mut self.panes[pane.index()].network
+        {
+            network.wanted_cursor = child;
+        }
+        true
     }
     pub(super) fn network_history(
         &mut self,
@@ -262,7 +281,10 @@ impl Presenter {
                                 network.history_index = network.history.len() - 1;
                             }
                             network.address = listing.address;
-                            network.parent = listing.parent;
+                            self.retired.push(Box::new(mem::replace(
+                                &mut network.ancestors,
+                                listing.ancestors,
+                            )));
                         } else {
                             let mut network = p
                                 .network_return
@@ -276,7 +298,10 @@ impl Presenter {
                                     NetworkPane::restored(listing.address.clone(), p.path.clone())
                                 });
                             network.address = listing.address;
-                            network.parent = listing.parent;
+                            self.retired.push(Box::new(mem::replace(
+                                &mut network.ancestors,
+                                listing.ancestors,
+                            )));
                             network.requested_history = None;
                             p.network = Some(network);
                         }

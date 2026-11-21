@@ -92,6 +92,35 @@ publications reveal their validated location and rows while retaining loading
 feedback. Refreshing the same Network address retains its rows. Sorting, refreshing
 or matching another panel cannot repeat pending share activation or text parsing.
 
+The path bar names the shown Network location after its ancestors, the outermost
+first, for example `Network › Microsoft Windows Network › WORKGROUP › SERVER` with
+WNet/MPR or `Network › Windows Network › WORKGROUP › server` with GVfs. Each
+part of the chain browses its location (`Browse`, never `Activate` or `Parse`); an
+ancestor's part leaves the cursor on the location below it, as Up does, and the last
+part reads the location again. ` › ` is display text, not a path separator: a part's
+tooltip and right-click copy give the captions up to that part, and the path editor
+still starts from the location's own caption. A shortened bar follows the native
+rules: the root and the shown location stay whole while they fit, and `...` stands
+for the omitted middle. A share opens its native folder with the native path bar; Up
+or Back at its root returns to the Network location and its chain.
+
+Every listing publication carries this chain (`NetworkListing::ancestors`, the
+parent last). The engine asks the provider for the location's parent, then for that
+one's parent, up to a root; these lookups resolve opaque addresses without discovery.
+Nothing is inferred from how the location was reached, so Enter, Up, Back, a restored
+tab and a Hot Path show the same chain, and the part before the last is what Up
+opens. Only the parent is required, and failing to report it fails the request as
+before. Further out, a failed lookup, a location already in the chain, 64 ancestors
+or 16 MiB of address and caption bytes beyond the parent end the chain with the nearer
+ancestors, so the bar may then start below the root. The bundled plugin's addresses
+carry their discovery trail, so its chains reach the root. A location entered as text
+(`\\server`, `smb://server/`) has only the root above it, since the provider does not
+know its domain or workgroup; a provider that reports no parent leaves the single
+caption. Until a new location publishes its chain, a pending request shows its caption
+alone, except a refresh or sort of the shown location, a visit to one of its ancestors
+(a part, Up) and a return from a share, which keep the known chain up to the
+requested location.
+
 Both native and Network listings show an indeterminate, accessible loading notice
 within the panel, including before the first backend event and during refresh.
 The notice overlays the bottom of the list without moving rows or changing the

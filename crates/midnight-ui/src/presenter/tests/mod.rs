@@ -23,6 +23,7 @@ mod navigation;
 mod navigation_fallback;
 mod network_bookmarks;
 mod network_neighborhood;
+mod network_path_bar;
 mod operations;
 mod panel_choices;
 mod panel_navigation;

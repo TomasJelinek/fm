@@ -10,6 +10,9 @@ pub(crate) struct PathPart {
     path: PathBuf,
     archive: Option<ArchiveLocation>,
     network: Option<NetworkAction>,
+    /// A Network ancestor's next location toward the shown one: the cursor rests on it
+    /// once the ancestor is listed, as after Up.
+    network_child: Option<NetworkAddress>,
 }
 
 /// One part per folder of a native path, the root first. Each label is the part of
@@ -36,9 +39,92 @@ fn native_parts(path: &Path, identity: &str) -> Vec<PathPart> {
                 path: path.to_owned(),
                 archive: None,
                 network: None,
+                network_child: None,
             }
         })
         .collect()
+}
+
+/// Joins Network captions in the path bar. It is not a path separator: the joined text
+/// is presentation only and is never parsed back into a location.
+pub(super) const NETWORK_PATH_SEPARATOR: &str = " › ";
+
+/// The parts of a Network location: its published ancestors, the outermost first, then
+/// the location itself. A pending refresh or sort of it, or a pending visit to one of
+/// those ancestors, keeps the chain up to that location, as does a return to the
+/// location a share was opened from. Any other pending request shows its caption alone
+/// until its provider publishes the chain. `None` outside Network.
+fn network_path_parts(p: &Pane) -> Option<Vec<PathPart>> {
+    let context = p
+        .network
+        .as_ref()
+        .or_else(|| p.network_return.as_ref().map(|previous| &previous.context));
+    let chain: Vec<&NetworkAddress> = context.map_or_else(Vec::new, |network| {
+        network.ancestors.iter().chain([&network.address]).collect()
+    });
+    let identity = format!("network-path:{}", p.generation);
+    let Some(action) = &p.network_pending else {
+        let shown = &p.network.as_ref()?.address;
+        return Some(network_parts(&chain, chain.len() - 1, shown, &identity));
+    };
+    if let NetworkAction::Browse(target) | NetworkAction::Refresh(target) = action
+        && let Some(end) = chain.iter().position(|known| same_location(known, target))
+    {
+        return Some(network_parts(&chain, end, target, &identity));
+    }
+    let label = p.display_location_text();
+    Some(vec![PathPart {
+        identity: format!("network-pending-path:{}", p.generation),
+        label: label.clone(),
+        prefix: label,
+        keep_whole: false,
+        path: PathBuf::new(),
+        archive: None,
+        network: Some(action.clone()),
+        network_child: None,
+    }])
+}
+
+/// One part per location of `chain` before `end`, then one for `target`, the location at
+/// `end`. As on a native path, each label is the part of its prefix after the previous
+/// one, so that the labels join into the shown chain. Each part browses its provider
+/// address, and the cursor then rests on the next location of `chain`.
+fn network_parts(
+    chain: &[&NetworkAddress],
+    end: usize,
+    target: &NetworkAddress,
+    identity: &str,
+) -> Vec<PathPart> {
+    let mut prefix = String::new();
+    chain[..end]
+        .iter()
+        .copied()
+        .chain([target])
+        .enumerate()
+        .map(|(index, address)| {
+            let label = if index == 0 {
+                address.display.clone()
+            } else {
+                format!("{NETWORK_PATH_SEPARATOR}{}", address.display)
+            };
+            prefix.push_str(&label);
+            PathPart {
+                identity: format!("{identity}:{index}"),
+                label,
+                prefix: prefix.clone(),
+                keep_whole: false,
+                path: PathBuf::new(),
+                archive: None,
+                network: Some(NetworkAction::Browse(address.clone())),
+                network_child: chain.get(index + 1).copied().cloned(),
+            }
+        })
+        .collect()
+}
+
+/// A provider address names a location by its opaque bytes; its caption is display text.
+fn same_location(a: &NetworkAddress, b: &NetworkAddress) -> bool {
+    a.provider == b.provider && a.opaque == b.opaque
 }
 
 pub(crate) struct HistoryChoice {
@@ -106,7 +192,8 @@ impl Presenter {
             return false;
         };
         // A native part copies its exact path; its lossy label is display text.
-        // Archive and network parts copy their provider display text.
+        // Archive and network parts copy their provider display text: a Network part
+        // the captions from the outermost shown ancestor to its own, as its tooltip names.
         if part.archive.is_none() && part.network.is_none() {
             let Some(text) = part.path.to_str() else {
                 self.desktop.report(
@@ -122,29 +209,8 @@ impl Presenter {
 
     pub(crate) fn path_parts(&self, pane: PaneId) -> Vec<PathPart> {
         let p = &self.panes[pane.index()];
-        if let Some(action) = &p.network_pending {
-            let label = p.display_location_text();
-            return vec![PathPart {
-                identity: format!("network-pending-path:{}", p.generation),
-                label: label.clone(),
-                prefix: label,
-                keep_whole: false,
-                path: PathBuf::new(),
-                archive: None,
-                network: Some(action.clone()),
-            }];
-        }
-        // A network address is opaque and names only its own node: no folders to show.
-        if let Some(network) = &p.network {
-            return vec![PathPart {
-                identity: format!("network-path:{}", p.generation),
-                label: network.address.display.clone(),
-                prefix: network.address.display.clone(),
-                keep_whole: false,
-                path: PathBuf::new(),
-                archive: None,
-                network: Some(NetworkAction::Browse(network.address.clone())),
-            }];
+        if let Some(parts) = network_path_parts(p) {
+            return parts;
         }
         if let Some(a) = &p.archive {
             // The native folders that hold the archive come first, as on a native
@@ -183,6 +249,7 @@ impl Presenter {
                     path: PathBuf::new(),
                     archive: Some(location),
                     network: None,
+                    network_child: None,
                 }
             }));
             return parts;
@@ -207,7 +274,7 @@ impl Presenter {
             return false;
         };
         if let Some(action) = part.network {
-            return self.network_navigate(pane, action, send);
+            return self.network_visit(pane, action, part.network_child, send);
         }
         if let Some(location) = part.archive {
             return self.archive_navigate(pane, ArchiveAction::List(location), send);

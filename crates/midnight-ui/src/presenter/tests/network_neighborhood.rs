@@ -19,7 +19,7 @@ fn listing(id: u8) -> NetworkUpdate {
     NetworkUpdate::Listing {
         listing: NetworkListing {
             address: address(id),
-            parent: None,
+            ancestors: Arc::default(),
             index: Arc::new(DirectoryIndex::from_entries(&entries)),
             entries,
         },

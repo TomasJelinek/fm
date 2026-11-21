@@ -14,6 +14,7 @@ use tokio::{
     task::JoinSet,
 };
 
+mod ancestors;
 mod publication;
 #[cfg(test)]
 mod tests;
@@ -278,7 +279,8 @@ fn run(
         NetworkAction::Browse(address) => address,
     };
     check_cancel(cancel)?;
-    let parent = provider.parent(&address, cancel)?;
+    // Every publication of this location names the same chain.
+    let ancestors = ancestors::ancestors(provider, &address, cancel)?;
     check_cancel(cancel)?;
     let mut entries = Vec::new();
     let mut sent = 0;
@@ -290,7 +292,7 @@ fn run(
         emit(NetworkUpdate::Listing {
             listing: NetworkListing {
                 address: address.clone(),
-                parent: parent.clone(),
+                ancestors: ancestors.clone(),
                 entries: rows.into(),
                 index,
             },

@@ -143,9 +143,20 @@ pub enum NetworkAction {
 #[derive(Clone, Debug)]
 pub struct NetworkListing {
     pub address: NetworkAddress,
-    pub parent: Option<NetworkAddress>,
+    /// The ancestors of `address` that its provider reports, the outermost first and
+    /// the parent last; empty at a root. The parent is present whenever the provider
+    /// has one. Further out the chain may end early, when the provider stops
+    /// answering or the engine's bounds are reached, so the first one need not be a
+    /// root. Each is a `Browse` target; no caption is ever parsed into an address.
+    pub ancestors: Arc<[NetworkAddress]>,
     pub entries: Arc<[crate::Entry]>,
     pub index: Arc<crate::DirectoryIndex>,
+}
+impl NetworkListing {
+    /// The provider's parent of `address`, which Up opens.
+    pub fn parent(&self) -> Option<&NetworkAddress> {
+        self.ancestors.last()
+    }
 }
 
 #[derive(Clone, Debug)]
