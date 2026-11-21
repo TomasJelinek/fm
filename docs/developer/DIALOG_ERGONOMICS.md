@@ -165,9 +165,46 @@ operations and copy actions (Copy details,
   example. A ticked row still showing its starting value keeps that exact instant
   (sub-seconds and seconds of the offset included). The worker also captures the
   local calendar of each set time (`MetadataPreview::patch_calendars`), and the
-  review notes a typed offset that is not the local one there. Clicks inside a
-  picker keep it open; choosing a day, Enter, Escape or an outside click close it.
-  The row's checkbox follows the draft, so typing into an unticked row ticks it.
+  review notes a typed offset that is not the local one there.
+  Every field shows its row's current value from the start, ticked or not, in the
+  text colour, and takes input at once; a field still showing the starting value it
+  was given follows a newer one from the worker (the first UTC placeholder becomes
+  the local time), an edited field keeps its text. Only ticked rows are applied.
+  A pointer press into a field, on its text or its padding, or a click on its
+  calendar or clock button ticks the row, and so does any change of a value
+  (typing, Up/Down, a picker step or choice, Now). Moving the keyboard into a
+  field with Tab does not tick it, because Tab only navigates (decided 21 November
+  2026): the field tells a press from Tab by its caret, which Tab selects the whole
+  text with and a press sets down with no key held. Unticking keeps the shown
+  values, so ticking again restores them. A row whose time the file system cannot
+  set stays disabled: it shows its value greyed, and clicks neither tick it nor
+  open its pickers. Clicks inside a picker keep it open. The calendar applies a
+  date only when one is chosen (a day, Today, Enter or Space); Escape or an outside
+  click close it unchanged. The time picker changes the field at once: Enter, Space
+  or an outside click keep the time, and Escape restores the time and the row's tick
+  as they were when the picker opened. Its ▲/▼ step when pressed and, held on the
+  arrow, again after 500 ms and then every 50 ms; off the arrow the repeat pauses.
+  The wheel over a column steps it, one step per 60 px notch, which a touchpad's or
+  a fine wheel's small deltas add up to; a press anywhere on a column chooses it for
+  the keyboard, which shows the chosen column with a 2 px active frame. Values wrap
+  within their column without a carry (23 → 00 keeps the date, 59 → 00 keeps the
+  hour), as the field's own Up/Down do; on a 12-hour clock the hour runs through the
+  day, so 11 AM ▲ gives 12 PM. Keys are listed in
+  [keyboard shortcuts](../KEYBOARD_SHORTCUTS.md#attributes-times-and-case-editor).
+  The arrows and the calendar's month chevrons are drawn shapes, not font glyphs,
+  so they sit centred at one size in every column with any font; the hovered one
+  also gets the theme's active frame, which stands out from the surface in every
+  theme where the hover colour alone does not. Where four rows or the column names
+  do not fit the window (320 × 200 with a 32 px font), the time picker leaves out
+  the names and narrows its columns to their values. The calendar's cells shrink
+  to the window, down to what a day's number needs, and a calendar that still does
+  not fit scrolls, keeping the keyboard's day in view; it turns months with the
+  wheel while it fits. Both pickers place their frames on whole device pixels.
+  The dialog tells the presenter that the draft changed (`dirty-metadata`) on the
+  first change after a review and on any change while a review is requested or
+  being prepared; later changes of the same draft wait for Review, which sends the
+  whole draft. Each such word retires hints with a synthetic pointer exit, which
+  would end a held arrow's grab.
   Now fills its row with the current moment at the worker's latest local offset
   (UTC without one), computed without a timezone lookup, and ticks the row; the
   presenter keeps that exact instant, so an unedited row applies it, sub-seconds

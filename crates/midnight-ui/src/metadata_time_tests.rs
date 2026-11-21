@@ -612,3 +612,172 @@ fn arrows_and_the_picker_keep_the_system_clock() {
         ("오전 02:30:00".into(), 0..6)
     );
 }
+
+/// What a key typed into a time picker column makes of `text`, and whether the column
+/// waits for another digit.
+fn typed(
+    text: &str,
+    part: usize,
+    pending: &str,
+    key: &str,
+    forms: &SystemForms,
+) -> (String, String, bool) {
+    let typed = type_part(text, part, pending, key, "", forms).unwrap();
+    (typed.text, typed.pending, typed.complete)
+}
+
+#[test]
+fn digits_typed_into_a_picker_column_set_it_and_move_on_when_complete() {
+    // 1 then 7: the hour shows 01, then 17, and the column is complete.
+    assert_eq!(
+        typed("03:04:05", 0, "", "1", &plain()),
+        ("01:04:05".into(), "1".into(), false)
+    );
+    assert_eq!(
+        type_part("01:04:05", 0, "1", "7", "", &plain()).unwrap(),
+        TypedPart {
+            text: "17:04:05".into(),
+            range: 0..2,
+            pending: String::new(),
+            complete: true,
+        }
+    );
+    // A digit no second digit could follow completes the column at once.
+    assert_eq!(
+        typed("03:04:05", 0, "", "5", &plain()),
+        ("05:04:05".into(), String::new(), true)
+    );
+    assert_eq!(
+        typed("03:04:05", 1, "", "6", &plain()),
+        ("03:06:05".into(), String::new(), true)
+    );
+    assert_eq!(
+        typed("03:04:05", 2, "", "5", &plain()),
+        ("03:04:05".into(), "5".into(), false)
+    );
+    assert_eq!(
+        typed("03:04:05", 2, "5", "9", &plain()),
+        ("03:04:59".into(), String::new(), true)
+    );
+    // Two digits that are no hour start the column again with the second.
+    assert_eq!(
+        typed("03:04:05", 0, "2", "4", &plain()),
+        ("04:04:05".into(), String::new(), true)
+    );
+    assert_eq!(
+        typed("03:04:05", 0, "2", "3", &plain()),
+        ("23:04:05".into(), String::new(), true)
+    );
+    // A typed fraction survives, an empty field starts from the fallback, and other
+    // keys are not typing.
+    assert_eq!(typed("12:00:00.5", 1, "", "7", &plain()).0, "12:07:00.5");
+    assert_eq!(
+        type_part("", 1, "", "8", "03:04:05", &plain())
+            .unwrap()
+            .text,
+        "03:08:05"
+    );
+    for key in ["a", "", "12", "٣", " "] {
+        assert!(
+            type_part("03:04:05", 0, "", key, "", &plain()).is_none(),
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
+fn a_12_hour_column_types_hours_of_its_half_day_and_the_marker_by_its_letter() {
+    let us = system("%m/%d/%Y %I:%M:%S %p");
+    assert_eq!(
+        typed("02:30:00 PM", 0, "", "1", &us),
+        ("01:30:00 PM".into(), "1".into(), false)
+    );
+    assert_eq!(
+        typed("01:30:00 PM", 0, "1", "2", &us),
+        ("12:30:00 PM".into(), String::new(), true)
+    );
+    assert_eq!(
+        typed("02:30:00 AM", 0, "1", "1", &us),
+        ("11:30:00 AM".into(), String::new(), true)
+    );
+    // 2 to 9 are complete hours; a lone 0 waits and changes nothing yet.
+    assert_eq!(
+        typed("02:30:00 PM", 0, "", "9", &us),
+        ("09:30:00 PM".into(), String::new(), true)
+    );
+    assert_eq!(
+        typed("02:30:00 PM", 0, "", "0", &us),
+        ("02:30:00 PM".into(), "0".into(), false)
+    );
+    assert_eq!(
+        typed("02:30:00 PM", 0, "0", "7", &us),
+        ("07:30:00 PM".into(), String::new(), true)
+    );
+    assert_eq!(
+        typed("02:30:00 PM", 0, "1", "3", &us),
+        ("03:30:00 PM".into(), String::new(), true)
+    );
+    // The marker column takes the first letter of a marker, in any letter case.
+    for key in ["a", "A"] {
+        assert_eq!(
+            type_part("02:30:00 PM", 3, "", key, "", &us).unwrap(),
+            TypedPart {
+                text: "02:30:00 AM".into(),
+                range: 9..11,
+                pending: String::new(),
+                complete: true,
+            }
+        );
+    }
+    assert_eq!(typed("02:30:00 AM", 3, "", "p", &us).0, "02:30:00 PM");
+    assert!(type_part("02:30:00 AM", 3, "", "x", "", &us).is_none());
+    assert!(type_part("02:30:00 AM", 3, "", "5", "", &us).is_none());
+    // Both Korean markers start with 오: that letter chooses neither.
+    let korean = SystemForms::new("%Y. %m. %d. %p %I:%M:%S", ["오전", "오후"]);
+    assert!(type_part("오후 2:30:00", 3, "", "오", "", &korean).is_none());
+}
+
+#[test]
+fn home_and_end_give_a_picker_column_its_first_and_last_value() {
+    for (part, last, wanted, range) in [
+        (0, false, "00:34:56", 0..2),
+        (0, true, "23:34:56", 0..2),
+        (1, false, "12:00:56", 3..5),
+        (1, true, "12:59:56", 3..5),
+        (2, false, "12:34:00", 6..8),
+        (2, true, "12:34:59", 6..8),
+    ] {
+        assert_eq!(
+            edge_part("12:34:56", part, last, "", &plain()).unwrap(),
+            (wanted.into(), range),
+            "part {part}, last {last}"
+        );
+    }
+    assert_eq!(
+        edge_part("", 1, true, "03:04:05", &plain()).unwrap().0,
+        "03:59:05"
+    );
+    let us = system("%m/%d/%Y %I:%M:%S %p");
+    // The hours of a 12-hour clock run 12, 01 … 11 in their half of the day.
+    assert_eq!(
+        edge_part("02:30:00 PM", 0, false, "", &us).unwrap().0,
+        "12:30:00 PM"
+    );
+    assert_eq!(
+        edge_part("02:30:00 PM", 0, true, "", &us).unwrap().0,
+        "11:30:00 PM"
+    );
+    assert_eq!(
+        edge_part("02:30:00 AM", 0, false, "", &us).unwrap().0,
+        "12:30:00 AM"
+    );
+    assert_eq!(
+        edge_part("02:30:00 PM", 3, false, "", &us).unwrap().0,
+        "02:30:00 AM"
+    );
+    assert_eq!(
+        edge_part("02:30:00 AM", 3, true, "", &us).unwrap().0,
+        "02:30:00 PM"
+    );
+    assert!(edge_part("", 0, true, "", &plain()).is_none());
+}

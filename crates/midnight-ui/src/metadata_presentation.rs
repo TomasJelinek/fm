@@ -327,6 +327,35 @@ fn install_time_codec(window: &MainWindow) {
             ))
         }
     });
+    codec.on_type_time({
+        let forms = forms.clone();
+        move |text, part, pending, key, fallback| {
+            let part = usize::try_from(part).unwrap_or_default();
+            metadata_time::type_part(&text, part, &pending, &key, &fallback, &forms())
+                .map(|typed| MetadataTimeStep {
+                    text: typed.text.into(),
+                    start: typed.range.start as i32,
+                    end: typed.range.end as i32,
+                    valid: true,
+                    pending: typed.pending.into(),
+                    complete: typed.complete,
+                })
+                .unwrap_or_default()
+        }
+    });
+    codec.on_edge_time({
+        let forms = forms.clone();
+        move |text, part, last, fallback| {
+            let part = usize::try_from(part).unwrap_or_default();
+            step_result(metadata_time::edge_part(
+                &text,
+                part,
+                last,
+                &fallback,
+                &forms(),
+            ))
+        }
+    });
     codec.on_parts({
         let forms = forms.clone();
         move |text, field, fallback| {
@@ -417,6 +446,7 @@ fn step_result(step: Option<(String, std::ops::Range<usize>)>) -> MetadataTimeSt
         start: range.start as i32,
         end: range.end as i32,
         valid: true,
+        ..Default::default()
     })
     .unwrap_or_default()
 }

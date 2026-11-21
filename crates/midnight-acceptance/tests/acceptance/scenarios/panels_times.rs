@@ -230,7 +230,8 @@ fn pickers(
     }
 
     // The time picker: Alt+Down, Left/Right choose a column, Up/Down by one, Page Up/Down
-    // by ten, Escape closes it with the changed time kept.
+    // by ten; Enter closes it with the changed time kept, and Escape restores the time it
+    // opened with.
     input::click(app.slint(), AccessibleRole::TextInput, TIME)?;
     press(app, Key::DownArrow, true);
     if popups(app) != before + 1 || spin(app, "Modified hour").is_none() {
@@ -258,12 +259,12 @@ fn pickers(
                 wanted,
             );
         }
-        press(app, Key::Escape, false);
+        press(app, Key::Return, false);
         if popups(app) != before {
-            failures.push("Escape did not close the time picker".into());
+            failures.push("Enter did not close the time picker".into());
         }
         if app.window.get_metadata_token().is_empty() {
-            failures.push("Escape in the time picker closed the editor".into());
+            failures.push("Enter in the time picker closed the editor".into());
         }
         expect(
             failures,
@@ -271,6 +272,32 @@ fn pickers(
             Some(field(app, TIME)),
             "07:05:07",
         );
+        // Escape closes only the picker and restores the time it opened with.
+        press(app, Key::DownArrow, true);
+        if popups(app) != before + 1 {
+            failures.push("Alt+Down opened no time picker the second time".into());
+        } else {
+            press(app, Key::UpArrow, false);
+            expect(
+                failures,
+                "time picker Up before Escape",
+                spin(app, "Modified hour"),
+                "08",
+            );
+            press(app, Key::Escape, false);
+            if popups(app) != before {
+                failures.push("Escape did not close the time picker".into());
+            }
+            if app.window.get_metadata_token().is_empty() {
+                failures.push("Escape in the time picker closed the editor".into());
+            }
+            expect(
+                failures,
+                "the time after Escape in the picker",
+                Some(field(app, TIME)),
+                "07:05:07",
+            );
+        }
     }
     // Its ▲/▼ buttons; Enter closes it.
     if let Err(error) = input::click_button(app.slint(), "Modified: choose time") {

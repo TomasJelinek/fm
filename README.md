@@ -1031,13 +1031,22 @@ editor scope and shortcuts reserved for later stages.
   when there are any. Each timestamp on the Times page has separate Date
   (year-month-day, or the system's numeric date order such as 24.11.2026),
   Time (24-hour, or the system's clock such as 02:30:00 PM) and UTC offset
-  fields that start from the item's current time in the native timezone (or the
-  current time when the items differ). Type freely, press Up/Down to change the
-  part under the cursor, or use the calendar and time pickers (Alt+Down from a
-  field; on a 12-hour clock the time picker has an AM/PM column). A date or time
-  keeps the form it was typed in. The offset is used exactly as shown, and the
-  review says when it is not local time on that date (for example a summer date
-  moved into winter); a ticked time left as it started keeps its exact value. Now
+  fields that show the item's current time in the native timezone (or the
+  current time when the items differ), ticked or not. Only ticked rows are
+  applied: a click into a row's field or on its calendar or clock button ticks
+  the row, and so does any change of a value; moving there with Tab does not.
+  Unticking keeps what the row shows for later. Type freely, press Up/Down to
+  change the part under the cursor, or use the calendar and time pickers
+  (Alt+Down from a field; on a 12-hour clock the time picker has an AM/PM
+  column). The time picker's ▲/▼ step when pressed and repeat while held, the
+  wheel steps the column under the pointer, and digits type the chosen column;
+  values wrap within their column (23 → 00 keeps the date). The field follows at
+  once: Enter or a click outside keeps the time, Escape restores the row as the
+  picker found it. The calendar also turns months with the wheel, and in a window
+  too small for it, it scrolls. A date or time keeps the form it was typed in.
+  The offset is used exactly as shown, and the review says when it is not local
+  time on that date (for example a summer date moved into winter); a ticked time
+  left as it started keeps its exact value. Now
   fills a row with the current local date, time and offset and ticks it; Apply
   sets exactly that moment. A change that completes without problems closes
   without a summary; only failures, skips or cancellation report.

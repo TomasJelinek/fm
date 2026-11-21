@@ -9,7 +9,7 @@ import { DialogFooter } from "dialog-footer.slint";
 import { DialogText } from "dialog-text.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { MetadataAttribute } from "metadata-attribute.slint";
-import { MetadataTime, MetadataTimeCodec, MetadataTimeDraft } from "metadata-time-field.slint";
+import { MetadataTime, MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue } from "metadata-time-field.slint";
 import { UnixPermissions } from "unix-permissions.slint";
 
 export struct MetadataDraft {
@@ -104,8 +104,42 @@ export component MetadataDialog inherits Rectangle {
         }
     }
     function edited() {
+        // The presenter hears of the first change after a review, and of any change
+        // while a review is requested or prepared; later changes of the same draft need
+        // no word until Review sends it. Each word also retires hints with a synthetic
+        // pointer exit, which would end a time picker arrow held down for repeats.
+        let tell = !root.draft-edited || root.review-requested || root.busy;
         root.draft-edited = true; root.review-requested = false; root.reviewing = false;
-        root.dirty();
+        if tell { root.dirty(); }
+    }
+    // Every time field shows its item's current value from the start, ticked or not. A
+    // field that still shows the starting value it was given follows a newer one (the
+    // worker's local time replaces the first UTC placeholder); an edited field keeps
+    // its text.
+    private property <MetadataTimeValue> created-start: MetadataTimeCodec.created-default;
+    private property <MetadataTimeValue> modified-start: MetadataTimeCodec.modified-default;
+    private property <MetadataTimeValue> accessed-start: MetadataTimeCodec.accessed-default;
+    private property <MetadataTimeValue> created-shown;
+    private property <MetadataTimeValue> modified-shown;
+    private property <MetadataTimeValue> accessed-shown;
+    changed created-start => { root.follow-starts(); }
+    changed modified-start => { root.follow-starts(); }
+    changed accessed-start => { root.follow-starts(); }
+    pure function follow(current: MetadataTimeDraft, shown: MetadataTimeValue, start: MetadataTimeValue) -> MetadataTimeDraft {
+        return {
+            mode: current.mode,
+            date: current.date == shown.date ? start.date : current.date,
+            time: current.time == shown.time ? start.time : current.time,
+            offset: current.offset == shown.offset ? start.offset : current.offset,
+        };
+    }
+    function follow-starts() {
+        root.draft.created = root.follow(root.draft.created, root.created-shown, root.created-start);
+        root.draft.modified = root.follow(root.draft.modified, root.modified-shown, root.modified-start);
+        root.draft.accessed = root.follow(root.draft.accessed, root.accessed-shown, root.accessed-start);
+        root.created-shown = root.created-start;
+        root.modified-shown = root.modified-start;
+        root.accessed-shown = root.accessed-start;
     }
     public function begin(case-enabled: bool) {
         root.draft = {
@@ -114,6 +148,10 @@ export component MetadataDialog inherits Rectangle {
             created: { mode: 0 }, modified: { mode: 0 }, accessed: { mode: 0 },
             case-enabled: case-enabled, case-mode: 0, case-scope: 0, recursive: false,
         };
+        root.created-shown = { date: "", time: "", offset: "" };
+        root.modified-shown = { date: "", time: "", offset: "" };
+        root.accessed-shown = { date: "", time: "", offset: "" };
+        root.follow-starts();
         root.draft-edited = true;
         root.has-reviewed = false;
         root.review-requested = false; root.reviewing = false; root.reviewed-revision = "";
@@ -191,7 +229,7 @@ export component MetadataDialog inherits Rectangle {
                     }
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
-                        Text { text: "Tick a timestamp to change it, then type its date and time or pick them. Up/Down arrows change the part under the cursor."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
+                        Text { text: "Only ticked timestamps are applied. Clicking or changing a date, time or offset ticks its row; Up/Down change the part under the cursor."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
                         MetadataTime { narrow: root.narrow-times; label: "Modified"; index: 1; enabled: root.can-modified; default: MetadataTimeCodec.modified-default; value <=> root.draft.modified; edited => { root.edited(); } }
                         MetadataTime { narrow: root.narrow-times; label: "Created"; index: 0; enabled: root.can-created; default: MetadataTimeCodec.created-default; value <=> root.draft.created; edited => { root.edited(); } }
                         MetadataTime { narrow: root.narrow-times; label: "Accessed"; index: 2; enabled: root.can-accessed; default: MetadataTimeCodec.accessed-default; value <=> root.draft.accessed; edited => { root.edited(); } }

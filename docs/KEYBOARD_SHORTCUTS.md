@@ -578,16 +578,25 @@ Selection.
 ## Attributes, times and case editor
 
 On the Times page of the Ctrl+F2 editor, the Date, Time and UTC offset fields
-accept typing. **Up/Down** change the part under the cursor (year, month or day;
-hour, minute or second; offset hours or quarter hours), and **Alt+Down** opens
-the field's calendar or time picker. In the calendar, **Left/Right** move one
-day, **Up/Down** one week and **Page Up/Page Down** one month; **Enter** or
-**Space** chooses the date and **Escape** closes only the calendar. In the time
-picker, **Left/Right** choose hours, minutes or seconds, **Up/Down** change them
-by one and **Page Up/Page Down** by ten; **Enter**, **Space** or **Escape**
-close it. **Space** or **Enter** on a row's **Now** button fills its fields with the
-current local date, time and offset and ticks the row; Apply sets exactly that
-moment. Outside a picker, **Escape** closes the editor without applying.
+accept typing. **Tab** moves through a row without ticking it; typing or any other
+change of a value ticks the row. **Up/Down** change the part under the cursor
+(year, month or day; hour, minute or second; offset hours or quarter hours), and
+**Alt+Down** opens the field's calendar or time picker. In the calendar,
+**Left/Right** move one day, **Up/Down** one week, **Page Up/Page Down** one month
+and **Ctrl+Page Up/Ctrl+Page Down** one year; **Home/End** go to the first or last
+day of the month; **Enter** or **Space** chooses the date and **Escape** closes only
+the calendar. In the time picker, **Left/Right** choose hours, minutes, seconds or
+AM/PM, and **Tab/Shift+Tab** go round them. **Up/Down** change the chosen column by
+one and **Page Up/Page Down** by ten, wrapping within the column (23 → 00 leaves
+the date as it is); **Home/End** set its first or last value. Digits type the
+column: two digits, or one that no second digit could follow (3 for hours, 6 for
+minutes), complete it and move to the next column; the AM/PM column takes the first
+letter of AM or PM. The time field follows at once. **Enter** or **Space** closes
+the picker and keeps the time; **Escape** closes it and restores the time, and the
+row's tick, as they were when it opened. **Space** or **Enter** on a row's **Now**
+button fills its fields with the current local date, time and offset and ticks the
+row; Apply sets exactly that moment. Outside a picker, **Escape** closes the editor
+without applying.
 
 ## Find result actions
 

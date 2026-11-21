@@ -874,6 +874,131 @@ pub(crate) fn step_picker(
     step(start, field, part, delta, fallback, forms)
 }
 
+/// A key typed into a time picker column, and how typing goes on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TypedPart {
+    /// The time's new text, in the form it was typed in.
+    pub(crate) text: String,
+    /// The byte range of the typed column's part in `text`.
+    pub(crate) range: Range<usize>,
+    /// The digits typed into the column so far while another one may follow.
+    pub(crate) pending: String,
+    /// The column is complete: typing goes on in the next one.
+    pub(crate) complete: bool,
+}
+
+/// A key typed into column `part` (0 hour, 1 minute, 2 second, 3 AM/PM) of a time
+/// picker that shows `text`, or `fallback` while that is not a time. Digits replace the
+/// column's number as typed, so 1 then 7 make 17: `pending` holds the digits already
+/// typed into the column. It is complete after two digits, or after one that no second
+/// digit could follow (3 to 9 for hours, 2 to 9 for the hours of a 12-hour clock, 6 to
+/// 9 for minutes and seconds). Two digits that are no value of the column start it
+/// again with the second. A 12-hour hour keeps its half of the day; the AM/PM column
+/// takes the first letter of one of its markers, in any letter case. None for any
+/// other key.
+pub(crate) fn type_part(
+    text: &str,
+    part: usize,
+    pending: &str,
+    key: &str,
+    fallback: &str,
+    forms: &SystemForms,
+) -> Option<TypedPart> {
+    let start = if normalize(text, Field::Time, forms).is_some() {
+        text
+    } else {
+        fallback
+    };
+    let (mut values, typed) = normalize(start, Field::Time, forms)?;
+    let markers = match typed {
+        Typed::Time(clock) => clock.markers.as_ref(),
+        _ => None,
+    };
+    let part = part.min(if markers.is_some() { 3 } else { 2 });
+    let mut chars = key.chars();
+    let (Some(key), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    let (pending, complete) = if part == Clock::Marker.index() {
+        let key = key.to_lowercase().to_string();
+        let mut matching = markers?
+            .iter()
+            .enumerate()
+            .filter(|(_, marker)| marker.to_lowercase().starts_with(&key));
+        let (pm, _) = matching.next()?;
+        if matching.next().is_some() {
+            // Both markers start with it (오전, 오후): not a choice.
+            return None;
+        }
+        values[0] = values[0] % 12 + if pm == 1 { 12 } else { 0 };
+        (String::new(), true)
+    } else {
+        let digit = key.to_digit(10)?;
+        let twelve = part == 0 && markers.is_some();
+        let (low, high) = match part {
+            0 if twelve => (1, 12),
+            0 => (0, 23),
+            _ => (0, 59),
+        };
+        let mut digits = match pending.as_bytes() {
+            [first] if first.is_ascii_digit() => format!("{pending}{digit}"),
+            _ => digit.to_string(),
+        };
+        let mut number = digits.parse::<u32>().ok()?;
+        if digits.len() == 2 && !(low..=high).contains(&number) {
+            digits = digit.to_string();
+            number = digit;
+        }
+        // A lone 0 on a 12-hour clock is no hour yet: it waits for the next digit.
+        if (low..=high).contains(&number) {
+            let value = i64::from(number);
+            values[part] = if twelve {
+                value % 12 + if values[0] >= 12 { 12 } else { 0 }
+            } else {
+                value
+            };
+        }
+        let complete = digits.len() == 2 || number * 10 > high;
+        (if complete { String::new() } else { digits }, complete)
+    };
+    let (text, range) = render(Field::Time, &values, start, part, typed);
+    Some(TypedPart {
+        text,
+        range,
+        pending,
+        complete,
+    })
+}
+
+/// Home (`last` false) or End in column `part` of a time picker that shows `text`, or
+/// `fallback` while that is not a time: the column's first or last value as the column
+/// shows them. The hours of a 12-hour clock run 12, 01 … 11 within the half of the
+/// day, and the AM/PM column starts with AM.
+pub(crate) fn edge_part(
+    text: &str,
+    part: usize,
+    last: bool,
+    fallback: &str,
+    forms: &SystemForms,
+) -> Option<(String, Range<usize>)> {
+    let start = if normalize(text, Field::Time, forms).is_some() {
+        text
+    } else {
+        fallback
+    };
+    let (mut values, typed) = normalize(start, Field::Time, forms)?;
+    let twelve = matches!(typed, Typed::Time(clock) if clock.markers.is_some());
+    let part = part.min(if twelve { 3 } else { 2 });
+    let half = if values[0] >= 12 { 12 } else { 0 };
+    match part {
+        3 => values[0] = values[0] % 12 + if last { 12 } else { 0 },
+        0 if twelve => values[0] = half + if last { 11 } else { 0 },
+        0 => values[0] = if last { 23 } else { 0 },
+        _ => values[part] = if last { 59 } else { 0 },
+    }
+    Some(render(Field::Time, &values, start, part, typed))
+}
+
 /// Numeric parts of a valid field and the form it was typed in: date `[year, month,
 /// day]`, time `[hour, minute, second]` on the 24-hour clock, offset `[minutes]`.
 fn normalize<'a>(

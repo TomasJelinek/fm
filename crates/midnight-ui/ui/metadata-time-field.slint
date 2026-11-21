@@ -2,12 +2,16 @@ import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { TooltipPlacement } from "tooltip-placement.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { VScrollView } from "scroll-view.slint";
 
 // One timestamp of the draft: mode 0 keeps it, 1 sets the typed value. The input
 // also accepts 2 (the moment of review), which this dialog no longer offers.
 export struct MetadataTimeDraft { mode: int, date: string, time: string, offset: string }
 export struct MetadataTimeValue { date: string, time: string, offset: string }
-export struct MetadataTimeStep { text: string, start: int, end: int, valid: bool }
+// A field's text after a step or a typed key, with the byte range of the changed part.
+// A key typed into a time picker column also returns the digits that wait for the
+// next key there and whether the column is complete.
+export struct MetadataTimeStep { text: string, start: int, end: int, valid: bool, pending: string, complete: bool }
 export struct MetadataMonthView { title: string, year: int, month: int, leading: int, days: int, day: int, valid: bool }
 // The worker-captured edit pattern, e.g. "%m/%d/%Y %I:%M:%S %p", and its AM/PM markers.
 export struct MetadataEditFormat { pattern: string, am: string, pm: string }
@@ -27,6 +31,10 @@ export global MetadataTimeCodec {
     // Step the part under a byte cursor; an unparsable text becomes the fallback.
     pure callback step(string, int, int, int, string) -> MetadataTimeStep;
     pure callback step-part(string, int, int, int, string) -> MetadataTimeStep;
+    // A key typed into a time picker column (0 hour, 1 minute, 2 second, 3 AM/PM) after
+    // the digits already typed there; Home (false) or End (true) in such a column.
+    pure callback type-time(string, int, string, string, string) -> MetadataTimeStep;
+    pure callback edge-time(string, int, bool, string) -> MetadataTimeStep;
     pure callback parts(string, int, string) -> [string];
     pure callback month(string, string) -> MetadataMonthView;
     pure callback shift(string, string, int, int) -> string;
@@ -49,6 +57,13 @@ component SegmentField inherits Rectangle {
     in-out property <string> text <=> input.text;
     callback edited();
     callback open-picker();
+    // The pointer pressed into the field to edit it. Tab and other keys only move the
+    // keyboard there, so they do not report it.
+    callback pointer-edit();
+    // A key is down in the input: the caret moves it makes are not the pointer's.
+    private property <bool> key-down;
+    // The field selects text itself: not the pointer's either.
+    private property <bool> selecting;
     forward-focus: input;
     height: Theme.control-height;
     min-width: Theme.font-size * 4;
@@ -58,44 +73,75 @@ component SegmentField inherits Rectangle {
     public function step-part(part: int, delta: int) {
         root.apply(MetadataTimeCodec.step-part(input.text, root.field, part, delta, root.fallback));
     }
-    function apply(step: MetadataTimeStep) {
+    // A step or a key from a picker: the new text with the changed part selected.
+    public function apply(step: MetadataTimeStep) {
         if step.valid {
             input.text = step.text;
-            input.set-selection-offsets(step.start, step.end);
+            root.select(step.start, step.end);
             root.edited();
         }
     }
-    Text {
-        x: 6px; width: parent.width - 12px;
-        visible: input.text == "" && input.preedit-text == "";
-        text: root.placeholder; color: Theme.muted-text;
-        font-size: Theme.font-size; font-family: Theme.font-family;
-        vertical-alignment: center; overflow: elide;
+    function select(anchor: int, cursor: int) {
+        root.selecting = true;
+        input.set-selection-offsets(anchor, cursor);
+        root.selecting = false;
     }
-    input := TextInput {
-        x: 6px; width: parent.width - 12px; height: parent.height;
+    pointer := TouchArea {
         enabled: root.enabled;
-        single-line: true; vertical-alignment: center;
-        font-size: Theme.font-size; font-family: Theme.font-family;
-        color: root.enabled ? Theme.text : Theme.muted-text;
-        selection-foreground-color: Theme.selection-text;
-        selection-background-color: Theme.selection-background;
-        accessible-role: text-input; accessible-label: root.label;
-        accessible-value: self.text; accessible-placeholder-text: root.placeholder;
-        accessible-description: root.hint;
-        edited => { root.edited(); }
-        key-pressed(event) => {
-            if event.modifiers.control || event.modifiers.meta { return reject; }
-            if event.modifiers.alt {
-                if event.text == Key.DownArrow { root.open-picker(); return accept; }
-                return reject;
+        // A press beside the text, on the field's padding, edits the field too: the
+        // caret goes to the nearer end of the text.
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                input.focus();
+                // The input clamps an offset past its end to the end.
+                root.select(self.mouse-x < input.x ? 0 : 1000000, self.mouse-x < input.x ? 0 : 1000000);
+                root.pointer-edit();
             }
-            if event.text == Key.UpArrow || event.text == Key.DownArrow {
-                root.apply(MetadataTimeCodec.step(self.text, root.field,
-                    self.cursor-position-byte-offset, event.text == Key.UpArrow ? 1 : -1, root.fallback));
-                return accept;
+        }
+        Text {
+            x: 6px; width: parent.width - 12px;
+            visible: input.text == "" && input.preedit-text == "";
+            text: root.placeholder; color: Theme.muted-text;
+            font-size: Theme.font-size; font-family: Theme.font-family;
+            vertical-alignment: center; overflow: elide;
+        }
+        input := TextInput {
+            x: 6px; width: parent.width - 12px; height: parent.height;
+            enabled: root.enabled;
+            single-line: true; vertical-alignment: center;
+            font-size: Theme.font-size; font-family: Theme.font-family;
+            color: root.enabled ? Theme.text : Theme.muted-text;
+            selection-foreground-color: Theme.selection-text;
+            selection-background-color: Theme.selection-background;
+            accessible-role: text-input; accessible-label: root.label;
+            accessible-value: self.text; accessible-placeholder-text: root.placeholder;
+            accessible-description: root.hint;
+            edited => { root.edited(); }
+            key-pressed(event) => {
+                root.key-down = true;
+                if event.modifiers.control || event.modifiers.meta { return reject; }
+                if event.modifiers.alt {
+                    if event.text == Key.DownArrow { root.open-picker(); return accept; }
+                    return reject;
+                }
+                if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                    root.apply(MetadataTimeCodec.step(self.text, root.field,
+                        self.cursor-position-byte-offset, event.text == Key.UpArrow ? 1 : -1, root.fallback));
+                    return accept;
+                }
+                reject
             }
-            reject
+            key-released(event) => { root.key-down = false; reject }
+            changed has-focus => { if !self.has-focus { root.key-down = false; } }
+            // A press on the text puts the caret there with no key down and nothing
+            // selected: the pointer edits. Tab selects the whole text, and the field's
+            // own selections and key moves are excluded above.
+            cursor-position-changed(position) => {
+                if self.has-focus && pointer.has-hover && !root.key-down && !root.selecting
+                    && self.anchor-position-byte-offset == self.cursor-position-byte-offset {
+                    root.pointer-edit();
+                }
+            }
         }
     }
     Tip { text: root.hint; }
@@ -107,13 +153,14 @@ component PickerButton inherits Rectangle {
     in property <string> hint;
     in property <bool> enabled: true;
     in property <bool> clock;
-    callback activate();
+    // True for a click; the keyboard and screen readers open it without one.
+    callback activate(bool);
     width: Theme.control-height; height: Theme.control-height;
     background: area.has-hover && root.enabled ? Theme.hover : Theme.secondary-surface;
     border-width: 1px; border-radius: 3px;
     border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { root.activate(); } }
+    accessible-action-default => { if root.enabled { root.activate(false); } }
     Path {
         width: parent.width * 0.6; height: self.width;
         viewbox-width: 16; viewbox-height: 16;
@@ -126,11 +173,11 @@ component PickerButton inherits Rectangle {
         enabled: root.enabled;
         key-pressed(event) => {
             if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
-                root.activate(); return accept;
+                root.activate(false); return accept;
             }
             reject
         }
-        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.activate(); } }
+        area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.activate(true); } }
     }
     // Last, so that it sees the pointer before the input area.
     Tip { text: root.hint; }
@@ -140,18 +187,141 @@ component PopupCell inherits Rectangle {
     in property <string> text;
     in property <bool> selected;
     in property <bool> strong;
+    in property <length> text-size: Theme.font-size;
     callback activate();
     border-radius: 3px;
     background: root.selected ? Theme.active-header : area.has-hover ? Theme.hover : transparent;
-    border-width: root.selected ? 1px : 0px; border-color: Theme.active-frame;
+    // The active frame shows the pointer in every theme, also where the hover colour is
+    // close to the surface.
+    border-width: root.selected || area.has-hover ? 1px : 0px; border-color: Theme.active-frame;
     accessible-role: button;
     accessible-action-default => { root.activate(); }
     Text {
-        text: root.text; color: Theme.text; font-size: Theme.font-size;
+        text: root.text; color: Theme.text; font-size: root.text-size;
         font-weight: root.selected || root.strong ? 600 : 400;
         horizontal-alignment: center; vertical-alignment: center;
     }
     area := TouchArea { clicked => { root.activate(); } }
+}
+
+// The calendar's previous or next month button. Its chevron is drawn, not a font
+// glyph, so both sit in the middle of their cells at one size with any font.
+component MonthArrow inherits Rectangle {
+    in property <bool> forward;
+    in property <string> label;
+    callback activate();
+    border-radius: 3px;
+    background: area.has-hover ? Theme.hover : transparent;
+    border-width: area.has-hover ? 1px : 0px; border-color: Theme.active-frame;
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { root.activate(); }
+    Path {
+        width: max(8px, min(parent.width, parent.height) * 0.36); height: self.width;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        viewbox-width: 8; viewbox-height: 8;
+        commands: root.forward ? "M 2.5 0.5 L 6 4 L 2.5 7.5" : "M 5.5 0.5 L 2 4 L 5.5 7.5";
+        stroke: Theme.text; stroke-width: 1.5px;
+    }
+    area := TouchArea { clicked => { root.activate(); } }
+}
+
+// ▲ or ▼ of a time picker column. A press steps at once; held on the arrow it steps
+// again after 500 ms and then every 50 ms, and pauses while the pointer is off the
+// arrow. The triangle is drawn, not a font glyph, so it
+// sits in the middle at one size in every column and with any font.
+component SpinArrow inherits Rectangle {
+    in property <bool> up;
+    in property <string> label;
+    callback step();
+    private property <bool> inside: area.mouse-x >= 0px && area.mouse-x < self.width
+        && area.mouse-y >= 0px && area.mouse-y < self.height;
+    private property <bool> hovered: area.has-hover && root.inside;
+    private property <bool> held: area.pressed && root.inside;
+    private property <bool> repeating;
+    border-radius: 3px;
+    background: root.held ? Theme.active-header : root.hovered ? Theme.hover : transparent;
+    // The active frame shows the pointer in every theme, also where the hover colour is
+    // close to the surface.
+    border-width: root.hovered ? 1px : 0px; border-color: Theme.active-frame;
+    accessible-role: button; accessible-label: root.label;
+    accessible-action-default => { root.step(); }
+    Path {
+        width: max(8px, Theme.font-size * 0.75); height: self.width / 2;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        viewbox-width: 10; viewbox-height: 5;
+        commands: root.up ? "M 0 5 L 5 0 L 10 5 Z" : "M 0 0 L 5 5 L 10 0 Z";
+        fill: Theme.text;
+    }
+    area := TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.repeating = false;
+                root.step();
+            }
+        }
+    }
+    Timer {
+        interval: root.repeating ? 50ms : 500ms;
+        running: root.held;
+        triggered => { root.repeating = true; root.step(); }
+    }
+}
+
+// One time picker column: its name, ▲, the value and ▼. A press anywhere on it chooses
+// it for the keyboard. The wheel over it steps it, up increases: one step per notch of
+// 60 px, which a touchpad or a high-resolution wheel adds up.
+component SpinColumn inherits Rectangle {
+    in property <string> caption;
+    in property <string> value;
+    in property <bool> chosen;
+    // Without room the name is left out: the arrows' and the picker's own accessible
+    // labels still name the column.
+    in property <bool> labelled;
+    in property <length> row-height;
+    callback choose();
+    callback step(int);
+    private property <length> wheel;
+    border-radius: 4px;
+    // The column the keyboard edits: a 2 px active frame, as keyboard focus elsewhere.
+    border-width: root.chosen ? 2px : 0px; border-color: Theme.active-frame;
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down { root.choose(); }
+        }
+        scroll-event(event) => {
+            if event.delta-y == 0px { return reject; }
+            if root.wheel != 0px && (root.wheel > 0px) != (event.delta-y > 0px) { root.wheel = 0px; }
+            root.wheel += event.delta-y;
+            let notches = floor(abs(root.wheel) / 60px);
+            if notches > 0 {
+                root.choose();
+                root.step(root.wheel > 0px ? notches : -notches);
+                root.wheel = root.wheel > 0px ? root.wheel - notches * 60px : root.wheel + notches * 60px;
+            }
+            accept
+        }
+    }
+    Text {
+        visible: root.labelled;
+        y: 0px; width: parent.width; height: root.row-height;
+        text: root.caption; color: Theme.secondary-text; font-size: Theme.small-font;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    SpinArrow {
+        x: 0px; y: root.labelled ? root.row-height : 0px; width: parent.width; height: root.row-height;
+        up: true; label: "Increase " + root.caption;
+        step => { root.choose(); root.step(1); }
+    }
+    Text {
+        y: root.labelled ? root.row-height * 2 : root.row-height; width: parent.width; height: root.row-height;
+        text: root.value; color: Theme.text; font-size: Theme.font-size * 1.2;
+        font-weight: 600; horizontal-alignment: center; vertical-alignment: center;
+    }
+    SpinArrow {
+        x: 0px; y: root.labelled ? root.row-height * 3 : root.row-height * 2; width: parent.width; height: root.row-height;
+        up: false; label: "Decrease " + root.caption;
+        step => { root.choose(); root.step(-1); }
+    }
 }
 
 // Popup frame placement shared by both pickers: below the anchor, else above it.
@@ -161,7 +331,8 @@ component PickerFrame inherits Rectangle {
     drop-shadow-blur: 8px; drop-shadow-color: #0004;
 }
 
-// Date field with a calendar. Arrows move the day, Page Up/Down the month.
+// Date field with a calendar. Arrows move the day, Page Up/Down the month, Ctrl+Page
+// Up/Down the year, Home/End the first and last day of the month.
 component DateField inherits HorizontalLayout {
     in property <string> label;
     in property <bool> enabled;
@@ -169,9 +340,23 @@ component DateField inherits HorizontalLayout {
     in property <string> fallback;
     in-out property <string> text;
     callback edited();
+    // A click on the field or its calendar button: the row is edited.
+    callback pointer-edit();
     private property <string> cursor;
     private property <MetadataMonthView> view: MetadataTimeCodec.month(root.cursor, root.fallback);
-    private property <length> cell: max(28px, Theme.font-size * 2.2);
+    // Day cells are as roomy as the font asks, smaller where the window is small (the
+    // width leaves room for a scroll bar) and never smaller than a day's two digits
+    // need; a calendar that still does not fit the window's height scrolls.
+    private property <length> names-height: Theme.small-font + 10px;
+    private property <length> cell: TooltipPlacement.snap(max(Theme.touch ? 32px : 20px, Theme.font-size * 1.2,
+        min(max(28px, Theme.font-size * 2.2), (TooltipPlacement.surface-width - 46px) / 7,
+            (TooltipPlacement.surface-height - 36px - root.names-height - Theme.control-height) / 7)));
+    // Day names shrink to one letter where two would not fit a cell.
+    private property <[string]> day-names: root.cell < Theme.small-font * 1.7
+        ? ["M", "T", "W", "T", "F", "S", "S"] : ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+    // The month row, the day names, six weeks and Today, with 8 px padding and a 4 px gap.
+    private property <length> content-height: root.cell * 7 + root.names-height + Theme.control-height + 20px;
+    private property <bool> scrolls: root.content-height > TooltipPlacement.surface-height - 16px;
     spacing: 2px;
     function open() {
         root.cursor = root.text;
@@ -196,19 +381,22 @@ component DateField inherits HorizontalLayout {
         hint: "Type " + MetadataTimeCodec.date-forms + " Up/Down change the part under the cursor; Alt+Down opens the calendar.";
         edited => { root.edited(); }
         open-picker => { root.open(); }
+        pointer-edit => { root.pointer-edit(); }
     }
     anchor := PickerButton {
         label: root.label + ": choose date"; enabled: root.enabled;
         hint: "Choose the date in a calendar. Alt+Down in the date field opens it too.";
-        activate => { root.open(); }
+        activate(pointer) => { if pointer { root.pointer-edit(); } root.open(); }
         popup := PopupWindow {
-            private property <length> frame-width: root.cell * 7 + 16px;
-            private property <length> frame-height: root.cell * 8 + Theme.control-height + 24px;
+            private property <length> frame-width: root.cell * 7 + 16px + (root.scrolls ? 14px : 0px);
+            private property <length> frame-height: TooltipPlacement.snap-up(min(root.content-height, TooltipPlacement.surface-height - 16px));
             private property <bool> above: TooltipPlacement.surface-height - anchor.absolute-position.y - anchor.height < self.frame-height + 8px
                 && anchor.absolute-position.y > self.frame-height + 8px;
-            x: clamp(anchor.absolute-position.x + anchor.width - self.frame-width, 8px,
-                max(8px, TooltipPlacement.surface-width - self.frame-width - 8px)) - anchor.absolute-position.x;
-            y: self.above ? -self.frame-height - 2px : anchor.height + 2px;
+            // Whole device pixels keep the frame crisp at every scale.
+            x: TooltipPlacement.snap(clamp(anchor.absolute-position.x + anchor.width - self.frame-width, 8px,
+                max(8px, TooltipPlacement.surface-width - self.frame-width - 8px))) - anchor.absolute-position.x;
+            y: TooltipPlacement.snap(self.above ? anchor.absolute-position.y - self.frame-height - 2px
+                : anchor.absolute-position.y + anchor.height + 2px) - anchor.absolute-position.y;
             width: self.frame-width; height: self.frame-height;
             // Month buttons keep it open; choosing a day, Escape or an outside click close it.
             close-policy: close-on-click-outside;
@@ -222,51 +410,94 @@ component DateField inherits HorizontalLayout {
                     accessible-action-increment => { root.move(1, 0); }
                     accessible-action-decrement => { root.move(-1, 0); }
                     accessible-action-default => { root.choose(root.cursor); }
+                    // A calendar that scrolls keeps the cursor's week in view.
+                    property <string> shown: root.cursor;
+                    changed shown => { self.reveal(); }
+                    init => { self.reveal(); }
+                    function reveal() {
+                        if root.scrolls && days.visible-height > 0px {
+                            let top = 8px + root.cell + root.names-height
+                                + root.cell * floor((root.view.leading + root.view.day - 1) / 7);
+                            if top + days.viewport-y < 0px {
+                                days.viewport-y = -top;
+                            } else if top + root.cell + days.viewport-y > days.visible-height {
+                                days.viewport-y = days.visible-height - top - root.cell;
+                            }
+                        }
+                    }
                     key-pressed(event) => {
                         if event.text == Key.LeftArrow { root.move(-1, 0); return accept; }
                         if event.text == Key.RightArrow { root.move(1, 0); return accept; }
                         if event.text == Key.UpArrow { root.move(-7, 0); return accept; }
                         if event.text == Key.DownArrow { root.move(7, 0); return accept; }
-                        if event.text == Key.PageUp { root.move(0, -1); return accept; }
-                        if event.text == Key.PageDown { root.move(0, 1); return accept; }
+                        if event.text == Key.PageUp { root.move(0, event.modifiers.control ? -12 : -1); return accept; }
+                        if event.text == Key.PageDown { root.move(0, event.modifiers.control ? 12 : 1); return accept; }
+                        if event.text == Key.Home { root.move(1 - root.view.day, 0); return accept; }
+                        if event.text == Key.End { root.move(root.view.days - root.view.day, 0); return accept; }
                         if event.text == Key.Return || event.text == Key.Space { root.choose(root.cursor); return accept; }
                         if event.text == Key.Escape { popup.close(); field.focus(); return accept; }
                         accept
                     }
                 }
-                PopupCell {
-                    x: 8px; y: 8px; width: root.cell; height: root.cell; text: "‹";
-                    accessible-role: button; accessible-label: "Previous month";
-                    activate => { root.move(0, -1); }
-                }
-                Text {
-                    x: 8px + root.cell; y: 8px; width: root.cell * 5; height: root.cell;
-                    text: root.view.title; color: Theme.text; font-size: Theme.font-size; font-weight: 600;
-                    horizontal-alignment: center; vertical-alignment: center;
-                }
-                PopupCell {
-                    x: 8px + root.cell * 6; y: 8px; width: root.cell; height: root.cell; text: "›";
-                    accessible-role: button; accessible-label: "Next month";
-                    activate => { root.move(0, 1); }
-                }
-                for name[index] in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] : Text {
-                    x: 8px + root.cell * index; y: 8px + root.cell; width: root.cell; height: root.cell;
-                    text: name; color: Theme.secondary-text; font-size: Theme.small-font;
-                    horizontal-alignment: center; vertical-alignment: center;
-                }
-                for index in 42 : PopupCell {
-                    property <int> day: index - root.view.leading + 1;
-                    visible: self.day >= 1 && self.day <= root.view.days;
-                    x: 8px + root.cell * mod(index, 7); y: 8px + root.cell * (2 + floor(index / 7));
-                    width: root.cell; height: root.cell;
-                    text: self.day; selected: self.day == root.view.day;
-                    accessible-role: button; accessible-label: MetadataTimeCodec.compose(root.view.year, root.view.month, self.day);
-                    activate => { root.choose(MetadataTimeCodec.compose(root.view.year, root.view.month, self.day)); }
-                }
-                PopupCell {
-                    x: 8px; y: parent.height - Theme.control-height - 8px; width: root.cell * 3; height: Theme.control-height;
-                    text: "Today"; accessible-role: button; accessible-label: "Today";
-                    activate => { root.choose(MetadataTimeCodec.now-default.date); }
+                days := VScrollView {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    viewport-width: self.visible-width; viewport-height: root.content-height;
+                    // The wheel turns the month while the calendar fits the window (up goes
+                    // back), one month per notch of 60 px; a calendar that scrolls scrolls.
+                    TouchArea {
+                        x: 0px; y: 0px; width: root.cell * 7 + 16px; height: root.content-height;
+                        property <length> wheel;
+                        scroll-event(event) => {
+                            if root.scrolls || event.delta-y == 0px { return reject; }
+                            if self.wheel != 0px && (self.wheel > 0px) != (event.delta-y > 0px) { self.wheel = 0px; }
+                            self.wheel += event.delta-y;
+                            let notches = floor(abs(self.wheel) / 60px);
+                            if notches > 0 {
+                                root.move(0, self.wheel > 0px ? -notches : notches);
+                                self.wheel = self.wheel > 0px ? self.wheel - notches * 60px : self.wheel + notches * 60px;
+                            }
+                            accept
+                        }
+                    }
+                    MonthArrow {
+                        x: 8px; y: 8px; width: root.cell; height: root.cell;
+                        label: "Previous month";
+                        activate => { root.move(0, -1); }
+                    }
+                    Text {
+                        x: 8px + root.cell; y: 8px; width: root.cell * 5; height: root.cell;
+                        // The longest title, "September 2026", fits five narrow cells.
+                        text: root.view.title; color: Theme.text; font-size: min(Theme.font-size, root.cell * 5 / 8);
+                        font-weight: 600; horizontal-alignment: center; vertical-alignment: center; overflow: elide;
+                    }
+                    MonthArrow {
+                        x: 8px + root.cell * 6; y: 8px; width: root.cell; height: root.cell;
+                        forward: true; label: "Next month";
+                        activate => { root.move(0, 1); }
+                    }
+                    for name[index] in root.day-names : Text {
+                        x: 8px + root.cell * index; y: 8px + root.cell; width: root.cell; height: root.names-height;
+                        text: name; color: Theme.secondary-text; font-size: Theme.small-font;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    for index in 42 : PopupCell {
+                        property <int> day: index - root.view.leading + 1;
+                        visible: self.day >= 1 && self.day <= root.view.days;
+                        x: 8px + root.cell * mod(index, 7);
+                        y: 8px + root.cell + root.names-height + root.cell * floor(index / 7);
+                        width: root.cell; height: root.cell;
+                        // Two digits keep a gap to their neighbours in narrow cells.
+                        text: self.day; text-size: min(Theme.font-size, root.cell * 0.6);
+                        selected: self.day == root.view.day;
+                        accessible-role: button; accessible-label: MetadataTimeCodec.compose(root.view.year, root.view.month, self.day);
+                        activate => { root.choose(MetadataTimeCodec.compose(root.view.year, root.view.month, self.day)); }
+                    }
+                    PopupCell {
+                        x: 8px; y: 12px + root.cell * 7 + root.names-height;
+                        width: root.cell * 3; height: Theme.control-height;
+                        text: "Today"; accessible-role: button; accessible-label: "Today";
+                        activate => { root.choose(MetadataTimeCodec.now-default.date); }
+                    }
                 }
             }
         }
@@ -274,7 +505,10 @@ component DateField inherits HorizontalLayout {
 }
 
 // Time field with an hour/minute/second picker, plus AM/PM for a time typed on the
-// system's 12-hour clock. Left/Right choose a column, Up/Down change it.
+// system's 12-hour clock. In the picker, Left/Right and Tab choose a column; Up/Down,
+// Page Up/Down, Home/End, digits, the arrows and the wheel change it; the field follows
+// at once. Enter, Space or a click outside keep the time; Escape restores the row as
+// the picker found it.
 component TimeField inherits HorizontalLayout {
     in property <string> label;
     in property <bool> enabled;
@@ -282,14 +516,48 @@ component TimeField inherits HorizontalLayout {
     in property <string> fallback;
     in-out property <string> text;
     callback edited();
+    // A click on the field or its clock button: the row is edited.
+    callback pointer-edit();
+    // The picker opens; Escape there asks for the row as it was then (`cancelled`).
+    callback opened();
+    callback cancelled();
     private property <int> part;
+    // Digits typed into the chosen column while another one may follow.
+    private property <string> digits;
     private property <[string]> values: MetadataTimeCodec.parts(root.text, 1, root.fallback);
     // A fourth part is the AM/PM marker of the system's 12-hour clock.
     private property <int> columns: root.values.length > 3 ? 4 : 3;
-    private property <[string]> names: root.columns > 3 ? ["Hour", "Minute", "Second", "AM/PM"] : ["Hour", "Minute", "Second"];
-    private property <length> column: max(44px, Theme.font-size * 3.4);
+    // The columns' names, set as the picker opens. A repeater remakes its items whenever
+    // its model binding is dirtied, and a binding on the parts would be dirtied by every
+    // step: the arrow under the pointer would lose its press and its hover each time.
+    private property <[string]> names;
     spacing: 2px;
-    function open() { root.part = 0; popup.show(); }
+    function open() {
+        root.part = 0; root.digits = "";
+        root.names = root.columns > 3 ? ["Hour", "Minute", "Second", "AM/PM"] : ["Hour", "Minute", "Second"];
+        root.opened();
+        popup.show();
+    }
+    function choose(part: int) { root.part = part; root.digits = ""; }
+    function step(part: int, delta: int) { root.choose(part); field.step-part(part, delta); }
+    function edge(last: bool) {
+        root.digits = "";
+        field.apply(MetadataTimeCodec.edge-time(root.text, root.part, last, root.fallback));
+    }
+    // Digits set the chosen column as typed and move on once it is complete.
+    function type-key(key: string) {
+        let typed = MetadataTimeCodec.type-time(root.text, root.part, root.digits, key, root.fallback);
+        if typed.valid {
+            field.apply(typed);
+            root.digits = typed.pending;
+            if typed.complete && root.part < root.columns - 1 { root.part += 1; }
+        }
+    }
+    function close(keep: bool) {
+        popup.close();
+        if !keep { root.cancelled(); }
+        field.focus();
+    }
     field := SegmentField {
         field: 1; label: root.label + " time"; enabled: root.enabled;
         text <=> root.text; placeholder: root.placeholder; fallback: root.fallback;
@@ -297,76 +565,96 @@ component TimeField inherits HorizontalLayout {
         hint: "Type 24-hour " + MetadataTimeCodec.time-forms + " Up/Down change the part under the cursor; Alt+Down opens the picker.";
         edited => { root.edited(); }
         open-picker => { root.open(); }
+        pointer-edit => { root.pointer-edit(); }
     }
     anchor := PickerButton {
         label: root.label + ": choose time"; enabled: root.enabled; clock: true;
         hint: "Choose the hour, minute and second. Alt+Down in the time field opens this too.";
-        activate => { root.open(); }
+        activate(pointer) => { if pointer { root.pointer-edit(); } root.open(); }
         popup := PopupWindow {
-            private property <length> frame-width: root.column * root.columns + 16px;
-            private property <length> frame-height: Theme.control-height * 4 + 24px;
+            private property <length> row-height: Theme.control-height;
+            // A column holds two digits or a marker, and its name while there is room.
+            private property <length> least: Theme.touch ? 48px : 40px;
+            private property <length> digit-fit: max(self.least, digit-measure.preferred-width + 16px);
+            private property <length> marker-fit: max(self.least, am-measure.preferred-width + 16px, pm-measure.preferred-width + 16px);
+            private property <length> digit-named: max(self.digit-fit, hour-measure.preferred-width + 12px,
+                minute-measure.preferred-width + 12px, second-measure.preferred-width + 12px);
+            private property <length> marker-named: max(self.marker-fit, marker-measure.preferred-width + 12px);
+            // The names need a fourth row and may widen the columns; without that room in
+            // the window the picker leaves them out.
+            private property <bool> labelled: self.row-height * 4 + 16px <= TooltipPlacement.surface-height - 16px
+                && self.digit-named * 3 + (root.columns > 3 ? self.marker-named : 0px) + 16px
+                    <= TooltipPlacement.surface-width - 16px;
+            private property <length> digit-width: TooltipPlacement.snap-up(self.labelled ? self.digit-named : self.digit-fit);
+            private property <length> marker-width: TooltipPlacement.snap-up(self.labelled ? self.marker-named : self.marker-fit);
+            private property <length> frame-width: self.digit-width * 3 + (root.columns > 3 ? self.marker-width : 0px) + 16px;
+            private property <length> frame-height: self.row-height * (self.labelled ? 4 : 3) + 16px;
             private property <bool> above: TooltipPlacement.surface-height - anchor.absolute-position.y - anchor.height < self.frame-height + 8px
                 && anchor.absolute-position.y > self.frame-height + 8px;
-            x: clamp(anchor.absolute-position.x + anchor.width - self.frame-width, 8px,
-                max(8px, TooltipPlacement.surface-width - self.frame-width - 8px)) - anchor.absolute-position.x;
-            y: self.above ? -self.frame-height - 2px : anchor.height + 2px;
+            // Whole device pixels keep the frame crisp at every scale.
+            x: TooltipPlacement.snap(clamp(anchor.absolute-position.x + anchor.width - self.frame-width, 8px,
+                max(8px, TooltipPlacement.surface-width - self.frame-width - 8px))) - anchor.absolute-position.x;
+            y: TooltipPlacement.snap(self.above ? anchor.absolute-position.y - self.frame-height - 2px
+                : anchor.absolute-position.y + anchor.height + 2px) - anchor.absolute-position.y;
             width: self.frame-width; height: self.frame-height;
-            // The ▲/▼ buttons keep it open; Enter, Escape or an outside click close it.
+            // The arrows keep it open; Enter, Space, Escape or an outside click close it.
             close-policy: close-on-click-outside;
             forward-focus: keys;
             PickerFrame {
                 accessible-role: groupbox; accessible-label: root.label + " time picker";
+                // Measures only: the widest two digits, the markers and the names.
+                digit-measure := Text { visible: false; accessible-role: none; text: "88"; font-size: Theme.font-size * 1.2; font-weight: 600; }
+                am-measure := Text { visible: false; accessible-role: none; text: MetadataTimeCodec.edit-format.am; font-size: Theme.font-size * 1.2; font-weight: 600; }
+                pm-measure := Text { visible: false; accessible-role: none; text: MetadataTimeCodec.edit-format.pm; font-size: Theme.font-size * 1.2; font-weight: 600; }
+                hour-measure := Text { visible: false; accessible-role: none; text: "Hour"; font-size: Theme.small-font; }
+                minute-measure := Text { visible: false; accessible-role: none; text: "Minute"; font-size: Theme.small-font; }
+                second-measure := Text { visible: false; accessible-role: none; text: "Second"; font-size: Theme.small-font; }
+                marker-measure := Text { visible: false; accessible-role: none; text: "AM/PM"; font-size: Theme.small-font; }
                 keys := FocusScope {
-                    // The chosen part: Left/Right choose it, Up/Down change it.
+                    // The chosen column: Left/Right and Tab choose it, Up/Down change it.
                     accessible-role: spinbox;
-                    accessible-label: root.label + " " + (root.part == 0 ? "hour" : root.part == 1 ? "minute" : "second");
+                    accessible-label: root.label + " " + (root.part == 0 ? "hour" : root.part == 1 ? "minute"
+                        : root.part == 2 ? "second" : "AM/PM");
                     accessible-value: root.values[root.part];
-                    accessible-action-increment => { field.step-part(root.part, 1); }
-                    accessible-action-decrement => { field.step-part(root.part, -1); }
+                    accessible-action-increment => { root.step(root.part, 1); }
+                    accessible-action-decrement => { root.step(root.part, -1); }
                     key-pressed(event) => {
-                        if event.text == Key.LeftArrow { root.part = max(0, root.part - 1); return accept; }
-                        if event.text == Key.RightArrow { root.part = min(root.columns - 1, root.part + 1); return accept; }
-                        if event.text == Key.UpArrow { field.step-part(root.part, 1); return accept; }
-                        if event.text == Key.DownArrow { field.step-part(root.part, -1); return accept; }
-                        if event.text == Key.PageUp { field.step-part(root.part, 10); return accept; }
-                        if event.text == Key.PageDown { field.step-part(root.part, -10); return accept; }
-                        if event.text == Key.Return || event.text == Key.Space || event.text == Key.Escape {
-                            popup.close(); field.focus(); return accept;
+                        // Tab and Shift+Tab go round the columns and stay in the picker.
+                        if event.text == Key.Tab || event.text == Key.Backtab {
+                            root.choose(mod(root.part + (event.modifiers.shift || event.text == Key.Backtab
+                                ? root.columns - 1 : 1), root.columns));
+                            return accept;
                         }
+                        if event.modifiers.control || event.modifiers.alt || event.modifiers.meta { return accept; }
+                        if event.text == Key.LeftArrow { root.choose(max(0, root.part - 1)); return accept; }
+                        if event.text == Key.RightArrow { root.choose(min(root.columns - 1, root.part + 1)); return accept; }
+                        if event.text == Key.UpArrow { root.step(root.part, 1); return accept; }
+                        if event.text == Key.DownArrow { root.step(root.part, -1); return accept; }
+                        if event.text == Key.PageUp { root.step(root.part, 10); return accept; }
+                        if event.text == Key.PageDown { root.step(root.part, -10); return accept; }
+                        if event.text == Key.Home { root.edge(false); return accept; }
+                        if event.text == Key.End { root.edge(true); return accept; }
+                        if event.text == Key.Return || event.text == Key.Space { root.close(true); return accept; }
+                        if event.text == Key.Escape { root.close(false); return accept; }
+                        root.type-key(event.text);
                         accept
                     }
                 }
-                for name[index] in root.names : Rectangle {
-                    x: 8px + root.column * index; y: 8px; width: root.column; height: parent.height - 16px;
-                    border-radius: 3px;
-                    border-width: index == root.part ? 1px : 0px; border-color: Theme.active-frame;
-                    Text {
-                        y: 0px; height: Theme.control-height;
-                        text: name; color: Theme.secondary-text; font-size: Theme.small-font;
-                        horizontal-alignment: center; vertical-alignment: center;
-                    }
-                    PopupCell {
-                        y: Theme.control-height; height: Theme.control-height; text: "▲";
-                        accessible-role: button; accessible-label: "Increase " + name;
-                        activate => { root.part = index; field.step-part(index, 1); }
-                    }
-                    Text {
-                        y: Theme.control-height * 2; height: Theme.control-height;
-                        text: root.values[index]; color: Theme.text; font-size: Theme.font-size * 1.2;
-                        font-weight: 600; horizontal-alignment: center; vertical-alignment: center;
-                    }
-                    PopupCell {
-                        y: Theme.control-height * 3; height: Theme.control-height; text: "▼";
-                        accessible-role: button; accessible-label: "Decrease " + name;
-                        activate => { root.part = index; field.step-part(index, -1); }
-                    }
+                for column-name[index] in root.names : SpinColumn {
+                    x: 8px + popup.digit-width * index; y: 8px;
+                    width: index > 2 ? popup.marker-width : popup.digit-width; height: parent.height - 16px;
+                    caption: column-name; value: root.values[index]; chosen: index == root.part;
+                    labelled: popup.labelled; row-height: popup.row-height;
+                    choose => { root.choose(index); }
+                    step(delta) => { root.step(index, delta); }
                 }
             }
         }
     }
 }
 
-// One timestamp row: change checkbox, date and time with pickers, UTC offset, Now.
+// One timestamp row: change checkbox, date and time with pickers, UTC offset, Now. Its
+// fields always show a value and take input; only a ticked row is applied.
 export component MetadataTime inherits GridLayout {
     in property <string> label;
     // 0 created, 1 modified, 2 accessed.
@@ -376,14 +664,17 @@ export component MetadataTime inherits GridLayout {
     in property <MetadataTimeValue> default;
     in-out property <MetadataTimeDraft> value;
     callback edited();
+    // The row as its time picker opened; Escape there restores it.
+    private property <int> picker-mode;
+    private property <string> picker-time;
     spacing: 8px;
-    // Editing a field selects the row and completes its other, still empty fields.
-    function complete(edited-field: int) {
-        if edited-field != 0 && root.value.date == "" { root.value.date = root.default.date; }
-        if edited-field != 1 && root.value.time == "" { root.value.time = root.default.time; }
-        if edited-field != 2 && root.value.offset == "" { root.value.offset = root.default.offset; }
-        root.value.mode = 1; root.edited();
+    // A click into a field or onto a picker ticks the row: the user edits it. Tab only
+    // moves the keyboard there and ticks nothing.
+    function select() {
+        if root.value.mode == 0 { root.value.mode = 1; root.edited(); }
     }
+    // A changed value ticks the row too. Unticking keeps the values for later.
+    function change() { root.value.mode = 1; root.edited(); }
     // A click on the box assigns `checked`, which ends its binding; typing, the pickers
     // and Now still tick the row through the draft, so the box follows the draft's mode.
     changed value => { tick.checked = root.value.mode != 0; }
@@ -392,8 +683,8 @@ export component MetadataTime inherits GridLayout {
         text: root.label; accessible-name: "Change " + root.label;
         checked: root.value.mode != 0; enabled: root.enabled;
         preferred-width: max(120px, Theme.font-size * 7);
-        hint: "Tick to change this timestamp. Unticked keeps the current value.";
-        toggled => { if self.checked { root.complete(-1); } else { root.value.mode = 0; root.edited(); } }
+        hint: "Ticked rows are applied. Unticking keeps the current timestamp, and the fields keep what you typed for later.";
+        toggled => { root.value.mode = self.checked ? 1 : 0; root.edited(); }
     }
     HorizontalLayout {
         row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
@@ -402,13 +693,21 @@ export component MetadataTime inherits GridLayout {
             label: root.label; enabled: root.enabled; text <=> root.value.date;
             placeholder: root.default.date; fallback: root.default.date;
             horizontal-stretch: 3;
-            edited => { root.complete(0); }
+            edited => { root.change(); }
+            pointer-edit => { root.select(); }
         }
         TimeField {
             label: root.label; enabled: root.enabled; text <=> root.value.time;
             placeholder: root.default.time; fallback: root.default.time;
             horizontal-stretch: 2;
-            edited => { root.complete(1); }
+            edited => { root.change(); }
+            pointer-edit => { root.select(); }
+            opened => { root.picker-mode = root.value.mode; root.picker-time = root.value.time; }
+            cancelled => {
+                if root.value.mode != root.picker-mode || root.value.time != root.picker-time {
+                    root.value.time = root.picker-time; root.value.mode = root.picker-mode; root.edited();
+                }
+            }
         }
         SegmentField {
             field: 2; label: root.label + " UTC offset"; enabled: root.enabled;
@@ -416,7 +715,8 @@ export component MetadataTime inherits GridLayout {
             placeholder: root.default.offset; fallback: root.default.offset;
             min-width: Theme.font-size * 4.2; horizontal-stretch: 1;
             hint: "UTC offset of the typed time, e.g. +01:00, -05:00 or Z. Up/Down change hours or quarter hours. It is used exactly as entered.";
-            edited => { root.complete(2); }
+            edited => { root.change(); }
+            pointer-edit => { root.select(); }
         }
     }
     now := Rectangle {
@@ -449,6 +749,6 @@ export component MetadataTime inherits GridLayout {
         if moment.date != "" {
             root.value.date = moment.date; root.value.time = moment.time; root.value.offset = moment.offset;
         }
-        root.complete(-1);
+        root.change();
     }
 }

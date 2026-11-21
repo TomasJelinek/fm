@@ -360,6 +360,32 @@ mod tests {
     }
 
     #[test]
+    fn only_ticked_rows_are_applied_and_unticking_keeps_the_typed_value() {
+        // The fields of an unticked row show values, starting or typed; none applies.
+        let mut draft = MetadataDraft {
+            modified: time(0, "2025-12-24", "18:30:00", "-05:00"),
+            accessed: time(0, "2026-11-19", "10:00:00", "+01:00"),
+            ..Default::default()
+        };
+        let edit = patch(&draft, &plain()).unwrap();
+        assert_eq!(
+            (edit.modified, edit.accessed),
+            (TimeEdit::Keep, TimeEdit::Keep)
+        );
+        assert!(edit.is_empty());
+        assert_eq!(typed_offsets(&draft), [None; 3]);
+        // Ticked again, the row applies the value it kept.
+        draft.modified.mode = 1;
+        let edit = patch(&draft, &plain()).unwrap();
+        assert_eq!(
+            edit.modified,
+            TimeEdit::Set(UNIX_EPOCH + Duration::from_secs(1_766_619_000))
+        );
+        assert_eq!(edit.accessed, TimeEdit::Keep);
+        assert_eq!(typed_offsets(&draft), [None, Some(-5 * 3600), None]);
+    }
+
+    #[test]
     fn only_typed_rows_report_their_offset_for_the_review() {
         let draft = MetadataDraft {
             created: time(1, "2026-12-15", "10:00", "UTC+2"),

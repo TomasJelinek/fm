@@ -211,7 +211,7 @@ combinations. Helpers of these scenarios are in
 | O-06 | Ctrl+F2 typed date, time (nanoseconds) and offset for one file, three files and a folder | `files_attributes` | PASS |
 | O-07 | Up/Down change the date, time and offset part under the cursor | `panels_times` | PASS |
 | O-08 | The calendar: Alt+Down, arrows, Page Up/Down, Enter, Previous/Next month, a day, Today | `panels_times` | PASS |
-| O-09 | The time picker: Alt+Down, arrows, Page Up/Down, ▲/▼, Escape, Enter | `panels_times` | PASS |
+| O-09 | The time picker: Alt+Down, arrows, Page Up/Down, ▲/▼, Enter keeping the picked time, Escape restoring the time it opened with | `panels_times` | PASS before the 21 November Attributes fix, when Escape still kept the time; the changed check has not run yet |
 | O-10 | Now fills date, time and offset and ticks the row; Apply sets that moment | `panels_times` | PASS |
 | O-11 | Escape closes a picker only; the next Escape closes the editor without applying | `panels_times` | PASS |
 | O-12 | Ctrl+F7 opens the Case page; lowercase renames the file | `panels_times` | PASS |
