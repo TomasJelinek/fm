@@ -93,7 +93,8 @@ pub(super) fn attempt_with(
                 Ok(()) => Ok(Outcome::Moved {
                     destination: directory.path().join(name),
                     recovery: Vec::new(),
-                    durability_confirmed: false,
+                    // Unless saving a folder it changed fails (`folder_flush::confirm`).
+                    durability_confirmed: true,
                 }),
                 Err(failure) if failure.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE as i32) => {
                     Ok(Outcome::CrossDevice)
@@ -105,6 +106,15 @@ pub(super) fn attempt_with(
     if matches!(outcome, Outcome::CrossDevice) {
         return Ok(outcome);
     }
+    // The rename removed the name from the source folder and added it to the destination:
+    // save both before reporting it.
+    let outcome = super::folder_flush::confirm(
+        outcome,
+        &[
+            (directory.native_file(), directory.identity()),
+            (capture.parent.native_file(), capture.parent.identity()),
+        ],
+    );
     // Cancellation after a successful rename cannot erase the committed namespace fact.
     state.native_outcome = Some(outcome.clone());
     Ok(outcome)
@@ -286,7 +296,13 @@ fn replace_existing(
     Ok(Outcome::Moved {
         destination: path,
         recovery: vec![original_receipt],
-        durability_confirmed: false,
+        // The private recovery folder now holds the displaced original. Only this turn
+        // holds that folder, so it is saved here; the destination and source folders are
+        // saved after the turn (`folder_flush::confirm`).
+        durability_confirmed: super::folder_flush::saved(&[(
+            recovery.native_file(),
+            recovery.identity(),
+        )]),
     })
 }
 

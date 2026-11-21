@@ -766,7 +766,13 @@ retains every actual source reader and empty stage, and verifies native source
 parents are protected before copying the batch. Windows requests DELETE upfront
 only for Move and rejects incompatible sharing; recovery/copy-fallback qualification
 also rejects unsafe parent DACLs. Metadata-only native rename preparation does not
-require content-read or directory-list rights. Linux
+require content-read or directory-list rights. After a committed native rename, Windows
+reopens the source and destination folders (and a replacement's private recovery
+folder) through their retained handles, never by path, with only the right to add
+files or else subfolders, sharing everything, to flush them, and closes them at once;
+no volume handle or administrator right is used. A folder that cannot be opened so
+leaves the Move's durability unconfirmed and never refuses or undoes the rename
+([Move durability on Windows](docs/developer/TRANSFERS.md#move-durability-on-windows)). Linux
 requires protected source parents (the Copy parent rule above) and effective
 mutation permissions.
 Shared inherited directories can be unsupported even on a supported filesystem;

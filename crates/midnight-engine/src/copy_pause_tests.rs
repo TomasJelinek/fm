@@ -116,6 +116,49 @@ async fn in_flight_copy_is_not_falsely_acknowledged_and_cancel_cleans_paused_sta
     assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
 }
 
+/// WIN-1: a job paused in the middle of a file still reports that file's size and the
+/// bytes written so far, from which its window's Details show "Current file written:
+/// X / Y bytes"; the pause is taken at the step boundary after the blocked read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_copy_paused_in_the_middle_of_a_file_reports_its_size_and_progress() {
+    let temp = fixture();
+    let source = temp.path().join("source");
+    let destination = temp.path().join("destination");
+    fs::write(&source, vec![42; 600_000]).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let entered = Arc::new(Notify::new());
+    let released = Arc::new(AtomicBool::new(false));
+    let _release = ReleaseOnDrop(released.clone());
+    let mut h = Harness::new(Some(Arc::new(BlockingService {
+        inner: midnight_platform::LocalFileSystem::new(None),
+        entered: entered.clone(),
+        released: released.clone(),
+        prepared: Arc::new(AtomicUsize::new(0)),
+        read_before_block: true,
+    })));
+    h.controller
+        .enqueue(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    // The second read blocks: the first 256 KiB block is written.
+    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        .await
+        .unwrap();
+    h.controller.set_paused(OperationId(1), true).await;
+    released.store(true, Ordering::Release);
+    let stopped = paused(&mut h, 1).await;
+    assert_eq!(stopped.phase, CopyOperationPhase::Copying, "{stopped:?}");
+    assert_eq!(stopped.current_file_size, Some(600_000), "{stopped:?}");
+    assert!(
+        (1..600_000).contains(&stopped.current_file_copied),
+        "{stopped:?}"
+    );
+    assert_eq!(stopped.current_file_copied, stopped.copied_bytes);
+    h.controller.cancel(OperationId(1));
+    let done = h.terminal(1).await;
+    h.close().await;
+    assert_eq!(done.state, CopyOperationState::Cancelled);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn confirmation_waits_for_a_safe_checkpoint_and_preserves_manual_pause() {
     use CopyCancelConfirmationAction::{Begin, Confirm, Dismiss};

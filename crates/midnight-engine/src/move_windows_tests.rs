@@ -385,6 +385,35 @@ async fn shared_clipboard_move_uses_native_rename_without_content_verification()
     harness.close().await;
 }
 
+/// WIN-6: each native rename of a same-volume Move saves the folders it changed, so the
+/// Move ends Completed without a closure receipt ("Completed with warnings").
+#[tokio::test]
+async fn same_volume_move_of_a_file_and_a_folder_ends_completed_without_warnings() {
+    let (_temp, parent) = protected_fixture();
+    let file = parent.join("file 文档");
+    let folder = parent.join("folder");
+    let destination = parent.join("destination");
+    fs::write(&file, b"file").unwrap();
+    // Empty: a scanner holding a just-written child would refuse the folder's rename
+    // (TEST-04), which this test is not about.
+    fs::create_dir(&folder).unwrap();
+    fs::create_dir(&destination).unwrap();
+    let mut harness = Harness::native();
+    harness
+        .controller
+        .enqueue_move(request(1, &[file.clone(), folder.clone()], &destination))
+        .await;
+    let done = harness.terminal(1).await;
+    harness.close().await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.native_entries_moved, 2);
+    assert_eq!(done.source_removal_durability_unconfirmed, 0, "{done:?}");
+    assert!(done.closure.is_none(), "{done:?}");
+    assert_eq!(fs::read(destination.join("file 文档")).unwrap(), b"file");
+    assert!(destination.join("folder").is_dir());
+    assert!(!file.exists() && !folder.exists());
+}
+
 #[test]
 fn move_removes_this_verified_source_before_copying_next_and_cancel_keeps_remainder() {
     let (_temp, parent) = protected_fixture();

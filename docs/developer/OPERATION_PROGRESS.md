@@ -240,6 +240,17 @@ application delivery remain pending.
 - Closing Jobs only closes the ledger. It does not cancel independent operations.
 - Successfully completed automatic progress closes. A manually reopened progress
   window stays open; so does manually opened Jobs.
+- A Move counts a change it made as unconfirmed (`source_removal_durability_unconfirmed`,
+  "Source changes the system could not confirm as saved to disk: N") only when a step
+  it takes to save that change to disk fails, never merely because the platform has no
+  such step. Any such count gives the job a closure receipt, so it ends "Completed with
+  warnings" with an attention mark in Jobs. Linux syncs the folders a change touched;
+  Windows flushes the source and destination folders of each native rename, and a
+  filesystem that does not flush folders leaves nothing to report
+  ([Move durability on Windows](TRANSFERS.md#move-durability-on-windows)). A
+  same-volume Move on Windows therefore ends Completed (WIN-6). A Windows source
+  removal by delete disposition (a cross-volume Move, a folder a merge emptied) is
+  still counted as unconfirmed, and is noted as accepted by Windows.
 - Pause requests a safe backend checkpoint. Until acknowledged the UI says
   Pausing; it must not claim a native call has stopped. Resume and Cancel remain
   available while paused. Cancellation wakes paused waits and takes precedence.

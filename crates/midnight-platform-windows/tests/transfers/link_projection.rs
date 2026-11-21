@@ -90,8 +90,9 @@ fn native_move_renames_the_original_junction_under_both_policies() {
         for _ in 0..2 {
             assert!(matches!(
                 capture.try_native_move(directory.as_ref(), name, None, &cancel).unwrap(),
+                // Both folders saved (WIN-6), and the repeated call reports the same.
                 TransferNativeMoveOutcome::Moved {
-                    destination, recovery, durability_confirmed: false
+                    destination, recovery, durability_confirmed: true
                 } if destination == moved && recovery.is_empty()
             ));
         }

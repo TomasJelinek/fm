@@ -152,7 +152,8 @@ impl Capture {
             Ok(()) => Outcome::Moved {
                 destination: path.to_owned(),
                 recovery: Vec::new(),
-                durability_confirmed: false,
+                // Unless saving a folder it changed fails (`folder_flush::confirm`).
+                durability_confirmed: true,
             },
             Err(error) => {
                 // The native rename committed. Recoverable location is reported from the
@@ -273,6 +274,14 @@ impl TransferDirectoryLinkMoveCapture for Capture {
                 }
             })?
         };
+        // A renamed link left its folder for the destination: save both before reporting it.
+        let outcome = super::folder_flush::confirm(
+            outcome,
+            &[
+                (directory.native_file(), directory.identity()),
+                (self.parent.as_ref(), self.parent_identity),
+            ],
+        );
         if !matches!(outcome, Outcome::CrossDevice | Outcome::Unsupported) {
             *state = State::Renamed {
                 target: target.identity(),

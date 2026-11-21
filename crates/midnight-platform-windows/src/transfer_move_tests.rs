@@ -321,9 +321,16 @@ fn native_move_replacement_retains_original_and_conflict_gap_winners() {
         );
         match gap {
             "none" => {
-                let TransferNativeMoveOutcome::Moved { recovery, .. } = outcome.unwrap() else {
+                let TransferNativeMoveOutcome::Moved {
+                    recovery,
+                    durability_confirmed,
+                    ..
+                } = outcome.unwrap()
+                else {
                     panic!("native replacement did not commit")
                 };
+                // The recovery, destination and source folders were saved (WIN-6).
+                assert!(durability_confirmed);
                 assert_eq!(recovery.len(), 1);
                 assert_eq!(fs::read(&recovery[0].path).unwrap(), b"old target");
                 assert!(!source.exists());
@@ -1265,3 +1272,6 @@ fn late_named_stream_after_capture_blocks_removal_even_with_unchanged_main_bytes
 
 #[path = "transfer_move_refusal_tests.rs"]
 mod peer_refusal;
+
+#[path = "transfer_move_durability_tests.rs"]
+mod durability;

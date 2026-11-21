@@ -16,6 +16,8 @@ use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
 mod directory_link;
 #[path = "transfer_finalize.rs"]
 mod finalization;
+#[path = "transfer_folder_flush.rs"]
+mod folder_flush;
 #[path = "transfer_native_move.rs"]
 mod native_move;
 

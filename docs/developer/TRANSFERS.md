@@ -105,6 +105,71 @@ supersedes earlier unconditional SHA-256 and same-volume-copy descriptions below
 full-hash proof discussions describe the default mode, and sampled proofs retain
 the same identity/revision/publication guards with bounded range reads.
 
+### Move durability on Windows
+
+A Move reports a change as unconfirmed only when a step it takes to save that change to
+disk fails, never merely because a platform has no such step. The provider says so in
+`durability_confirmed` of `TransferNativeMoveOutcome::Moved` (and of the source
+removals below); the engine counts each unconfirmed one in
+`source_removal_durability_unconfirmed`, which gives the job a closure receipt, so it
+ends "Completed with warnings" with "Source changes the system could not confirm as
+saved to disk: N" (WIN-6 in the [Windows acceptance record](acceptance/windows.md)).
+
+After a committed native rename, Windows flushes (`FlushFileBuffers`) the destination
+folder and the source folder, each once: a rename within one folder flushes it once,
+and a native replacement first flushes the private recovery folder that keeps the
+displaced original (`transfer_folder_flush.rs`). Windows flushes a folder only through a
+handle that may add files or subfolders to it; through the Move's own pins, which may
+only read its attributes and traverse it, the flush fails with ERROR_ACCESS_DENIED (both
+measured on NTFS). So each folder is reopened through its retained handle (an empty
+relative name, never the path) with the right to add files, or else subfolders,
+sharing everything, and closed at once. No volume handle is opened: its flush needs
+administrator rights. The flushes run after the rename's namespace turn, whatever the
+cancellation, since the rename is committed. Then:
+
+- Every flush succeeds: the Move is confirmed.
+- The filesystem or file server does not flush folders: it refuses the call as not
+  supported (ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED, ERROR_INVALID_PARAMETER), or
+  with ERROR_ACCESS_DENIED although the handle may add entries, which is all a flush
+  requires of it (a file server may answer so). The Move counts as confirmed as far as
+  Windows allows and shows no warning.
+- A flush fails otherwise (an I/O error), or a folder cannot be opened for one: the
+  account may add nothing to it (removing its own entry from a folder needs no such
+  right) or another program holds the folder without write sharing. The rename stays
+  committed and the Move is unconfirmed.
+
+What that confirms depends on the filesystem; only NTFS was available on the
+development machine:
+
+- NTFS (measured, Windows 11 on an NVMe SSD): the destination folder's flush right
+  after a rename took 0.047 ms on average (200 renames), the source folder's flush right
+  after it 0.004 ms, as long as flushing an unchanged folder (0.002 ms), which suggests
+  the first flush already wrote NTFS's log for the whole rename; the rename itself took
+  0.11 ms. Per native Move call the two reopens and flushes took 0.14 ms of 0.6 ms
+  (debug build, 400 Moves, a machine shared with builds). On a disk whose cache flush is
+  slow a Move waits for that flush per folder, as a Linux native Move waits for its two
+  folder fsyncs.
+- FAT and exFAT (not measured: no such volume without administrator rights): the FAT
+  driver whose source Microsoft publishes (FastFAT) accepts a flush of a folder other
+  than the root without writing its entries, so such a Move counts as confirmed
+  without the Move writing them. Whether they survive a power loss depends on the
+  drive's write caching: with Quick removal, the default removal policy for external
+  drives since Windows 10 version 1809, Windows does not cache their writes.
+- ReFS, including Dev Drives (not measured: creating one needs administrator rights),
+  and network shares (the flush is the file server's): a flush refused as not
+  supported counts as above.
+
+Source removals by delete disposition are unchanged and stay unconfirmed: a
+cross-volume Move's verified file removal, the removal of a folder a Move emptied (a
+cross-volume Move, or a same-volume one that merged into an existing folder) and a
+directory link's original after its copy (`TransferSourceRemoval::DeletePending`).
+Windows removes such a name only when the job's own handles close, after the outcome is
+reported, so no flush at that point could confirm it. Those Moves also carry the note
+that Windows accepted the removals (`source_delete_pending`), which alone ends them
+"Completed with warnings". Confirming them needs a contract change, such as a
+durability result from a step after the handles close (the empty-stage cleanup), which
+is open for the Architect.
+
 ## Change-time drift (VIEW-05)
 
 Native revisions include the change time (Windows ChangeTime, Linux ctime). It also
