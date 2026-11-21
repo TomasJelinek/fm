@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -99,6 +99,7 @@ impl CaptureCache {
             name: initial.display_name(),
             initial: Mutex::new(Some(initial.into_inner())),
             release_failure: Mutex::new(None),
+            changed: AtomicBool::new(false),
             released: false,
         }));
         // The constructor validates through this initial reader, but prefetching a
@@ -153,7 +154,7 @@ impl CaptureCache {
                 }
             };
         let source = PendingRelease::new(source);
-        if !snapshot.accepts(source.length(), &source.version()) {
+        if !snapshot.accepts_reader(source.length(), &source.version()) {
             if let Err(error) = release_source(source.into_inner()) {
                 snapshot.note_release_failure(error.clone());
                 return Err(error);
@@ -195,6 +196,9 @@ struct Snapshot {
     name: String,
     initial: Mutex<Option<Arc<dyn ContentSource>>>,
     release_failure: Mutex<Option<Error>>,
+    /// A native reader of this path reported a length or revision that `accepts`
+    /// refused: the file was changed (`ContentSource::changed_since_capture`).
+    changed: AtomicBool,
     released: bool,
 }
 impl Snapshot {
@@ -212,6 +216,16 @@ impl Snapshot {
             && (revision == self.revision
                 || (self.policy == RevisionPolicy::AcceptChangeTimeOnly
                     && crate::revision::matches(&self.revision, revision, self.policy)))
+    }
+    /// `accepts` for the length and revision of a native reader that the plugin opened
+    /// on this path, which reflect the file there now: a refusal is remembered. A reader
+    /// that could not be opened (an unreachable file, an I/O error) proves no change.
+    fn accepts_reader(&self, length: u64, revision: &[u8]) -> bool {
+        let accepted = self.accepts(length, revision);
+        if !accepted {
+            self.changed.store(true, Ordering::Release);
+        }
+        accepted
     }
     fn source(&self) -> Result<Arc<dyn ContentSource>, Error> {
         if let Some(error) = lock(&self.release_failure).clone() {
@@ -322,6 +336,10 @@ impl ContentSource for Snapshot {
         lock(&self.release_failure).is_some()
     }
 
+    fn changed_since_capture(&self) -> bool {
+        self.changed.load(Ordering::Acquire)
+    }
+
     fn release_on_worker(self: Arc<Self>) -> Result<(), Error> {
         if self.cleanup_unconfirmed() {
             std::mem::forget(self);
@@ -360,7 +378,7 @@ impl ContentSource for Snapshot {
     fn validate(&self) -> Result<(), Error> {
         self.with_reader(|source| {
             source.validate()?;
-            if !self.accepts(source.length(), &source.version()) {
+            if !self.accepts_reader(source.length(), &source.version()) {
                 return Err(Error("Native file changed after capture".into()));
             }
             Ok(())
@@ -391,7 +409,7 @@ impl ContentSource for Snapshot {
         }
         self.with_reader(|source| {
             let (reader_length, reader_revision) = (source.length(), source.version());
-            if !self.accepts(reader_length, &reader_revision) {
+            if !self.accepts_reader(reader_length, &reader_revision) {
                 return Err(Error("Native file changed after capture".into()));
             }
             source.read_checked(offset, length, reader_length, &reader_revision)

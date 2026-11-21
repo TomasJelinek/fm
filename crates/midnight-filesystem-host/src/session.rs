@@ -431,6 +431,19 @@ impl Mount {
             .map_or(&self.container, |link| &link.label)
     }
 
+    /// A failed revalidation or read of the captured source. When the capture found that
+    /// its archive file was changed, the kind is `InvalidData`: repeating the request is
+    /// not expected to succeed, so callers do not offer to retry (Copy). Other failures,
+    /// such as an unreachable file, keep `Other`.
+    fn source_failure(&self, error: midnight_plugin_host::Error) -> io::Error {
+        let kind = if self.source().changed_since_capture() {
+            io::ErrorKind::InvalidData
+        } else {
+            io::ErrorKind::Other
+        };
+        io::Error::new(kind, error)
+    }
+
     pub fn address(&self) -> midnight_core::ArchiveAddress {
         midnight_core::ArchiveAddress {
             provider: self.provider.clone(),
@@ -744,7 +757,7 @@ impl Mount {
                         }
                         let result = self.source().read_at(offset, length);
                         self.close.observe_cleanup(self.source().cleanup_unconfirmed());
-                        let bytes = result.map_err(|e| fail(io::Error::other(e)))?;
+                        let bytes = result.map_err(|e| fail(self.source_failure(e)))?;
                         if bytes.len() != length as usize {
                             return Err(fail(io::ErrorKind::UnexpectedEof.into()));
                         }
@@ -1129,7 +1142,7 @@ impl ArchiveMount for Mount {
             FsError::from_io(
                 "archive source changed",
                 self.error_path(),
-                io::Error::other(e),
+                self.source_failure(e),
             )
         })
     }
@@ -1266,3 +1279,7 @@ mod cooperative_tests;
 #[cfg(test)]
 #[path = "nested_session_tests.rs"]
 mod nested_session_tests;
+
+#[cfg(test)]
+#[path = "source_change_tests.rs"]
+mod source_change_tests;

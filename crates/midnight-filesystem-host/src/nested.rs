@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -133,6 +133,9 @@ pub(crate) struct NestedSource {
     version: Vec<u8>,
     name: String,
     length: u64,
+    /// The enclosing chain reported that the native archive file was changed
+    /// (`InvalidData` from its `validate`, see `Mount::source_failure`).
+    changed: AtomicBool,
 }
 impl NestedSource {
     pub(crate) fn new(
@@ -148,6 +151,7 @@ impl NestedSource {
             version,
             name,
             length,
+            changed: AtomicBool::new(false),
         }
     }
 }
@@ -170,9 +174,15 @@ impl ContentSource for NestedSource {
         self.version.clone()
     }
     fn validate(&self) -> Result<(), Error> {
-        self.link
-            .validate()
-            .map_err(|error| Error(error.to_string()))
+        self.link.validate().map_err(|error| {
+            if error.kind == io::ErrorKind::InvalidData {
+                self.changed.store(true, Ordering::Release);
+            }
+            Error(error.to_string())
+        })
+    }
+    fn changed_since_capture(&self) -> bool {
+        self.changed.load(Ordering::Acquire)
     }
     fn read_at(&self, offset: u64, length: u32) -> Result<Vec<u8>, Error> {
         self.content.read_at(offset, length).map_err(|error| {

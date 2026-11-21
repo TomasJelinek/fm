@@ -1201,11 +1201,14 @@ fields and conservative physical-device classifications.
   escapes or control pictures. Copy and search use the displayed text.
 - The native content broker provides LiveValidated reads, not a filesystem snapshot:
   it prepares identity, opens without following links, and checks revision before
-  and after reads. Replaced/changed files report an error. Viewer captures accept a
-  revision whose change time alone moved (VIEW-05: same volume, file ID, length and
-  LastWriteTime on Windows; same device, inode, length and mtime on Linux), as
-  endpoint protection moves it on freshly written files; a same-length rewrite that
-  restores the modification time is then not detected while a file is displayed.
+  and after reads. Replaced/changed files report an error. Viewer captures and,
+  since 21 November, archive file captures accept a revision whose change time alone
+  moved (VIEW-05: same volume, file ID, length and LastWriteTime on Windows; same
+  device, inode, length and mtime on Linux), as endpoint protection moves it on
+  freshly written files and on archives hours later; a same-length rewrite that
+  restores the modification time is then not detected while a file is displayed or
+  an archive is open, nor when a saved tab or Hot Path reopens that archive. A
+  different file at the path, a link and every other change are still refused.
   Reads are bounded to 256 KiB and use u64 offsets. Four live sessions share the
   host limits; decoded pages, wire items, retained service replies and raster
   surfaces have separate explicit budgets. Selection/copy is limited to the loaded

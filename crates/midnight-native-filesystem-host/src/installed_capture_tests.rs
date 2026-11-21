@@ -156,7 +156,10 @@ fn checked_installed_capture_forwards_unconfirmed_status_and_preflight_cancellat
 fn mismatched_capture_releases_provider_resources_and_returns_source_changed() {
     let (installed, transport, path) = fixture(false);
     let mut changed = platform::legacy();
-    *changed.last_mut().unwrap() ^= 1;
+    // The write time (payload bytes 32..40: Windows LastWriteTime, Linux mtime
+    // nanoseconds). A change time alone is no mismatch for an archive container.
+    let payload = changed.len() - if cfg!(windows) { 48 } else { 56 };
+    changed[payload + 32] ^= 1;
     let failure = installed
         .capture_matching(&path, Some(&changed), &|| false)
         .unwrap_err();

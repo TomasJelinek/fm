@@ -29,8 +29,9 @@ callback for both new mounts and saved-tab restoration. The host's `open_capture
 keeps the original native locator separate from its pathless content lease; only
 the lease authorizes reads. `Mount::open` was removed; embedders use `open_captured`
 with a provider capture, and production Engine navigation has no direct opener or
-missing-provider fallback. Native-host `capture_matching` accepts complete matching v1 metadata
-under the current or supported legacy platform prefix. Successful restoration
+missing-provider fallback. Native-host `capture_matching` accepts v1 metadata that matches in
+everything but the change time (VIEW-05, since 21 November) under the current or
+supported legacy platform prefix. Successful restoration
 stores the current token; changed, malformed, foreign or unknown tokens fail closed.
 Windows and Linux implementations remain separate. Mount/read/source budgets are
 unchanged. See [implementation and qualification plan](../superpowers/plans/2026-11-09-archive-native-capture.md).

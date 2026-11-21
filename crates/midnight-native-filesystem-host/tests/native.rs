@@ -176,6 +176,77 @@ fn installed_viewer_capture_reads_on_after_only_the_change_time_moved() {
     }
 }
 
+#[cfg(windows)]
+#[path = "support/archive_tag_windows.rs"]
+mod archive_tag;
+#[cfg(target_os = "linux")]
+#[path = "support/archive_tag_linux.rs"]
+mod archive_tag;
+
+/// Tag the file (`archive_tag::tag`) until its change time has moved, at the file
+/// system's clock tick at the latest; each pass is a real metadata change, without
+/// sleeping.
+#[cfg(any(windows, target_os = "linux"))]
+fn tag_until_the_change_time_moved(path: &Path) {
+    let revision = || {
+        midnight_plugin_host::CapturedFile::capture(path)
+            .unwrap()
+            .stable_version()
+    };
+    let before = revision();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while revision() == before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the change time did not move"
+        );
+        archive_tag::tag(path);
+    }
+}
+
+/// Archive containers through the actual native plugin, whose reader checks every read
+/// against its own revision (change time included): after the archive was tagged, the
+/// archive capture reads on and its saved revision still restores it, while an exact
+/// capture fails. A rewrite of the same length fails both, for good.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+#[ignore = "requires a protected independent native plugin installation"]
+fn installed_archive_capture_reads_on_after_the_archive_was_tagged() {
+    let installed =
+        midnight_native_filesystem_host::InstalledProvider::from_installation(installation(), None);
+    let fixture = tempfile::tempdir().unwrap();
+    // No extension: endpoint protection tags some fresh file types on its own.
+    let container = fixture.path().join("tagged 文档");
+    std::fs::write(&container, b"archive bytes").unwrap();
+    let archive = installed
+        .capture_matching(&container, None, &|| false)
+        .unwrap();
+    let saved = archive.stable_version();
+    let exact = installed.capture(&container, &|| false).unwrap();
+    assert_eq!(archive.read_at(0, 7).unwrap(), b"archive");
+    assert_eq!(exact.read_at(0, 7).unwrap(), b"archive");
+    tag_until_the_change_time_moved(&container);
+    assert!(exact.read_at(0, 7).is_err());
+    assert!(exact.revalidate().is_err());
+    assert_eq!(archive.read_at(8, 5).unwrap(), b"bytes");
+    archive.revalidate().unwrap();
+    let restored = installed
+        .capture_matching(&container, Some(&saved), &|| false)
+        .unwrap();
+    assert_eq!(restored.read_at(0, 7).unwrap(), b"archive");
+    std::fs::write(&container, b"changed bytes").unwrap();
+    for capture in [&archive, &restored] {
+        assert!(capture.read_at(0, 7).is_err());
+        assert!(capture.revalidate().is_err());
+        assert!(capture.changed_since_capture());
+    }
+    assert!(
+        installed
+            .capture_matching(&container, Some(&saved), &|| false)
+            .is_err()
+    );
+}
+
 #[test]
 #[ignore = "requires a protected independent native plugin installation"]
 fn missing_duplicate_incompatible_and_removed_native_packages_fail_closed() {

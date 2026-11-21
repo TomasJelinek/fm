@@ -15,6 +15,14 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+/// How an archive container capture (`InstalledProvider::capture_matching`) compares the
+/// file with its captured or saved revision: a revision whose change time alone moved is
+/// unchanged (VIEW-05), because endpoint protection moves the change time of archives at
+/// any time, for example by adding an alternate data stream hours after they were
+/// written. The identity, length and write time must still match, and the plugin still
+/// opens only regular files without following links.
+const ARCHIVE_REVISIONS: RevisionPolicy = RevisionPolicy::AcceptChangeTimeOnly;
+
 /// Construction performs no IO. All service calls and final drops belong on backend workers.
 /// Both successful discovery and failures remain fixed for this application session.
 #[derive(Default)]
@@ -160,19 +168,22 @@ impl InstalledProvider {
             .capture_checked_with(path, policy, cancelled)
     }
 
-    /// Capture through the installed provider and require a persisted native revision, if supplied.
-    /// Supports only exact current-platform v1 revisions and their legacy equivalent.
-    /// Mismatches fail with `SourceChanged`; provider failures never use a native fallback.
+    /// Capture an archive container through the installed provider and, if supplied,
+    /// require a persisted native revision (a restored tab or Hot Path). Both
+    /// that check and every later read and revalidation of the capture use
+    /// `ARCHIVE_REVISIONS`. Supports only current-platform v1 revisions and their legacy
+    /// equivalent. Mismatches fail with `SourceChanged`; provider failures never use a
+    /// native fallback.
     pub fn capture_matching(
         &self,
         path: &Path,
         expected: Option<&[u8]>,
         cancelled: Cancel<'_>,
     ) -> Result<midnight_plugin_host::CapturedFile, Failure> {
-        let file = self.capture(path, cancelled)?;
+        let file = self.capture_with(path, ARCHIVE_REVISIONS, cancelled)?;
         check_cancel(cancelled)?;
         if expected.is_some_and(|expected| {
-            !crate::revision::matches(expected, &file.stable_version(), RevisionPolicy::Exact)
+            !crate::revision::matches(expected, &file.stable_version(), ARCHIVE_REVISIONS)
         }) {
             return Err(Failure::new(
                 midnight_filesystem_plugin_api::ErrorCode::SourceChanged,
@@ -192,6 +203,10 @@ impl InstalledProvider {
 #[cfg(test)]
 #[path = "installed_capture_tests.rs"]
 mod capture_tests;
+
+#[cfg(all(test, any(windows, target_os = "linux")))]
+#[path = "installed_archive_capture_tests.rs"]
+mod archive_capture_tests;
 
 #[cfg(test)]
 #[path = "installed_size_tests.rs"]

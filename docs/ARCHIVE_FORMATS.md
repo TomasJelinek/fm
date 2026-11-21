@@ -173,7 +173,13 @@ is never parsed to reconstruct an operation target. Duplicate detection compares
 the archive location independently of its captured source revision. Re-adding a
 location refreshes that revision while retaining its shortcut slot. If the archive
 has changed since capture, navigation reports that change; reopen the archive and
-add the Hot Path again to capture its new revision. Missing providers remain an
+add the Hot Path again to capture its new revision. A change of the archive file's
+change time alone, which endpoint protection makes for example by adding an alternate
+data stream, is not a change: an open archive reads on and a Hot Path or saved tab
+still opens it, as long as its identity, length and modification time are the same
+([change-time drift](developer/CONTENT_READS.md#change-time-drift-view-05)). A Copy
+out of an archive that did change offers Skip but no Retry, which could not succeed.
+Missing providers remain an
 explicit unavailable location, with native file operations disabled. Core/codec
 and presenter tests cover this implementation; final integrated UI qualification
 is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-followups.md#archive-hot-paths).

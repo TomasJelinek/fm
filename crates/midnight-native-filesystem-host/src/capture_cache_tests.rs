@@ -264,6 +264,7 @@ fn snapshot_checked_reads_forward_original_expected_metadata() {
         name: "archive.7z".into(),
         initial: Mutex::new(None),
         release_failure: Mutex::new(None),
+        changed: AtomicBool::new(false),
         released: false,
     };
     for (expected_length, expected_version) in [(11, &[1][..]), (12, &[2][..])] {

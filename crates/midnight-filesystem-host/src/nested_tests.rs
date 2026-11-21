@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 #[derive(Debug, Default)]
 struct Enclosing {
     changed: AtomicBool,
+    /// The native archive file was changed (`InvalidData`, `Mount::source_failure`).
+    gone: AtomicBool,
     tainted: AtomicBool,
     validations: AtomicUsize,
     releases: AtomicUsize,
@@ -25,6 +27,13 @@ impl ArchiveMount for Enclosing {
     }
     fn validate(&self) -> Result<(), FsError> {
         self.validations.fetch_add(1, Ordering::SeqCst);
+        if self.gone.load(Ordering::Acquire) {
+            return Err(FsError::from_io(
+                "archive source changed",
+                Path::new("outer.zip"),
+                io::Error::new(io::ErrorKind::InvalidData, "changed for good"),
+            ));
+        }
         if self.changed.load(Ordering::Acquire) {
             return Err(FsError::from_io(
                 "archive source changed",
@@ -123,6 +132,23 @@ fn the_staged_member_is_read_through_the_enclosing_archive_revision() {
         Some(3),
         "the mount reports its enclosing folder"
     );
+}
+
+/// An archive inside an archive whose native archive file was changed reports that too,
+/// so its own mount fails as `InvalidData`; another failure of the chain does not.
+#[test]
+fn a_lasting_change_of_the_enclosing_chain_carries_over() {
+    let mount = Arc::new(Enclosing::default());
+    let (_link, source) = source(&mount);
+    let captured = CapturedFile::from_source(source.clone()).unwrap();
+    mount.changed.store(true, Ordering::Release);
+    assert!(captured.revalidate().is_err());
+    assert!(!captured.changed_since_capture());
+    mount.changed.store(false, Ordering::Release);
+    captured.revalidate().unwrap();
+    mount.gone.store(true, Ordering::Release);
+    assert!(captured.revalidate().is_err());
+    assert!(captured.changed_since_capture());
 }
 
 #[test]

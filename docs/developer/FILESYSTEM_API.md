@@ -128,8 +128,15 @@ The executable receives pipes and a source length, never a source filename,
 arbitrary native handles, command text, credentials or network access. It must
 not reconstruct paths from display labels. Native source identity remains
 host-owned. The host validates identity, length and change/write timestamps
-before and after operations, and before/after each broker read. A detected change
-invalidates the operation; consumers must not combine different revisions.
+before and after operations, and before/after each broker read. A change time that
+alone moved is not a change (VIEW-05, since 21 November for archive files):
+endpoint protection moves it, for example by adding an alternate data stream to an
+archive hours after it was written, and the host then reopens the file's reader and
+reads on. A detected change invalidates the operation; consumers must not combine
+different revisions.
+A change that a reopened reader confirms is lasting, and fails as `InvalidData`:
+that mount is not expected to read the archive again, so Copy offers no Retry
+([archive members as a source](TRANSFERS.md#archive-members-as-a-source)).
 This is live validation, not a filesystem snapshot guarantee.
 
 The [archive worker entry point](../../plugins/midnight-fs-archive/src/main.rs)
@@ -231,7 +238,9 @@ bytes. Components reject empty, dot, dot-dot, NUL, slash, backslash and colon.
 These are application persistence rules, not a public Rust provider trait.
 
 Active saved tabs restore by exact provider ID and source revision, then resolve
-components through provider listings. Inactive tabs restore lazily. Missing
+components through provider listings. A saved revision whose change time alone moved
+still matches (identity, length and modification time must agree), and the restored
+tab keeps the current revision. Inactive tabs restore lazily. Missing
 providers, changed archives and failed locators retain an unavailable read-only
 tab with its address and diagnostic; they never fall back to native member paths.
 Parent navigation can leave an unavailable archive and return to its native

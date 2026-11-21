@@ -232,6 +232,7 @@ unchanged, and every other captured field still counts.
 | Move capture of the source (its own binding pin) and Move children | `AcceptChangeTimeOnly` (`prepare_move_source_with_policy`) | As a conflict pin |
 | Revalidation of Copy sources (`prepare_transfer_source_with_policy`), Move sources and their children | Linux `AcceptChangeTimeOnly`; Windows has never compared ChangeTime here | Identity; length and modification time (Windows also creation time) |
 | Verification read guards, modified-time pins, planned-source namespace pins, Move finalization | Always `AcceptChangeTimeOnly`; only Copy and Move use them | As a conflict pin; Linux namespace pins compare length and mtime |
+| The archive file of archive members copied out, before each chunk and each Retry ([archive members as a source](#archive-members-as-a-source)) | `AcceptChangeTimeOnly` since 21 November, like every capture of an archive | Identity, length and modification time (Windows LastWriteTime, Linux mtime) |
 
 Exact revisions remain for every other consumer of the same services:
 `prepare_target`, `prepare_transfer_source`, `prepare_transfer_source_with_links`,
@@ -250,6 +251,34 @@ through these fields; see
 its preparation; Linux Move removal keeps its read lease; a replaced conflict target
 stays in recovery.
 Directory-link stubs keep exact revisions.
+
+### Archive members as a source
+
+A Copy out of an archive reads members through the archive's mount, which revalidates
+the captured archive file before every chunk and before a Retry resumes a member
+(`archive_transfer.rs`). On the Windows development machine Defender for Endpoint data
+loss prevention added its `sec.endpointdlp` alternate data stream to a tar file about
+two hours after it was written; NTFS moved the file's ChangeTime but not its
+LastWriteTime or the main stream's length, and a Copy of its members stopped at member
+315 with "archive source changed: Captured native content changed" (21 November,
+while measuring WIN-8). Decision, as VIEW-05: every capture of an archive file accepts
+a change time that alone moved, on Windows and Linux
+([content reads](CONTENT_READS.md#change-time-drift-view-05)); its identity, length and
+modification time still count, and the plugin still opens only a regular file without
+following links.
+
+The question after that failure offered Retry, which could never succeed: the capture
+compared every revalidation with its fixed revision, change time included, and a
+failure inside an exchange with the archive worker also stops that worker, so every
+later request through that mount fails with "Archive worker was stopped after a failed
+request (…); open the archive again". Now a lasting change, found when a reader that
+the plugin opens on the archive's path reports another identity, length or
+modification time, fails as `InvalidData` (`Mount::source_failure` in the filesystem
+host, from `CapturedFile::changed_since_capture`), and the copy offers Skip, Skip all
+and Cancel but no Retry, as for a changed native source. Other source failures, such as
+an unreachable network file, still offer Retry. It succeeds once the file is back when
+the revalidation between chunks failed; when the failure stopped the worker during an
+exchange, each Retry of that member fails again until the archive is opened again.
 
 ## Conflict policies
 

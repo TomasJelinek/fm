@@ -57,6 +57,15 @@ pub trait ContentSource: Send + Sync + std::fmt::Debug {
         false
     }
 
+    /// Cached observation that the captured file was changed: a reader opened on its path
+    /// reported another identity, length or revision than the capture's policy accepts,
+    /// so repeating a failed read or revalidation is not expected to succeed. This query
+    /// performs no I/O. False only means that no such change was observed; a failure for
+    /// another reason, such as an unreachable file, leaves it false.
+    fn changed_since_capture(&self) -> bool {
+        false
+    }
+
     /// Consume this reference on a backend worker. A known shared reference may
     /// return immediately; a last owner must confirm native cleanup before Ok.
     /// Errors/unwinds retain unconfirmed native and accounting tails. Unknown
@@ -116,6 +125,16 @@ impl CapturedFile {
         self.source
             .as_ref()
             .is_some_and(|source| source.cleanup_unconfirmed())
+    }
+
+    /// Whether the backing source found that the captured file was changed
+    /// (`ContentSource::changed_since_capture`), so that repeating a failed read or
+    /// revalidation is not expected to succeed. No I/O. An in-process native capture
+    /// reports false.
+    pub fn changed_since_capture(&self) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|source| source.changed_since_capture())
     }
 
     /// Explicit backend release of this capture's content, then resource authority.
@@ -417,8 +436,12 @@ mod provider_tests {
     struct Source {
         version: AtomicU64,
         oversized: std::sync::atomic::AtomicBool,
+        changed: std::sync::atomic::AtomicBool,
     }
     impl ContentSource for Source {
+        fn changed_since_capture(&self) -> bool {
+            self.changed.load(Ordering::Acquire)
+        }
         fn length(&self) -> u64 {
             5
         }
@@ -455,6 +478,16 @@ mod provider_tests {
         assert_eq!(captured.stable_version(), revision);
         assert!(captured.read_at(0, 1).is_err());
         assert!(captured.revalidate().is_err());
+    }
+    /// Archive mounts report a capture whose file was changed as a failure that a Retry
+    /// cannot undo; only the source can observe it.
+    #[test]
+    fn a_capture_reports_the_lasting_change_its_source_observed() {
+        let source = Arc::new(Source::default());
+        let captured = CapturedFile::from_source(source.clone()).unwrap();
+        assert!(!captured.changed_since_capture());
+        source.changed.store(true, Ordering::Release);
+        assert!(captured.changed_since_capture());
     }
     #[test]
     fn provider_cannot_return_more_than_the_broker_requested() {

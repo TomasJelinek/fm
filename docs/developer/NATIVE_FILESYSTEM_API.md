@@ -62,8 +62,9 @@ keep at most 16 resident readers. An evicted reader reopens only while the file
 keeps its captured length and revision, and a capture's readers are released when
 that captured source is released or dropped. A viewer capture
 (`InstalledProvider::capture_with` with `RevisionPolicy::AcceptChangeTimeOnly`,
-VIEW-05) also reopens, and continues reading, a file whose revision differs only in
-its change time; see [change-time drift](CONTENT_READS.md#change-time-drift-view-05). `InstalledProvider::shared(home)` is a
+VIEW-05) and an archive capture (`capture_matching`) also reopen, and continue
+reading, a file whose revision differs only in its change time; see
+[change-time drift](CONTENT_READS.md#change-time-drift-view-05). `InstalledProvider::shared(home)` is a
 lazy backend-only installation binding pinned until application exit. It has no
 builtin fallback. Do not call these APIs or drop their resource owners on the UI
 thread.
@@ -75,10 +76,12 @@ captured metadata, byte/EOF checks, explicit revalidation and validation of empt
 reads remain enforced. This host optimization requires no plugin ABI change.
 
 For a persisted native content reference, `InstalledProvider::capture_matching`
-also accepts an optional expected revision. It captures through the same installed
-provider and checks cancellation before returning. Exact current v1 tokens and
-their documented Windows/Linux legacy equivalents are accepted only when every
-identity/revision field agrees; mismatches return `SourceChanged`. This is a
+also accepts an optional expected revision. It captures an archive file through the
+same installed provider and checks cancellation before returning. Current v1 tokens
+and their documented Windows/Linux legacy equivalents are accepted only when every
+identity/revision field but the change time agrees (since 21 November; the archive
+capture accepts a change time that alone moved, VIEW-05); mismatches return
+`SourceChanged`. This is a
 host-side migration adapter, not a new wire operation or permission to reinterpret
 arbitrary provider tokens. Archive restoration uses it before launching the decoder
 and stores the current validated token. See [archive capture qualification](../verification/2026-11-09-archive-native-capture.md).
