@@ -194,8 +194,9 @@ through that session again: it opens the archive once more at the requested fold
 as well it returns to the native folder that contains the archive, with the archive
 under the cursor, and shows the error. A cancelled listing changes nothing.
 
-ZIP support is currently Stored/Deflate without passwords; other codecs, encrypted
-Office containers, DRM and corrupt archives may fail explicitly. The current worker
+ZIP support is Stored/Deflate, including password-protected members (below); other
+codecs, encrypted Office containers, DRM and corrupt archives fail explicitly, and the
+panel names the reason. The current worker
 has no artificial source, member or expansion-ratio byte ceiling: available spool
 storage limits decoded content. Nothing limits how many members an archive has, how
 many a folder lists or how long their names are in total: the archive's index lives
@@ -212,6 +213,52 @@ invalid archive. RAR is unavailable; archives inside archives are described belo
 See the [filesystem API](developer/FILESYSTEM_API.md) and the
 [archive worker](../plugins/midnight-fs-archive/README.md) for exact limits and the
 plugin contract.
+
+## Password-protected archives
+
+Encrypted members are listed like any other, with the length the archive records, and
+a small padlock beside their icon (" · Encrypted" for screen readers). The status line
+of a focused encrypted member adds **Encrypted** with its method: ZipCrypto (the
+traditional ZIP encryption), AES-128, AES-192 or AES-256 (WinZip AES) or 7-Zip
+AES-256. A member that cannot be read says why, in its status line (**Unreadable**) and
+when it is opened: for example "old.bin is compressed with Implode, which the archive
+plugin cannot decompress.", a link, an unsafe name, several records with one name, or
+PKWARE strong encryption, which is not supported.
+
+One password opens an archive, and it is asked once: in a small dialog, when an
+action first needs it. That is F3 or Alt+F3 on an encrypted member, Enter on an
+encrypted archive inside the archive, F5 of a selection that holds encrypted members
+(or folders that contain some), or opening a 7z archive whose file names are
+encrypted. Type the password (Show password reveals it) and press Enter or OK; a wrong
+password keeps the dialog open with "Wrong password — try again." Escape, Cancel or
+the close button leave the archive locked: F3 and Enter then say the member is
+password-protected, a copy goes on and skips each protected member, naming that
+reason in its results, without asking again, and the next action that needs the
+password asks for it again. Find's search inside archives never asks: it skips
+protected members with that reason, and previews of protected members appear once the
+archive has been unlocked in its panel.
+
+Once accepted, the password is remembered until the archive is closed, and F3, Enter
+and F5 use it without asking. The archive is closed when nothing uses it any more:
+every panel tab that showed it has left it or been closed (a tab that is not in front
+keeps its archive open), every viewer of one of its members is closed and every copy
+from it has finished. Exiting the application closes every archive. Opening the
+archive again after it was closed, or opening the same file separately in the other
+panel, starts a new session, which asks again when it needs the password. An archive
+inside an archive asks for its own password, separately from the archive that
+contains it, and keeps it by the same rule. A panel that has left an archive inside
+an archive keeps that archive open for Back and Forward only until the panel opens
+another archive inside an archive or leaves the enclosing archive.
+
+The password is kept in memory only: it is never saved in settings, history, logs,
+error details or the clipboard, and it goes away when the archive closes, because the
+archive's worker process, the only place that keeps it, then ends. Only that sandboxed
+worker decrypts, and every member is checked (CRC-32, and for WinZip AES its
+authentication code) before any of its bytes is shown or copied: a damaged member or a
+password that only seemed right fails with an error instead of producing wrong data.
+ZIP passwords are taken as UTF-8 text, so a non-ASCII ZipCrypto password that another
+program stored in an old code page may not match. Members with a different password
+than the archive's first encrypted members are reported as needing another password.
 
 ## Archives inside archives
 

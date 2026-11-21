@@ -259,6 +259,7 @@ fn archive_entry(id: u64, raw_name: &[u8], caption: &str, kind: EntryKind) -> En
         size: None,
         modified: None,
         readable: kind == EntryKind::File,
+        access: Default::default(),
     })
 }
 

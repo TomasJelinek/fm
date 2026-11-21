@@ -393,6 +393,7 @@ fn archive_thumbnail_rectangle_keeps_disjoint_opaque_ids_and_preview_until_ack()
                 kind: EntryKind::File,
                 size: Some(row),
                 readable: true,
+                access: Default::default(),
             })
         })
         .collect::<Vec<_>>()

@@ -35,6 +35,7 @@ fn file(mount: u64, entry: u64, name: &str) -> Entry {
         size: Some(5),
         modified: None,
         readable: true,
+        access: Default::default(),
     })
 }
 

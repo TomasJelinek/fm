@@ -52,6 +52,7 @@ fn archive_node(entry: u64, parent: u64, raw_name: &[u8]) -> ArchiveNode {
         kind: EntryKind::Directory,
         size: None,
         readable: false,
+        access: Default::default(),
     }
 }
 

@@ -2,7 +2,6 @@
 use crate::*;
 use sevenz_rust2::{ArchiveEntry, Block, BlockDecoder, EncoderMethod, Password};
 use std::{
-    collections::HashSet,
     io::{Seek, SeekFrom},
     ops::Range,
 };
@@ -42,6 +41,8 @@ pub(crate) struct Content {
     /// Readable members without a stream, in increasing ID order.
     empty: Vec<u64>,
     retained: Retained,
+    /// Blocks encrypted with 7-Zip AES that this worker decodes once unlocked.
+    pub(crate) encrypted: Vec<usize>,
 }
 
 /// Bytes of members of one block whose complete decode, including every member
@@ -68,9 +69,49 @@ impl Archive {
     pub(crate) fn sevenzip(&mut self, mut source: Reader, source_length: u64) -> Result<(), Error> {
         preflight_header(&mut source, source_length)?;
         // This parses and verifies the 7z index (including compressed headers), not bodies.
-        let metadata =
-            sevenz_rust2::Archive::read(&mut source, &Password::empty()).map_err(seven_error)?;
-        self.index_sevenzip(source, metadata)
+        match sevenz_rust2::Archive::read(&mut source, &Password::empty()) {
+            Ok(metadata) => self.index_sevenzip(source, metadata),
+            // Its names are encrypted: the archive opens and lists once it is unlocked.
+            Err(sevenz_rust2::Error::PasswordRequired) => {
+                self.locked_names = Some(source);
+                Ok(())
+            }
+            Err(error) => Err(seven_error(error)),
+        }
+    }
+
+    /// Unlock a 7z archive whose names are encrypted: a password that decrypts and
+    /// verifies its header (CRC-32) indexes it. Any other outcome of decoding the
+    /// header with it is a wrong password, unless reading the source failed.
+    pub(crate) fn unlock_names(
+        &mut self,
+        password: &midnight_filesystem_api::Password,
+    ) -> Result<UnlockStatus, Error> {
+        let Some(mut source) = self.locked_names.take() else {
+            return Ok(UnlockStatus::NotEncrypted);
+        };
+        let Some(password) = seven_password(password) else {
+            self.locked_names = Some(source);
+            return Ok(UnlockStatus::WrongPassword);
+        };
+        match sevenz_rust2::Archive::read(&mut source, &password) {
+            Ok(metadata) => {
+                self.index_sevenzip(source, metadata)?;
+                self.finish_index();
+                Ok(UnlockStatus::Unlocked)
+            }
+            Err(error) => {
+                self.locked_names = Some(source);
+                match error {
+                    sevenz_rust2::Error::Io(io, _) | sevenz_rust2::Error::MaybeBadPassword(io)
+                        if Failure::of(&io).is_some() =>
+                    {
+                        Err(Error::from(io))
+                    }
+                    _ => Ok(UnlockStatus::WrongPassword),
+                }
+            }
+        }
     }
 
     fn index_sevenzip(
@@ -98,7 +139,8 @@ impl Archive {
                 return Err(corrupt_block());
             }
         }
-        let mut undecodable = HashSet::new();
+        let mut blocks = HashMap::new();
+        let mut encrypted = Vec::new();
         for (index, (block, size)) in metadata.blocks.iter().zip(block_sizes).enumerate() {
             if size != block.get_unpack_size() {
                 return Err(corrupt_block());
@@ -106,45 +148,129 @@ impl Archive {
             if size == 0 && block.has_crc && block.crc != 0 {
                 return Err(corrupt_block());
             }
-            // Payload decoding is deferred: a block with an encrypted or unsupported
-            // coder, or with a dictionary beyond the worker budget, only makes its own
-            // members unreadable, as ZIP does per member.
-            if !decodable(block, dictionary_bytes(block)) {
-                undecodable.insert(index);
+            // Payload decoding is deferred: a block with an unsupported coder, or with a
+            // dictionary beyond the worker budget, only makes its own members
+            // unreadable, as ZIP does per member. An encrypted block is readable once
+            // the archive is unlocked.
+            if let Some(access) = self.block_access(block, dictionary_bytes(block)) {
+                if access.reason == Reason::None {
+                    encrypted.push(index);
+                }
+                blocks.insert(index, access);
             }
         }
         let mut file_nodes = Vec::with_capacity(metadata.files.len());
         for (index, entry) in metadata.files.iter_mut().enumerate() {
             let kind = kind(entry);
-            let decodable = metadata.stream_map.file_block_index[index]
-                .is_none_or(|block| !undecodable.contains(&block));
+            let access = metadata.stream_map.file_block_index[index]
+                .and_then(|block| blocks.get(&block).copied())
+                .unwrap_or(Access::READABLE);
             // The index keeps its own copy; block decoding never reads entry names.
             let name = std::mem::take(&mut entry.name);
-            let readable = kind == Kind::File && decodable && tree::safe_name(name.as_bytes());
-            let id = self.add(name.as_bytes(), &name, kind, None, readable)?;
-            if let Some(member) = self.member_mut(id) {
-                member.modified = entry
-                    .has_last_modified_date
-                    .then(|| timestamps::filetime(u64::from(entry.last_modified_date)));
-            }
+            let id = self.add(name.as_bytes(), &name, kind, None, access)?;
+            let readable = match self.member_mut(id) {
+                Some(member) => {
+                    member.modified = entry
+                        .has_last_modified_date
+                        .then(|| timestamps::filetime(u64::from(entry.last_modified_date)));
+                    member.readable
+                }
+                None => false,
+            };
             if readable {
                 let id = self.indexed_size(entry.size)?;
                 file_nodes.push(Some(id));
             } else {
+                if kind == Kind::File && id != 1 {
+                    self.declared_size(entry.size);
+                }
                 file_nodes.push(None);
             }
         }
-        self.sevenzip_content = Some(Content::new(source, metadata, file_nodes)?);
+        let mut content = Content::new(source, metadata, file_nodes)?;
+        content.encrypted = encrypted;
+        self.sevenzip_content = Some(content);
         Ok(())
     }
 }
 
-fn decodable(block: &Block, dictionary: u64) -> bool {
-    dictionary <= MAX_DICTIONARY
-        && block
-            .coders
+impl Archive {
+    /// How the members of `block` can be read, or None for a plain decodable block: a
+    /// coder this worker cannot decode, then a dictionary beyond its budget, make them
+    /// unreadable; 7-Zip AES marks them encrypted, readable once unlocked.
+    pub(crate) fn block_access(&mut self, block: &Block, dictionary: u64) -> Option<Access> {
+        let methods = || block.coders.iter().map(|coder| coder.encoder_method_id());
+        let encryption = if methods().any(|method| method == EncoderMethod::ID_AES256_SHA256) {
+            Encryption::SevenZipAes256
+        } else {
+            Encryption::None
+        };
+        let reason = if let Some(method) = methods().find(|method| !supported(method)) {
+            self.compression(&coder_name(method))
+        } else if dictionary > MAX_DICTIONARY {
+            Reason::Limit
+        } else {
+            Reason::None
+        };
+        (encryption != Encryption::None || reason != Reason::None)
+            .then_some(Access { encryption, reason })
+    }
+
+    /// Verify `password` against the first encrypted blocks: each must decode its first
+    /// byte. A wrong 7-Zip AES key garbles the stream of the next coder, whose header
+    /// check fails at once (an LZMA range coder's first byte is zero, an LZMA2 chunk
+    /// starts with a known control byte); the key derivation itself checks nothing.
+    pub(crate) fn unlock_blocks(
+        &mut self,
+        password: &midnight_filesystem_api::Password,
+    ) -> Result<Option<UnlockStatus>, Error> {
+        let Some(content) = self.sevenzip_content.as_mut() else {
+            return Ok(None);
+        };
+        if content.encrypted.is_empty() {
+            return Ok(None);
+        }
+        let Some(seven) = seven_password(password) else {
+            return Ok(Some(UnlockStatus::WrongPassword));
+        };
+        let blocks: Vec<usize> = content
+            .encrypted
             .iter()
-            .all(|coder| supported(coder.encoder_method_id()))
+            .copied()
+            .take(UNLOCK_CHECKS)
+            .collect();
+        for block in blocks {
+            if !content.probe(block, &seven)? {
+                return Ok(Some(UnlockStatus::WrongPassword));
+            }
+        }
+        Ok(Some(UnlockStatus::Unlocked))
+    }
+}
+
+/// The 7z decoder's form of `password`: its UTF-8 text, which the decoder encodes as
+/// UTF-16, or None for bytes that are no text (no 7z password can match them).
+fn seven_password(password: &midnight_filesystem_api::Password) -> Option<Password> {
+    std::str::from_utf8(password.as_bytes())
+        .ok()
+        .map(Password::from)
+}
+
+/// The name users know a 7z coder by.
+fn coder_name(method: &[u8]) -> String {
+    match EncoderMethod::by_id(method).map(|method| method.name()) {
+        Some("PPMD") => "PPMd".into(),
+        Some("DEFLATE") => "Deflate".into(),
+        Some("DEFLATE64") => "Deflate64".into(),
+        Some("ZSTD") => "Zstandard".into(),
+        Some("BROTLI") => "Brotli".into(),
+        Some(name) => name.into(),
+        None if method.is_empty() => "an unknown method".into(),
+        None => {
+            let hex: String = method.iter().map(|byte| format!("{byte:02X}")).collect();
+            format!("method {hex}")
+        }
+    }
 }
 
 /// Dictionary bytes the pinned decoders allocate for one block. Malformed coder
@@ -299,13 +425,47 @@ impl Content {
             block_files,
             empty,
             retained: Retained::default(),
+            encrypted: Vec::new(),
         })
+    }
+
+    /// Whether `password` decodes the first byte of `block` (`Archive::unlock_blocks`).
+    /// The decode stops there; a failed read of the source is reported as itself.
+    fn probe(&mut self, block: usize, password: &Password) -> Result<bool, Error> {
+        let mut decoded: Result<bool, io::Error> = Ok(true);
+        let result = BlockDecoder::new(1, block, &self.metadata, password, &mut self.source)
+            .for_each_entries(&mut |file, reader| {
+                if file.size == 0 {
+                    return Ok(true);
+                }
+                // A member with content that decodes to nothing is garbled, too.
+                let mut byte = [0];
+                decoded = reader.read(&mut byte).map(|count| count == 1);
+                Ok(false)
+            });
+        match (result, decoded) {
+            (
+                Err(
+                    sevenz_rust2::Error::Io(error, _)
+                    | sevenz_rust2::Error::MaybeBadPassword(error),
+                ),
+                _,
+            )
+            | (Ok(_), Err(error))
+                if Failure::of(&error).is_some() =>
+            {
+                Err(Error::from(error))
+            }
+            (Ok(_), Ok(true)) => Ok(true),
+            _ => Ok(false),
+        }
     }
 
     pub(crate) fn decode(
         &mut self,
         entry: u64,
         storage: Rc<dyn Storage>,
+        password: Option<&midnight_filesystem_api::Password>,
     ) -> Result<storage::Content, Error> {
         if self.empty.binary_search(&entry).is_ok() {
             return Stage::new(storage, StagePurpose::Member { entry }, Some(0), 0)?.finish();
@@ -347,7 +507,11 @@ impl Content {
         let mut kept = Vec::new();
         let mut actual = 0u64;
         let mut failure = None;
-        let password = Password::empty();
+        // An encrypted block decodes with the unlocked password (`Archive::prepare_member`
+        // refuses to read it without one); the decoder copies it as UTF-16.
+        let password = password
+            .and_then(seven_password)
+            .unwrap_or_else(Password::empty);
         BlockDecoder::new(1, block, &self.metadata, &password, &mut self.source)
             .for_each_entries(&mut |file, reader| {
                 let result = (|| {
@@ -449,6 +613,7 @@ fn supported(method: &[u8]) -> bool {
             | EncoderMethod::ID_BCJ_SPARC
             | EncoderMethod::ID_BCJ_RISCV
             | EncoderMethod::ID_DELTA
+            | EncoderMethod::ID_AES256_SHA256
     )
 }
 
@@ -466,11 +631,28 @@ fn seven_error(error: sevenz_rust2::Error) -> Error {
     {
         return failure.clone().into();
     }
+    if let E::MaybeBadPassword(io) = &error {
+        if let Some(failure) = Failure::of(io) {
+            return failure.clone().into();
+        }
+        // A password that passed the quick check but is wrong garbles the data.
+        return Error::new(
+            ErrorCode::Corrupt,
+            format!(
+                "The 7z data failed its checks: the password is wrong or the data is damaged ({io})"
+            ),
+        );
+    }
+    if matches!(&error, E::PasswordRequired) {
+        return Error::new(
+            ErrorCode::Unsupported,
+            "This 7z archive member needs the archive's password",
+        );
+    }
     let code = match error {
-        E::PasswordRequired
-        | E::UnsupportedCompressionMethod(_)
-        | E::Unsupported(_)
-        | E::ExternalUnsupported => ErrorCode::Unsupported,
+        E::UnsupportedCompressionMethod(_) | E::Unsupported(_) | E::ExternalUnsupported => {
+            ErrorCode::Unsupported
+        }
         E::MaxMemLimited { .. } => ErrorCode::Limit,
         _ => ErrorCode::Corrupt,
     };

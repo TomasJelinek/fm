@@ -9,6 +9,7 @@ export component FileArtwork inherits Rectangle {
     in property <bool> parent-entry;
     in property <bool> browsable-archive;
     in property <bool> compressed;
+    in property <bool> encrypted;
     in property <bool> dimmed;
     in property <bool> thumbnail;
     // The group is a child: `opacity` on a component root makes Slint inline
@@ -32,6 +33,19 @@ export component FileArtwork inherits Rectangle {
                 color: Theme.compression-mark;
                 horizontal-alignment: center; vertical-alignment: center;
                 accessible-role: none;
+            }
+        }
+        if root.encrypted : Rectangle {
+            // A small padlock in the lower left corner: an encrypted archive member.
+            x: 0px; y: parent.height - (root.thumbnail ? 17px : 9px);
+            width: root.thumbnail ? 13px : 8px; height: root.thumbnail ? 17px : 9px;
+            background: root.thumbnail ? transparent : Theme.pane-background;
+            border-radius: 2px;
+            Path {
+                width: parent.width; height: parent.height;
+                viewbox-width: 8; viewbox-height: 10;
+                commands: "M 2 4.5 L 2 3 A 2 2 0 0 1 6 3 L 6 4.5 M 1 4.5 L 7 4.5 L 7 9.5 L 1 9.5 Z";
+                stroke: Theme.secondary-text; stroke-width: 1px;
             }
         }
         if root.browsable-archive && root.native-icon.width > 0 : ArchiveBadge {

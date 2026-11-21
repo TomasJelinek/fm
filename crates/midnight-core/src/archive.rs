@@ -141,6 +141,182 @@ pub struct ArchiveNode {
     pub size: Option<u64>,
     pub readable: bool,
     pub modified: Option<ArchiveTimestamp>,
+    /// Encryption and the reason a member cannot be read, as protocol-4 providers
+    /// report them; empty for older providers.
+    pub access: ArchiveAccess,
+}
+
+/// How an archive member's content is encrypted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ArchiveEncryption {
+    #[default]
+    None,
+    /// Traditional PKWARE ("ZipCrypto") encryption.
+    ZipCrypto,
+    Aes128,
+    Aes192,
+    /// WinZip AES-256 (AE-1 or AE-2).
+    Aes256,
+    /// 7-Zip AES-256.
+    SevenZipAes256,
+    /// Another method, such as PKWARE strong encryption.
+    Unknown,
+}
+impl ArchiveEncryption {
+    /// The method's name as users know it; empty for `None`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::ZipCrypto => "ZipCrypto",
+            Self::Aes128 => "AES-128",
+            Self::Aes192 => "AES-192",
+            Self::Aes256 => "AES-256",
+            Self::SevenZipAes256 => "7-Zip AES-256",
+            Self::Unknown => "unknown method",
+        }
+    }
+}
+
+/// Why an archive member that is not a folder cannot be read.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ArchiveUnreadable {
+    /// Encrypted with a method that the provider cannot decrypt.
+    Encryption,
+    /// Compressed with the named method, which the provider cannot decode.
+    Compression(String),
+    Link,
+    UnsafeName,
+    /// Several records share the name, and the reader cannot tell them apart.
+    AmbiguousName,
+    SpecialFile,
+    /// Decoding it needs more than the provider's bounds (such as a dictionary).
+    Limit,
+}
+
+/// A member's encryption and readability as its provider reports them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ArchiveAccess {
+    /// A file: how its content is encrypted. A folder: `None`.
+    pub encryption: ArchiveEncryption,
+    /// A folder: whether a member below it is encrypted.
+    pub contains_encrypted: bool,
+    /// Why a member that is not a folder is unreadable; `None` when it is readable,
+    /// or when an older provider gives no reason.
+    pub unreadable: Option<ArchiveUnreadable>,
+}
+
+impl ArchiveNode {
+    /// Whether opening this member, or a folder of members, may need its archive's
+    /// password: an encrypted readable file, or a folder holding an encrypted member.
+    pub fn needs_password(&self) -> bool {
+        match self.kind {
+            EntryKind::Directory => self.access.contains_encrypted,
+            _ => self.readable && self.access.encryption != ArchiveEncryption::None,
+        }
+    }
+
+    /// Why this member cannot be read, as one sentence that names it: the reason its
+    /// provider reports, or a general one from an older provider.
+    pub fn unreadable_reason(&self) -> String {
+        let name = crate::visible_name(&self.display_name);
+        match (&self.access.unreadable, self.kind) {
+            (_, EntryKind::Directory) => format!("{name} is a folder."),
+            (Some(ArchiveUnreadable::Encryption), _) => format!(
+                "{name} is encrypted with {}, which the archive plugin cannot decrypt.",
+                match self.access.encryption {
+                    ArchiveEncryption::None | ArchiveEncryption::Unknown => {
+                        "an unsupported method (such as PKWARE strong encryption)"
+                    }
+                    other => other.label(),
+                }
+            ),
+            (Some(ArchiveUnreadable::Compression(method)), _) => format!(
+                "{name} is compressed with {method}, which the archive plugin cannot \
+                 decompress."
+            ),
+            (Some(ArchiveUnreadable::Link), _) | (None, EntryKind::Symlink) => {
+                format!("{name} is a link inside the archive; links are not opened.")
+            }
+            (Some(ArchiveUnreadable::UnsafeName), _) => format!(
+                "{name} has an unsafe name (an absolute path, `..`, a backslash, a drive \
+                 colon or NUL), so it is never read."
+            ),
+            (Some(ArchiveUnreadable::AmbiguousName), _) => format!(
+                "Several records of the archive are named {name}, and they cannot be \
+                 told apart."
+            ),
+            (Some(ArchiveUnreadable::SpecialFile), _) | (None, EntryKind::Other) => {
+                format!("{name} is a device, pipe or other special record.")
+            }
+            (Some(ArchiveUnreadable::Limit), _) => {
+                format!("Reading {name} needs more memory than the archive worker may use.")
+            }
+            (None, _) => format!(
+                "{name} cannot be read by this archive plugin: it may be encrypted, use an \
+                 unsupported compression method or have an unsafe name (a newer archive \
+                 plugin names the reason)."
+            ),
+        }
+    }
+}
+
+/// The `FsError::operation` of an archive read that needs its mount's password: the
+/// provider keeps the mount, and the caller may ask for the password
+/// (`ArchiveMount::unlock`) and try again.
+pub const ARCHIVE_PASSWORD_OPERATION: &str = "archive password";
+/// The message of that error.
+pub const ARCHIVE_PASSWORD_REQUIRED: &str =
+    "This archive member is password-protected, and no password was entered for its archive.";
+
+/// The error of an archive read that needs its mount's password.
+pub fn archive_password_required(path: &std::path::Path) -> FsError {
+    FsError::from_io(
+        ARCHIVE_PASSWORD_OPERATION,
+        path,
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            ARCHIVE_PASSWORD_REQUIRED,
+        ),
+    )
+}
+
+/// Whether `error` says that an archive read needs its mount's password.
+pub fn is_archive_password_required(error: &FsError) -> bool {
+    error.operation == ARCHIVE_PASSWORD_OPERATION
+        && error.kind == std::io::ErrorKind::PermissionDenied
+}
+
+/// A password typed for an archive. Kept in memory only: its UTF-8 bytes are zeroized
+/// when it is dropped, and `Debug` never prints them.
+#[derive(Clone)]
+pub struct ArchivePassword(zeroize::Zeroizing<String>);
+impl ArchivePassword {
+    pub fn new(text: String) -> Self {
+        Self(zeroize::Zeroizing::new(text))
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+impl std::fmt::Debug for ArchivePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ArchivePassword(<redacted>)")
+    }
+}
+
+/// The outcome of `ArchiveMount::unlock`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveUnlock {
+    /// The password opens the mount's encrypted members; the mount keeps it.
+    Unlocked,
+    WrongPassword,
+    /// The archive has no encrypted member.
+    NotEncrypted,
+    /// Its encrypted members use only methods the provider cannot decrypt.
+    Unsupported,
 }
 
 /// Host-owned session; only backend workers call these methods.
@@ -238,6 +414,32 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
         Ok(bytes)
     }
     fn validate(&self) -> Result<(), FsError>;
+
+    /// Whether a password was verified for this mount (`unlock`). Reads cached state
+    /// only, so the UI may ask it. Wrappers forward it.
+    fn unlocked(&self) -> bool {
+        false
+    }
+
+    /// Whether this mount's names are encrypted and its last listing needed the
+    /// password (7z): such a listing is empty until `unlock`. Cached state only.
+    fn listing_locked(&self) -> bool {
+        false
+    }
+
+    /// Backend only: verify `password` for this mount's encrypted members and keep it
+    /// for the mount's lifetime when it opens them. An archive inside an archive is a
+    /// mount of its own, with its own password. Providers without passwords refuse.
+    fn unlock(&self, _password: &ArchivePassword) -> Result<ArchiveUnlock, FsError> {
+        Err(FsError::from_io(
+            "archive password",
+            std::path::Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "This archive plugin cannot open password-protected members",
+            ),
+        ))
+    }
 
     /// Backend-only native container locator held by this mount. This is not a member path.
     /// Revalidate the mount before using it for storage policy; absent for non-native sources.

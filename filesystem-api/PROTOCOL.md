@@ -142,3 +142,53 @@ is dropped. Existing scratch, cache entries and retained read leases remain vali
 A completed ContentReady racing cancellation must pass full source/stage/range
 validation but cannot publish bytes or insert a new cache entry. All native cleanup
 and actual worker/I/O permit release completes on backend workers.
+
+# Protocol 4 passwords and member diagnostics (API 0.5)
+
+Version 4 is an explicit installed-worker opt-in (`protocol = 4`). It keeps every
+protocol-3 message, field layout, validation rule, cooperative cancellation and
+resource bound, and adds the following. Earlier versions refuse all of it: their
+frames keep their exact bytes, decode the new node fields as absent, and refuse the
+new tags and error codes.
+
+Each node record appends, after its timestamp: encryption `u8` (0 none,
+1 traditional PKWARE "ZipCrypto", 2 WinZip AES-128, 3 AES-192, 4 AES-256 (AE-1 or
+AE-2), 5 7-Zip AES-256, 255 another method), contains-encrypted `bool` and an
+unreadable reason `u8`: 0 none, 1 unsupported encryption method, 2 unsupported
+compression followed by the method's name as a 1–64-byte UTF-8 string (`Implode`,
+`PPMd`, `method 14`), 3 link, 4 unsafe name, 5 ambiguous name (records the reader
+cannot tell apart), 6 special file, 7 beyond the worker's decoder bounds. A directory
+has encryption 0 and reason 0, and its contains-encrypted flag says whether a member
+below it is encrypted. Any other node has contains-encrypted false and is readable
+exactly when its reason is 0. A node's size is the length the archive's directory
+records, also for an unreadable member.
+
+| Tag | Message | Fields after request ID |
+| --- | --- | --- |
+| 22 | Unlock | password blob, 1–1024 bytes (UTF-8 text as typed) |
+| 23 | UnlockReply | status `u8`: 1 unlocked, 2 wrong password, 3 not encrypted, 4 unsupported |
+
+Errors add password-required = 10 and wrong-password = 11.
+
+`Unlock` may follow `Opened` at any time; its terminal reply is `UnlockReply` (a
+`Failed` reply ends the session as usual). The worker checks the password against the
+quick verifiers of its encrypted members (the ZipCrypto check byte, the WinZip AES
+password verification value, the decryption of a 7z AES header) and replies
+`Unlocked` only when they accept it; it then keeps the password for the rest of the
+mount, and a later `Unlocked` replaces it. `WrongPassword`, `NotEncrypted` (no member is
+encrypted) and `Unsupported` (only methods the worker cannot decrypt) change nothing.
+
+A `Read` of an encrypted member while no password is unlocked, and a `List` of a
+folder whose names are encrypted, are answered with `Failed(PasswordRequired)` before
+any `StageBegin`. A `Read` whose member's verifier refuses the unlocked password is
+answered with `Failed(WrongPassword)`, also before any `StageBegin`. Both keep the
+session: the request staged nothing, and the worker accepts the next request. Either
+code anywhere else (the reply to `Open` or `Unlock`, or after the request began a
+stage) is a protocol violation that ends the session. A member that passes its
+verifier but fails its authentication (CRC-32, the AE-2 HMAC-SHA1) is
+`Failed(Corrupt)` and ends the session like any integrity failure, before any of its
+bytes is published.
+
+The codec zeroizes the frame buffers that carry a password after writing and reading
+them, and the `Password` type zeroizes its bytes when dropped and prints none of them
+in `Debug` output. Pipe buffers of the operating system are outside this guarantee.

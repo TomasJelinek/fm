@@ -175,6 +175,7 @@ fn mixed_rows() -> Vec<TreeDisplayRow> {
         kind: EntryKind::File,
         size: Some(11),
         readable: true,
+        access: Default::default(),
     });
     virtual_file.entry.id = EntryId(103);
     vec![native, folder, virtual_file]

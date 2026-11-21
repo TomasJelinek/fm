@@ -75,4 +75,5 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | midnight-ui |
 | [x11rb](https://crates.io/crates/x11rb/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | midnight-platform-linux |
 | [zbus](https://crates.io/crates/zbus/5.19.0) | 5.19.0 | MIT | midnight-platform-linux |
+| [zeroize](https://crates.io/crates/zeroize/1.9.1) | 1.9.1 | Apache-2.0 OR MIT | midnight-core, midnight-filesystem-api |
 | [zip](https://crates.io/crates/zip/8.6.0) | 8.6.0 | MIT | midnight-fs-archive, midnight-office-preview |

@@ -77,6 +77,9 @@ fn cooperative_version_preserves_timestamps_and_strict_frame_limits() {
                 seconds: 123,
                 nanoseconds: 456,
             }),
+            encryption: Encryption::None,
+            contains_encrypted: false,
+            unreadable: None,
         }],
     };
     let mut bytes = Vec::new();
@@ -102,5 +105,6 @@ fn cooperative_version_preserves_timestamps_and_strict_frame_limits() {
         )
         .is_err()
     );
-    assert!(Protocol::try_from(4).is_err());
+    // Protocol 4 (API 0.5) is the newest version; later ones are unknown.
+    assert!(Protocol::try_from(5).is_err());
 }

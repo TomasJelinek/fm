@@ -82,6 +82,7 @@ fn archive_checkbox_defaults_on_hides_resident_pixels_and_supports_cancel_ok_and
         size: Some(5),
         modified: None,
         readable: true,
+        access: Default::default(),
     })]
     .into();
     presenter.borrow_mut().apply(Event::ArchiveListed {

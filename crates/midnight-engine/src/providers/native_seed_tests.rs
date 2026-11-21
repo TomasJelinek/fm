@@ -291,6 +291,7 @@ fn native_seed_refuses_virtual_rows_nul_paths_and_hidden_large_capacity() {
         kind: EntryKind::File,
         size: Some(5),
         readable: true,
+        access: Default::default(),
     }));
     assert!(matches!(
         provider.capture_root(&root(), &bad, &Cancellation::default()),

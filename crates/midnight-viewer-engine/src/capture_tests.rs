@@ -192,6 +192,7 @@ fn a_virtual_entry_cannot_enter_the_native_capture_route() {
         kind: EntryKind::File,
         size: Some(8),
         readable: true,
+        access: Default::default(),
     }));
     launch.entries = entries.into();
     let source: NativeCapture = Arc::new(|_, _| panic!("native capture must not run"));

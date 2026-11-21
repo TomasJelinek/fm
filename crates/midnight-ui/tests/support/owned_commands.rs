@@ -238,6 +238,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::LoadPreferences
             | Command::ImportPreferences { .. }
             | Command::ListFontFamilies
+            | Command::UnlockArchive { .. }
             | Command::ReadLicenseNotice(_)
             | Command::ResolveDefaultEditor
             | Command::EditFile { .. }

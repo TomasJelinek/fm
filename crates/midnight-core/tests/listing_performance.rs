@@ -102,6 +102,7 @@ fn archive_nodes() -> Vec<ArchiveNode> {
                     seconds: (state >> 34) as i64,
                     nanoseconds: 0,
                 }),
+                access: Default::default(),
             }
         })
         .collect()

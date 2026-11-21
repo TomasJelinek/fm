@@ -576,6 +576,7 @@ fn full_path_insertion_rejects_virtual_descendants_even_under_a_native_root() {
         size: Some(1),
         readable: true,
         modified: None,
+        access: Default::default(),
     });
     rows[1].disclosure = TreeDisclosure::None;
     rows[1].navigable = false;

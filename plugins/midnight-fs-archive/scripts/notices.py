@@ -167,13 +167,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--output", required=True)
+    # The packaged target: notices cover what is built for it, not lockfile entries of
+    # other targets (getrandom's UEFI-only r-efi has no license file of its own).
+    parser.add_argument("--target")
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     output = checked_output(args.output)
+    platform = ["--filter-platform", args.target] if args.target else []
     # Cargo writes UTF-8 JSON; Python before 3.15 would decode it in the ANSI code page.
     metadata = json.loads(subprocess.check_output([
         "cargo", "metadata", "--format-version", "1", "--locked", "--offline",
-        "--manifest-path", str(root / "Cargo.toml"), "--config", args.config,
+        "--manifest-path", str(root / "Cargo.toml"), "--config", args.config, *platform,
     ], text=True, encoding="utf-8"))
     plan, inventory = notice_plan(metadata)
     replace_notices(output, plan, inventory)

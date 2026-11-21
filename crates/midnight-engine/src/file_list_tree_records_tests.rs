@@ -14,6 +14,7 @@ fn archive_entry(id: u64, name: &str) -> Entry {
         size: None,
         readable: false,
         modified: None,
+        access: Default::default(),
     });
     entry.id = EntryId(id);
     entry

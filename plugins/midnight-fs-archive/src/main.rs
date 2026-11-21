@@ -61,6 +61,13 @@ fn serve(broker: Broker) -> io::Result<()> {
                 }),
                 None => Err(unopened()),
             },
+            // The password moves into the archive, or is dropped (and zeroized) here.
+            Message::Unlock { password, .. } => match archive.as_mut() {
+                Some(archive) => archive
+                    .unlock(password)
+                    .map(|status| Message::UnlockReply { request, status }),
+                None => Err(unopened()),
+            },
             Message::Close { .. } => return Ok(()),
             _ => Err(Error {
                 code: ErrorCode::Unsupported,

@@ -25,7 +25,7 @@ impl Presenter {
         let entry = panel.cursor.and_then(|id| panel.entry_by_id(id))?;
         if let Some(node) = &entry.virtual_node {
             if !node.readable {
-                return Some("This archive member is unreadable: directories, links, unsafe names, encryption and unsupported compression cannot be opened by the read-only provider.".into());
+                return Some(node.unreadable_reason());
             }
             if panel
                 .archive

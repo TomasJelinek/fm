@@ -24,6 +24,7 @@ fn member(entry: u64, name: &str) -> ArchiveNode {
         size: None,
         readable: false,
         modified: None,
+        access: Default::default(),
     }
 }
 

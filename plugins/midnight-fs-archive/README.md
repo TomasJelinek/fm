@@ -13,10 +13,16 @@ The host supplies bounded source bytes and owns cancellation and revision checks
 
 Supported content: ZIP store/deflate; GZIP including concatenated members;
 TAR regular files and directory metadata (GNU/PAX long names provided by tar-rs);
-7z Copy/LZMA/LZMA2 and enabled pure Rust BCJ filters, solid and non-solid. Encrypted,
-unsupported codec and multi-volume input is not silently delegated to an external
-utility: such ZIP members, and the members of such 7z blocks, are listed but
-unreadable while the rest of the archive stays browsable. Links, special entries,
+7z Copy/LZMA/LZMA2 and enabled pure Rust BCJ filters, solid and non-solid. Encrypted
+members open with the archive's password (protocol 4 `Unlock`): ZipCrypto and WinZip
+AES-128/192/256 through the `zip` crate's `aes-crypto`, 7-Zip AES-256 blocks and
+encrypted 7z headers through sevenz-rust2's `aes256`; one password per mount, checked
+against the quick verifiers of the first four encrypted members (ZIP) or blocks (7z),
+or the CRC of an encrypted 7z header, before it is kept. Unsupported codec, PKWARE
+strong encryption and multi-volume input is not silently delegated to an external
+utility: such ZIP members, and the members of such 7z blocks, are listed with their
+size and the reason (protocol 4 `Unreadable`) but unreadable while the rest of the
+archive stays browsable. Links, special entries,
 traversal, absolute names, backslashes, colons, NUL names and a file named by a
 final `.` component are not readable or extractable; such records stay visible at
 the root under their full raw name, and unsafe directory records are listed as
@@ -64,7 +70,7 @@ whole block again. Decoding another block replaces the retained siblings. Corrup
 payloads can therefore be listed but fail when read, just as with ZIP, and nothing
 unverified is retained. TAR indexes checked u64 ranges without reading its file
 payloads. Selected members stream directly into private host-owned spool files
-through the protocol-2 staging format (protocol 3 in this release). Compressed TAR
+through the protocol-2 staging format (protocol 4 in this release). Compressed TAR
 must decode and validate its complete outer stream into one private scratch file to
 discover headers; member leases reuse checked ranges of that verified file.
 Standalone compressed streams use the same verified scratch storage. No complete
@@ -111,7 +117,8 @@ whatever the archive holds, but the pinned 7z decoder has no public decoded-head
 allocation hook, so decoding it remains subject to process memory containment.
 Decoded member lengths and all available checksums must match before
 sealing/publication; a member that decodes past its indexed length is reported as
-corrupt. There is no archive writing, password support or RAR codec in this
+corrupt; encrypted members are checked the same way (CRC-32, WinZip AES HMAC-SHA1,
+7z CRCs) after decryption. There is no archive writing or RAR codec in this
 release. Archives inside archives need nothing from the worker: the host stages the
 member through an ordinary read and starts another worker whose brokered source is
 that staged copy, so each worker still sees one archive through bounded source reads.

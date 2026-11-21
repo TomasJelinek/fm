@@ -35,6 +35,7 @@ fn member(mount: u64, entry: u64, name: &str, kind: EntryKind, readable: bool) -
         kind,
         size: Some(3 * 1024 * 1024),
         readable,
+        access: Default::default(),
     })
 }
 
@@ -285,7 +286,7 @@ fn archives_inside_archives_stop_at_the_depth_limit_and_other_members_explain() 
     assert!(!p.open(PaneId::Left, row(&p, "locked.zip"), &send));
     let (title, body) = p.desktop.notice.clone().expect("a notice");
     assert_eq!(title, "Archive member");
-    assert!(body.contains("unreadable"), "{body}");
+    assert!(body.starts_with("locked.zip cannot be read"), "{body}");
     assert!(!p.open(PaneId::Left, row(&p, "notes.txt"), &send));
     let (_, body) = p.desktop.notice.clone().expect("a notice");
     assert!(body.contains("F3") && body.contains("F5"), "{body}");

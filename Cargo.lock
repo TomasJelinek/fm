@@ -2830,6 +2830,7 @@ version = "0.3.0"
 dependencies = [
  "midnight-web-viewer-api",
  "unicase",
+ "zeroize",
 ]
 
 [[package]]
@@ -2901,7 +2902,10 @@ dependencies = [
 
 [[package]]
 name = "midnight-filesystem-api"
-version = "0.4.0"
+version = "0.5.0"
+dependencies = [
+ "zeroize",
+]
 
 [[package]]
 name = "midnight-filesystem-host"
@@ -6649,6 +6653,12 @@ dependencies = [
  "syn 3.0.9",
  "synstructure",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zerotrie"

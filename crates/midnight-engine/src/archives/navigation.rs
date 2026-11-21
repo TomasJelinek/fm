@@ -94,7 +94,12 @@ pub(super) fn run(
             });
     // A superseded listing of a shared mount ends between pages without stopping
     // the worker that other tabs, trees, viewers and jobs use (archive_shared.rs).
-    let nodes = mount.list(location.directory, &request.cancel)?;
+    // An archive whose names are encrypted (7z) opens empty: its pane asks for the
+    // password (`ArchiveMount::listing_locked`) and lists it again once it is unlocked.
+    let nodes = match mount.list(location.directory, &request.cancel) {
+        Err(error) if is_archive_password_required(&error) && mount.listing_locked() => Vec::new(),
+        result => result?,
+    };
     let mut entries: Vec<_> = nodes.into_iter().map(Entry::from_archive).collect();
     let hide_hidden = request.snapshots.lock().unwrap_or_else(|e| e.into_inner())
         [request.pane.index()]

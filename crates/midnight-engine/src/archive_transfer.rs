@@ -194,6 +194,7 @@ pub(crate) fn retirement_source_for_test(mount: Arc<dyn ArchiveMount>) -> Box<dy
         size: Some(0),
         modified: None,
         readable: true,
+        access: Default::default(),
     };
     Box::new(
         Source::new(
@@ -212,15 +213,23 @@ impl Source {
         depth: usize,
         visited: Arc<Mutex<Traversal>>,
     ) -> Result<Self, FsError> {
-        if depth > 256
-            || node.id.mount != mount.id()
-            || node.id.entry <= 1
-            || !matches!(node.kind, EntryKind::File | EntryKind::Directory)
-            || (node.kind == EntryKind::File && (!node.readable || node.size.is_none()))
-        {
+        if depth > 256 || node.id.mount != mount.id() || node.id.entry <= 1 {
             return Err(failure(
-                "Archive copy refuses links, unsafe members and excessive nesting.",
+                "Archive copy refuses foreign members and excessive nesting.",
             ));
+        }
+        // A member that cannot be read says why (its provider's reason).
+        if !matches!(node.kind, EntryKind::File | EntryKind::Directory)
+            || (node.kind == EntryKind::File && !node.readable)
+        {
+            return Err(error(
+                Path::new(""),
+                io::ErrorKind::Unsupported,
+                &node.unreadable_reason(),
+            ));
+        }
+        if node.kind == EntryKind::File && node.size.is_none() {
+            return Err(failure("Archive member has no declared length."));
         }
         // Raw provider bytes are authoritative. Undecodable names fail explicitly rather
         // than using a lossy display label as a destination identity.

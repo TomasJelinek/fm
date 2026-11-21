@@ -16,6 +16,7 @@ fn node(entry: u64, parent: u64, name: &str, kind: EntryKind) -> ArchiveNode {
         size: Some(6),
         readable: true,
         modified: None,
+        access: Default::default(),
     }
 }
 

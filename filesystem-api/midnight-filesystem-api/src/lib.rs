@@ -1,7 +1,9 @@
 //! Public, path-free filesystem worker contract. See PROTOCOL.md.
+mod passwords;
 mod streaming;
 mod timestamp;
 mod wire;
+pub use passwords::{Encryption, Password, UnlockStatus, Unreadable};
 use std::io;
 pub use timestamp::Timestamp;
 pub use wire::{
@@ -13,6 +15,10 @@ pub const MAX_READ: u32 = 256 * 1024;
 pub const MAX_NAME: usize = 64 * 1024;
 pub const MAX_BATCH: usize = 128;
 pub const VERSION: u16 = 1;
+/// Protocol 4: the most bytes an `Unlock` password may have.
+pub const MAX_PASSWORD: usize = 1024;
+/// Protocol 4: the most bytes of a compression method's name in `Unreadable::Compression`.
+pub const MAX_METHOD_NAME: usize = 64;
 
 /// Select the installed worker's protocol explicitly; legacy helpers always use V1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -23,12 +29,25 @@ pub enum Protocol {
     V2 = 2,
     /// Streaming with acknowledged request-local member cancellation.
     V3 = 3,
+    /// Protocol 3 with member encryption and unreadability reasons in listings,
+    /// per-mount `Unlock` and the non-fatal password error codes.
+    V4 = 4,
 }
 
 impl Protocol {
     /// Protocols with host-owned staging and policy-ready containment.
     pub fn supports_staging(self) -> bool {
-        matches!(self, Self::V2 | Self::V3)
+        matches!(self, Self::V2 | Self::V3 | Self::V4)
+    }
+
+    /// Protocols with acknowledged request-local member cancellation (protocol 3 and later).
+    pub fn cancels_members(self) -> bool {
+        matches!(self, Self::V3 | Self::V4)
+    }
+
+    /// Protocols with member encryption, unreadability reasons and `Unlock`.
+    pub fn supports_passwords(self) -> bool {
+        matches!(self, Self::V4)
     }
 }
 
@@ -39,6 +58,7 @@ impl TryFrom<u16> for Protocol {
             1 => Ok(Self::V1),
             2 => Ok(Self::V2),
             3 => Ok(Self::V3),
+            4 => Ok(Self::V4),
             _ => Err(invalid()),
         }
     }
@@ -88,6 +108,12 @@ pub enum ErrorCode {
     ReadOnly = 7,
     Corrupt = 8,
     Io = 9,
+    /// Protocol 4: the request needs the mount's password (`Unlock`). The session
+    /// continues; the worker staged nothing for the request.
+    PasswordRequired = 10,
+    /// Protocol 4: the mount's unlocked password does not open this member (it may
+    /// use another password). The session continues; nothing was staged.
+    WrongPassword = 11,
 }
 
 /// Identity is session-scoped and independent of the raw name and display label.
@@ -98,10 +124,20 @@ pub struct Node {
     pub name: Vec<u8>,
     pub display: String,
     pub kind: Kind,
+    /// The length the archive's directory records, also for a member that is not
+    /// readable (protocol 4 workers report it whenever the directory has one).
     pub size: Option<u64>,
     pub readable: bool,
     /// UTC when the archive records an offset, otherwise a timezone-free civil time.
     pub modified: Option<Timestamp>,
+    /// Protocol 4: how the content of a member that is not a directory is encrypted.
+    /// Directories report `None`; protocols 1–3 decode `None`.
+    pub encryption: Encryption,
+    /// Protocol 4, directories only: whether a member below this directory is encrypted.
+    pub contains_encrypted: bool,
+    /// Protocol 4: why a member that is not a directory is not readable; `None` when it
+    /// is readable and for directories. Protocols 1–3 decode `None`.
+    pub unreadable: Option<Unreadable>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,11 +249,24 @@ pub enum Message {
         stage: u64,
         completed: u64,
     },
+    /// Protocol 4, host to worker: verify `password` for this mount's encrypted
+    /// members and keep it for the mount's lifetime. The terminal reply is
+    /// `UnlockReply` (or `Failed`, which ends the session as usual).
+    Unlock {
+        request: u64,
+        password: Password,
+    },
+    /// Protocol 4, worker to host: the terminal reply to `Unlock`.
+    UnlockReply {
+        request: u64,
+        status: UnlockStatus,
+    },
 }
 
 impl Message {
     pub fn request(&self) -> u64 {
         match self {
+            Self::Unlock { request, .. } | Self::UnlockReply { request, .. } => *request,
             Self::Open { request, .. }
             | Self::Opened { request, .. }
             | Self::List { request, .. }

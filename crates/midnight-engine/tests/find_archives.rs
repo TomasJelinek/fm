@@ -83,6 +83,7 @@ fn node(id: u64, parent: u64, name: &str, kind: EntryKind, size: Option<u64>) ->
             minute: 8,
             second: 9,
         }),
+        access: Default::default(),
     }
 }
 

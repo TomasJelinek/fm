@@ -15,6 +15,7 @@ fn member(id: u64, parent: u64, kind: EntryKind, size: Option<u64>) -> ArchiveNo
         size,
         modified: None,
         readable: kind == EntryKind::File,
+        access: Default::default(),
     }
 }
 

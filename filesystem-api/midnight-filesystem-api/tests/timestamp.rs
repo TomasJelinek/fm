@@ -12,6 +12,9 @@ fn entries(modified: Option<Timestamp>) -> Message {
             size: Some(1),
             readable: true,
             modified,
+            encryption: Encryption::None,
+            contains_encrypted: false,
+            unreadable: None,
         }],
         more: false,
     }

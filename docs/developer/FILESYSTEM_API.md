@@ -1,6 +1,6 @@
 # Read-only filesystem worker API
 
-`midnight-filesystem-api` version `0.4.0` implements protocols **1, 2 and 3** for independent
+`midnight-filesystem-api` version `0.5.0` implements protocols **1, 2, 3 and 4** for independent
 archive filesystem executables. It supports opening one captured byte source,
 listing directories and reading members. The application integrates this with
 pane navigation, selection, sorting, filtering, tabs, F3 viewing and verified F5
@@ -15,7 +15,7 @@ worker package. Filesystem mutation remains outside this read-only worker API.
 The authoritative public definitions are [lib.rs](../../filesystem-api/midnight-filesystem-api/src/lib.rs)
 and [wire.rs](../../filesystem-api/midnight-filesystem-api/src/wire.rs). The
 [wire reference](../../filesystem-api/PROTOCOL.md) specifies every tag and field.
-It is packaged in the released 0.4.0 crate and therefore not edited in place: its
+It is packaged in each released crate (0.4.0 without protocol 4, 0.5.0 with it); its
 statement that cancellation terminates the worker predates the current host, whose
 behavior is described under [errors, cancellation and resource bounds](#errors-cancellation-and-resource-bounds).
 Workers must still tolerate termination at any time.
@@ -30,7 +30,7 @@ and tests. Its public dependencies are pinned registry packages:
 
 ```toml
 [dependencies]
-midnight-filesystem-api = { version = "=0.4.0", registry = "midnight" }
+midnight-filesystem-api = { version = "=0.5.0", registry = "midnight" }
 midnight-worker-sdk = { version = "=0.2.0", registry = "midnight" }
 ```
 
@@ -52,7 +52,7 @@ kind = "filesystem-worker"
 version = "0.1.0"
 entry_executable = "example-archive.exe"
 target = "x86_64-pc-windows-msvc"
-protocol = 3
+protocol = 4
 stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 ```
@@ -253,7 +253,8 @@ one tab does not invalidate a viewer still reading that captured member.
 `SourceChanged`, `NotFound`, `ReadOnly`, `Corrupt` or `Io`, plus at most 4096 UTF-8
 diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
 through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
-protocol-3 cooperative cancellation acknowledgement described below. Protocol violations, truncated frames and unexpected replies
+protocol-3 cooperative cancellation acknowledgement described below and the protocol-4
+`PasswordRequired`/`WrongPassword` replies that staged nothing. Protocol violations, truncated frames and unexpected replies
 also fail closed. Cancelling one request never ends a mount that other tabs,
 viewers and jobs share: a listing stops between pages and discards a conforming
 in-flight page; protocol-3 member reads cancel cooperatively through both the ordinary
@@ -410,9 +411,10 @@ extraction capability. TAR and 7z duplicate regular files remain distinct; the
 pinned ZIP reader merges central-directory records that repeat a name (the raw name
 or the Info-ZIP Unicode Path replacing it) into a single entry, which is listed but
 unreadable, and a ZIP whose records the worker cannot reconcile with the reader's
-index is refused. Encrypted or unsupported ZIP members
-and 7z blocks are unreadable without hiding the rest of the archive. Passwords,
-multi-volume archives, RAR and archive writing are unsupported.
+index is refused. Unsupported ZIP members and 7z blocks are unreadable without hiding
+the rest of the archive, and protocol-4 listings say why; encrypted members open with
+the archive's password (below). Multi-volume archives, RAR and archive writing are
+unsupported.
 
 Archives inside archives need no worker change. `ArchiveMount::stage_member` asks the
 enclosing session for one ordinary member read (cooperatively cancellable, with
@@ -502,3 +504,75 @@ This is cooperative cancellation, not an OS-call deadline. One already-admitted
 bounded source/spool call or decoder work interval can delay the next checkpoint.
 CRC/length validation still gates every successful content publication. All existing
 memory, chunk, cache, process and decoder-window limits remain unchanged.
+
+## Protocol 4 passwords and member diagnostics (API 0.5, 21 November 2026)
+
+`midnight-filesystem-api` 0.5.0 adds protocol 4 (wire details in the
+[reference](../../filesystem-api/PROTOCOL.md#protocol-4-passwords-and-member-diagnostics-api-05));
+0.4.0 stays as released, and the worker SDK is unchanged at 0.2.0. Protocol 4 is an
+installed-worker opt-in like protocol 3: the bundled archive plugin 0.3.0 declares
+`protocol = 4`, and the host keeps serving protocol 1–3 workers as before.
+
+**Listings say why.** A protocol-4 node carries its member's encryption method, for
+a folder whether a member below it is encrypted, and for an unreadable member the
+reason: an encryption method or compression method (named) that the worker cannot
+decode, a link, an unsafe or ambiguous name, a special file or the worker's decoder
+bounds. The size comes from the archive's directory even when the member is
+unreadable (not for an ambiguous name, whose records the reader merged). The host
+passes these on as `ArchiveNode::access` (`ArchiveAccess`); older workers leave it
+empty, and their unreadable members keep a generic explanation.
+
+**One password per mount.** `ArchiveMount::unlock(&ArchivePassword)` sends `Unlock`
+and returns `Unlocked`, `WrongPassword`, `NotEncrypted` or `Unsupported`;
+`ArchiveMount::unlocked()` reads the mount's state without I/O. The worker keeps an
+accepted password for the session, so it lasts exactly as long as the archive stays
+open: the host ends the session, and the worker with it, when the mount's last lease
+is released (every panel tab, viewer and job has let the mount go) or the application
+exits. A new `Open` of the same archive is a new mount that asks again. An archive
+inside an archive is its own mount with its own password. Encrypted members that the
+worker can decrypt are `readable`: reading one before the mount is unlocked fails with
+an `FsError` whose `operation` is `"archive password"` and whose kind is
+`PermissionDenied` (`midnight_core::is_archive_password_required`), and the host keeps
+the session, as it does for `WrongPassword` (a member whose own verifier refuses the
+mount's password). A protocol-1–3 worker refuses `unlock` as unsupported.
+
+**Where the password is asked.** The presenter asks once, in a modal dialog, before an
+explicit action needs it: F3/Alt+F3 on an encrypted member, Enter on an encrypted
+archive inside the archive, F5 of a selection that holds an encrypted member or a
+folder that contains one, and a listing that came back empty because the archive's
+names are encrypted (7z; `ArchiveMount::listing_locked`, the engine then publishes an
+empty listing instead of failing). `Presenter::request_archive_password` asks for the
+shown archive on request; it has no menu entry or shortcut yet. OK sends
+`Command::UnlockArchive` to a backend worker, which answers `Event::ArchiveUnlocked`;
+a wrong password keeps the dialog open with "Wrong password — try again." After
+`Unlocked` the action runs (F3 through `take_archive_view`, which the UI turns into its
+ordinary view request once the dialog has closed); Cancel leaves the mount locked and
+the action goes on without the password: F3 and Enter report that the member is
+password-protected, and a copy skips each encrypted member with that reason in its
+results, without asking again (the copy job skips every `is_archive_password_required`
+failure itself). Background consumers never open the dialog: Find's private archive
+sessions skip encrypted and other unreadable members with their reason, and archive
+previews fail like any read until the user has unlocked the mount in the panel.
+
+**Memory only.** `ArchivePassword` (core) and `Password` (API) hold their bytes in
+`zeroize::Zeroizing` buffers that are wiped when dropped and print `<redacted>` in
+`Debug`; the API codec wipes the frames that carry a password. A password is never
+saved in settings, history, logs, events, error or Copy-details text, or the clipboard,
+and it crosses only the existing UI → engine → host → worker channels. The password
+field's own text, held by the UI toolkit while the dialog is open, is cleared when the
+dialog closes but is not under the application's zeroization. See
+[SECURITY.md](../../SECURITY.md#archive-passwords).
+
+**Decryption stays in the worker.** Only the sandboxed archive worker decrypts, through
+the same verified staging as plain members: traditional PKWARE (ZipCrypto) and WinZip
+AES-128/192/256 (AE-1 and AE-2) with the `zip` crate's own reader (`aes-crypto`), 7-Zip
+AES-256 blocks and encrypted 7z headers with sevenz-rust2's `aes256`. Every member is
+checked before any of its bytes is published: the ZipCrypto CRC-32, the AE-1 CRC-32
+and HMAC-SHA1, the AE-2 HMAC-SHA1 (when the member's encrypted data has been read to its
+end), and the 7z block and member CRCs. Unlock verifies a password with the quick
+verifiers of the first four encrypted members (ZIP: every one must accept it), the
+first byte decoded from each of the first four encrypted 7z blocks, or the CRC of an
+encrypted 7z header. Members with another password than the first ones report
+`WrongPassword`; one password per mount is the design. PKWARE strong encryption stays
+unreadable with its reason. The 7z decoder copies the password into its own UTF-16
+buffer, which that crate does not zeroize.

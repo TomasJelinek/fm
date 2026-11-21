@@ -22,10 +22,10 @@ impl<R: Read, W: Write> Transport for Pipes<R, W> {
         self.receive()
     }
     fn receive(&mut self) -> io::Result<Message> {
-        api::read_message_with_protocol(&mut self.input, Protocol::V3)
+        api::read_message_with_protocol(&mut self.input, Protocol::V4)
     }
     fn send(&mut self, message: &Message) -> io::Result<()> {
-        api::write_message_with_protocol(&mut self.output, Protocol::V3, message)
+        api::write_message_with_protocol(&mut self.output, Protocol::V4, message)
     }
 }
 #[derive(Clone)]

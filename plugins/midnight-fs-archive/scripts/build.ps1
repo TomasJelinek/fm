@@ -57,15 +57,15 @@ try {
 schema_version = 1
 id = "midnight.fs.archive"
 kind = "filesystem-worker"
-version = "0.2.0"
+version = "0.3.0"
 entry_executable = "midnight-fs-archive.exe"
 target = "$target"
-protocol = 3
+protocol = 4
 stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 "@
         [IO.File]::WriteAllText((Join-Path $package 'plugin.toml'), $manifest.Replace("`r`n", "`n"), [Text.UTF8Encoding]::new($false))
-        & $python @pythonArguments (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --output (Join-Path $package 'licenses')
+        & $python @pythonArguments (Join-Path $PSScriptRoot 'notices.py') --config $SdkConfig --target $target --output (Join-Path $package 'licenses')
         if ($LASTEXITCODE -ne 0) { throw 'Archive distribution notices failed' }
     }
 } finally {

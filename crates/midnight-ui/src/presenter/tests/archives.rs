@@ -3,6 +3,9 @@ use super::*;
 #[path = "nested_archives.rs"]
 mod nested_archives;
 
+#[path = "archive_passwords.rs"]
+mod archive_passwords;
+
 #[derive(Debug)]
 struct FixtureMount;
 impl ArchiveMount for FixtureMount {
@@ -32,6 +35,7 @@ fn node(id: u64, name: &str, kind: EntryKind) -> Entry {
         kind,
         size: Some(5),
         readable: kind == EntryKind::File,
+        access: Default::default(),
     })
 }
 pub(super) fn archive_pane() -> Presenter {

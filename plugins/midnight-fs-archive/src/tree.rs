@@ -1,6 +1,36 @@
 use crate::*;
-use midnight_filesystem_api::Timestamp;
+use midnight_filesystem_api::{Encryption, Timestamp, Unreadable};
 use std::borrow::Cow;
+
+/// Why a member that is not a directory is unreadable, as compact as the index needs:
+/// a compression method's name lies once in `Archive::methods`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Reason {
+    #[default]
+    None,
+    Encryption,
+    /// Index into `Archive::methods`.
+    Compression(u16),
+    Link,
+    UnsafeName,
+    AmbiguousName,
+    SpecialFile,
+    Limit,
+}
+
+/// How a member's content can be read: its encryption and, when it cannot be read,
+/// why. A regular file is readable exactly when its reason is `None`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Access {
+    pub(crate) encryption: Encryption,
+    pub(crate) reason: Reason,
+}
+impl Access {
+    pub(crate) const READABLE: Self = Self {
+        encryption: Encryption::None,
+        reason: Reason::None,
+    };
+}
 
 /// Display length of a member whose label is its raw name read as UTF-8.
 const SAME_DISPLAY: u32 = u32::MAX;
@@ -22,6 +52,10 @@ pub(crate) struct Member {
     pub(crate) kind: Kind,
     pub(crate) readable: bool,
     sized: bool,
+    pub(crate) encryption: Encryption,
+    /// A directory: a member below it is encrypted.
+    contains_encrypted: bool,
+    pub(crate) reason: Reason,
 }
 impl Member {
     pub(crate) fn size(&self) -> Option<u64> {
@@ -102,7 +136,43 @@ impl Archive {
             size: member.size(),
             readable: member.readable,
             modified: member.modified,
+            encryption: member.encryption,
+            contains_encrypted: member.contains_encrypted,
+            unreadable: self.unreadable(member.reason),
         }
+    }
+
+    /// The public reason for `reason`.
+    pub(crate) fn unreadable(&self, reason: Reason) -> Option<Unreadable> {
+        Some(match reason {
+            Reason::None => return None,
+            Reason::Encryption => Unreadable::Encryption,
+            Reason::Compression(index) => Unreadable::Compression(
+                self.methods
+                    .get(usize::from(index))
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".into()),
+            ),
+            Reason::Link => Unreadable::Link,
+            Reason::UnsafeName => Unreadable::UnsafeName,
+            Reason::AmbiguousName => Unreadable::AmbiguousName,
+            Reason::SpecialFile => Unreadable::SpecialFile,
+            Reason::Limit => Unreadable::Limit,
+        })
+    }
+
+    /// The reason that names compression `method`, keeping each name once.
+    pub(crate) fn compression(&mut self, method: &str) -> Reason {
+        let index = match self.methods.iter().position(|known| known == method) {
+            Some(index) => index,
+            None => {
+                self.methods.push(method.to_owned());
+                self.methods.len() - 1
+            }
+        };
+        // Formats name only a handful of methods: a method number beyond the index
+        // type would be a hostile archive's, and its members are then beyond bounds.
+        u16::try_from(index).map_or(Reason::Limit, Reason::Compression)
     }
 
     /// Release what only indexing needed and the spare capacity of the index.
@@ -111,6 +181,15 @@ impl Archive {
         self.members.shrink_to_fit();
         self.names.shrink_to_fit();
         self.zip_members.shrink_to_fit();
+    }
+
+    /// Record the length the archive's directory declares for the just-indexed member
+    /// that cannot be read: it is shown, while no budget counts what is never staged.
+    pub(crate) fn declared_size(&mut self, size: u64) {
+        if let Some(member) = self.members.last_mut() {
+            member.size = size;
+            member.sized = true;
+        }
     }
 
     /// Add the bounded declared length to the just-indexed regular file.
@@ -126,14 +205,16 @@ impl Archive {
         Ok(id)
     }
     /// Index one member. Returns its node ID; a `./` directory record names the
-    /// root (ID 1), which has no node or metadata of its own.
+    /// root (ID 1), which has no node or metadata of its own. A regular file with no
+    /// reason in `access` is readable; an unsafe name overrides any reason, and links
+    /// and special records always have one.
     pub(crate) fn add(
         &mut self,
         raw: &[u8],
         display: &str,
         kind: Kind,
         data: Option<Content>,
-        readable: bool,
+        access: Access,
     ) -> Result<u64, Error> {
         let raw = if kind == Kind::Directory {
             raw.strip_suffix(b"/").unwrap_or(raw)
@@ -153,12 +234,16 @@ impl Archive {
         if !safe {
             // Unsafe records stay visible at the root under their complete raw name.
             // They never become navigable, always-empty directories named `..` or `C:`.
-            let kind = if kind == Kind::Directory {
-                Kind::Other
+            let (kind, encryption) = if kind == Kind::Directory {
+                (Kind::Other, Encryption::None)
             } else {
-                kind
+                (kind, access.encryption)
             };
-            return self.push(1, raw, display, kind, data, false);
+            let access = Access {
+                encryption,
+                reason: Reason::UnsafeName,
+            };
+            return self.push(1, raw, display, kind, data, access);
         }
         let parts: Vec<&[u8]> = raw.split(|b| *b == b'/').collect();
         let labels: Vec<&str> = display.trim_end_matches('/').split('/').collect();
@@ -189,13 +274,21 @@ impl Archive {
         if kind == Kind::Directory {
             return self.directory(parent, name, label);
         }
+        let reason = match (kind, access.reason) {
+            (Kind::Link, Reason::None) => Reason::Link,
+            (Kind::Other, Reason::None) => Reason::SpecialFile,
+            (_, reason) => reason,
+        };
         self.push(
             parent,
             name,
             label,
             kind,
             data,
-            readable && kind == Kind::File,
+            Access {
+                encryption: access.encryption,
+                reason,
+            },
         )
     }
     /// The directory `name` below `parent`, created on first encounter.
@@ -204,7 +297,7 @@ impl Archive {
         if let Some(existing) = self.directories.get(&key) {
             return Ok(*existing);
         }
-        let id = self.push(parent, name, label, Kind::Directory, None, false)?;
+        let id = self.push(parent, name, label, Kind::Directory, None, Access::READABLE)?;
         self.directories.insert(key, id);
         Ok(id)
     }
@@ -215,7 +308,7 @@ impl Archive {
         display: &str,
         kind: Kind,
         data: Option<Content>,
-        readable: bool,
+        access: Access,
     ) -> Result<u64, Error> {
         let size = data.as_ref().map(|v| v.length);
         self.total = self
@@ -256,6 +349,12 @@ impl Archive {
             label_length
         };
         self.children.entry(parent).or_default().push(position);
+        let directory = kind == Kind::Directory;
+        let encryption = if directory {
+            Encryption::None
+        } else {
+            access.encryption
+        };
         self.members.push(Member {
             parent,
             name: start,
@@ -264,12 +363,34 @@ impl Archive {
             size: size.unwrap_or(0),
             modified: None,
             kind,
-            readable,
+            readable: kind == Kind::File && access.reason == Reason::None,
             sized: size.is_some(),
+            encryption,
+            contains_encrypted: false,
+            reason: if directory {
+                Reason::None
+            } else {
+                access.reason
+            },
         });
+        if encryption != Encryption::None {
+            self.mark_encrypted(parent);
+        }
         if let Some(data) = data {
             self.contents.insert(id, data);
         }
         Ok(id)
+    }
+
+    /// Mark `directory` and the directories above it as holding an encrypted member.
+    /// Marking stops at the first one already marked, so each directory is marked once.
+    fn mark_encrypted(&mut self, mut directory: u64) {
+        while let Some(member) = self.member_mut(directory) {
+            if member.contains_encrypted {
+                return;
+            }
+            member.contains_encrypted = true;
+            directory = member.parent;
+        }
     }
 }

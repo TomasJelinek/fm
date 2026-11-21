@@ -111,10 +111,11 @@ were used; captures, command/host receipts and hashes are retained under
 `_build/qa/accessibility-feature-20261119/`. The earlier 12/17/18 November
 counts and targeted row edits below remain historical. The current tables are:
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **69**
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **70** (69 before the archive-password rows)
   package/version records declared by project crates, including build/test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **654**
-  package/version/source records, **536** distinct crate names, including transitives.
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **665**
+  package/version/source records, **546** distinct crate names, including transitives
+  (654 and 536 before the archive-password rows).
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the same complete list,
   with licenses, source, workspace, target and direct dependants.
 
@@ -586,6 +587,30 @@ Upstream maintenance and the RustSec Tokio package record were reviewed on
 records the timer repair. This is a pinned-package review, not a fresh complete
 workspace advisory scan or implementation/native qualification.
 
+## Archive passwords — 21 November 2026
+
+Password-protected archive members are decrypted only in the independent archive
+worker. Its `zip` 8.6.0 enables `aes-crypto` and its sevenz-rust2 0.23.0 enables
+`aes256`; both features were fetched once from crates.io with the Orchestrator's
+authorization (`cargo fetch` of the plugin workspace; the lock diff adds packages and
+edges only). They add **aes 0.9.4, cipher 0.5.2, inout 0.2.6, block-padding 0.4.2,
+cbc 0.2.1, hmac 0.13.0, pbkdf2 0.13.0, sha1 0.11.0, cmov 0.5.4, ctutils 0.4.8 and
+cpubits 0.1.1**, all from the RustCrypto organisation's repositories and MIT OR
+Apache-2.0 (cmov and ctutils: Apache-2.0 OR MIT), plus the existing constant_time_eq
+0.4.2 (CC0-1.0 OR MIT-0 OR Apache-2.0, required by zip's feature), getrandom 0.4.3
+(MIT OR Apache-2.0, required by both features for writing salts, never called by the
+read-only worker) and r-efi 6.0.0 (lockfile only, UEFI targets). Each package's
+manifest and LICENSE files were inspected in Cargo's downloaded source; checksums are
+the crates.io index checksums pinned in `plugins/midnight-fs-archive/Cargo.lock`.
+`zeroize` 1.9.1 (Apache-2.0 OR MIT, already inventoried for the HTML viewer) becomes a
+direct dependency of `midnight-core` (`ArchivePassword`) and of the public
+`midnight-filesystem-api` 0.5.0 (`Password`), with only `alloc`. The plugin's
+[notice file](../plugins/midnight-fs-archive/THIRD-PARTY.md) lists the selected
+branches; its packaged `licenses/` come from the existing notice script. The generated
+tables were updated by targeted rows for these packages (665 records, 546 names, 70
+direct records), not by a fresh forty-six-pair capture; the next full inventory
+refresh recaptures them. No paid branch or mandatory fee is selected.
+
 ## Main functional libraries
 
 Optional executable-size diagnostics use `cargo-bloat` **0.12.1** (MIT), installed
@@ -606,11 +631,11 @@ This table is a guide; the linked inventories above contain every selected crate
 | crc32fast 1.5.4 | SFV/CRC32 compatibility calculations and verification of private spool reads; also an existing PNG/compression dependency | MIT OR Apache-2.0; MIT branch selected |
 | notify 8.2.1 | Linux filesystem event watching (Windows uses its own `ReadDirectoryChangesW` service) | CC0-1.0 |
 | image 0.25.10 / png 0.18.1 | Icons, isolated image thumbnails and the independent image viewer | MIT OR Apache-2.0 |
-| zip 8.6.0 | Read-only ZIP archive provider and host Office package parsing | MIT |
+| zip 8.6.0 | Read-only ZIP archive provider (with `aes-crypto` for WinZip AES members) and host Office package parsing | MIT |
 | quick-xml 0.41.0 | Host Office XML parsing; existing transitive consumers | MIT |
 | hayro 0.9.0 and its parser/interpreter crates | Isolated PDF rendering and first-page PDF thumbnails | Apache-2.0 OR MIT; pinned notices and embedded font/CMap licenses accompany the PDF viewer and image thumbnail packages |
 | similar 2.7.0 | Bounded text comparison | Apache-2.0 |
-| sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z and XZ decoding | Apache-2.0 |
+| sevenz-rust2 0.23.0 / lzma-rust2 0.21.0 | Read-only 7z (with `aes256` for 7-Zip AES) and XZ decoding | Apache-2.0 |
 | bzip2 0.6.1 / libbz2-rs-sys 0.2.6 | Pure Rust BZIP2 stream decoding | MIT OR Apache-2.0 / bzip2-1.0.6 |
 | ruzstd 0.9.1 / twox-hash 2.1.5 | Zstandard decoding and frame checksums | MIT |
 | tar 0.4.46 / flate2 1.1.10 and 1.1.11 | TAR/GZIP archive decoding, host Office DEFLATE, SDK packaging and image codec dependencies | MIT OR Apache-2.0 |

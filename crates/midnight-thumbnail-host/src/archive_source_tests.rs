@@ -113,6 +113,7 @@ fn descriptor(mount: Arc<Mount>, entry: u64) -> ArchiveThumbnailSource {
             size: Some(5),
             readable: true,
             modified: None,
+            access: Default::default(),
         },
         mount,
         source_version: vec![1, 2, 3],

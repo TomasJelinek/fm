@@ -84,6 +84,7 @@ export component FileEntry inherits Rectangle {
     accessible-role: list-item;
     accessible-label: item.name + (item.folder-link ? " · Folder link" : "")
         + (item.compressed ? " · Filesystem compressed" : "")
+        + (item.encrypted ? " · Encrypted" : "")
         + (item.browsable-archive ? " · Archive: open as folder" : "")
         + (item.size-state == 3 ? " · Folder size warning" : "");
     pointer := TouchArea {
@@ -207,6 +208,7 @@ export component FileEntry inherits Rectangle {
                     native-icon: item.icon; browsable-archive: item.browsable-archive;
                     parent-entry: item.parent-entry;
                     compressed: item.compressed; dimmed: item.dim-icon;
+                    encrypted: item.encrypted;
                     width: Theme.file-icon-size; height: Theme.file-icon-size;
                     y: (parent.height - self.height) / 2;
                 }
@@ -303,6 +305,7 @@ export component FileEntry inherits Rectangle {
             native-icon: item.icon; browsable-archive: item.browsable-archive;
             parent-entry: item.parent-entry;
             compressed: item.compressed; dimmed: item.dim-icon; thumbnail: true;
+            encrypted: item.encrypted;
             width: min(root.thumbnail-size * 1px, max(0px, parent.width - 24px)); height: self.width;
             x: (parent.width - self.width) / 2; y: 12px;
         }

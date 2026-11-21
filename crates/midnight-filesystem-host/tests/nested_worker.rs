@@ -23,7 +23,7 @@ fn install(root: &Path, worker: &Path) {
     #[cfg(target_os = "linux")]
     native::secure_test_executable(&package.join(filename));
     fs::write(package.join("plugin.toml"), format!(
-        "schema_version = 1\nid = \"midnight.fs.archive\"\nkind = \"filesystem-worker\"\nversion = \"0.2.0\"\nentry_executable = \"{filename}\"\ntarget = \"{}\"\nprotocol = 3\nstable_entry_ids = true\nformats = [\"zip\", \"tar\", \"gzip\", \"tar-gzip\", \"7z\"]\n",
+        "schema_version = 1\nid = \"midnight.fs.archive\"\nkind = \"filesystem-worker\"\nversion = \"0.2.0\"\nentry_executable = \"{filename}\"\ntarget = \"{}\"\nprotocol = 4\nstable_entry_ids = true\nformats = [\"zip\", \"tar\", \"gzip\", \"tar-gzip\", \"7z\"]\n",
         midnight_plugin_host::host_target())).unwrap();
 }
 

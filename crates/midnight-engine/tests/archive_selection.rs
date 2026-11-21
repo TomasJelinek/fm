@@ -20,6 +20,7 @@ fn entries() -> Vec<Entry> {
                 kind: EntryKind::File,
                 size: Some(row),
                 readable: true,
+                access: Default::default(),
             })
         })
         .collect()

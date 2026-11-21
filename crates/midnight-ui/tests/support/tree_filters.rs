@@ -250,6 +250,7 @@ impl ArchiveMount for Archive {
                 },
                 modified: None,
                 readable: *kind == EntryKind::File,
+                access: Default::default(),
             })
             .collect())
     }

@@ -439,7 +439,8 @@ them locally:
    Copy the package directory to `<root>/filesystems/archive`; on Linux make its
    directories and the `midnight-fs-archive` executable `chmod 700` and its other
    files `chmod 600`.
-2. Export the plugin's owned format and cancellation fixtures:
+2. Export the plugin's owned format, cancellation and password fixtures (`password.zip`
+   and `password.7z`, whose password the streaming test knows):
    `cargo test --config <registry.toml> --manifest-path plugins/midnight-fs-archive/Cargo.toml --test worker_fixtures --locked --offline -- --ignored`
    with `MIDNIGHT_ARCHIVE_FIXTURES` set to a directory below `_build`. To reuse the
    test build of step 1 instead of compiling everything again, also set

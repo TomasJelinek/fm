@@ -1,7 +1,7 @@
 use crate::Package;
 use midnight_core::{
-    ArchiveContent, ArchiveMount, ArchiveNode, ArchiveParent, Cancellation, EntryKind, FsError,
-    MAX_ARCHIVE_DEPTH, VirtualEntryId,
+    ArchiveContent, ArchiveMount, ArchiveNode, ArchiveParent, ArchiveUnlock, Cancellation,
+    EntryKind, FsError, MAX_ARCHIVE_DEPTH, VirtualEntryId,
 };
 use midnight_filesystem_api::{self as api, Format, Message, Protocol};
 use midnight_plugin_host::CapturedFile;
@@ -103,6 +103,11 @@ struct Supervision {
     cause: OnceLock<Stop>,
     watch: Mutex<Option<Watch>>,
     changed: Condvar,
+    /// Protocol 4: the worker accepted a password for this session (`Mount::unlock`).
+    unlocked: AtomicBool,
+    /// Protocol 4: a listing needed the password (encrypted 7z names) since the last
+    /// unlock.
+    listing_locked: AtomicBool,
 }
 impl Supervision {
     fn new(watch: Option<Watch>) -> Self {
@@ -111,6 +116,8 @@ impl Supervision {
             cause: OnceLock::new(),
             watch: Mutex::new(watch),
             changed: Condvar::new(),
+            unlocked: AtomicBool::new(false),
+            listing_locked: AtomicBool::new(false),
         }
     }
     fn lock(&self) -> MutexGuard<'_, Option<Watch>> {
@@ -650,7 +657,7 @@ impl Mount {
         let interrupted = || fail(io::ErrorKind::Interrupted.into());
         let hard_cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
         let is_cancelled = || cancelled.is_some_and(|check| check());
-        let cooperative = cancelled.filter(|_| self.protocol == Protocol::V3);
+        let cooperative = cancelled.filter(|_| self.protocol.cancels_members());
         if is_cancelled() {
             return Err(interrupted());
         }
@@ -792,6 +799,39 @@ impl Mount {
                             io::ErrorKind::InvalidData,
                             format!("Archive worker reported an unrequested cancellation ({message})"),
                         )));
+                    }
+                    // Protocol 4: a member or listing that needs the mount's password (or
+                    // another one). The worker staged nothing and serves on, so the session
+                    // is kept; a stage it began makes the reply a protocol violation.
+                    Message::Failed {
+                        code: code @ (api::ErrorCode::PasswordRequired | api::ErrorCode::WrongPassword),
+                        message,
+                        ..
+                    } => {
+                        let staged_nothing = matches!(operation, Message::Read { .. } | Message::List { .. })
+                            && self.staging.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+                                .is_some_and(|staging| staging.staged_nothing(request));
+                        if !staged_nothing {
+                            return Err(fail(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Archive worker asked for a password where the protocol allows none",
+                            )));
+                        }
+                        self.validate()?;
+                        self.ensure_active(cancel, cancelled).map_err(fail)?;
+                        canceled_safely = true;
+                        if matches!(operation, Message::List { .. }) {
+                            self.supervision.listing_locked.store(true, Ordering::Release);
+                        }
+                        return Err(if code == api::ErrorCode::PasswordRequired {
+                            midnight_core::archive_password_required(self.error_path())
+                        } else {
+                            FsError::from_io(
+                                "archive read",
+                                self.error_path(),
+                                io::Error::new(io::ErrorKind::PermissionDenied, message),
+                            )
+                        });
                     }
                     Message::Failed { code, message, .. } => {
                         return Err(fail(io::Error::new(
@@ -1047,6 +1087,36 @@ impl Mount {
         }
     }
 }
+/// A protocol-4 node's encryption and unreadability; older protocols report none.
+fn access(
+    encryption: api::Encryption,
+    contains_encrypted: bool,
+    unreadable: Option<api::Unreadable>,
+) -> midnight_core::ArchiveAccess {
+    use midnight_core::{ArchiveEncryption as E, ArchiveUnreadable as U};
+    midnight_core::ArchiveAccess {
+        encryption: match encryption {
+            api::Encryption::None => E::None,
+            api::Encryption::ZipCrypto => E::ZipCrypto,
+            api::Encryption::Aes128 => E::Aes128,
+            api::Encryption::Aes192 => E::Aes192,
+            api::Encryption::Aes256 => E::Aes256,
+            api::Encryption::SevenZipAes256 => E::SevenZipAes256,
+            api::Encryption::Unknown => E::Unknown,
+        },
+        contains_encrypted,
+        unreadable: unreadable.map(|reason| match reason {
+            api::Unreadable::Encryption => U::Encryption,
+            api::Unreadable::Compression(method) => U::Compression(method),
+            api::Unreadable::Link => U::Link,
+            api::Unreadable::UnsafeName => U::UnsafeName,
+            api::Unreadable::AmbiguousName => U::AmbiguousName,
+            api::Unreadable::SpecialFile => U::SpecialFile,
+            api::Unreadable::Limit => U::Limit,
+        }),
+    }
+}
+
 /// Whether a terminal reply keeps the wire rules of its own request. The wire
 /// reference (filesystem-api/PROTOCOL.md) requires member IDs from 2 in increasing
 /// order, past the request's cursor, and content no longer than requested. The host
@@ -1103,6 +1173,50 @@ impl ArchiveMount for Mount {
         progress: &dyn Fn(u64),
     ) -> Result<Arc<dyn ArchiveContent>, FsError> {
         self.stage(entry, cancelled, progress)
+    }
+    fn unlocked(&self) -> bool {
+        self.supervision.unlocked.load(Ordering::Acquire)
+    }
+    fn listing_locked(&self) -> bool {
+        self.supervision.listing_locked.load(Ordering::Acquire)
+    }
+    /// Protocol 4 `Unlock`: one exchange, which a protocol-1–3 worker cannot take. The
+    /// password crosses the pipe in one frame that the codec zeroizes; the host keeps
+    /// no copy, and the worker keeps it for the session.
+    fn unlock(&self, password: &midnight_core::ArchivePassword) -> Result<ArchiveUnlock, FsError> {
+        let fail =
+            |error: io::Error| FsError::from_io("archive password", self.error_path(), error);
+        if !self.protocol.supports_passwords() {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This archive plugin cannot open password-protected members; a newer one can",
+            )));
+        }
+        if password.is_empty() || password.as_bytes().len() > api::MAX_PASSWORD {
+            return Err(fail(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("An archive password has 1 to {} bytes", api::MAX_PASSWORD),
+            )));
+        }
+        let reply = self.exchange_read(None, None, |request| Message::Unlock {
+            request,
+            password: api::Password::new(password.as_bytes().to_vec()),
+        })?;
+        let Message::UnlockReply { status, .. } = reply else {
+            return Err(self.wrong_reply("archive password"));
+        };
+        Ok(match status {
+            api::UnlockStatus::Unlocked => {
+                self.supervision.unlocked.store(true, Ordering::Release);
+                self.supervision
+                    .listing_locked
+                    .store(false, Ordering::Release);
+                ArchiveUnlock::Unlocked
+            }
+            api::UnlockStatus::WrongPassword => ArchiveUnlock::WrongPassword,
+            api::UnlockStatus::NotEncrypted => ArchiveUnlock::NotEncrypted,
+            api::UnlockStatus::Unsupported => ArchiveUnlock::Unsupported,
+        })
     }
     fn persistent_member_identity(
         &self,
@@ -1232,6 +1346,7 @@ impl ArchiveMount for Mount {
                     },
                     size: node.size,
                     readable: node.readable,
+                    access: access(node.encryption, node.contains_encrypted, node.unreadable),
                 });
             }
             if !more {
@@ -1294,3 +1409,7 @@ mod nested_session_tests;
 #[cfg(test)]
 #[path = "source_change_tests.rs"]
 mod source_change_tests;
+
+#[cfg(test)]
+#[path = "password_tests.rs"]
+mod password_tests;

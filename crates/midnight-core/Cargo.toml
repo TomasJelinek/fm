@@ -10,6 +10,8 @@ autotests = false
 [dependencies]
 midnight-web-viewer-api = { path = "../../web-viewer-api/midnight-web-viewer-api" }
 unicase = "=2.10.0"
+# Archive passwords are zeroized when dropped (`ArchivePassword`).
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 
 [[test]]
 name = "integration"

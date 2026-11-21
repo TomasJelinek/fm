@@ -384,6 +384,7 @@ impl ArchiveMount for Archive {
             size: None,
             readable: false,
             modified: None,
+            access: Default::default(),
         }])
     }
     fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
@@ -408,6 +409,7 @@ fn archive_fixture(
         size: None,
         readable: false,
         modified: None,
+        access: Default::default(),
     });
     let entries: Arc<[Entry]> = vec![entry].into();
     let index = Arc::new(DirectoryIndex::from_entries(&entries));

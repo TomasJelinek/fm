@@ -1012,6 +1012,13 @@ editor scope and shortcuts reserved for later stages.
   the background queue and SHA-256 destination readback. Archive contents stay
   read-only. XZ, Bzip2 and Zstandard streams and their TAR variants are supported
   by the archive plugin alongside ZIP, 7z, GZIP and TAR.
+- Password-protected ZIP (ZipCrypto, WinZip AES) and 7z (AES-256) archives open with
+  their password. It is asked once, when F3, Enter or F5 first needs it, and kept in
+  memory only until the archive is closed: when no panel tab, viewer or copy uses the
+  archive any more, or when the application exits. An archive inside an archive asks
+  for its own password. A padlock marks encrypted members, and the status line names a
+  member's encryption or why it cannot be read
+  ([details](docs/ARCHIVE_FORMATS.md#password-protected-archives)).
 - Ctrl+F2 or the panel's attributes icon opens **Attributes, times and case**.
   Ctrl+F7 opens the same editor with case conversion enabled. Other edits start
   as Leave unchanged. Preview the captured selection, then Apply to queue the

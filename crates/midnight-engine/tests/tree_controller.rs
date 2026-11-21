@@ -443,6 +443,7 @@ impl ArchiveMount for Archive {
             kind: EntryKind::Directory,
             size: None,
             readable: false,
+            access: Default::default(),
         }])
     }
     fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
@@ -1124,6 +1125,7 @@ impl ArchiveMount for NavigationBlockingArchive {
                     kind: EntryKind::Directory,
                     size: None,
                     readable: false,
+                    access: Default::default(),
                 })
                 .collect())
         } else {

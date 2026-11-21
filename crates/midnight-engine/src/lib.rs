@@ -1000,6 +1000,9 @@ impl EngineServices {
                             comparison.invalidate(pane);
                             archives.navigate(pane, navigation, action, sort, &mut tasks).await;
                         }
+                        Some(Command::UnlockArchive { request, mount, password }) => {
+                            archives.unlock(request, mount, password, &mut tasks);
+                        }
                         Some(Command::LoadLocale) if !locale_requested => {
                             locale_requested = true;
                             let service = self.locale.clone();

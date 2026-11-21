@@ -165,6 +165,20 @@ fn walk_folders(
                 });
             if let Some(content) = content {
                 matches &= entry.kind == EntryKind::File;
+                // A member that cannot be read, or whose archive's password was never
+                // entered (Find's own sessions never ask), is skipped with its reason.
+                if matches && (!node.readable || (node.needs_password() && !mount.unlocked())) {
+                    work.error(if node.readable {
+                        archive_password_required(&entry.path)
+                    } else {
+                        find_error(
+                            &entry.path,
+                            io::ErrorKind::Unsupported,
+                            &node.unreadable_reason(),
+                        )
+                    });
+                    matches = false;
+                }
                 if matches {
                     let mut member = Member {
                         mount,

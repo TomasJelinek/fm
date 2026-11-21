@@ -210,7 +210,11 @@ impl Job {
         };
         self.failure_context = context;
         self.progress.message = failure.error.to_string();
-        if can_skip && self.skipped_errors.contains(&Scope::from(&failure)) {
+        // An archive member whose password was not entered: the password was asked
+        // once before the copy (or the archive has none), so the copy never asks per
+        // member and skips it with that reason in its results.
+        let password = midnight_core::is_archive_password_required(&failure.error);
+        if can_skip && (password || self.skipped_errors.contains(&Scope::from(&failure))) {
             self.failure = Some(failure);
             self.decision = Some(CopyChoice::Skip);
             return Step::Continue;

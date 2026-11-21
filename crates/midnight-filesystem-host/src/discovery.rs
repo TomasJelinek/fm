@@ -195,7 +195,7 @@ fn package(path: &Path) -> io::Result<Option<Package>> {
     }
     let m: Manifest = toml::from_str(&text).map_err(io::Error::other)?;
     if m.schema_version != 1
-        || !matches!(m.protocol, 1..=3)
+        || !matches!(m.protocol, 1..=4)
         || m.kind != "filesystem-worker"
         || m.target != midnight_plugin_host::host_target()
         || m.version.is_empty()

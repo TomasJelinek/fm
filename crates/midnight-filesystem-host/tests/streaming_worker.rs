@@ -210,7 +210,7 @@ fn all_supported_formats_use_the_same_verified_stage_protocol() {
 }
 
 #[test]
-#[ignore = "requires protected protocol3 worker and exported MIDNIGHT_ARCHIVE_FIXTURES"]
+#[ignore = "requires protected protocol 4 worker and exported MIDNIGHT_ARCHIVE_FIXTURES"]
 fn cooperative_installed_zip_and_solid_sevenzip_keep_mount_and_cached_member() {
     let installation = PathBuf::from(std::env::var_os("ARCHIVE_CAPTURE_INSTALLATION").unwrap());
     let fixtures = PathBuf::from(std::env::var_os("MIDNIGHT_ARCHIVE_FIXTURES").unwrap());
@@ -218,7 +218,7 @@ fn cooperative_installed_zip_and_solid_sevenzip_keep_mount_and_cached_member() {
         let (catalog, path, measured, source) =
             setup_path(installation.clone(), fixtures.join(name));
         let (package, format) = catalog.choose(&path).unwrap();
-        assert_eq!(package.protocol, midnight_filesystem_api::Protocol::V3);
+        assert_eq!(package.protocol, midnight_filesystem_api::Protocol::V4);
         let mount =
             Mount::open_captured(package, format, &path, source, &Cancellation::default()).unwrap();
         let nodes = mount.list(1, &Cancellation::default()).unwrap();
@@ -289,4 +289,97 @@ fn cooperative_installed_zip_and_solid_sevenzip_keep_mount_and_cached_member() {
         );
         assert!(mount.validate().is_ok());
     }
+}
+
+/// The password of the archive plugin's exported `password.zip` and `password.7z`.
+const FIXTURE_PASSWORD: &str = "Kyrandia-heslo-\u{1F511}";
+/// Their members' content.
+const FIXTURE_PAYLOAD: &[u8] = b"shared verified content";
+
+fn named(nodes: &[midnight_core::ArchiveNode], name: &str) -> midnight_core::ArchiveNode {
+    nodes
+        .iter()
+        .find(|node| node.display_name == name)
+        .unwrap_or_else(|| panic!("{name} listed: {nodes:?}"))
+        .clone()
+}
+
+/// One password per mount through the installed worker: encrypted ZIP members list
+/// with their sizes and encryption, reading one before the password fails without
+/// ending the mount, a wrong password is refused, and the right one reads WinZip AES
+/// and ZipCrypto members. A 7z whose names are encrypted lists only after it.
+#[test]
+#[ignore = "requires protected protocol 4 worker and exported MIDNIGHT_ARCHIVE_FIXTURES"]
+fn installed_worker_asks_for_checks_and_uses_one_archive_password() {
+    use midnight_core::{
+        ArchiveEncryption, ArchivePassword, ArchiveUnlock, is_archive_password_required,
+    };
+    let installation = PathBuf::from(std::env::var_os("ARCHIVE_CAPTURE_INSTALLATION").unwrap());
+    let fixtures = PathBuf::from(std::env::var_os("MIDNIGHT_ARCHIVE_FIXTURES").unwrap());
+    let cancel = Cancellation::default();
+    let whole = FIXTURE_PAYLOAD.len() as u32;
+    let wrong = ArchivePassword::new("Kyrandia".into());
+    let right = ArchivePassword::new(FIXTURE_PASSWORD.into());
+    let catalog = Catalog::discover(&installation).unwrap();
+    assert!(catalog.diagnostics.is_empty(), "{:?}", catalog.diagnostics);
+    // Directly captured sources, whose teardown `release_on_worker` confirms.
+    let open = |name: &str| {
+        let path = fixtures.join(name);
+        let (package, format) = catalog.choose(&path).unwrap();
+        assert_eq!(package.protocol, midnight_filesystem_api::Protocol::V4);
+        let source = CapturedFile::capture(&path).unwrap();
+        Mount::open_captured(package, format, &path, source, &cancel).unwrap()
+    };
+
+    let mount = open("password.zip");
+    let root = mount.list(1, &cancel).unwrap();
+    let folder = named(&root, "Kyrandia");
+    assert!(folder.access.contains_encrypted);
+    let legacy = named(&root, "legacy.txt");
+    assert_eq!(legacy.access.encryption, ArchiveEncryption::ZipCrypto);
+    let plain = named(&root, "plain.txt");
+    assert_eq!(plain.access.encryption, ArchiveEncryption::None);
+    let balcony = named(
+        &mount.list(folder.id.entry, &cancel).unwrap(),
+        "balcony.emc",
+    );
+    assert_eq!(balcony.access.encryption, ArchiveEncryption::Aes256);
+    assert!(balcony.readable && balcony.access.unreadable.is_none());
+    assert_eq!(balcony.size, Some(FIXTURE_PAYLOAD.len() as u64));
+    let error = mount.read(balcony.id.entry, 0, whole, &cancel).unwrap_err();
+    assert!(is_archive_password_required(&error), "{error:?}");
+    // The worker keeps the mount: its plain member still reads.
+    assert_eq!(
+        mount.read(plain.id.entry, 0, whole, &cancel).unwrap(),
+        FIXTURE_PAYLOAD
+    );
+    assert_eq!(mount.unlock(&wrong).unwrap(), ArchiveUnlock::WrongPassword);
+    assert!(!mount.unlocked());
+    assert_eq!(mount.unlock(&right).unwrap(), ArchiveUnlock::Unlocked);
+    assert!(mount.unlocked());
+    for member in [&balcony, &legacy] {
+        assert_eq!(
+            mount.read(member.id.entry, 0, whole, &cancel).unwrap(),
+            FIXTURE_PAYLOAD,
+            "{}",
+            member.display_name
+        );
+    }
+    mount.release_on_worker().unwrap();
+
+    let mount = open("password.7z");
+    let error = mount.list(1, &cancel).unwrap_err();
+    assert!(is_archive_password_required(&error), "{error:?}");
+    assert!(mount.listing_locked());
+    assert_eq!(mount.unlock(&wrong).unwrap(), ArchiveUnlock::WrongPassword);
+    assert!(mount.listing_locked());
+    assert_eq!(mount.unlock(&right).unwrap(), ArchiveUnlock::Unlocked);
+    assert!(!mount.listing_locked());
+    let secret = named(&mount.list(1, &cancel).unwrap(), "secret.txt");
+    assert_eq!(secret.access.encryption, ArchiveEncryption::SevenZipAes256);
+    assert_eq!(
+        mount.read(secret.id.entry, 0, whole, &cancel).unwrap(),
+        FIXTURE_PAYLOAD
+    );
+    mount.release_on_worker().unwrap();
 }

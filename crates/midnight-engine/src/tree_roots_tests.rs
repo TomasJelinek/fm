@@ -256,6 +256,7 @@ fn archive_handoff_retains_source_mount_and_exact_virtual_index_after_navigation
         kind: EntryKind::Directory,
         size: None,
         readable: false,
+        access: Default::default(),
     })]
     .into();
     let listing = ArchiveListing {

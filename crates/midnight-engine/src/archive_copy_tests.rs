@@ -55,6 +55,7 @@ fn node(id: u64, parent: u64, name: &[u8], kind: EntryKind) -> ArchiveNode {
         kind,
         size: (kind == EntryKind::File).then_some(7),
         readable: kind == EntryKind::File,
+        access: Default::default(),
     }
 }
 fn input(mount: Arc<MemoryMount>, destination: &Path) -> ArchiveCopyRequest {

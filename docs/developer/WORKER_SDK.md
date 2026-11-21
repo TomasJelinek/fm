@@ -130,7 +130,11 @@ bundle containing the worker, thumbnail, filesystem and image-viewer APIs/SDKs; 
 fails if any of them is missing. Its
 `.cargo/registry.toml` declares the registry without redirecting third-party
 dependencies. Independent plugins pin registry versions and have no host path
-dependencies. Existing viewer registry artifacts remain unchanged.
+dependencies. Existing viewer registry artifacts remain unchanged. Since 21 November
+the bundle packages `midnight-filesystem-api` 0.5.0 (protocol 4: archive passwords and
+member diagnostics, see [the filesystem API](FILESYSTEM_API.md)), which now depends on
+crates.io `zeroize`; the archive plugin pins `=0.5.0`, so its lockfile checksum changes
+with a rebuilt bundle. The worker SDK itself stays 0.2.0.
 
 `scripts/build-thumbnailers.ps1` and `.sh` use that config with `--locked --offline`.
 Supply `-NoticesRoot` on Windows or the fourth positional argument on Linux,

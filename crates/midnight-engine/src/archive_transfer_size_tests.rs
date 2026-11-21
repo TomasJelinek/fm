@@ -17,6 +17,7 @@ fn member(id: u64, parent: u64, kind: EntryKind, name: Vec<u8>) -> ArchiveNode {
         size: (kind == EntryKind::File).then_some(0),
         modified: None,
         readable: kind == EntryKind::File,
+        access: Default::default(),
     }
 }
 

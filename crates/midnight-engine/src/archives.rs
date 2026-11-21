@@ -23,6 +23,7 @@ mod size_sort_tests;
 #[cfg(test)]
 mod tests;
 mod timestamps;
+mod unlock;
 
 const PANES: usize = 2;
 const MAX_WORKERS: usize = 2;

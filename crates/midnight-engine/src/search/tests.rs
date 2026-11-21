@@ -58,6 +58,7 @@ fn duplicate_archive_names_filter_by_provider_identity_without_native_paths() {
                 kind: EntryKind::File,
                 size: Some(id),
                 readable: true,
+                access: Default::default(),
             })
         })
         .collect::<Vec<_>>()
@@ -271,6 +272,7 @@ fn archive_prefix_uses_valid_raw_name_instead_of_an_opaque_or_alternate_caption(
             kind: EntryKind::File,
             size: None,
             readable: true,
+            access: Default::default(),
         })
     })
     .collect();

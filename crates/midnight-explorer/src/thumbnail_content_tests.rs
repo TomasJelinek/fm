@@ -52,6 +52,7 @@ fn target(mount: Arc<Mount>, network_allowed: bool) -> ThumbnailTarget {
                 size: Some(1),
                 readable: true,
                 modified: None,
+                access: Default::default(),
             },
             address: Arc::new(ArchiveAddress {
                 provider: "test.archive".into(),

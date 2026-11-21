@@ -306,6 +306,7 @@ mod tests {
             kind: EntryKind::File,
             size,
             readable: true,
+            access: Default::default(),
         }
     }
 
@@ -424,6 +425,7 @@ mod tree_tests {
                     kind: EntryKind::File,
                     size: Some(1),
                     readable: entry != 4,
+                    access: Default::default(),
                 })
             })
             .collect();

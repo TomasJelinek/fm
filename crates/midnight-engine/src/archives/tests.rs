@@ -123,6 +123,7 @@ fn shared_mount(id: u64) -> Arc<crate::archive_shared::testing::SharedMount> {
             size: None,
             readable: false,
             modified: None,
+            access: Default::default(),
         }],
     );
     Arc::new(mount)
@@ -335,6 +336,7 @@ async fn archive_listings_sort_names_with_backend_locale_keys() {
         size: Some(1),
         readable: true,
         modified: None,
+        access: Default::default(),
     };
     // Raw byte order would place "Zeta" before "alpha".
     mount.insert(1, vec![file(2, "Zeta"), file(3, "alpha")]);

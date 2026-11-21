@@ -65,6 +65,7 @@ pub(super) fn node(id: u64, parent: u64, kind: EntryKind, size: Option<u64>) -> 
         size,
         readable: kind == EntryKind::File,
         modified: None,
+        access: Default::default(),
     }
 }
 pub(super) fn address() -> ArchiveAddress {

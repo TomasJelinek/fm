@@ -193,6 +193,15 @@ impl Presenter {
             ),
         ];
         fields.extend(crate::detail_attributes::fields(metadata));
+        // Archive members: how one is encrypted, and why one cannot be read.
+        if let Some(node) = &entry.virtual_node {
+            if node.access.encryption != ArchiveEncryption::None {
+                fields.push(("Encrypted", node.access.encryption.label().to_owned()));
+            }
+            if !node.readable && node.kind != EntryKind::Directory {
+                fields.push(("Unreadable", node.unreadable_reason()));
+            }
+        }
         fields
             .into_iter()
             .enumerate()
@@ -209,6 +218,10 @@ impl Presenter {
                 value,
                 explanation: if label == "Attributes" {
                     crate::detail_attributes::explanation(metadata)
+                } else if label == "Encrypted" {
+                    "Encrypted inside the archive: its password is asked for once, when the \
+                     member is first viewed, opened or copied."
+                        .into()
                 } else {
                     String::new()
                 },
@@ -361,6 +374,7 @@ mod tests {
             size: Some(32),
             readable: true,
             modified: None,
+            access: Default::default(),
         });
         p.panes[0].entries = vec![entry].into();
         p.panes[0].index = Arc::new(DirectoryIndex::from_entries(&p.panes[0].entries));

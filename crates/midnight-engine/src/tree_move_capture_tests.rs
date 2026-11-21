@@ -77,6 +77,7 @@ impl MountedFilesystem for Mount {
             kind: EntryKind::File,
             size: Some(1),
             readable: true,
+            access: Default::default(),
         };
         Ok(ProviderTarget::Archive(Box::new(ArchiveTarget {
             location: ArchiveLocation {

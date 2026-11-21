@@ -539,6 +539,15 @@ impl Staging {
     ) -> io::Result<Option<Lease>> {
         self.terminal_with_cache(operation, reply, true)
     }
+    /// Protocol 4: whether `request` has begun no stage, so that a terminal password
+    /// reply to it leaves nothing to discard and the session may go on.
+    pub(crate) fn staged_nothing(&self, request: u64) -> bool {
+        self.pending.is_none()
+            && self.admitted.is_none()
+            && !self.sealed.values().any(|stage| {
+                stage.request == request && matches!(stage.purpose, StagePurpose::Member { .. })
+            })
+    }
     pub(crate) fn terminal_with_cache(
         &mut self,
         operation: &Message,
@@ -551,6 +560,7 @@ impl Staging {
         match (operation, reply) {
             (Message::Open { .. }, Message::Opened { root: 1, .. })
             | (Message::List { .. }, Message::Entries { .. })
+            | (Message::Unlock { .. }, Message::UnlockReply { .. })
                 if !self
                     .sealed
                     .values()

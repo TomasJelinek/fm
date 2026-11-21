@@ -362,6 +362,21 @@ impl ArchiveMount for LeasedArchive {
         self.context().validate_registration().ok()?;
         self.source().parent()
     }
+    fn unlocked(&self) -> bool {
+        self.source().unlocked()
+    }
+    fn listing_locked(&self) -> bool {
+        self.source().listing_locked()
+    }
+    // A revoked target unlocks nothing.
+    fn unlock(
+        &self,
+        password: &midnight_core::ArchivePassword,
+    ) -> Result<midnight_core::ArchiveUnlock, FsError> {
+        let request = self.context().request(&Cancellation::default());
+        self.check(&request)?;
+        self.source().unlock(password)
+    }
 
     fn stage_member(
         &self,

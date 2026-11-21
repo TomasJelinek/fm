@@ -1254,6 +1254,34 @@ fields and conservative physical-device classifications.
   and retained frames are bounded. Commands and labels derived from content never
   execute.
 
+## Archive passwords
+
+Password-protected archive members (ZipCrypto, WinZip AES, 7-Zip AES; see
+[archive formats](docs/ARCHIVE_FORMATS.md#password-protected-archives)) are decrypted
+only inside the sandboxed archive worker, through the same verified staging as plain
+members: no host, engine or UI code parses or decrypts archive bytes, and nothing is
+published before its CRC-32 or WinZip AES authentication code has been checked.
+
+A password is kept in memory only, by the worker of the one archive session it
+unlocks. It is asked once and kept until that archive is closed: until no panel tab,
+viewer or copy uses the archive any more, or the application exits. The host then ends
+the worker process, whose memory goes back to the operating system without the worker
+wiping it first. Opening the archive again starts a new session that asks again, and an
+archive inside an archive asks for and keeps its own password. It is never written to
+settings, history, logs, events, error or Copy-details text, or the clipboard. It
+travels from the password dialog's callback straight into `Command::UnlockArchive`
+(`midnight_core::ArchivePassword`), to the backend worker that calls
+`ArchiveMount::unlock`, and through the protocol-4 `Unlock` frame to the worker
+(`midnight_filesystem_api::Password`). Both types hold their bytes in `zeroize`
+buffers that are wiped when dropped and print `<redacted>` in `Debug`; the API codec
+wipes the frames that carry a password after writing and reading them, and the
+answer (`Event::ArchiveUnlocked`) carries none of it. Known limits: the dialog's text
+field is owned by the UI toolkit, which frees but does not wipe it when the dialog
+closes; the 7z decoder keeps its own UTF-16 copy for the mount without wiping it;
+operating-system pipe buffers are outside the process. A wrong password is refused by
+the worker's verifiers without unlocking anything; local password attempts are not
+rate-limited.
+
 ## Dependencies
 
 Keep `Cargo.lock`, check advisories against the actual lockfile, and record the

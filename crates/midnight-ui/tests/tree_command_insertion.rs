@@ -470,6 +470,7 @@ fn tree_rows(root: &TreeRootSnapshot) -> Vec<TreeDisplayRow> {
         kind: EntryKind::File,
         size: Some(9),
         readable: true,
+        access: Default::default(),
     });
     vec![
         row(TreeRowId(101), folder, None, 0, true, Some(ROOT_FOLDER)),

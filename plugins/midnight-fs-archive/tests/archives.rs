@@ -120,7 +120,7 @@ fn zip_crc_failure_rejects_first_read_before_publishing_any_member_bytes() {
 }
 
 #[test]
-fn encrypted_zip_members_are_explicitly_unreadable_without_password_guessing() {
+fn encrypted_zip_members_need_their_password_and_are_never_guessed() {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     writer
         .start_file(
@@ -136,10 +136,16 @@ fn encrypted_zip_members_are_explicitly_unreadable_without_password_guessing() {
     source[central + 8] |= 1;
     let mut archive = Archive::open(Format::Zip, source, Limits::default()).unwrap();
     let node = archive.list(1, 0).unwrap().remove(0);
-    assert!(!node.readable);
+    // Readable once unlocked, with its size and method: nothing is tried without one.
+    assert!(node.readable);
+    assert_eq!(
+        node.encryption,
+        midnight_filesystem_api::Encryption::ZipCrypto
+    );
+    assert_eq!(node.size, Some(25));
     assert_eq!(
         archive.read(node.id, 0, 1).unwrap_err().code,
-        ErrorCode::Unsupported
+        ErrorCode::PasswordRequired
     );
 }
 

@@ -80,12 +80,12 @@ if [[ -n "$package" ]]; then
 schema_version = 1
 id = "midnight.fs.archive"
 kind = "filesystem-worker"
-version = "0.2.0"
+version = "0.3.0"
 entry_executable = "midnight-fs-archive"
 target = "$target"
-protocol = 3
+protocol = 4
 stable_entry_ids = true
 formats = ["zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz", "bzip2", "tar-bzip2", "zstd", "tar-zstd"]
 EOF
-    python3 -B "$plugin_root/scripts/notices.py" --config "$sdk_config" --output "$package/licenses"
+    python3 -B "$plugin_root/scripts/notices.py" --config "$sdk_config" --target "$target" --output "$package/licenses"
 fi

@@ -224,6 +224,15 @@ pub(crate) fn install(
         } else {
             PaneId::Right
         };
+        // An encrypted member of an archive without its password yet: the password
+        // dialog opens first, and the viewer once it is unlocked (`take_archive_view`).
+        if presenter
+            .borrow_mut()
+            .view_needs_archive_password(pane, basic)
+        {
+            midnight_ui::refresh(&window, &presenter.borrow());
+            return;
+        }
         let launch = presenter.borrow().viewer_launch(pane, basic);
         let Some(launch) = launch else {
             let reason = presenter.borrow().viewer_unavailable_reason(pane);

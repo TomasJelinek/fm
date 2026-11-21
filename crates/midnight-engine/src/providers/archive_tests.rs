@@ -132,6 +132,7 @@ fn node(mount: u64, entry: u64, parent: u64, kind: EntryKind) -> ArchiveNode {
         kind,
         size: (kind == EntryKind::File).then_some(5),
         readable: kind == EntryKind::File,
+        access: Default::default(),
     }
 }
 

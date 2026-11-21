@@ -3,7 +3,8 @@ import { HelpBody } from "help-dialog.slint";
 import { DialogFrame, PopupFocus } from "dialog-frame.slint";
 import { Theme } from "theme.slint";
 import { MaskSelectionDialog, PanelChoices } from "select-mask-dialog.slint";
-export { PanelChoices }
+import { ArchivePasswordDialog, ArchivePasswords } from "archive-password-dialog.slint";
+export { PanelChoices, ArchivePasswords }
 
 export global PanelFilterPresentation {
     in-out property <PanelFilterView> model;
@@ -18,12 +19,41 @@ export global PanelFilterPresentation {
 }
 
 // The native window stays enabled; both modal layers live in its popup stack.
-// It also hosts Select/Deselect by mask, the other pattern dialog of a panel.
+// It also hosts Select/Deselect by mask, the other pattern dialog of a panel, and the
+// password of an archive that a panel's action needs.
 export component EmbeddedPanelFilter inherits Rectangle {
     private property <string> token: PanelFilterPresentation.token;
     private property <string> mask-token: PanelChoices.mask-token;
-    out property <bool> active: root.token != "" || root.mask-token != "";
+    private property <string> password-token: ArchivePasswords.token;
+    out property <bool> active: root.token != "" || root.mask-token != "" || root.password-token != "";
     background: transparent;
+    changed password-token => {
+        PopupFocus.update();
+        if root.password-token != "" { password-popup.close(); password-popup.show(); }
+        else { password-popup.close(); }
+        PopupFocus.update();
+    }
+    password-popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        password-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(460px, Theme.font-size * 24);
+            desired-height: max(280px, Theme.control-height * 5 + 130px);
+            dim: true; dismiss-on-outside: false;
+            init => { self.reset(); }
+            ArchivePasswordDialog {
+                x: 0px; y: 0px;
+                width: password-frame.body-width; height: password-frame.body-height;
+                private property <string> occurrence;
+                input-enabled: self.occurrence == ArchivePasswords.token;
+                init => { self.occurrence = ArchivePasswords.token; self.begin(); }
+                move-dialog(dx, dy) => { password-frame.move-by(dx, dy); }
+                submit(password) => { ArchivePasswords.submit(self.occurrence, password); }
+                cancel => { ArchivePasswords.dismiss(self.occurrence); }
+            }
+        }
+    }
     changed token => {
         PopupFocus.update();
         if root.token != "" { filter-popup.close(); filter-popup.show(); }

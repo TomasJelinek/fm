@@ -92,6 +92,7 @@ mod tests {
             size: Some(999),
             readable: false,
             modified: None,
+            access: Default::default(),
         });
         for (finished, errors, expected) in [(false, 0, None), (true, 1, None), (true, 0, Some(12))]
         {

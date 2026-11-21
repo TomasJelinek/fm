@@ -135,6 +135,14 @@ pub enum Command {
         action: crate::ArchiveAction,
         sort: SortSpec,
     },
+    /// Verify the password of one archive mount on a backend worker
+    /// (`ArchiveMount::unlock`), answered by `Event::ArchiveUnlocked`. The password
+    /// is zeroized when the command is dropped and never enters an event.
+    UnlockArchive {
+        request: DesktopRequestId,
+        mount: Arc<dyn crate::ArchiveMount>,
+        password: crate::ArchivePassword,
+    },
     ListViewerPlugins,
     /// Metadata-only effective image coverage for the established startup-disabled snapshot.
     ListComparatorCapabilities {
@@ -514,6 +522,11 @@ pub enum Event {
         pane: PaneId,
         navigation: NavigationId,
         result: Result<crate::ArchiveListing, FsError>,
+    },
+    /// The answer to `Command::UnlockArchive`.
+    ArchiveUnlocked {
+        request: DesktopRequestId,
+        result: Result<crate::ArchiveUnlock, FsError>,
     },
     /// Member bytes decoded so far while `navigation` opens an archive inside an archive.
     ArchiveProgress {

@@ -527,6 +527,7 @@ fn archive_root_migration_uses_original_ids_and_preserves_directory_links_on_inv
                 },
                 size: entry.metadata.size,
                 readable: true,
+                access: Default::default(),
             })
         })
         .collect();

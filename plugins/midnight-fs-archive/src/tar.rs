@@ -244,15 +244,23 @@ impl Archive {
             } else {
                 Kind::Other
             };
-            let readable = kind == Kind::File && tree::safe_name(&raw);
             let size = entry.size();
             if size > self.limits.max_entry {
                 return Err(Error::limit());
             }
             let modified = timestamps::tar_modified(&mut entry);
-            let id = self.add(&raw, &display, kind, None, readable)?;
-            if let Some(member) = self.member_mut(id) {
-                member.modified = modified;
+            // Links and special records get their reason from the index; an unsafe
+            // name overrides it.
+            let id = self.add(&raw, &display, kind, None, Access::READABLE)?;
+            let readable = match self.member_mut(id) {
+                Some(member) => {
+                    member.modified = modified;
+                    member.readable
+                }
+                None => false,
+            };
+            if !readable && kind == Kind::File && id != 1 {
+                self.declared_size(size);
             }
             if readable {
                 let start = entry.raw_file_position();

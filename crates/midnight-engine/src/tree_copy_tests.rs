@@ -648,6 +648,7 @@ impl crate::providers::MountedFilesystem for LinkCaptureMount {
             kind: EntryKind::File,
             size: Some(1),
             readable: true,
+            access: Default::default(),
         };
         Ok(crate::providers::ProviderTarget::Archive(Box::new(
             crate::providers::ArchiveTarget {

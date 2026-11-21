@@ -111,6 +111,7 @@ impl ArchiveMount for Archive {
                 size: None,
                 modified: None,
                 readable: false,
+                access: Default::default(),
             })
             .collect())
     }

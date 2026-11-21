@@ -10,14 +10,23 @@ mod tar;
 mod timestamps;
 mod tree;
 mod window;
-use midnight_filesystem_api::StagePurpose;
-use midnight_filesystem_api::{ErrorCode, Format, Kind, MAX_BATCH, MAX_FRAME, MAX_READ, Node};
+use midnight_filesystem_api::{
+    Encryption, ErrorCode, Format, Kind, MAX_BATCH, MAX_FRAME, MAX_READ, Node, Password,
+    StagePurpose, UnlockStatus,
+};
 use std::rc::Rc;
 use std::{
     collections::HashMap,
     io::{self, Read},
 };
 use storage::{Content, Reader, Stage, Storage};
+use tree::{Access, Reason};
+
+/// Encrypted members (7z: blocks) whose quick verifiers `Archive::unlock` checks:
+/// every one of them must accept a password. A wrong ZipCrypto password passes one
+/// check byte with probability 1/256 and four of them with 1/2^32; a WinZip AES
+/// verification value is 16 bits.
+pub(crate) const UNLOCK_CHECKS: usize = 4;
 
 /// Process memory the host grants this worker: its memory policy for archive workers,
 /// the largest the public worker SDK accepts. The worker cannot query its own limit
@@ -160,6 +169,13 @@ pub struct Archive {
     total: u64,
     /// The first failed read of the source during the current open or member read.
     failure: window::Failures,
+    /// Names of the compression methods that unreadable members name.
+    methods: Vec<String>,
+    /// The password that `unlock` verified, kept for the mount's lifetime and
+    /// zeroized when replaced or dropped.
+    password: Option<Password>,
+    /// The source of a 7z archive whose names are encrypted, until it is unlocked.
+    locked_names: Option<Reader>,
 }
 impl Archive {
     /// Owned in-memory fixtures. The executable uses `open_stream` with the host broker.
@@ -189,6 +205,9 @@ impl Archive {
             sevenzip_content: None,
             limits,
             total: 0,
+            methods: Vec::new(),
+            password: None,
+            locked_names: None,
         }
     }
 
@@ -252,7 +271,13 @@ impl Archive {
                 } else {
                     streams::decode(format, source, &mut stage)?;
                     let content = stage.finish()?;
-                    result.add(b"content", "content", Kind::File, Some(content), true)?;
+                    result.add(
+                        b"content",
+                        "content",
+                        Kind::File,
+                        Some(content),
+                        Access::READABLE,
+                    )?;
                 }
             }
         }
@@ -289,6 +314,12 @@ impl Archive {
 
     /// Children of `directory` with IDs above `after`, in increasing ID order.
     fn children_after(&self, directory: u64, after: u64) -> Result<&[usize], Error> {
+        if self.locked_names.is_some() {
+            return Err(Error::new(
+                ErrorCode::PasswordRequired,
+                "This archive's file names are encrypted; enter the archive's password to list them",
+            ));
+        }
         if directory != 1
             && self
                 .member(directory)
@@ -342,39 +373,183 @@ impl Archive {
         let member = self
             .member(entry)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "Unknown archive member"))?;
-        if !member.readable {
+        if member.kind == Kind::Directory {
             return Err(Error::new(
                 ErrorCode::Unsupported,
-                "Unsafe, encrypted, linked or unsupported archive member",
+                "A folder has no byte content",
             ));
         }
+        if !member.readable {
+            let message = unreadable_message(member.reason, member.encryption, &self.methods);
+            return Err(Error::new(ErrorCode::Unsupported, message));
+        }
         let declared_size = member.size();
+        let encrypted = member.encryption != Encryption::None;
         if let Some(content) = self.contents.get(&entry) {
             return Ok(*content);
+        }
+        // Nothing is staged for an encrypted member before its password is unlocked.
+        if encrypted && self.password.is_none() {
+            return Err(password_required());
         }
         if let Some(tar) = &mut self.tar_content {
             return tar.prepare(entry, self.storage.clone());
         }
         if let Some(sevenzip) = &mut self.sevenzip_content {
-            return sevenzip.decode(entry, self.storage.clone());
+            let password = self.password.as_ref().filter(|_| encrypted);
+            return sevenzip.decode(entry, self.storage.clone(), password);
         }
         if let Some(index) = tree::find(&self.zip_members, entry).copied() {
             let zip = self
                 .zip
                 .as_mut()
                 .ok_or_else(|| Error::new(ErrorCode::Corrupt, "Missing ZIP source"))?;
+            // The member's reader is opened, and an encrypted member's password checked,
+            // before its stage begins: a missing or refused password stages nothing.
+            let reader = if encrypted {
+                let password = self.password.as_ref().ok_or_else(password_required)?;
+                zip.by_index_decrypt(index, password.as_bytes())
+                    .map_err(formats::decrypt_error)?
+            } else {
+                zip.by_index(index).map_err(formats::zip_error)?
+            };
             let mut stage = Stage::new(
                 self.storage.clone(),
                 StagePurpose::Member { entry },
                 declared_size,
                 declared_size.unwrap_or(u64::MAX),
             )?;
-            stage.copy(zip.by_index(index).map_err(formats::zip_error)?)?;
+            // The ZIP reader checks the member's CRC-32 at its end, so a password that
+            // passed the check byte but is wrong fails here, before anything is sealed.
+            stage.copy(reader)?;
             return stage.finish();
         }
         Err(Error::new(
             ErrorCode::Unsupported,
-            "Directory has no byte content",
+            "Archive member has no byte content",
         ))
+    }
+
+    /// Protocol 4 `Unlock`: verify `password` and keep it when it opens this archive's
+    /// encrypted content. A refused password changes nothing; a failed read of the
+    /// source is reported as itself.
+    pub fn unlock(&mut self, password: Password) -> Result<UnlockStatus, Error> {
+        self.failure.take();
+        let result = self.verify_password(&password);
+        let status = match (result, self.failure.take()) {
+            (Err(_), Some(failure)) => return Err(failure.into()),
+            (result, _) => result?,
+        };
+        if status == UnlockStatus::Unlocked {
+            self.password = Some(password);
+        }
+        Ok(status)
+    }
+
+    /// 7z names are verified by decrypting the header (its CRC-32), 7z blocks by
+    /// decoding the first byte of each of the first `UNLOCK_CHECKS` encrypted blocks,
+    /// ZIP members by the quick verifiers (ZipCrypto check byte, WinZip AES password
+    /// verification value) of the first `UNLOCK_CHECKS` encrypted members: all of
+    /// them must accept the password.
+    fn verify_password(&mut self, password: &Password) -> Result<UnlockStatus, Error> {
+        if self.locked_names.is_some() {
+            return self.unlock_names(password);
+        }
+        if let Some(status) = self.unlock_blocks(password)? {
+            return Ok(status);
+        }
+        let encrypted = self
+            .members
+            .iter()
+            .any(|member| member.encryption != Encryption::None);
+        if !encrypted {
+            return Ok(UnlockStatus::NotEncrypted);
+        }
+        let checks: Vec<usize> = self
+            .zip_members
+            .iter()
+            .filter(|(id, _)| {
+                self.member(*id)
+                    .is_some_and(|member| member.encryption != Encryption::None)
+            })
+            .map(|(_, index)| *index)
+            .take(UNLOCK_CHECKS)
+            .collect();
+        if checks.is_empty() {
+            // Encrypted members exist, but none with a method this worker decrypts.
+            return Ok(UnlockStatus::Unsupported);
+        }
+        self.verify(&checks, password)
+    }
+
+    fn verify(&mut self, checks: &[usize], password: &Password) -> Result<UnlockStatus, Error> {
+        let zip = self
+            .zip
+            .as_mut()
+            .ok_or_else(|| Error::new(ErrorCode::Corrupt, "Missing ZIP source"))?;
+        for index in checks {
+            match zip.by_index_decrypt(*index, password.as_bytes()) {
+                Ok(_) => {}
+                Err(zip::result::ZipError::InvalidPassword) => {
+                    return Ok(UnlockStatus::WrongPassword);
+                }
+                Err(error) => return Err(formats::zip_error(error)),
+            }
+        }
+        Ok(UnlockStatus::Unlocked)
+    }
+
+    /// Whether a password was unlocked.
+    pub fn unlocked(&self) -> bool {
+        self.password.is_some()
+    }
+}
+
+/// A member read before its archive's password was unlocked.
+fn password_required() -> Error {
+    Error::new(
+        ErrorCode::PasswordRequired,
+        "This archive member is password-protected; enter the archive's password to read it",
+    )
+}
+
+/// Why a member cannot be read, as a `Read` of it reports.
+fn unreadable_message(reason: Reason, encryption: Encryption, methods: &[String]) -> String {
+    match reason {
+        Reason::None => "This archive member cannot be read".into(),
+        Reason::Encryption => format!(
+            "This archive member is encrypted with {}, which this archive plugin cannot decrypt",
+            encryption_name(encryption)
+        ),
+        Reason::Compression(index) => format!(
+            "This archive member is compressed with {}, which this archive plugin cannot decompress",
+            methods
+                .get(usize::from(index))
+                .map_or("an unknown method", String::as_str)
+        ),
+        Reason::Link => "This archive member is a link; links are not read".into(),
+        Reason::UnsafeName => {
+            "This archive member's name is unsafe (an absolute path, `..`, a backslash, a drive or stream colon or NUL)".into()
+        }
+        Reason::AmbiguousName => {
+            "Several records of this archive share this member's name, and the reader cannot tell them apart".into()
+        }
+        Reason::SpecialFile => "This archive member is a device, pipe or other special record".into(),
+        Reason::Limit => {
+            "Decoding this archive member needs more memory than the archive worker's bounds allow".into()
+        }
+    }
+}
+
+/// How users know an encryption method.
+pub(crate) fn encryption_name(encryption: Encryption) -> &'static str {
+    match encryption {
+        Encryption::None => "no encryption",
+        Encryption::ZipCrypto => "traditional ZIP encryption (ZipCrypto)",
+        Encryption::Aes128 => "WinZip AES-128",
+        Encryption::Aes192 => "WinZip AES-192",
+        Encryption::Aes256 => "WinZip AES-256",
+        Encryption::SevenZipAes256 => "7-Zip AES-256",
+        Encryption::Unknown => "an unsupported method (such as PKWARE strong encryption)",
     }
 }

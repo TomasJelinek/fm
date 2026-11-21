@@ -11,6 +11,7 @@ fn entry(timestamp: ArchiveTimestamp) -> Entry {
         size: Some(1),
         readable: true,
         modified: Some(timestamp),
+        access: Default::default(),
     })
 }
 #[test]

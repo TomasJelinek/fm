@@ -75,6 +75,7 @@ mod tool_window_shutdown_tests;
 #[cfg(test)]
 mod watch_status_tests;
 pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
+mod archive_passwords;
 mod panel_choices;
 mod panel_filter_windows;
 mod panel_models;
@@ -265,6 +266,7 @@ impl Model for Rows {
                 parent_entry: true,
                 prefix_end: 0,
                 compressed: false,
+                encrypted: false,
                 browsable_archive: false,
                 size: "".into(),
                 size_state: 0,
@@ -348,6 +350,9 @@ impl Model for Rows {
             ))
             .unwrap_or(0),
             compressed: metadata.compression == CompressionStatus::Compressed,
+            encrypted: entry.virtual_node.as_ref().is_some_and(|node| {
+                node.access.encryption != midnight_core::ArchiveEncryption::None
+            }),
             browsable_archive: state.can_browse_archive(entry),
             dim_icon: detail_attributes::dim_icon(metadata),
             size: size.into(),
@@ -650,6 +655,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_right_bookmark_name(bookmark_name(PaneId::Right));
     window.invoke_refresh_panel_filter_window();
     panel_choices::refresh(window, presenter);
+    archive_passwords::refresh(window, presenter);
     window.invoke_refresh_hot_paths_window();
     let volume_icons = presenter
         .volumes
@@ -1111,6 +1117,7 @@ pub fn install_with_owned(
     commander_presentation::bind(window, &presenter, &send);
     panel_filter_windows::install(window, presenter.clone(), send.clone());
     panel_choices::install(window, presenter.clone(), send.clone());
+    archive_passwords::install(window, presenter.clone(), send.clone());
     hot_path_windows::install(window, presenter.clone(), send.clone());
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");

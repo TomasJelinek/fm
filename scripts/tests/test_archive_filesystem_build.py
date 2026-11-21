@@ -130,7 +130,7 @@ if sys.argv[1] == 'build':
         package = self.application / "filesystems/midnight.fs.archive"
         self.assertEqual((package / "midnight-fs-archive").read_bytes(), b"debug")
         manifest = (package / "plugin.toml").read_text()
-        self.assertIn('protocol = 3', manifest)
+        self.assertIn('protocol = 4', manifest)
         self.assertIn(f'version = "{plugin_version()}"', manifest)
         self.assertEqual((package / "licenses/LICENSE").read_text(), "Exact archive dependency license\n")
         self.assertEqual((package / "THIRD-PARTY.md").read_text(), "Pinned archive dependencies\n")

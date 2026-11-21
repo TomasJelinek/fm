@@ -775,6 +775,16 @@ impl Presenter {
     }
 
     fn request_archive_copy_dialog(&mut self, pane: PaneId) {
+        // Encrypted members of a locked archive: its password is asked for once first.
+        if self.copy_needs_archive_password(pane) {
+            return;
+        }
+        self.request_archive_copy_dialog_unchecked(pane);
+    }
+
+    /// The Copy dialog of an archive selection, whether or not its password was entered:
+    /// without it the copy skips the protected members with that reason.
+    pub(super) fn request_archive_copy_dialog_unchecked(&mut self, pane: PaneId) {
         let p = &self.panes[pane.index()];
         let Some(archive) = &p.archive else {
             return;

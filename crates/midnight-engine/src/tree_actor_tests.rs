@@ -909,6 +909,7 @@ fn root_preflight_charges_the_boxed_node_of_each_archive_row() {
                 size: None,
                 readable: true,
                 modified: None,
+                access: Default::default(),
             });
             entry.display_name = String::with_capacity(caption);
             entry

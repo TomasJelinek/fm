@@ -790,6 +790,9 @@ fn member(id: u64, parent: u64) -> api::Node {
         size: None,
         readable: true,
         modified: None,
+        encryption: api::Encryption::None,
+        contains_encrypted: false,
+        unreadable: None,
     }
 }
 /// The conforming root page that a worker which kept running would serve to `request`.

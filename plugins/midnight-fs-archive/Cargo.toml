@@ -3,25 +3,27 @@ resolver = "2"
 
 [package]
 name = "midnight-fs-archive"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
 
 [dependencies]
-midnight-filesystem-api = { version = "=0.4.0", registry = "midnight" }
+midnight-filesystem-api = { version = "=0.5.0", registry = "midnight" }
 midnight-worker-sdk = { version = "=0.2.0", registry = "midnight" }
-zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
+# `aes-crypto` decrypts WinZip AES members (traditional ZipCrypto needs no feature);
+# `aes256` decrypts 7-Zip AES blocks and headers. Both use RustCrypto crates.
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2", "aes-crypto"] }
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 tar = { version = "=0.4.46", default-features = false }
-sevenz-rust2 = { version = "=0.23.0", default-features = false }
+sevenz-rust2 = { version = "=0.23.0", default-features = false, features = ["aes256"] }
 lzma-rust2 = { version = "=0.21.0", default-features = false, features = ["std", "xz"] }
 bzip2 = "=0.6.1"
 ruzstd = { version = "=0.9.1", default-features = false, features = ["std", "hash"] }
 
 [dev-dependencies]
 lzma-rust2 = { version = "=0.21.0", default-features = false, features = ["std", "xz", "encoder"] }
-sevenz-rust2 = { version = "=0.23.0", default-features = false, features = ["compress"] }
+sevenz-rust2 = { version = "=0.23.0", default-features = false, features = ["compress", "aes256"] }
 
 # The development application loads the development archive worker. Unoptimized
 # decompressors inflated a 91 MB .tar.gz six times slower (1.2 s instead of 0.2 s).

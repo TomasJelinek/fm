@@ -122,3 +122,60 @@ fn export_cooperative_fixtures() {
         .unwrap();
     fs::write(root.join("cancel.7z"), seven.finish().unwrap().into_inner()).unwrap();
 }
+
+/// The password of `password.zip` and `password.7z`; the host's real-worker test uses it.
+const PASSWORD: &str = "Kyrandia-heslo-\u{1F511}";
+
+#[test]
+#[ignore = "exports password-protected fixtures under _build"]
+fn export_password_fixtures() {
+    use zip::unstable::write::FileOptionsExt;
+    let root =
+        PathBuf::from(std::env::var_os("MIDNIGHT_ARCHIVE_FIXTURES").expect("fixture output"));
+    assert!(root.components().any(|part| part.as_os_str() == "_build"));
+    fs::create_dir_all(&root).unwrap();
+    // As in the user's share.zip: a folder of WinZip AES-256 members, here beside a
+    // ZipCrypto member and a plain one that never needs the password.
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    zip.start_file(
+        "Kyrandia/balcony.emc",
+        options.with_aes_encryption(zip::AesMode::Aes256, PASSWORD),
+    )
+    .unwrap();
+    zip.write_all(PAYLOAD).unwrap();
+    zip.start_file(
+        "legacy.txt",
+        options
+            .with_deprecated_encryption(PASSWORD.as_bytes())
+            .unwrap(),
+    )
+    .unwrap();
+    zip.write_all(PAYLOAD).unwrap();
+    zip.start_file("plain.txt", options).unwrap();
+    zip.write_all(PAYLOAD).unwrap();
+    fs::write(
+        root.join("password.zip"),
+        zip.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    // AES-256 content and encrypted names: nothing lists before the password.
+    let mut seven = sevenz_rust2::ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
+    seven.set_content_methods(vec![
+        sevenz_rust2::encoder_options::AesEncoderOptions::new(PASSWORD.into()).into(),
+        sevenz_rust2::EncoderConfiguration::new(sevenz_rust2::EncoderMethod::LZMA2),
+    ]);
+    seven.set_encrypt_header(true);
+    seven
+        .push_archive_entry(
+            sevenz_rust2::ArchiveEntry::new_file("secret.txt"),
+            Some(Cursor::new(PAYLOAD.to_vec())),
+        )
+        .unwrap();
+    fs::write(
+        root.join("password.7z"),
+        seven.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+}

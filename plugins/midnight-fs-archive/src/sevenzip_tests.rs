@@ -44,7 +44,7 @@ fn a_failed_decode_of_the_same_block_keeps_its_verified_siblings() {
     // Decoding the block again (for example after the host evicted the lease of
     // `a`, or a cancelled preview) fails here, but must not discard `b` and `c`.
     assert_eq!(
-        content.decode(2, storage).unwrap_err().code,
+        content.decode(2, storage, None).unwrap_err().code,
         ErrorCode::Corrupt
     );
     assert_eq!(archive.read(4, 0, 5).unwrap().0, b"third");
@@ -165,26 +165,50 @@ fn an_undecodable_block_only_makes_its_own_members_unreadable() {
     let mut source = Reader::new(Box::new(Cursor::new(bytes)), length);
     let mut metadata = sevenz_rust2::Archive::read(&mut source, &Password::empty()).unwrap();
     assert_eq!(metadata.blocks.len(), 2);
-    assert!(decodable(&metadata.blocks[1], MAX_DICTIONARY));
-    assert!(!decodable(&metadata.blocks[1], MAX_DICTIONARY + 1));
-    // An empty method ID stands for any codec the worker does not enable (PPMd, AES...).
-    metadata.blocks[1].coders = vec![sevenz_rust2::Coder::default()];
     let mut archive = Archive::empty(
         Rc::new(storage::MemoryStorage::default()),
         Limits::default(),
         source.failures(),
     );
+    assert!(
+        archive
+            .block_access(&metadata.blocks[1], MAX_DICTIONARY)
+            .is_none()
+    );
+    let limited = archive.block_access(&metadata.blocks[1], MAX_DICTIONARY + 1);
+    assert_eq!(limited.map(|access| access.reason), Some(Reason::Limit));
+    // An empty method ID stands for any codec the worker does not enable (PPMd...).
+    metadata.blocks[1].coders = vec![sevenz_rust2::Coder::default()];
     archive.index_sevenzip(source, metadata).unwrap();
     let nodes = archive.list(1, 0).unwrap();
     assert_eq!(
         nodes.iter().map(|node| node.readable).collect::<Vec<_>>(),
         [true, false]
     );
-    assert_eq!(archive.read(nodes[0].id, 0, 5).unwrap().0, b"first");
+    // The unreadable member keeps the length its index declares, and says why.
+    assert_eq!(nodes[1].size, Some(5));
     assert_eq!(
-        archive.read(nodes[1].id, 0, 5).unwrap_err().code,
-        ErrorCode::Unsupported
+        nodes[1].unreadable,
+        Some(midnight_filesystem_api::Unreadable::Compression(
+            "an unknown method".into()
+        ))
     );
+    assert_eq!(archive.read(nodes[0].id, 0, 5).unwrap().0, b"first");
+    let error = archive.read(nodes[1].id, 0, 5).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(
+        error.message.contains("an unknown method"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn coders_are_named_as_users_know_them() {
+    assert_eq!(coder_name(EncoderMethod::ID_PPMD), "PPMd");
+    assert_eq!(coder_name(EncoderMethod::ID_BZIP2), "BZIP2");
+    assert_eq!(coder_name(&[0x7f, 0x01]), "method 7F01");
+    assert_eq!(coder_name(&[]), "an unknown method");
 }
 
 #[test]

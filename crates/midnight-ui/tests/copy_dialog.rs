@@ -444,6 +444,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
         kind: EntryKind::File,
         size: Some(5),
         readable: true,
+        access: Default::default(),
     })]
     .into();
     state.borrow_mut().apply(Event::ArchiveListed {

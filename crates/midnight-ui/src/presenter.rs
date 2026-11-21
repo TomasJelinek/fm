@@ -1,4 +1,5 @@
 use midnight_core::*;
+mod archive_password;
 mod archive_sizes;
 mod archives;
 mod bookmarks;
@@ -292,6 +293,8 @@ pub struct Presenter {
     pub(crate) comparison: comparison::ComparisonState,
     pub(crate) filter_dialog: filter::FilterDialogState,
     pub(crate) mask_dialog: mask_selection::MaskDialogState,
+    /// The password of a mounted archive that an action needs (`archive_password`).
+    pub(crate) archive_password: archive_password::ArchivePasswordState,
     pub(crate) hidden_entries: panel_visibility::HiddenEntriesState,
     pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
@@ -353,6 +356,7 @@ impl Presenter {
             comparison: comparison::ComparisonState::default(),
             filter_dialog: filter::FilterDialogState::default(),
             mask_dialog: mask_selection::MaskDialogState::default(),
+            archive_password: archive_password::ArchivePasswordState::default(),
             hidden_entries: panel_visibility::HiddenEntriesState::default(),
             colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
@@ -958,6 +962,10 @@ impl Presenter {
             self.find_validated(*result, send);
             return;
         }
+        if let Event::ArchiveUnlocked { request, result } = event {
+            self.apply_archive_unlocked(request, result, send);
+            return;
+        }
         if let Event::TransferDestinationChecked(checked) = event {
             self.transfer_destination_checked(*checked, send);
             return;
@@ -1048,6 +1056,11 @@ impl Presenter {
         }
         if let Event::LicenseNoticeReady(notice) = event {
             self.about_notice.receive(notice);
+            return;
+        }
+        if let Event::ArchiveUnlocked { request, result } = event {
+            // Without a sender an action that needs one waits for none.
+            self.apply_archive_unlocked(request, result, &|_| false);
             return;
         }
         if let Event::DiagnosticTextReady { request, result } = event {

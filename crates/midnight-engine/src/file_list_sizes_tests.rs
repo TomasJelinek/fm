@@ -136,6 +136,7 @@ fn archive_sizes_use_opaque_mount_identity_and_never_size_links() {
         size: Some(999),
         readable: false,
         modified: None,
+        access: Default::default(),
     });
     let sizes = Arc::new(ArchiveSizeSnapshot::new(
         97,
@@ -198,6 +199,7 @@ fn archive_binding_survives_root_retirement_but_rejects_replacement_mount_with_s
         size: None,
         readable: false,
         modified: None,
+        access: Default::default(),
     })]
     .into();
     let index = Arc::new(DirectoryIndex::from_entries(&entries));

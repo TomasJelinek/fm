@@ -110,6 +110,7 @@ fn opaque_archive_names_never_promote_a_display_caption_into_authoritative_name_
             kind: EntryKind::File,
             size: Some(100),
             readable: true,
+            access: Default::default(),
         });
         assert!(matches(
             "missing(name) and kind = file and size = 100",
@@ -129,6 +130,7 @@ fn opaque_archive_names_never_promote_a_display_caption_into_authoritative_name_
         kind: EntryKind::File,
         size: Some(42),
         readable: true,
+        access: Default::default(),
     });
     assert!(matches("present(name) and name like \"*.rs\"", &entry));
 }

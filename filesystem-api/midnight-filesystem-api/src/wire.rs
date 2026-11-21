@@ -15,7 +15,17 @@ pub fn write_message_with_protocol(
     } else if streaming::tag(message).is_some() {
         return Err(invalid());
     }
-    let mut data = Vec::new();
+    if protocol.supports_passwords() {
+        passwords::validate(message)?;
+    } else if passwords::needs_v4(message) {
+        return Err(invalid());
+    }
+    // A frame that carries a password is zeroized once written, or on any failure.
+    let mut frame = passwords::Frame {
+        bytes: Vec::new(),
+        secret: matches!(message, Message::Unlock { .. }),
+    };
+    let data = &mut frame.bytes;
     data.extend((protocol as u16).to_le_bytes());
     let tag: u8 = match message {
         Message::Open { .. } => 1,
@@ -28,21 +38,23 @@ pub fn write_message_with_protocol(
         Message::SourceData { .. } => 8,
         Message::Failed { .. } => 9,
         Message::Close { .. } => 10,
-        other => streaming::tag(other).ok_or_else(invalid)?,
+        other => streaming::tag(other)
+            .or_else(|| passwords::tag(other))
+            .ok_or_else(invalid)?,
     };
     data.push(tag);
-    put64(&mut data, message.request());
+    put64(data, message.request());
     match message {
         Message::Open { format, length, .. } => {
             data.push(*format as u8);
-            put64(&mut data, *length);
+            put64(data, *length);
         }
-        Message::Opened { root, .. } => put64(&mut data, *root),
+        Message::Opened { root, .. } => put64(data, *root),
         Message::List {
             directory, after, ..
         } => {
-            put64(&mut data, *directory);
-            put64(&mut data, *after);
+            put64(data, *directory);
+            put64(data, *after);
         }
         Message::Entries { entries, more, .. } => {
             if entries.len() > MAX_BATCH {
@@ -50,18 +62,21 @@ pub fn write_message_with_protocol(
             }
             data.extend((entries.len() as u32).to_le_bytes());
             for node in entries {
-                put64(&mut data, node.id);
-                put64(&mut data, node.parent);
-                bytes(&mut data, &node.name, MAX_NAME)?;
-                bytes(&mut data, node.display.as_bytes(), MAX_NAME)?;
+                put64(data, node.id);
+                put64(data, node.parent);
+                bytes(data, &node.name, MAX_NAME)?;
+                bytes(data, node.display.as_bytes(), MAX_NAME)?;
                 data.push(node.kind as u8);
                 data.push(u8::from(node.size.is_some()));
                 if let Some(size) = node.size {
-                    put64(&mut data, size);
+                    put64(data, size);
                 }
                 data.push(u8::from(node.readable));
                 if protocol.supports_staging() {
-                    timestamp::write(&mut data, node.modified)?;
+                    timestamp::write(data, node.modified)?;
+                }
+                if protocol.supports_passwords() {
+                    passwords::write_node(data, node)?;
                 }
             }
             data.push(u8::from(*more));
@@ -72,33 +87,34 @@ pub fn write_message_with_protocol(
             length,
             ..
         } => {
-            put64(&mut data, *entry);
-            put64(&mut data, *offset);
-            read_len(&mut data, *length)?;
+            put64(data, *entry);
+            put64(data, *offset);
+            read_len(data, *length)?;
         }
         Message::Content {
             bytes: value, eof, ..
         } => {
-            bytes(&mut data, value, MAX_READ as usize)?;
+            bytes(data, value, MAX_READ as usize)?;
             data.push(u8::from(*eof));
         }
         Message::SourceRead { offset, length, .. } => {
-            put64(&mut data, *offset);
-            read_len(&mut data, *length)?;
+            put64(data, *offset);
+            read_len(data, *length)?;
         }
-        Message::SourceData { bytes: value, .. } => bytes(&mut data, value, MAX_READ as usize)?,
+        Message::SourceData { bytes: value, .. } => bytes(data, value, MAX_READ as usize)?,
         Message::Failed { code, message, .. } => {
             data.push(*code as u8);
-            bytes(&mut data, message.as_bytes(), 4096)?;
+            bytes(data, message.as_bytes(), 4096)?;
         }
         Message::Close { .. } => {}
-        other => streaming::write(&mut data, other)?,
+        other if passwords::tag(other).is_some() => passwords::write(data, other)?,
+        other => streaming::write(data, other)?,
     }
     if data.len() > MAX_FRAME {
         return Err(invalid());
     }
     writer.write_all(&(data.len() as u32).to_le_bytes())?;
-    writer.write_all(&data)?;
+    writer.write_all(data)?;
     writer.flush()
 }
 
@@ -114,9 +130,14 @@ pub fn read_message_with_protocol(
     if length > MAX_FRAME {
         return Err(invalid());
     }
-    let mut bytes = vec![0; length];
-    reader.read_exact(&mut bytes)?;
-    let mut data = Cursor::new(bytes.as_slice());
+    // A frame that carries a password (`Unlock`) is zeroized once decoded or refused.
+    let mut frame = passwords::Frame {
+        bytes: vec![0; length],
+        secret: true,
+    };
+    reader.read_exact(&mut frame.bytes)?;
+    frame.secret = protocol.supports_passwords() && frame.bytes.get(2) == Some(&passwords::UNLOCK);
+    let mut data = Cursor::new(frame.bytes.as_slice());
     let mut version = [0; 2];
     data.read_exact(&mut version)?;
     if u16::from_le_bytes(version) != protocol as u16 {
@@ -159,7 +180,7 @@ pub fn read_message_with_protocol(
             }
             let mut entries = Vec::with_capacity(count);
             for _ in 0..count {
-                entries.push(Node {
+                let mut node = Node {
                     id: u64le(&mut data)?,
                     parent: u64le(&mut data)?,
                     name: blob(&mut data, MAX_NAME)?,
@@ -182,7 +203,14 @@ pub fn read_message_with_protocol(
                     } else {
                         None
                     },
-                });
+                    encryption: Encryption::None,
+                    contains_encrypted: false,
+                    unreadable: None,
+                };
+                if protocol.supports_passwords() {
+                    passwords::read_node(&mut data, &mut node)?;
+                }
+                entries.push(node);
             }
             Message::Entries {
                 request,
@@ -222,12 +250,15 @@ pub fn read_message_with_protocol(
                 7 => ErrorCode::ReadOnly,
                 8 => ErrorCode::Corrupt,
                 9 => ErrorCode::Io,
+                10 if protocol.supports_passwords() => ErrorCode::PasswordRequired,
+                11 if protocol.supports_passwords() => ErrorCode::WrongPassword,
                 _ => return Err(invalid()),
             },
             message: string(&mut data, 4096)?,
         },
         10 => Message::Close { request },
         11..=21 if protocol.supports_staging() => streaming::read(tag, request, &mut data)?,
+        22..=23 if protocol.supports_passwords() => passwords::read(tag, request, &mut data)?,
         _ => return Err(invalid()),
     };
     if data.position() != length as u64 {
@@ -235,6 +266,9 @@ pub fn read_message_with_protocol(
     }
     if protocol.supports_staging() {
         streaming::validate(&message)?;
+    }
+    if protocol.supports_passwords() {
+        passwords::validate(&message)?;
     }
     Ok(message)
 }

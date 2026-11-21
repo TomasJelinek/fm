@@ -9,6 +9,8 @@ export struct FileRow {
     parent-entry: bool,
     prefix-end: int,
     compressed: bool,
+    // An encrypted archive member: a small lock beside its icon.
+    encrypted: bool,
     browsable-archive: bool,
     dim-icon: bool,
     size: string,

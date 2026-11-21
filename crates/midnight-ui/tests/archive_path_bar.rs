@@ -156,6 +156,7 @@ impl Panel {
                     size: None,
                     readable: false,
                     modified: None,
+                    access: Default::default(),
                 })
             })
             .collect::<Vec<_>>()

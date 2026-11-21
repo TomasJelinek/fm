@@ -70,6 +70,7 @@ mod tests {
                 minute: 34,
                 second: 56,
             }),
+            access: Default::default(),
         });
         localize(&mut entry, None);
         assert_eq!(

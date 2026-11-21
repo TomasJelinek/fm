@@ -428,6 +428,14 @@ impl Presenter {
                     self.retired.push(Box::new(result));
                     return None;
                 }
+                // A listing that came back empty because the archive's names are
+                // encrypted: its password is asked for once the listing is shown.
+                let names_locked = result
+                    .as_ref()
+                    .ok()
+                    .filter(|listing| listing.entries.is_empty())
+                    .and_then(|listing| listing.location.mount.as_ref())
+                    .is_some_and(|mount| mount.listing_locked() && !mount.unlocked());
                 self.end_opening(pane);
                 let p = &mut self.panes[pane.index()];
                 p.loading = false;
@@ -577,6 +585,14 @@ impl Presenter {
                         p.set_error("", &mut self.retired);
                     }
                 }
+                if names_locked
+                    && let Some(location) = self.panes[pane.index()]
+                        .archive
+                        .as_ref()
+                        .map(|archive| archive.location.clone())
+                {
+                    self.listing_needs_archive_password(pane, &location);
+                }
             }
             other => return Some(other),
         }
@@ -703,7 +719,7 @@ impl Presenter {
     }
     /// Enter on an archive member whose name is an enabled archive: open it as an
     /// archive inside this archive, listed from its root in this pane.
-    fn open_member_archive(
+    pub(super) fn open_member_archive(
         &mut self,
         pane: PaneId,
         node: ArchiveNode,
@@ -721,12 +737,7 @@ impl Presenter {
                     .to_owned(),
             ))
         } else if !node.readable {
-            Some((
-                "Archive member",
-                "This archive member is unreadable: links, unsafe names, encryption and \
-                 unsupported compression cannot be opened by the read-only provider."
-                    .to_owned(),
-            ))
+            Some(("Archive member", node.unreadable_reason()))
         } else if location.depth() >= MAX_ARCHIVE_DEPTH {
             Some(("Archive nesting limit", archive_depth_message()))
         } else {
@@ -735,6 +746,21 @@ impl Presenter {
         if let Some((title, message)) = refusal {
             self.desktop.report(title, message);
             return false;
+        }
+        // An encrypted inner archive needs the enclosing archive's password first.
+        if let Some(mount) = self.archive_password_needed(pane, &node) {
+            let name = midnight_core::visible_name(&node.display_name).into_owned();
+            self.ask_archive_password(
+                pane,
+                mount,
+                format!("Enter its password to open {name}."),
+                super::archive_password::PasswordAction::OpenMember {
+                    pane,
+                    node: Box::new(node),
+                    format,
+                },
+            );
+            return true;
         }
         // An inner archive this pane still remembers is entered through its session.
         if let Some(root) = archive.remembered_inner_root(node.id) {

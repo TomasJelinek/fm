@@ -3,6 +3,7 @@ use std::{
     cell::RefCell,
     io::{Seek, SeekFrom},
 };
+use zip::read::HasZipMetadata;
 
 const CENTRAL_HEADER: [u8; 4] = *b"PK\x01\x02";
 /// Fixed bytes of a central-directory record before its name.
@@ -47,33 +48,98 @@ impl Archive {
             } else {
                 Kind::File
             };
-            let supported = matches!(
-                raw.compression(),
-                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
-            );
-            let readable = kind == Kind::File
-                && supported
-                && !raw.encrypted()
-                && tree::safe_name(&name)
-                && !merged;
+            let metadata = raw.get_metadata();
+            let aes = metadata.aes_mode.map(|(mode, ..)| mode);
+            let encryption = encryption(raw.encrypted(), metadata.flags, aes);
+            // The real method: the AES extra field replaces method 99 with it.
+            let method = compression_name(raw.compression());
+            let reason = if kind != Kind::File {
+                Reason::None
+            } else if merged {
+                Reason::AmbiguousName
+            } else if !decryptable(encryption) {
+                Reason::Encryption
+            } else if let Some(method) = method {
+                self.compression(method.as_ref())
+            } else {
+                Reason::None
+            };
             if raw.size() > self.limits.max_entry {
                 return Err(Error::limit());
             }
             let size = raw.size();
             let modified = timestamps::zip_modified(raw.extra_data_fields(), raw.last_modified());
             drop(raw);
-            let id = self.add(&name, &display, kind, None, readable)?;
-            if let Some(member) = self.member_mut(id) {
-                member.modified = modified;
-            }
+            let access = Access { encryption, reason };
+            let id = self.add(&name, &display, kind, None, access)?;
+            let Some(member) = self.member_mut(id) else {
+                continue;
+            };
+            member.modified = modified;
+            let (readable, kind) = (member.readable, member.kind);
             if readable {
                 let id = self.indexed_size(size)?;
                 self.zip_members.push((id, index));
+            } else if kind == Kind::File && !merged {
+                // Merged records leave one entry standing for several sizes.
+                self.declared_size(size);
             }
         }
         self.zip = Some(zip);
         Ok(())
     }
+}
+
+/// A member's encryption: the AES extra field names WinZip AES and its key length,
+/// general-purpose bit 6 PKWARE strong encryption, and bit 0 alone ZipCrypto.
+fn encryption(encrypted: bool, flags: u16, aes: Option<zip::AesMode>) -> Encryption {
+    const STRONG_ENCRYPTION: u16 = 1 << 6;
+    match aes {
+        Some(zip::AesMode::Aes128) => Encryption::Aes128,
+        Some(zip::AesMode::Aes192) => Encryption::Aes192,
+        Some(zip::AesMode::Aes256) => Encryption::Aes256,
+        None if !encrypted => Encryption::None,
+        None if flags & STRONG_ENCRYPTION != 0 => Encryption::Unknown,
+        None => Encryption::ZipCrypto,
+    }
+}
+
+/// Whether this worker decrypts `encryption`: ZipCrypto, and WinZip AES through the
+/// `zip` crate's `aes-crypto` feature. PKWARE strong encryption is not supported.
+fn decryptable(encryption: Encryption) -> bool {
+    encryption != Encryption::Unknown
+}
+
+/// The name of a compression method that this worker cannot decode, or None when it
+/// decodes it (APPNOTE 4.4.5 numbers the methods).
+fn compression_name(method: zip::CompressionMethod) -> Option<std::borrow::Cow<'static, str>> {
+    #[allow(deprecated)]
+    let number = match method {
+        zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated => return None,
+        zip::CompressionMethod::Unsupported(number) => number,
+        // Variants of methods whose `zip` features this worker does not enable.
+        other => return Some(other.to_string().into()),
+    };
+    Some(match number {
+        1 => "Shrink".into(),
+        2..=5 => "Reduce".into(),
+        6 => "Implode".into(),
+        9 => "Deflate64".into(),
+        10 => "PKWARE DCL Implode".into(),
+        12 => "BZIP2".into(),
+        14 => "LZMA".into(),
+        16 => "IBM z/OS CMPSC".into(),
+        18 => "IBM TERSE".into(),
+        19 => "IBM LZ77".into(),
+        20 | 93 => "Zstandard".into(),
+        94 => "MP3".into(),
+        95 => "XZ".into(),
+        96 => "JPEG".into(),
+        97 => "WavPack".into(),
+        98 => "PPMd".into(),
+        99 => "AES".into(),
+        number => format!("method {number}").into(),
+    })
 }
 
 /// Central-directory records zip indexed under one name.
@@ -213,6 +279,17 @@ fn not_zip(error: zip::result::ZipError) -> Error {
         zip::result::ZipError::InvalidArchive(_) => Error::new(
             ErrorCode::Corrupt,
             format!("This file is not a valid ZIP archive.\n{error}"),
+        ),
+        error => zip_error(error),
+    }
+}
+
+/// Opening an encrypted member: a password that its verifier refuses keeps the session.
+pub(crate) fn decrypt_error(error: zip::result::ZipError) -> Error {
+    match error {
+        zip::result::ZipError::InvalidPassword => Error::new(
+            ErrorCode::WrongPassword,
+            "The archive's password does not open this member; it may use another password",
         ),
         error => zip_error(error),
     }

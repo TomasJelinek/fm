@@ -89,6 +89,7 @@ fn target(mount: Arc<BlockingMount>, token: u64) -> Target {
                 size: Some(1),
                 readable: true,
                 modified: None,
+                access: Default::default(),
             },
             source_version: vec![1],
         }
