@@ -156,6 +156,7 @@ fn publish_with_limit(
         ),
         std::fs::TryLockError::Error(error) => error,
     })?;
+    let _unlock = Unlock(&lock);
     active(cancel)?;
     if same_contents(open_existing(&destination)?, &snapshot.bytes)? {
         return Ok(destination);
@@ -177,6 +178,18 @@ fn publish_with_limit(
     })?;
     active(cancel)?;
     Ok(destination)
+}
+
+/// Releases the publication lock when a publication ends, explicitly rather than by
+/// closing the lock file: a child process that another thread is starting at that moment
+/// shares the process's open files until it executes its program, and the lock belongs to
+/// the open file, so closing this handle alone would leave it held until then.
+struct Unlock<'a>(&'a File);
+
+impl Drop for Unlock<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 fn same_contents(file: Option<File>, expected: &[u8]) -> io::Result<bool> {
@@ -319,7 +332,34 @@ mod tests {
         let error = publish(root.path(), &snapshot, &cancel, create, open).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(!root.path().join(&snapshot.name).exists());
+        // Unlocked explicitly: a child process that another test starts at this moment
+        // may share the open lock file until it executes its program.
+        lock.unlock().unwrap();
         drop(lock);
         publish(root.path(), &snapshot, &cancel, create, open).unwrap();
+    }
+
+    #[test]
+    fn a_finished_publication_releases_its_lock_while_a_copy_of_the_lock_file_stays_open() {
+        // A copy of the open lock file stands in for a child process that another thread
+        // starts during the publication: it shares the lock file until it executes.
+        let root = tempfile::tempdir().unwrap();
+        let cancel = Cancellation::default();
+        let mut copies = Vec::new();
+        let first = encode(&pixels(), &cancel).unwrap();
+        let sharing = |path: &Path| {
+            let file = create(path)?;
+            if path.ends_with(".snapshot.lock") {
+                copies.push(file.try_clone()?);
+            }
+            Ok(file)
+        };
+        publish(root.path(), &first, &cancel, sharing, open).unwrap();
+        assert_eq!(copies.len(), 1, "the publication created the lock file");
+        let other = SnapshotPixels::new(1, 1, vec![0, 255, 0, 255]).unwrap();
+        let second = encode(&other, &cancel).unwrap();
+        assert_ne!(first.name, second.name);
+        publish(root.path(), &second, &cancel, create, open).unwrap();
+        assert!(root.path().join(&second.name).exists());
     }
 }

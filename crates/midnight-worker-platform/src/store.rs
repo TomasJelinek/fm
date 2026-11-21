@@ -63,6 +63,15 @@ impl Transaction {
         Ok(())
     }
 }
+impl Drop for Transaction {
+    /// Unlocks explicitly rather than by closing the lock file: a child process that another
+    /// thread is starting at that moment shares the process's open files until it executes
+    /// its program, and the lock belongs to the open file, so closing this handle alone
+    /// would leave the store locked until then.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
 impl PrivateStore {
     pub fn open(path: &Path) -> io::Result<Self> {
         native::Root::open(path).map(Self)
@@ -205,4 +214,26 @@ pub(crate) fn valid_name(name: &str) -> bool {
     name.len() == 68
         && name.ends_with(".mtc")
         && name.as_bytes()[..64].iter().all(u8::is_ascii_hexdigit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ended_transaction_releases_the_store_while_a_copy_of_its_lock_file_stays_open() {
+        // A copy of the open lock file stands in for a child process that another thread
+        // starts during the transaction: it shares the lock file until it executes.
+        // As the integration tests: a root whose path has no link or reparse point.
+        let root = match std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT") {
+            Some(root) => tempfile::tempdir_in(root).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
+        let store = PrivateStore::open(&root.path().join("cache")).unwrap();
+        let transaction = store.transaction().unwrap();
+        let copy = transaction.file.try_clone().unwrap();
+        drop(transaction);
+        assert!(store.try_transaction().is_ok());
+        drop(copy);
+    }
 }
