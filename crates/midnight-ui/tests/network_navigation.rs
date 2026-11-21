@@ -571,11 +571,12 @@ fn the_network_path_bar_shows_and_browses_each_published_ancestor() {
         assert!(whole(&test, part), "{prefix} is cut");
     }
     assert_eq!(markers(&test), 1, "the omitted middle has a marker");
-    // A wide panel shows every part; each browses its location.
+    // A wide panel shows every part; each browses its location. Only geometry is
+    // checked here, so this frame is laid out without software-rendering 2400 px.
     test.set_size(2400, 820);
     test.window.set_panel_ratio(1.0);
     refresh(&test.window, &presenter.borrow());
-    test.draw();
+    test.layout();
     let names: Vec<String> = shown_parts(&test, &shown)
         .into_iter()
         .map(|(prefix, _)| prefix)

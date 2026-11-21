@@ -61,8 +61,6 @@ struct Provider {
     fail: bool,
     declared: Option<u64>,
     barrier: Option<Arc<ReadBarrier>>,
-    /// Time each file takes before its first chunk.
-    delay: Option<std::time::Duration>,
 }
 impl Provider {
     fn new(data: &[u8]) -> Self {
@@ -75,7 +73,6 @@ impl Provider {
             fail: false,
             declared: None,
             barrier: None,
-            delay: None,
         }
     }
 }
@@ -158,9 +155,6 @@ impl TransferSource for Source {
             while !*released {
                 released = barrier.wake.wait(released).unwrap();
             }
-        }
-        if let Some(delay) = self.provider.delay.filter(|_| self.offset == 0) {
-            std::thread::sleep(delay);
         }
         self.provider.reads.calls.fetch_add(1, Ordering::SeqCst);
         if holds_exclusive_io() {
@@ -715,10 +709,17 @@ fn a_recursive_directory_root_is_read_as_its_own_volume_allows() {
     }
 }
 
-#[test]
-fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
-    let mut provider = Provider::new(b"abcdefgh");
-    provider.delay = Some(UPDATE_INTERVAL + Duration::from_millis(50));
+/// Three files of eight bytes, calculated with `update` as the update interval: the
+/// run, everything it sent, the files' paths and their provider.
+fn listed_run(
+    update: Duration,
+) -> (
+    Arc<ChecksumRun>,
+    Vec<ChecksumUpdate>,
+    Vec<PathBuf>,
+    Provider,
+) {
+    let provider = Provider::new(b"abcdefgh");
     let mut request = request();
     for name in ["second", "third"] {
         let mut target = request.targets[0].clone();
@@ -731,17 +732,39 @@ fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
         .map(|target| target.path.clone())
         .collect();
     let mut updates = Vec::new();
-    let result = calculate(
+    let result = super::run(
         request,
         &provider,
         &UNCLASSIFIED,
         &Cancellation::default(),
         ChecksumRetention::new(()),
+        Settings {
+            update,
+            ..CALCULATION
+        },
         |update| {
             updates.push(update);
             true
         },
     );
+    (result, updates, paths, provider)
+}
+
+/// How many rows each batch sent carried, in order.
+fn batches(updates: &[ChecksumUpdate]) -> Vec<usize> {
+    updates
+        .iter()
+        .filter_map(|update| match update {
+            ChecksumUpdate::Batch(rows) => Some(rows.len()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
+    // Every file takes longer than a zero update interval: no test waits in real time.
+    let (result, updates, paths, provider) = listed_run(Duration::ZERO);
     assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
     // Every file is listed, with its length, before any is read.
     assert!(matches!(&updates[0], ChecksumUpdate::Progress(progress) if progress.listing));
@@ -787,14 +810,11 @@ fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
     assert_eq!(result.summary.progress.planned, 3);
     // Files that take longer than the update interval arrive one by one, not as
     // one batch at the end.
-    let batches: Vec<_> = updates
-        .iter()
-        .filter_map(|update| match update {
-            ChecksumUpdate::Batch(rows) => Some(rows.len()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(batches, [1, 1, 1]);
+    assert_eq!(batches(&updates), [1, 1, 1]);
+    // Files that all finish within the interval wait for it and go out together.
+    let (result, updates, ..) = listed_run(Duration::MAX);
+    assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(batches(&updates), [3]);
 }
 
 #[test]
@@ -820,8 +840,9 @@ fn verification_reads_without_listing() {
     );
 }
 
-/// A folder holding `top.txt` and a subfolder `sub` holding `deep.txt`.
-struct Nested(Provider);
+/// A folder holding `top.txt` and a subfolder `sub` holding `deep.txt`; `sub` is on
+/// the volume with the given device number (the folder's is 1).
+struct Nested(Provider, u64);
 struct Dir {
     entry: TransferEntry,
     children: Vec<Box<dyn TransferSource>>,
@@ -844,7 +865,11 @@ impl TransferSource for Dir {
         Ok(self.children.pop())
     }
 }
-fn dir(path: &Path, object: u8, children: Vec<Box<dyn TransferSource>>) -> Box<dyn TransferSource> {
+fn dir(
+    path: &Path,
+    (device, object): (u64, u8),
+    children: Vec<Box<dyn TransferSource>>,
+) -> Box<dyn TransferSource> {
     Box::new(Dir {
         entry: TransferEntry {
             item: MutationItem {
@@ -853,7 +878,7 @@ fn dir(path: &Path, object: u8, children: Vec<Box<dyn TransferSource>>) -> Box<d
                 metadata: EntryMetadata::default(),
             },
             identity: TransferIdentity {
-                device: 1,
+                device,
                 object: [object; 16],
             },
         },
@@ -874,7 +899,11 @@ impl TransferService for Nested {
             .0
             .prepare_transfer_source(&sub.join("deep.txt"), cancel)?;
         // Children are taken from the end: top.txt first, then sub.
-        Ok(dir(path, 3, vec![dir(&sub, 4, vec![deep]), top]))
+        Ok(dir(
+            path,
+            (1, 3),
+            vec![dir(&sub, (self.1, 4), vec![deep]), top],
+        ))
     }
     fn prepare_transfer_destination(
         &self,
@@ -893,7 +922,7 @@ fn a_selected_folder_contributes_its_own_files_and_include_subfolders_the_rest()
         let root = request.targets[0].path.clone();
         let run = calculate(
             request,
-            &Nested(Provider::new(b"abc")),
+            &Nested(Provider::new(b"abc"), 1),
             &UNCLASSIFIED,
             &Cancellation::default(),
             ChecksumRetention::new(()),
@@ -918,7 +947,7 @@ fn a_selected_folder_contributes_its_own_files_and_include_subfolders_the_rest()
     // Verification names files: a folder in its place is still skipped.
     let run = calculate_for_verification(
         request(),
-        &Nested(Provider::new(b"abc")),
+        &Nested(Provider::new(b"abc"), 1),
         &UNCLASSIFIED,
         &Cancellation::default(),
         ChecksumRetention::new(()),
@@ -926,4 +955,44 @@ fn a_selected_folder_contributes_its_own_files_and_include_subfolders_the_rest()
     );
     assert_eq!(run.rows.len(), 1);
     assert_eq!(run.rows[0].state, ChecksumRowState::Skipped);
+}
+
+#[test]
+fn a_subfolder_mounted_from_another_volume_is_left_out_unless_subfolders_are_included() {
+    for recursive in [false, true] {
+        let mut request = request();
+        request.recursive = recursive;
+        let root = request.targets[0].path.clone();
+        // `sub` is a mount point, as ~/nas or /media/<user>/stick is.
+        let run = calculate(
+            request,
+            &Nested(Provider::new(b"abc"), 2),
+            &UNCLASSIFIED,
+            &Cancellation::default(),
+            ChecksumRetention::new(()),
+            |_| true,
+        );
+        let rows: Vec<_> = run
+            .rows
+            .iter()
+            .map(|row| (row.path.clone(), row.state))
+            .collect();
+        let mut wanted = vec![(root.join("top.txt"), ChecksumRowState::Calculated)];
+        // Without Include subfolders it is left out like any subfolder: no row, and
+        // the run is complete. With them, a walk does not cross into another volume:
+        // the mount point is skipped and the run says it is incomplete.
+        let completion = if recursive {
+            wanted.push((root.join("sub"), ChecksumRowState::Skipped));
+            ChecksumCompletion::Incomplete
+        } else {
+            ChecksumCompletion::Completed
+        };
+        assert_eq!(rows, wanted, "recursive: {recursive}");
+        assert_eq!(run.summary.completion, completion, "recursive: {recursive}");
+        assert_eq!(
+            run.summary.progress.skipped,
+            u64::from(recursive),
+            "recursive: {recursive}"
+        );
+    }
 }

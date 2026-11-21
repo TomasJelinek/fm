@@ -302,8 +302,8 @@ fn describe(item: &MutationItem, locale: &NumberLocale) -> String {
             || "Unknown size".into(),
             |size| {
                 format!(
-                    "{} bytes ({})",
-                    locale.format_u64(size),
+                    "{} ({})",
+                    crate::job_presentation::counted(size, "byte", "bytes", locale),
                     format_size(size, locale)
                 )
             },
@@ -455,5 +455,18 @@ mod tests {
             assert_eq!(detail.contains("123 bytes"), kind == EntryKind::File);
             assert!(detail.contains("資料"));
         }
+    }
+    #[test]
+    fn a_one_byte_file_is_described_in_the_singular() {
+        let item = MutationItem {
+            path: "one.txt".into(),
+            kind: EntryKind::File,
+            metadata: EntryMetadata {
+                size: Some(1),
+                ..EntryMetadata::default()
+            },
+        };
+        let detail = describe(&item, &NumberLocale::default());
+        assert!(detail.contains("\nFile\n1 byte (1 B)\n"), "{detail}");
     }
 }

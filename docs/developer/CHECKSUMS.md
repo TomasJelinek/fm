@@ -14,23 +14,29 @@ or filesystem plugin ABI. Independent plugins do not depend on host internals.
 fallback, plus job/generation, algorithms, recursion and limits. The UI's existing
 selection-action broker waits for the specific selection revision before opening
 the window. A nonempty selection is authoritative; no parent (`..`) row becomes
-a file target. With no selection, calculation uses a focused regular native file.
+a file target.
 Opening the window calculates nothing; Calculate starts a run. With nothing selected,
 the target is the focused file or folder; on the parent row or in an empty folder it
 is the shown folder itself, so Calculate covers its files (and its subfolders with
-Include subfolders). Ctrl+F8 therefore always opens on Calculate with a target. A
-checksum file the user points at opens the Verify page instead, with that file
-chosen: the focused file when it is a checksum file and is selected (or nothing is),
-else, in a flat panel, the first selected checksum file in display order. The UI
-finds it from the selection bitset and the displayed rows, looking at no more
-selected rows than one calculation could hold (16,384), never by scanning the
-folder's index. Neither action automatically verifies a manifest or follows its
-entries.
+Include subfolders). That holds also when Ctrl+F8 follows a deselect so closely that
+the window opens only once the empty selection is published. Ctrl+F8 therefore always
+opens on Calculate with a target. A checksum file the user points at opens the Verify
+page instead, with that file chosen: the focused file when it is a checksum file and
+is selected (or nothing is), else, in a flat panel, the first selected checksum file
+in display order. A checksum file is a regular file named with a checksum format's
+extension, by the panel row's kind: a folder named like one (`photos.sfv`), focused,
+selected or shown on the parent row, is calculated, never verified. The UI finds it
+from the selection bitset and the displayed rows, looking at no more selected rows
+than one calculation could hold (16,384), never by scanning the folder's index.
+Neither action automatically verifies a manifest or follows its entries.
 A selected folder contributes its own files; Include subfolders adds the levels
-below it, whose folders are otherwise left out without rows. Links and special
-entries are skipped. Verification names files only, so a folder in a manifest
-entry's place stays a skipped entry. Provider/archive content
-is not silently interpreted as a native pathname.
+below it, whose folders are otherwise left out without rows, a subfolder that is a
+mount point of another volume (`~/nas`, `/media/<user>/stick`) included. With
+Include subfolders a walk does not cross into another volume: such a subfolder is a
+Skipped row and the run is Incomplete. Links and special entries are skipped.
+Verification names files only, so a folder in a manifest entry's place stays a
+skipped entry. Provider/archive content is not silently interpreted as a native
+pathname.
 
 In an adopted inline tree, Ctrl+F8 instead submits `TreeChecksumRequest` with the
 exact acknowledged projection, selection allocation/revision and focused fallback.
@@ -82,7 +88,9 @@ the complete bounded `ChecksumRun`. While a run goes on, the window shows the ro
 far followed by the listed files still to come: the one being read with its share
 read, then those waiting. A determinate bar shows bytes read of the listed total (an
 indeterminate one while listing), and the status line shows "N of M files · X of Y B
-read". The UI keeps streamed row references until Finished, then uses the run's
+read", where a file that could not be read counts as done, as for the bar (by files
+when every listed file is empty), and one file is "1 file". Details counts "1 error"
+the same way. The UI keeps streamed row references until Finished, then uses the run's
 shared rows directly and retires the temporary vector and the listed files on the
 backend.
 Only visible rows are formatted. Display text is never reconstructed into file
@@ -255,15 +263,25 @@ Calculate requires a nonempty set. The dropdown works from the keyboard: Enter,
 Space or an arrow opens it; Up/Down/Home/End move, Space ticks the row, Enter shows
 the row's column (or ticks Include subfolders), and Escape or Tab closes it. Enter in
 the results list (which shows a focus ring), or on the page where no field takes it,
-runs Calculate or Verify under the same conditions as the footer button, never from
-Details, while a save question waits or on a held key. The
+runs the shown page's primary action under the same conditions as its footer button:
+Calculate, or Verify on the Verify page. Enter never discards a verification's
+results: while they are shown (after Verify the window shows its first page), Enter
+in them verifies the same checksum file again, by its exact path whatever the Verify
+field holds by then, and Calculate, which would replace them, is a button press only
+and loses its default look. Never from Details, while a save question waits, while
+work runs or on a held key. The
 shown algorithm controls the hash column, Copy and the format Save manifest… offers.
 File/bytes/status stay before the hash. The complete digest uses measured monospace
 width with horizontal scrolling when needed. The footer's Copy button copies the
 calculated checksums of the shown algorithm as a checksum file: exactly the lines Save
 manifest… writes to the suggested folder (`midnight_core::checksum_file_line`, shared
 with the manifest writer), named relative to that folder. A file it cannot name there
-is left out and the attention line says how many were. Other algorithms and full-row
+is left out. A note on the save line, not an error, then says how many lines were
+copied and how many files were left out for each reason (not below the checksum
+file's folder; a name that is not valid Unicode; a name SFV cannot hold unambiguously,
+such as one starting with `#`, `;` or a space; any other reason in the encoder's own
+words), and Details repeats it. The note neither sets nor clears the window's error;
+the next copy, a save or a new run replaces it. Other algorithms and full-row
 copy remain in the row context menu. Ctrl+C copies the chosen digest of the selected
 row; Ctrl+Shift+C copies the full row in this window, while that chord continues to
 compare files in a main panel.
@@ -273,7 +291,8 @@ diagnostic of the finished run (for example a refused manifest: absolute path,
 parent traversal, malformed or duplicate line, a limit), else the resource limits
 the run reached. Its Details button, and the one on the save line, show every
 retained diagnostic, the limits reached in words, the counts, the checksum file
-being verified and the last save's full paths; Copy details copies that text with
+being verified, the last copy's note and the last save's full paths; Copy details
+copies that text with
 exact paths. Both lines can be dismissed; a new run closes Details. The footer
 contains only actions relevant to the page and keeps Close reachable independently
 of overflow. When height is tight, results use single-line rows and hide the header
@@ -300,7 +319,8 @@ Rust/Slint code and asynchronous cancellation; it does not copy reference code,
 assets, synchronous waits or ANSI filename conversions.
 
 The current native boundary is Windows/Linux. Different-device descendants are
-excluded; same-filesystem Linux bind mounts require a future mount-ID capability.
+excluded (left out without Include subfolders, Skipped with it; see the calculation
+contract); same-filesystem Linux bind mounts require a future mount-ID capability.
 Read guards and hashes describe the observed streams, not an immutable snapshot or
 file authentication. Exact budgets, dependency licenses and native test evidence
 remain in the backend verification document.

@@ -480,7 +480,9 @@ fn settings_kept_from_another_system_are_listed_inactive_and_removed_as_an_optio
         ..current()
     };
     let mut h = Harness::with(preferences);
-    h.ui.resize(1100, 1600);
+    // An ordinary window: the kept list then lies below the General page's fold, which
+    // `the_kept_list_scrolls_fully_into_view_at_the_end_of_the_general_page` scrolls to.
+    h.ui.resize(940, 660);
     h.ui.window.set_options_topic_index(0);
     h.ui.draw();
     let system = PathSystem::CURRENT.other().name();
@@ -495,7 +497,8 @@ fn settings_kept_from_another_system_are_listed_inactive_and_removed_as_an_optio
             .iter()
             .any(|text| text.contains(&other("code")))
     );
-    // The kept list ends the long General page: its buttons act without scrolling.
+    // The kept list ends the long General page: its buttons' accessible actions act
+    // without scrolling.
     let remove = |h: &mut Harness, label: &str| {
         ui::popup_item(&h.ui.window, label, AccessibleRole::Button)
             .accessible_action(&AccessibilityAction::Default);

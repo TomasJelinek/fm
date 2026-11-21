@@ -195,8 +195,11 @@ fn other_system_summary(
         };
         message.push_str(&format!(" Not opened: {tabs} at {folders}."));
     }
+    // They return with their commands, as the settings codec keeps them.
     if let Some(bindings) = counted(removed_bindings, "key binding", "key bindings") {
-        message.push_str(&format!(" Removed: {bindings} of those commands."));
+        message.push_str(&format!(
+            " Kept inactive with those custom commands: {bindings}."
+        ));
     }
 }
 

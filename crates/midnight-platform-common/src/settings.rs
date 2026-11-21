@@ -793,20 +793,14 @@ fn decode_preferences_impl(
         _ => return Err(invalid("missing or unexpected window geometry")),
     };
     let (file_list, foreign_output) = file_list::decode(stored.version, stored.file_list)?;
-    let (user_commands, foreign_commands) =
+    let (user_commands, mut foreign_commands) =
         user_commands::decode(stored.version, stored.user_commands)?;
     let (file_comparators, foreign_comparators) =
         file_comparators::decode(stored.version, stored.file_comparators)?;
-    // Bindings of commands kept from another system would name no command here.
+    // Bindings of commands kept from another system would name no command here: they
+    // wait, inactive, in those commands' records and return to the file with them.
     let mut shortcuts = shortcuts;
-    let bound = shortcuts.len();
-    for setting in &foreign_commands {
-        if let midnight_core::ForeignSettingKind::UserCommand { id, .. } = &setting.kind {
-            let action = id.action();
-            shortcuts.retain(|binding| binding.action != action);
-        }
-    }
-    let removed_bindings = bound - shortcuts.len();
+    let removed_bindings = user_commands::keep_bindings(&mut foreign_commands, &mut shortcuts)?;
     foreign_settings.extend(foreign_commands);
     foreign_settings.extend(foreign_comparators);
     foreign_settings.extend(foreign_output);
@@ -1091,6 +1085,12 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let archive_choices = color_choices || !preferences.archive_association_overrides.is_empty();
     let store_previews =
         archive_choices || !preferences.thumbnails_enabled || preferences.thumbnails_network;
+    // Kept commands' key bindings return to the shortcut list beside the active ones.
+    let shortcuts = user_commands::with_kept_bindings(
+        preferences.shortcuts.clone(),
+        &preferences.user_commands,
+        &foreign_settings,
+    )?;
     let stored = StoredPreferences {
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
@@ -1245,8 +1245,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
                 .collect()
         }),
         shortcuts: Some(
-            preferences
-                .shortcuts
+            shortcuts
                 .into_iter()
                 .map(|binding| StoredShortcut {
                     action: binding.action,

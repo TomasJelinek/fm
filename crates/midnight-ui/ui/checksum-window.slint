@@ -35,6 +35,7 @@ export component ChecksumWindow inherits ToolWindow {
     in property <bool> stopping;
     in property <bool> saving;
     in property <bool> save-stopping;
+    // The shown results are a verification's, while it runs and after it.
     in property <bool> verifying;
     in property <bool> picker-busy;
     in property <bool> has-captured-files: true;
@@ -48,7 +49,8 @@ export component ChecksumWindow inherits ToolWindow {
     in property <string> error;
     // The attention line: the error, a backend diagnostic or the limits reached.
     in property <string> issue;
-    // What a save does, or where the last one went and what it replaced.
+    // What a save does, else what the last Copy left out (a note, not an error), else
+    // where the last save went and what it replaced.
     in property <string> save-status;
     // Everything both lines summarize; shown in place of the page on request.
     in property <string> details;
@@ -88,6 +90,8 @@ export component ChecksumWindow inherits ToolWindow {
     callback copy-checksum-file(int);
     callback browse-manifest(bool, int);
     callback verify-manifest(string);
+    // Verify again the checksum file whose results are shown.
+    callback verify-again();
     callback stop-save();
     callback confirm-save();
     callback cancel-save-prompt();
@@ -105,13 +109,20 @@ export component ChecksumWindow inherits ToolWindow {
     // Calculate as its button allows it, which offers Stop instead while one runs.
     private property <bool> can-calculate: !root.running && !root.stopping && !root.saving
         && !root.picker-busy && root.has-algorithm && root.has-captured-files;
-    // Enter in the results or on the page itself starts the shown page's primary action,
-    // Calculate or Verify; not from the details, and not while a save question waits
-    // for its answer. Fields, buttons, the page chooser and the algorithm menu keep
-    // their own Enter.
+    // Enter in the results or on the page itself starts the shown page's primary action:
+    // Calculate, Verify on the Verify page, and for a verification's results that
+    // verification again, of the same checksum file. Enter never replaces a
+    // verification's results with calculated ones; that stays a Calculate press. Not
+    // from the details, and not while a save question waits for its answer. Fields,
+    // buttons, the page chooser and the algorithm menu keep their own Enter.
     function start-page-action() {
         if root.show-details || root.save-prompt != "" { return; }
         if root.page == 1 { root.submit-verify(); }
+        else if root.verifying {
+            if !root.running && !root.stopping && !root.saving && !root.picker-busy {
+                root.verify-again();
+            }
+        }
         else if root.can-calculate { root.calculate(root.draft); }
     }
     // The page's key handler where no list takes the keys (Verify, Details). Below the
@@ -247,7 +258,7 @@ export component ChecksumWindow inherits ToolWindow {
             Text { text: root.save-status; color: Theme.text; overflow: elide; vertical-alignment: center;
                 min-width: 0px; horizontal-stretch: 1; }
             if !root.show-details && !root.saving: HintedActionButton {
-                text: "Details"; hint: "Show the saved file's full path and where a replaced file is kept.";
+                text: "Details"; hint: "Show the saved file's full path, where a replaced file is kept and what a copy left out.";
                 clicked => { root.show-details = true; root.focus-page(); }
             }
             if !root.saving: CloseButton { label: "Dismiss save notice";
@@ -277,8 +288,9 @@ export component ChecksumWindow inherits ToolWindow {
                 hint: "Copy these details, including full paths, to the clipboard.";
                 clicked => { root.copy-details(); }
             }
+            // Not the default look over a verification's results: Enter verifies again.
             if root.running || (root.page == 0 && !root.show-details): HintedActionButton {
-                text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate"; primary: !root.running;
+                text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate"; primary: !root.running && !root.verifying;
                 fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.checksums;
                 enabled: !root.stopping && !root.saving && !root.picker-busy && (root.running || (root.has-algorithm && root.has-captured-files));
                 hint: root.running ? "Stop calculation and keep completed results." : "Calculate the chosen checksums for the captured selection.";

@@ -51,6 +51,8 @@ pub(crate) struct ChecksumSession {
     pub save_message: String,
     /// The last completed save of this run: where it went and what it replaced.
     pub saved: Option<ChecksumManifestReceipt>,
+    /// What the last Copy of the checksums as a checksum file left out.
+    pub copy_note: Option<CopyNote>,
     pub suggested: PathBuf,
     pub manifest_suggested: PathBuf,
     pub verification: Option<PathBuf>,
@@ -123,6 +125,24 @@ impl Planned {
             .filter(|(_, done)| !**done)
             .map(|(file, _)| file)
             .nth(k)
+    }
+}
+
+/// What a Copy of the checksums as a checksum file did when it had to leave files out:
+/// how many lines it copied, and each reason a file could not be named there with how
+/// many were not, in the order first met. The window shows it as a note, not an error.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CopyNote {
+    pub copied: u64,
+    pub left_out: Vec<(&'static str, u64)>,
+}
+
+impl CopyNote {
+    fn left_out(&mut self, reason: &'static str) {
+        match self.left_out.iter_mut().find(|(known, _)| *known == reason) {
+            Some((_, count)) => *count += 1,
+            None => self.left_out.push((reason, 1)),
+        }
     }
 }
 
@@ -210,12 +230,14 @@ impl ChecksumSession {
     }
 
     /// A new run makes every answer about the previous one obsolete: its save
-    /// question, a destination chosen for it and the report of its last save.
+    /// question, a destination chosen for it, the report of its last save and the
+    /// note of its last copy.
     fn forget_saves(&mut self) {
         self.save_prompt = None;
         self.save_pending = None;
         self.save_message.clear();
         self.saved = None;
+        self.copy_note = None;
     }
 
     pub fn export_counts(
@@ -272,26 +294,40 @@ impl ChecksumState {
     }
 }
 
-fn is_checksum_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            ChecksumAlgorithm::ALL
-                .iter()
-                .any(|a| extension.eq_ignore_ascii_case(a.extension()))
-        })
+/// A checksum file is a regular file named with a checksum format's extension. A
+/// folder (or a link) is never one, whatever its name, e.g. `photos.sfv`.
+fn is_checksum_file(path: &Path, kind: EntryKind) -> bool {
+    kind == EntryKind::File
+        && path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                ChecksumAlgorithm::ALL
+                    .iter()
+                    .any(|a| extension.eq_ignore_ascii_case(a.extension()))
+            })
 }
 
-/// The focused file when it is a checksum file and is selected, or nothing is.
-fn focused_checksum_file(files: &SelectedFiles) -> Option<PathBuf> {
+/// The focused file when it is a checksum file and is selected, or nothing is. `kind`
+/// is the focused entry's kind, when known.
+fn focused_checksum_file(files: &SelectedFiles, kind: Option<EntryKind>) -> Option<PathBuf> {
     files
         .fallback
         .as_ref()
         .filter(|path| {
-            is_checksum_file(path)
+            kind.is_some_and(|kind| is_checksum_file(path, kind))
                 && (files.selection.is_empty() || files.selection.contains_path(path))
         })
         .cloned()
+}
+
+/// The kind of the panel row the captured files name at `path`, found through the
+/// captured view without a scan; nothing when the row is gone or is another one now.
+fn captured_kind(pane: &Pane, files: &SelectedFiles, path: &Path) -> Option<EntryKind> {
+    let id = *files.view.by_path.get(path)?;
+    pane.entry_by_id(id)
+        .filter(|entry| entry.path == path)
+        .map(|entry| entry.kind)
 }
 
 /// The checksum file among the captured files, found from the selection itself and never
@@ -299,7 +335,11 @@ fn focused_checksum_file(files: &SelectedFiles) -> Option<PathBuf> {
 /// selected one in display order. Only as many selected rows are looked at as one
 /// calculation could hold; the bitset skips unselected rows 64 at a time.
 fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf> {
-    if let Some(focused) = focused_checksum_file(files) {
+    let focused = files
+        .fallback
+        .as_deref()
+        .and_then(|path| captured_kind(pane, files, path));
+    if let Some(focused) = focused_checksum_file(files, focused) {
         return Some(focused);
     }
     let selection = &files.selection;
@@ -320,9 +360,8 @@ fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf>
         })
         .take(ChecksumLimits::default().max_rows)
         .filter_map(|position| pane.display_entry(position))
-        .map(|entry| &entry.path)
-        .find(|path| is_checksum_file(path))
-        .cloned()
+        .find(|entry| is_checksum_file(&entry.path, entry.kind))
+        .map(|entry| entry.path.clone())
 }
 
 impl Presenter {
@@ -343,9 +382,9 @@ impl Presenter {
         }
         let p = &self.panes[pane.index()];
         // Nothing selected and no row under the cursor (the parent row, an empty
-        // folder): Calculate covers the shown folder's files, and its subfolders when
-        // Include subfolders is on. A focused file or folder is the selection action's
-        // fallback below, so Ctrl+F8 always opens with something to calculate.
+        // folder): Calculate covers the shown folder (see `open_captured_checksums`).
+        // A focused file or folder is the selection action's fallback below, so Ctrl+F8
+        // always opens with something to calculate.
         if p.selected.is_empty()
             && p.selection_revision == p.selection_resolved
             && (p.parent_cursor || p.cursor.and_then(|id| p.entry_by_id(id)).is_none())
@@ -353,11 +392,11 @@ impl Presenter {
             let directory = p.display_path().to_owned();
             self.open_captured_checksums(
                 pane,
-                directory.clone(),
+                directory,
                 SelectedFiles {
                     selection: Arc::new(SelectionSnapshot::default()),
                     view: Arc::new(DirectoryIndex::default()),
-                    fallback: Some(directory),
+                    fallback: None,
                 },
                 send,
             );
@@ -377,9 +416,17 @@ impl Presenter {
         &mut self,
         pane: PaneId,
         directory: PathBuf,
-        files: SelectedFiles,
+        mut files: SelectedFiles,
         send: &dyn Fn(Command) -> bool,
     ) -> Option<ChecksumJobId> {
+        // Nothing selected and no row under the cursor, also when that is only known
+        // once a pending selection (a deselect just before Ctrl+F8) is published:
+        // Calculate covers the shown folder's files, and its subfolders when Include
+        // subfolders is on. The shown folder is never a checksum file to verify.
+        if files.selection.is_empty() && files.fallback.is_none() {
+            files.fallback = Some(directory.clone());
+            return self.open_checksum_session(directory, files, None, None, send);
+        }
         let manifest = selected_checksum_file(&self.panes[pane.index()], &files);
         self.open_checksum_session(directory, files, None, manifest, send)
     }
@@ -391,8 +438,9 @@ impl Presenter {
         tree_sources: Option<Arc<dyn CapturedChecksumFiles>>,
         send: &dyn Fn(Command) -> bool,
     ) -> Option<ChecksumJobId> {
-        // A captured tree names a checksum file only through its focused row.
-        let manifest = focused_checksum_file(&files);
+        // A captured tree names a checksum file only through its focused row, which
+        // the tree capture accepts only as a regular file (and only without marks).
+        let manifest = focused_checksum_file(&files, Some(EntryKind::File));
         self.open_checksum_session(directory, files, tree_sources, manifest, send)
     }
 
@@ -420,9 +468,9 @@ impl Presenter {
         // Every window starts with SHA-256 alone; other algorithms are a per-window choice.
         let algorithms = ChecksumAlgorithms::default();
         // A checksum file in the selection (or under the cursor) means the user wants to
-        // verify it, so the window opens on Verify with that file chosen.
-        let verify_initial = manifest.is_some()
-            || (tree_sources.is_none() && files.selection.is_empty() && files.fallback.is_none());
+        // verify it, so the window opens on Verify with that file chosen. Otherwise it
+        // opens on Calculate, which always has a target.
+        let verify_initial = manifest.is_some();
         let algorithm = preferred_algorithm(algorithms);
         self.checksums.sessions.insert(
             id,
@@ -451,6 +499,7 @@ impl Presenter {
                 save: None,
                 save_message: String::new(),
                 saved: None,
+                copy_note: None,
                 streamed: Vec::new(),
                 planned: Planned::default(),
             },

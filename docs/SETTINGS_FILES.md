@@ -120,20 +120,31 @@ otherwise mean that folder on the current drive. Instead:
   inactive. Options › General lists them under "Kept from Linux" or "Kept from
   Windows", where you can remove them. Removing is an Options edit: OK saves it,
   and Cancel keeps them.
+- A custom command is also the other system's when its working folder is one of that
+  system's paths, or when it runs in a shell that only that system's terminal runs:
+  a POSIX shell script on Windows; a PowerShell or Command Prompt script on Linux.
+  The list then shows that folder or the shell's name. This applies to a command you
+  create with the other system's shell too, because it could not run here.
 - While they are inactive, Midnight Explorer behaves as if they were absent. F4
   uses the next matching editor rule or the default editor, file comparison uses
   the next matching comparator rule, and those custom commands are not in the
   toolbar or menus. Choosing your own editor, or an output file in Make File
   List, replaces the kept one and removes it from the list; a settings file holds
   only one of each.
-- **Key bindings** of kept custom commands are removed, because they would refer
-  to commands that cannot run here.
-- Kept entries are saved and exported unchanged. When the file returns to its own
-  system, they work again there, in their original positions in their lists.
+- **Key bindings** of kept custom commands are inactive too: Options › Keyboard
+  does not list them and their keys do nothing here. They stay with their commands.
+  If you give one of their keys to another action here, saving leaves that key out
+  of the kept binding (and the binding itself once it has no key left), so that the
+  file stays valid on the other system.
+- Kept entries are saved and exported unchanged, and so are the key bindings of
+  kept custom commands, apart from keys taken here as described above. When the file
+  returns to its own system, they work again there, in their original positions in
+  their lists.
 
 The import result line says what was kept and what was left out. For example:
 "Kept inactive because they use Linux paths: 2 hot paths, 1 custom command and
-the editor. Not opened: 1 tab at a Linux folder."
+the editor. Not opened: 1 tab at a Linux folder. Kept inactive with those custom
+commands: 1 key binding."
 
 ## File format
 
@@ -156,6 +167,12 @@ settings file: `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, o
   system's syntax (a Linux path begins with `/`; a Windows path has a drive letter
   or begins with `\\`), or when its encoding names the other system. Such records
   are kept exactly as stored.
+- A custom command belongs to the other system when its program or icon path does,
+  when its `working_directory` is such a path, or when its terminal `shell` is the
+  other system's: `posix` on Windows; `powershell` or `cmd` on Linux. The key
+  binding of a kept command stays in `shortcuts`, beside the others, so the schema
+  is the same on both systems. When saving, a kept binding keeps only the keys that
+  leave the whole `shortcuts` list valid for its command's own system.
 - A leading UTF-8 byte order mark, as some text editors add, is ignored.
 
 Developers: the codec is `midnight_platform_common::settings`
@@ -164,4 +181,6 @@ Developers: the codec is `midnight_platform_common::settings`
 presenter's `preferences::settings_file` module. Entries of another system are
 `UserPreferences::foreign_hot_paths` and `foreign_settings`
 (`midnight_core::foreign_settings`); their stored records are interpreted only by
-the settings codec.
+the settings codec. In memory, a kept custom command's record also holds its key
+binding, which the codec moves out of `shortcuts` when reading and writes back when
+saving.

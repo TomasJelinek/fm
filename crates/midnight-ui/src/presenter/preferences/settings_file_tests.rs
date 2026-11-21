@@ -565,7 +565,7 @@ fn an_import_reports_what_the_other_system_keeps_and_leaves_out() {
             "Kept inactive because they use {system} paths: 1 hot path, 1 custom command and the editor."
         ),
         format!("Not opened: 2 tabs at {system} folders."),
-        "Removed: 1 key binding of those commands.".into(),
+        "Kept inactive with those custom commands: 1 key binding.".into(),
     ] {
         assert!(message.contains(&expected), "{message}");
     }

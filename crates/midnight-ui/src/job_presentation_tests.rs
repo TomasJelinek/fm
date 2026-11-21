@@ -449,6 +449,14 @@ fn discovered_totals_keep_recursive_counts_and_exact_bytes_in_copy_details() {
         "Logical file bytes: {} bytes",
         p.number_locale.format_u64(123_456)
     )));
+    // One byte in the singular.
+    value.discovery.bytes = Some(1);
+    let row = copy(&p, &value);
+    assert!(
+        row.detail.contains("Logical file bytes: 1 byte ("),
+        "{}",
+        row.detail
+    );
     value
         .discovery
         .unavailable("Source membership changed after discovery.");

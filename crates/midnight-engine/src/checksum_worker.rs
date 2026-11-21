@@ -102,6 +102,8 @@ struct Settings {
     /// Calculated rows can be saved as a manifest; keep them within its verifier budget.
     exportable: bool,
     revalidation: Duration,
+    /// How often progress, listed files and finished rows reach the window.
+    update: Duration,
     /// List every file before reading any, so the window shows them all with the
     /// run's total. Verification already knows its files from the manifest.
     listing: bool,
@@ -112,6 +114,7 @@ struct Settings {
 const CALCULATION: Settings = Settings {
     exportable: true,
     revalidation: REVALIDATION_INTERVAL,
+    update: UPDATE_INTERVAL,
     listing: true,
     folders: true,
 };
@@ -515,6 +518,16 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             }
             if let Some(source) = current.take() {
                 let entry = source.entry().clone();
+                // A selected folder contributes its own files; Include subfolders adds
+                // the levels below, whose folders are otherwise left out without rows,
+                // also one that is a mount point of another volume.
+                let left_out = entry.item.kind == EntryKind::Directory
+                    && !self.request.recursive
+                    && self.settings.folders
+                    && !stack.is_empty();
+                if left_out {
+                    continue;
+                }
                 if entry.identity.device != root_device {
                     self.incomplete |= entry.item.kind == EntryKind::Directory;
                     self.failed(
@@ -531,10 +544,6 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                 }
                 match entry.item.kind {
                     EntryKind::File => self.file(source),
-                    // A selected folder contributes its own files; Include subfolders
-                    // adds the levels below, whose folders are otherwise left out.
-                    EntryKind::Directory if !self.request.recursive && self.settings.folders
-                        && !stack.is_empty() => {}
                     EntryKind::Directory if self.request.recursive
                         || (self.settings.folders && stack.is_empty()) => {
                         if stack.len() >= self.request.limits.max_depth { self.budget(ChecksumBudget::Depth); break; }
@@ -769,8 +778,10 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         self.rows.push(row.clone());
         self.batch.push(row);
         // A finished file reaches the window at once, unless many finish quickly:
-        // those wait at most UPDATE_INTERVAL (see `progress`).
-        if self.batch.len() >= CHECKSUM_BATCH_SIZE || self.last_flush.elapsed() >= UPDATE_INTERVAL {
+        // those wait at most the update interval (see `progress`).
+        if self.batch.len() >= CHECKSUM_BATCH_SIZE
+            || self.last_flush.elapsed() >= self.settings.update
+        {
             self.flush_batch();
         }
         self.progress();
@@ -792,7 +803,8 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             .planned_bytes
             .saturating_add(file.size.unwrap_or(0));
         self.planned.push(file);
-        if self.planned.len() >= PLANNED_BATCH || self.last_flush.elapsed() >= UPDATE_INTERVAL {
+        if self.planned.len() >= PLANNED_BATCH || self.last_flush.elapsed() >= self.settings.update
+        {
             self.flush_planned();
         }
         self.progress();
@@ -808,7 +820,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         }
     }
     fn progress(&mut self) {
-        if self.last_progress.elapsed() >= UPDATE_INTERVAL {
+        if self.last_progress.elapsed() >= self.settings.update {
             // Rows or listed files held back by quick successions go first.
             if !self.batch.is_empty() {
                 self.flush_batch();

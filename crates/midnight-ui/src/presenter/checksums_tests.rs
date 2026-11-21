@@ -138,26 +138,41 @@ fn generated_filename_follows_preferred_format_and_recalculation() {
     );
 }
 
+/// A presenter whose left panel lists these entries of the temporary folder.
+fn listing(entries: &[(&str, EntryKind)]) -> (Presenter, PathBuf) {
+    let root = std::env::temp_dir();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let entries: Arc<[Entry]> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, (name, kind))| Entry::new(EntryId(index as u64 + 1), root.join(name), *kind))
+        .collect();
+    let pane = &mut p.panes[0];
+    pane.entries = entries.clone();
+    pane.index = Arc::new(DirectoryIndex::from_entries(&entries));
+    (p, root)
+}
+
+/// Captured with nothing selected: only the focused row, `path`.
+fn focused(p: &Presenter, path: PathBuf) -> SelectedFiles {
+    SelectedFiles {
+        selection: Arc::new(SelectionSnapshot::default()),
+        view: p.panes[0].index.clone(),
+        fallback: Some(path),
+    }
+}
+
 #[test]
 fn focused_checksum_sidecar_prefills_verification_without_hashing_the_manifest() {
-    let root = std::env::temp_dir();
+    let (mut p, root) = listing(&[("日本語.MD5", EntryKind::File)]);
     let manifest = root.join("日本語.MD5");
     let commands = std::cell::RefCell::new(Vec::new());
-    let mut p = Presenter::new(root.clone(), root.clone());
+    let files = focused(&p, manifest.clone());
     let id = p
-        .open_captured_checksums(
-            PaneId::Left,
-            root,
-            SelectedFiles {
-                selection: Arc::new(SelectionSnapshot::default()),
-                view: Arc::new(DirectoryIndex::default()),
-                fallback: Some(manifest.clone()),
-            },
-            &|command| {
-                commands.borrow_mut().push(command);
-                true
-            },
-        )
+        .open_captured_checksums(PaneId::Left, root, files, &|command| {
+            commands.borrow_mut().push(command);
+            true
+        })
         .unwrap();
     let s = &p.checksums.sessions[&id];
     assert!(s.verify_initial);
@@ -458,25 +473,25 @@ fn ctrl_f8_without_a_selection_calculates_the_focused_folder_or_the_shown_folder
 
 #[test]
 fn opening_calculates_nothing_and_a_selected_checksum_file_opens_verification() {
-    let root = std::env::temp_dir();
-    let mut p = Presenter::new(root.clone(), root.clone());
+    let (mut p, root) = listing(&[
+        ("photo.jpg", EntryKind::File),
+        ("photos.SHA256", EntryKind::File),
+    ]);
     let sent = std::cell::RefCell::new(Vec::new());
     let send = |command| {
         sent.borrow_mut().push(command);
         true
     };
-    let files = |name: &str| SelectedFiles {
-        selection: Arc::new(SelectionSnapshot::default()),
-        view: Arc::new(DirectoryIndex::default()),
-        fallback: Some(root.join(name)),
-    };
+    let files = |p: &Presenter, name: &str| focused(p, root.join(name));
+    let photo = files(&p, "photo.jpg");
     let plain = p
-        .open_captured_checksums(PaneId::Left, root.clone(), files("photo.jpg"), &send)
+        .open_captured_checksums(PaneId::Left, root.clone(), photo, &send)
         .unwrap();
     assert!(!p.checksums.sessions[&plain].running);
     assert!(!p.checksums.sessions[&plain].verify_initial);
+    let sums = files(&p, "photos.SHA256");
     let manifest = p
-        .open_captured_checksums(PaneId::Left, root.clone(), files("photos.SHA256"), &send)
+        .open_captured_checksums(PaneId::Left, root.clone(), sums, &send)
         .unwrap();
     assert!(p.checksums.sessions[&manifest].verify_initial);
     assert_eq!(
@@ -869,21 +884,297 @@ fn copy_writes_the_lines_a_saved_checksum_file_has() {
         copied(&commands.borrow()),
         Some(format!("{} *Žluťoučký 日本語.txt\n", "42".repeat(32)))
     );
-    assert!(p.checksums.sessions[&id].error.is_empty());
-    // A file that is not below the checksum file's folder is left out, and said so.
+    assert!(p.checksums.sessions[&id].copy_note.is_none());
+    // A file that is not below the checksum file's folder is left out, and a note
+    // says so. It is not an error: an earlier, unrelated error stays as it was.
     commands.borrow_mut().clear();
     let s = p.checksums.sessions.get_mut(&id).unwrap();
+    let suggested = s.suggested.clone();
     s.suggested = s.directory.join("jinde").join("checksums.sha256");
+    let unrelated = "File chooser queue is busy. Try Browse again.";
+    s.error = unrelated.into();
     p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
     assert_eq!(copied(&commands.borrow()), None);
-    assert!(
-        p.checksums.sessions[&id]
-            .error
-            .starts_with("1 file is not below"),
-        "{}",
-        p.checksums.sessions[&id].error
+    let locale = NumberLocale::default();
+    let s = &p.checksums.sessions[&id];
+    assert_eq!(s.error, unrelated);
+    assert_eq!(
+        s.save_status(&locale),
+        "Nothing copied. Left out: 1 file not below the checksum file's folder."
     );
+    // A copy that leaves nothing out drops the note, and still not the error.
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = suggested;
+    p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
+    assert!(copied(&commands.borrow()).is_some());
+    let s = &p.checksums.sessions[&id];
+    assert!(s.copy_note.is_none());
+    assert_eq!(s.error, unrelated);
     // An algorithm that was not calculated copies nothing.
+    commands.borrow_mut().clear();
     p.copy_checksum_file(id, ChecksumAlgorithm::Md5, &send);
     assert_eq!(copied(&commands.borrow()), None);
+}
+
+#[test]
+fn copy_says_how_many_files_it_left_out_for_each_reason() {
+    let commands = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    // The checksum file goes to `qa`; a folder name below it is not valid Unicode.
+    let qa = raw_paths::plain_parent().parent().unwrap().to_owned();
+    let elsewhere = std::env::temp_dir();
+    let paths = [
+        qa.join("ok.txt"),
+        qa.join("#notes.txt"),
+        raw_paths::raw_parent().join("x.txt"),
+        elsewhere.join("first.txt"),
+        qa.join(" leading space.txt"),
+        elsewhere.join("second.txt"),
+    ];
+    let generation = p.checksums.sessions[&id].generation;
+    let retention = ChecksumRetention::new(());
+    let rows: Vec<_> = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            Arc::new(ChecksumRow {
+                id: ChecksumRowId(index as u64 + 1),
+                path: path.clone(),
+                identity: None,
+                kind: Some(EntryKind::File),
+                state: ChecksumRowState::Calculated,
+                bytes_read: 3,
+                digests: vec![ChecksumDigest {
+                    algorithm: ChecksumAlgorithm::Crc32,
+                    bytes: vec![0x42; 4],
+                }],
+                error: None,
+                retention: retention.clone(),
+            })
+        })
+        .collect();
+    p.apply(Event::Checksum(Box::new(ChecksumEvent {
+        job: id,
+        generation,
+        update: ChecksumUpdate::Finished(Arc::new(ChecksumRun {
+            job: id,
+            generation,
+            algorithms: ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap(),
+            captured_roots: vec![qa.clone()].into(),
+            rows: rows.into(),
+            summary: ChecksumSummary {
+                completion: ChecksumCompletion::Completed,
+                progress: ChecksumProgress {
+                    discovered: 6,
+                    calculated: 6,
+                    ..Default::default()
+                },
+                reached_budgets: vec![],
+                diagnostics: vec![],
+            },
+            retention,
+        })),
+    })));
+    p.checksums.sessions.get_mut(&id).unwrap().suggested = qa.join("checksums.sfv");
+    commands.borrow_mut().clear();
+    p.copy_checksum_file(id, ChecksumAlgorithm::Crc32, &send);
+    let copied: Vec<_> = commands
+        .borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::CopyText { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copied, ["ok.txt  42424242\n"]);
+    let locale = NumberLocale::default();
+    let s = &p.checksums.sessions[&id];
+    let note = "Copied 1 checksum. Left out: 2 files whose names SFV cannot hold \
+                unambiguously; 1 file whose name is not valid Unicode; 2 files not below \
+                the checksum file's folder.";
+    assert_eq!(s.save_status(&locale), note);
+    assert!(s.details(&locale).contains(note), "{}", s.details(&locale));
+    // A note, not an error: no issue line, no attention.
+    assert!(s.error.is_empty());
+    assert_eq!(s.issue(), None);
+}
+
+#[test]
+fn details_count_one_error_in_the_singular() {
+    let (mut p, id) = setup(&|_| true);
+    finish(&mut p, id, ChecksumCompletion::CompletedWithErrors);
+    p.checksums.sessions.get_mut(&id).unwrap().progress.errors = 1;
+    let details = p.checksums.sessions[&id].details(&NumberLocale::default());
+    assert!(
+        details.contains("1 found · 0 skipped · 1 error"),
+        "{details}"
+    );
+    assert!(!details.contains("1 errors"), "{details}");
+}
+
+#[test]
+fn a_folder_named_like_a_checksum_file_is_calculated_and_never_verified() {
+    let (mut p, root) = listing(&[
+        ("photos.sfv", EntryKind::Directory),
+        ("sums.sha256", EntryKind::File),
+    ]);
+    let send = |_| true;
+    let opened = |p: &mut Presenter, files: SelectedFiles| {
+        let id = p
+            .open_captured_checksums(PaneId::Left, root.clone(), files, &send)
+            .unwrap();
+        let s = &p.checksums.sessions[&id];
+        let shown = (s.verify_initial, s.manifest_suggested.clone());
+        assert!(p.close_checksums(id, &send));
+        shown
+    };
+    // The focused folder is calculated; a focused checksum file is verified.
+    let folder = focused(&p, root.join("photos.sfv"));
+    assert!(!opened(&mut p, folder).0, "a focused folder");
+    let file = focused(&p, root.join("sums.sha256"));
+    assert_eq!(opened(&mut p, file), (true, root.join("sums.sha256")));
+    // A selected folder named like one is no checksum file either.
+    let index = p.panes[0].index.clone();
+    let selected = SelectedFiles {
+        selection: Arc::new(SelectionSnapshot::from_bits(index.clone(), vec![0b01]).unwrap()),
+        view: index,
+        fallback: None,
+    };
+    assert!(!opened(&mut p, selected).0, "a selected folder");
+    // On the parent row inside such a folder, Ctrl+F8 calculates that folder.
+    let pane = &mut p.panes[0];
+    pane.path = root.join("archive.md5");
+    pane.parent_cursor = true;
+    pane.cursor = None;
+    p.request_checksums(PaneId::Left, &send);
+    let s = p.checksums.sessions.values().next().unwrap();
+    assert!(!s.verify_initial, "the shown folder");
+    assert_eq!(s.files.fallback, Some(root.join("archive.md5")));
+}
+
+#[test]
+fn ctrl_f8_on_the_parent_row_right_after_a_deselect_calculates_the_shown_folder() {
+    let (mut p, _) = listing(&[("photo.jpg", EntryKind::File)]);
+    let pane = &mut p.panes[0];
+    pane.parent_cursor = true;
+    pane.cursor = None;
+    // A deselect is still being applied when Ctrl+F8 arrives.
+    pane.selection_revision = SelectionRevision(1);
+    let send = |_| true;
+    p.request_checksums(PaneId::Left, &send);
+    assert!(
+        p.checksums.sessions.is_empty(),
+        "it waits for the selection"
+    );
+    let navigation = NavigationId(p.panes[0].generation);
+    p.apply_with_sender(
+        Event::SelectionChanged {
+            pane: PaneId::Left,
+            navigation,
+            revision: SelectionRevision(1),
+            selection: Arc::new(SelectionSnapshot::default()),
+            deferred: Default::default(),
+        },
+        &send,
+    );
+    let s = p
+        .checksums
+        .sessions
+        .values()
+        .next()
+        .expect("the window opens once the selection is known");
+    // On Calculate with the shown folder, not on an empty Verify page.
+    assert!(!s.verify_initial);
+    assert_eq!(s.files.fallback.as_deref(), Some(p.panes[0].display_path()));
+}
+
+#[test]
+fn a_verification_starts_without_the_listed_files_of_an_earlier_calculation() {
+    let (mut p, id) = setup(&|_| true);
+    let generation = p.checksums.sessions[&id].generation;
+    let listed: Arc<[ChecksumPlannedFile]> = ["a", "b"]
+        .iter()
+        .map(|name| ChecksumPlannedFile {
+            path: std::env::temp_dir().join(name),
+            size: Some(3),
+        })
+        .collect();
+    p.apply(Event::Checksum(Box::new(ChecksumEvent {
+        job: id,
+        generation,
+        update: ChecksumUpdate::Planned(listed),
+    })));
+    // The calculation is refused after listing its files; they stay listed.
+    p.apply(Event::ChecksumRejected(Box::new(ChecksumRejected {
+        job: id,
+        generation,
+        error: FsError::from_io(
+            "checksums",
+            Path::new(""),
+            std::io::ErrorKind::OutOfMemory.into(),
+        ),
+    })));
+    assert_eq!(p.checksums.sessions[&id].pending_count(), 2);
+    assert!(p.start_checksum_verification(id, "sums.sha256", &|_| true));
+    assert_eq!(p.checksums.sessions[&id].pending_count(), 0);
+    assert!(p.checksums.sessions[&id].rows().is_empty());
+}
+
+#[test]
+fn verifying_again_checks_the_same_checksum_file_by_its_exact_path() {
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    assert!(
+        !p.repeat_checksum_verification(id, &send),
+        "calculated results have no checksum file to verify again"
+    );
+    assert!(p.start_checksum_verification(id, "日本語.sha256", &send));
+    let verified = || {
+        sent.borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::VerifyChecksumManifest(request) => {
+                    Some((request.manifest.clone(), request.generation))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let manifest = verified()[0].0.clone();
+    finish(&mut p, id, ChecksumCompletion::CompletedWithErrors);
+    // The Verify page's field may name another file by now.
+    p.checksums
+        .sessions
+        .get_mut(&id)
+        .unwrap()
+        .manifest_suggested = std::env::temp_dir().join("other.md5");
+    assert!(p.repeat_checksum_verification(id, &send));
+    assert_eq!(
+        verified(),
+        [
+            (manifest.clone(), ChecksumGeneration(2)),
+            (manifest.clone(), ChecksumGeneration(3))
+        ]
+    );
+    let s = &p.checksums.sessions[&id];
+    assert_eq!(s.verification, Some(manifest));
+    assert!(s.running);
+    assert!(
+        !sent
+            .borrow()
+            .iter()
+            .skip(1)
+            .any(|command| matches!(command, Command::StartSelectedChecksums(_))),
+        "no calculation replaces the verification"
+    );
+    // Not while it runs.
+    assert!(!p.repeat_checksum_verification(id, &send));
 }

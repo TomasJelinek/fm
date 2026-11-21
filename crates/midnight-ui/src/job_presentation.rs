@@ -662,8 +662,8 @@ fn append_discovery(detail: &mut String, discovery: &OperationDiscovery, locale:
             || "Unknown".to_owned(),
             |bytes| {
                 format!(
-                    "{} bytes ({})",
-                    locale.format_u64(bytes),
+                    "{} ({})",
+                    counted(bytes, "byte", "bytes", locale),
                     format_size(bytes, locale)
                 )
             },

@@ -28,7 +28,8 @@ pub struct ImportedPreferences {
     pub preferences: UserPreferences,
     /// Tabs whose folders belong to another system; they are not opened.
     pub skipped_tabs: usize,
-    /// Key bindings of custom commands kept from another system; they are removed.
+    /// Key bindings of custom commands kept from another system. They are removed from
+    /// the active bindings and kept, inactive, with those commands' stored records.
     pub removed_bindings: usize,
 }
 

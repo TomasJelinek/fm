@@ -200,18 +200,220 @@ fn kept_records_return_unchanged_on_export_at_their_positions() {
         "bookmarks",
         "editor",
         "user_commands",
+        "shortcuts",
         "file_comparators",
         "file_list",
     ] {
         assert_eq!(document[field], original[field], "{field}");
     }
-    // Skipped tabs and the kept command's key binding do not return.
+    // Skipped tabs do not return; the kept command's key binding does, with it.
     assert_eq!(document["tabs"][0]["paths"].as_array().unwrap().len(), 1);
-    assert_eq!(document["shortcuts"], json!([]));
-    // Reading the export again keeps the same entries; nothing is skipped twice.
+    // Reading the export again keeps the same entries; no tab is skipped twice.
     let again = decode_settings_file(&exported).unwrap();
     assert_eq!(again.preferences, imported.preferences);
-    assert_eq!((again.skipped_tabs, again.removed_bindings), (0, 0));
+    assert_eq!((again.skipped_tabs, again.removed_bindings), (0, 1));
+}
+
+/// The shell this system's terminal runs, and one only the other system's runs.
+fn shells() -> (ShellFlavor, ShellFlavor) {
+    match PathSystem::CURRENT {
+        PathSystem::Windows => (ShellFlavor::PowerShell, ShellFlavor::Posix),
+        PathSystem::Unix => (ShellFlavor::Posix, ShellFlavor::Cmd),
+    }
+}
+
+fn terminal(id: &str, shell: ShellFlavor, working_directory: &str) -> UserCommand {
+    UserCommand {
+        id: UserCommandId::new(id).unwrap(),
+        name: format!("{id} 文档"),
+        enabled: true,
+        toolbar_label: None,
+        icon: None,
+        working_directory: working_directory.into(),
+        launch: UserCommandLaunch::Single,
+        invocation: UserCommandInvocation::Terminal {
+            shell,
+            script: "make 文档".into(),
+            variables: Vec::new(),
+        },
+    }
+}
+
+fn binding(id: &str, keys: &[&str]) -> ShortcutBinding {
+    ShortcutBinding {
+        action: format!("user-command.{id}"),
+        keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+    }
+}
+
+/// A file as the other system writes it: a native program, a terminal command that
+/// works in one of its folders and one in its shell, each with a key binding.
+fn terminal_document() -> Value {
+    let (native_shell, other_shell) = shells();
+    let preferences = UserPreferences {
+        user_commands: vec![
+            program("tool", native("tool")),
+            terminal("folder", native_shell, &other("src")),
+            terminal("shell", other_shell, "${active.path}"),
+        ]
+        .into(),
+        shortcuts: vec![
+            binding("tool", &["Alt+1"]),
+            binding("folder", &["Alt+3", "Alt+5"]),
+            binding("shell", &["Alt+4"]),
+        ],
+        ..UserPreferences::default()
+    };
+    serde_json::from_slice(&encode_settings_file(preferences).unwrap()).unwrap()
+}
+
+/// `document` read on the system that wrote it: there its folder and shell are native.
+fn on_its_own_system(mut document: Value) -> ImportedPreferences {
+    let native_shell = match shells().0 {
+        ShellFlavor::PowerShell => "powershell",
+        ShellFlavor::Cmd => "cmd",
+        ShellFlavor::Posix => "posix",
+    };
+    for command in document["user_commands"].as_array_mut().unwrap() {
+        if command["working_directory"] == other("src") {
+            command["working_directory"] = "${active.path}".into();
+        }
+        if command["invocation"]["mode"] == "terminal" {
+            command["invocation"]["shell"] = native_shell.into();
+        }
+    }
+    decode_settings_file(&serde_json::to_vec(&document).unwrap()).unwrap()
+}
+
+#[test]
+fn terminal_commands_of_the_other_system_are_kept_inactive_with_their_key_bindings() {
+    let imported =
+        decode_settings_file(&serde_json::to_vec(&terminal_document()).unwrap()).unwrap();
+    let preferences = &imported.preferences;
+    let ids: Vec<_> = preferences
+        .user_commands
+        .iter()
+        .map(|command| command.id.as_str())
+        .collect();
+    assert_eq!(ids, ["tool"], "only the native program stays active");
+    let kept: Vec<_> = preferences
+        .foreign_settings
+        .iter()
+        .map(|setting| {
+            (
+                setting.kind.clone(),
+                setting.system,
+                setting.location.clone(),
+            )
+        })
+        .collect();
+    let system = PathSystem::CURRENT.other();
+    let shell_name = match system {
+        PathSystem::Unix => "POSIX shell",
+        PathSystem::Windows => "Command Prompt",
+    };
+    assert_eq!(
+        kept,
+        [
+            (
+                ForeignSettingKind::UserCommand {
+                    position: 1,
+                    id: UserCommandId::new("folder").unwrap(),
+                    name: "folder 文档".into()
+                },
+                system,
+                other("src")
+            ),
+            (
+                ForeignSettingKind::UserCommand {
+                    position: 2,
+                    id: UserCommandId::new("shell").unwrap(),
+                    name: "shell 文档".into()
+                },
+                system,
+                shell_name.into()
+            ),
+        ]
+    );
+    // Their key bindings do nothing here, but are not lost.
+    assert_eq!(preferences.shortcuts, [binding("tool", &["Alt+1"])]);
+    assert_eq!(imported.removed_bindings, 2);
+    let exported: Value =
+        serde_json::from_slice(&encode_settings_file(preferences.clone()).unwrap()).unwrap();
+    assert_eq!(
+        exported["user_commands"],
+        terminal_document()["user_commands"]
+    );
+    assert_eq!(exported["shortcuts"], terminal_document()["shortcuts"]);
+    // Back on their own system the commands and their keys work again.
+    let home = on_its_own_system(exported);
+    let shortcuts = &home.preferences.shortcuts;
+    for wanted in [
+        binding("folder", &["Alt+3", "Alt+5"]),
+        binding("shell", &["Alt+4"]),
+    ] {
+        assert!(shortcuts.contains(&wanted), "{wanted:?} in {shortcuts:?}");
+    }
+    assert!(
+        home.preferences
+            .user_commands
+            .iter()
+            .any(|command| command.id.as_str() == "shell")
+    );
+}
+
+#[test]
+fn a_key_taken_here_leaves_the_kept_binding_so_the_file_stays_valid_there() {
+    let imported =
+        decode_settings_file(&serde_json::to_vec(&terminal_document()).unwrap()).unwrap();
+    let mut preferences = imported.preferences;
+    // Alt+3 now runs the native program here, as Alt+1 does.
+    preferences.shortcuts = vec![binding("tool", &["Alt+1", "Alt+3"])];
+    let exported: Value =
+        serde_json::from_slice(&encode_settings_file(preferences).unwrap()).unwrap();
+    assert_eq!(
+        exported["shortcuts"],
+        json!([
+            { "action": "user-command.tool", "keys": ["Alt+1", "Alt+3"] },
+            { "action": "user-command.folder", "keys": ["Alt+5"] },
+            { "action": "user-command.shell", "keys": ["Alt+4"] },
+        ])
+    );
+    // The other system reads it without a conflict.
+    let home = on_its_own_system(exported);
+    assert!(
+        home.preferences
+            .shortcuts
+            .contains(&binding("folder", &["Alt+5"]))
+    );
+    // A kept binding left without keys is left out.
+    let imported =
+        decode_settings_file(&serde_json::to_vec(&terminal_document()).unwrap()).unwrap();
+    let mut preferences = imported.preferences;
+    preferences.shortcuts = vec![binding("tool", &["Alt+1", "Alt+4"])];
+    let exported: Value =
+        serde_json::from_slice(&encode_settings_file(preferences).unwrap()).unwrap();
+    let actions: Vec<_> = exported["shortcuts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|binding| binding["action"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actions, ["user-command.tool", "user-command.folder"]);
+}
+
+#[test]
+fn a_kept_command_bound_twice_is_refused_as_its_own_system_refuses_it() {
+    let mut document = terminal_document();
+    document["shortcuts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "action": "user-command.shell", "keys": ["Alt+6"] }));
+    let error = decode_settings_file(&serde_json::to_vec(&document).unwrap()).unwrap_err();
+    assert!(
+        error.to_string().contains("repeated key binding"),
+        "{error}"
+    );
 }
 
 #[test]

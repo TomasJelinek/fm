@@ -492,6 +492,10 @@ fn create(
             }
         });
     }
+    // Enter in a verification's results: the same checksum file again.
+    callback!(on_verify_again, |p, send| {
+        p.repeat_checksum_verification(id, send);
+    });
     {
         let weak = window.as_weak();
         callback!(on_browse_manifest, |p, send, verify, index| {
@@ -662,10 +666,12 @@ fn progress(s: &ChecksumSession, locale: &NumberLocale) -> String {
             );
         }
         if s.progress.planned > 0 {
+            // A file that could not be read is done too, as for the bar (`fraction`).
+            let done = s.progress.calculated + s.progress.errors + s.progress.skipped;
             return format!(
-                "{status} · {} of {} files · {} of {} B read",
-                locale.format_u64(s.progress.calculated),
-                locale.format_u64(s.progress.planned),
+                "{status} · {} of {} · {} of {} B read",
+                locale.format_u64(done),
+                crate::job_presentation::counted(s.progress.planned, "file", "files", locale),
                 locale.format_u64(s.progress.bytes_read),
                 locale.format_u64(s.progress.planned_bytes)
             );
@@ -783,5 +789,35 @@ mod tests {
         assert!(republished != published, "a new algorithm set republishes");
         let available: Vec<bool> = republished.iter().collect();
         assert_eq!(available, [false, false, true, false, false]);
+    }
+
+    /// "1 of 1 file", not "0 of 1 files": one listed file in the singular, and a file
+    /// that could not be read counts as done, as `fraction` counts it.
+    #[test]
+    fn the_status_line_counts_listed_files_as_the_bar_does() {
+        let mut p = Presenter::new(std::env::temp_dir(), std::env::temp_dir());
+        let send = |_| true;
+        p.request_checksums(PaneId::Left, &send);
+        let id = *p.checksums.sessions.keys().next().unwrap();
+        let algorithms = p.checksums.sessions[&id].algorithms;
+        assert!(p.start_checksums(id, algorithms, false, &send));
+        let generation = p.checksums.sessions[&id].generation;
+        let locale = NumberLocale::default();
+        for (errors, planned, wanted) in [
+            (1, 1, "Calculating… · 1 of 1 file · 0 of 8 B read"),
+            (0, 2, "Calculating… · 0 of 2 files · 0 of 8 B read"),
+        ] {
+            p.apply(Event::Checksum(Box::new(ChecksumEvent {
+                job: id,
+                generation,
+                update: ChecksumUpdate::Progress(ChecksumProgress {
+                    planned,
+                    planned_bytes: 8,
+                    errors,
+                    ..Default::default()
+                }),
+            })));
+            assert_eq!(progress(&p.checksums.sessions[&id], &locale), wanted);
+        }
     }
 }

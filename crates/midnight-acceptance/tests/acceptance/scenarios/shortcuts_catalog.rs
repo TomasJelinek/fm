@@ -26,7 +26,7 @@ use crate::{
     panel,
     tools_support::{self as tools},
 };
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_core::{
     Bookmark, BookmarkId, CommandHistoryEntry, FileClipboardIntent, PaneId, PanelViewMode,
     ShellFlavor, ShortcutChord, ShortcutContext, ShortcutDefinition, ShortcutMap, ShortcutScope,
@@ -574,21 +574,32 @@ fn sorted(names: &[&str]) -> Vec<String> {
 fn checksums_ready(app: &App) -> Result<(), String> {
     let window =
         tools::tool_titled(app, "Checksums · Midnight Explorer").ok_or("no Checksums window")?;
-    let mut calculate = Vec::new();
+    // The page tab is a "Calculate" button too, on either page, but a checkable one.
+    let (mut tab, mut footer) = (None, None);
     for root in inspect::roots(window.window()) {
         inspect::walk(&root, &mut |item| {
             if item.accessible_role() == AccessibleRole::Button
                 && inspect::label(item).as_deref() == Some("Calculate")
             {
-                calculate.push(item.clone());
+                let checkable = item
+                    .accessible_string_property(AccessibleStringProperty::Checkable)
+                    .is_some_and(|value| value == "true");
+                if checkable {
+                    tab = Some(item.clone());
+                } else {
+                    footer = Some(item.clone());
+                }
             }
         });
     }
-    // The footer's Calculate (after the page tab, if any) exists only on that page.
-    let Some(button) = calculate.last() else {
+    if tab.as_ref().is_some_and(|tab| !tools::checked(tab)) {
+        return Err("Checksums opened on Verify: the Calculate tab is not the checked one".into());
+    }
+    // The footer's Calculate exists only on the Calculate page.
+    let Some(button) = footer else {
         return Err("Checksums opened on Verify instead of Calculate".into());
     };
-    if !tools::enabled(button) {
+    if !tools::enabled(&button) {
         return Err("Checksums opened with nothing to calculate: Calculate is disabled".into());
     }
     Ok(())

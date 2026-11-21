@@ -39,8 +39,8 @@ pub(crate) fn body(
     ] {
         lines.push(match bytes {
             Some(bytes) => format!(
-                "{label}: {} bytes ({})",
-                locale.format_u64(bytes),
+                "{label}: {} ({})",
+                crate::job_presentation::counted(bytes, "byte", "bytes", locale),
                 format_size(bytes, locale)
             ),
             None => format!("{label}: Unavailable"),

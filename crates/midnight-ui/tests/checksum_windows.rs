@@ -149,7 +149,7 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
         .apply(Event::Checksum(Box::new(ChecksumEvent {
             job: verify.job,
             generation: verify.generation,
-            update: ChecksumUpdate::Batch(rows.into()),
+            update: ChecksumUpdate::Batch(rows.clone().into()),
         })));
     midnight_ui::refresh(&main, &state.borrow());
     draw(&native, 1000, 620, "checksum-verification-icons");
@@ -167,9 +167,69 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
             );
         }
     }
+    // The verification finishes. Enter in its results verifies the same checksum file
+    // again: it never calculates the captured folder in their place.
+    state
+        .borrow_mut()
+        .apply(Event::Checksum(Box::new(ChecksumEvent {
+            job: verify.job,
+            generation: verify.generation,
+            update: ChecksumUpdate::Finished(Arc::new(ChecksumRun {
+                job: verify.job,
+                generation: verify.generation,
+                algorithms: ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap(),
+                captured_roots: vec![manifest.clone()].into(),
+                rows: rows.into(),
+                summary: ChecksumSummary {
+                    completion: ChecksumCompletion::CompletedWithErrors,
+                    progress: ChecksumProgress {
+                        verified: 1,
+                        mismatched: 1,
+                        missing: 1,
+                        ..Default::default()
+                    },
+                    reached_budgets: vec![],
+                    diagnostics: vec![],
+                },
+                retention,
+            })),
+        })));
+    midnight_ui::refresh(&main, &state.borrow());
+    draw(&native, 1000, 620, "checksum-verification-finished");
+    native.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Return.into(),
+    });
+    let verifications: Vec<_> = commands
+        .borrow()
+        .iter()
+        .filter_map(|command| match command {
+            Command::VerifyChecksumManifest(request) => {
+                Some((request.manifest.clone(), request.generation))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        verifications,
+        [
+            (manifest.clone(), ChecksumGeneration(1)),
+            (manifest.clone(), ChecksumGeneration(2))
+        ],
+        "Enter verifies the same checksum file again"
+    );
+    assert!(
+        !commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::StartSelectedChecksums(_))),
+        "Enter never calculates in place of a verification's results"
+    );
+    midnight_ui::refresh(&main, &state.borrow());
+    draw(&native, 1000, 620, "checksum-verifying-again");
     click(&native, "Stop");
     assert!(commands.borrow().iter().any(|command| matches!(command,
-        Command::CancelChecksums { job, generation } if *job == verify.job && *generation == verify.generation)));
+        Command::CancelChecksums { job, generation }
+            if *job == verify.job && *generation == ChecksumGeneration(2))));
     native.window().dispatch_event(WindowEvent::KeyPressed {
         text: Key::Escape.into(),
     });

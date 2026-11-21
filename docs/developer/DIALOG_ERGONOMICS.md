@@ -76,7 +76,11 @@ separately; this document is not a claim that every item is already released.
   mask and the main menu are not Tab stops.
 - Compare directories compares on Enter from an option or its tolerance field, as
   other dialogs confirm from their options; Space ticks an option, and a held Enter or
-  one during a comparison does nothing. Dialog tabs and the Checksums and Jobs lists
+  one during a comparison does nothing. In Checksums, Enter in the results or on the
+  page starts the shown page's primary action: Calculate, or Verify on the Verify page.
+  Enter never discards a verification's results: in them it verifies the same checksum
+  file again, and Calculate, which would replace them, is then a button press only,
+  without the default look. Dialog tabs and the Checksums and Jobs lists
   show keyboard focus with a 2 px frame. A check box answers the pointer on its box or
   its caption with a 2 px active frame around the box, and an Options › Colors swatch
   with a 2 px active-frame ring around it; only the frame changes, so the caption, the

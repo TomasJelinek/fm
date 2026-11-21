@@ -2,6 +2,56 @@
 //! and the details behind both. Paths keep their own lines (see `append_path`).
 use super::*;
 use crate::error_presentation::{append_path, describe};
+use crate::job_presentation::counted;
+
+/// Each reason `checksum_file_line` gives for a name it cannot write, as the words that
+/// follow a count of files, singular and plural. Other reasons keep their own text.
+const LEFT_OUT: [(&str, &str, &str); 3] = [
+    (
+        "must be below its containing directory",
+        "file not below the checksum file's folder",
+        "files not below the checksum file's folder",
+    ),
+    (
+        "cannot round-trip through the UTF-8",
+        "file whose name is not valid Unicode",
+        "files whose names are not valid Unicode",
+    ),
+    (
+        "unambiguously in SFV format",
+        "file whose name SFV cannot hold unambiguously",
+        "files whose names SFV cannot hold unambiguously",
+    ),
+];
+
+impl CopyNote {
+    /// What the copy did, then how many files it left out for each reason.
+    pub(crate) fn text(&self, locale: &NumberLocale) -> String {
+        let copied = match self.copied {
+            0 => "Nothing copied".to_owned(),
+            copied => format!(
+                "Copied {}",
+                counted(copied, "checksum", "checksums", locale)
+            ),
+        };
+        let left_out = self
+            .left_out
+            .iter()
+            .map(|(reason, count)| {
+                match LEFT_OUT.iter().find(|(cause, ..)| reason.contains(cause)) {
+                    Some((_, one, many)) => counted(*count, one, many, locale),
+                    None => format!(
+                        "{}: {}",
+                        counted(*count, "file", "files", locale),
+                        reason.trim_end_matches('.')
+                    ),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("{copied}. Left out: {left_out}.")
+    }
+}
 
 impl ChecksumSession {
     /// The attention line: the window's error, else the first backend diagnostic of the
@@ -26,10 +76,14 @@ impl ChecksumSession {
         })
     }
 
-    /// The save line: what a running save does, or where the last one went.
+    /// The save line: what a running save does, else what the last Copy left out, else
+    /// where the last save went.
     pub(crate) fn save_status(&self, locale: &NumberLocale) -> String {
         if self.save.is_some() {
             return self.save_message.clone();
+        }
+        if let Some(note) = &self.copy_note {
+            return note.text(locale);
         }
         let Some(saved) = &self.saved else {
             return String::new();
@@ -90,6 +144,9 @@ impl ChecksumSession {
                 text.push_str("\nDelete it when you no longer need it.");
             }
         }
+        if let Some(note) = &self.copy_note {
+            section(&mut text, &note.text(locale));
+        }
         if let Some(manifest) = &self.verification {
             section(&mut text, "Checksum file\n");
             append_path(&mut text, manifest);
@@ -97,10 +154,10 @@ impl ChecksumSession {
         section(
             &mut text,
             &format!(
-                "{} found · {} skipped · {} errors",
+                "{} found · {} skipped · {}",
                 locale.format_u64(self.progress.discovered),
                 locale.format_u64(self.progress.skipped),
-                locale.format_u64(self.progress.errors)
+                counted(self.progress.errors, "error", "errors", locale)
             ),
         );
         if let Some(summary) = self.run.as_ref().map(|run| &run.summary) {

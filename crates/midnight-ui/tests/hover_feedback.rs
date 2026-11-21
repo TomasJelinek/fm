@@ -21,8 +21,13 @@ use std::{cell::Cell, time::Duration};
 /// Window rectangle: left, top, width, height.
 type Rect = (f32, f32, f32, f32);
 
-/// Every theme: a hover look must show in each palette.
-const THEMES: std::ops::Range<i32> = 0..26;
+/// Themes for the behaviour checks: Blue, Light and High contrast dark. Themes select
+/// colours only (ui/theme.slint), so what answers the pointer is the same in each;
+/// `hover_looks_keep_each_themes_contrast` shows the hover look in every theme.
+const THEMES: [i32; 3] = [0, 2, 21];
+
+/// Every theme.
+const ALL_THEMES: std::ops::Range<i32> = 0..26;
 
 fn bounds(item: &ItemRc) -> Rect {
     let rect = item.geometry();
@@ -246,9 +251,10 @@ fn colour_swatches_answer_hovering() {
     }
 }
 
-/// In every theme, the hover look's frame stands out from the dialog surface at least
-/// as much as the resting frame, and the pixels it changes are only that frame: the
-/// box's or swatch's inside keeps the colour that its mark or sample is drawn on.
+/// In every theme, a check box and a swatch answer hovering, the hover look's frame
+/// stands out from the dialog surface at least as much as the resting frame, and the
+/// pixels it changes are only that frame: the box's or swatch's inside keeps the
+/// colour that its mark or sample is drawn on.
 #[test]
 fn hover_looks_keep_each_themes_contrast() {
     let (mut test, clock) = ui::TestUi::with_virtual_clock();
@@ -257,7 +263,7 @@ fn hover_looks_keep_each_themes_contrast() {
         "*.rs",
     )])));
     colors.set_selected(0);
-    for scheme in 0..26 {
+    for scheme in ALL_THEMES {
         test.window.invoke_apply_preferences(scheme, 0);
         let theme = test.window.global::<Theme>();
         let (surface, frame, active) = (
@@ -295,10 +301,8 @@ fn hover_looks_keep_each_themes_contrast() {
             } else {
                 (x + 3.0, y + 3.0, w - 6.0, h - 6.0)
             };
-            let fill_before: Vec<Color> = {
-                pointer_out(&mut test, &clock);
-                inside(&test, inner)
-            };
+            pointer_out(&mut test, &clock);
+            let (before, fill_before) = (region(&test, (x, y, w, h)), inside(&test, inner));
             test.window
                 .window()
                 .dispatch_event(WindowEvent::PointerMoved {
@@ -306,6 +310,11 @@ fn hover_looks_keep_each_themes_contrast() {
                 });
             ui::advance(&clock, Duration::from_millis(200));
             test.draw();
+            assert_ne!(
+                before,
+                region(&test, (x, y, w, h)),
+                "theme {scheme}: {label:?} does not change when hovered"
+            );
             let fill_after = inside(&test, inner);
             assert_eq!(
                 fill_before, fill_after,
