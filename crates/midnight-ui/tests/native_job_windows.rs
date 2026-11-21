@@ -1063,6 +1063,8 @@ fn pause_and_resume_are_exact_job_requests_and_wait_for_backend_acknowledgement(
 
 #[path = "native_job_windows/confirmation.rs"]
 mod confirmation;
+#[path = "native_job_windows/details_file_progress.rs"]
+mod details_file_progress;
 #[path = "native_job_windows/jobs_actions.rs"]
 mod jobs_actions;
 #[path = "native_job_windows/minimum_size.rs"]

@@ -161,6 +161,22 @@ export component JobProgressWindow inherits DialogWindow {
                                     && root.job.cancellable && !root.job.attention ? "Calculating..." : "Unavailable");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
+                        // The current file's own bytes and bar. A transfer shows them under
+                        // Details only, and above its chart, where the Details panel below
+                        // leaves them in view. Only a Copy or Move reports a current file.
+                        if root.job.file-progress-label != "" && (!root.transfer
+                            || (root.details-visible && !root.job.verification-view)) : VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: root.job.file-progress-label; color: Theme.secondary-text;
+                                font-size: Theme.small-font; wrap: word-wrap;
+                            }
+                            if root.job.file-determinate : ProgressIndicator {
+                                accessible-label: root.job.file-progress-title != "" ? root.job.file-progress-title : "Current file written";
+                                accessible-value: root.job.file-progress-label;
+                                progress: root.job.file-progress; height: 8px;
+                            }
+                        }
                         if !root.job.determinate : ProgressIndicator {
                             accessible-label: root.cancelling-delete ? "Deletion progress"
                                 : root.job.activity-label != "" ? root.job.activity-label : "Discovering operation items";
@@ -222,19 +238,6 @@ export component JobProgressWindow inherits DialogWindow {
                             progress-label: root.job.file-progress-label;
                             waiting-label: root.job.activity-label;
                             height: max(130px, Theme.font-size * 7.5);
-                        }
-                        if root.job.file-progress-label != "" && (!root.transfer
-                            || (root.details-visible && !root.job.verification-view)) : VerticalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: root.job.file-progress-label; color: Theme.secondary-text;
-                                font-size: Theme.small-font; wrap: word-wrap;
-                            }
-                            if root.job.file-determinate : ProgressIndicator {
-                                accessible-label: root.job.file-progress-title != "" ? root.job.file-progress-title : "Current file written";
-                                accessible-value: root.job.file-progress-label;
-                                progress: root.job.file-progress; height: 8px;
-                            }
                         }
                         if !root.transfer && !root.cancelling-delete : Text {
                             text: root.job.eta == "" && root.job.activity-label != ""
