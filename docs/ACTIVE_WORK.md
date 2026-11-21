@@ -104,7 +104,7 @@ Handover items:
   Move child that cannot be prepared is skipped alone, and an uncertain commit or
   cleanup whose data stays in place asks Skip or Cancel instead of ending the job
   (`80e8f98a`).
-- The acceptance suite runs on Windows (`scriptscceptance.ps1`; 91 of 107 scenarios
+- The acceptance suite runs on Windows (`scripts\acceptance.ps1`; 91 of 107 scenarios
   pass, see the [Windows results](developer/acceptance/windows.md)), and CI lints the
   suite on both platforms (`4d788480`).
 - Viewers: the Rust source travel lost at the raster frontier is reproduced and

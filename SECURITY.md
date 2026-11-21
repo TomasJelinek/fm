@@ -288,7 +288,7 @@ private folder, so they neither use nor read the account's Trash, and a run dele
 inside the run folder it created itself (docs/developer/ACCEPTANCE.md). On Windows the
 suite never uses or reads the Recycle Bin (its Trash scenario is skipped there);
 staged children get a private profile inside a private installation that
-`scriptscceptance.ps1` creates under the user profile for owner, SYSTEM and
+`scripts\acceptance.ps1` creates under the user profile for owner, SYSTEM and
 Administrators only and removes afterwards, and the deny entries the suite adds with
 icacls name only the account's own SID, only on entries below its run folder, and are
 removed after each scenario.

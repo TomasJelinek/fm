@@ -541,7 +541,7 @@ backend (the suite renders with Slint's software renderer and needs no display);
 `cargo test`, CI or `--validate` (CI only checks that it compiles). With
 `--validate --acceptance` both run, and the first failure decides the exit status.
 `clean` cannot be combined with it either. On Windows, `pwsh -File
-scriptscceptance.ps1` builds and runs the suite (`--list`, `--only`, `--scale`,
+scripts\acceptance.ps1` builds and runs the suite (`--list`, `--only`, `--scale`,
 `--dry-run`; see the acceptance guide).
 
 Build only the host with Cargo (install the native provider/viewers separately as
