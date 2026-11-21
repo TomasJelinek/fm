@@ -1,0 +1,49 @@
+name: Download artifacts
+description: >-
+  Download artifacts of this run by name or pattern with actions/download-artifact,
+  which checks each archive's SHA-256 digest, but without its decompression: its unzip
+  dependency calls the deprecated Buffer() constructor (Node DEP0005,
+  actions/download-artifact#484). extract.py then extracts the archives into one
+  directory, refusing unsafe member paths, links and a second file at one path.
+inputs:
+  name:
+    description: The name of one artifact; give this or pattern.
+    default: ""
+  pattern:
+    description: A pattern of artifact names; every match is extracted into path.
+    default: ""
+  path:
+    description: The directory to extract into; it must not hold any file yet.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Choose a download directory
+      id: download
+      shell: pwsh
+      env:
+        ARTIFACT_NAME: ${{ inputs.name }}
+        ARTIFACT_PATTERN: ${{ inputs.pattern }}
+      run: |
+        # Without both, download-artifact would download every artifact of the run.
+        if ([string]::IsNullOrEmpty($env:ARTIFACT_NAME) -eq [string]::IsNullOrEmpty($env:ARTIFACT_PATTERN)) {
+          throw 'Give exactly one of the name and pattern inputs'
+        }
+        $directory = Join-Path $env:RUNNER_TEMP ('artifact-archives-' + [guid]::NewGuid().ToString('N'))
+        "directory=$directory" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+    # One directory per artifact when several match, so archive names cannot collide.
+    - uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ steps.download.outputs.directory }}
+        skip-decompress: true
+    - name: Extract the downloaded archives
+      shell: pwsh
+      env:
+        ARCHIVES: ${{ steps.download.outputs.directory }}
+        DESTINATION: ${{ inputs.path }}
+        EXTRACTOR: ${{ github.action_path }}/extract.py
+      run: |
+        python -B $env:EXTRACTOR $env:ARCHIVES $env:DESTINATION
+        if ($LASTEXITCODE -ne 0) { throw 'Artifact extraction failed' }

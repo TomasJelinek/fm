@@ -31,18 +31,16 @@ runs:
           --producer viewers --producer image-viewer --producer archive-filesystem `
           --producer filesystem-libraries @names
         if ($LASTEXITCODE -ne 0) { throw 'The plugin packages of this run are unavailable' }
-    - uses: actions/download-artifact@v8
+    - uses: ./.github/actions/download-artifacts
       with:
         pattern: viewer-${{ runner.os }}-*
-        merge-multiple: true
         path: _build/viewer-packages
-    - uses: actions/download-artifact@v8
+    - uses: ./.github/actions/download-artifacts
       with:
         pattern: filesystem-${{ runner.os }}-*
-        merge-multiple: true
         path: _build/filesystem-packages
     - if: inputs.archive-fixtures == 'true'
-      uses: actions/download-artifact@v8
+      uses: ./.github/actions/download-artifacts
       with:
         name: archive-fixtures-${{ runner.os }}
         path: _build/archive-fixtures

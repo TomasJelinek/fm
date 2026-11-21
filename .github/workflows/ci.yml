@@ -83,7 +83,7 @@ jobs:
             /plugins/midnight-viewer-${{ matrix.plugin }}/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v8
+      - uses: ./.github/actions/download-artifacts
         with:
           name: released-plugin-sdk
           path: _build/released-sdk
@@ -148,7 +148,7 @@ jobs:
             /plugins/viewer-conformance/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v8
+      - uses: ./.github/actions/download-artifacts
         with:
           name: released-plugin-sdk
           path: _build/released-sdk
@@ -249,7 +249,7 @@ jobs:
             /vendor/image/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v8
+      - uses: ./.github/actions/download-artifacts
         with:
           name: released-worker-sdk
           path: _build/released-sdk
@@ -299,7 +299,7 @@ jobs:
             /vendor/image/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v8
+      - uses: ./.github/actions/download-artifacts
         with:
           name: released-worker-sdk
           path: _build/released-sdk
@@ -339,7 +339,7 @@ jobs:
             /plugins/midnight-fs-archive/
             /rust-toolchain.toml
             /.github/actions/
-      - uses: actions/download-artifact@v8
+      - uses: ./.github/actions/download-artifacts
         with:
           name: released-worker-sdk
           path: _build/released-sdk

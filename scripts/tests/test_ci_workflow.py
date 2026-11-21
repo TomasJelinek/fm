@@ -209,8 +209,32 @@ class WorkflowTests(unittest.TestCase):
                 self.assertNotRegex(self.jobs[name], r"(?m)^    name:", "a job name replaces the matrix values")
         for pattern in ("pattern: viewer-${{ runner.os }}-*", "pattern: filesystem-${{ runner.os }}-*"):
             self.assertIn(pattern, packages)
-        self.assertLess(packages.index("scripts/ci-wait-for-artifacts.py"), packages.index("actions/download-artifact"))
+        self.assertLess(packages.index("scripts/ci-wait-for-artifacts.py"),
+                        packages.index("uses: ./.github/actions/download-artifacts"))
         self.assertIn("GH_TOKEN: ${{ github.token }}", packages)
+
+    def test_artifacts_are_extracted_by_the_checking_extractor_not_by_download_artifact(self):
+        # download-artifact's own unzip dependency calls the deprecated Buffer() constructor
+        # (Node DEP0005, actions/download-artifact#484); it still checks the SHA-256 digest.
+        local = {path.parent.name: path.read_text(encoding="utf-8")
+                 for path in (ROOT / ".github/actions").glob("*/action.yml")}
+        downloads = local.pop("download-artifacts")
+        for name, text in [("ci.yml", self.text), *local.items()]:
+            with self.subTest(file=name):
+                self.assertNotIn("uses: actions/download-artifact@", text)
+                for entry in re.split(r"\n\s+- ", text):
+                    if "uses: ./.github/actions/download-artifacts\n" in entry:
+                        self.assertIn("path: _build/", entry)
+                        self.assertEqual(len(re.findall(r"\n\s+(name|pattern): \S", entry)), 1, entry)
+                        self.assertNotIn("merge-multiple", entry)
+        self.assertEqual(downloads.count("uses: actions/download-artifact@"), 1)
+        self.assertIn("skip-decompress: true", downloads)
+        self.assertNotIn("digest-mismatch", downloads, "the default fails on a digest mismatch")
+        self.assertNotIn("merge-multiple", downloads, "one directory per artifact; the extractor merges")
+        self.assertLess(downloads.index("uses: actions/download-artifact@"),
+                        downloads.index("EXTRACTOR: ${{ github.action_path }}/extract.py"))
+        self.assertIn("Give exactly one of the name and pattern inputs", downloads)
+        self.assertTrue((ROOT / ".github/actions/download-artifacts/extract.py").is_file())
 
     def test_only_the_waiting_jobs_may_read_the_runs_jobs_and_artifacts(self):
         permissions = self.text.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
