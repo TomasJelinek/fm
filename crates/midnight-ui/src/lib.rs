@@ -795,12 +795,15 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         // The path editor starts from this text; `Presenter::navigate_text` maps it back.
         let location = shown_text(&p.display_location_text());
         let cursor = p.cursor_index().map_or(-1, |i| i as i32);
+        // A navigation key shows the cursor row even when the cursor stays.
+        let requested = p.reveal_cursor.take();
         reveal[index] = !p.preserve_viewport
-            && if index == 0 {
-                window.get_left_path() != location || window.get_left_cursor() != cursor
-            } else {
-                window.get_right_path() != location || window.get_right_cursor() != cursor
-            };
+            && (requested
+                || if index == 0 {
+                    window.get_left_path() != location || window.get_left_cursor() != cursor
+                } else {
+                    window.get_right_path() != location || window.get_right_cursor() != cursor
+                });
         let volume = presenter
             .volumes
             .iter()
@@ -1565,6 +1568,7 @@ pub fn install_with_owned(
             p.enter_focused_folder(id, s);
         } else if (2..=7).contains(&key) && !p.panes[id.index()].search.query.is_empty() {
             p.move_search_cursor(id, key);
+            p.panes[id.index()].reveal_cursor.set(true);
         } else {
             let (mode, columns, rows) = if id == PaneId::Left {
                 (
@@ -1591,6 +1595,12 @@ pub fn install_with_owned(
                 p.focus_display_row(id, row);
             } else {
                 p.move_cursor(id, key, s);
+            }
+            // Every cursor-navigation key shows the cursor row, also where the cursor
+            // stays (Home on the first row of a list the wheel scrolled away). Left and
+            // Right navigate in Brief and Thumbnails only; Insert and Space toggle.
+            if (2..=7).contains(&key) || (matches!(key, 11 | 12) && matches!(mode, 1 | 2)) {
+                p.panes[id.index()].reveal_cursor.set(true);
             }
         }
     });

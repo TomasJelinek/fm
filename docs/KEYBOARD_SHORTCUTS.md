@@ -129,9 +129,9 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Keys | Current action |
 | --- | --- |
 | Tab / Shift+Tab in files | Switch the active pane |
-| ↑ / ↓, PageUp / PageDown, Home / End | Move the focused row |
-| ← / → in Brief | Move to the previous / next file column |
-| ← / → and ↑ / ↓ in Thumbnails | Move between cells and grid rows |
+| ↑ / ↓, PageUp / PageDown, Home / End | Move the focused row and scroll it into view, also when it stays: Home or ↑ on the first row and End or ↓ on the last bring a list the wheel scrolled away back to it |
+| ← / → in Brief | Move to the previous / next file column, and scroll the focused file into view (also at either end) |
+| ← / → and ↑ / ↓ in Thumbnails | Move between cells and grid rows, and scroll the focused cell into view (also at either end) |
 | Plain typing in files | Start Unicode case-insensitive filename-prefix search; the number row's + − * are typed too (Ctrl+= / Ctrl+− and the numeric keypad's + − * select by mask) |
 | ↑ / ↓ during search | Visit previous / next matching name without wrapping |
 | Escape during search | Leave search and restore the complete listing |

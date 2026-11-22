@@ -13,6 +13,8 @@ use std::{cell::Cell, path::PathBuf, sync::Arc};
 mod fling_measure;
 #[path = "scroll_input_kinetic_tests.rs"]
 mod kinetic_tests;
+#[path = "scroll_input_reveal_tests.rs"]
+mod reveal_tests;
 #[path = "scroll_input_rows_tests.rs"]
 mod rows_tests;
 #[cfg(feature = "acceptance-seams")]

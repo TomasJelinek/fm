@@ -214,6 +214,10 @@ pub(crate) struct Pane {
     folder_presence: folder_presence::State,
     folder_errors: Option<folder_presence::Retained>,
     pub(crate) preserve_viewport: bool,
+    /// A cursor-navigation key asks to show the cursor row even where the cursor stays
+    /// (Home on the first row of a list the wheel scrolled away). The next refresh
+    /// reveals it once.
+    pub(crate) reveal_cursor: std::cell::Cell<bool>,
     size_scan_generation: u64,
     pub(crate) selected: Arc<SelectionSnapshot>,
     selection_preview: Vec<selection_preview::PendingSelection>,
@@ -2003,6 +2007,7 @@ impl Pane {
             folder_presence: folder_presence::State::default(),
             folder_errors: None,
             preserve_viewport: false,
+            reveal_cursor: std::cell::Cell::new(false),
             size_scan_generation: 0,
             selection_sizes: selection_sizes::State::default(),
             selected: Arc::default(),

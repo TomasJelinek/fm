@@ -79,6 +79,19 @@ wheel input moves at once and the row alignment is immediate. Other systems keep
 three lines per notch, and their reduced-motion settings are not read yet. The viewers
 honour the animation setting too ([wheel distance](#wheel-distance)).
 
+Every cursor-navigation key reveals the cursor row, also where the cursor stays:
+Up, Down, Page Up, Page Down, Home and End in every view, and Left and Right in
+Brief and Thumbnails. Home or Up on the first row, or End or Down on the last,
+therefore brings a list the wheel scrolled away back to the cursor. The key asks
+the next refresh to reveal (`Pane::reveal_cursor`, set in the window's `key`
+callback), which uses the ordinary reveal (`file-pane.slint` `reveal-cursor`):
+a row above the view comes to the top edge and a row below it to the bottom edge,
+at once, without row alignment afterwards. Refreshes, Insert and Space that keep the
+row (on the last row), and the wheel reveal nothing; otherwise the cursor is
+revealed only when it or the folder changes. Until 22 November 2026 a key that left
+the cursor in place revealed nothing either, so Home on the first row left a
+wheel-scrolled list where it was.
+
 From 19 to 21 November 2026 the Details and Brief views drew whole rows only and
 nothing aligned the rest position, so every fractional rest (a notch of 60 px over
 22 px rows, any touchpad scroll, a cursor revealed at the bottom edge) left a
@@ -221,7 +234,9 @@ a modifier, click or notch stopping momentum with only the alignment after it,
 reduced motion) and `rows_tests` (the reported mid-folder rest in both panels,
 rows covering the list at fractional offsets in each view at three scales and
 font sizes, keyboard reveals, refreshes and sorting while scrolled, rows painting
-their model state after a flick);
+their model state after a flick), `reveal_tests` (each family of cursor keys
+reveals a wheel-scrolled cursor that stays, in Details, Brief and Thumbnails;
+refreshes and toggles that keep the row do not);
 `tests/panel_scroll.rs` (partly visible rows drawn and clickable, band coverage
 over offsets, row heights and viewport heights, the idle alignment and what holds,
 interrupts or bounds it); `tests/panel_scroll_costs.rs` (a 3000 px/s fling of the
