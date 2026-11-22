@@ -178,9 +178,8 @@ fn a_move_drop_is_refused_up_front_beyond_64_items_or_across_drives_to_a_refusin
     assert_eq!(error.kind, io::ErrorKind::Unsupported);
     assert_eq!(
         error.message,
-        "Items from another drive cannot be moved to a network location: Move removes the \
-         originals only after verifying their copies, which it cannot do there. Copy them \
-         instead."
+        "Items from another drive cannot be moved to a network location: Move cannot verify \
+         their copies there before removing the originals. Copy them instead."
     );
     internal::admit_move(Some(&RefusesMoves), &files(vec!["same"]), target, &cancel).unwrap();
     internal::admit_move(

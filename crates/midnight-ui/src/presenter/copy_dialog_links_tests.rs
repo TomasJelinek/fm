@@ -177,6 +177,8 @@ fn keeping_links_where_none_can_be_stored_is_explained_once_before_starting() {
         error.ends_with("or choose \u{201c}Copy the files links point to\u{201d}."),
         "{error}"
     );
+    // The dialog shows it under the link choice.
+    assert!(p.copy_draft_error_about_links());
     // Confirming again keeps links anyway.
     let sent = confirm(&mut p, &token, &destination, CopyLinkPolicy::Preserve);
     assert_eq!(started_with(&sent), Some(CopyLinkPolicy::Preserve));
@@ -212,10 +214,11 @@ fn a_move_from_another_drive_to_a_network_location_does_not_start_and_suggests_c
         assert!(sent.is_empty(), "{sent:?}");
         assert_eq!(
             p.copies.draft.as_ref().unwrap().error,
-            "Items from another drive cannot be moved to a network location: Move removes the \
-             originals only after verifying their copies, which it cannot do there. Copy them \
-             instead."
+            "Items from another drive cannot be moved to a network location: Move cannot verify \
+             their copies there before removing the originals. Copy them instead."
         );
+        // The refusal concerns the destination, not the link choice.
+        assert!(!p.copy_draft_error_about_links());
     }
     network.same_volume = true;
     let (mut p, token, request) = draft(&destination);
@@ -265,6 +268,10 @@ fn a_typed_folder_whose_default_differs_shows_its_default_before_starting() {
         "{error}"
     );
     assert!(error.ends_with("Select Move again to start."), "{error}");
+    assert!(
+        p.copy_draft_error_about_links(),
+        "the link choice's own note"
+    );
     assert!(p.copy_draft_links_view().unwrap().copy_files);
     // Confirming again with the shown default starts.
     let sent = confirm(&mut p, &token, &typed, CopyLinkPolicy::FollowLinks);

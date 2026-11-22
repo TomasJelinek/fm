@@ -283,8 +283,9 @@ application delivery remain pending.
 
 Requests default to `TransferStartPolicy::Immediate`. The accepted scheduler
 contract makes these jobs runnable concurrently, subject to configured worker,
-physical I/O and safety admission. The dialog's **Wait for other operations to
-finish** option starts unchecked for every new draft and is not persisted.
+physical I/O and safety admission. The dialog's **Wait for earlier transfers** option
+(called "Wait for other operations to finish" until 22 November 2026) starts unchecked
+for every new draft and is not persisted.
 Confirmation freezes the choice; rejection, reconfirmation and Retry retain it.
 Other submission routes default to Immediate.
 

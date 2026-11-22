@@ -40,7 +40,7 @@ and `20261122-025746` (the Links keys swapped: each choice refused), and the Win
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| T-D01 | F5 shows the selection and its source folder | `files_copy_options` | summary names `a.txt` and the source folder | PASS |
+| T-D01 | F5 shows the selection and its source folder | `files_copy_options` | summary names `a.txt`; the source folder is its tooltip | PASS |
 | T-D02 | The destination is the other panel's folder | `files_copy_options` | "Destination folder" value | PASS |
 | T-D03 | A typed existing folder is the destination | `files_copy_kinds`, `files_transfer_jobs`, `files_transfer_errors` | files arrive in the typed folder | PASS |
 | T-D04 | A missing folder is refused in the dialog | `files_copy_options` | dialog stays open, "Enter the full path of an existing destination folder.", no job | PASS: ACC-OPT-01 (a missing folder admitted as a job) no longer happens |
@@ -50,7 +50,7 @@ and `20261122-025746` (the Links keys swapped: each choice refused), and the Win
 | T-D08 | Exact modified time: offered for files, not for folders; kept to the nanosecond | `files_copy_options`, `files_copy_kinds` | check box state; times equal | PASS (both scenarios) |
 | T-D09 | Copy offers one **Links** choice; on a fixed local folder it shows "Keep links as links", of exactly "Copy the files links point to" and "Keep links as links", with no reason or warning line (none read by a screen reader either); the former "Follow links" check boxes are gone | `files_copy_options` | the Links box's entries, value and description once the folder's link facts arrived; no former check box | PASS (Linux `20261122-024836`, Windows `20261122-024919`) |
 | T-D10 | Move offers the same Links choice (same default on a fixed local folder); its policy line names renames | `files_copy_options` | as T-D09 for F6; policy text | PASS (Linux `20261122-024836`, Windows `20261122-024919`) |
-| T-D11 | "Wait for other operations to finish" shown, unchecked | `files_copy_options`, `files_transfer_jobs` | check box state | PASS |
+| T-D11 | "Wait for earlier transfers" shown, unchecked | `files_copy_options`, `files_transfer_jobs` | check box state | PASS |
 | T-D12 | Full SHA-256 verification (default) reads every byte back | `files_copy_options` | `verified_bytes` equals the size; policy text | PASS (2,097,152 of 2,097,152 bytes read back; at full scale 25,165,824 of 25,165,824) |
 | T-D13 | Size-and-samples verification from Options › General | `files_copy_options` | policy text; at most three 64 KiB samples read back; bytes equal | PASS (196,608 bytes read back) |
 

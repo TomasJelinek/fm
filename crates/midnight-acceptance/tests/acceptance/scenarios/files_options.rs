@@ -52,7 +52,7 @@ fn checkbox(app: &App, label: &str) -> Option<(bool, bool)> {
 
 /// The open dialog's Links choice on a fixed local folder, once the folder's link facts
 /// arrived (after the trace `before`): "Keep links as links" of exactly its two entries,
-/// labelled "Links:", without a reason or a warning (shown or read).
+/// labelled "Links", without a reason or a warning (shown or read).
 fn check_links(app: &mut App, before: &[String], what: &str, failures: &mut Vec<String>) {
     if !support::wait_link_facts(app, before) {
         failures.push(format!(
@@ -67,9 +67,9 @@ fn check_links(app: &mut App, before: &[String], what: &str, failures: &mut Vec<
     let mut differences = view.plain_default();
     if !inspect::visible_texts(app.slint())
         .iter()
-        .any(|text| text == "Links:")
+        .any(|text| text == "Links")
     {
-        differences.push("its label \"Links:\" is not shown".into());
+        differences.push("its label \"Links\" is not shown".into());
     }
     if !differences.is_empty() {
         failures.push(format!(
@@ -156,11 +156,14 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
     let trace = app.recent_events();
     open_dialog(&mut app, Key::F5);
     let body = app.window.get_copy_draft_body().to_string();
+    let source_shown = app.window.get_copy_draft_source().to_string();
     let policy = app.window.get_copy_draft_policy().to_string();
     let destination =
         support::accessible_value(app.slint(), AccessibleRole::TextInput, "Destination folder");
-    if !body.contains("a.txt") || !body.contains(&source.display().to_string()) {
-        failures.push(format!("the Copy dialog's summary is {body:?}"));
+    if !body.contains("a.txt") || !source_shown.contains(&source.display().to_string()) {
+        failures.push(format!(
+            "the Copy dialog's summary is {body:?}, its source {source_shown:?}"
+        ));
     }
     if destination.as_deref() != Some(&*target.to_string_lossy()) {
         failures.push(format!(

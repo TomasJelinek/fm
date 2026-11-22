@@ -1,5 +1,5 @@
-//! Journey: work goes on while a copy is paused. Two copies without "Wait for other
-//! operations to finish", the first paused as soon as it copies, and a permanent delete
+//! Journey: work goes on while a copy is paused. Two copies without "Wait for earlier
+//! transfers", the first paused as soon as it copies, and a permanent delete
 //! in a third folder meanwhile; Jobs shows all three; Resume finishes the first and then
 //! the delete; every result is exact on disk and no notice appears.
 //!
@@ -32,7 +32,7 @@ pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_concurrent_jobs",
         area: "journeys",
-        summary: "Two copies with Wait for other operations off, the first paused, and a permanent delete in a third folder meanwhile; Jobs lists all three; Resume; every result exact on disk, no notice.",
+        summary: "Two copies with Wait for earlier transfers off, the first paused, and a permanent delete in a third folder meanwhile; Jobs lists all three; Resume; every result exact on disk, no notice.",
         run: concurrent_jobs,
         timeout: Duration::from_secs(15 * 60),
     }

@@ -368,7 +368,11 @@ fn tree_copy_retry_keeps_the_requested_row_after_the_cursor_moves() {
             "the cursor move must not retarget the transfer (marks {marks})"
         );
         captured(&mut p, retried, Arc::default());
-        assert_eq!(p.copies.draft.as_ref().unwrap().summary, summary);
+        let items = &p.copies.draft.as_ref().unwrap().items;
+        assert!(
+            matches!(items, crate::presenter::copy_dialog::DraftItems::One { name, .. } if name == summary),
+            "the dialog names {summary}: {items:?}"
+        );
     }
 }
 

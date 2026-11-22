@@ -50,6 +50,7 @@ mod comparator_options;
 mod comparator_transaction;
 mod comparison_toolbar;
 mod copy_dialog;
+mod copy_dialog_polish;
 mod copy_errors;
 mod delete_confirmation;
 mod delete_job_resolve;

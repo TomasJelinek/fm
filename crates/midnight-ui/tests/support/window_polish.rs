@@ -1,5 +1,6 @@
 //! The UI polish gate's measurements (docs/developer/acceptance/ui-polish.md) in the
-//! form the job, Jobs, Checksums and Compare tests need: a window's own minimum size,
+//! form the job, Jobs, Checksums, Compare and Copy/Move tests need (of a window, or of an
+//! embedded dialog's popup): a window's own minimum size,
 //! text or a control cut by a container that does not scroll (U-K03), one-line text
 //! clipped without an ellipsis (U-K04), wrapped text cut off (U-K05), a caption that
 //! does not fit the visible part of its button (U-K20), and how a focus change shows
@@ -323,10 +324,14 @@ fn collect_captions(item: &ItemRc, walk: Walk, found: &mut Vec<(TextNode, f32)>)
 
 /// Every finding of the layout checks in the window's item tree.
 pub fn layout_findings(window: &slint::Window) -> Vec<String> {
-    let root = ItemRc::new_root(WindowInner::from_pub(window).component());
+    item_findings(&ItemRc::new_root(WindowInner::from_pub(window).component()))
+}
+
+/// Every finding of the layout checks below `root`, such as an embedded dialog's popup.
+pub fn item_findings(root: &ItemRc) -> Vec<String> {
     let mut found = Found::default();
     audit(
-        &root,
+        root,
         Walk {
             hidden: false,
             clip: None,

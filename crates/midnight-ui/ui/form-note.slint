@@ -1,0 +1,39 @@
+import { Theme } from "theme.slint";
+
+// A note under the form control it concerns: a glyph and its short text. A refusal shows
+// the error colours and glyph; a warning about the outcome shows the amber glyph of panel
+// warnings on the secondary surface, in the text colour. Its height follows its wrapped
+// text; the glyph sits on the first line.
+export component FormNote inherits Rectangle {
+    in property <string> text;
+    in property <bool> error;
+    private property <length> inset: 6px;
+    private property <length> glyph-size: max(16px, round(Theme.font-size * 1.1 / 1px) * 1px);
+    min-width: 0px;
+    height: max(root.glyph-size, message.preferred-height) + 2 * root.inset;
+    background: root.error ? Theme.error-background : Theme.secondary-surface;
+    border-radius: 4px;
+    glyph := Rectangle {
+        x: 8px;
+        y: root.inset + max(0px, (line.preferred-height - self.height) / 2);
+        width: root.glyph-size; height: self.width;
+        border-radius: self.width / 2;
+        background: root.error ? Theme.error-text : #f4c542;
+        Text {
+            text: "!"; color: root.error ? Theme.error-background : #27210c;
+            font-size: parent.height * 0.75; font-weight: 800;
+            horizontal-alignment: center; vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    message := Text {
+        x: glyph.x + glyph.width + 8px; y: root.inset;
+        width: max(1px, root.width - self.x - 8px);
+        height: self.preferred-height;
+        text: root.text; wrap: word-wrap;
+        color: root.error ? Theme.error-text : Theme.text;
+        font-size: Theme.font-size;
+    }
+    // One line of the message's font, to centre the glyph on the first line.
+    line := Text { visible: false; accessible-role: none; text: "X"; font-size: Theme.font-size; }
+}

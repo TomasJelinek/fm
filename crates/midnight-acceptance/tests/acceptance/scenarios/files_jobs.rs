@@ -1,5 +1,5 @@
-//! Copy jobs side by side and their windows: "Wait for other operations to finish"
-//! off (a second job runs at once beside a paused one) and on (a third waits for the
+//! Copy jobs side by side and their windows: "Wait for earlier transfers" off (a
+//! second job runs at once beside a paused one) and on (a third waits for the
 //! paused one and runs after it), the Jobs window's states and its Cancel job, the
 //! progress window's totals, time remaining, speed chart and per-file progress, Cancel
 //! operation, the Jobs window's two Clear buttons, and the job windows' wording.

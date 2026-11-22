@@ -64,8 +64,9 @@ pub struct TransferLinkDestination {
 }
 
 impl TransferLinkDestination {
-    /// Why a Move from another drive does not start here, in words for the user, or None
-    /// where it can.
+    /// Why a Move from another drive does not start here, in words for the user (what is
+    /// refused, why, and that Copy is the way), or None where it can. The Copy/Move dialog
+    /// shows it as a short note under its destination; a drag's refusal says the same.
     pub fn cross_volume_move_refusal(&self) -> Option<String> {
         if !self.refuses_cross_volume_move {
             return None;
@@ -79,8 +80,8 @@ impl TransferLinkDestination {
             }
         };
         Some(format!(
-            "Items from another drive cannot be moved {here}: Move removes the originals \
-             only after verifying their copies, which it cannot do there. Copy them instead."
+            "Items from another drive cannot be moved {here}: Move cannot verify their copies \
+             there before removing the originals. Copy them instead."
         ))
     }
 }
@@ -203,6 +204,43 @@ mod tests {
         );
         assert!(facts(Unsupported, false, false).cannot_keep_links());
         assert!(!facts(Unknown, false, false).cannot_keep_links());
+    }
+
+    /// A Move from another drive is refused where the destination cannot take one, in
+    /// words that say what, why and what to do instead; a Move on the destination's own
+    /// drive is not, and where nothing tells, the job decides.
+    #[test]
+    fn a_refused_move_says_why_and_suggests_copy() {
+        let mut network = facts(TransferLinkStorage::Unsupported, true, false);
+        assert_eq!(
+            network.move_refusal(),
+            None,
+            "nothing tells: the job decides"
+        );
+        network.destination.refuses_cross_volume_move = true;
+        assert_eq!(
+            network.move_refusal().as_deref(),
+            Some(
+                "Items from another drive cannot be moved to a network location: Move cannot \
+                 verify their copies there before removing the originals. Copy them instead."
+            )
+        );
+        let mut stick = facts(TransferLinkStorage::Unsupported, false, true);
+        stick.destination.refuses_cross_volume_move = true;
+        stick.destination.filesystem = Some("exFAT".into());
+        assert_eq!(
+            stick.move_refusal().as_deref(),
+            Some(
+                "Items from another drive cannot be moved to this drive (exFAT): Move cannot \
+                 verify their copies there before removing the originals. Copy them instead."
+            )
+        );
+        stick.same_volume = true;
+        assert_eq!(
+            stick.move_refusal(),
+            None,
+            "on its own drive a Move renames"
+        );
     }
 
     #[test]

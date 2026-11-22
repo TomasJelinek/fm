@@ -612,7 +612,7 @@ pub struct TransferSpec<'a> {
     /// kept where none can be stored or a typed folder whose link default differs) and
     /// the second start the transfer. Without it a held confirmation is a refusal.
     pub hold: bool,
-    /// Set "Wait for other operations to finish".
+    /// Set "Wait for earlier transfers".
     pub wait: Option<bool>,
     pub choices: Vec<Choice>,
     pub shot: Option<&'a str>,
@@ -683,7 +683,7 @@ fn operation_form(app: &App) -> midnight_ui::OperationPresentation<'_> {
 }
 
 /// The label of the dialog's queueing option.
-pub const WAIT_OPTION: &str = "Wait for other operations to finish";
+pub const WAIT_OPTION: &str = "Wait for earlier transfers";
 
 /// The Copy/Move dialog's Links entries: the first copies the files links point to, the
 /// second keeps links as links.

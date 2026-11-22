@@ -7,7 +7,8 @@ destination verification.
 
 “Preserve exact modified time” is an unchecked, per-dialog choice. It is limited to
 at most 64 distinct native regular files. Archive members, known folders and larger
-selections cannot enable it. Cached selection/index facts determine availability;
+selections cannot enable it: the dialog offers the check box only where it can apply
+and leaves it out elsewhere. Cached selection/index facts determine availability;
 unknown native/clipboard kinds still require authoritative backend preflight.
 The UI never opens paths or enumerates selected rows to decide availability.
 

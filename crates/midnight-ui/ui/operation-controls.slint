@@ -1,21 +1,32 @@
 import { HScrollView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedCheckBox, HintedComboBox } from "hinted-inputs.slint";
+import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { ThemedLineEdit } from "content-controls.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { FormNote } from "form-note.slint";
+import { Tip } from "controls.slint";
 
 
 export component OperationDialog inherits Rectangle {
     in property <string> title;
     in property <string> body;
     in property <string> policy;
+    // The Copy/Move form (`EmbeddedOperation` passes `kind < 0`). `body` is its first
+    // line, which names what is copied and ends where the destination field takes over;
+    // `body-hint` (where the items come from) is that line's tooltip and `policy` the
+    // primary action's. The options grid follows the field, and one note at most sits
+    // under the control it concerns instead of a warning above the summary.
+    in property <bool> transfer;
+    in property <string> body-hint;
     in property <bool> wait-visible;
     in-out property <bool> wait-checked;
     // The Copy/Move link choice: index 0 copies the files links point to, 1 keeps links
-    // as links. The presenter sets the entries, the hint that explains both, why the
-    // default was chosen and what keeping links does where it cannot work.
+    // as links. The presenter sets the entries, the hint that says why the default was
+    // chosen and explains both (the box's tooltip; `link-reason` is its accessible
+    // description), and what keeping links does where it cannot work (the note under it).
     in property <bool> links-visible;
     in-out property <int> link-choice;
     in property <[string]> link-choices;
@@ -34,6 +45,10 @@ export component OperationDialog inherits Rectangle {
     in property <image> native-icon;
     in property <image> fallback-icon;
     in property <string> warning;
+    // The Copy/Move form's `warning` is about the link choice (what keeping links does
+    // there), and sits under it; otherwise under the destination. Other forms show their
+    // warning above the summary.
+    in property <bool> warning-about-links;
     in property <bool> option-visible;
     in property <bool> option-enabled: true;
     in-out property <bool> option-checked;
@@ -66,19 +81,85 @@ export component OperationDialog inherits Rectangle {
     changed name-missing => {
         if root.name-missing { root.reveal-middle(name.y, name.height + root.row-spacing + Theme.font-size * 3); }
     }
-    private property <length> regular-row-spacing: root.wait-visible ? 6px : 12px;
+    private property <length> regular-row-spacing: 12px;
     private property <length> row-spacing: root.compact ? 4px : root.regular-row-spacing;
-    // What DialogText draws: the compact layout moves the warning into the summary,
-    // the regular layout shows it separately above.
+    // What the other forms' DialogText draws: the compact layout moves the warning into
+    // the summary, the regular layout shows it separately above.
     private property <string> summary: (root.compact && root.warning != "" ? root.warning + "\n\n" : "") + root.body;
     pure function form-padding(is-compact: bool) -> length {
-        return is-compact || root.wait-visible ? 8px : 16px;
+        return is-compact ? 8px : 16px;
     }
     // The width DialogText draws the summary at: inside the form padding on both
     // sides, the scroll bar's column, which the form's scroll view leaves free, and
     // DialogText's 16px: its own bar's column and 2px.
     pure function summary-width(is-compact: bool) -> length {
         return max(1px, root.width - 2 * root.form-padding(is-compact) - FluentScrollMetrics.overlay-size - 16px);
+    }
+    // The Copy/Move form's spacing: 6 px inside a block (the first line and the field, a
+    // control and its note, the options' rows), 16 px between the destination and the
+    // options and 12 px between the options' columns; the compact layout tightens the
+    // first two to 4 and 8 px.
+    private property <length> block-gap: root.compact ? 4px : 6px;
+    private property <length> section-gap: root.compact ? 8px : 16px;
+    private property <length> column-gap: 12px;
+    // The width of the form's content: inside the form padding on both sides and the
+    // scroll bar's column, which the form's scroll view leaves free.
+    pure function content-width(is-compact: bool) -> length {
+        return max(1px, root.width - 2 * root.form-padding(is-compact) - FluentScrollMetrics.overlay-size);
+    }
+    private property <bool> any-option: root.links-visible || root.option-visible || root.wait-visible;
+    private property <string> wait-label: "Wait for earlier transfers";
+    // The link choice's box is as wide as its longest entry: the Fluent box's 11 px
+    // padding on either side, its 12 px arrow and the 8 px before it, 12 px to spare, and
+    // its 160 px minimum.
+    private property <length> combo-width: max(160px,
+        max(first-choice-measure.preferred-width, second-choice-measure.preferred-width) + 54px);
+    private property <length> combo-height: max(32px, Theme.control-height);
+    // The options grid: the link choice's caption is the label column, and every control
+    // (the link box and the check boxes) starts at one edge after it. Where the caption
+    // and the box do not fit side by side, the caption sits above the box and every
+    // control starts at the left edge.
+    pure function options-narrow(width: length) -> bool {
+        return root.links-visible
+            && links-caption-measure.preferred-width + root.column-gap + root.combo-width > width;
+    }
+    pure function control-x(width: length) -> length {
+        return root.links-visible && !root.options-narrow(width)
+            ? links-caption-measure.preferred-width + root.column-gap : 0px;
+    }
+    private property <bool> narrow: root.options-narrow(options.width);
+    private property <length> drawn-control-x: root.control-x(options.width);
+    // The one note the Copy/Move form shows, first of: why Enter with an empty
+    // destination did nothing, why the form does not start (`warning`), and what keeping
+    // links does where none can be stored.
+    private property <string> note-text: root.name-missing ? root.name-reason
+        : root.warning != "" ? root.warning
+        : root.links-visible ? root.link-warning : "";
+    // A note about the link choice sits under it (in the regular layout); the others,
+    // and every note of the compact layout, under the destination, near the top.
+    private property <bool> links-note: root.transfer && root.note-text != "" && root.links-visible
+        && !root.name-missing && (root.warning == "" || root.warning-about-links);
+    private property <bool> note-under-links: root.links-note && !root.compact;
+    private property <bool> field-note: root.transfer && root.note-text != "" && !root.note-under-links;
+    // Notes about the link choice warn; the others refuse.
+    private property <bool> note-error: !root.links-note;
+    // A note's glyph, as FormNote sizes it, and the width that glyph and the note's insets
+    // take from its text (8 px before the glyph, after it and at the end).
+    private property <length> note-glyph: max(16px, round(Theme.font-size * 1.1 / 1px) * 1px);
+    private property <length> note-chrome: root.note-glyph + 24px;
+    changed note-text => {
+        if root.transfer && root.note-text != "" {
+            if root.note-under-links {
+                root.reveal-middle(options.y + links-box.y,
+                    links-box.height + root.block-gap + links-note-measure.preferred-height + 12px);
+            } else {
+                root.reveal-middle(name.y,
+                    name.height + root.block-gap + field-note-measure.preferred-height + 12px);
+            }
+            // The keyboard stays where it was: Slint drops the focus of a control
+            // scrolled out of view at the next key.
+            root.reveal-focused();
+        }
     }
     function reveal-middle(top: length, extent: length) {
         if top < -middle.content-y { middle.content-y = -top; }
@@ -93,22 +174,22 @@ export component OperationDialog inherits Rectangle {
         name.focus();
     }
     function focus-option() {
-        root.reveal-middle(option-scroll.y + option.y, option.height);
+        root.reveal-middle(options.y + option-box.y, option-box.height);
         option.focus();
     }
     function focus-directory-links() {
-        root.reveal-middle(links-scroll.y + follow-links.y, follow-links.height);
+        root.reveal-middle(options.y + links-box.y + follow-links.y, follow-links.height);
         follow-links.focus();
     }
     function focus-wait() {
-        root.reveal-middle(wait-scroll.y + wait-option.y, wait-option.height);
+        root.reveal-middle(options.y + wait-box.y, wait-box.height);
         wait-option.focus();
     }
     function reveal-focused() {
         if name.has-focus { root.reveal-middle(name.y, name.height); }
-        else if option.has-focus { root.reveal-middle(option-scroll.y + option.y, option.height); }
-        else if follow-links.has-focus { root.reveal-middle(links-scroll.y + follow-links.y, follow-links.height); }
-        else if wait-option.has-focus { root.reveal-middle(wait-scroll.y + wait-option.y, wait-option.height); }
+        else if follow-links.has-focus { root.reveal-middle(options.y + links-box.y + follow-links.y, follow-links.height); }
+        else if option.has-focus { root.reveal-middle(options.y + option-box.y, option-box.height); }
+        else if wait-option.has-focus { root.reveal-middle(options.y + wait-box.y, wait-box.height); }
     }
     function focus-primary() {
         // A Fluent button's zero-width focus point sits at its left edge.
@@ -117,13 +198,13 @@ export component OperationDialog inherits Rectangle {
         primary-focus.focus();
     }
     // The form's own Tab cycle, in the order the controls are shown: 0 the header's
-    // close button, 1 the name, 2 the option, 3 the link option, 4 the wait option,
+    // close button, 1 the name, 2 the link choice, 3 the option, 4 the wait option,
     // 5 Cancel and 6 the primary action. Hidden and disabled stops are skipped.
     pure function stop-available(stop: int) -> bool {
         return stop == 0 ? header.close-focusable
             : stop == 1 ? root.has-name
-            : stop == 2 ? root.option-visible && root.option-enabled
-            : stop == 3 ? root.links-visible
+            : stop == 2 ? root.links-visible
+            : stop == 3 ? root.option-visible && root.option-enabled
             : stop == 4 ? root.wait-visible
             : stop == 5 || (stop == 6 && confirm-button.enabled);
     }
@@ -148,15 +229,15 @@ export component OperationDialog inherits Rectangle {
             : end >= 0 && root.stop-available(0) ? 0 : -1;
     }
     pure function focused-stop() -> int {
-        return header.close-has-focus ? 0 : name.has-focus ? 1 : option.has-focus ? 2
-            : follow-links.has-focus ? 3 : wait-option.has-focus ? 4
+        return header.close-has-focus ? 0 : name.has-focus ? 1 : follow-links.has-focus ? 2
+            : option.has-focus ? 3 : wait-option.has-focus ? 4
             : cancel-button.has-focus ? 5 : primary-focus.has-focus ? 6 : -1;
     }
     function focus-stop(stop: int) {
         if stop == 0 { header.focus-close(); }
         else if stop == 1 { root.focus-name(); }
-        else if stop == 2 { root.focus-option(); }
-        else if stop == 3 { root.focus-directory-links(); }
+        else if stop == 2 { root.focus-directory-links(); }
+        else if stop == 3 { root.focus-option(); }
         else if stop == 4 { root.focus-wait(); }
         else if stop == 6 { root.focus-primary(); }
         else { cancel-button.focus(); }
@@ -167,23 +248,34 @@ export component OperationDialog inherits Rectangle {
         let next = forward ? root.stop-from(current + 1) : root.stop-until(current - 1);
         root.focus-stop(next >= 0 ? next : forward ? root.stop-from(0) : root.stop-until(6));
     }
-    // Size the initial presentation from its actual wrapped summary. Resizing
-    // remains independent in DialogFrame; editing never recreates the input.
-    out property <length> preferred-dialog-height: clamp(
-        (root.wait-visible ? 28px : 42px)
-        + (root.wait-visible ? max(28px, Theme.font-size + 8px) : max(36px, Theme.font-size * 1.2 + 6px))
+    // Size the initial presentation from its actual wrapped text, measured at the
+    // regular layout's width: the compact layout follows the height it decides.
+    // Resizing remains independent in DialogFrame; editing never recreates the input.
+    out property <length> preferred-dialog-height: root.transfer ? root.transfer-height : root.classic-height;
+    private property <length> classic-height: clamp(
+        42px + max(36px, Theme.font-size * 1.2 + 6px)
         + min(280px, summary-measure.preferred-height)
         + (root.has-name ? max(Theme.control-height, name.preferred-height) + root.regular-row-spacing : 0px)
         + (root.has-name && root.input-label != "" ? Theme.font-size * 1.5 + root.regular-row-spacing : 0px)
-        + (root.option-visible ? max(Theme.control-height, option.preferred-height)
-            + root.regular-row-spacing + (root.wait-visible ? 0px : 12px) : 0px)
-        + (root.links-visible ? max(Theme.control-height, links-row.preferred-height)
-            + root.regular-row-spacing
-            + (root.link-reason != "" ? link-reason-measure.preferred-height + root.regular-row-spacing : 0px)
-            + (root.link-warning != "" ? link-warning-measure.preferred-height + root.regular-row-spacing : 0px) : 0px)
-        + (root.wait-visible ? max(Theme.control-height, wait-option.preferred-height) + root.regular-row-spacing : 0px)
-        + (root.policy != "" ? policy-measure.preferred-height + root.regular-row-spacing : 0px)
-        + max(32px, confirm-button.preferred-height) + (root.wait-visible ? 21px : 36px), 220px, 640px);
+        + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
+    private property <length> regular-control-x: root.control-x(root.content-width(false));
+    // The Copy/Move form in its regular layout, block by block as the form lays it out:
+    // the padding, the header and the gaps around the middle; the first line and its
+    // gap, the field and its note; the options' heading after its gap, then each shown
+    // row with the gap above it; and the actions' row.
+    private property <length> transfer-height: clamp(
+        2 * root.form-padding(false) + header.regular-height + 2 * root.regular-row-spacing
+        + first-line-measure.preferred-height + 6px + root.name-height
+        + (root.transfer && root.note-text != "" && !root.links-note
+            ? 6px + max(root.note-glyph, field-note-measure.preferred-height) + 12px : 0px)
+        + (root.any-option ? 16px + options-heading-measure.preferred-height : 0px)
+        + (root.links-visible ? 6px + root.combo-height
+            + (root.options-narrow(root.content-width(false)) ? links-caption-measure.preferred-height + 4px : 0px)
+            + (root.links-note ? 6px + max(root.note-glyph, links-note-measure.preferred-height) + 12px : 0px) : 0px)
+        + (root.option-visible ? 6px + max(Theme.control-height, option-caption-measure.preferred-height) : 0px)
+        + (root.wait-visible ? 6px + max(Theme.control-height, wait-caption-measure.preferred-height) : 0px)
+        + max(32px, Theme.control-height, cancel-button.min-height, confirm-button.preferred-height),
+        220px, 640px);
     // The dialog height counts the summary at its regular-layout width, a warning
     // included as the compact layout draws it (standing in for the separate warning
     // text). It cannot follow `compact`, which depends on that height.
@@ -201,20 +293,49 @@ export component OperationDialog inherits Rectangle {
         text: root.summary;
         font-size: Theme.font-size; wrap: word-wrap;
     }
-    policy-measure := Text {
+    // The Copy/Move form's texts at the regular layout's width (a note's glyph and
+    // insets take `note-chrome` of it).
+    first-line-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.width - 48px);
-        text: root.policy; font-size: Theme.font-size; wrap: word-wrap;
+        width: root.content-width(false);
+        text: root.body; font-size: Theme.font-size; wrap: word-wrap;
     }
-    link-reason-measure := Text {
+    field-note-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.width - 48px);
-        text: root.link-reason; font-size: Theme.font-size; wrap: word-wrap;
+        width: max(1px, root.content-width(false) - root.note-chrome);
+        text: root.note-text; font-size: Theme.font-size; wrap: word-wrap;
     }
-    link-warning-measure := Text {
+    links-note-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.width - 48px);
-        text: root.link-warning; font-size: Theme.font-size; wrap: word-wrap;
+        width: max(1px, root.content-width(false) - root.regular-control-x - root.note-chrome);
+        text: root.note-text; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    options-heading-measure := Text {
+        visible: false; accessible-role: none;
+        text: "Options"; font-size: Theme.font-size; font-weight: 600;
+    }
+    links-caption-measure := Text {
+        visible: false; accessible-role: none;
+        text: "Links"; font-size: Theme.font-size;
+    }
+    first-choice-measure := Text {
+        visible: false; accessible-role: none;
+        text: root.link-choices[0]; font-size: Theme.font-size;
+    }
+    second-choice-measure := Text {
+        visible: false; accessible-role: none;
+        text: root.link-choices[1]; font-size: Theme.font-size;
+    }
+    // A check box's caption wraps beside its 24 px box and 6 px gap.
+    option-caption-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.content-width(false) - root.regular-control-x - 30px);
+        text: root.option-label; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    wait-caption-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.content-width(false) - root.regular-control-x - 30px);
+        text: root.wait-label; font-size: Theme.font-size; wrap: word-wrap;
     }
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     public function begin() {
@@ -254,8 +375,8 @@ export component OperationDialog inherits Rectangle {
             padding: root.form-padding(root.compact); spacing: root.row-spacing;
             header := DialogHeader {
                 title: root.title; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
-                compact: root.compact || root.wait-visible;
-                text-size: Theme.font-size * (root.wait-visible ? 1.0 : 1.2);
+                compact: root.compact;
+                text-size: Theme.font-size * 1.2;
                 foreground: root.dangerous ? Theme.error-text : Theme.text;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
@@ -268,12 +389,13 @@ export component OperationDialog inherits Rectangle {
                 changed content-height => { root.reveal-focused(); }
                 form := VerticalLayout {
                     height: middle.content-height;
-                    spacing: root.row-spacing; alignment: start;
-                    if root.warning != "" && !root.compact : Text {
+                    // The Copy/Move form spaces its blocks itself.
+                    spacing: root.transfer ? 0px : root.row-spacing; alignment: start;
+                    if !root.transfer && root.warning != "" && !root.compact : Text {
                         text: root.warning; color: Theme.error-text; font-weight: 600;
                         font-size: Theme.font-size; wrap: word-wrap;
                     }
-                    Rectangle {
+                    if !root.transfer : Rectangle {
                         height: min(280px, drawn-summary.preferred-height);
                         background: transparent; clip: true;
                         DialogText {
@@ -283,7 +405,20 @@ export component OperationDialog inherits Rectangle {
                             min-height: 0px;
                         }
                     }
-                    if root.has-name && root.input-label != "" && !root.compact : Text {
+                    // Copy/Move: what is copied, ending where the destination field
+                    // takes over ("Copy “report.pdf” (1.2 MiB) to:").
+                    if root.transfer : VerticalLayout {
+                        padding-bottom: root.block-gap;
+                        Text {
+                            text: root.body; color: Theme.text;
+                            font-size: Theme.font-size; wrap: word-wrap;
+                            // Every wrapped line counts in the scrolled extent.
+                            min-height: self.preferred-height;
+                            accessible-description: root.body-hint;
+                            Tip { text: root.body-hint; }
+                        }
+                    }
+                    if !root.transfer && root.has-name && root.input-label != "" && !root.compact : Text {
                         text: root.input-label; color: Theme.text; font-size: Theme.font-size;
                     }
                     // The themed field: its selected text uses the theme's selection
@@ -293,41 +428,46 @@ export component OperationDialog inherits Rectangle {
                         max-height: root.name-height;
                         visible: root.has-name;
                         accessible-label: root.input-label == "" ? root.title : root.input-label;
-                        accessible-description: root.name-missing ? root.name-reason : "";
+                        accessible-description: root.name-missing ? root.name-reason
+                            : root.field-note && !root.links-note ? root.note-text : "";
                         changed has-focus => { if self.has-focus { root.reveal-middle(self.y, self.height); } }
                         accepted => { if root.confirm-enabled && self.text != "" { root.confirm(self.text); } }
                     }
-                    if root.name-missing : Text {
+                    if !root.transfer && root.name-missing : Text {
                         text: root.name-reason; color: Theme.error-text;
                         font-size: Theme.font-size; wrap: word-wrap;
                     }
-                    option-scroll := HScrollView {
-                        visible: root.option-visible; min-width: 0px;
-                        height: root.option-visible ? max(Theme.control-height, option.preferred-height)
-                            + (root.wait-visible && self.width >= option.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
-                        horizontal-scrollbar-policy: as-needed;
-                        HorizontalLayout {
-                            option := HintedCheckBox {
-                                text: root.option-label; hint: root.option-hint;
-                                enabled: root.option-visible && root.option-enabled;
-                                checked <=> root.option-checked;
-                                font-size: Theme.font-size;
-                                changed has-focus => { if self.has-focus { root.reveal-middle(option-scroll.y + self.y, self.height); } }
-                            }
-                        }
+                    if root.field-note : VerticalLayout {
+                        padding-top: root.block-gap;
+                        FormNote { text: root.note-text; error: root.note-error; }
                     }
-                    links-scroll := HScrollView {
-                        visible: root.links-visible; min-width: 0px;
-                        height: root.links-visible ? max(Theme.control-height, links-row.preferred-height)
-                            + (self.width >= links-row.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
-                        horizontal-scrollbar-policy: as-needed;
-                        links-row := HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "Links:"; color: Theme.text; font-size: Theme.font-size;
+                    // Copy/Move: the options grid, as one group under its heading. A
+                    // form without options keeps no room for it.
+                    options := VerticalLayout {
+                        // Each row carries the gap above it, so a row left out keeps
+                        // no gap either.
+                        padding-top: root.any-option ? root.section-gap : 0px;
+                        if root.any-option : Text {
+                            text: "Options"; color: Theme.strong-text;
+                            font-size: Theme.font-size; font-weight: 600;
+                            min-height: self.preferred-height;
+                        }
+                        links-box := Rectangle {
+                            visible: root.links-visible;
+                            height: !root.links-visible ? 0px : root.block-gap + root.combo-height
+                                + (root.narrow ? links-caption.preferred-height + 4px : 0px);
+                            links-caption := Text {
+                                x: 0px; y: root.block-gap;
+                                width: root.narrow ? parent.width : self.preferred-width;
+                                height: root.narrow ? self.preferred-height : root.combo-height;
+                                text: "Links"; color: Theme.text; font-size: Theme.font-size;
                                 vertical-alignment: center; accessible-role: none;
                             }
                             follow-links := HintedComboBox {
+                                x: root.drawn-control-x;
+                                y: root.block-gap + (root.narrow ? links-caption.preferred-height + 4px : 0px);
+                                width: min(root.combo-width, max(0px, parent.width - self.x));
+                                height: root.combo-height;
                                 model: root.link-choices;
                                 current-index <=> root.link-choice;
                                 hint: root.link-hint;
@@ -335,41 +475,47 @@ export component OperationDialog inherits Rectangle {
                                 accessible-label: "Links";
                                 accessible-description: root.link-warning != "" ? root.link-warning : root.link-reason;
                                 selected => { root.link-chosen(self.current-index); }
-                                changed has-focus => { if self.has-focus { root.reveal-middle(links-scroll.y + self.y, self.height); } }
+                                changed has-focus => { if self.has-focus { root.reveal-middle(options.y + links-box.y + self.y, self.height); } }
                             }
                         }
-                    }
-                    if root.links-visible && root.link-reason != "" : Text {
-                        text: root.link-reason; color: Theme.secondary-text;
-                        font-size: Theme.font-size; wrap: word-wrap;
-                    }
-                    if root.links-visible && root.link-warning != "" : Text {
-                        text: root.link-warning; color: Theme.error-text;
-                        font-size: Theme.font-size; wrap: word-wrap;
-                    }
-                    wait-scroll := HScrollView {
-                        visible: root.wait-visible; min-width: 0px;
-                        height: root.wait-visible ? max(Theme.control-height, wait-option.preferred-height)
-                            + (self.width >= wait-option.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
-                        horizontal-scrollbar-policy: as-needed;
-                        HorizontalLayout {
-                            wait-option := HintedCheckBox {
-                                text: "Wait for other operations to finish";
-                                hint: "Wait only for Copy/Move operations already unfinished when you confirm. Later operations and Delete are not included.";
+                        // Positioned at the controls' edge: an indent from the form's
+                        // width must stay out of the form's own width constraints.
+                        if root.note-under-links : Rectangle {
+                            height: root.block-gap + under-links.height;
+                            under-links := FormNote {
+                                x: root.drawn-control-x; y: root.block-gap;
+                                width: max(0px, parent.width - self.x);
+                                text: root.note-text; error: false;
+                            }
+                        }
+                        option-box := Rectangle {
+                            visible: root.option-visible;
+                            height: root.option-visible ? root.block-gap + option.height : 0px;
+                            option := WrappingCheckBox {
+                                x: root.drawn-control-x; y: root.block-gap;
+                                width: max(0px, parent.width - self.x);
+                                text: root.option-label; hint: root.option-hint;
+                                enabled: root.option-visible && root.option-enabled;
+                                checked <=> root.option-checked;
+                                changed has-focus => { if self.has-focus { root.reveal-middle(options.y + option-box.y, option-box.height); } }
+                            }
+                        }
+                        wait-box := Rectangle {
+                            visible: root.wait-visible;
+                            height: root.wait-visible ? root.block-gap + wait-option.height : 0px;
+                            wait-option := WrappingCheckBox {
+                                x: root.drawn-control-x; y: root.block-gap;
+                                width: max(0px, parent.width - self.x);
+                                text: root.wait-label;
+                                hint: "Start only after the Copy and Move jobs that are unfinished when you confirm. Later jobs and Delete do not hold it back.";
                                 enabled: root.wait-visible;
                                 checked <=> root.wait-checked;
-                                font-size: Theme.font-size;
-                                changed has-focus => { if self.has-focus { root.reveal-middle(wait-scroll.y + self.y, self.height); } }
+                                changed has-focus => { if self.has-focus { root.reveal-middle(options.y + wait-box.y, wait-box.height); } }
                             }
                         }
                     }
-                    if root.policy != "" : Text {
-                        text: root.policy; color: Theme.secondary-text;
-                        font-size: Theme.font-size; wrap: word-wrap;
-                    }
                 }
-            }
-            HorizontalLayout {
+            }            HorizontalLayout {
                 spacing: 8px;
                 cancel-button := HintedActionButton { text: "Cancel"; hint: "Leave files unchanged (Escape)."; clicked => { root.cancel(); } }
                 Rectangle {
@@ -387,7 +533,9 @@ export component OperationDialog inherits Rectangle {
                                 fallback-icon: root.fallback-icon; compact: root.compact;
                                 text: root.confirm-text; enabled: root.confirm-enabled && (!root.has-name || name.text != "");
                                 accessible-role: none;
-                                hint: !root.dangerous ? root.confirm-text
+                                // Copy/Move: what the job verifies, which its policy says.
+                                hint: root.transfer && root.policy != "" ? root.policy
+                                    : !root.dangerous ? root.confirm-text
                                     : root.has-name ? "Replace the existing file with an empty file. The original file is kept in a recovery folder."
                                     : "Permanently delete the confirmed targets. This cannot be undone.";
                                 clicked => { primary-focus.focus(); root.confirm(name.text); }

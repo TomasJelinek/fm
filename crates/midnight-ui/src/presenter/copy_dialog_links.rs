@@ -26,6 +26,9 @@ pub(crate) struct DraftLinks {
     /// The destination for which keeping links was explained once before starting:
     /// confirming again there starts.
     warned: Option<PathBuf>,
+    /// What `Presenter::copy_links_hold` last said instead of starting; the dialog shows
+    /// the draft's error under the link choice while it is this.
+    held: Option<String>,
 }
 
 /// What the dialog shows about links.
@@ -134,6 +137,7 @@ impl Presenter {
             pending: sent.then_some((request, cancel)),
             chosen: None,
             warned: None,
+            held: None,
         });
     }
 
@@ -209,6 +213,7 @@ impl Presenter {
                     pending: None,
                     chosen: Some(copy_files),
                     warned: None,
+                    held: None,
                 });
             }
         }
@@ -243,6 +248,7 @@ impl Presenter {
             pending: None,
             chosen: None,
             warned: None,
+            held: None,
         });
         if state.token != token {
             return None;
@@ -264,10 +270,12 @@ impl Presenter {
                 } else {
                     "Links are kept as links here.".into()
                 };
-                return Some(format!(
+                let held = format!(
                     "The link handling changed for this folder. {reason} Select {verb} again \
                      to start."
-                ));
+                );
+                state.held = Some(held.clone());
+                return Some(held);
             }
         } else if state.destination != destination {
             // A panel's other folder, not asked about: start with the choice shown.
@@ -279,12 +287,31 @@ impl Presenter {
             && state.warned.as_deref() != Some(destination)
         {
             state.warned = Some(destination.to_owned());
-            return Some(format!(
+            let held = format!(
                 "{} Select {verb} again to keep links anyway, or choose \u{201c}{COPY_FILES}\u{201d}.",
                 keep_warning(facts, intent)
-            ));
+            );
+            state.held = Some(held.clone());
+            return Some(held);
         }
         None
+    }
+
+    /// Whether the open draft's error is what keeping links does at its destination
+    /// (`copy_links_hold`), which the dialog shows under its link choice; any other error
+    /// concerns the destination.
+    pub(crate) fn copy_draft_error_about_links(&self) -> bool {
+        let Some(draft) = self.copies.draft.as_ref() else {
+            return false;
+        };
+        !draft.error.is_empty()
+            && self
+                .copies
+                .links
+                .as_ref()
+                .filter(|links| links.token == draft.token)
+                .and_then(|links| links.held.as_deref())
+                == Some(draft.error.as_str())
     }
 
     /// Why the open draft, a Move, does not start at `destination`: it would bring items

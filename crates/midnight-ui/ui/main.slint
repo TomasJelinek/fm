@@ -264,11 +264,16 @@ export component MainWindow inherits Window {
     public function close-copy-conflict() { root.close-decision-window(false); }
     in property <string> copy-draft-token;
     in property <bool> copy-draft-move;
+    // The Copy/Move dialog's first line ("Copy “report.pdf” (1.2 MiB) to:") and where its
+    // items come from (the line's tooltip).
     in property <string> copy-draft-body;
+    in property <string> copy-draft-source;
     in property <string> copy-draft-policy;
     in property <string> copy-draft-destination;
     in property <int> copy-draft-selection-end;
     in property <string> copy-draft-error;
+    // The error is about the link choice: the dialog shows it under that choice.
+    in property <bool> copy-draft-error-links;
     in property <bool> copy-draft-metadata-enabled;
     in property <string> metadata-conflict-token;
     in property <string> metadata-conflict-body;

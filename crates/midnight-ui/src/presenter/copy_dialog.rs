@@ -1,8 +1,11 @@
 //! A copy draft retains shared identities; only backend admission expands selected paths.
 use super::*;
 use midnight_core::{CopyLinkPolicy, CopyOptionsInput, CopyOptionsRequest};
+#[path = "copy_dialog_items.rs"]
+mod items;
 #[path = "copy_dialog_links.rs"]
 mod links;
+pub(crate) use items::DraftItems;
 pub(crate) use links::{DraftLinks, LinkChoiceView};
 
 #[derive(Clone)]
@@ -62,7 +65,10 @@ mod owned_draft_tests {
             },
             source: "source".into(),
             destination: path,
-            summary: "one item".into(),
+            items: DraftItems::One {
+                name: "one item".into(),
+                bytes: None,
+            },
             error: String::new(),
             intent: TransferIntent::Copy,
             retire_requested: false,
@@ -232,9 +238,11 @@ mod owned_draft_tests {
 pub(crate) struct CopyDraft {
     pub(crate) token: String,
     pub(super) input: CopyDraftInput,
+    /// Where the items come from, as the dialog's first line names it in its tooltip.
     pub(crate) source: String,
     pub(crate) destination: PathBuf,
-    pub(crate) summary: String,
+    /// What the draft holds, as the dialog's first line names it.
+    pub(crate) items: DraftItems,
     pub(crate) error: String,
     pub(crate) intent: TransferIntent,
     /// Hidden in place until an owned callback can detach the captured sources.
@@ -499,25 +507,13 @@ impl Presenter {
             self.retired.push(Box::new(files));
             return;
         }
-        let summary = if files.selection.is_empty() {
-            files
-                .fallback
-                .as_deref()
-                .and_then(Path::file_name)
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        } else {
-            format!(
-                "{} selected items",
-                self.number_locale.format_u64(files.selection.len() as u64)
-            )
-        };
+        let items = DraftItems::selected(&files);
         self.copies.draft = Some(CopyDraft {
             token: format!("copy-draft:{}", request.0),
             input: CopyDraftInput::Native(files),
             source: context.source.to_string_lossy().into_owned(),
             destination: context.destination,
-            summary,
+            items,
             error: String::new(),
             intent: context.intent,
             retire_requested: false,
@@ -843,12 +839,15 @@ impl Presenter {
             self.note_filter_hides_focus(pane);
             return;
         }
-        let summary = if archive.selected.is_empty() {
-            focused
-                .map(|entry| entry.display_name.clone())
-                .unwrap_or_default()
-        } else {
-            "Selected archive items in the current view".into()
+        // The panel's own counts of the marked members (settled: the selection is not
+        // pending here).
+        let items = match focused {
+            Some(entry) if archive.selected.is_empty() => DraftItems::entry(entry),
+            _ => {
+                let (files, folders, bytes, _) =
+                    p.archive_selection_summary().unwrap_or((0, 0, None, false));
+                DraftItems::counted(files, folders, bytes)
+            }
         };
         let destination = self.panes[pane.other().index()].display_path().to_owned();
         let source = archive.location.display_text();
@@ -869,7 +868,7 @@ impl Presenter {
             input,
             source,
             destination,
-            summary,
+            items,
             error: String::new(),
             intent: TransferIntent::Copy,
             retire_requested: false,
@@ -944,13 +943,13 @@ impl Presenter {
             return;
         }
         let request = self.desktop.request();
-        let count = clipboard.paths.len() as u64;
+        let items = DraftItems::clipboard(&clipboard.paths);
         self.copies.draft = Some(CopyDraft {
             token: format!("copy-draft:{}", request.0),
             input: CopyDraftInput::Clipboard(Arc::new(clipboard)),
             source: "Files on clipboard".into(),
             destination,
-            summary: format!("{} clipboard items", self.number_locale.format_u64(count)),
+            items,
             error: String::new(),
             intent: TransferIntent::Move,
             retire_requested: false,

@@ -247,7 +247,7 @@ async fn one_disk_slot_interleaves_a_second_copy_with_a_busy_copy() {
     second_copy_progresses_beside_the_busy_copy(false, 1).await;
 }
 
-/// "Wait for other operations" still waits for the transfers unfinished at confirm time.
+/// "Wait for earlier transfers" still waits for the transfers unfinished at confirm time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wait_for_earlier_copy_still_waits_for_the_busy_copy() {
     let case = Busy::new();

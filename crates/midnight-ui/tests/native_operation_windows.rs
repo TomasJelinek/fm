@@ -5,9 +5,7 @@ mod owned_commands;
 use crate::support::ui;
 
 use i_slint_core::{
-    accessibility::AccessibleStringProperty,
-    item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, Flickable},
+    accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
     window::WindowInner,
 };
 use midnight_core::*;
@@ -639,26 +637,19 @@ fn bounds(item: &ItemRc) -> (f32, f32, f32, f32) {
     )
 }
 
-/// The scroll viewport that shows `item`: its nearest `Flickable` ancestor.
-fn viewport(item: &ItemRc) -> ItemRc {
-    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
-    while let Some(ancestor) = parent {
-        if ancestor.downcast::<Flickable>().is_some() {
-            return ancestor;
-        }
-        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
-    }
-    panic!("the item has no scroll viewport");
-}
-
+/// The Copy/Move draft's first line names the captured item and ends right above its
+/// destination field, which stays a single line at every density and font. (The layout
+/// of every state at every size is checked in copy_dialog_polish.)
 #[test]
-fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
+fn embedded_copy_draft_names_its_item_right_above_a_single_line_destination() {
     let h = Harness::new();
     let child = h.transfer(PaneId::Left, false);
-    let body = h.main.global::<OperationPresentation>().get_body();
+    let line = h.main.global::<OperationPresentation>().get_body();
     assert!(
-        body.contains("source 文档.txt"),
-        "the draft describes its captured source: {body}"
+        line.starts_with("Copy \u{201c}")
+            && line.contains("source 文档.txt")
+            && line.ends_with(" to:"),
+        "the draft names its captured item: {line}"
     );
     for (density, font) in [(0, 13), (1, 15), (0, 22)] {
         h.main.invoke_apply_fonts("".into(), font, font);
@@ -667,18 +658,17 @@ fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
             &child,
             720,
             520,
-            &format!("embedded-copy-source-{density}-{font}"),
+            &format!("embedded-copy-line-{density}-{font}"),
         );
-        let source = item(&child, &body, AccessibleRole::Text);
-        let label = item(&child, "Destination folder", AccessibleRole::Text);
-        let (_, box_top, _, box_bottom) = bounds(&viewport(&source));
-        let (_, label_top, ..) = bounds(&label);
-        assert!(source.is_visible() && label.is_visible());
-        assert!(
-            box_bottom > box_top && box_bottom <= label_top + 0.5,
-            "the source box must sit above the destination: box={box_top}..{box_bottom}, label={label_top}, font={font}, density={density}"
-        );
+        let first = item(&child, &line, AccessibleRole::Text);
         let editor = item(&child, "Destination folder", AccessibleRole::TextInput);
+        let (.., line_bottom) = bounds(&first);
+        let (_, editor_top, ..) = bounds(&editor);
+        assert!(first.is_visible() && editor.is_visible());
+        assert!(
+            line_bottom <= editor_top + 0.5 && editor_top - line_bottom < 10.0,
+            "the first line must sit right above the destination: line ends {line_bottom}, field starts {editor_top}, font={font}, density={density}"
+        );
         assert!(
             editor.geometry().height() < font as f32 * 3.0,
             "the destination stays single-line: font={font}, density={density}"
@@ -686,7 +676,7 @@ fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
     }
     h.main.invoke_apply_fonts("".into(), 13, 15);
     h.main.invoke_apply_preferences(3, 0);
-    modeless::draw(&child, 320, 200, "embedded-copy-source-compact");
+    modeless::draw(&child, 320, 200, "embedded-copy-line-compact");
     for (label, role) in [
         ("Destination folder", AccessibleRole::TextInput),
         ("Cancel", AccessibleRole::Button),
@@ -697,63 +687,6 @@ fn embedded_copy_draft_keeps_the_source_box_above_a_single_line_destination() {
     modeless::click(&child, "Cancel");
     h.assert_closed(&child);
 }
-
-/// Window widths below the dialog's desired 540 px narrow the dialog, so every wrap
-/// point of a multi-word source sweeps through any width mismatch between how the
-/// summary is measured and how it is drawn, independent of the font in use. The
-/// short window makes the dialog compact: its padding narrows and a warning moves
-/// from above the summary into it. The summary box must end exactly where its
-/// wrapped text ends in every case: lower would hide the last line, higher would
-/// leave a blank one.
-#[test]
-fn embedded_copy_draft_shows_every_wrapped_source_completely() {
-    let h = Harness::with_root(
-        std::env::temp_dir().join("copy draft source with several short words that wrap 文档"),
-    );
-    let child = h.transfer(PaneId::Left, false);
-    let presentation = h.main.global::<OperationPresentation>();
-    let body = presentation.get_body();
-    h.main.invoke_apply_fonts("".into(), 13, 15);
-    h.main.invoke_apply_preferences(3, 0);
-    let mut mismatched = Vec::new();
-    for warned in [false, true] {
-        if warned {
-            // A confirmation refused while the fixture's only owned scope is held
-            // keeps the draft open with a warning.
-            h.commands.borrow_mut().clear();
-            let held = (h.begin)().expect("no owned action is running");
-            key(&child, Key::Return);
-            drop(held);
-            assert!(
-                h.commands.borrow().is_empty(),
-                "the refused draft must not run"
-            );
-        }
-        let warning = presentation.get_warning();
-        assert_eq!(warning.is_empty(), !warned);
-        for (height, step) in [(520, 2), (250, 6)] {
-            let summary = if warned && height < 280 {
-                format!("{warning}\n\n{body}")
-            } else {
-                body.to_string()
-            };
-            for width in (320..=600).step_by(step) {
-                modeless::layout(&child, width, height);
-                let source = item(&child, &summary, AccessibleRole::Text);
-                let (.., text_bottom) = bounds(&source);
-                let (.., box_bottom) = bounds(&viewport(&source));
-                if (text_bottom - box_bottom).abs() > 0.5 {
-                    mismatched.push((warned, width, height, text_bottom - box_bottom));
-                }
-            }
-        }
-    }
-    assert!(
-        mismatched.is_empty(),
-        "the summary box must end where its wrapped text ends at these sizes (warning, width, height, hidden px; negative: blank px): {mismatched:?}"
-    );
-}
-
 #[test]
 fn native_operation_rejected_close_retains_modal_child_and_never_turns_into_confirmation() {
     let h = Harness::new();

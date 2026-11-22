@@ -293,8 +293,7 @@ fn clipboard_move(follow_directory_links: bool) {
             crate::support::link_option::KEEP_LINKS
         );
         if follow_directory_links {
-            // From the destination field, past the metadata option, to the choice.
-            owned_windows::child_key(&h.windows, Key::Tab);
+            // From the destination field to the choice, the first option.
             owned_windows::child_key(&h.windows, Key::Tab);
             owned_windows::child_key(&h.windows, Key::UpArrow);
             assert_eq!(

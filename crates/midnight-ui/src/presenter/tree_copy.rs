@@ -6,7 +6,8 @@ pub(super) struct Pending {
     capture: tree_capture::Capture,
     source: String,
     destination: PathBuf,
-    summary: String,
+    /// What the dialog's first line names: the marked rows, or the one row F5 named.
+    items: copy_dialog::DraftItems,
     directory_links_available: bool,
     retry: Option<Retry>,
 }
@@ -50,7 +51,7 @@ impl Presenter {
                 |archive| archive.location.display_text(),
             ),
             destination: self.panes[pane.other().index()].display_path().to_owned(),
-            summary: String::new(),
+            items: copy_dialog::DraftItems::counted(0, 0, None),
             directory_links_available: p.native_capabilities(),
             retry: None,
         });
@@ -166,20 +167,18 @@ impl Presenter {
         } else {
             None
         };
-        pending.summary = named_row
+        pending.items = named_row
             .and_then(|id| pending.capture.view.index.row_positions.get(&id))
             .map_or_else(
                 || {
-                    format!(
-                        "{} selected items",
-                        self.number_locale.format_u64(count as u64)
+                    copy_dialog::DraftItems::counted(
+                        publication.selection.file_count(),
+                        publication.selection.folder_count(),
+                        publication.selection.file_bytes(),
                     )
                 },
                 |position| {
-                    pending.capture.view.rows[*position]
-                        .entry
-                        .display_name
-                        .clone()
+                    copy_dialog::DraftItems::entry(&pending.capture.view.rows[*position].entry)
                 },
             );
         if send(Command::Tree(Box::new(TreeCommand::Transfer(
@@ -245,7 +244,7 @@ impl Presenter {
                         },
                         source: pending.source.clone(),
                         destination: pending.destination.clone(),
-                        summary: pending.summary.clone(),
+                        items: pending.items.clone(),
                         error: String::new(),
                         intent: pending.intent,
                         retire_requested: false,

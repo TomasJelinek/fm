@@ -19,7 +19,10 @@ pub(super) fn initialize(
     };
     window.set_title_text(title.into());
     window.set_confirm_text(title.into());
+    // The first line ("Copy “report.pdf” (1.2 MiB) to:"), with where the items come from
+    // as its tooltip; what the job verifies is the primary action's tooltip.
     window.set_body(main.get_copy_draft_body());
+    window.set_body_hint(format!("From: {}", main.get_copy_draft_source()).into());
     window.set_policy(main.get_copy_draft_policy());
     window.set_wait_visible(true);
     window.set_wait_checked(false);
@@ -28,24 +31,29 @@ pub(super) fn initialize(
         SharedString::from(transfer_link_option::COPY_FILES),
         SharedString::from(transfer_link_option::KEEP_LINKS),
     ]))));
-    window.set_link_hint(transfer_link_option::HINT.into());
+    window.set_link_hint(transfer_link_option::hint("").into());
     window.set_link_reason("".into());
     window.set_link_warning("".into());
     refresh_links(window, links.as_ref());
     window.set_has_name(true);
     window.set_initial_name(main.get_copy_draft_destination());
     window.set_selection_end(main.get_copy_draft_selection_end());
+    // The field's accessible name; the first line, which ends with "to:", labels it.
     window.set_input_label("Destination folder".into());
     window.set_native_icon(main.get_action_icons().copy);
-    window.set_option_visible(true);
-    window.set_option_enabled(main.get_copy_draft_metadata_enabled());
+    // Exact modified time is offered only where it can apply (at most 64 native regular
+    // files), not shown disabled elsewhere.
+    let exact_time = main.get_copy_draft_metadata_enabled();
+    window.set_option_visible(exact_time);
+    window.set_option_enabled(exact_time);
     window.set_option_checked(false);
     window.set_option_label("Preserve exact modified time".into());
     window.set_option_hint("Verify each destination file’s exact modified time. Up to 64 native regular files; folders, links and archive members are unsupported. Unsupported precision fails instead of rounding; earlier completed copies may remain.".into());
 }
 
-/// Shows the presenter's link choice, why the default was chosen and what keeping links
-/// does where it cannot work. Unchanged values are not set again.
+/// Shows the presenter's link choice, why the default was chosen (at the start of the
+/// choice's tooltip) and what keeping links does where it cannot work (the note under the
+/// choice). Unchanged values are not set again.
 pub(super) fn refresh_links(window: &OperationPresentation<'_>, links: Option<&LinkChoiceView>) {
     let Some(links) = links else {
         return;
@@ -56,6 +64,7 @@ pub(super) fn refresh_links(window: &OperationPresentation<'_>, links: Option<&L
     }
     if window.get_link_reason().as_str() != links.reason {
         window.set_link_reason(links.reason.as_str().into());
+        window.set_link_hint(transfer_link_option::hint(&links.reason).into());
     }
     if window.get_link_warning().as_str() != links.warning {
         window.set_link_warning(links.warning.as_str().into());

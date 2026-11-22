@@ -38,11 +38,7 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
     ui::key(&h.ui.window, Key::F5);
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
     assert!(!h.ui.window.get_copy_draft_metadata_enabled());
-    assert!(
-        h.ui.window
-            .get_copy_draft_body()
-            .contains("2 selected items")
-    );
+    assert_eq!(h.ui.window.get_copy_draft_body(), "Copy 2 folders to:");
     let dialog = h.dialog();
     let links = modeless::accessible_popup_item(
         &dialog,

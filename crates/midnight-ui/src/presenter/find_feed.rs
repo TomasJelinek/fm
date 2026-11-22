@@ -544,15 +544,11 @@ impl Presenter {
         let Some(files) = feed.files() else {
             return;
         };
-        let summary = if files.selection.is_empty() {
-            feed.focused()
-                .map(|entry| entry.display_name.clone())
-                .unwrap_or_default()
-        } else {
-            format!(
-                "{} selected search results",
-                self.number_locale.format_u64(files.selection.len() as u64)
-            )
+        let items = match feed.focused() {
+            Some(entry) if files.selection.is_empty() => {
+                crate::presenter::copy_dialog::DraftItems::entry(entry)
+            }
+            _ => crate::presenter::copy_dialog::DraftItems::selected(&files),
         };
         let destination = self.panes[pane.other().index()].display_path().to_owned();
         let request = self.desktop.request();
@@ -561,7 +557,7 @@ impl Presenter {
             input: crate::presenter::copy_dialog::CopyDraftInput::Native(files),
             source: "Search results".into(),
             destination,
-            summary,
+            items,
             error: String::new(),
             intent,
             retire_requested: false,

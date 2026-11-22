@@ -324,7 +324,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "files_transfer_jobs",
                 area: "jobs",
-                summary: "Copy jobs side by side: Wait for other operations off (runs at once) and on (waits for a paused job); Jobs states and Cancel job; totals, time remaining, speed chart and per-file progress; Cancel operation; wording.",
+                summary: "Copy jobs side by side: Wait for earlier transfers off (runs at once) and on (waits for a paused job); Jobs states and Cancel job; totals, time remaining, speed chart and per-file progress; Cancel operation; wording.",
                 run: files_jobs::transfer_jobs,
                 timeout: minutes(15),
             },

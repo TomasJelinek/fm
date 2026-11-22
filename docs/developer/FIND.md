@@ -312,8 +312,9 @@ otherwise on that row alone:
   several selected files; the menu's versions act on the row it opened on.
 - **Feed to panel** feeds every result, as before. When the selection is more than the
   cursor's row, the selected results arrive marked in the panel's list, so F5 and F6 (the
-  Copy/Move dialog naming "N selected search results"), F8 and Shift+F8 (the Delete
-  confirmation naming the count), the clipboard and Properties act on them there. A
+  Copy/Move dialog counting the marked results: "Copy 3 files (12.4 MiB) to:"), F8 and
+  Shift+F8 (the Delete confirmation naming the count), the clipboard and Properties act
+  on them there. A
   selection that only follows the cursor marks nothing; the list's cursor starts on the
   Find's cursor result either way.
 - The Find window itself offers no delete and no copy or move: those go through Feed to

@@ -16,6 +16,7 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
         return;
     };
     window.set_copy_draft_error(draft.error.as_str().into());
+    window.set_copy_draft_error_links(presenter.copy_draft_error_about_links());
     if window.get_copy_draft_token() == draft.token {
         return;
     }
@@ -35,16 +36,17 @@ fn refresh_draft(window: &MainWindow, presenter: &Presenter) {
             "Same-volume items are renamed without reading file contents.\nIf copying is needed: size + first/middle/last 64 KiB verification before each source is removed; bytes between samples are not checked."
         }
     };
+    // What the job verifies: the Copy or Move button's tooltip.
     window.set_copy_draft_policy(policy.into());
-    // The first line is the item's name (or a count) on its own.
+    // The dialog's first line names what is copied and ends where the destination field
+    // takes over; where the items come from is its tooltip.
     window.set_copy_draft_body(
-        format!(
-            "{}\nFrom: {}",
-            crate::isolated_name(&shown_text(&draft.summary)),
-            shown_text(&draft.source)
-        )
-        .into(),
+        draft
+            .items
+            .summary(draft.intent, &presenter.number_locale)
+            .into(),
     );
+    window.set_copy_draft_source(shown_text(&draft.source));
     // The destination field edits the raw path that the dialog confirms.
     window.set_copy_draft_destination(destination.as_ref().into());
     window.set_copy_draft_selection_end(destination.len().min(i32::MAX as usize) as i32);

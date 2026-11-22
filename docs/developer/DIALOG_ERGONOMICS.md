@@ -74,6 +74,43 @@ separately; this document is not a claim that every item is already released.
   too, until a name is typed. The FocusScopes that only route keys (Escape, a
   dialog's shortcuts) in dialogs, the colour picker, shortcut replacement, Select by
   mask and the main menu are not Tab stops.
+- The Copy/Move dialog (22 November polish; `OperationDialog` in its Copy/Move form,
+  which `EmbeddedOperation` selects with `kind < 0`) reads top to bottom: the title;
+  one line that names what is copied and ends where the destination field takes over
+  ("Copy “report.pdf” (1.2 MiB) to:", "Copy 3 files (12.4 MiB) to:", "Move 2 files and
+  1 folder to:", "Move 3 items from the clipboard to:"; from the counts and sizes the
+  draft captured with its selection, nothing is read; a size counts files only and is
+  left out where folders are counted; where the items come from is the line's tooltip,
+  "From: <folder>"); the destination field, full width, with the keyboard and the
+  accessible name "Destination folder"; and an **Options** group. In that group the
+  link choice's caption "Links" forms the label column, and the Links box and the
+  check boxes ("Preserve exact modified time", offered only where it can apply, at
+  most 64 native regular files, and left out rather than disabled elsewhere; "Wait for
+  earlier transfers") start at one edge after it. Where the caption and the box do not
+  fit side by side, the caption sits above the box and every control starts at the
+  form's left edge. Spacing: 16 px padding, 6 px inside a block (the line and the field,
+  a control and its note, the options' rows), 16 px between the destination and the
+  options, 12 px between the columns; the compact layout (under 280 px high) uses 8, 4
+  and 8 px, keeps the header and the actions fixed and scrolls the rest. At most one
+  note shows, a glyph and its text under the control it concerns, first of: Enter's
+  request for a destination; a refusal (a destination that is not an existing folder, a
+  Move from another drive to a location that refuses one, more than 64 items to move;
+  error colours) under the destination; and what keeping links does where none are
+  created (`keep_warning`, the first Enter's hold) under the Links box (a warning).
+  The compact layout shows every note under the destination, near the top. Why the
+  default link handling was chosen starts the Links box's tooltip (and is its
+  accessible description), and what the job verifies (the draft's policy) is the Copy or
+  Move button's tooltip; neither is a paragraph of the dialog. Tab goes through the
+  destination, the options top to bottom, Cancel, the primary action and the header's
+  close button, and wraps; Enter in the destination field, an option or the Links box
+  confirms. Verified on Windows with software-window tests (`copy_dialog_polish`: every
+  state at 320 × 200 and 1340 × 820, in both densities, with the density's default font
+  and with 32 px, finds nothing in the UI polish gate's layout checks and scrolls nothing
+  at the regular size; the options' edges; the Tab cycle; Enter in the destination; one
+  note at a time; the first line; a long first line and a note at every width from 320
+  to 600 px), with `copy_dialog`, `native_operation_windows`, `file_actions_ui` and
+  `tree_copy` updated to the new order and texts; Linux and the application window were
+  not exercised.
 - Compare directories compares on Enter from an option or its tolerance field, as
   other dialogs confirm from their options; Space ticks an option, and a held Enter or
   one during a comparison does nothing. In Checksums, Enter in the results or on the

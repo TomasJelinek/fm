@@ -142,8 +142,8 @@ fn dismiss_native_notice(windows: &NativeWindows) {
         count - 1
     );
 }
-// The complete-source layout of the shipped draft is checked on the embedded host:
-// native_operation_windows::embedded_copy_draft_shows_the_complete_source_above_a_single_line_destination.
+// The layout of the shipped draft (its first line, options and notes at every size) is
+// checked in copy_dialog_polish.
 
 /// Answer the check of the typed destination `path` as the backend does, recording
 /// only what that answer sends (the transfer, if any).
@@ -335,9 +335,10 @@ fn refuse_a_destination_that_is_not_an_existing_folder(shortcut: Key, moving: bo
 }
 
 /// The Move dialog's link choice follows what its destination reports: a drive that
-/// cannot store links copies the files, and the dialog says why. Choosing to keep links
-/// there shows what happens to them, and the first OK explains it instead of starting;
-/// the second keeps links anyway.
+/// cannot store links copies the files, and the choice's tooltip and accessible
+/// description say why (no paragraph does). Choosing to keep links there shows what
+/// happens to them in a note under the choice, and the first OK explains it there instead
+/// of starting; the second keeps links anyway.
 #[test]
 fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_links() {
     let (mut ui, windows) = multi_window_ui();
@@ -368,7 +369,7 @@ fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_link
             _ => None,
         })
         .unwrap();
-    // A file, so that the metadata option is a keyboard stop before the link choice.
+    // A file, so that the dialog offers every option: Links first, then exact times.
     let entries: Arc<[Entry]> = vec![Entry::new(
         EntryId(1),
         base.join("notes.txt"),
@@ -433,12 +434,25 @@ fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_link
     ui.draw();
     assert_eq!(value(&links), link_option::COPY_FILES);
     let reason = "This drive cannot store links (FAT32), so the files they point to are copied.";
-    assert!(
-        accessible_item(&child, AccessibleRole::Text, reason).is_some_and(|item| not_hidden(&item)),
-        "the dialog says why it copies the files"
+    assert_eq!(
+        links
+            .accessible_string_property(AccessibleStringProperty::Description)
+            .unwrap(),
+        reason,
+        "a screen reader hears why it copies the files"
     );
-    // From the destination field, past the metadata option, to the link choice.
-    input::key(&child, Key::Tab);
+    let presentation = ui.window.global::<midnight_ui::OperationPresentation>();
+    assert!(
+        presentation
+            .get_link_hint()
+            .starts_with(&format!("{reason}\n\n")),
+        "the choice's tooltip starts with why it copies the files"
+    );
+    assert!(
+        accessible_item(&child, AccessibleRole::Text, reason).is_none_or(|item| !not_hidden(&item)),
+        "no paragraph repeats the reason"
+    );
+    // From the destination field to the link choice, the first option.
     input::key(&child, Key::Tab);
     input::key(&child, Key::DownArrow);
     refresh(&ui.window, &state.borrow());
@@ -467,6 +481,18 @@ fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_link
     assert!(
         !ui.window.get_copy_draft_token().is_empty(),
         "the dialog stays open"
+    );
+    // The explanation takes the warning's place, still under the link choice.
+    assert!(ui.window.get_copy_draft_error_links());
+    assert!(
+        accessible_item(&child, AccessibleRole::Text, error.as_str())
+            .is_some_and(|item| not_hidden(&item)),
+        "the dialog explains why it holds"
+    );
+    assert!(
+        accessible_item(&child, AccessibleRole::Text, warning)
+            .is_none_or(|item| !not_hidden(&item)),
+        "one note at a time"
     );
     input::key(&child, Key::Return);
     refresh(&ui.window, &state.borrow());
@@ -544,8 +570,7 @@ impl ArchiveMount for NoIoArchive {
 }
 
 #[test]
-fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
-    use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+fn archive_dialog_leaves_out_required_modified_time_and_keeps_ordinary_copy() {
     let (mut ui, windows) = multi_window_ui();
     let root = std::env::temp_dir().join("archive dialog 文档");
     let state = Rc::new(RefCell::new(Presenter::new(
@@ -629,29 +654,20 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
         accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL)
             .is_none_or(|item| !item.is_visible())
     );
-    let option = accessible_item(
-        &child,
-        AccessibleRole::Checkbox,
-        "Preserve exact modified time",
-    )
-    .unwrap();
-    assert_eq!(
-        option
-            .accessible_string_property(AccessibleStringProperty::Enabled)
-            .unwrap(),
-        "false"
-    );
-    input::click(&child, &option);
-    assert_eq!(
-        option
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .unwrap(),
-        "false"
+    // Archive members cannot keep exact times: the dialog leaves the option out.
+    assert!(
+        accessible_item(
+            &child,
+            AccessibleRole::Checkbox,
+            "Preserve exact modified time"
+        )
+        .is_none_or(|item| !not_hidden(&item)),
+        "exact modified time is not offered for archive members"
     );
     let wait = accessible_item(
         &child,
         AccessibleRole::Checkbox,
-        "Wait for other operations to finish",
+        "Wait for earlier transfers",
     )
     .unwrap();
     input::click(&child, &wait);
@@ -661,7 +677,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     ui.draw();
     let commands = commands.borrow();
     let [Command::EnqueueArchiveCopy(request)] = commands.as_slice() else {
-        panic!("disabled metadata must leave ordinary archive copy available");
+        panic!("unavailable metadata must leave ordinary archive copy available");
     };
     assert_eq!(request.start_policy, TransferStartPolicy::WaitForEarlier);
     assert_eq!(request.fallback, Some(EntryId(2)));
@@ -779,7 +795,7 @@ fn destination_editor(
     let wait = accessible_item(
         &child,
         AccessibleRole::Checkbox,
-        "Wait for other operations to finish",
+        "Wait for earlier transfers",
     )
     .expect("Copy and Move both expose the wait option");
     let shown = link_option::shown(moving);
@@ -802,10 +818,10 @@ fn destination_editor(
             .unwrap(),
         "false"
     );
-    input::key(&child, Key::Tab);
-    input::key(&child, Key::Tab);
     if let Some(links) = &links {
-        // The arrow keys choose; Up reaches the first entry, Down the second again.
+        // The link choice is the first option. The arrow keys choose; Up reaches the
+        // first entry, Down the second again.
+        input::key(&child, Key::Tab);
         input::key(&child, Key::UpArrow);
         assert_eq!(
             links
@@ -820,8 +836,10 @@ fn destination_editor(
                 .unwrap(),
             link_option::KEEP_LINKS
         );
-        input::key(&child, Key::Tab);
     }
+    // Past the exact-time option to the wait option.
+    input::key(&child, Key::Tab);
+    input::key(&child, Key::Tab);
     input::key(&child, Key::Space);
     assert_eq!(
         wait.accessible_string_property(AccessibleStringProperty::Checked)
@@ -850,7 +868,7 @@ fn destination_editor(
     let wait = accessible_item(
         &child,
         AccessibleRole::Checkbox,
-        "Wait for other operations to finish",
+        "Wait for earlier transfers",
     )
     .unwrap();
     assert_eq!(
@@ -886,8 +904,7 @@ fn destination_editor(
             "a new draft keeps links where its destination tells nothing else"
         );
         if follow_directory_links {
-            // From the destination field, past the metadata option, to the link choice.
-            input::key(&child, Key::Tab);
+            // From the destination field to the link choice, the first option.
             input::key(&child, Key::Tab);
             input::key(&child, Key::UpArrow);
             assert_eq!(
@@ -1073,17 +1090,23 @@ fn compact_item(test: &ui::TestUi, role: AccessibleRole, label: &str) -> ItemRc 
 fn compact_bounds(item: &ItemRc, indicator: bool) -> (f32, f32, f32, f32) {
     let rect = item.geometry();
     let origin = item.map_to_native_window(rect.origin);
-    // The checkbox caption is deliberately wider than this viewport. Its left
-    // indicator and full vertical span must remain visible and actionable.
-    let width = if indicator {
-        rect.width().min(24.0)
-    } else {
-        rect.width()
-    };
+    // A check box's caption wraps, so at this size its row can be taller than the
+    // scrolled middle of the dialog. Its box (24 px square, centred on the row) must
+    // remain visible and actionable.
+    if indicator {
+        let middle = origin.y + rect.height() / 2.0;
+        let side = rect.width().min(24.0);
+        return (
+            origin.x,
+            middle - side / 2.0,
+            origin.x + side,
+            middle + side / 2.0,
+        );
+    }
     (
         origin.x,
         origin.y,
-        origin.x + width,
+        origin.x + rect.width(),
         origin.y + rect.height(),
     )
 }
@@ -1421,11 +1444,26 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         .unwrap();
     let caret = destination.char_indices().next_back().unwrap().0;
     compact_assert_edit(&input, &destination, caret);
+    let shown = link_option::shown(moving);
+    if shown {
+        // The link choice is the first option.
+        input::key(&test.native, Key::Tab);
+        compact_settle(&mut test);
+        let links = compact_item(&test, AccessibleRole::Combobox, link_option::LABEL);
+        compact_assert_focus(&test, &links);
+        // Keyboard focus itself must reveal each control; a preparatory wheel here
+        // would hide a broken focus/scroll interaction.
+        compact_assert_visible(&test, &links, false, "keyboard link choice");
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .unwrap(),
+            link_option::KEEP_LINKS
+        );
+    }
     input::key(&test.native, Key::Tab);
     compact_settle(&mut test);
     compact_assert_focus(&test, &option);
-    // Keyboard focus itself must reveal this control; a preparatory wheel here
-    // would hide a broken focus/scroll interaction.
     compact_assert_visible(&test, &option, true, "keyboard metadata checkbox indicator");
     input::key(&test.native, Key::Space);
     compact_settle(&mut test);
@@ -1435,20 +1473,9 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
             .unwrap(),
         "true"
     );
+    // On to the wait option and back.
     input::key(&test.native, Key::Tab);
     compact_settle(&mut test);
-    let shown = link_option::shown(moving);
-    if shown {
-        let links = compact_item(&test, AccessibleRole::Combobox, link_option::LABEL);
-        compact_assert_focus(&test, &links);
-        compact_assert_visible(&test, &links, true, "keyboard link choice");
-        assert_eq!(
-            links
-                .accessible_string_property(AccessibleStringProperty::Value)
-                .unwrap(),
-            link_option::KEEP_LINKS
-        );
-    }
     input::chord(&test.native, &[Key::Shift], Key::Tab);
     compact_settle(&mut test);
     compact_assert_focus(&test, &option);
@@ -1471,8 +1498,11 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         "true"
     );
     compact_assert_focus(&test, &option);
-    input::chord(&test.native, &[Key::Shift], Key::Tab);
-    compact_settle(&mut test);
+    // Back to the destination, past the link choice.
+    for _ in 0..if shown { 2 } else { 1 } {
+        input::chord(&test.native, &[Key::Shift], Key::Tab);
+        compact_settle(&mut test);
+    }
     compact_assert_visible(&test, &editor, false, "keyboard Destination folder");
     assert_eq!(
         WindowInner::from_pub(test.window.window())

@@ -200,6 +200,7 @@ fn open(
     window.set_kind(-1);
     window.set_confirm_enabled(true);
     window.set_option_visible(false);
+    window.set_body_hint("".into());
     window.set_policy("".into());
     window.set_wait_visible(false);
     window.set_wait_checked(false);
@@ -274,20 +275,28 @@ fn open(
     window.invoke_begin();
     Ok(record)
 }
+/// The form's warning: the presenter's (a Copy/Move draft's error), with the window's own
+/// when it says something else. A Copy/Move warning that is only the draft's error about
+/// its link choice is shown under that choice.
 fn update_warning(record: &Record, main: &MainWindow) {
-    let base = match record.key {
-        Key::Operation(_) => main.get_operation_warning(),
-        Key::Copy(_) => main.get_copy_draft_error(),
+    let (base, about_links) = match record.key {
+        Key::Operation(_) => (main.get_operation_warning(), false),
+        Key::Copy(_) => (
+            main.get_copy_draft_error(),
+            main.get_copy_draft_error_links(),
+        ),
     };
     let error = record.error.borrow();
-    let warning = if error.is_empty() || base.as_str() == error.as_str() {
-        base
+    let (warning, about_links) = if error.is_empty() || base.as_str() == error.as_str() {
+        (base, about_links)
     } else if base.is_empty() {
-        error.as_str().into()
+        (error.as_str().into(), false)
     } else {
-        format!("{base}\n\n{error}").into()
+        (format!("{base}\n\n{error}").into(), false)
     };
-    main.global::<OperationPresentation>().set_warning(warning);
+    let window = main.global::<OperationPresentation>();
+    window.set_warning_about_links(about_links);
+    window.set_warning(warning);
 }
 /// The user chose the Copy/Move link handling (0 copies the files, 1 keeps links): the
 /// presenter keeps that choice for the draft, whatever its destination reports later.
