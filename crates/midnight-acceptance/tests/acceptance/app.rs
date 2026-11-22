@@ -763,6 +763,15 @@ impl App {
         });
     }
 
+    /// Run due timers and render the main window only when Slint has a frame pending.
+    pub fn frame(&mut self) {
+        slint::platform::update_timers_and_animations();
+        let (pixels, width) = (&mut self.pixels, self.width);
+        self.main.draw_if_needed(|renderer| {
+            renderer.render(pixels, width);
+        });
+    }
+
     pub fn slint(&self) -> &slint::Window {
         self.window.window()
     }
@@ -905,7 +914,8 @@ impl App {
         consumed
     }
 
-    /// Apply every pending Engine event and repaint, like idle frames of the event loop.
+    /// Apply every pending Engine event and repaint what changed, like idle frames of the
+    /// event loop.
     pub fn settle(&mut self) {
         for _ in 0..4 {
             let mut consumed = false;
@@ -926,7 +936,7 @@ impl App {
             self.sync_visible();
             self.sample_visible_rows();
             refresh(&self.window, &self.presenter.borrow());
-            self.draw();
+            self.frame();
             for window in self.tool_windows() {
                 slint::platform::update_timers_and_animations();
                 inspect_tree(&window);

@@ -382,13 +382,18 @@ input to the same observer closure the Winit hook runs:
 
 Time, as the event loop and the product see it:
 
-- `app.settle()` is one frame's worth of work: pending Engine events applied, the
-  retry pass's flushes, Slint's timers and animations brought up to the clock, a
-  redraw. `app.until(what, condition)` settles until the condition holds (60 s hang
-  guard; `until_for` names another); `app.pump(duration)` lets real time pass as the
-  event loop does, settling about every 10 ms (`app::FRAME`), so timers fire and
-  animations move frame by frame; `app.idle(duration)` is one sleep and one settle
-  (timers jump once) and is not a synchronisation.
+- `app.settle()` is one frame's worth of work: pending Engine events applied, the retry
+  pass's flushes, Slint's timers and animations brought up to the clock, and a redraw
+  only when Slint has a frame pending (a property it draws changed, an animation runs),
+  as production's event loop draws; `app.draw()`, screenshots and frames render
+  regardless. A settle that also redrew unchanged frames cost about 13 % of the time of
+  `harness_checks`, `options_general`, two journeys and `ui_review` with the same
+  verdicts; one that never drew broke `journeys_keyboard_only`. `app.until(what,
+  condition)` settles until the condition holds (60 s hang guard; `until_for` names
+  another); `app.pump(duration)` lets real time pass as the event loop does, settling
+  about every 10 ms (`app::FRAME`), so timers fire and animations move frame by frame;
+  `app.idle(duration)` is one sleep and one settle (timers jump once) and is not a
+  synchronisation.
 - Slint's timers and animations follow the platform clock, an `app::Clock` that runs
   with real time. `app.hold_clock()` stops it; `app.advance(duration)` then moves it
   in 10 ms steps, settling after each, so a timer fires in the step that reaches it;
