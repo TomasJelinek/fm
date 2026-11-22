@@ -521,7 +521,7 @@ fn compact(app: &mut App, context: &mut Context, failures: &Failures) -> Result<
         let viewing = support::view(app, false, OPEN_LIMIT)?;
         if let Err(error) = viewing.result.clone() {
             close(app, viewing)?;
-            match probe::browser_refused(&error) {
+            match support::browser_refused(&error) {
                 Some(reason) if file.ends_with(".html") => failures.skip(
                     &format!("small viewer windows: {file}"),
                     &format!("{reason}: {}", support::clip(&error, 160)),

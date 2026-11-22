@@ -289,8 +289,9 @@ fn run(context: &mut Context) -> Result<(), String> {
     source_highlighting(&mut app, context, &failures);
     failures.skip(
         "kinetic (touchpad) coasting",
-        "synthetic PointerScrolled events carry no touchpad phases, and this harness \
-         delivers no native window events, which production's kinetic observer reads",
+        "not written yet: Slint's own PointerScrolled events carry no touchpad phases; the \
+         acceptance seam's touchpad reports (NativeWheel::Pixels with their phases) can drive \
+         such a check now",
     );
     app.shutdown()?;
     failures.finish(context)
@@ -1280,10 +1281,9 @@ fn source_highlighting(app: &mut App, context: &mut Context, failures: &Failures
         let closed = viewing.close(app);
         result.and(closed)
     });
-    failures.pending(
+    failures.check(
         "source highlighting: a small file scrolled by wheel, keys and scrollbar shows no \
          preparation notice and keeps its tints",
-        HIGHLIGHTING_FIX,
         small,
     );
     let large = open_highlighted(app, "highlight-large.cpp").and_then(|(viewing, reference)| {
@@ -1291,17 +1291,12 @@ fn source_highlighting(app: &mut App, context: &mut Context, failures: &Failures
         let closed = viewing.close(app);
         result.and(closed)
     });
-    failures.pending(
+    failures.check(
         "source highlighting: the rows after Ctrl+End in a large file are coloured within a \
          second, without a lasting notice",
-        HIGHLIGHTING_FIX,
         large,
     );
 }
-
-/// What the highlighting checks wait for while they are pending.
-const HIGHLIGHTING_FIX: &str = "the fix that keeps \"Preparing source highlighting…\" out of \
-    scrolling is staged, not on main yet";
 
 /// The small file: twelve wheel notches down and up (one every 50 ms, as a hand turns a
 /// wheel), eight PageDowns and eight PageUps (one every 100 ms) and a scrollbar drag to

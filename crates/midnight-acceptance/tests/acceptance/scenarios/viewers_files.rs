@@ -625,7 +625,7 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
     ) && let Err(error) = &viewing.result
     {
         if matches!(case.expect, Expect::Html | Expect::HtmlText)
-            && let Some(reason) = probe::browser_refused(error)
+            && let Some(reason) = support::browser_refused(error)
         {
             return Err(format!("SKIP: {reason}: {error:?}"));
         }

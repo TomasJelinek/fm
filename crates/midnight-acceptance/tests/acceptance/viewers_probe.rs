@@ -1201,30 +1201,12 @@ fn grouped_glyph_runs(
     groups.into_iter().map(|group| group.members).collect()
 }
 
-/// Why this machine refuses the HTML viewer's browser, when `error` (the viewer's own
-/// report) is one of the refusals that depend on the machine, not on Midnight
-/// Explorer: the messages of `midnight_worker_platform`'s `browser_sandbox_linux.rs`,
-/// `browser_cgroup_linux.rs` and `browser_libraries_linux.rs`.
-pub fn browser_refused(error: &str) -> Option<&'static str> {
-    if error.contains("The HTML viewer needs permission for Chromium's sandbox") {
-        Some(
-            "AppArmor denies Chromium's sandbox to this installation (no \
-             midnight-explorer-html-viewer profile covers the stage)",
-        )
-    } else if error.contains("Chromium requires a writable cgroup-v2 user delegation") {
-        Some("no writable cgroup-v2 delegation for the browser on this machine")
-    } else if error.contains("The HTML viewer needs system libraries that are not installed") {
-        Some("this machine lacks system libraries of the HTML viewer's browser")
-    } else {
-        None
-    }
-}
-
 /// Record a check of the HTML viewer: SKIP with the machine's reason when the machine
-/// refused the viewer's browser ([`browser_refused`]), the check itself otherwise.
+/// refused the viewer's browser (`viewers_support::browser_refused`), the check itself
+/// otherwise.
 pub fn check_html(failures: &Failures, what: &str, result: Result<(), String>) {
     let refused = result.as_ref().err().and_then(|error| {
-        browser_refused(error).map(|reason| format!("{reason}: {}", super::clip(error, 160)))
+        super::browser_refused(error).map(|reason| format!("{reason}: {}", super::clip(error, 160)))
     });
     match refused {
         Some(reason) => failures.skip(what, &reason),
@@ -1235,7 +1217,7 @@ pub fn check_html(failures: &Failures, what: &str, result: Result<(), String>) {
 /// Why the HTML viewer cannot be checked here, known before it opens: its package is not
 /// staged, or, on Linux, system libraries its browser links are missing
 /// (`viewers_stage::html_viewer_missing`). A machine that refuses the browser only when
-/// it starts is told by the viewer's own report ([`browser_refused`]).
+/// it starts is told by the viewer's own report (`viewers_support::browser_refused`).
 pub fn html_unavailable() -> Option<String> {
     crate::viewers_stage::html_viewer_missing()
 }
