@@ -19,6 +19,8 @@ pub(super) struct State {
     pub(super) sizes: tree_sizes::State,
     pub(super) refresh: tree_refresh::State,
     navigation: Option<(TreeViewStamp, TreeRequestId, TreeRowId, NavigationId)>,
+    /// The latest Ctrl+click expansion: a rejection of it says where its walk stopped.
+    recursive: Option<TreeRequestId>,
     pub(super) revision: SelectionRevision,
     pub(super) applied: SelectionRevision,
     /// Highest retired selection request; rejected requests do not change applied authority.
@@ -399,6 +401,9 @@ impl Presenter {
         }
         p.clear_busy(BUSY, &mut self.retired);
         p.tree.request = request;
+        if action == TreeBranchAction::ExpandRecursive {
+            p.tree.recursive = Some(request);
+        }
         true
     }
 
@@ -877,8 +882,8 @@ impl Presenter {
             TreeEvent::Rejected {
                 stamp,
                 request,
+                row,
                 error,
-                ..
             } => {
                 let p = &mut self.panes[stamp.pane.index()];
                 let navigation_rejected =
@@ -905,6 +910,23 @@ impl Presenter {
                         p.tree.navigation = None;
                     }
                     p.set_tree_error(&error, "", &mut self.retired);
+                    // A Ctrl+click expansion that stopped early asked for every level;
+                    // its reply names the row of the folder where it stopped.
+                    if p.tree.recursive == Some(request) {
+                        p.tree.recursive = None;
+                        let folder = p
+                            .tree_view()
+                            .and_then(|view| {
+                                let position = view.index.row_positions.get(&row)?;
+                                view.rows.get(*position)
+                            })
+                            .map(|row| row.entry.path.clone());
+                        self.show_incomplete_expansion(
+                            stamp.pane,
+                            error.as_str(),
+                            folder.as_deref(),
+                        );
+                    }
                 }
             }
         }

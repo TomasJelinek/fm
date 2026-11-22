@@ -22,6 +22,9 @@ pub(super) struct Walk {
     request: TreeRequestId,
     frames: Vec<Frame>,
     active: Option<BranchId>,
+    // Folders on the deepest admitted row whose own folders the depth budget left
+    // out: the first one the walk met, and how many there are.
+    depth_stops: Option<(BranchId, usize)>,
 }
 
 pub(super) struct Batch {
@@ -48,6 +51,13 @@ enum Pause {
     Capacity,
     Changed,
     Admission,
+}
+
+/// Why a walk left folders unexpanded, for its notice.
+enum Incomplete {
+    Paused(Pause),
+    /// The depth budget refused the listing of this many folders on its deepest row.
+    Depth(usize),
 }
 
 impl Walk {
@@ -115,7 +125,9 @@ impl Walk {
             {
                 continue;
             }
-            if self.frames.len() >= TreeLimits::default().depth {
+            // A walk from a top-level row reaches the deepest admitted row in
+            // `depth + 1` frames; the tree refuses to list anything deeper.
+            if self.frames.len() > TreeLimits::default().depth {
                 return Err(Pause::Capacity);
             }
             self.frames.push(Frame {
@@ -141,7 +153,7 @@ impl Session {
         self.queue.retain(|pending| {
             pending.kind != TreeRequest::Probe || !in_subtree(&self.tree, pending.branch, root)
         });
-        let mut frames = Vec::with_capacity(TreeLimits::default().depth);
+        let mut frames = Vec::with_capacity(TreeLimits::default().depth + 1);
         frames.push(Frame {
             branch: root,
             next_child: 0,
@@ -154,6 +166,7 @@ impl Session {
             request,
             frames,
             active: None,
+            depth_stops: None,
         });
     }
 
@@ -248,19 +261,19 @@ impl Session {
         let branch = match next {
             Ok(Some(Some(branch))) => branch,
             Ok(_) => {
-                self.recursive = None;
+                let walk = self.recursive.take();
                 let cancel = self.lifetime.clone();
-                self.finish_recursive_batch(&cancel)?;
+                self.complete_recursive(walk, &cancel)?;
                 return Ok(None);
             }
             Err(reason) => {
-                self.pause_recursive_reason(reason);
+                self.pause_recursive_reason(reason)?;
                 return Ok(None);
             }
         };
         let version = self.next_work;
         let Some(next) = version.checked_add(1) else {
-            self.pause_recursive_reason(Pause::Capacity);
+            self.pause_recursive_reason(Pause::Capacity)?;
             return Ok(None);
         };
         let Some(walk) = &mut self.recursive else {
@@ -337,14 +350,29 @@ impl Session {
         if !applied {
             return Ok(false);
         }
-        if self
+        // The model changed, a failure of this row included: the batch publishes it.
+        let Some(batch) = &mut self.recursive_batch else {
+            return Ok(false);
+        };
+        batch.results += 1;
+        batch.dirty = true;
+        if self.tree.depth_limited(branch) {
+            // Only this folder's listing is refused: its folders are one level too
+            // deep. Like a denied folder, it stays local to its row; the walk goes
+            // on with the others and says at its end what it left out.
+            if let Some(walk) = &mut self.recursive {
+                let stops = walk.depth_stops.get_or_insert((branch, 0));
+                stops.1 = stops.1.saturating_add(1);
+            }
+        } else if self
             .tree
             .state(branch)
             .is_some_and(|row| row.error == Some(ProviderError::ResourceLimited))
         {
-            self.pause_recursive_reason(Pause::Capacity);
+            self.pause_recursive_reason(Pause::Capacity)?;
             return Ok(false);
         }
+        let mut finished = None;
         if let Some(walk) = &mut self.recursive {
             if let Some(frame) = walk
                 .frames
@@ -358,24 +386,47 @@ impl Session {
             }
             match walk.pending(&self.tree) {
                 Ok(Some(_)) => {}
-                Ok(None) => self.recursive = None,
+                Ok(None) => finished = self.recursive.take(),
                 Err(reason) => {
-                    self.pause_recursive_reason(reason);
+                    self.pause_recursive_reason(reason)?;
                     return Ok(false);
                 }
             }
         }
-        let Some(batch) = &mut self.recursive_batch else {
+        let Some(batch) = &self.recursive_batch else {
             return Ok(false);
         };
-        batch.results += 1;
-        batch.dirty = true;
         // Check only after a real callback return; 50 ms never invents cancellation
         // or releases a still-running native worker permit.
-        if self.recursive.is_none() || batch.results >= MAX_BATCH_RESULTS || batch.time_expired() {
+        let yields = batch.results >= MAX_BATCH_RESULTS || batch.time_expired();
+        if finished.is_some() {
+            return self.complete_recursive(finished, cancel);
+        }
+        if self.recursive.is_none() || yields {
             return self.finish_recursive_batch(cancel);
         }
         Ok(false)
+    }
+
+    /// The walk reached everything it could: publish its last batch, then say
+    /// which folders the depth budget left out.
+    fn complete_recursive(
+        &mut self,
+        walk: Option<Walk>,
+        cancel: &Cancellation,
+    ) -> Result<bool, ProviderError> {
+        let published = self.finish_recursive_batch(cancel)?;
+        // A projection that cannot hold the batch rolls it back and reports that.
+        if self.recursive_notice.is_some() {
+            return Ok(published);
+        }
+        if let Some(walk) = walk
+            && let Some((branch, folders)) = walk.depth_stops
+        {
+            self.recursive_notice =
+                Some(self.incomplete_notice(&walk, Some(branch), Incomplete::Depth(folders)));
+        }
+        Ok(published)
     }
 
     fn finish_recursive_batch(&mut self, cancel: &Cancellation) -> Result<bool, ProviderError> {
@@ -394,7 +445,7 @@ impl Session {
                 self.tree.rollback_unpublished(batch.checkpoint);
                 self.recursive = Some(batch.walk);
                 if error == ProviderError::ResourceLimited {
-                    self.pause_recursive_reason(Pause::Capacity);
+                    self.pause_recursive_reason(Pause::Capacity)?;
                     Ok(false)
                 } else {
                     // Malformed provider responses retain their existing failure
@@ -405,7 +456,7 @@ impl Session {
         }
     }
 
-    pub(crate) fn pause_recursive(&mut self, error: &ProviderError) -> bool {
+    pub(crate) fn pause_recursive(&mut self, error: &ProviderError) -> Result<bool, ProviderError> {
         let reason = if *error == ProviderError::ResourceLimited {
             Pause::Capacity
         } else {
@@ -414,34 +465,76 @@ impl Session {
         self.pause_recursive_reason(reason)
     }
 
-    fn pause_recursive_reason(&mut self, reason: Pause) -> bool {
-        self.rollback_unpublished();
+    fn pause_recursive_reason(&mut self, reason: Pause) -> Result<bool, ProviderError> {
+        // The walk stops at the folder it was listing or about to list.
+        let stop = self
+            .recursive
+            .as_ref()
+            .and_then(|walk| walk.frames.last())
+            .map(|frame| frame.branch);
+        // What the batch listed within the budgets stays: publish it. A projection
+        // that cannot hold it rolls the batch back and reports that stop instead.
+        let cancel = self.lifetime.clone();
+        self.finish_recursive_batch(&cancel)?;
         let Some(walk) = self.recursive.take() else {
-            return false;
+            return Ok(false);
         };
         if let Some(active) = walk.active {
             self.tree.cancel_work(active);
             self.versions.remove(&active);
         }
-        self.recursive_publication = false;
-        let message = match reason {
-            Pause::Capacity => {
-                "Recursive expansion is incomplete: the tree resource budget is exhausted."
+        self.recursive_notice =
+            Some(self.incomplete_notice(&walk, stop, Incomplete::Paused(reason)));
+        Ok(true)
+    }
+
+    /// Say where the walk stopped and why, against the published view: the row of
+    /// the folder where it stopped when that view shows it, else the walk's own row.
+    fn incomplete_notice(&self, walk: &Walk, stop: Option<BranchId>, why: Incomplete) -> TreeEvent {
+        let shown = stop.and_then(|branch| {
+            let row = self.projection_state.row(branch)?;
+            self.projection
+                .index
+                .row_positions
+                .contains_key(&row)
+                .then_some((branch, row))
+        });
+        let (branch, row) = shown.unwrap_or((walk.root, walk.row));
+        let name = self
+            .tree
+            .state(branch)
+            .map(|state| state.entry.display_name.clone())
+            .unwrap_or_default();
+        let message = match why {
+            Incomplete::Depth(folders) => {
+                let others = match folders.saturating_sub(1) {
+                    0 => String::new(),
+                    1 => " and 1 other folder".to_owned(),
+                    others => format!(" and {others} other folders"),
+                };
+                format!(
+                    "Recursive expansion is incomplete: the tree shows at most {} levels of \
+                     subfolders, so the folders inside “{name}”{others} are not shown.",
+                    self.tree.depth_limit()
+                )
             }
-            Pause::Changed => {
-                "Recursive expansion is incomplete: a loaded branch changed. Restart expansion to continue."
-            }
-            Pause::Admission => {
-                "Recursive expansion is incomplete: a branch could not be admitted."
+            Incomplete::Paused(pause) => {
+                let reason = match pause {
+                    Pause::Capacity => "the tree resource budget is exhausted",
+                    Pause::Changed => "a loaded branch changed. Restart expansion to continue",
+                    Pause::Admission => "the branch could not be admitted",
+                };
+                format!(
+                    "Recursive expansion is incomplete: it stopped at “{name}” because {reason}."
+                )
             }
         };
-        self.recursive_notice = Some(TreeEvent::Rejected {
+        TreeEvent::Rejected {
             stamp: self.projection.stamp,
             request: walk.request,
-            row: walk.row,
-            error: TreeDiagnostic::new(message),
-        });
-        true
+            row,
+            error: TreeDiagnostic::new(&message),
+        }
     }
 
     pub(crate) fn take_recursive_notice(&mut self) -> Option<TreeEvent> {

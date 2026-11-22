@@ -963,3 +963,67 @@ async fn recursive_scaling_before_after() {
     scaling_case(10_000, 1, 1, true).await;
     scaling_case(10_000, 32, 0, true).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_click_on_a_deeper_chain_publishes_depth_64_before_saying_where_it_stopped() {
+    // “folder” is depth 0 and d01 to d65 depths 1 to 65; one more folder is in d65.
+    let mut injected = Files::new();
+    injected.scaling = Some(Scaling::new(&injected.root, 68, 66));
+    let files = Arc::new(injected);
+    let scaling = files.scaling.as_ref().unwrap();
+    let (commands, mut events, engine, initial) = start(files.clone()).await;
+    recursive(&commands, &initial).await;
+    let mut current = initial;
+    let (stamp, row, error) = loop {
+        match next_tree(&mut events).await {
+            TreeEvent::Published(publication) => {
+                tree(&commands, TreeCommand::Commit(publication.view.clone())).await;
+                current = publication;
+            }
+            TreeEvent::Rejected {
+                stamp,
+                request: TreeRequestId(1),
+                row,
+                error,
+            } => break (stamp, row, error),
+            TreeEvent::Sizes(_) => {}
+            other => panic!("unexpected tree event: {other:?}"),
+        }
+    };
+    assert_eq!(
+        stamp, current.view.stamp,
+        "the notice describes the view published before it"
+    );
+    // Scaling path 1 is “folder”, path k the folder at depth k - 1.
+    let shown = |depth: usize| {
+        current
+            .view
+            .rows
+            .iter()
+            .find(|row| row.entry.native_path() == Some(scaling.paths[depth + 1].as_path()))
+    };
+    for depth in 0..64 {
+        let folder = shown(depth).unwrap_or_else(|| panic!("depth {depth} is shown"));
+        assert_eq!(folder.depth, depth);
+        assert!(folder.expanded, "depth {depth} is expanded");
+    }
+    let last = shown(64).expect("depth 64 is shown");
+    assert_eq!(last.depth, 64);
+    assert_eq!(last.disclosure, TreeDisclosure::Failed);
+    assert!(shown(65).is_none(), "depth 65 is not shown");
+    assert_eq!(
+        row, last.id,
+        "the notice names the folder where the walk stopped"
+    );
+    assert_eq!(
+        error.as_str(),
+        "Recursive expansion is incomplete: the tree shows at most 64 levels of \
+         subfolders, so the folders inside “d64” are not shown."
+    );
+    assert_eq!(files.max_branch_active.load(Ordering::Acquire), 1);
+    commands.send(Command::Shutdown).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), engine)
+        .await
+        .unwrap()
+        .unwrap();
+}

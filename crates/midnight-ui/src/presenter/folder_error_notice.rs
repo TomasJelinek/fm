@@ -23,6 +23,25 @@ impl Presenter {
         crate::error_presentation::append_path(&mut self.desktop.notice_path, path);
     }
 
+    /// A Ctrl+click expansion that stopped before every level was shown: why, and
+    /// the folder where it stopped. Like a navigation failure, the notice replaces
+    /// the pane's error line for this occurrence instead of repeating it.
+    pub(super) fn show_incomplete_expansion(
+        &mut self,
+        pane: PaneId,
+        reason: &str,
+        folder: Option<&Path>,
+    ) {
+        self.retire_warning_viewer();
+        self.desktop
+            .report("Expansion incomplete", reason.to_owned());
+        if let Some(folder) = folder.filter(|folder| !folder.as_os_str().is_empty()) {
+            crate::error_presentation::append_path(&mut self.desktop.notice_path, folder);
+        }
+        let p = &self.panes[pane.index()];
+        self.panel_warnings.modal_errors[pane.index()] = Some((p.generation, p.error_revision));
+    }
+
     pub(super) fn show_navigation_error(
         &mut self,
         pane: PaneId,

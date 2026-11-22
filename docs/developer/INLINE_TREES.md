@@ -126,6 +126,18 @@ Default per-tree bounds are 10,000 retained occurrences including the hidden roo
 16 MiB charged payload, depth 64, eight work/result permits and 64 explicitly
 attached container targets. Callers can lower these bounds. Overflow rejects the
 attempt atomically; it does not silently truncate children or label them empty.
+
+Depth is a row's tree depth, as `TreeProjection::MAX_DEPTH` counts it: the shown
+folder's own entries are depth 0 and the folders inside them depth 1, so a
+folder shows 64 levels of subfolders. A folder at depth 64 is still listed: an
+empty one expands, and a listing that would add depth 65 fails on that folder
+with "Subfolders here are more than 64 levels deep and are not shown." Until 22
+November 2026 the tree refused to list a folder at depth 63, one level short of
+the projection's bound. Depth costs nothing else: every occurrence is charged
+once for its own entry, never for its path, and a listing returns its permit
+when its result is applied, so a 64-level chain holds one occurrence per level
+and no permit between levels.
+
 These are admission budgets, not an exact process RSS guarantee. Old presentation
 snapshots have separate lifecycle requirements; provider reference tables are
 reclaimed down to the model as described next.
@@ -176,6 +188,19 @@ its single debug synthetic aggregate. These opt-level 0 synthetic-provider
 fixtures measure no filesystem I/O or UI paint, and retained model bounds do not
 establish fast large-tree expansion. See
 [recursive expansion](TREE_PANEL.md#retry-diagnostics-and-recursive-expansion).
+
+A budget that stops the walk does not undo its batch: the listings it made
+within the budgets are published, and the folder it stopped at shows its
+failure. Only a display projection that cannot hold the batch rolls it back to
+the last publication. Until 22 November 2026 every stop rolled the batch back,
+so a 66-level chain showed only what the batches before the refused depth-63
+listing had published: down to depth 48 in the reported runs, whose first
+50 ms batch listed the clicked folder and depths 1 to 47. A folder refused by
+the depth budget stays local to its row, like a denied folder, and the walk
+goes on with the others. The walk's final `TreeEvent::Rejected` for its request
+names the row where it stopped and says why: the first folder the depth budget
+left out and how many others, or the folder where another budget, a change or
+an admission failure stopped it.
 
 Folder-only listing does not spend its retained-row quota on regular files, but
 still validates every observed token before filtering. A separate 32 MiB token

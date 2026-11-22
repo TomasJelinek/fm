@@ -871,7 +871,9 @@ impl Session {
             Err(error) => {
                 match pending.origin {
                     WorkOrigin::Recursive { .. } => {
-                        self.pause_recursive(&error);
+                        // Pausing publishes the walk's batch; no listing runs for it.
+                        drop(permit);
+                        self.pause_recursive(&error)?;
                     }
                     WorkOrigin::User { row } => self.reject_branch(pending, row, &error),
                     WorkOrigin::Maintenance => return Err(error),
@@ -888,8 +890,9 @@ impl Session {
         }))
     }
 
-    /// A user's branch request whose listing cannot start (for example a node at
-    /// the depth limit) stays local to that row. Probes are optional and silent.
+    /// A user's branch request whose listing cannot start (for example while every
+    /// request permit of the tree is held) stays local to that row. Probes are
+    /// optional and silent.
     fn reject_branch(&mut self, pending: PendingBranch, row: TreeRowId, error: &ProviderError) {
         if self.versions.get(&pending.branch) == Some(&pending.version) {
             self.versions.remove(&pending.branch);

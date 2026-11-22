@@ -27,6 +27,10 @@ pub struct BranchId {
 pub struct TreeLimits {
     pub nodes: usize,
     pub bytes: usize,
+    /// The deepest row: the shown folder's own entries are depth 0, the folders
+    /// inside them depth 1 (`TreeProjection::MAX_DEPTH` counts the same way). A
+    /// folder at this depth still lists, so an empty one expands; a listing that
+    /// would add a deeper row is refused on that folder instead.
     pub depth: usize,
     pub requests: usize,
 }
@@ -625,7 +629,8 @@ impl DirectoryTree {
         if node.entry.kind != EntryKind::File {
             return Err(ProviderError::Unsupported);
         }
-        if node.depth >= self.limits.depth {
+        // The container's entries would be one row deeper than this file.
+        if node.depth > self.limits.depth {
             return Err(ProviderError::ResourceLimited);
         }
         let targets = self
@@ -783,6 +788,20 @@ impl DirectoryTree {
         self.root
     }
 
+    /// The deepest row this tree admits; the shown folder's own entries are depth 0.
+    pub(crate) fn depth_limit(&self) -> usize {
+        self.limits.depth
+    }
+
+    /// Whether the branch's last listing was refused only because its folders
+    /// would be deeper than the depth budget allows.
+    pub(crate) fn depth_limited(&self, branch: BranchId) -> bool {
+        self.nodes.get(&branch).is_some_and(|node| {
+            node.depth > self.limits.depth
+                && node.error.as_ref() == Some(&depth_error(self.limits.depth))
+        })
+    }
+
     pub fn request(
         &mut self,
         branch: BranchId,
@@ -803,7 +822,12 @@ impl DirectoryTree {
         if kind == TreeRequest::Probe && node.expanded {
             return Err(ProviderError::Unsupported);
         }
-        if node.depth >= self.limits.depth {
+        // Rows are one level shallower than nodes: the hidden root is node depth 0,
+        // its entries node depth 1 and rows of depth 0. A folder on the deepest
+        // admitted row lists too, so an empty one expands, and `install` refuses a
+        // listing that would add a deeper row. Deeper nodes are never created; this
+        // only guards that invariant.
+        if node.depth.saturating_sub(1) > self.limits.depth {
             return Err(ProviderError::ResourceLimited);
         }
         let next = self
@@ -952,6 +976,13 @@ impl DirectoryTree {
             .nodes
             .get(&branch)
             .ok_or(ProviderError::StaleReference)?;
+        // A folder on the deepest admitted row lists only while it has no folder of
+        // its own: those would be one row too deep. Refuse the whole listing, as
+        // every other budget does, instead of hiding them or calling the folder empty.
+        // The parent's node depth is its children's row depth.
+        if parent.depth > self.limits.depth && !rows.is_empty() {
+            return Err(depth_error(self.limits.depth));
+        }
         let existing = parent
             .children
             .iter()
@@ -1222,6 +1253,14 @@ fn bounded_error(mut error: ProviderError, available: usize) -> ProviderError {
         *message = message[..message.floor_char_boundary(available.min(4096))].to_owned();
     }
     error
+}
+
+/// The refusal of a folder on the deepest admitted row that has folders of its own.
+fn depth_error(limit: usize) -> ProviderError {
+    let levels = if limit == 1 { "level" } else { "levels" };
+    ProviderError::Failed(format!(
+        "Subfolders here are more than {limit} {levels} deep and are not shown."
+    ))
 }
 
 #[cfg(test)]

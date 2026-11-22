@@ -449,18 +449,36 @@ fn ancestor_cycle_is_an_error_and_failed_refresh_retains_previous_rows() {
 
 #[test]
 fn node_and_depth_budgets_fail_atomically_and_do_not_turn_into_empty() {
-    let limits = TreeLimits {
-        nodes: 4,
+    // Depth 1 admits the root's folders (depth 0) and the folders inside them. One
+    // of those still lists, so an empty one expands. Folders inside it would be
+    // depth 2: that listing fails on its own row, adds nothing and does not call
+    // the folder empty.
+    let (_registry, graph, mut tree) = fixture(TreeLimits {
         depth: 1,
         ..TreeLimits::default()
-    };
-    let (_registry, _graph, mut tree) = fixture(limits);
+    });
     let first = row(&tree, 1).id;
-    assert!(matches!(
-        tree.request(first, TreeRequest::Expand),
-        Err(ProviderError::ResourceLimited)
-    ));
-    assert_eq!(row(&tree, 1).disclosure, Disclosure::Unknown);
+    run(&mut tree, Some(first), TreeRequest::Expand);
+    let inner = row(&tree, 4);
+    assert_eq!(inner.depth, 1);
+    graph.set(4, vec![directory(8)]);
+    let rows = tree.rows().len();
+    run(&mut tree, Some(inner.id), TreeRequest::Expand);
+    assert_eq!(tree.rows().len(), rows);
+    let refused = row(&tree, 4);
+    assert_eq!(refused.disclosure, Disclosure::Failed);
+    assert!(!refused.expanded);
+    assert!(
+        matches!(&refused.error, Some(ProviderError::Failed(reason))
+            if reason == "Subfolders here are more than 1 level deep and are not shown."),
+        "{:?}",
+        refused.error
+    );
+    super::tree::tests::assert_payload_accounting(&tree);
+    graph.set(4, Vec::new());
+    run(&mut tree, Some(inner.id), TreeRequest::Expand);
+    assert_eq!(row(&tree, 4).disclosure, Disclosure::Empty);
+    assert!(row(&tree, 4).expanded);
     let (_registry, _graph, mut tree) = fixture(TreeLimits {
         nodes: 4,
         ..TreeLimits::default()
@@ -470,6 +488,115 @@ fn node_and_depth_budgets_fail_atomically_and_do_not_turn_into_empty() {
     assert_eq!(tree.rows().len(), 3);
     assert_eq!(row(&tree, 1).disclosure, Disclosure::Failed);
     assert_eq!(row(&tree, 1).error, Some(ProviderError::ResourceLimited));
+}
+
+/// Nest `nested` folders inside the root's first folder entry-1 (depth 0):
+/// entry-101 at depth 1, entry-102 at depth 2 and so on. The deepest holds one
+/// more folder when `deeper` is set.
+fn chain(graph: &Graph, nested: u64, deeper: bool) -> Vec<u64> {
+    let mut tokens = vec![1];
+    for value in 101..=100 + nested {
+        graph.set(*tokens.last().unwrap(), vec![directory(value)]);
+        tokens.push(value);
+    }
+    let last = *tokens.last().unwrap();
+    graph.set(
+        last,
+        if deeper {
+            vec![directory(101 + nested)]
+        } else {
+            Vec::new()
+        },
+    );
+    tokens
+}
+
+/// Expand each folder of the chain in turn with exact payload accounting after
+/// every listing; the first whose listing fails ends it with its depth and error.
+fn expand_chain(tree: &mut DirectoryTree, tokens: &[u64]) -> Option<(usize, ProviderError)> {
+    for (depth, token) in tokens.iter().enumerate() {
+        let folder = row(tree, *token);
+        assert_eq!(folder.depth, depth);
+        run(tree, Some(folder.id), TreeRequest::Expand);
+        super::tree::tests::assert_payload_accounting(tree);
+        let folder = row(tree, *token);
+        if let Some(error) = folder.error {
+            assert!(!folder.expanded, "depth {depth}");
+            return Some((depth, error));
+        }
+        assert!(folder.expanded, "depth {depth}");
+    }
+    None
+}
+
+#[test]
+fn a_64_level_chain_takes_one_occurrence_per_level_and_returns_every_permit() {
+    // The hidden root, the root's three entries and the chain's 64 nested folders.
+    let occurrences = 4 + 64;
+    let (_registry, graph, mut tree) = fixture(TreeLimits {
+        nodes: occurrences,
+        ..TreeLimits::default()
+    });
+    let tokens = chain(&graph, 64, false);
+    assert_eq!(tokens.len(), 65);
+    assert_eq!(expand_chain(&mut tree, &tokens), None);
+    let deepest = row(&tree, *tokens.last().unwrap());
+    assert_eq!(deepest.depth, 64);
+    assert_eq!(deepest.disclosure, Disclosure::Empty);
+    assert_eq!(tree.rows().len(), occurrences - 1);
+    // No level kept its listing permit: all eight are free again.
+    let held = (0..8)
+        .map(|_| tree.request(deepest.id, TreeRequest::Expand).unwrap())
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        tree.request(deepest.id, TreeRequest::Expand),
+        Err(ProviderError::ResourceLimited)
+    ));
+    drop(held);
+
+    // One occurrence fewer: the listing that would add depth 64 fails at depth 63.
+    let (_registry, graph, mut tree) = fixture(TreeLimits {
+        nodes: occurrences - 1,
+        ..TreeLimits::default()
+    });
+    let tokens = chain(&graph, 64, false);
+    assert_eq!(
+        expand_chain(&mut tree, &tokens),
+        Some((63, ProviderError::ResourceLimited))
+    );
+    assert_eq!(tree.rows().len(), occurrences - 2);
+}
+
+#[test]
+fn folders_below_depth_64_fail_on_the_deepest_folder_without_partial_rows() {
+    let (_registry, graph, mut tree) = fixture(TreeLimits::default());
+    // A folder at depth 64 with a folder of its own; then, emptied, expanded again.
+    for deeper in [true, false] {
+        let tokens = chain(&graph, 64, deeper);
+        let failure = expand_chain(&mut tree, &tokens);
+        let deepest = row(&tree, *tokens.last().unwrap());
+        assert_eq!(deepest.depth, 64);
+        assert!(
+            tree.rows().iter().all(|row| row.depth <= 64),
+            "nothing is shown below depth 64"
+        );
+        assert_eq!(tree.rows().len(), 67);
+        if deeper {
+            assert_eq!(
+                failure,
+                Some((
+                    64,
+                    ProviderError::Failed(
+                        "Subfolders here are more than 64 levels deep and are not shown.".into()
+                    )
+                ))
+            );
+            assert_eq!(deepest.disclosure, Disclosure::Failed);
+        } else {
+            assert_eq!(failure, None);
+            assert_eq!(deepest.disclosure, Disclosure::Empty);
+        }
+    }
 }
 
 fn issued(tree: &DirectoryTree) -> usize {

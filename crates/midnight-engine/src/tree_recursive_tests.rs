@@ -951,3 +951,224 @@ fn recursive_identity_resolution_never_replaces_captured_logical_action_paths() 
         &fixture.graph.root_path.join("z-parent").join("child")
     );
 }
+
+/// Nest folders “01” to `nested` inside the root folder “z-parent” (depth 0), so
+/// that each folder's name is its depth.
+fn chain(fixture: &Fixture, nested: u64) {
+    let mut rows = fixture.graph.rows.lock().unwrap();
+    let mut parent = 1;
+    for level in 1..=nested {
+        let value = 100 + level;
+        rows.insert(parent, vec![directory(value, &format!("{level:02}"))]);
+        parent = value;
+    }
+}
+
+/// The chain's rows in order: “z-parent”, then “01” and deeper.
+fn chain_rows(view: &TreeProjection) -> Vec<&midnight_core::TreeDisplayRow> {
+    view.rows
+        .iter()
+        .filter(|row| {
+            row.entry.display_name == "z-parent" || row.entry.display_name.parse::<u8>().is_ok()
+        })
+        .collect()
+}
+
+/// The deepest shown row of the chain: its name, depth and disclosure.
+fn deepest(levels: &[&midnight_core::TreeDisplayRow]) -> Option<(String, usize, String)> {
+    levels.last().map(|row| {
+        (
+            row.entry.display_name.clone(),
+            row.depth,
+            format!("{:?}", row.disclosure),
+        )
+    })
+}
+
+/// Drain the walk like `drain`. The listing numbered `yield_after` ends its batch
+/// as the 50 ms guard did in the reported runs: their first batch listed
+/// “z-parent” to “47”, so “48” was shown unexpanded.
+fn drain_yielding_after(fixture: &mut Fixture, yield_after: usize, limit: usize) -> usize {
+    let mut completed = 0;
+    loop {
+        let view = fixture.session.projection().clone();
+        assert!(fixture.session.commit(&view));
+        let Some(job) = fixture.session.take_work().unwrap() else {
+            break;
+        };
+        completed += 1;
+        complete_recursive(fixture, job, completed == yield_after);
+        assert!(
+            completed <= limit,
+            "recursive work must not spin or revisit branches"
+        );
+    }
+    completed
+}
+
+#[test]
+fn ctrl_click_expands_every_level_of_a_64_level_chain() {
+    for yield_after in [48, usize::MAX] {
+        let mut fixture = fixture();
+        chain(&fixture, 64);
+        expand_recursive(&mut fixture, "z-parent", 1);
+        let listed = drain_yielding_after(&mut fixture, yield_after, 65);
+        let view = fixture.session.projection().clone();
+        let levels = chain_rows(&view);
+        assert_eq!(
+            levels.len(),
+            65,
+            "every level is shown; the deepest shown: {:?}",
+            deepest(&levels)
+        );
+        for (depth, row) in levels.iter().enumerate() {
+            assert_eq!(row.depth, depth);
+            // A folder confirmed empty has no expanded display affordance.
+            assert!(
+                row.expanded || depth == 64,
+                "{} is expanded",
+                row.entry.display_name
+            );
+        }
+        assert_eq!(levels[64].entry.display_name, "64");
+        assert_eq!(levels[64].disclosure, midnight_core::TreeDisclosure::Empty);
+        assert_eq!(listed, 65, "every level is listed once");
+        assert!(
+            fixture.session.take_recursive_notice().is_none(),
+            "nothing was left out"
+        );
+        assert!(fixture.session.take_work().unwrap().is_none());
+    }
+}
+
+#[test]
+fn ctrl_click_on_a_66_level_chain_shows_64_levels_and_says_where_and_why_it_stopped() {
+    for yield_after in [48, usize::MAX] {
+        let mut fixture = fixture();
+        chain(&fixture, 66);
+        expand_recursive(&mut fixture, "z-parent", 1);
+        let listed = drain_yielding_after(&mut fixture, yield_after, 65);
+        let view = fixture.session.projection().clone();
+        let levels = chain_rows(&view);
+        assert_eq!(
+            levels.len(),
+            65,
+            "“64” is the deepest shown, “65” and “66” are not: the deepest shown is {:?}",
+            deepest(&levels)
+        );
+        assert_eq!(listed, 65, "“64” is listed, nothing deeper");
+        assert!(levels[..64].iter().all(|row| row.expanded));
+        let last = levels[64];
+        assert_eq!(last.depth, 64);
+        assert_eq!(last.entry.display_name, "64");
+        assert_eq!(last.disclosure, midnight_core::TreeDisclosure::Failed);
+        assert_eq!(
+            last.error.as_deref(),
+            Some("Subfolders here are more than 64 levels deep and are not shown.")
+        );
+        let Some(TreeEvent::Rejected {
+            stamp,
+            request,
+            row,
+            error,
+        }) = fixture.session.take_recursive_notice()
+        else {
+            panic!("an incomplete expansion is reported");
+        };
+        assert_eq!(
+            (stamp, request, row),
+            (view.stamp, TreeRequestId(1), last.id)
+        );
+        assert_eq!(
+            error.as_str(),
+            "Recursive expansion is incomplete: the tree shows at most 64 levels of \
+             subfolders, so the folders inside “64” are not shown."
+        );
+        assert_eq!(
+            fixture.session.projection().stamp.session,
+            view.stamp.session
+        );
+        assert!(fixture.session.take_work().unwrap().is_none());
+    }
+}
+
+#[test]
+fn a_depth_stop_stays_on_its_folder_while_the_walk_expands_the_others() {
+    let mut fixture = fixture();
+    chain(&fixture, 66);
+    {
+        let mut rows = fixture.graph.rows.lock().unwrap();
+        // “63” holds a second folder with a folder of its own, and “z-parent”
+        // a shallow folder that the walk reaches after the chain.
+        rows.get_mut(&163).unwrap().push(directory(300, "64b"));
+        rows.insert(300, vec![directory(301, "65b")]);
+        rows.get_mut(&1).unwrap().push(directory(310, "side"));
+        rows.insert(310, vec![directory(311, "side-child")]);
+    }
+    expand_recursive(&mut fixture, "z-parent", 1);
+    assert_eq!(drain(&mut fixture, 70), 68);
+    let view = fixture.session.projection().clone();
+    let named = |name: &str| view.rows.iter().find(|row| row.entry.display_name == name);
+    for name in ["64", "64b"] {
+        assert_eq!(
+            named(name).unwrap().disclosure,
+            midnight_core::TreeDisclosure::Failed
+        );
+    }
+    assert!(named("65").is_none() && named("65b").is_none());
+    assert!(named("side").unwrap().expanded);
+    assert!(named("side-child").is_some());
+    let Some(TreeEvent::Rejected { row, error, .. }) = fixture.session.take_recursive_notice()
+    else {
+        panic!("an incomplete expansion is reported");
+    };
+    assert_eq!(row, named("64").unwrap().id, "the first folder it left out");
+    assert_eq!(
+        error.as_str(),
+        "Recursive expansion is incomplete: the tree shows at most 64 levels of \
+         subfolders, so the folders inside “64” and 1 other folder are not shown."
+    );
+}
+
+#[test]
+fn a_capacity_stop_keeps_what_the_walk_listed_and_names_the_folder_it_stopped_at() {
+    let mut fixture = fixture();
+    let session = fixture.session.projection().stamp.session;
+    {
+        let mut rows = fixture.graph.rows.lock().unwrap();
+        rows.insert(1, vec![directory(100, "kept"), directory(101, "wide")]);
+        rows.insert(100, vec![directory(102, "kept-child")]);
+        // With the four retained occurrences around it, this listing passes the
+        // 10,000-occurrence budget.
+        rows.insert(
+            101,
+            (1_000..11_000)
+                .map(|value| directory(value, &format!("w{value}")))
+                .collect(),
+        );
+    }
+    expand_recursive(&mut fixture, "z-parent", 1);
+    assert_eq!(drain(&mut fixture, 8), 4);
+    let view = fixture.session.projection().clone();
+    let named = |name: &str| view.rows.iter().find(|row| row.entry.display_name == name);
+    assert!(named("z-parent").unwrap().expanded);
+    assert!(named("kept").unwrap().expanded);
+    assert!(named("kept-child").is_some());
+    let wide = named("wide").unwrap();
+    assert_eq!(wide.disclosure, midnight_core::TreeDisclosure::Failed);
+    assert!(named("w1000").is_none(), "no partial listing");
+    let Some(TreeEvent::Rejected {
+        stamp, row, error, ..
+    }) = fixture.session.take_recursive_notice()
+    else {
+        panic!("an incomplete expansion is reported");
+    };
+    assert_eq!((stamp, row), (view.stamp, wide.id));
+    assert_eq!(
+        error.as_str(),
+        "Recursive expansion is incomplete: it stopped at “wide” because the tree \
+         resource budget is exhausted."
+    );
+    assert_eq!(view.stamp.session, session);
+    assert!(fixture.session.take_work().unwrap().is_none());
+}

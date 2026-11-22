@@ -233,6 +233,74 @@ fn recursive_disclosure_expands_open_rows_while_ordinary_disclosure_collapses() 
 }
 
 #[test]
+fn an_incomplete_ctrl_click_expansion_says_in_a_notice_where_it_stopped_and_why() {
+    let (mut p, root) = fixture();
+    p.apply_with_sender(
+        Event::Tree(Box::new(TreeEvent::Published(publication(
+            root, 1, true, false,
+        )))),
+        &|_| true,
+    );
+    let view = p.panes[0].tree_view().unwrap().clone();
+    let identity = p.panes[0].row_identity(&view.rows[0].entry);
+    let sent = RefCell::new(Vec::new());
+    let send = |command: Command| {
+        if let Command::Tree(command) = &command
+            && let TreeCommand::Branch {
+                request, action, ..
+            } = command.as_ref()
+        {
+            sent.borrow_mut().push((*request, *action));
+        }
+        true
+    };
+    p.disclose_tree_recursive(PaneId::Left, &identity, &send);
+    p.disclose_tree(PaneId::Left, &identity, &send);
+    let (recursive, ordinary) = match sent.borrow().as_slice() {
+        [
+            (recursive, TreeBranchAction::ExpandRecursive),
+            (ordinary, TreeBranchAction::Collapse),
+        ] => (*recursive, *ordinary),
+        other => panic!("unexpected branch requests: {other:?}"),
+    };
+    let rejected = |request, row, reason: &str| {
+        Event::Tree(Box::new(TreeEvent::Rejected {
+            stamp: view.stamp,
+            request,
+            row,
+            error: TreeDiagnostic::new(reason),
+        }))
+    };
+    // An ordinary row rejection stays on the pane's error line.
+    let busy = "Filesystem resource budget is exhausted.";
+    p.apply_with_sender(rejected(ordinary, TreeRowId(7), busy), &|_| true);
+    assert!(p.desktop.notice.is_none());
+    assert_eq!(p.panel_error_text(PaneId::Left), busy);
+    // The walk's reply names the row of the folder where it stopped.
+    let reason = "Recursive expansion is incomplete: the tree shows at most 64 levels of \
+                  subfolders, so the folders inside “child” are not shown.";
+    p.apply_with_sender(rejected(recursive, TreeRowId(11), reason), &|_| true);
+    assert_eq!(
+        p.desktop.notice,
+        Some(("Expansion incomplete".to_owned(), reason.to_owned()))
+    );
+    assert_eq!(
+        p.desktop.notice_path,
+        view.rows[1].entry.path.to_str().unwrap()
+    );
+    assert!(p.desktop.notice_error);
+    assert_eq!(
+        p.panel_error_text(PaneId::Left),
+        "",
+        "the notice replaces the error line instead of repeating it"
+    );
+    // One walk reports once.
+    p.desktop.notice = None;
+    p.apply_with_sender(rejected(recursive, TreeRowId(11), reason), &|_| true);
+    assert!(p.desktop.notice.is_none());
+}
+
+#[test]
 fn recursive_disclosure_intent_is_retired_by_navigation_before_commit() {
     let (mut p, root) = flat_fixture(EntryKind::Directory);
     let identity = p.panes[0].row_identity(&root.entries[0]);

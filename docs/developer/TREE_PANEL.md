@@ -246,8 +246,17 @@ remain local to the affected branch. Known-empty directory links have no synthet
 `+` expander.
 
 Allocation, work/publication and stale-occurrence guards remain unchanged.
-Capacity saturation preserves the valid published tree and reports paused/
-incomplete expansion without a retry spin. Paging beyond the retained model is
+A budget stop keeps what the walk listed within the budgets, publishes it with
+the failure on the folder it stopped at, and reports the incomplete expansion
+without a retry spin; a projection overflow still restores the last published
+tree. The panel shows rows down to tree depth 64 (the shown folder's own
+entries are depth 0): a depth-64 folder with folders of its own fails on its row
+("Subfolders here are more than 64 levels deep and are not shown.") while the
+walk expands the other folders. When the walk ends early, an **Expansion
+incomplete** notice says why and shows the folder where it stopped (for the
+depth limit, the first folder it left out and how many others); like a
+navigation failure, it replaces the pane's error line for that occurrence.
+Paging beyond the retained model is
 an explicit follow-up. Architect owns the API contract, Backend owns traversal/
 cycles, and UI owns modifier/state routing. Backend's broad first run retained one
 legacy fixture failure; its refined Windows junction/Delete subset passes 11/0

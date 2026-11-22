@@ -102,6 +102,11 @@ impl ProjectionState {
         Ok(current)
     }
 
+    /// The row identity of a branch occurrence a projection has shown.
+    pub(crate) fn row(&self, branch: BranchId) -> Option<TreeRowId> {
+        self.records.get(&branch).map(|record| record.id)
+    }
+
     /// Failed unpublished projections consume their allocated identities too.
     pub(crate) fn advance_high_water(&mut self, other: &Self) {
         self.next_row = TreeRowId(self.next_row.0.max(other.next_row.0));

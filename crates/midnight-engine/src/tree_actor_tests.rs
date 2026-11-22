@@ -459,7 +459,7 @@ fn viewport_checks_do_not_displace_explicit_work_or_expand_the_queue_limit() {
 /// that deepest row.
 fn expand_to_depth_limit(fixture: &mut Fixture) -> (Arc<TreeProjection>, TreeRowId) {
     let mut parent = 1;
-    for value in 300..363 {
+    for value in 300..364 {
         fixture
             .graph
             .rows
@@ -469,7 +469,7 @@ fn expand_to_depth_limit(fixture: &mut Fixture) -> (Arc<TreeProjection>, TreeRow
         parent = value;
     }
     let mut name = "z-parent".to_owned();
-    for (request, value) in (1..).zip(300..363) {
+    for (request, value) in (1..).zip(300..364) {
         let view = fixture.session.projection().clone();
         assert!(fixture.session.commit(&view));
         let row = view
@@ -498,7 +498,7 @@ fn expand_to_depth_limit(fixture: &mut Fixture) -> (Arc<TreeProjection>, TreeRow
         .iter()
         .find(|row| row.entry.display_name == name)
         .unwrap();
-    assert_eq!(deepest.depth, 63);
+    assert_eq!(deepest.depth, 64);
     let deepest = deepest.id;
     (view, deepest)
 }
@@ -507,32 +507,57 @@ fn expand_to_depth_limit(fixture: &mut Fixture) -> (Arc<TreeProjection>, TreeRow
 fn branch_requests_at_the_depth_limit_stay_local_to_their_row() {
     let mut fixture = fixture();
     let (view, deepest) = expand_to_depth_limit(&mut fixture);
-    // An optional probe of that row is dropped silently.
+    // The folder at the deepest admitted depth holds a folder of its own.
+    fixture
+        .graph
+        .rows
+        .lock()
+        .unwrap()
+        .insert(363, vec![directory(364, "deep-364")]);
+    let shown = |view: &TreeProjection| {
+        view.rows
+            .iter()
+            .find(|row| row.id == deepest)
+            .unwrap()
+            .clone()
+    };
+    // An optional probe of that row runs: it adds no row.
     fixture.session.viewport(&view, &[deepest]).unwrap();
-    assert!(fixture.session.take_work().unwrap().is_none());
-    assert!(fixture.session.take_branch_notice().is_none());
-    // An explicit expansion is a row diagnostic, never a session failure.
+    let probe = fixture.session.take_work().unwrap().unwrap();
+    fixture
+        .session
+        .apply(probe.run(), &Cancellation::default())
+        .unwrap();
+    let view = fixture.session.projection().clone();
+    assert!(fixture.session.commit(&view));
+    assert_eq!(
+        shown(&view).disclosure,
+        midnight_core::TreeDisclosure::Collapsed
+    );
+    // An explicit expansion fails on that row, never the session, and adds nothing.
     fixture
         .session
         .branch(&view, TreeRequestId(100), deepest, BranchAction::Expand)
         .unwrap();
-    assert!(fixture.session.take_work().unwrap().is_none());
-    let Some(midnight_core::TreeEvent::Rejected {
-        stamp,
-        request,
-        row,
-        error,
-    }) = fixture.session.take_branch_notice()
-    else {
-        panic!("explicit expansion must be rejected on its row");
-    };
-    assert_eq!(
-        (stamp, request, row),
-        (view.stamp, TreeRequestId(100), deepest)
+    let job = fixture.session.take_work().unwrap().unwrap();
+    assert!(
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap(),
+        "the row failure is published"
     );
-    assert!(error.as_str().contains("resource budget"), "{error:?}");
+    let failed = fixture.session.projection().clone();
+    assert_eq!(failed.stamp.session, view.stamp.session);
+    assert_eq!(failed.rows.len(), view.rows.len());
+    let refused = shown(&failed);
+    assert_eq!(refused.disclosure, midnight_core::TreeDisclosure::Failed);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("Subfolders here are more than 64 levels deep and are not shown.")
+    );
+    assert!(fixture.session.take_branch_notice().is_none());
     assert_eq!(fixture.session.queued(), 0);
-    assert!(Arc::ptr_eq(fixture.session.projection(), &view));
 }
 
 #[test]
@@ -560,8 +585,19 @@ fn row_rejections_of_a_completion_and_the_next_request_are_both_kept() {
     cancelled.cancel();
     assert!(!fixture.session.apply(job.run(), &cancelled).unwrap());
     // The worker flushes notices only after its next pump has taken work,
-    // and that request cannot start at the depth limit.
+    // and that request cannot start while every listing permit is held.
+    let root = fixture.session.tree.root();
+    let held = (0..8)
+        .map(|_| {
+            fixture
+                .session
+                .tree
+                .request(root, TreeRequest::Refresh)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
     assert!(fixture.session.take_work().unwrap().is_none());
+    drop(held);
     let rejected = std::iter::from_fn(|| fixture.session.take_branch_notice())
         .map(|event| match event {
             midnight_core::TreeEvent::Rejected { request, row, .. } => (request, row),
