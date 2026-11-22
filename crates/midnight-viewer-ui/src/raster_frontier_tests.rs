@@ -363,7 +363,7 @@ impl Fixture {
 }
 
 fn notch(open: &OpenWindow, _: usize) {
-    assert!(raster_motion::push(open, 0.0, WHEEL));
+    assert!(raster_motion::push(open, 0.0, WHEEL, false));
 }
 
 fn key(action: &'static str) -> impl Fn(&OpenWindow, usize) {

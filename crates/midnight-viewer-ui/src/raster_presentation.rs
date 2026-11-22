@@ -14,9 +14,9 @@ pub(super) struct State {
 /// `f32` row stays precise to a small fraction of a pixel; further travel rewrites them.
 const STRIP_BASE_SCREENS: f64 = 32.0;
 
-/// What strip rows' images and sizes belong to: generation, surface, viewport, strip width
-/// and gutter width.
-type StripOwner = (u64, ViewerSurfaceId, [u32; 2], u32, u32);
+/// What strip rows' sizes belong to: viewport, strip width and gutter width. Strip IDs are
+/// unique in the process, so images are kept by ID across surfaces and files.
+type StripOwner = ([u32; 2], u32, u32);
 
 /// The shown prepared text strips. A strip keeps its image and its Slint row while it stays
 /// shown, so its texture is uploaded once however far the camera moves over it: the
@@ -59,7 +59,6 @@ impl Strips {
     fn show(
         &mut self,
         open: &OpenWindow,
-        frame: &ViewerFrame,
         info: &ViewerRasterInfo,
         bands: &ViewerRasterBands,
         prepared: &[pixel_preparation::PreparedStrip],
@@ -71,13 +70,7 @@ impl Strips {
                 .set_raster_gutter_bands(slint::ModelRc::from(self.gutter.clone()));
             self.installed = true;
         }
-        let owner = (
-            frame.generation,
-            info.surface,
-            info.viewport,
-            bands.width,
-            bands.gutter_width,
-        );
+        let owner = (info.viewport, bands.width, bands.gutter_width);
         let reach = STRIP_BASE_SCREENS * f64::from(info.viewport[1]);
         let rebase = self.base.is_none_or(|(base, old)| {
             old != owner
@@ -87,8 +80,8 @@ impl Strips {
                     .any(|band| (band.top - base).abs() > reach)
         });
         if rebase {
-            // Every row's `y` changes: rows are written again. Other content may number its
-            // strips again, so images are kept only for the same content and sizes.
+            // Every row's `y` changes: rows are written again. New sizes come with new
+            // strips; their images go.
             if self.base.is_some_and(|(_, old)| old != owner) {
                 self.images.clear();
             }
@@ -326,7 +319,7 @@ fn receive_strips(
     open.window.set_raster_viewport_height(viewport[1]);
     state.positions = [frame.horizontal_position, frame.position];
     if let Some(pixels) = prepared {
-        let created = state.strips.show(open, frame, info, bands, &pixels.strips);
+        let created = state.strips.show(open, info, bands, &pixels.strips);
         open.window.set_surface(slint::Image::default());
         open.window.set_raster_gutter(slint::Image::default());
         state.pixels = Some(key);

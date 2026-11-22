@@ -71,3 +71,48 @@ fn home_and_end_go_to_the_top_and_bottom_of_a_tall_image_and_across_a_wide_one()
     assert_eq!(pans(&inputs).last(), Some(&[0.0, -20.0]));
     manager.close_all();
 }
+
+/// With the system's animation effects off, a wheel notch and a scroll key move a tiled
+/// image (or document) at once instead of gliding.
+#[test]
+fn with_reduced_motion_a_notch_and_a_key_move_a_tiled_image_at_once() {
+    use slint::winit_030::winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    };
+    let (_runtime, manager, open, _service) = image_presentation_tests::open();
+    open.timer.stop();
+    manager.set_motion_preference(Rc::new(|| true));
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    assert!(open.window.get_tiled());
+    let scale = f64::from(open.window.window().scale_factor());
+    image_motion::observe(
+        &open,
+        &WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(
+                f64::from(open.window.get_content_left() + 20.0) * scale,
+                f64::from(open.window.get_content_top() + 20.0) * scale,
+            ),
+        },
+    );
+    let before = open.image_camera.borrow().origin;
+    image_motion::observe(
+        &open,
+        &WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        },
+    );
+    assert!(!open.image_camera.borrow().active(), "the notch glides");
+    let after = open.image_camera.borrow().origin;
+    assert!(
+        after[1] > before[1],
+        "the notch did not move: {before:?} {after:?}"
+    );
+    assert!(dispatch_key(&open, "viewer.down"));
+    assert!(!open.image_camera.borrow().active(), "the key glides");
+    assert!(open.image_camera.borrow().origin[1] > after[1]);
+    manager.close_all();
+}

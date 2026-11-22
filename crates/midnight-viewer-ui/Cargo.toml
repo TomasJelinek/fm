@@ -7,6 +7,12 @@ publish.workspace = true
 # All tests/*.rs files are modules of one binary; see tests/integration.rs.
 autotests = false
 
+[features]
+# Native wheel and focus events and system-setting overrides for the acceptance suite
+# (`src/acceptance_seams.rs`). Only crates/midnight-acceptance enables it: the
+# application and every other package build without it.
+acceptance-seams = []
+
 [dependencies]
 midnight-core.workspace = true
 midnight-viewer-engine = { path = "../midnight-viewer-engine" }

@@ -100,7 +100,7 @@ fn the_camera_glides_over_prepared_strips_without_new_pixels() {
         / f64::from(open.window.get_raster_viewport_height());
     let notch = image_motion::notch_pixels(&open, false);
     for _ in 0..10 {
-        assert!(raster_motion::push(&open, 0.0, notch));
+        assert!(raster_motion::push(&open, 0.0, notch, false));
     }
     let mut previous = open.retained_raster.borrow().camera.origin[1];
     let mut frames = 0;

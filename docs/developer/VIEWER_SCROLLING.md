@@ -83,8 +83,10 @@ backend messages and bounded coalescing; no Salamander code is copied.
 Text, source, Markdown and binary/hex retain prepared strips (`ViewerRasterBands`):
 the body and the source gutter, 256 rows each, several screens around the window
 (the [prepared text window](SCROLLING.md#prepared-text-window)). Their surface
-identity names a layout/camera context; a strip's ID names its immutable pixels, and a
-frame's pixel identity changes when its set of strips does. The frontend moves over
+identity names a layout/camera context; a strip's ID names its immutable pixels in the
+whole process (so a new surface keeps the strips its page still paints the same way, and
+the window keeps their conversions and images), and a frame's pixel identity changes
+when its set of strips does. The frontend moves over
 the strips without waiting for the backend and keeps the gutter horizontally fixed;
 each strip becomes one image when it first arrives. Strips of one viewer hold at most
 64 MiB and those of all viewers 256 MiB; the engine's budget and the UI's frame check

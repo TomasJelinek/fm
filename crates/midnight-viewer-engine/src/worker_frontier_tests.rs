@@ -510,6 +510,9 @@ pub(super) struct Window {
     pub rebases: usize,
     /// Frames on which the camera waited at a coverage edge with travel left.
     pub edge_waits: usize,
+    /// A wheel glide outside this model is still delivering its notches: the real camera's
+    /// motion is active, so its requests are not settled (`raster_camera::Camera::request`).
+    pub gliding: bool,
     position_sequence: u64,
     /// The scrollbar position the last presented frame showed, and the position request
     /// it acknowledged.
@@ -652,7 +655,7 @@ impl Window {
                 self.pending -= delivered;
             }
         }
-        let settled = self.pending == 0.0;
+        let settled = self.pending == 0.0 && !self.gliding;
         let lookahead = if self.uncovered {
             0.0
         } else {

@@ -32,6 +32,8 @@ acceptance = [
     "dep:midnight-thumbnail-host",
     "dep:midnight-viewer-engine",
     "dep:midnight-viewer-ui",
+    # The acceptance-only native input seam (wheel notches, focus, system settings).
+    "midnight-viewer-ui/acceptance-seams",
     "dep:midnight-work-budget",
     "dep:windows",
 ]

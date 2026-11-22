@@ -92,6 +92,11 @@ mod presentation_eq;
 use presentation_eq::SamePresentation;
 mod icon_view;
 mod motion_preference;
+/// Whether the system asks for less motion (Windows: animation effects off), as the panels
+/// read it; the viewer windows take it through `ViewerWindows::set_motion_preference`.
+pub fn system_reduces_motion() -> bool {
+    !motion_preference::animations_enabled()
+}
 mod presenter;
 mod scroll_input;
 mod search_input;

@@ -23,6 +23,14 @@ impl Motion {
         self.wheel.active() || self.unsent.is_some()
     }
 
+    fn push_direct(&mut self, x: f32, y: f32, now: Duration) -> bool {
+        if !self.wheel.push_direct(x, y, now) {
+            return false;
+        }
+        self.resumed_direct = false;
+        true
+    }
+
     fn push(&mut self, x: f32, y: f32, now: Duration) -> bool {
         if !self.wheel.push(x, y, now) {
             return false;
@@ -126,16 +134,17 @@ pub(super) fn admit_raw(open: &OpenWindow, x: f32, y: f32) -> bool {
     true
 }
 
-pub(super) fn push(open: &OpenWindow, x: f32, y: f32) -> bool {
+/// A wheel notch's distance, gliding unless `direct` (the system asks for less motion).
+pub(super) fn push(open: &OpenWindow, x: f32, y: f32, direct: bool) -> bool {
     if owns_raw(open) {
         let scale = open.window.window().scale_factor();
         return admit_raw(open, x * scale, y * scale);
     }
-    if let Some(queued) = raster_rebase::push(open, x, y, false) {
+    if let Some(queued) = raster_rebase::push(open, x, y, direct) {
         return queued;
     }
     if open.window.get_retained_raster() {
-        return raster_presentation::push(open, x, y, false);
+        return raster_presentation::push(open, x, y, direct);
     }
     if open.window.get_tiled()
         || open.window.get_web_mode()
@@ -143,11 +152,13 @@ pub(super) fn push(open: &OpenWindow, x: f32, y: f32) -> bool {
     {
         return false;
     }
-    if !open
-        .raster_motion
-        .borrow_mut()
-        .push(x, y, image_motion::now(open))
-    {
+    let now = image_motion::now(open);
+    let pushed = if direct {
+        open.raster_motion.borrow_mut().push_direct(x, y, now)
+    } else {
+        open.raster_motion.borrow_mut().push(x, y, now)
+    };
+    if !pushed {
         return false;
     }
     open.text_position.borrow_mut().cancel();

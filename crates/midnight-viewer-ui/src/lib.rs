@@ -1,6 +1,8 @@
 //! Thin UI adapters. Reading, parsing, search, layout and selection run on the backend.
 #![deny(unsafe_code)]
 
+#[cfg(feature = "acceptance-seams")]
+pub mod acceptance_seams;
 mod appearance;
 #[cfg(test)]
 mod control_sync_tests;
@@ -90,6 +92,11 @@ pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
 pub type OpenReady = Box<dyn FnOnce(Result<(), String>)>;
 type PreferencesListener = Rc<dyn Fn(ViewerPreferenceChange)>;
 type PreferencesRelay = Rc<RefCell<PreferencesListener>>;
+/// Whether the system asks for less motion, as the host reads it (`set_motion_preference`).
+type MotionPreference = Rc<RefCell<Rc<dyn Fn() -> bool>>>;
+/// A window's native observer: the closure winit's events reach (`on_winit_window_event`).
+type NativeObserver =
+    Rc<RefCell<dyn FnMut(&slint::winit_030::winit::event::WindowEvent) -> EventResult>>;
 type InputSender = Rc<dyn Fn(ViewerInput) -> bool>;
 
 #[derive(Default)]
@@ -121,6 +128,7 @@ pub struct ViewerWindows {
     windows: RefCell<Vec<Rc<OpenWindow>>>,
     preferences_listener: PreferencesRelay,
     appearance: RefCell<Option<appearance::AppAppearance>>,
+    motion_preference: MotionPreference,
 }
 
 struct OpenWindow {
@@ -149,6 +157,7 @@ struct OpenWindow {
     /// A refused request restores this authoritative value.
     mode_index: Cell<i32>,
     preferences_listener: PreferencesRelay,
+    motion_preference: MotionPreference,
     image_info: RefCell<Option<ViewerImageInfo>>,
     document_layout: RefCell<Option<DocumentLayoutIntent>>,
     font_catalog_ready: Cell<bool>,
@@ -164,6 +173,9 @@ struct OpenWindow {
     text_position: RefCell<text_position::TextPosition>,
     web_native: RefCell<web_input::Native>,
     key_resolver: RefCell<KeyResolver>,
+    /// The native observer and frames of the acceptance seams (`acceptance_seams`).
+    #[cfg(feature = "acceptance-seams")]
+    seam: acceptance_seams::Seam,
 }
 
 impl OpenWindow {
@@ -284,11 +296,20 @@ impl ViewerWindows {
             windows: RefCell::new(Vec::new()),
             preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
             appearance: RefCell::new(None),
+            motion_preference: Rc::new(RefCell::new(Rc::new(|| false))),
         }
     }
 
     pub fn set_preferences_listener(&self, listener: Rc<dyn Fn(ViewerPreferenceChange)>) {
         *self.preferences_listener.borrow_mut() = listener;
+    }
+
+    /// Whether the system asks for less motion (Windows: animation effects off), as the
+    /// host reads it. Each window asks with its first native event and whenever it gains
+    /// the focus; wheel notches and scroll keys then move at once, without a glide, and
+    /// no touchpad momentum is synthesised. Without a source, motion is full.
+    pub fn set_motion_preference(&self, source: Rc<dyn Fn() -> bool>) {
+        *self.motion_preference.borrow_mut() = source;
     }
 
     /// The user's number format, read when a zoom percentage is typed: its decimal
@@ -495,6 +516,7 @@ impl ViewerWindows {
             modes: RefCell::new(Vec::new()),
             mode_index: Cell::new(0),
             preferences_listener: self.preferences_listener.clone(),
+            motion_preference: self.motion_preference.clone(),
             image_info: RefCell::new(None),
             document_layout: RefCell::new(None),
             font_catalog_ready: Cell::new(false),
@@ -510,6 +532,8 @@ impl ViewerWindows {
             text_position: RefCell::new(Default::default()),
             web_native: RefCell::new(Default::default()),
             key_resolver: RefCell::new(keys.clone()),
+            #[cfg(feature = "acceptance-seams")]
+            seam: Default::default(),
         });
         bind(&open);
         preferences::present(&open);
@@ -1424,6 +1448,7 @@ fn observe_native_content(
     // itself, and a new gesture must cancel older motion before its first report.
     image_motion::bookkeeping(open, event);
     ancillary.set_wheel_setting(image_motion::wheel_setting(open));
+    ancillary.set_reduce_motion(image_motion::reduce_motion(open));
     let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
     // Touchpad lines (X11) reach the content's pixel path without wheel easing.
     let touchpad = ancillary.source() == midnight_ui_input::WheelSource::Touchpad;
@@ -1523,12 +1548,21 @@ fn bind(open: &Rc<OpenWindow>) {
     let native = Rc::new(RefCell::new(midnight_ui_input::ShortcutState::default()));
     let weak = Rc::downgrade(open);
     let native_state = native.clone();
-    let mut ancillary_scroll = midnight_ui_input::NativeScroll::new(&open.window);
-    bind_kinetic(open, &mut ancillary_scroll);
-    open.window.window().on_winit_window_event(move |_, event| {
+    let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
+    bind_kinetic(open, &mut scroll);
+    let scroll = Rc::new(RefCell::new(scroll));
+    let ancillary = scroll.clone();
+    // Native keys make native shortcuts authoritative over Slint's logical keys, so only a
+    // window that winit backs takes them: the acceptance seams' wheel and focus events
+    // leave a software window's Slint keys alone. Checked with the first event.
+    let winit_backed = Cell::new(None);
+    // Winit's events reach this observer; the acceptance seams hand it the same events on
+    // Slint's software platform, where winit does not run (`acceptance_seams`).
+    let observe = move |event: &slint::winit_030::winit::event::WindowEvent| {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        let mut ancillary_scroll = ancillary.borrow_mut();
         if let slint::winit_030::winit::event::WindowEvent::Focused(active) = event {
             appearance::activation_changed(&open, *active);
         }
@@ -1540,10 +1574,17 @@ fn bind(open: &Rc<OpenWindow>) {
             ancillary_scroll.cancel();
             return EventResult::PreventDefault;
         }
-        let consumed = native_state.borrow_mut().handle(event, |chord| {
-            let action = (open.key_resolver.borrow())(&chord, !open.window.get_content_focused());
-            action.is_some_and(|action| dispatch_keyboard_shortcut(&open, &action))
+        let winit = winit_backed.get().unwrap_or_else(|| {
+            let backed = open.window.window().has_winit_window();
+            winit_backed.set(Some(backed));
+            backed
         });
+        let consumed = winit
+            && native_state.borrow_mut().handle(event, |chord| {
+                let action =
+                    (open.key_resolver.borrow())(&chord, !open.window.get_content_focused());
+                action.is_some_and(|action| dispatch_keyboard_shortcut(&open, &action))
+            });
         if consumed {
             ancillary_scroll.cancel();
             return EventResult::PreventDefault;
@@ -1558,6 +1599,15 @@ fn bind(open: &Rc<OpenWindow>) {
         } else {
             EventResult::Propagate
         }
+    };
+    let observer: NativeObserver = Rc::new(RefCell::new(observe));
+    #[cfg(feature = "acceptance-seams")]
+    acceptance_seams::install(open, observer.clone(), scroll);
+    open.window.window().on_winit_window_event(move |_, event| {
+        // Winit delivers one event at a time: a nested one would find the observer busy.
+        observer
+            .try_borrow_mut()
+            .map_or(EventResult::Propagate, |mut observe| (*observe)(event))
     });
     let weak = Rc::downgrade(open);
     open.window.on_input_key(move |event, search| {
@@ -1764,7 +1814,9 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
     if let ViewerInput::Scroll { x, y } = input {
         let scale = open.window.window().scale_factor();
         if open.window.get_tiled() {
-            return image_motion::push(open, x / scale, y / scale, false);
+            // A key glides over a tiled image unless the system asks for less motion.
+            let direct = image_motion::reduce_motion(open);
+            return image_motion::push(open, x / scale, y / scale, direct);
         }
         if !raster_motion::owns_raw(open)
             && open.window.get_retained_raster()

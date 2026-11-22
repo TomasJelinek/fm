@@ -150,6 +150,8 @@ pub(crate) fn install(
     *retirement = Some(service.image_spare_retirement());
     let image_preparation = Rc::new(ImagePreparation::new(service.clone()));
     let viewers = Rc::new(ViewerWindows::new(service));
+    // Viewer windows move at once when the system asks for less motion, as the panels do.
+    viewers.set_motion_preference(Rc::new(midnight_ui::system_reduces_motion));
     // A typed zoom percentage uses the user's decimal separator.
     let locale = presenter.clone();
     viewers.set_number_locale(Rc::new(move || {

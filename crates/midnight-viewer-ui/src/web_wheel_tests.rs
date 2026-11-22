@@ -510,3 +510,72 @@ fn touchpad_lines_and_acting_wheels_reach_the_page_at_once() {
     }
     manager.close_all();
 }
+
+/// With the system's animation effects off (`ViewerWindows::set_motion_preference`), a
+/// notch reaches the text viewer and the page whole on the next frame, without a glide.
+#[test]
+fn with_reduced_motion_a_notch_moves_whole_on_the_next_frame() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    manager.set_motion_preference(Rc::new(|| true));
+    for web in [false, true] {
+        if web {
+            fixture.web();
+        } else {
+            fixture.text();
+        }
+        let distance = notch_distance(&fixture.open)[1] * fixture.scale();
+        fixture.native(notch(-1.0));
+        let mut frames = vec![sum(&fixture.take())];
+        for _ in 0..30 {
+            frames.push(sum(&fixture.frame(false)));
+        }
+        let moving: Vec<_> = frames
+            .iter()
+            .enumerate()
+            .filter(|(_, delta)| delta[1] != 0.0)
+            .collect();
+        assert_eq!(moving.len(), 1, "web {web}: {frames:?}");
+        assert!(
+            moving[0].0 <= 1,
+            "web {web}: moved first on frame {}",
+            moving[0].0
+        );
+        assert!(
+            (moving[0].1[1] - distance).abs() < 0.5,
+            "web {web}: {} of {distance}",
+            moving[0].1[1]
+        );
+    }
+    manager.close_all();
+}
+
+/// With the system's animation effects off, a touchpad flick over the page stops with the
+/// finger: no momentum is synthesised.
+#[test]
+fn with_reduced_motion_a_touchpad_flick_has_no_momentum() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    manager.set_motion_preference(Rc::new(|| true));
+    fixture.web();
+    for _ in 0..6 {
+        advance_time(Duration::from_millis(10));
+        fixture.native(wheel(
+            MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -20.0)),
+            TouchPhase::Moved,
+        ));
+    }
+    advance_time(Duration::from_millis(10));
+    fixture.native(wheel(
+        MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 0.0)),
+        TouchPhase::Ended,
+    ));
+    fixture.take();
+    let mut sent = Vec::new();
+    for _ in 0..30 {
+        sent.extend(fixture.frame(true));
+    }
+    assert!(
+        sent.is_empty(),
+        "momentum after the finger lifted: {sent:?}"
+    );
+    manager.close_all();
+}

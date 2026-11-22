@@ -1984,5 +1984,48 @@ fn retained_scrollbar_during_uncompleted_rebase_cannot_acknowledge_the_speculati
     );
 }
 
+/// Prepared strips outlive a new raster context and are kept where the page paints their
+/// rows the same way (`worker_bands.rs`). A Markdown line height follows the font size, so
+/// a new font family keeps every row where it was: its strips must all be painted again.
+#[test]
+fn a_new_font_with_the_same_line_height_paints_every_strip_again() {
+    let (mut worker, output) = worker();
+    worker.mode = viewer::MODE_DOCUMENT;
+    worker.modes = vec![viewer::MODE_DOCUMENT];
+    let text: String = (0..120).map(|row| format!("row {row:03} café\n")).collect();
+    worker.length = text.len() as u64;
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+    worker.appearance.family = "serif".into();
+    assert!(worker.set_page(fragment(&text, 0, text.len()), &output));
+    let strips = |frame: &ViewerFrame| -> Vec<(f64, u64)> {
+        frame
+            .raster
+            .as_ref()
+            .and_then(|info| info.bands.as_ref())
+            .map(|bands| bands.list.iter().map(|band| (band.top, band.id)).collect())
+            .unwrap_or_default()
+    };
+    let rows = |worker: &Worker| worker.shaped.as_ref().unwrap().scroll_anchors();
+    let before = strips(&paint(&mut worker, &output));
+    let rows_before = rows(&worker);
+    worker.appearance.family = "monospace".into();
+    worker.position_context(&output);
+    worker.reflow(&output);
+    let after = strips(&paint(&mut worker, &output));
+    assert_eq!(rows(&worker), rows_before, "the new font moved the rows");
+    assert!(!before.is_empty(), "no strips");
+    assert_eq!(
+        after.iter().map(|(top, _)| *top).collect::<Vec<_>>(),
+        before.iter().map(|(top, _)| *top).collect::<Vec<_>>()
+    );
+    assert!(
+        after
+            .iter()
+            .zip(&before)
+            .all(|((_, new), (_, old))| new != old),
+        "strips of the former font were kept: {before:?} -> {after:?}"
+    );
+}
+
 #[path = "worker_raster_scroll_tests.rs"]
 mod scroll_mapping;

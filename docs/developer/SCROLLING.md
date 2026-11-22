@@ -76,8 +76,8 @@ The panels read Windows' lines per notch (`SPI_GETWHEELSCROLLLINES`,
 (`SPI_GETCLIENTAREAANIMATION`, `motion_preference.rs`) with the window's first
 native event and whenever it regains the focus. With animation effects off, panel
 wheel input moves at once and the row alignment is immediate. Other systems keep
-three lines per notch, and their reduced-motion settings are not read yet; viewers
-do not honour the animation setting.
+three lines per notch, and their reduced-motion settings are not read yet. The viewers
+honour the animation setting too ([wheel distance](#wheel-distance)).
 
 From 19 to 21 November 2026 the Details and Brief views drew whole rows only and
 nothing aligned the rest position, so every fractional rest (a notch of 60 px over
@@ -105,9 +105,30 @@ gives it (`set_wheel_setting`; three lines until then). Linux and macOS have no 
 setting and keep three lines. Touchpad pixels and X11 finger lines are not notches:
 they follow the finger, lines at `LINE_PIXELS`.
 
+When the system asks for less motion (Windows: Animation effects off,
+`SPI_GETCLIENTAREAANIMATION`), the viewers do not glide. They read the setting through the
+panels' `motion_preference` module (`midnight_ui::system_reduces_motion`, which the
+application gives the viewer windows with `ViewerWindows::set_motion_preference`), with
+each window's first native event and whenever it gains the focus. A wheel notch and a
+scroll key then move their whole distance on the next frame in the Text, Source, Markdown
+and hex views, over PDF and image tiles and over an HTML page, and the shared
+`NativeScroll` synthesises no touchpad momentum (`set_reduce_motion`); a touchpad's own
+system momentum stays the system's. Linux and macOS report no such setting yet.
+
 Tests: `midnight-ui-input` `wheel_lines::tests` (the default, proportions, bounds, one
 screen per notch); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
-(a notch glides `image_motion::notch_pixels` in the text and HTML viewers).
+(a notch glides `image_motion::notch_pixels` in the text and HTML viewers; with less
+motion it moves whole on the next frame and a touchpad flick has no momentum) and
+`image_key_tests` (a notch and a key move a tiled image at once with less motion).
+
+The acceptance suite runs on Slint's software platform, where winit never runs, so it
+reaches this path through `midnight_viewer_ui::acceptance_seams` (feature
+`acceptance-seams`, which only `midnight-acceptance` enables): `wheel` and `focus`
+hand the window's own native observer the events winit would deliver, the wheel frames
+follow by themselves while the window moves, and `override_settings` replaces the lines
+per notch and the reduced-motion setting for the test process until its guard drops.
+The panels' seam in `midnight-ui` behaves the same way. Tests: `acceptance_seams_tests`
+(a seam notch moves the text as a native notch does, frame for frame).
 
 ## Touchpad momentum (kinetic scrolling)
 
@@ -461,15 +482,23 @@ the prepared screens and two more along the travel: its request's line budget co
 them, still at most 512 lines and the byte budgets below. A refill starts while the
 page holds fewer screens than the strips want along the direction of travel (a quarter
 of a screen against it) and keeps a screen against it, so it comes every two screens
-of travel and the window moves over prepared rows meanwhile. A refill, a restyle or a
-new selection keeps every strip whose rows it shows the same way: each strip keeps a
-hash of the source text, line starts and world positions of the rows whose ink can
-reach it (8 em around it), their colours, typography, roles, document blocks, the
-selection over them and the gutter's numbers, and keeps its pixels when the new page
-reproduces that hash. A strip that a page did not hold completely (one at a page's
-edge) and a page with tables are painted again. Text is laid out once per page: rows
-are shaped again only when a refill joins them into its new page, or when the width,
-font or zoom changes.
+of travel and the window moves over prepared rows meanwhile. In the Text, Source and hex
+views a camera request at rest (a key, the end of a glide) starts it too, so PageDown
+finds the next page read; a Markdown page ends at whole blocks, which a reply may not
+pass (`Continuation::seam`), so it reads on only while the camera glides or once the
+camera leaves it. A refill, a restyle, a new selection or a new raster context (a
+scrollbar position, a seek that waits for its page) keeps every strip whose rows it
+shows the same way: each strip keeps a hash of the source text, line starts and world
+positions of the rows whose ink can reach it (8 em around it), their colours, styles,
+roles, document blocks, the selection over them and the gutter's numbers, and keeps its
+pixels when the new page reproduces that hash. A strip at a page's edge lacks the ink of
+the rows beyond it, so only a page with the same edge reproduces it; a page with tables
+is painted again. A new font, size, scale, margin or Markdown preset paints every strip
+again, since a font of the same line height keeps every row where it was. Text is laid
+out once per page: rows are shaped again only when a refill joins them into its new
+page, or when the width, font or zoom changes. Strip IDs are unique in the process, so
+the window keeps each strip's conversion and image by ID across surfaces: a scrollbar
+drag whose positions wait for their page paints, converts and uploads nothing again.
 
 Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`) and those of
 all viewers 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`), body and gutter together,
@@ -503,6 +532,15 @@ most 120 KiB holds too few of them to prepare screens ahead. In the native probe
 frames later than 25 ms within a wheel notch fell from 54 to 6 for Text at 1x, from 68
 to 3 at 2x, and from 98 to 4 for Source at 2x. Source at 1x is unresolved: one run
 under build load had 25 late frames, against 15 before.
+
+On 22 November the co-simulation's window was made to glide like the real camera, whose
+requests are settled only once their wheel motion ends: with it the fast spin stalls no
+frame before or after, so its 3 and 4 stalled frames came from the model. Since then a
+Source scrollbar drag whose positions wait for their page paints no strip again (5
+strips over a 61-frame drag before), and eight PageDowns over 100 MB stall no frame (3
+to 6 before) ([follow-up](../verification/2026-11-22-text-scrolling-follow-up.md)). Unwrapped
+rows wider than the window still stall: every refill shapes its whole page of at most
+120 KiB again for at most a guard (256 px) of travel.
 
 Native GPU allocation stalls are addressed separately by the pinned FemtoVG
 [upload cache](../../vendor/README.md). In-flight buffers become reusable only

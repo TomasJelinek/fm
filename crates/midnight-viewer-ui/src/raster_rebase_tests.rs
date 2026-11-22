@@ -214,7 +214,7 @@ fn raster_rebase_to_legacy_replies_with_displayed_camera_and_resumes_only_remain
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     let received = capture(&open);
     start(&open, &service);
-    assert!(raster_motion::push(&open, 0.0, 200.0));
+    assert!(raster_motion::push(&open, 0.0, 200.0, false));
     advance(&open, 16);
     let displayed = open.retained_raster.borrow().camera.origin;
     assert_eq!(displayed, [0.0, 200.0]);
@@ -373,7 +373,7 @@ fn raster_rebase_pending_selection_is_blocked_and_mouse_cancel_only_discards_mot
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     let received = capture(&open);
     start(&open, &service);
-    assert!(raster_motion::push(&open, 0.0, 200.0));
+    assert!(raster_motion::push(&open, 0.0, 200.0, false));
     rebase(&open, &service, 1);
     received.borrow_mut().clear();
     open.window.invoke_select_point(10.0, 10.0, false);

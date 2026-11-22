@@ -161,6 +161,10 @@ struct Report {
     peak_bytes: usize,
     /// Strips the window was given again, with a new ID, for rows it already had.
     repainted: usize,
+    /// The work of each frame.
+    frame_counts: Vec<prepare_counters::Counts>,
+    /// `repainted` after each frame.
+    repainted_by_frame: Vec<usize>,
 }
 
 fn percentile(values: &[f64], percent: usize) -> f64 {
@@ -351,7 +355,10 @@ fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
             window.push(engine, step, true);
             ideal += step;
         }
+        window.gliding = glide.active;
         timed_frame(engine, window, &mut line, &mut report);
+        report.frame_counts.push(prepare_counters::take());
+        report.repainted_by_frame.push(line.repainted);
         report.peak_bytes = report.peak_bytes.max(
             engine
                 .worker
@@ -379,7 +386,12 @@ fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
     }
     report.frames = frame;
     report.repainted = line.repainted;
-    report.counts = prepare_counters::take();
+    for counts in &report.frame_counts {
+        report.counts.layouts += counts.layouts;
+        report.counts.layout_bytes += counts.layout_bytes;
+        report.counts.rasters += counts.rasters;
+        report.counts.raster_pixels += counts.raster_pixels;
+    }
     report.moved = window.shown() - start;
     report.reads = engine.reads - reads;
     report
@@ -890,4 +902,81 @@ fn measure_prepared_modes() {
         measure_mode("Hex", viewer::MODE_BINARY, binary_page(), size, &mut report);
     }
     println!("{report}");
+}
+
+/// The Text view of 100 MB of short rows at 1x, at rest at 30 % of the file.
+fn large_text() -> (Engine, Window) {
+    let mut engine = Engine::open(
+        rows(1_700_000, 60),
+        viewer::MODE_TEXT,
+        geometry(1312, 720, 1.0),
+        1,
+    );
+    let mut window = Window::default();
+    assert!(settle(&mut engine, &mut window));
+    window.seek(&mut engine, 0.3);
+    assert!(settle(&mut engine, &mut window));
+    (engine, window)
+}
+
+/// A scrollbar drag that the shown page cannot answer (a Source view reads no page while
+/// the thumb moves) starts a new raster context for every position, but its page, its
+/// camera and so its pixels stay the same: until a page arrives, the window is given no
+/// strip again for rows it had (new strips of the prepared window may still come).
+#[test]
+fn a_scrollbar_drag_paints_no_strip_again_while_its_page_stays() {
+    let size = geometry(1312, 720, 1.0);
+    let mut engine = Engine::open(rust(200_000), viewer::MODE_SOURCE, size, 1);
+    engine.highlight_replies = Some(highlight);
+    let mut window = Window::default();
+    assert!(settle(&mut engine, &mut window));
+    window.seek(&mut engine, 0.3);
+    assert!(settle(&mut engine, &mut window));
+    let drag = scripts(100.0, f64::from(size.height)).remove(5);
+    let report = run(&mut engine, &mut window, &drag);
+    let first_page = report
+        .frame_counts
+        .iter()
+        .position(|counts| counts.layouts > 0)
+        .unwrap_or(report.frame_counts.len());
+    assert!(first_page > 10, "a page arrived after {first_page} frames");
+    let repainted = report.repainted_by_frame[first_page - 1];
+    assert_eq!(
+        repainted, 0,
+        "the window was given {repainted} strips again over {first_page} frames of the same page"
+    );
+}
+
+/// PageDown moves the camera a whole screen and leaves it at rest; the next page is read
+/// while it rests, so eight presses 120 ms apart never wait for a page.
+#[test]
+fn page_down_never_waits_for_the_next_page() {
+    let (mut engine, mut window) = large_text();
+    let keys = scripts(100.0, 720.0).remove(3);
+    let report = run(&mut engine, &mut window, &keys);
+    assert!((report.moved - report.travel).abs() < 1.0);
+    assert_eq!(
+        report.stalls,
+        0,
+        "frames waited for pixels: lag p95 {:.1} px, max {:.1} px",
+        percentile(&report.lag, 95),
+        percentile(&report.lag, 100)
+    );
+}
+
+/// Forty notches 25 ms apart (about five screens a second) never wait for a page: the
+/// glide's requests read the next page while the prepared strips still cover the camera.
+#[test]
+fn a_fast_wheel_spin_never_waits_for_the_next_page() {
+    let (mut engine, mut window) = large_text();
+    let spin = scripts(100.0, 720.0).remove(1);
+    let report = run(&mut engine, &mut window, &spin);
+    assert!((report.moved - report.travel).abs() < 1.0);
+    assert_eq!(
+        report.stalls,
+        0,
+        "frames waited for pixels: lag p95 {:.1} px, max {:.1} px",
+        percentile(&report.lag, 95),
+        percentile(&report.lag, 100)
+    );
 }

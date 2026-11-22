@@ -454,10 +454,10 @@ struct Cache {
     strips: Option<(StripKey, std::collections::HashMap<u64, PreparedStrip>)>,
 }
 
+/// Strip IDs are unique in the process (`midnight_viewer_engine`), so conversions are
+/// kept by ID across surfaces and files; only the strips' sizes key them.
 #[derive(Clone, Copy, PartialEq)]
 struct StripKey {
-    generation: u64,
-    surface: u64,
     width: u32,
     gutter: u32,
 }
@@ -529,8 +529,6 @@ impl Cache {
         }
         bands.validate(PREPARED_BYTES)?;
         let key = StripKey {
-            generation: frame.generation,
-            surface: info.surface.0,
             width: bands.width,
             gutter: bands.gutter_width,
         };

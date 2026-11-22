@@ -95,7 +95,10 @@ impl Retained {
         self.continuing = None;
         self.refill_attempt = None;
         self.cache = None;
-        self.bands.clear();
+        // The strips stay: the next publication keeps those the shown page still paints
+        // the same way (their content hash), so a seek that keeps its page and camera
+        // paints nothing again.
+        self.bands.reset_travel();
         self.invalid = true;
         self.selected_source = None;
         self.selected_text = None;
@@ -117,6 +120,11 @@ impl Retained {
     /// Strips beyond the window remain to be prepared.
     pub(super) fn strips_pending(&self) -> bool {
         self.enabled && self.bands.pending
+    }
+
+    /// Drop the prepared strips: the view no longer shows retained text.
+    pub(super) fn clear_strips(&mut self) {
+        self.bands.clear();
     }
 
     /// The newest prepared strip's ID: strips with larger IDs were painted later.
@@ -412,6 +420,7 @@ impl Worker {
 
     pub(super) fn raster_page_loaded(&mut self, continuing: Option<[f64; 2]>, restored: [f32; 2]) {
         if !self.retained_active() {
+            self.raster.clear_strips();
             if self.raster.enabled {
                 self.raster.reset(self.origin);
                 // Its frames carry no raster but still copy the shown selection.
@@ -532,7 +541,13 @@ impl Worker {
                 }
             })
         };
-        let refill = ((backwards || forwards) && (!covered || (prefetch && !self.raster.exact)))
+        // A camera at rest (a key, the end of a glide) starts the next page along its travel
+        // too: the strips stay as long as the new page paints them the same way. A document
+        // page ends at whole blocks, which a reply may not pass (`Continuation::seam`): it
+        // reads on only while the camera glides or once the camera leaves it.
+        let along = self.mode != viewer::MODE_DOCUMENT && self.raster.bands.along(backwards);
+        let refill = ((backwards || forwards)
+            && (!covered || (prefetch && (!self.raster.exact || along))))
             .then(|| {
                 // A camera past the page reaches a page holding it even when its guard
                 // would keep the rows the page starts (or ends) with: these read nothing new.

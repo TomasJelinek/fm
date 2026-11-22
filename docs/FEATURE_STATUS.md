@@ -1361,9 +1361,29 @@ spin over a 100 MB file stalled 13 frames before and none after at 1x (31 and no
 fell from 54 to 6 (Text, 1x), from 68 to 3 (Text, 2x) and from 98 to 4 (Source, 2x).
 Source at 1x measured 15 before and 25 after, with one 422 ms pause, and is
 unresolved. Unwrapped rows wider than the window (2400 bytes) still stall about as
-before, and a scrollbar drag in Source paints more than before
-([record](verification/2026-11-21-prepared-text-window.md)). Not verified: a physical
-wheel or touchpad, the full application, Linux and macOS, and a quiet machine.
+before, and a scrollbar drag in Source painted more than before (fixed on 22 November,
+below) ([record](verification/2026-11-21-prepared-text-window.md)). Not verified: a
+physical wheel or touchpad, the full application, Linux and macOS, and a quiet machine.
+
+The 22 November follow-up keeps the prepared strips when a scrollbar position or a seek
+starts a new raster context: each is checked against its content hash, a strip at a
+page's edge against that edge, and a new font, size or Markdown preset still paints them
+all again. A Source scrollbar drag whose positions wait for their page now paints,
+converts and uploads no strip again (in the co-simulation the window was given 5 strips
+again over a 61-frame drag before, none after). A camera at rest (PageDown, the end of a
+glide) reads the next page ahead in the Text, Source and hex views: eight PageDowns over
+100 MB, 120 ms apart, stall no frame (3 to 6 before). The co-simulation's window now glides
+like the real camera; the 3 to 4 stalled frames reported above for a fast spin came from
+that model, and the spin stalls none before or after. With Windows' animation effects off,
+wheel notches and scroll keys move at once in every viewer and no touchpad momentum is
+synthesised; the viewers read the setting through the panels' module. Unwrapped rows
+wider than the window still stall: a page of at most 120 KiB holds too few of them and
+every refill shapes its whole page again; shaping only the rows a refill adds is
+proposed. The acceptance suite can drive viewers with native wheel and focus events and
+override the lines per notch and reduced motion (`midnight_viewer_ui::acceptance_seams`,
+feature `acceptance-seams`). Not verified: the application window, a physical wheel or
+touchpad, Windows' animation-effects setting itself, Linux and macOS
+([record](verification/2026-11-22-text-scrolling-follow-up.md)).
 
 The 12 November follow-up adds XML-family syntax highlighting, previous-file
 navigation (Backspace/Alt+Left), selected-item panel navigation (Alt+Up/Down),

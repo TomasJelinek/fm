@@ -8,11 +8,14 @@
 //! pixels: the rows reaching it (their source text, line starts and world positions), their
 //! colours, typography, roles, document blocks, the selection over them and the gutter's
 //! numbers. A new page, a restyle or a new selection keeps every strip whose hash it
-//! reproduces; a strip whose rows a page did not hold completely is never reused. The window
-//! moves over the strips it has; the worker publishes the contiguous run around the camera.
+//! reproduces. A strip at a page's edge lacks the ink of the rows beyond it: only a page
+//! with the same edge reproduces it. A new font, size or preset paints every strip again.
+//! The window moves over the strips it has; the worker publishes the contiguous run around
+//! the camera.
 use super::*;
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Rows of one strip, effective raster pixels.
@@ -31,6 +34,9 @@ const REFILL_AGAINST: f32 = 0.25;
 /// Laid-out screens a page holds beyond the prepared strips, so that a refill comes only
 /// every few screens of travel: layout is far cheaper than pixels, text costs no budget.
 const PAGE_EXTRA: f32 = 2.0;
+/// The newest strip ID in the process: an ID names one strip's pixels in every viewer, so
+/// a window keeps its conversions and images by ID across surfaces and files.
+static LAST_STRIP_ID: AtomicU64 = AtomicU64::new(0);
 /// Preparation beyond the window's own strips takes at most this long per worker turn;
 /// inputs are taken between turns.
 const TURN: std::time::Duration = std::time::Duration::from_millis(4);
@@ -43,11 +49,14 @@ pub(super) struct Column {
     pub gutter: u32,
 }
 
+/// What all strips share. A new raster context (a seek, a new page) keeps them: they are
+/// revalidated by their content hash before they are published again.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Key {
-    surface: u64,
     column: Column,
     palette: u64,
+    /// The font, size, mode and preset that shape every row (`Worker::strip_typography`).
+    typography: u64,
 }
 
 struct Strip {
@@ -63,7 +72,8 @@ struct Strip {
 pub(super) struct Bands {
     key: Option<Key>,
     strips: BTreeMap<i64, Strip>,
-    next_id: u64,
+    /// The newest strip this worker painted.
+    last_id: u64,
     palette: u64,
     /// The direction of travel (1 down, -1 up, 0 not known yet) and whether it is fast.
     direction: i8,
@@ -76,8 +86,13 @@ pub(super) struct Bands {
 impl Bands {
     pub fn clear(&mut self) {
         self.strips.clear();
-        self.pending = false;
         self.key = None;
+        self.reset_travel();
+    }
+
+    /// A new raster context: the travel starts again; the strips stay for revalidation.
+    pub fn reset_travel(&mut self) {
+        self.pending = false;
         self.last_target = None;
         self.direction = 0;
         self.fast = false;
@@ -133,10 +148,19 @@ impl Bands {
         BEHIND
     }
 
-    /// The newest strip's ID.
+    /// Whether a refill towards the start (`backwards`) or the end goes along the travel.
+    pub fn along(&self, backwards: bool) -> bool {
+        if backwards {
+            self.direction < 0
+        } else {
+            self.direction > 0
+        }
+    }
+
+    /// The newest strip's ID: IDs grow, so strips with larger IDs were painted later.
     #[cfg(test)]
     pub fn last_id(&self) -> u64 {
-        self.next_id
+        self.last_id
     }
 }
 
@@ -247,14 +271,13 @@ impl Worker {
         reservation
             .commit(&pixels, gutter.as_ref())
             .map_err(str::to_owned)?;
-        self.raster.bands.next_id = self
-            .raster
-            .bands
-            .next_id
+        let id = LAST_STRIP_ID
+            .fetch_add(1, Ordering::Relaxed)
             .checked_add(1)
             .ok_or("Raster strip identity exhausted.")?;
+        self.raster.bands.last_id = id;
         Ok(Some(Strip {
-            id: self.raster.bands.next_id,
+            id,
             pixels,
             gutter,
             hash,
@@ -276,9 +299,10 @@ impl Worker {
         let (low, high) = (top - reach - base, top + f64::from(BAND) + reach - base);
         let view = self.geometry.height as f32;
         let available = f64::from(crate::viewport::available_height(page, shaped, view));
-        if (page.before && low < 0.0) || (page.after && high > available) {
-            return None;
-        }
+        // Rows beyond a page's edge would ink a strip that reaches it, so such a strip is
+        // painted the same way only by a page with the same edge and the rows up to it.
+        let top_edge = page.before && low < 0.0;
+        let bottom_edge = page.after && high > available;
         let rows = shaped.scroll_anchors();
         if rows.is_empty() {
             return None;
@@ -291,8 +315,19 @@ impl Worker {
             .min(rows.len());
         let (start, _) = *rows.get(first)?;
         let (end, _) = *rows.get(last.min(rows.len() - 1))?;
-        let end = end.max(start);
+        let start = if top_edge { 0 } else { start };
+        let end = if bottom_edge {
+            page.text.len()
+        } else {
+            end.max(start)
+        };
         let mut hasher = DefaultHasher::new();
+        (
+            top_edge.then_some(page.start),
+            bottom_edge.then_some(page.end),
+            page.revision,
+        )
+            .hash(&mut hasher);
         let source = |offset: usize| {
             let at = page
                 .anchors
@@ -377,13 +412,32 @@ impl Worker {
         Some(hasher.finish())
     }
 
+    /// What shapes every row besides the page: the mode, font, size, scale and preset. The
+    /// strips' hash holds rows and their positions, which a new font of the same line
+    /// height keeps.
+    fn strip_typography(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        (
+            self.mode,
+            self.binary,
+            &self.appearance.family,
+            self.appearance.font_size.to_bits(),
+            self.geometry.scale.to_bits(),
+            self.line_height().map(f32::to_bits),
+            self.preferences.markdown_preset.storage_name(),
+            self.text_margin().to_bits(),
+        )
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Strips are kept only where the shown page reproduces their hash; a changed key
-    /// (surface, column or palette) drops them all.
+    /// (column, palette or typography) drops them all.
     fn adopt_strips(&mut self, column: Column) {
         let key = Key {
-            surface: self.raster.surface,
             column,
             palette: self.raster.bands.palette,
+            typography: self.strip_typography(),
         };
         if self.raster.bands.key != Some(key) {
             self.raster.bands.strips.clear();
@@ -555,7 +609,8 @@ impl Worker {
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
             return false;
         };
-        if key.surface != self.raster.surface {
+        // Strips of an earlier raster context are revalidated before more are added.
+        if self.raster.invalid {
             return false;
         }
         let origin = self.raster.camera(self.origin)[1];

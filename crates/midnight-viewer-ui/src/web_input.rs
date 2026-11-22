@@ -145,8 +145,8 @@ fn cancel_glide(open: &OpenWindow) {
     native.redraw.stop();
 }
 
-/// Tests: the glide's frame clock runs.
-#[cfg(test)]
+/// The glide's frame clock runs (tests, and the acceptance seams' frames).
+#[cfg(any(test, feature = "acceptance-seams"))]
 pub(super) fn gliding(open: &OpenWindow) -> bool {
     open.web_native.borrow().redraw.running()
 }
@@ -239,7 +239,14 @@ fn glide(open: &OpenWindow, native: &mut Native, target: [f64; 2], lines: (f32, 
         lines.0 * image_motion::notch_pixels(open, true),
         lines.1 * image_motion::notch_pixels(open, false),
     );
-    if !glide.motion.push(x, y, image_motion::now(open)) {
+    // With less motion, the notch goes to the page whole on the next frame.
+    let now = image_motion::now(open);
+    let pushed = if image_motion::reduce_motion(open) {
+        glide.motion.push_direct(x, y, now)
+    } else {
+        glide.motion.push(x, y, now)
+    };
+    if !pushed {
         return;
     }
     if let Some(unsent) = &mut glide.unsent {

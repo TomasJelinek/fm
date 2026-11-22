@@ -1041,6 +1041,9 @@ impl Worker {
         if let ViewerInput::RetainedRaster(enabled) = input {
             self.invalidate_source_target();
             self.raster.enabled = enabled;
+            if !enabled {
+                self.raster.clear_strips();
+            }
             self.source_viewport_parameters_changed();
             if self.mode != VIEWER_MODE_VIDEO && self.web.is_none() && self.image.is_none() {
                 self.reset_raster_context();

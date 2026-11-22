@@ -283,10 +283,16 @@ pub struct NativeScroll {
     glide_region: Option<GlideRegion>,
     /// The system's wheel setting, which the host reads and keeps current.
     wheel_setting: crate::WheelSetting,
+    /// The system asks for less motion; the host reads and keeps it current.
+    reduce_motion: bool,
+    /// Momentum is synthesised (`synthesize_momentum`) unless motion is reduced.
+    momentum: bool,
 }
 
 impl NativeScroll {
     pub fn new<C: ComponentHandle + 'static>(window: &C) -> Self {
+        let kinetic = NativeKinetic::default();
+        let momentum = kinetic.enabled;
         let weak = window.as_weak();
         let timer = slint::Timer::default();
         timer.start(slint::TimerMode::Repeated, WHEEL_FRAME, move || {
@@ -302,13 +308,15 @@ impl NativeScroll {
             target: None,
             motion: WheelMotion::default(),
             timer,
-            kinetic: NativeKinetic::default(),
+            kinetic,
             source: WheelSource::Other,
             kinetic_view: None,
             kinetic_sink: None,
             kinetic_surface: None,
             glide_region: None,
             wheel_setting: crate::WheelSetting::default(),
+            reduce_motion: false,
+            momentum,
         }
     }
 
@@ -316,6 +324,18 @@ impl NativeScroll {
     /// (`notch_pixels_for`); the default until the host supplies its own.
     pub fn set_wheel_setting(&mut self, setting: crate::WheelSetting) {
         self.wheel_setting = setting;
+    }
+
+    /// Whether the system asks for less motion (Windows: animation effects off): wheel
+    /// notches then move their whole distance at once and no touchpad momentum is
+    /// synthesised. Off until the host supplies the system's setting.
+    pub fn set_reduce_motion(&mut self, reduce: bool) {
+        if reduce == self.reduce_motion {
+            return;
+        }
+        self.reduce_motion = reduce;
+        self.kinetic.cancel();
+        self.kinetic.enabled = self.momentum && !reduce;
     }
 
     /// Glide wheel notches over this region of the window too, not only over
@@ -330,7 +350,8 @@ impl NativeScroll {
     /// on Windows and macOS, whose touchpads deliver their own momentum events).
     pub fn synthesize_momentum(mut self, enabled: bool) -> Self {
         self.kinetic.cancel();
-        self.kinetic.enabled = enabled;
+        self.momentum = enabled;
+        self.kinetic.enabled = enabled && !self.reduce_motion;
         self
     }
 
@@ -626,7 +647,12 @@ impl NativeScroll {
                 self.target = Some(target);
                 self.position = Some(point);
                 let notch = crate::notch_pixels_for(self.wheel_setting, 0.0);
-                if self.motion.push(x * notch, y * notch, now) {
+                let pushed = if self.reduce_motion {
+                    self.motion.push_direct(x * notch, y * notch, now)
+                } else {
+                    self.motion.push(x * notch, y * notch, now)
+                };
+                if pushed {
                     if !self.timer.running() {
                         self.timer.restart();
                     }
