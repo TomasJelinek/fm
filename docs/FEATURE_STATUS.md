@@ -1376,10 +1376,15 @@ glide) reads the next page ahead in the Text, Source and hex views: eight PageDo
 like the real camera; the 3 to 4 stalled frames reported above for a fast spin came from
 that model, and the spin stalls none before or after. With Windows' animation effects off,
 wheel notches and scroll keys move at once in every viewer and no touchpad momentum is
-synthesised; the viewers read the setting through the panels' module. Unwrapped rows
-wider than the window still stall: a page of at most 120 KiB holds too few of them and
-every refill shapes its whole page again; shaping only the rows a refill adds is
-proposed. The acceptance suite can drive viewers with native wheel and focus events and
+synthesised; the viewers read the setting through the panels' module. Unwrapped Text and
+Source pages are laid out in row groups: a refill shapes only the rows it adds, a page of
+long rows grows past 120 KiB to hold the prepared screens, and its camera moves on while a
+refill reads. Over 2400-byte rows the 40-notch spin stalls 5 of 117 frames in the
+co-simulation instead of 137 of 165 (still a few under load), a touchpad flick none
+instead of 48, and eight PageDowns 55 instead of 206. Each such row with right-to-left text
+is now a bidirectional paragraph of its own, ordered by its own first strong character
+whatever row the page starts with ([record](verification/2026-11-22-long-rows-row-groups.md)).
+The acceptance suite can drive viewers with native wheel and focus events and
 override the lines per notch and reduced motion (`midnight_viewer_ui::acceptance_seams`,
 feature `acceptance-seams`). Not verified: the application window, a physical wheel or
 touchpad, Windows' animation-effects setting itself, Linux and macOS

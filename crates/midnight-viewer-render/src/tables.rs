@@ -38,6 +38,8 @@ pub(crate) struct Composite {
     pub border_color: [u8; 4],
     pub width: f32,
     pub height: f32,
+    /// A stack of whole-row groups that together lay out one page of rows (`rows.rs`).
+    pub rows: Option<crate::rows::RowGroups>,
 }
 
 #[derive(Clone, Copy)]
@@ -88,6 +90,7 @@ impl TextRenderer {
             ),
             width: 0.0,
             height: 0.0,
+            rows: None,
         };
         let mut cursor = 0;
         let mut rows = tables.iter().peekable();
@@ -380,6 +383,14 @@ fn sorted_disjoint<'a>(ranges: impl IntoIterator<Item = &'a Range<usize>>) -> bo
         .all(|range| std::mem::replace(&mut end, range.end) <= range.start)
 }
 
+/// How many colour spans, sorted and disjoint, reach into `range`.
+pub(crate) fn colors_in(spans: &[ColorSpan], range: &Range<usize>) -> usize {
+    window(spans, range, true, |span| &span.range)
+        .iter()
+        .filter(|span| intersection(&span.range, range).is_some())
+        .count()
+}
+
 /// Color spans are validated sorted and non-overlapping before any layout.
 pub(crate) fn clipped_colors(spans: &[ColorSpan], range: &Range<usize>) -> Vec<ColorSpan> {
     window(spans, range, true, |span| &span.range)
@@ -415,6 +426,14 @@ impl<'a> Styles<'a> {
             all,
             sorted: sorted_disjoint(all.iter().map(|style| &style.range)),
         }
+    }
+
+    /// How many styles reach into `range`.
+    pub(crate) fn count(&self, range: &Range<usize>) -> usize {
+        window(self.all, range, self.sorted, |style| &style.range)
+            .iter()
+            .filter(|style| intersection(&style.range, range).is_some())
+            .count()
     }
 
     pub(crate) fn clip(&self, range: &Range<usize>) -> Vec<StyleSpan> {
@@ -499,6 +518,14 @@ impl Composite {
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Result<usize, LayoutError> {
+        // Row groups: the row that one layout of the page hit-tests (`RowGroups::hit_at`).
+        if let Some(rows) = self.rows.as_ref() {
+            let (index, y) = rows.hit_at(y);
+            let part = &self.parts[index];
+            return Ok(
+                part.range.start + part.page.hit_test(x - part.origin[0], y - part.origin[1])?
+            );
+        }
         let distance = |part: &PlacedPage| {
             let dx = (part.origin[0] - x)
                 .max(0.0)
@@ -532,6 +559,15 @@ impl Composite {
     }
 
     pub fn line_at_y(&self, y: f32) -> Result<(Range<usize>, f32), LayoutError> {
+        // Row groups: the line that one layout of the page gives (`RowGroups::line_at`).
+        if let Some(rows) = self.rows.as_ref() {
+            let part = &self.parts[rows.line_at(y)];
+            let (range, top) = part.page.line_at_y(y - part.origin[1])?;
+            return Ok((
+                range.start + part.range.start..range.end + part.range.start,
+                top + part.origin[1],
+            ));
+        }
         let distance = |part: &PlacedPage| {
             (part.origin[1] - y)
                 .max(0.0)

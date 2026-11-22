@@ -133,6 +133,12 @@ impl Retained {
         self.bands.last_id()
     }
 
+    /// Whether the worker's camera, at page-local `origin`, is the one the window asked for.
+    #[cfg(test)]
+    pub(super) fn follows(&self, origin: [f32; 2]) -> bool {
+        (self.camera(origin)[1] - self.target[1]).abs() < 1e-3
+    }
+
     /// Colors invalidate pixels only: camera, gesture, selection and surface stay exact.
     pub(super) fn palette_changed(&mut self) {
         self.cache = None;
@@ -485,14 +491,37 @@ impl Worker {
     }
 
     pub(super) fn resume_raster_target(&mut self, output: &Mailbox) {
-        // Raw scroll and a corrected rebase make the viewport origin authoritative.
+        // Raw scroll and a corrected rebase make the viewport origin authoritative. A page of
+        // row groups reads on from there until it holds its screens, since each of its
+        // refills adds at most a request's bytes (`worker_chain::Budget`).
         if self.raster.sequence != 0 {
-            self.apply_raster_target_with(output, false);
+            let reads_on = self.long_rows();
+            self.apply_raster_target_with(output, reads_on);
         }
     }
 
+    /// Whether the shown page is a page of row groups whose rows are so long that a request
+    /// cannot read all the screens it asks for (`worker_chain::Budget`): the screens the page
+    /// holds beyond the window (`Bands::page_screens`) and the window take more than a
+    /// request's bytes at the shown page's bytes per screen.
+    pub(super) fn long_rows(&self) -> bool {
+        let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
+            return false;
+        };
+        let screens = f64::from(shaped.height()) / f64::from(self.geometry.height.max(1));
+        self.row_pages()
+            && screens > 0.0
+            && page.text.len() as f64 / screens * f64::from(self.raster.bands.page_screens() + 1.0)
+                > crate::viewport::PAGE_BYTES as f64
+    }
+
     fn apply_raster_target_with(&mut self, output: &Mailbox, prefetch: bool) {
-        if self.raster.continuing.is_some() || self.raster_rebase_waiting() {
+        // A refill of a page of row groups reads many ranges, one plugin reply each
+        // (`worker_chain.rs`): meanwhile its camera moves on over the rows the page holds,
+        // and the refill's page takes the camera where it is (`resume_raster_target`). Any
+        // other camera waits for its refill's page.
+        let refilling = self.raster.continuing.is_some();
+        if (refilling && !self.row_pages()) || self.raster_rebase_waiting() {
             return;
         }
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
@@ -512,12 +541,36 @@ impl Worker {
             local[1] = local[1].min(maximum[1]);
         }
         self.raster.target = self.raster.camera(local);
+        if refilling {
+            if local[1] >= 0.0 && local[1] <= maximum[1] {
+                self.origin = local;
+                self.dirty = true;
+            }
+            return;
+        }
         // A refill starts while less than a screen is prepared in the direction of travel
         // (`worker_bands.rs`), and keeps a screen against it: refills are rare and the
-        // window moves over prepared rows meanwhile.
+        // window moves over prepared rows meanwhile. A page that is one layout starts one no
+        // further than half its span from its edge, since a refill lays it out whole. A page
+        // of row groups grows with each refill (`worker_chain::Budget`), so it refills at the
+        // strips' own thresholds; one of rows so long that a request cannot read all the
+        // screens it asks for refills until it holds those screens too.
         let view = self.geometry.height as f32;
-        let (above, below) = self.raster.bands.refill_thresholds();
-        let threshold = |screens: f32| (screens * view).min(maximum[1] / 2.0);
+        let grows = self.row_pages();
+        let long_rows = self.long_rows();
+        let (above, below) = if long_rows {
+            self.raster.bands.growth_thresholds()
+        } else {
+            self.raster.bands.refill_thresholds()
+        };
+        let threshold = |screens: f32| {
+            let pixels = screens * view;
+            if grows {
+                pixels
+            } else {
+                pixels.min(maximum[1] / 2.0)
+            }
+        };
         let backwards = local[1] < threshold(above) && page.before;
         let forwards = local[1] + threshold(below) > maximum[1] && page.after;
         let guard_y = (self.raster.bands.refill_keeps() * view).min(maximum[1] / 2.0);
@@ -533,11 +586,18 @@ impl Worker {
                 backwards,
                 matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE),
             )
+            // A refill moves the page along, or a page of long rows grows at its edge from
+            // where it starts (ends, backwards): it keeps every row and reads on, while a
+            // request can still add to it (`worker_chain::Budget` and the line budget).
             .filter(|next| {
+                let extends = long_rows
+                    && page.text.len() + crate::viewport::PAGE_BYTES
+                        <= midnight_viewer_render::MAX_ROWS_BYTES
+                    && shaped.height() <= self.raster.bands.page_screens() * view;
                 if backwards {
-                    next.anchor < page.end
+                    next.anchor < page.end || extends && next.anchor == page.end
                 } else {
-                    next.anchor > page.start
+                    next.anchor > page.start || extends && next.anchor == page.start
                 }
             })
         };

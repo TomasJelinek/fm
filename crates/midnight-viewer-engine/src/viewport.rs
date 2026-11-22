@@ -51,10 +51,11 @@ pub(crate) fn available_height(
 
 /// Retained pixels a refill keeps beyond each side of the window, in logical pixels.
 pub(crate) const GUARD: u32 = 256;
-/// The most bytes one text page lays out, and the most color spans it takes
-/// (`worker_chain.rs`). Fifteen plugin reads of 8 KiB, so the last of a chain's sixteen
-/// takes the room left: 51 rows of 2400 bytes, more than a 720-pixel window shows (44). The
-/// renderer shapes a layout past 64 KiB in several runs (`midnight_viewer_render`).
+/// The most bytes one text layout takes, and the most color spans (`worker_chain.rs`).
+/// Fifteen plugin reads of 8 KiB, so the last of a chain's sixteen takes the room left: 51
+/// rows of 2400 bytes, more than a 720-pixel window shows (44). The renderer shapes a layout
+/// past 64 KiB in several runs (`midnight_viewer_render`). A page of unwrapped rows is laid
+/// out in row groups and grows by this much per request (`worker_chain::Budget`).
 pub(crate) const PAGE_BYTES: usize = 120 * 1024;
 pub(crate) const PAGE_SPANS: usize = 4096;
 

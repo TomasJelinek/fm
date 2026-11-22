@@ -95,11 +95,24 @@ impl TextPage {
         let own = [0.0, self.height()];
         match &self.composite {
             Some(grid) => grid.parts.iter().fold(own, |bounds, part| {
-                let reach = part.page.vertical_reach();
+                let reach = part.page.part_reach(grid.rows.is_some());
                 union(bounds, reach.map(|edge| part.origin[1] + edge))
             }),
             None => self.line_bounds.iter().copied().fold(own, union),
         }
+    }
+
+    /// The reach of a composite's part: a row group is laid out at its place in the page
+    /// (`rows.rs`), so only its lines tell where it paints.
+    pub(crate) fn part_reach(&self, row_group: bool) -> [f32; 2] {
+        if !row_group {
+            return self.vertical_reach();
+        }
+        self.line_bounds
+            .iter()
+            .copied()
+            .reduce(|a, b| [a[0].min(b[0]), a[1].max(b[1])])
+            .unwrap_or([0.0, 0.0])
     }
 }
 
@@ -323,7 +336,7 @@ impl GlyphPainter {
             }
             for part in &grid.parts {
                 // Marks stacked above a cell's first line reach beyond its box.
-                let reach = part.page.vertical_reach();
+                let reach = part.page.part_reach(grid.rows.is_some());
                 if culled
                     && match precise_bounds {
                         Some(bounds) => {

@@ -1758,6 +1758,12 @@ impl Worker {
         matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE)
     }
 
+    /// Text and Source pages of unwrapped rows: laid out as row groups that a refill shares
+    /// with the page before it, and joined past one layout (`worker_chain.rs`).
+    pub(super) fn row_pages(&self) -> bool {
+        !self.binary && matches!(self.mode, viewer::MODE_TEXT | viewer::MODE_SOURCE) && !self.wrap
+    }
+
     fn received_page(&mut self, id: u64, page: Page, output: &Mailbox) {
         if self.search_cursor.candidate.is_some() && self.find_page(&page, output) {
             return;
@@ -1781,12 +1787,37 @@ impl Worker {
         &mut self,
         page: &Page,
     ) -> Result<TextPage, midnight_viewer_render::LayoutError> {
-        let options = TextOptions {
-            family: if self.binary || self.appearance.family.is_empty() {
-                "monospace"
-            } else {
-                &self.appearance.family
-            },
+        let family = self.text_family().to_owned();
+        let options = self.text_options(&family);
+        if self.row_pages() && page.tables.is_empty() && page.document_blocks.is_empty() {
+            // The shown page's rows that this one repeats keep their shaping.
+            let previous = self.page.as_ref().zip(self.shaped.as_ref());
+            let (shaped, rows) = page.layout_rows(&mut self.renderer, &options, previous)?;
+            prepare_counters::layout(rows.shaped_bytes);
+            return Ok(shaped);
+        }
+        prepare_counters::layout(page.text.len());
+        page.layout(
+            &mut self.renderer,
+            &options,
+            self.preferences.markdown_preset == MarkdownPreset::GitHub,
+            self.appearance.background,
+        )
+    }
+
+    /// The font family the shown page is laid out in.
+    pub(super) fn text_family(&self) -> &str {
+        if self.binary || self.appearance.family.is_empty() {
+            "monospace"
+        } else {
+            &self.appearance.family
+        }
+    }
+
+    /// The typography the shown page is laid out with, in `family` (`text_family`).
+    pub(super) fn text_options<'a>(&self, family: &'a str) -> TextOptions<'a> {
+        TextOptions {
+            family,
             size: self.appearance.font_size,
             scale: self.geometry.scale,
             foreground: self.appearance.foreground,
@@ -1798,14 +1829,7 @@ impl Worker {
                 .then_some(self.text_width()),
             line_height: self.line_height(),
             ..TextOptions::default()
-        };
-        prepare_counters::layout(page.text.len());
-        page.layout(
-            &mut self.renderer,
-            &options,
-            self.preferences.markdown_preset == MarkdownPreset::GitHub,
-            self.appearance.background,
-        )
+        }
     }
 
     fn reflow(&mut self, output: &Mailbox) {

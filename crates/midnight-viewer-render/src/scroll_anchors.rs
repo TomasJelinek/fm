@@ -37,6 +37,19 @@ impl TextPage {
                         y + part.origin[1],
                         rows,
                     );
+                    // A row group's end (its empty last line and endpoint) is where the next
+                    // group's first row starts, and the last group's endpoint is the page's:
+                    // one layout of the page has each once.
+                    if grid.rows.is_some() {
+                        if index + 1 < grid.parts.len() {
+                            let end = offset + part.range.end;
+                            while rows.last().is_some_and(|(at, _)| *at == end) {
+                                rows.pop();
+                            }
+                        } else {
+                            rows.pop();
+                        }
+                    }
                     index += 1;
                 }
             }

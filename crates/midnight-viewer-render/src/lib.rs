@@ -16,6 +16,7 @@ pub use fonts::{fixed_pitch_family, installed_families, is_generic_family, monos
 mod glyphs;
 mod options;
 mod raster;
+mod rows;
 mod runs;
 mod scroll_anchors;
 mod selection;
@@ -24,6 +25,7 @@ mod tables;
 
 pub use options::TextOptions;
 pub use raster::{Raster, RasterMut, Viewport};
+pub use rows::{MAX_ROWS_BYTES, MAX_ROWS_SPANS, RowLayout};
 use source_map::SourceMap;
 pub use tables::{CellAlignment, TableCell, TableRow};
 
@@ -129,6 +131,19 @@ impl TextRenderer {
         styles: &[StyleSpan],
         run_bytes: usize,
     ) -> Result<TextPage, LayoutError> {
+        self.layout_at(text, options, spans, styles, run_bytes, 0.0)
+    }
+
+    /// [`Self::layout_with_runs`] with its first line `top` down a page (`rows.rs`).
+    pub(crate) fn layout_at(
+        &mut self,
+        text: &str,
+        options: &TextOptions<'_>,
+        spans: &[ColorSpan],
+        styles: &[StyleSpan],
+        run_bytes: usize,
+        top: f64,
+    ) -> Result<TextPage, LayoutError> {
         validate_input(text, options.size, options.scale, spans)?;
         if options
             .wrap_width
@@ -224,7 +239,9 @@ impl TextRenderer {
             builder.push(StyleProperty::FontFeatures(features.into()), piece);
         }
         let mut layout = builder.build(&shaped);
-        layout.break_all_lines(options.wrap_width);
+        let mut lines = layout.break_lines();
+        lines.state_mut().set_line_y(top);
+        lines.break_remaining(options.wrap_width.unwrap_or(f32::MAX));
         Ok(TextPage {
             text: text.into(),
             line_bounds: glyphs::line_bounds(&layout),
@@ -265,7 +282,15 @@ impl TextPage {
     pub fn line_count(&self) -> usize {
         self.composite.as_ref().map_or_else(
             || self.layout.len(),
-            |grid| grid.parts.iter().map(|part| part.page.line_count()).sum(),
+            |grid| {
+                let lines: usize = grid.parts.iter().map(|part| part.page.line_count()).sum();
+                // Every row group but the last ends with a line break, after which its own
+                // layout has an empty line that the page's next group starts instead.
+                match &grid.rows {
+                    Some(_) => lines - grid.parts.len().saturating_sub(1),
+                    None => lines,
+                }
+            },
         )
     }
 

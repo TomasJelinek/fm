@@ -143,6 +143,18 @@ impl Bands {
         }
     }
 
+    /// Thresholds below which a refill of a page that grows with each refill starts (row
+    /// groups, `worker_chain::Budget`): the strips' (`refill_thresholds`) and the screens a
+    /// page holds beyond them along the travel, so that such a page comes to hold every
+    /// screen its request asks for.
+    pub fn growth_thresholds(&self) -> (f32, f32) {
+        let (above, below) = self.refill_thresholds();
+        match self.direction {
+            -1 => (above + PAGE_EXTRA, below),
+            _ => (above, below + PAGE_EXTRA),
+        }
+    }
+
     /// Screens a refill keeps against the direction of travel.
     pub fn refill_keeps(&self) -> f32 {
         BEHIND

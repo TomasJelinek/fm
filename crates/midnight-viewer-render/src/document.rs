@@ -60,6 +60,7 @@ impl TextRenderer {
             border_color: colors.border,
             width: 0.0,
             height: if document.start_of_document { em } else { 0.0 },
+            rows: None,
         };
         let mut index = 0;
         let mut previous = None;

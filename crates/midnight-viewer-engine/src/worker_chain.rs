@@ -13,11 +13,15 @@
 //! only the rows past the page's edge, and its reply is joined to the rows the page holds
 //! (`Worker::overlap`), as the reply to a byte-capped read is joined to the next range.
 //!
-//! A joined page is one text layout and stays within the page's budget (`fit`). Before the
-//! renderer bounded its shaping runs, whose glyph clusters keep their offset in 16 bits
-//! (parley 0.11, `ClusterData::text_offset`), every byte past 64 KiB of a page mapped to the
-//! wrong glyph: the caret of offset 72,000 of a 73,200-byte page lay on the page's end, a
-//! row too low, and refills placed on it lost travel.
+//! A joined page stays within its budget (`Budget`, `fit`): one text layout, or for a page of
+//! unwrapped Text or Source rows, which is laid out in row groups that a refill shares with
+//! the shown page (`TextRenderer::layout_rows`), the rows it holds of the shown page and at
+//! most one layout's worth more, so that such a page grows to hold the prepared screens
+//! however long its rows are. Before the renderer bounded its shaping runs, whose glyph
+//! clusters keep their offset in 16 bits (parley 0.11, `ClusterData::text_offset`), every
+//! byte past 64 KiB of a page mapped to the wrong glyph: the caret of offset 72,000 of a
+//! 73,200-byte page lay on the page's end, a row too low, and refills placed on it lost
+//! travel.
 use super::*;
 
 /// The most bytes one joined page lays out, tabs expanded (`viewport::PAGE_BYTES`).
@@ -44,12 +48,74 @@ pub(super) struct Chain {
     stalled: bool,
     /// The request's first part came from the shown page (`Worker::overlap`).
     seeded: bool,
+    /// What the joined page may hold (`Budget`).
+    budget: Budget,
     /// The range read after that part did not continue it: read the whole request.
     whole: bool,
 }
 
 #[derive(Default)]
 pub(super) struct Chains(Vec<Chain>);
+
+/// What one joined page may hold. A page is one layout of at most `JOIN_BYTES` and
+/// `JOIN_SPANS`, except a page of unwrapped rows (`Worker::row_pages`): laid out in row
+/// groups that a refill shares with the shown page, it holds the shown page's rows (`seed`)
+/// and at most one layout's worth more, up to the row groups' limits, and no row it reads
+/// grows past one layout.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Budget {
+    bytes: usize,
+    spans: usize,
+    rows: bool,
+}
+
+impl Budget {
+    pub(super) fn new(rows: bool, seed: Option<&viewer::TextPage>) -> Self {
+        let (bytes, spans) = seed
+            .filter(|_| rows)
+            .map_or((0, 0), |seed| (layout_bytes(&seed.text), seed.spans.len()));
+        Self {
+            bytes: if rows {
+                (bytes + JOIN_BYTES).min(midnight_viewer_render::MAX_ROWS_BYTES)
+            } else {
+                JOIN_BYTES
+            },
+            spans: if rows {
+                (spans + JOIN_SPANS).min(midnight_viewer_render::MAX_ROWS_SPANS)
+            } else {
+                JOIN_SPANS
+            },
+            rows,
+        }
+    }
+
+    /// The colour spans of the row a read in this direction continues (`open_row`).
+    fn open_row_spans(page: &viewer::TextPage, backwards: bool) -> usize {
+        let row = Self::open_row(page, backwards);
+        if backwards {
+            page.spans
+                .partition_point(|span| (span.start as usize) < row)
+        } else {
+            let start = page.text.len() - row;
+            page.spans.len()
+                - page
+                    .spans
+                    .partition_point(|span| (span.end as usize) <= start)
+        }
+    }
+
+    /// The bytes of the row a read in this direction continues: after the page's last
+    /// line break, or before its first one for a backward read.
+    fn open_row(page: &viewer::TextPage, backwards: bool) -> usize {
+        let text = &page.text;
+        if backwards {
+            text.find('\n').map_or(text.len(), |at| at + 1)
+        } else {
+            text.rfind('\n')
+                .map_or(text.len(), |at| text.len() - at - 1)
+        }
+    }
+}
 
 /// Logical lines in `text`: the unit of a request's line budget.
 fn lines(text: &str) -> u32 {
@@ -66,15 +132,38 @@ pub(super) fn layout_bytes(text: &str) -> usize {
 /// Whether a joined page of `lines` rows reads on for a request of `max_lines`: up to its
 /// line budget, while its layout has room. A backward page holds one newline less than its
 /// line budget: its last row runs up to the anchor. One missing line is enough.
-fn reads_on(lines: u32, page: &viewer::TextPage, max_lines: u32) -> bool {
+fn reads_on(
+    lines: u32,
+    page: &viewer::TextPage,
+    max_lines: u32,
+    budget: Budget,
+    backwards: bool,
+) -> bool {
     lines.saturating_add(1) < max_lines
-        && layout_bytes(&page.text) < JOIN_BYTES
-        && page.spans.len() < JOIN_SPANS
+        && layout_bytes(&page.text) < budget.bytes
+        && page.spans.len() < budget.spans
+        && (!budget.rows
+            || Budget::open_row(page, backwards) < JOIN_BYTES
+                && Budget::open_row_spans(page, backwards) < JOIN_SPANS)
 }
 
 /// The bytes a read after `page` may add to its layout.
-fn room(page: &viewer::TextPage) -> u32 {
-    u32::try_from(JOIN_BYTES.saturating_sub(layout_bytes(&page.text))).unwrap_or(u32::MAX)
+fn room(page: &viewer::TextPage, budget: Budget, backwards: bool) -> u32 {
+    let mut room = budget.bytes.saturating_sub(layout_bytes(&page.text));
+    if budget.rows {
+        room = room.min(JOIN_BYTES.saturating_sub(Budget::open_row(page, backwards)));
+    }
+    u32::try_from(room).unwrap_or(u32::MAX)
+}
+
+/// The colour spans a read after `page` may add: no row it continues grows past one
+/// layout's.
+fn span_room(page: &viewer::TextPage, budget: Budget, backwards: bool) -> usize {
+    let mut room = budget.spans.saturating_sub(page.spans.len());
+    if budget.rows {
+        room = room.min(JOIN_SPANS.saturating_sub(Budget::open_row_spans(page, backwards)));
+    }
+    room
 }
 
 /// The longest part of `page` that fits `bytes` of layout and `spans` spans, cut at one of
@@ -275,11 +364,13 @@ impl Worker {
             return;
         }
         self.retire_stale_chains();
+        let budget = Budget::new(self.row_pages(), held.as_ref());
         self.chains.0.push(Chain {
             logical: id,
             physical: id,
             viewport: viewport.clone(),
             seeded: held.is_some(),
+            budget,
             page: held,
             cut_start: false,
             reads: 1,
@@ -309,7 +400,14 @@ impl Worker {
             .partition_point(|anchor| anchor.source_offset < viewport.source_anchor);
         let anchor = page.anchors.get(index)?;
         let at = anchor.text_offset as usize;
-        if anchor.source_offset != viewport.source_anchor || at == 0 || at >= page.text.len() {
+        // A page of row groups grows from its own edge too: a read from its start (its end,
+        // backwards) holds every row it has (`Worker::long_rows`).
+        let edge = self.row_pages();
+        let (from_start, from_end) = (edge && !viewport.backwards, edge && viewport.backwards);
+        if anchor.source_offset != viewport.source_anchor
+            || (at == 0 && !from_start)
+            || (at >= page.text.len() && !from_end)
+        {
             return None;
         }
         let (held, source_anchor) = if viewport.backwards {
@@ -325,11 +423,14 @@ impl Worker {
         if lines == 0 {
             return None;
         }
-        reads_on(lines, &held, viewport.max_lines).then(|| {
+        let budget = Budget::new(self.row_pages(), Some(&held));
+        reads_on(lines, &held, viewport.max_lines, budget, viewport.backwards).then(|| {
             let read = messages::Viewport {
                 source_anchor,
                 backwards: viewport.backwards,
-                max_bytes: viewport.max_bytes.min(room(&held)),
+                max_bytes: viewport
+                    .max_bytes
+                    .min(room(&held, budget, viewport.backwards)),
                 max_lines: viewport.max_lines - lines,
             };
             (held, read)
@@ -381,15 +482,17 @@ impl Worker {
             EventKind::TextPage(page) => {
                 let chain = &mut self.chains.0[index];
                 // A reply joins the pages read before it within one layout.
-                let (bytes, spans) = chain
-                    .page
-                    .as_ref()
-                    .map_or((JOIN_BYTES, JOIN_SPANS), |held| {
-                        (
-                            JOIN_BYTES.saturating_sub(layout_bytes(&held.text)),
-                            JOIN_SPANS.saturating_sub(held.spans.len()),
-                        )
-                    });
+                let budget = chain.budget;
+                let (bytes, spans) =
+                    chain
+                        .page
+                        .as_ref()
+                        .map_or((budget.bytes, budget.spans), |held| {
+                            (
+                                room(held, budget, chain.viewport.backwards) as usize,
+                                span_room(held, budget, chain.viewport.backwards),
+                            )
+                        });
                 let length = page.text.len();
                 let page = fit(page, bytes, spans, chain.viewport.backwards);
                 chain.stalled = page.source.length == 0 || page.text.len() < length;
@@ -434,11 +537,14 @@ impl Worker {
             }
             EventKind::Completed if self.chains.0[index].whole => {
                 let whole = self.chains.0[index].viewport.clone();
+                let rows = self.row_pages();
                 if let Some(physical) = self.chain_request(whole) {
                     let chain = &mut self.chains.0[index];
                     chain.physical = physical;
                     chain.reads += 1;
                     chain.seeded = false;
+                    // Read whole, the page holds nothing of the shown one.
+                    chain.budget = Budget::new(rows, None);
                     chain.whole = false;
                     chain.stalled = false;
                     chain.page = None;
@@ -459,12 +565,18 @@ impl Worker {
                             page.has_after
                                 .then(|| page.source.offset + page.source.length)
                         }?;
-                        reads_on(held, page, chain.viewport.max_lines).then(|| messages::Viewport {
-                            source_anchor: anchor,
-                            backwards: chain.viewport.backwards,
-                            max_bytes: chain.viewport.max_bytes.min(room(page)),
-                            max_lines: chain.viewport.max_lines - held,
-                        })
+                        let (budget, backwards) = (chain.budget, chain.viewport.backwards);
+                        reads_on(held, page, chain.viewport.max_lines, budget, backwards).then(
+                            || messages::Viewport {
+                                source_anchor: anchor,
+                                backwards,
+                                max_bytes: chain
+                                    .viewport
+                                    .max_bytes
+                                    .min(room(page, budget, backwards)),
+                                max_lines: chain.viewport.max_lines - held,
+                            },
+                        )
                     })
                 };
                 if let Some(next) = next

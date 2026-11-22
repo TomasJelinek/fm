@@ -1,8 +1,8 @@
 use midnight_core::ViewerAppearance;
 use midnight_plugin_host::api::{document, viewer};
 use midnight_viewer_render::{
-    CellAlignment, ColorSpan, DocumentBlock, DocumentKind, DocumentStyle, StyleSpan, TableCell,
-    TableRow, TextOptions, TextPage, TextRenderer,
+    CellAlignment, ColorSpan, DocumentBlock, DocumentKind, DocumentStyle, RowLayout, StyleSpan,
+    TableCell, TableRow, TextOptions, TextPage, TextRenderer,
 };
 use std::sync::Arc;
 
@@ -377,16 +377,7 @@ impl Page {
         github: bool,
         background: [u8; 4],
     ) -> Result<TextPage, midnight_viewer_render::LayoutError> {
-        let styles: Vec<_> = self
-            .styles
-            .iter()
-            .cloned()
-            .map(|mut style| {
-                style.size = (style.size * options.size / self.style_size.max(1.0))
-                    .min(256.0 / options.scale);
-                style
-            })
-            .collect();
+        let styles = self.scaled_styles(options);
         if github && !self.document_blocks.is_empty() {
             renderer.layout_document(
                 &self.text,
@@ -403,6 +394,54 @@ impl Page {
         } else {
             renderer.layout_with_tables(&self.text, options, &self.spans, &styles, &self.tables)
         }
+    }
+
+    /// Lay out unwrapped rows as row groups (`TextRenderer::layout_rows`), sharing the
+    /// groups of `previous` (the page laid out before, and its layout) that this page
+    /// repeats: a refill shapes only the rows it adds.
+    pub(crate) fn layout_rows(
+        &self,
+        renderer: &mut TextRenderer,
+        options: &TextOptions<'_>,
+        previous: Option<(&Page, &TextPage)>,
+    ) -> Result<(TextPage, RowLayout), midnight_viewer_render::LayoutError> {
+        let styles = self.scaled_styles(options);
+        let reuse = previous.and_then(|(page, shaped)| Some((shaped, page.shift_to(self)?)));
+        renderer.layout_rows(&self.text, options, &self.spans, &styles, reuse)
+    }
+
+    /// Styles at `options`' font size: they were converted at `style_size`.
+    pub(crate) fn scaled_styles(&self, options: &TextOptions<'_>) -> Vec<StyleSpan> {
+        self.styles
+            .iter()
+            .cloned()
+            .map(|mut style| {
+                style.size = (style.size * options.size / self.style_size.max(1.0))
+                    .min(256.0 / options.scale);
+                style
+            })
+            .collect()
+    }
+
+    /// What takes an offset of this page's text to the same source byte in `next`'s, from a
+    /// source offset that both pages anchor; `None` without one, or for another revision.
+    fn shift_to(&self, next: &Page) -> Option<isize> {
+        if self.revision != next.revision {
+            return None;
+        }
+        let first = next
+            .anchors
+            .partition_point(|anchor| anchor.source_offset < self.start);
+        next.anchors[first..]
+            .iter()
+            .take_while(|anchor| anchor.source_offset <= self.end)
+            .find_map(|anchor| {
+                let at = self
+                    .anchors
+                    .binary_search_by_key(&anchor.source_offset, |own| own.source_offset)
+                    .ok()?;
+                Some(anchor.text_offset as isize - self.anchors[at].text_offset as isize)
+            })
     }
 }
 

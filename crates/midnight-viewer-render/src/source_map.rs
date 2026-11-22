@@ -4,12 +4,13 @@ use std::{borrow::Cow, ops::Range};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+#[derive(Clone)]
 struct Replacement {
     source: Range<usize>,
     shaped: Range<usize>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SourceMap(Vec<Replacement>);
 
 impl SourceMap {

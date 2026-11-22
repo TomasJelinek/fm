@@ -157,7 +157,10 @@ guards. Since 21 November 2026 a page holds the [prepared text
 window](SCROLLING.md#prepared-text-window) (the window, one screen against the direction
 of travel and two or three along it) and two more screens along the travel, and a
 refill comes about every two screens of travel, so a gesture reads fewer, larger pages;
-the joins, cuts and limits below are unchanged.
+the joins, cuts and limits below are unchanged. Since 22 November an unwrapped Text or
+Source page is laid out in [row groups](SCROLLING.md#row-groups): a request still reads
+at most 16 ranges and 120 KiB, but the page keeps the shown page's rows and grows past
+120 KiB, up to 1 MiB, and a refill shapes only the rows it adds.
 
 The basic and Source plugins answer a Text or Source viewport with at most about 8 KiB.
 One anchor per character and the wire item budget limit a reply to about 13,000

@@ -522,7 +522,16 @@ the prepared screens and two more along the travel: its request's line budget co
 them, still at most 512 lines and the byte budgets below. A refill starts while the
 page holds fewer screens than the strips want along the direction of travel (a quarter
 of a screen against it) and keeps a screen against it, so it comes every two screens
-of travel and the window moves over prepared rows meanwhile. In the Text, Source and hex
+of travel and the window moves over prepared rows meanwhile. A page that is one layout
+(wrapped rows, Markdown, hex) starts a refill no further than half its span from its
+edge, since a refill lays it out whole; a page of [row groups](#row-groups) refills at
+the strips' own thresholds, so it grows to hold the prepared screens, and while such a
+refill reads its ranges, one plugin reply each, the camera moves on over the rows the
+page holds and the refill's page takes the camera where it is. A page of rows so long
+that one request cannot read every screen it asks for (`Worker::long_rows`) refills until
+it holds the two screens beyond the strips too, reads on after each refill until it does,
+and grows at its edge from where it starts when it already keeps the screen against the
+travel. In the Text, Source and hex
 views a camera request at rest (a key, the end of a glide) starts it too, so PageDown
 finds the next page read; a Markdown page ends at whole blocks, which a reply may not
 pass (`Continuation::seam`), so it reads on only while the camera glides or once the
@@ -536,7 +545,8 @@ the rows beyond it, so only a page with the same edge reproduces it; a page with
 is painted again. A new font, size, scale, margin or Markdown preset paints every strip
 again, since a font of the same line height keeps every row where it was. Text is laid
 out once per page: rows are shaped again only when a refill joins them into its new
-page, or when the width, font or zoom changes. Strip IDs are unique in the process, so
+page (a page of row groups keeps their shaping), or when the width, font or zoom
+changes. Strip IDs are unique in the process, so
 the window keeps each strip's conversion and image by ID across surfaces: a scrollbar
 drag whose positions wait for their page paints, converts and uploads nothing again.
 
@@ -553,7 +563,10 @@ send at most about 8 KiB, which for rows of a few hundred bytes is no taller tha
 viewport. The engine then reads the contiguous
 next range (backwards, the previous one) and joins the replies into one page, up to
 the request's line budget and at most 120 KiB (`PAGE_BYTES`, `worker_chain.rs`), so
-such rows scroll like short ones. A joined backward page whose first row may be cut
+such rows scroll like short ones. A page of row groups holds the rows it keeps of the
+shown page and at most 120 KiB more per request, up to 1 MiB (`MAX_ROWS_BYTES`), and no
+row it reads grows past 120 KiB or 4,096 colour spans (`worker_chain::Budget`). A joined
+backward page whose first row may be cut
 drops that row: a row's tail never shows as a line of its own. An incomplete
 byte-limited fragment that is still shorter than a viewport (a row longer than that
 bound) temporarily retains the existing viewport renderer rather than inventing
@@ -579,8 +592,9 @@ frame before or after, so its 3 and 4 stalled frames came from the model. Since 
 Source scrollbar drag whose positions wait for their page paints no strip again (5
 strips over a 61-frame drag before), and eight PageDowns over 100 MB stall no frame (3
 to 6 before) ([follow-up](../verification/2026-11-22-text-scrolling-follow-up.md)). Unwrapped
-rows wider than the window still stall: every refill shapes its whole page of at most
-120 KiB again for at most a guard (256 px) of travel.
+rows wider than the window stalled until their pages were laid out in [row
+groups](#row-groups): every refill shaped its whole page of at most 120 KiB again for at
+most a guard (256 px) of travel.
 
 Native GPU allocation stalls are addressed separately by the pinned FemtoVG
 [upload cache](../../vendor/README.md). In-flight buffers become reusable only
@@ -593,6 +607,46 @@ and [viewer measurements](../verification/2026-11-11-viewer-pixel-scroll.md).
 Backend/camera tests and a correct transform do not by themselves qualify native
 60 Hz performance; sustained refills, idle restart and real rendered pixels
 remain part of the measurement gate.
+
+### Row groups
+
+An unwrapped Text or Source page is laid out as a stack of row groups
+(`TextRenderer::layout_rows`, `midnight-viewer-render/src/rows.rs`), a composite page as
+tables use: groups of whole rows of at most 8 KiB, each its own layout, within one
+layout's colour spans, styles and lines; a longer row is a group of its own. A refill
+keeps the groups of the shown page that the new page repeats whole with the same
+colours, styles and options, and shapes only the rows it adds and the group its new edge
+cuts. Each group is broken into lines at its place in the page, from the sum of the line
+heights above it as one layout sums them, so its rows lie where one layout of the page
+puts them, bit for bit, whatever groups the page reused. Carets, hit tests, selections,
+Find highlights, copies, scroll anchors and the trailing newline are those of one layout
+across every group edge: the empty line after a group's last line break is left out, a
+hit test picks a group by its first row's top as parley picks a line by line tops, and a
+line at a height picks it by its last row's bottom (`rows_tests.rs`).
+
+A row with right-to-left letters, Arabic numbers or explicit embeddings is a group, and so
+a bidirectional paragraph, of its own: its direction comes from its own first strong
+character, whatever row the page starts with. One layout of a page, as wrapped rows still
+have, takes the direction of every row from the page's first strong character. Parley
+0.11.1 counts a wrong cluster in a line's advance when a ligature, combining or emoji
+sequence starts a cluster outside a layout's first run, so the width of such a row, and
+the highlight of the row selected whole, can differ by a few pixels between one layout and
+row groups; glyphs, carets, hit tests and copies do not use that advance
+([record](../verification/2026-11-22-long-rows-row-groups.md)).
+
+Measured on 22 November 2026 in the release co-simulation, single paired runs on the
+loaded development machine. Over unwrapped 2400-byte rows at 1x, the 40-notch spin with
+the 100 px notch stalled 137 of 165 frames before and 5 of 117 after (11 in a second run
+of the same build, and 0 and 18 in two runs of the build before its last change), and
+with the 60 px notch 79 and none, 96 and none at 2x. A touchpad flick stalls no frame (48
+before), eight PageDowns 120 ms apart 55 (206 before), and the spin shaped 481 KiB
+instead of 2280 KiB: each refill shaped the rows it added and at most the group its new
+edge cut, 125,209 bytes for 122,880 added, for instance. The 40-notch spin still stalls
+a few frames under load: a refill's worker turn takes 80 to 130 ms (about 37 ms shaping
+its 120 KiB, the rest placing the reused groups and painting the strips at its old edge),
+and the co-simulation answers a plugin read, 8 KiB or about three such rows, only
+between worker turns. Wrapped rows, 60-byte rows and Source stall no frame, as before.
+
 ## Scrollbar coverage and small source blocks
 
 A scrollbar position describes the scrollable visual range, excluding the visible
