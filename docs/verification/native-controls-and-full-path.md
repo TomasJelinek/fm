@@ -67,7 +67,7 @@ Workspace formatting, strict all-targets Clippy, application build, the
 154-file/100000-byte source guard and backend smoke all passed.
 
 Native Windows FemtoVG-WGPU smoke exited successfully. The inspected
-[screenshot](../screenshots/native-controls-windows.png) uses the Unicode preview
+screenshot uses the Unicode preview
 as the active pane, proving its complete working-directory prompt exceeds the
 former fixed-width field without elision. It also shows the inline drive/location
 strip, colored host icons, semantic action fallbacks and compact function keys.

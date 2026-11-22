@@ -50,7 +50,7 @@ by their passing parent tests. Strict Clippy, workspace formatting, application
 build, engine smoke and the 99-file/100000-byte source guard passed.
 
 The native FemtoVG-WGPU UI smoke exited successfully. The inspected
-[desktop screenshot](../screenshots/compact-desktop-windows.png) shows centered
+desktop screenshot shows centered
 icons, compact location controls, visible cwd prompt, no permanent help footer,
 and multilingual filenames. The updated window was opened as the desktop user,
 PID 1972, title `FM — File Manager`, visible and responding at verification.

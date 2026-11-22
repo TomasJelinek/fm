@@ -53,7 +53,7 @@ tests. Workspace formatting, strict all-targets Clippy, the application build,
 the 156-file/100000-byte source guard and backend smoke all passed.
 
 Native Windows FemtoVG-WGPU smoke passed. The inspected
-[current screenshot](../screenshots/compact-command-windows.png) shows the full
+current screenshot shows the full
 working path in the single command row, a separate usable editor, centered footer
 contents and the corrected Options vector alongside native colored host icons.
 The normal FM 0.1 window was reopened in the actual desktop session and verified

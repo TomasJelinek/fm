@@ -90,7 +90,7 @@ their passing parent tests execute them explicitly in hidden native consoles.
 The suite verifies new-console stdio isolation and exit259 handling. Actual
 PowerShell parsing and Cmd Unicode/metacharacter no-op probes also passed.
 
-Final native screenshot: [Windows controls](../screenshots/commander-controls-final-windows.png).
+Final native screenshot: Windows controls.
 The updated executable was launched under the real user account, PID73472,
 with visible/responding `FM — File Manager` window. Foreground activation was
 refused by Windows, so no claim that it is in front of the current app is made.

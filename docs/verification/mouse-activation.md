@@ -22,7 +22,7 @@ are reaped and nonzero exit status is surfaced; queue overload fails visibly.
 - Strict Clippy for every target, workspace rustfmt, app build and engine smoke:
   passed. Source-size check: **89 files**, each at most 100000 bytes.
 - Native FemtoVG-WGPU UI smoke exited successfully and produced the inspected
-  [screenshot](../screenshots/mouse-activation-windows.png). Both panels, parent
+  screenshot. Both panels, parent
   rows, active decoration, metadata, host icons and multilingual text render.
 - Updated application launched as `<domain>\<user>`, PID **22584**, title
   `FM — File Manager`; native window visible and responding at verification.

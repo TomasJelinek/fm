@@ -55,7 +55,7 @@ the 135-file/100000-byte source guard passed. The later cosmetic version additio
 was included in the fresh build and native title check.
 
 Native Windows FemtoVG-WGPU smoke exited successfully. The inspected
-[screenshot](../screenshots/navigation-appearance-windows.png) shows native drive
+screenshot shows native drive
 icons, folder-caption tabs, compact controls, multilingual entries, visible cwd
 and no pane status bars. The current executable was launched as the actual
 desktop account with title **FM 0.1 — File Manager**; its window was visible and
@@ -70,7 +70,7 @@ Fresh strict Windows workspace Clippy also passed after this change.
 The fresh compact-Touch application build and 135-file source guard passed;
 native Windows smoke passed again and the updated executable was launched as
 the desktop user with the verified FM 0.1 title. The captured current Desktop
-profile is [here](../screenshots/compact-touch-windows.png); Touch-specific
+profile is here; Touch-specific
 geometry is exercised by the eight interaction/render/scroll tests above.
 
 Linux baseline: **316 workspace tests passed**, zero failures, plus strict

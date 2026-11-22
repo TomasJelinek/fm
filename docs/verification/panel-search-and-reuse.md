@@ -132,7 +132,7 @@ hashes. The actual root build.sh helper also passed. Linux UI tests use the
 headless software renderer; this is not a native Linux desktop visual capture.
 
 The actual root build.bat helper and native Windows FemtoVG-WGPU smoke passed.
-The inspected [current screenshot](../screenshots/panel-search-windows.png) shows
+The inspected current screenshot shows
 Unicode names, a real junction with its system overlay, a compression mark only
 on the actual compressed fixture, the complete single-line cwd and centered
 footer controls. The final FM 0.1 window was left visible and responding in the

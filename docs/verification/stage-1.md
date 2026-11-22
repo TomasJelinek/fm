@@ -27,7 +27,7 @@ Cargo target dependency trees confirm that the Windows app includes the Windows
 adapter and Linux includes the Linux adapter, with no opposite native adapter.
 The common crate contains only portable code; OS implementations/tests are split.
 
-The native screenshot at [stage-1-windows.png](../screenshots/stage-1-windows.png)
+The native screenshot at stage-1-windows.png
 was inspected. It shows Czech, Chinese/Japanese, Arabic, Hebrew, supplementary
 emoji and combining-accent filenames. The actual Slint focus integration test
 and native window smoke check cover pane focus transfer separately from pure

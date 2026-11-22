@@ -56,7 +56,7 @@ Workspace formatting, strict all-targets Clippy, application build, the
 145-file/100000-byte source guard and backend smoke all passed.
 
 Native Windows FemtoVG-WGPU smoke exited successfully. The inspected
-[screenshot](../screenshots/selection-continuity-windows.png) shows the drive
+screenshot shows the drive
 shortcuts beside each drive dropdown, one navigation row per pane, native icons,
 multilingual names, the active directory beside the command input and compact
 bottom controls. It captures the saved Desktop profile; interaction tests also
