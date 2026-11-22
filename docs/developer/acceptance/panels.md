@@ -40,9 +40,9 @@ combinations. Helpers of these scenarios are in
 | P-4 | An empty folder showed only `..`: the empty-folder message never appeared because `..` counts as a row, and listings emptied by hidden files or a filter did not say so. Decided and fixed: the message appears below `..`, with a distinct message when everything is hidden or filtered. | N-35, N-36 |
 | P-5 | Fixed; the check passes. Select by mask accepted the invalid masks `a\|b\|c` (two `\|`) and `*.txt\|` (nothing after `\|`): the dialog closes, nothing is marked and no reason was shown anywhere. | S-07 |
 | P-6 | Inside an archive the path bar is cut at its end ("…/staged/r…"), hiding the archive's name and the folders inside it, while native folders show whole segments with one middle marker. Fixed; the check passes (Linux run `20261121-144246`). | N-45 |
-| P-7 | Home with the cursor already on the first row (and Up there, End or Down on the last row) left a list that the wheel had scrolled away from the cursor where it was: the cursor stayed out of view. The panels revealed the cursor only when the path or the cursor index changed (`midnight-ui` `lib.rs`, the refresh's reveal). Fixed in 49a8e9c9: Up, Down, Page Up, Page Down, Home and End in every view, and Left and Right in Brief and Thumbnails, reveal the cursor also when it does not move; the check failed before the fix, its re-run on 5ccd0eb7 is pending. | R-08 |
-| P-8 | In the application's composition, which browses through the installed native filesystem package, a typed or pasted path of a file shows "Cannot open folder: The selected node is not a directory" instead of its folder with the cursor on it: the package host reports a file as `Invalid` (`InvalidData`), and only a `NotADirectory` failure is inspected (`midnight-native-filesystem-host` `client.rs` `read_directory` and `services.rs` `fs_error`; `midnight-engine` `not_a_folder.rs`). The in-process scenarios browse through the engine's own local filesystem and pass. Assigned to a backend agent, with a test through the native host composition. | N-46b |
-| P-9 | Ctrl+click on a 66-level folder chain expands it down to depth 48 only, and the panel says "Recursive expansion is incomplete: the tree resource budget is exhausted."; the documented per-tree bounds are depth 64, 10,000 occurrences, 16 MiB of charged payload and eight permits ([INLINE_TREES.md](../INLINE_TREES.md#budgets)). Reported 22 November. | B-13 |
+| P-7 | Home with the cursor already on the first row (and Up there, End or Down on the last row) left a list that the wheel had scrolled away from the cursor where it was: the cursor stayed out of view. Fixed in 49a8e9c9: Up, Down, Page Up, Page Down, Home and End in every view, and Left and Right in Brief and Thumbnails, reveal the cursor also when it does not move; the check passes (Windows `20261122-122708` and `20261122-153059`, Linux `20261122-152841`). | R-08 |
+| P-8 | In the application's composition, which browses through the installed native filesystem package, a typed or pasted path of a file showed "Cannot open folder: The selected node is not a directory" instead of its folder with the cursor on it: the package host reported a file as `Invalid`, and only a `NotADirectory` failure was inspected. Fixed in 7ab1e8ac: the native host reports `NotADirectory` with the system's code; the staged check passes (Windows `20261122-153059`, Linux `20261122-152841`). | N-46b |
+| P-9 | Ctrl+click on a 66-level folder chain expanded it down to depth 39 to 48 only, varying between runs, with "Recursive expansion is incomplete: the tree resource budget is exhausted." on the panel. Fixed in 5fd7bf20: the depth check was one level short, and a pause rolled back the unpublished batch. Now the chain shows 64 levels, folder "64" says why its subfolders are not shown and an "Expansion incomplete" notice names it; the check passes (Windows `20261122-153059`, Linux `20261122-152841`). | B-13 |
 
 ## Startup and navigation
 
@@ -51,7 +51,7 @@ combinations. Helpers of these scenarios are in
 | N-01 | Both panels open on their folders and list them | `startup` | PASS |
 | N-02 | Enter and Backspace into every fixture folder; each listing equals the disk | `navigation` | PASS |
 | N-03 | Backspace returns the cursor to the folder left | `navigation`; `panels_tree_keys` › Enter on a nested folder | PASS |
-| N-04 | Alt+Left and Alt+Right history; Alt+Left from the filesystem root returns to the folder before it | `files_navigation` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| N-04 | Alt+Left and Alt+Right history; Alt+Left from the filesystem root returns to the folder before it | `files_navigation` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | N-05 | Toolbar Back and Forward: disabled without history, step through it | `panels_paths` › toolbar | PASS |
 | N-06 | Back and Forward history menus list the folders newest first and jump several steps | `panels_paths` › history menus | PASS |
 | N-07 | Toolbar Parent folder, cursor on the folder left, keyboard back in the list | `panels_paths` › toolbar | PASS |
@@ -60,17 +60,17 @@ combinations. Helpers of these scenarios are in
 | N-10 | Ctrl+PageUp goes to the parent with the cursor on the folder left | `panels_paths` › keys | PASS |
 | N-11 | Ctrl+PageDown enters a folder and never opens a file | `panels_paths` › keys | PASS |
 | N-12 | Ctrl+Backspace, Shift+Backspace and Ctrl+Backslash open the filesystem root | `files_navigation`; `panels_paths` › keys | PASS |
-| N-44 | Shift+Backspace goes to the focused panel's root: left and right deep folders (focused by Tab and by a click), after a search ended with Escape and during a search (which it closes), in a second tab (the first stays), and inside an archive to the archive's own root | `panels_root_keys` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| N-44 | Shift+Backspace goes to the focused panel's root: left and right deep folders (focused by Tab and by a click), after a search ended with Escape and during a search (which it closes), in a second tab (the first stays), and inside an archive to the archive's own root | `panels_root_keys` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | N-45 | Inside an archive the path bar shows the archive's and the current folder's names whole (a native folder is the control) | `panels_root_keys` › path bar | PASS (P-6 fixed) |
 | N-13 | A double click opens a folder; on `..` goes up with the cursor on the folder left | `panels_paths` › keys | PASS |
 | N-14 | Tab and Shift+Tab switch the active panel and its keyboard focus | `panels_paths` › keys | PASS |
 | N-15 | Ctrl+G opens a typed path | `files_navigation`; `panels_paths` | PASS |
-| N-46 | A typed or pasted path of a file opens the file's folder with the cursor on the file, nothing marked, no notice, the keyboard in the list: as typed, in double quotes, quoted with the separator Paste adds, with a final separator, with spaces around it, with `/` separators (Windows); a name relative to the shown folder moves the cursor without a new listing. In process, browsing through the engine's own local filesystem | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-090812`; Linux re-run pending); for the application see N-46b |
-| N-46b | The same through the installed native filesystem package, as the application browses (staged): the typed path of a plain file and of an archive opens its folder with the cursor on the file, the archive not opened | `panels_root_keys` › typed files | FAIL (Windows `20261122-090812`; Linux re-run pending): P-8, assigned |
-| N-47 | A typed path of a file the panel does not show opens its folder and the details strip says why: "Not shown" / ".dot.txt is hidden" with "Ctrl+H shows them", "filter-me.log is filtered out" with "Ctrl+F12 edits the filter"; a missing file's path reports "Cannot open folder" naming it and the panel keeps its folder | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-090812`; Linux re-run pending); no staged check yet (the staged path fails first on P-8) |
-| N-48 | A typed archive path focuses the archive in its folder without opening it (in process; staged: N-46b) | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-090812`; Linux re-run pending); for the application see N-46b |
-| N-49 | Windows: a file name typed in other letter case puts the cursor on the listed name with no note | `panels_paths` › letter case | staged-only: PASS in process (Windows `20261122-090812`) |
-| N-49b | Windows: in a folder that keeps letter case apart (`fsutil file setCaseSensitiveInfo`), a name two entries share in other case is "not listed here" and the cursor stays | `panels_paths` › letter case | SKIP: `fsutil file setCaseSensitiveInfo` was refused on the Windows test machine (Access is denied; Windows `20261122-090812`) |
+| N-46 | A typed or pasted path of a file opens the file's folder with the cursor on the file, nothing marked, no notice, the keyboard in the list: as typed, in double quotes, quoted with the separator Paste adds, with a final separator, with spaces around it, with `/` separators (Windows); a name relative to the shown folder moves the cursor without a new listing. In process, browsing through the engine's own local filesystem | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); for the application see N-46b |
+| N-46b | The same through the installed native filesystem package, as the application browses (staged): the typed path of a plain file and of an archive opens its folder with the cursor on the file, the archive not opened | `panels_root_keys` › typed files | PASS (Windows `20261122-153059`, Linux `20261122-152841`; P-8 fixed in 7ab1e8ac) |
+| N-47 | A typed path of a file the panel does not show opens its folder and the details strip says why: "Not shown" / ".dot.txt is hidden" with "Ctrl+H shows them", "filter-me.log is filtered out" with "Ctrl+F12 edits the filter"; a missing file's path reports "Cannot open folder" naming it and the panel keeps its folder | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); no staged check yet |
+| N-48 | A typed archive path focuses the archive in its folder without opening it (in process; staged: N-46b) | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); for the application see N-46b |
+| N-49 | Windows: a file name typed in other letter case puts the cursor on the listed name with no note | `panels_paths` › letter case | staged-only: PASS in process (Windows `20261122-153059`) |
+| N-49b | Windows: in a folder that keeps letter case apart (`fsutil file setCaseSensitiveInfo`), a name two entries share in other case is "not listed here" and the cursor stays | `panels_paths` › letter case | SKIP: `fsutil file setCaseSensitiveInfo` was refused on the Windows test machine (Access is denied; Windows `20261122-153059`) |
 | N-16 | Ctrl+G to a missing folder is reported with the whole path | `files_navigation`; `panels_notices` › missing folder | PASS |
 | N-17 | A path segment click opens that ancestor | `files_navigation` | PASS |
 | N-18 | Hovering a path segment highlights its prefix | `panels_paths` › path bar | PASS |
@@ -86,8 +86,8 @@ combinations. Helpers of these scenarios are in
 | N-28 | Ctrl+U moves each panel's tabs with it | `panels_tabs` › swap | PASS |
 | N-29 | Alt+Enter Properties of a folder: type, permissions, time and its contents counted as on disk | `files_navigation` › Properties | PASS |
 | N-29a | Properties' owner, group, created and accessed lines | none | SKIP: they come from the desktop service's property details, which the headless harness does not install (it would also launch programs) |
-| N-29b | Properties of a 2,000-file folder: "Contents: 2,000 files, 1 folder, <bytes> bytes" as on disk, "Not counted: 1 unreadable item" for a locked subfolder and, on Unix, "1 link (not followed)" | `panels_dialogs` › Properties contents | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| N-29c | "Contents: Calculating…" until the count arrives | `panels_dialogs` › Properties contents | SKIP: the count of 2,000 files arrived before the first frame showed Properties (Windows `20261122-090812`; Linux re-run pending) |
+| N-29b | Properties of a 2,000-file folder: "Contents: 2,000 files, 1 folder, <bytes> bytes" as on disk, "Not counted: 1 unreadable item" for a locked subfolder and, on Unix, "1 link (not followed)" | `panels_dialogs` › Properties contents | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| N-29c | "Contents: Calculating…" until the count arrives | `panels_dialogs` › Properties contents | SKIP: the count of 2,000 files arrived before the first frame showed Properties (Windows `20261122-153059`, Linux `20261122-152841`) |
 | N-30 | Alt+Enter Properties of a file: type, size, permissions, time | `panels_dialogs` › after the cancelled rounds | PASS |
 | N-31 | Properties of several marked items: "3 selected items", their kinds and the files' bytes | `panels_dialogs` › afterwards | PASS |
 | N-32 | Ctrl+F1 drive information: opens, shows the folder's volume, closes | `tools_help_drive_info` (O-T07 in the [tools record](tools.md)); `panels_dialogs` (open and close) | PASS |
@@ -96,13 +96,13 @@ combinations. Helpers of these scenarios are in
 | N-35 | An empty folder says so below `..`, and `..` still goes up | `panels_paths` › empty states | PASS |
 | N-36 | A listing emptied by hidden files or by the panel filter says why | `panels_paths` › empty states | PASS |
 | N-37 | A quick-filtered search without matches says "No matching names"; Escape restores | `panels_paths` › quick filter | PASS |
-| N-38 | The details strip copies the clicked field: name, Ctrl+click the whole path, size as shown; a file's Bytes, Date and Time are those on disk (1234 bytes; 2023-11-14 in the locale's order; minutes and seconds of 12:34:56 UTC) and its row's; Space and Enter on a focused field copy it again | `panels_paths` › details strip | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| N-39 | The free space at the right of the details strip ("<size> free") copies the value it shows | `panels_paths` › details strip | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| N-38 | The details strip copies the clicked field: name, Ctrl+click the whole path, size as shown; a file's Bytes, Date and Time are those on disk (1234 bytes; 2023-11-14 in the locale's order; minutes and seconds of 12:34:56 UTC) and its row's; Space and Enter on a focused field copy it again | `panels_paths` › details strip | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| N-39 | The free space at the right of the details strip ("<size> free") copies the value it shows | `panels_paths` › details strip | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | N-40 | Loading notice only after 500 ms; refreshes keep rows without it | `files_busy_folder` (no loading state while busy) | PASS |
 | N-41 | Shift+letter switches the drive | not on Linux | SKIP: Windows only |
 | N-42 | F11/F12 network drive dialogs | not on Linux | SKIP: Windows only; the footer hides them |
 | N-43 | The Trash location opens the desktop Trash | not installed headless | SKIP: the harness installs no desktop opener |
-| N-50 | Without a desktop service the "Command shell" chooser and "Open Terminal" are disabled; the command history picker lists the saved commands newest first ("<shell> · <command>") and choosing one runs nothing and leaves the command line as it was ("Command shell unavailable"); Enter in the command line reports "Terminal unavailable" | `files_navigation` › command line | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| N-50 | Without a desktop service the "Command shell" chooser and the terminal button ("Open … in this folder", since b2184fb2) are disabled; the command history picker lists the saved commands newest first ("<shell> · <command>") and choosing one runs nothing and leaves the command line as it was ("Command shell unavailable"); Enter in the command line reports "Terminal unavailable" | `files_navigation` › command line | PASS (Windows `20261122-164746`; Linux re-run pending) |
 | N-51 | The chooser lists the platform's shells; choosing one changes the hint to "Run with <shell>"; on Windows a switch between PowerShell and cmd with a draft is refused; a recalled command fills the draft without running | `files_navigation` › command line | SKIP: the shell and the terminal come from the desktop service (DesktopContext), which the harness does not install (it also launches terminals) |
 | N-52 | The watch fallback line "Live updates are unavailable for this folder; it is checked for changes regularly instead." | `files_busy_folder` (noted) | SKIP: no seam makes a watch registration fail (decision A5) |
 
@@ -120,7 +120,7 @@ combinations. Helpers of these scenarios are in
 | T-08 | A panel stops at 32 tabs: + disabled with its reason, Ctrl+T adds nothing | `panels_tabs` › many tabs | PASS |
 | T-09 | The right panel's tabs are its own | `panels_tabs` › second tabs | PASS |
 | T-10 | F7, Shift+F4 and F2 in a second tab act on that tab's folder, in both panels | `panels_tabs` › second tabs | PASS |
-| T-11 | Each panel's tabs, in order, and its active tab come back after a restart (no folders given, as a plain start) | `panels_tabs` › restart | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| T-11 | Each panel's tabs, in order, and its active tab come back after a restart (no folders given, as a plain start) | `panels_tabs` › restart | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 
 ## View, columns, sorting and layout
 
@@ -144,8 +144,8 @@ combinations. Helpers of these scenarios are in
 | V-16 | A small window shows one panel and a rail that activates the other | `panels_view_sort` › compact | PASS |
 | V-17 | Touch density: header sorting, the 12 px splitter drag | `panels_view_sort` › touch | PASS |
 | V-18 | Column resizing | not a panel feature | SKIP: panel columns have no resize handles; their widths are measured (Find's result columns resize, see the Find record) |
-| V-19 | Each panel's view mode comes back after a restart (Brief on the left, Thumbnails on the right) | `panels_view_sort` › restart | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| V-20 | With the list scrolled until the cursor is out of view, after Tab a click gives the list back the keyboard with the cursor and marks kept, and a click on a row in view puts the cursor on it: Detailed and Thumbnails (the grid) in `panels_view_sort`, Brief (column by column) in `panels_scrolling`, whose 120 rows overflow Brief's columns (`panels_view_sort`'s Brief list fits its viewport, so there only the click on a row is checked) | `panels_view_sort` › scrolled away; `panels_scrolling` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| V-19 | Each panel's view mode comes back after a restart (Brief on the left, Thumbnails on the right) | `panels_view_sort` › restart | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| V-20 | With the list scrolled until the cursor is out of view, after Tab a click gives the list back the keyboard with the cursor and marks kept, and a click on a row in view puts the cursor on it: Detailed and Thumbnails (the grid) in `panels_view_sort`, Brief (column by column) in `panels_scrolling`, whose 120 rows overflow Brief's columns (`panels_view_sort`'s Brief list fits its viewport, so there only the click on a row is checked) | `panels_view_sort` › scrolled away; `panels_scrolling` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | V-21 | File icons drawn from a source at least as large as their box in device pixels (aac18026): Windows type icons from the Shell, program artwork, Linux theme PNG and SVG | none | SKIP: the harness installs no desktop icon reader (decision A3 allows a read-only one in the harness, WP1) |
 
 ## Scrolling (cd0b3235)
@@ -158,15 +158,15 @@ of milliseconds without drawing.
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| R-01 | A wheel leaves a row cut at the list's top, and every frame sampled during the gesture draws it (with every file marked, the top band shows the selection fill, never the list's background), in Detailed, Brief and Thumbnails | `panels_scrolling` | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| R-02 | Detailed and Brief come to rest on a whole row after a wheel | `panels_scrolling` | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| R-03 | Thumbnails keeps the exact offset a wheel leaves; a click 2 px into the list selects a tile of the cut row; marks kept | `panels_scrolling` | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| R-04 | After the motion ends the alignment waits for a whole 100 ms interval without motion and then glides to the row over 200 ms: measured in real time, it glides (3 or more sampled frames), starts no sooner than 90 ms after the motion and lasts no less than 150 ms | `panels_scrolling` › half a notch | PASS (Windows `20261122-090812`; Linux re-run pending; Windows: the alignment began 113 ms after the motion and took 191 ms) |
+| R-01 | A wheel leaves a row cut at the list's top, and every frame sampled during the gesture draws it (with every file marked, the top band shows the selection fill, never the list's background), in Detailed, Brief and Thumbnails | `panels_scrolling` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| R-02 | Detailed and Brief come to rest on a whole row after a wheel | `panels_scrolling` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| R-03 | Thumbnails keeps the exact offset a wheel leaves; a click 2 px into the list selects a tile of the cut row; marks kept | `panels_scrolling` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| R-04 | After the motion ends the alignment waits for a whole 100 ms interval without motion and then glides to the row over 200 ms: measured in real time, it glides (3 or more sampled frames), starts no sooner than 90 ms after the motion and lasts no less than 150 ms | `panels_scrolling` › half a notch | PASS (Windows `20261122-153059`, Linux `20261122-152841`; Windows: the alignment began 109 ms after the motion and took 198 ms) |
 | R-04b | The exact 100 ms and 200 ms, and a new wheel stopping a glide where it is | `panels_scrolling` | SKIP: needs the scenario's own clock (harness H1) |
-| R-05 | With less motion (Windows: animation effects off), read on a native focus gain: one notch moves its whole distance in one frame, half a notch moves its 50 px at once and the rest aligns at once; with motion allowed again both glide | `panels_scrolling` › less motion | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| R-06 | One native notch moves the rows nearest the notch distance, at least one, gliding over several frames, and lands on a row boundary: 100 px at three lines per notch (the default), 33⅓ px at one line, 200 px at six, one screen per notch; Brief alike; Thumbnails from a cut offset lands on a band boundary | `panels_scrolling` › notches | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| R-05 | With less motion (Windows: animation effects off), read on a native focus gain: one notch moves its whole distance in one frame, half a notch moves its 50 px at once and the rest aligns at once; with motion allowed again both glide | `panels_scrolling` › less motion | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| R-06 | One native notch moves the rows nearest the notch distance, at least one, gliding over several frames, and lands on a row boundary: 100 px at three lines per notch (the default), 33⅓ px at one line, 200 px at six, one screen per notch; Brief alike; Thumbnails from a cut offset lands on a band boundary | `panels_scrolling` › notches | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | R-07 | The system's own settings (Windows' lines to scroll at a time and animation effects), read on the window's first native event and each focus gain | `panels_scrolling` | SKIP: the seam's settings override stands in for the system (decision A1) |
-| R-08 | Every navigation key reveals the cursor: with the list scrolled away from it by the wheel, Home and Up with the cursor already on `..`, End and Down with it already on the last row, bring the cursor row into view | `panels_scrolling` › keys reveal | FAIL (Windows `20261122-090812`; Linux re-run pending, before the fix): P-7, fixed in 49a8e9c9; the re-run on 5ccd0eb7 is pending |
+| R-08 | Every navigation key reveals the cursor: with the list scrolled away from it by the wheel, Home and Up with the cursor already on `..`, End and Down with it already on the last row, bring the cursor row into view | `panels_scrolling` › keys reveal | PASS (Windows `20261122-122708` and `20261122-153059`, Linux `20261122-152841`; P-7 fixed in 49a8e9c9) |
 
 ## Selection
 
@@ -188,8 +188,8 @@ of milliseconds without drawing.
 | S-14 | Marks with hidden files hidden and with a filter: Ctrl+A marks only what is shown | `files_filter_search`; `panels_search_filter` | PASS |
 | S-15 | F5 of a multi-selection deselects the completed roots | `files_selection` | PASS |
 | S-16 | The number row's + starts a search | `files_selection` | PASS |
-| S-17 | In every theme (26), measured in the rendered rows: a marked file's name keeps the theme's selected-text contrast against the selection fill (12:1 High Contrast, 7:1 Paper, Sandstone and Graphite Contrast, 4.5:1 otherwise), a marked file in a filename colour rule 4.5:1, the cursor row 4.5:1; after Tab the inactive panel's cursor row takes another fill, still 4.5:1 | `panels_selection_more` › selection colours | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| S-18 | The last mask and Include folders come back after a restart | `panels_selection_more` › restart | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| S-17 | In every theme (26), measured in the rendered rows: a marked file's name keeps the theme's selected-text contrast against the selection fill (12:1 High Contrast, 7:1 Paper, Sandstone and Graphite Contrast, 4.5:1 otherwise), a marked file in a filename colour rule 4.5:1, the cursor row 4.5:1; after Tab the inactive panel's cursor row takes another fill, still 4.5:1 | `panels_selection_more` › selection colours | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| S-18 | The last mask and Include folders come back after a restart | `panels_selection_more` › restart | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 
 ## Filename search, hidden files and the panel filter
 
@@ -200,13 +200,13 @@ of milliseconds without drawing.
 | Q-03 | Backspace removes one character; an empty query ends the search | `panels_search_filter` | PASS |
 | Q-04 | Space extends the query; Insert ends the search and marks the match | `panels_search_filter` | PASS |
 | Q-05 | Unicode names match without case | `panels_search_filter` | PASS |
-| Q-06 | A query survives sorting and Ctrl+R (which lists the folder again); opening a folder ends it | `panels_search_filter` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| Q-06 | A query survives sorting and Ctrl+R (which lists the folder again); opening a folder ends it | `panels_search_filter` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | Q-07 | Escape ends the search and restores the listing | `files_filter_search` | PASS |
 | Q-08 | Show only filename search matches hides the others | `panels_paths` › quick filter; `options_general` | PASS |
-| Q-09 | Commands never wait for the quick search: F5, F6, F8, Ctrl+F8 and F4 close it and act on the focused match (F8 with no match: on the focused shown row); with marks F5 copies the marks; pressed before the matches arrive, F5 acts on the row focused before and the late result does not move the cursor | `panels_search_filter` › commands | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| Q-10 | Enter on a name that matches nothing opens nothing, closes the search and the status row says "No name matches “zz”" until the cursor moves; the panel filter alone is never reported as the quick search | `panels_search_filter` › commands | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| Q-11 | In an inline tree, F7 and Shift+F8 on a nested match close the search; the match keeps its depth and the cursor; F7 creates in the panel's folder, Shift+F8 deletes the nested folder | `panels_tree_keys` › tree commands | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| Q-12 | F3 during a search closes it and views the focused match (plain.txt after "pl"), not the row focused before (staged with the viewers) | `panels_root_keys` › F3 during a search | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| Q-09 | Commands never wait for the quick search: F5, F6, F8, Ctrl+F8 and F4 close it and act on the focused match (F8 with no match: on the focused shown row); with marks F5 copies the marks; pressed before the matches arrive, F5 acts on the row focused before and the late result does not move the cursor | `panels_search_filter` › commands | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| Q-10 | Enter on a name that matches nothing opens nothing, closes the search and the status row says "No name matches “zz”" until the cursor moves; the panel filter alone is never reported as the quick search | `panels_search_filter` › commands | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| Q-11 | In an inline tree, F7 and Shift+F8 on a nested match close the search; the match keeps its depth and the cursor; F7 creates in the panel's folder, Shift+F8 deletes the nested folder | `panels_tree_keys` › tree commands | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| Q-12 | F3 during a search closes it and views the focused match (plain.txt after "pl"), not the row focused before (staged with the viewers) | `panels_root_keys` › F3 during a search | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | H-01 | Ctrl+H, the View menu, F10 and Options hide and show dot-names in both panels; saved across a restart | `files_filter_search` | PASS |
 | H-02 | Hiding moves the cursor to a shown row, drops marks on hidden rows, counts "N hidden", leaves hidden tree children out | `files_filter_search` | PASS |
 | F-01 | Ctrl+F12 Masks and Expression filters; Show all | `files_filter_search` | PASS |
@@ -214,14 +214,14 @@ of milliseconds without drawing.
 | F-03 | Case sensitive | `panels_search_filter` | PASS |
 | F-04 | The indicator above the list names the filter and opens it with its draft | `panels_search_filter` | PASS |
 | F-05 | The indicator's × turns the filter off, keeps the expression and the keyboard in the list | `panels_search_filter` | PASS |
-| F-06 | The filter history lists applied filters and fills the draft | `panels_search_filter` | PASS |
+| F-06 | Down in the filter's expression line lists the recent filters, newest first (27189334); a click on one fills the line, its mode and its case and applies nothing until OK, which applies it | `panels_search_filter` › recent filters | PASS (Windows `20261122-164746`; Linux re-run pending) |
 | F-07 | Cancel keeps the applied filter | `panels_search_filter` | PASS |
 | F-08 | An invalid regular expression is refused in the dialog; the listing stays | `panels_search_filter` | PASS |
 | F-09 | Ctrl+A, Ctrl+Shift+A, sorting and search inside a filtered list | `panels_search_filter` | PASS |
 | F-10 | Each panel has its own filter | `panels_search_filter` | PASS |
 | F-11 | A filtered tree keeps a match's ancestor as context that cannot be marked | `panels_tree_keys` | PASS |
 | F-12 | The filter's Help and F1 show the syntax; Escape closes only the help | `panels_search_filter` | PASS |
-| F-13 | The applied filter and the filter history come back after a restart; the other panel stays unfiltered | `panels_search_filter` › restart | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| F-13 | The applied filter and the recent filters come back after a restart; Down and Enter choose one by keyboard (mode, line and case filled); the other panel stays unfiltered | `panels_search_filter` › restart | PASS (Windows `20261122-164746`; Linux re-run pending) |
 
 ## Inline folder branches
 
@@ -238,8 +238,8 @@ of milliseconds without drawing.
 | B-09 | A branch that cannot be listed shows its error icon; the icon opens the notice with the whole path | `panels_notices` › failed branch | PASS |
 | B-10 | An expanded branch stays expanded while its folder changes | `panels_busy_ops` | PASS |
 | B-11 | Retry lists a failed branch once its folder is readable; the error icon goes | `panels_notices` › failed branch | PASS |
-| B-12 | Ctrl+click on a folder of 101 folders holding 100 folders each: at most 10,000 nested rows, and the list still works (End, Home) | `tree_expand_all` › limits | PASS (Windows `20261122-090812`; Linux re-run pending; 9,901 nested rows, then "Recursive expansion is incomplete: the tree resource budget is exhausted.") |
-| B-13 | Ctrl+click on a 66-level chain shows it down to level 64 and no deeper, without a notice | `tree_expand_all` › limits | FAIL (Windows `20261122-090812`; Linux re-run pending): P-9, reported |
+| B-12 | Ctrl+click on a folder of 101 folders holding 100 folders each: at most 10,000 nested rows, and the list still works (End, Home) | `tree_expand_all` › limits | PASS (Windows `20261122-153059`, Linux `20261122-152841`; 9,901 nested rows, then the notice "Expansion incomplete": "Recursive expansion is incomplete: it stopped at “w098” because the tree resource budget is exhausted.") |
+| B-13 | Ctrl+click on a 66-level chain shows it down to level 64 and no deeper: folder "64" shows Failed with "Subfolders here are more than 64 levels deep and are not shown.", and an "Expansion incomplete" notice gives the reason and the folder's path | `tree_expand_all` › limits | PASS (Windows `20261122-153059`, Linux `20261122-152841`; P-9 fixed in 5fd7bf20) |
 
 ## Busy folders
 
@@ -249,28 +249,28 @@ of milliseconds without drawing.
 | W-02 | A rename and a copy finished meanwhile are listed within 1.5 s | `files_busy_folder` | PASS |
 | W-03 | F7 and Shift+F4 while busy: done, listed at once, nothing left open; Ctrl+F2 while busy | `panels_busy_ops` | PASS (Linux run `20261121-144246`: Ctrl+F2 on the two marked files, as the check expects since 21 November; F7 and Shift+F4 listed 45 and 47 ms after their reports). The earlier FAIL was a test error, not a product bug |
 | W-04 | Once quiet the listing equals the disk | `files_busy_folder`; `panels_busy_ops` | PASS |
-| W-05 | The focused file deleted on disk: within 1.5 s its row is gone, the cursor is on a neighbouring row and the marks stay | `files_busy_folder` › neighbour | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| W-05 | The focused file deleted on disk: within 1.5 s its row is gone, the cursor is on a neighbouring row and the marks stay | `files_busy_folder` › neighbour | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 
 ## Create, rename, attributes and times
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| O-01 | Shift+F4 creates an empty file, Unicode name, cursor on it | `create_rename` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| O-01 | Shift+F4 creates an empty file, Unicode name, cursor on it | `create_rename` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | O-02 | Shift+F4 on an existing name asks; a second Enter does not replace; Replace file empties it and names the recovery copy | `create_rename`; `files_create` | PASS |
-| O-03 | F7 one name, nested segments, `..`, an existing name, Escape; Shift+F4 with nested segments creates nothing and the failed job says why; leading spaces kept exactly | `files_create` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| O-03 | F7 one name, nested segments, `..`, an existing name, Escape; Shift+F4 with nested segments creates nothing and the failed job says why; leading spaces kept exactly | `files_create` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | O-04 | F2 with the stem preselected; Unicode, case only, collision (Skip, Replace), `/`, empty, 255/256 bytes, a folder; listed at once with the cursor on it | `create_rename`; `files_rename` | PASS |
 | O-05 | Ctrl+F2 permission check boxes and octal | `files_attributes` | PASS |
-| O-06 | Ctrl+F2 typed date, time (nanoseconds) and offset for one file, three files and a folder; the unticked Accessed row leaves each access time alone | `files_attributes` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| O-06 | Ctrl+F2 typed date, time (nanoseconds) and offset for one file, three files and a folder; the unticked Accessed row leaves each access time alone | `files_attributes` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | O-07 | Up/Down change the date, time and offset part under the cursor | `panels_times` | PASS |
 | O-08 | The calendar: Alt+Down, arrows, Page Up/Down, Enter, Previous/Next month, a day, Today | `panels_times` | PASS |
-| O-09 | The time picker: Alt+Down, arrows, Page Up/Down, ▲/▼, Enter keeping the picked time, Escape restoring the time it opened with | `panels_times` | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| O-09 | The time picker: Alt+Down, arrows, Page Up/Down, ▲/▼, Enter keeping the picked time, Escape restoring the time it opened with | `panels_times` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | O-10 | Now fills date, time and offset and ticks the row; Apply sets that moment | `panels_times` | PASS |
 | O-11 | Escape closes a picker only; the next Escape closes the editor without applying | `panels_times` | PASS |
 | O-12 | Ctrl+F7 opens the Case page; lowercase renames the file | `panels_times` | PASS |
 | O-13 | Keys typed right after F2's Enter wait until the new name is listed, then act from it | `files_rename` › held keys | PASS (Linux run `20261121-144246`) |
 | O-14 | Include subfolders sets the time on a folder and everything below it; Back to editing keeps the draft | `panels_times` › Include subfolders | PASS (Linux run `20261121-144246`) |
-| O-15 | F7 with an empty name says "Type the folder name or path first." and keeps the dialog | `create_rename` | PASS (Windows `20261122-090812`; Linux re-run pending) |
-| O-16 | Times page details: Tab alone leaves a row unticked, Up in its field ticks it; Escape in the time picker restores the time and the tick; the picker's Home/End, Tab and Shift+Tab round the columns, digits that move on, Space keeping "15:07:00"; the wheel (one step per 60 px, fine deltas added up; months over the calendar); the calendar's Ctrl+Page Up/Down (a year), Home/End, Space; an outside click keeping the change; an unticked row keeping its value and not applied, ticked again applied | `panels_times` › picker details | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| O-15 | F7 with an empty name says "Type the folder name or path first." and keeps the dialog | `create_rename` | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
+| O-16 | Times page details: Tab alone leaves a row unticked, Up in its field ticks it; Escape in the time picker restores the time and the tick; the picker's Home/End, Tab and Shift+Tab round the columns, digits that move on, Space keeping "15:07:00"; the wheel (one step per 60 px, fine deltas added up; months over the calendar); the calendar's Ctrl+Page Up/Down (a year), Home/End, Space; an outside click keeping the change; an unticked row keeping its value and not applied, ticked again applied | `panels_times` › picker details | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 | O-17 | Holding ▲ in the time picker: +10 in 1,000 ms (a 500 ms delay, then every 50 ms), +1 in 300 ms, paused off the arrow | `panels_times` › picker details | SKIP: holding ▲ is timed; needs the scenario's own clock (harness H1) |
 | O-18 | F2's status "Renaming “a” to “b”…" while the rename holds the panel, and Escape releasing the hold | `files_rename` (noted) | SKIP: no seam holds a rename long enough to see its status (decision A5) |
 
@@ -297,7 +297,7 @@ of milliseconds without drawing.
 | L-06 | The focused entry when nothing is marked; a panel filter limits the list | `panels_dialogs`; `panels_file_list` | PASS |
 | L-07 | The template history | `panels_file_list` | PASS |
 | L-08 | Internal viewer output shows exactly the list | `panels_root_keys` (staged with the viewers) | PASS |
-| L-09 | The template history comes back after a restart | `panels_file_list` › restart | PASS (Windows `20261122-090812`; Linux re-run pending) |
+| L-09 | The template history comes back after a restart | `panels_file_list` › restart | PASS (Windows `20261122-153059`, Linux `20261122-152841`) |
 
 ## Dialogs and notices
 
@@ -319,14 +319,16 @@ of milliseconds without drawing.
 
 ### WP2 runs of 22 November 2026
 
-Base: main 26c18895 with WP2's acceptance changes; debug test profile, smoke scale, each
-run in its own folder. The run statuses of the rows above that WP2 added or changed come
-from these runs.
+Base: main 5fd7bf20 with WP2's acceptance changes; debug test profile, smoke scale, each run
+in its own folder. The statuses of the rows WP2 added or changed come from these runs.
 
 | Run | OS | Scenarios | Result |
 | --- | --- | --- | --- |
-| `20261122-090812` | Windows 11 | the 32 WP2 scenarios and `tools_folder_sizes` (`folder_sizes` selects it too); `panels_root_keys` staged with the release packages built at d7ff8860 | 30 PASS, 3 FAIL: `panels_root_keys` (P-8), `panels_scrolling` (P-7, fixed in 49a8e9c9 after this run), `tree_expand_all` (P-9) |
-| pending | Linux (WSL 2, Ubuntu 24.04) | the same, re-run after the shared Cargo target's workspace clean | a Linux run of the same changes, built in the shared target before that clean, is not counted |
+| `20261122-153059` | Windows 11 | the 32 WP2 scenarios and `tools_folder_sizes` (`folder_sizes` selects it too); `panels_root_keys` staged with the release packages built at d7ff8860 | 31 PASS, 2 FAIL: test errors since fixed (`files_navigation` looked for the terminal button's old name; `panels_search_filter` read the filter's draft from the presenter's view, which a recent filter does not change before OK) |
+| `20261122-152841` | Linux (WSL 2, Ubuntu 24.04, ext4) | the same; staged with the shared packages built at b1b89343; the shared Cargo target's workspace artifacts cleaned first | 31 PASS, 2 FAIL: the same two test errors |
+| `20261122-164746` | Windows 11 | `panels_search_filter`, `files_navigation` with the two fixes | 2 PASS |
+| pending | Linux | the same, queued | pending |
+| `20261122-161323` | Linux | a red variant: 28 breaks, one per new or strengthened check, over the 16 scenarios they touch | 16 FAIL, each break with its own message, but for the recent-filters choice (F-06): that check then read the presenter's view; its fixed version's red run is queued |
 
 Commands, Windows (from the source tree):
 
@@ -335,7 +337,7 @@ cargo test --workspace --features midnight-acceptance/acceptance --test acceptan
 pwsh -NoProfile -File scripts\acceptance.ps1 --test-binary <target>\debug\deps\acceptance-<hash>.exe --scale smoke --only <scenarios> --run-dir <run folder> --plugins <release packages>
 ```
 
-Linux (in the clone):
+Linux (in the clone, after cleaning the shared target's workspace artifacts):
 
 ```text
 cargo test --workspace --locked --offline -j 4 --features midnight-acceptance/acceptance --test acceptance --no-run

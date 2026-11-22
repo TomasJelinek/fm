@@ -226,8 +226,8 @@ fn native_focus(app: &mut App, reduced: bool, failures: &mut Vec<String>) -> Res
 }
 
 /// End, then Home in the left list: the cursor on `..` and the list resting at its top.
-/// Home alone leaves a list scrolled away from a cursor already on `..` where it is: the
-/// panels reveal the cursor only when it moves (reported as a finding).
+/// Moving the cursor first keeps this helper independent of `keys_reveal`'s subject (a
+/// key that leaves the cursor where it is reveals it too, since 49a8e9c9, finding P-7).
 fn to_top(app: &mut App) -> Result<ListGeometry, String> {
     panel::focus_list(app, LEFT)?;
     input::key(app.slint(), Key::End);

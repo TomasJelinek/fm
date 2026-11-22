@@ -1,15 +1,17 @@
 //! Inline tree expand-all (Ctrl+click on a folder expander) and folder sizes
 //! (Ctrl+Shift+S) compared with the bytes on disk. Expand-all stops at the tree's
-//! limits: 10,000 nested rows and 64 levels, without a notice.
+//! limits: 10,000 nested rows, and 64 levels with the reason on the last folder and in
+//! an "Expansion incomplete" notice.
 use crate::{
     Context,
     app::{App, Config},
     input, inspect, panel,
+    scenarios::panels_support as ps,
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
 use slint::platform::Key;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 
 /// Logical bytes of regular files below `path`; links are not followed.
 fn disk_size(path: &Path) -> u64 {
@@ -179,7 +181,7 @@ fn deepest_row(app: &App) -> Option<(String, i32, i32)> {
 /// The tree's limits (`TreeProjection`: 10,000 rows, 64 levels): Ctrl+click on a folder
 /// of 101 folders holding 100 folders each shows at most 10,000 nested rows and the list
 /// keeps working; Ctrl+click on a 66-level chain shows it down to level 64 and no
-/// deeper, without a notice.
+/// deeper: folder "64" shows why, and an "Expansion incomplete" notice names it (P-9).
 fn tree_limits(context: &mut Context) -> Result<(), String> {
     let base = context.work.join("limits");
     let wide = base.join("wide");
@@ -208,8 +210,6 @@ fn tree_limits(context: &mut Context) -> Result<(), String> {
         .filter(|row| row.tree_depth == deepest)
         .map(|row| row.name.to_string())
         .next();
-    // A walk that stops early says why on the panel's error line ("Recursive expansion is
-    // incomplete: …"), not in a notice.
     let reason = app.error(PaneId::Left);
     context.note(format!(
         "Ctrl+click on the 66-level chain: {rows} nested rows, the deepest at depth {deepest} \
@@ -221,18 +221,59 @@ fn tree_limits(context: &mut Context) -> Result<(), String> {
             deepest_row(&app)
         ));
         failures.push(format!(
-            "Ctrl+click on a 66-level chain showed {rows} nested rows down to depth {deepest} \
-             ({deepest_name:?}; the panel says {reason:?}); the tree stops at 64 levels"
+            "P-9: Ctrl+click on a 66-level chain showed {rows} nested rows down to depth \
+             {deepest} ({deepest_name:?}; the panel says {reason:?}); the tree stops at 64 levels"
         ));
     }
-    if let Some(notice) = crate::files_support::shown_notice(&app) {
-        failures.push(format!("the 64-level limit showed a notice {notice:?}"));
+    // Folder "64" says why its subfolders are not shown, and so does an "Expansion
+    // incomplete" notice that names the folder.
+    let limit = "Subfolders here are more than 64 levels deep and are not shown.";
+    let last = app
+        .rows(PaneId::Left)
+        .iter()
+        .find(|row| row.tree_depth == 64 && row.name == "64")
+        .map(|row| (row.tree_disclosure, row.tree_error.to_string()));
+    if last
+        .as_ref()
+        .is_none_or(|(disclosure, error)| *disclosure != 6 || error != limit)
+    {
+        failures.push(format!(
+            "P-9: folder \"64\" shows (disclosure, error) {last:?}; expected Failed with {limit:?}"
+        ));
+    }
+    let folder = (1..=64).fold(base.join("chain"), |path, level| {
+        path.join(format!("{level:02}"))
+    });
+    ps::wait(&mut app, Duration::from_secs(10), |app| {
+        crate::files_support::shown_notice(app).is_some()
+    });
+    let notice = crate::files_support::shown_notice(&app);
+    let named = {
+        use slint::ComponentHandle;
+        app.window
+            .global::<midnight_ui::NoticePresentation>()
+            .get_folder_path()
+            .to_string()
+    };
+    let reason_text = "the tree shows at most 64 levels of subfolders, so the folders inside \
+                       “64” are not shown.";
+    if notice
+        .as_ref()
+        .is_none_or(|(title, body)| title != "Expansion incomplete" || !body.contains(reason_text))
+        || !named.contains(folder.to_string_lossy().as_ref())
+    {
+        failures.push(format!(
+            "P-9: at the 64-level limit the notice is {notice:?} naming {named:?}; expected \
+             \"Expansion incomplete\" with {reason_text:?} naming {}",
+            folder.display()
+        ));
     }
     app.screenshot(
         context,
         "chain-64",
         "A 66-level chain expanded to its 64-level limit",
     );
+    crate::files_support::dismiss_all(&mut app);
 
     // Collapse the chain first: the wide folder alone fills the tree.
     let (before, _) = nested(&app);

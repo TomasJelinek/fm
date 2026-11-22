@@ -5,13 +5,15 @@
 //! names match without case; a query survives sorting and Ctrl+R and ends when the
 //! folder changes. Filter: Regex from the drive bar's funnel, Case sensitive, the
 //! indicator above the list (opens the filter; its × turns it off and keeps the
-//! expression), the history menu, Cancel keeping the applied filter, an invalid regular
-//! expression refused with the listing kept; Ctrl+A, Ctrl+Shift+A, sorting and search
-//! inside a filtered list; hidden files with a filter and Ctrl+A; each panel's own filter.
-//! Commands never wait for the search (aac18026): F5, F8, Ctrl+F8 and F4 close it and act
-//! on the marks or the focused shown row, also when pressed before its matches arrive;
-//! Enter on a name that matches nothing opens nothing and says so. The applied filter
-//! and the filter history come back after a restart.
+//! expression), the recent filters that Down lists in the expression line (a choice fills
+//! the line, its mode and case and applies nothing until OK), Cancel keeping the applied
+//! filter, an invalid regular expression refused with the listing kept; Ctrl+A,
+//! Ctrl+Shift+A, sorting and search inside a filtered list; hidden files with a filter and
+//! Ctrl+A; each panel's own filter. Commands never wait for the search (aac18026): F5,
+//! F6, F8, Ctrl+F8 and F4 close it and act on the marks or the focused shown row, also
+//! when pressed before its matches arrive; Enter on a name that matches nothing opens
+//! nothing and says so. The applied filter and the recent filters come back after a
+//! restart.
 use crate::{
     Context,
     app::{App, Config},
@@ -69,6 +71,60 @@ fn filter_label(app: &App, pane: PaneId) -> String {
         PaneId::Right => app.window.get_right_filter_label(),
     }
     .to_string()
+}
+
+/// The open Panel filter's recent filters (27189334): the expression line gets the
+/// keyboard with a click and Down lists them, newest first, as buttons labelled like
+/// "Masks: *.txt" or "Regex (case sensitive): ^al".
+fn recent_filters(app: &mut App) -> Result<Vec<String>, String> {
+    input::click(
+        app.slint(),
+        AccessibleRole::TextInput,
+        "File filter expression",
+    )?;
+    app.settle();
+    input::key(app.slint(), Key::DownArrow);
+    app.settle();
+    let labels = recent_filter_rows(app);
+    if labels.is_empty() {
+        return Err("Down in the filter's expression line listed no recent filters".into());
+    }
+    Ok(labels)
+}
+
+/// The recent filters list's rows while it is open.
+fn recent_filter_rows(app: &App) -> Vec<String> {
+    ps::popup_buttons(app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .filter(|label| recent_filter(label).is_some())
+        .collect()
+}
+
+fn recent_filters_closed(app: &App) -> bool {
+    recent_filter_rows(app).is_empty()
+}
+
+/// The open Panel filter's draft as its controls show it: the mode, the expression line
+/// and Case sensitive. A recent filter fills these; the presenter's view of the filter
+/// changes only when one is applied.
+fn filter_draft(app: &App) -> (Option<String>, Option<String>, Option<bool>) {
+    (
+        ps::value(app, AccessibleRole::Combobox, "Filter mode"),
+        ps::value(app, AccessibleRole::TextInput, "File filter expression"),
+        ps::checked(app, "Case sensitive"),
+    )
+}
+
+/// A recent filter's label read back: whether it is a Regex, whether it is case
+/// sensitive, and its expression ("Regex (case sensitive): ^al").
+fn recent_filter(label: &str) -> Option<(bool, bool, &str)> {
+    let (head, expression) = label.split_once(": ")?;
+    let (mode, case) = match head.strip_suffix(" (case sensitive)") {
+        Some(mode) => (mode, true),
+        None => (head, false),
+    };
+    matches!(mode, "Masks" | "Regex" | "Expression").then_some((mode == "Regex", case, expression))
 }
 
 /// Wait until the left panel's top-level names, sorted, are `wanted`.
@@ -175,18 +231,36 @@ fn restarted_filter(
         ));
     }
     open_filter(&mut app, LEFT)?;
-    input::click(app.slint(), AccessibleRole::Combobox, "Filter history")?;
-    app.settle();
-    let labels: Vec<String> = ps::popup_buttons(&app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .filter(|label| label.contains(": "))
-        .collect();
-    for wanted in ["Regex: ^al", "Regex (case sensitive): ^al"] {
-        if !labels.iter().any(|label| label == wanted) {
-            failures.push(format!(
-                "after a restart the filter history lacks {wanted:?}: {labels:?}"
-            ));
+    match recent_filters(&mut app) {
+        Err(error) => failures.push(format!("after a restart: {error}")),
+        Ok(labels) => {
+            for wanted in ["Regex: ^al", "Regex (case sensitive): ^al"] {
+                if !labels.iter().any(|label| label == wanted) {
+                    failures.push(format!(
+                        "after a restart the recent filters lack {wanted:?}: {labels:?}"
+                    ));
+                }
+            }
+            // With the keyboard: the list opens on the newest entry; Down moves to the
+            // case-sensitive one (the restored draft is case off) and Enter fills the
+            // line, its mode and its case and closes the list.
+            let wanted = "Regex (case sensitive): ^al";
+            if let Some(index) = labels.iter().position(|label| label == wanted) {
+                for _ in 0..index {
+                    input::key(app.slint(), Key::DownArrow);
+                }
+                input::key(app.slint(), Key::Return);
+                app.settle();
+                let draft = filter_draft(&app);
+                let expected = (Some("Regex".to_owned()), Some("^al".to_owned()), Some(true));
+                if draft != expected || !recent_filters_closed(&app) {
+                    failures.push(format!(
+                        "Down and Enter on {wanted:?} left the draft (mode, line, case) \
+                         {draft:?}, list closed {}",
+                        recent_filters_closed(&app)
+                    ));
+                }
+            }
         }
     }
     support::dismiss_all(&mut app);
@@ -418,36 +492,55 @@ fn filtering(
             ps::wait(app, Duration::from_secs(5), |app| !filter_open(app));
         }
     }
-    // The history lists both applied filters; choosing one fills the draft.
+    // Down in the expression line lists both applied filters; a click on one fills the
+    // line, its mode and its case and applies nothing; OK applies it.
     open_filter(app, LEFT)?;
-    input::click(app.slint(), AccessibleRole::Combobox, "Filter history")?;
-    app.settle();
-    let labels: Vec<String> = ps::popup_buttons(app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .filter(|label| label.starts_with("Regex"))
-        .collect();
-    if !labels.contains(&"Regex: ^al".to_owned())
-        || !labels.contains(&"Regex (case sensitive): ^al".to_owned())
-    {
-        failures.push(format!("the filter history lists {labels:?}"));
-    }
-    match ps::click_popup_button(app, "Regex: ^al") {
-        Err(error) => failures.push(format!("filter history: {error}")),
-        Ok(()) => {
-            let field = ps::value(app, AccessibleRole::TextInput, "File filter expression");
-            if ps::checked(app, "Case sensitive") != Some(false) || field.as_deref() != Some("^al")
+    let (label_before, rows_before) = (filter_label(app, LEFT), ps::top_level(app, LEFT));
+    match recent_filters(app) {
+        Err(error) => failures.push(error),
+        Ok(labels) => {
+            if !labels.iter().any(|label| label == "Regex: ^al")
+                || !labels
+                    .iter()
+                    .any(|label| label == "Regex (case sensitive): ^al")
             {
-                failures.push(
-                    "choosing Regex: ^al in the history did not fill its draft (case off)".into(),
-                );
+                failures.push(format!("the recent filters list {labels:?}"));
             }
-            ok(app)?;
-            if !lists(app, LEFT, &["alpine", "alpha.txt", "Alpha2.log"]) {
-                failures.push(format!(
-                    "the history's Regex ^al lists {:?}",
-                    ps::top_level(app, LEFT)
-                ));
+            match ps::click_popup_button(app, "Regex: ^al") {
+                Err(error) => failures.push(format!("the recent filters: {error}")),
+                Ok(()) => {
+                    // The draft was Regex ^al, case sensitive: the choice turns case off.
+                    let draft = filter_draft(app);
+                    if draft
+                        != (
+                            Some("Regex".to_owned()),
+                            Some("^al".to_owned()),
+                            Some(false),
+                        )
+                    {
+                        failures.push(format!(
+                            "choosing Regex: ^al left the draft (mode, line, case) {draft:?}"
+                        ));
+                    }
+                    if !recent_filters_closed(app)
+                        || filter_label(app, LEFT) != label_before
+                        || ps::top_level(app, LEFT) != rows_before
+                    {
+                        failures.push(format!(
+                            "choosing a recent filter applied it or left the list open: label \
+                             {:?}, listing {:?}",
+                            filter_label(app, LEFT),
+                            ps::top_level(app, LEFT)
+                        ));
+                    }
+                    ok(app)?;
+                    if !lists(app, LEFT, &["alpine", "alpha.txt", "Alpha2.log"]) {
+                        failures.push(format!(
+                            "the recent filter Regex ^al lists {:?}",
+                            ps::top_level(app, LEFT)
+                        ));
+                    }
+                }
             }
         }
     }

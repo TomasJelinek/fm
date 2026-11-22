@@ -809,9 +809,11 @@ fn command_line(context: &mut Context, failures: &mut Vec<String>) -> Result<(),
         inspect::find(app.slint(), role, label).map(|item| crate::tools_support::enabled(&item))
     };
     let chooser = enabled(&app, AccessibleRole::Combobox, "Command shell");
+    // The terminal button reads "Open PowerShell in this folder. Ctrl+click: …" (Windows)
+    // or "Open a terminal in this folder. …" (since b2184fb2).
     let open = inspect::controls(app.slint(), AccessibleRole::Button)
         .into_iter()
-        .find(|(label, _)| label.starts_with("Open Terminal"))
+        .find(|(label, _)| label.starts_with("Open ") && label.contains(" in this folder."))
         .map(|(_, item)| crate::tools_support::enabled(&item));
     if chooser != Some(false) || open != Some(false) || app.window.get_terminal_available() {
         failures.push(format!(
