@@ -10,6 +10,30 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
+/// A network location and a drive without reparse points create no links, and say why in
+/// words for the job details; a local NTFS folder creates them, and the transfer is told
+/// so.
+#[test]
+fn a_folder_that_creates_no_links_says_why_and_a_local_folder_creates_them() {
+    assert_eq!(
+        no_links_reason(true, true, "NTFS").as_deref(),
+        Some("no links are created at a network location")
+    );
+    assert_eq!(
+        no_links_reason(false, false, "FAT32").as_deref(),
+        Some("this drive cannot store links (FAT32)")
+    );
+    assert_eq!(no_links_reason(false, true, "NTFS"), None);
+    let folder = build_temp("no-links-");
+    let directory = destination(folder.path());
+    assert_eq!(
+        directory
+            .creates_no_links(&Cancellation::default())
+            .unwrap(),
+        None
+    );
+}
+
 fn destination(path: &Path) -> Arc<dyn TransferDirectory> {
     crate::WindowsFileSystem::new(None)
         .prepare_transfer_destination(path, &Cancellation::default())

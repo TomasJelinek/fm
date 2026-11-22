@@ -54,6 +54,8 @@ pub(super) fn link_destination(
         .dev();
     let mut facts = classify(filesystem);
     facts.volume = Some(device);
+    // The same check that a Move from another drive makes before it removes anything.
+    facts.refuses_cross_volume_move = !super::destination::recovery::supported_type(filesystem);
     facts.removable = !facts.network
         && removable_device(
             rustix::fs::major(device),
@@ -87,6 +89,7 @@ fn classify(magic: u64) -> TransferLinkDestination {
         network: NETWORK.contains(&magic),
         removable: false,
         volume: None,
+        refuses_cross_volume_move: false,
     }
 }
 

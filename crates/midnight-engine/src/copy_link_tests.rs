@@ -125,6 +125,8 @@ pub(super) struct Control {
     fail_second_open: AtomicBool,
     replacement_on_open: Mutex<Option<TransferLinkRepresentation>>,
     refuse_admission: AtomicBool,
+    /// Why the destination creates no links at all (`creates_no_links`).
+    no_links: Mutex<Option<String>>,
     /// What the destination plans instead of the source's representation.
     plan: Mutex<Option<TransferLinkPlan>>,
     pub(super) fail_stage_creation: AtomicBool,
@@ -511,8 +513,15 @@ impl TransferDirectory for Directory {
             }))
     }
 
+    fn creates_no_links(&self, _: &Cancellation) -> Result<Option<String>, FsError> {
+        Ok(self.control.no_links.lock().unwrap().clone())
+    }
+
     fn admit_link(&self, _: &TransferLinkRepresentation, _: &Cancellation) -> Result<(), FsError> {
-        if self.control.refuse_admission.load(Ordering::SeqCst) {
+        // A destination that creates no links also refuses each one, as the platforms do.
+        if self.control.refuse_admission.load(Ordering::SeqCst)
+            || self.control.no_links.lock().unwrap().is_some()
+        {
             Err(error(
                 &self.path,
                 io::ErrorKind::Unsupported,
@@ -1222,11 +1231,46 @@ fn preserve_move_without_provider_support_and_required_time_never_stage_a_link()
     }
 }
 
+/// Where the destination creates no links at all (a network location, a drive that
+/// cannot store them), the dialog's promise holds whatever started the job (the dialog,
+/// a paste, a drag): the link is left out without a question, a note names it, nothing
+/// is staged, and the job completes.
+#[test]
+fn a_link_where_no_links_are_created_is_left_out_without_a_question() {
+    let fixture = Fixture::new();
+    *fixture.control.no_links.lock().unwrap() =
+        Some("no links are created at a network location".into());
+    let (mut job, _, _) = fixture.prepare();
+    finish(&mut job);
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(
+        (done.failed, done.skipped, done.links_left_out),
+        (0, 0, 1),
+        "{done:?}"
+    );
+    assert_eq!(
+        done.notes,
+        [format!(
+            "{} was left out: no links are created at a network location.",
+            fixture.source.display()
+        )]
+    );
+    assert!(
+        done.message
+            .contains("1 link left out where no links are created"),
+        "{done:?}"
+    );
+    assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.control.referent_reads.load(Ordering::SeqCst), 0);
+    assert!(fixture.output().is_none());
+}
+
 #[test]
 fn a_link_the_destination_cannot_create_asks_alone_before_staging() {
-    // A link the destination refuses (a drive that cannot store links, a kind it cannot
-    // create) is reported when the job reaches it, with Skip and Skip all; the job is not
-    // refused as a whole, so other selected items would still be copied.
+    // A link the destination refuses although it creates links (a kind it cannot create)
+    // is reported when the job reaches it, with Skip and Skip all; the job is not refused
+    // as a whole, so other selected items would still be copied.
     let fixture = Fixture::new();
     fixture
         .control

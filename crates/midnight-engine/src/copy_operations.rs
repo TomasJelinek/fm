@@ -1395,8 +1395,14 @@ async fn publish_rejected(outbox: &Outbox, mut progress: CopyProgress) {
         .send(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
         .await;
 }
+/// An error of a step that Copy and Move share (reading, writing, verifying, publishing).
 fn error(path: &Path, kind: io::ErrorKind, message: &str) -> FsError {
     FsError::from_io("copy files", path, io::Error::new(kind, message))
+}
+/// An error of a step that only Move takes (its admission, native rename, source capture
+/// and removal): the operation the user chose is named, as the job and its details show.
+fn move_error(path: &Path, kind: io::ErrorKind, message: &str) -> FsError {
+    FsError::from_io("move files", path, io::Error::new(kind, message))
 }
 fn rejected_progress(mut progress: CopyProgress, error: FsError) -> CopyProgress {
     progress.state = CopyOperationState::Failed;

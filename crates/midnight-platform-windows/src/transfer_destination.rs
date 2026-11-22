@@ -91,6 +91,9 @@ impl TransferDirectory for Directory {
             link_replacement: false,
         }
     }
+    fn creates_no_links(&self, cancel: &Cancellation) -> Result<Option<String>, FsError> {
+        self.no_links_reason(cancel)
+    }
     fn admit_link(
         &self,
         representation: &midnight_core::TransferLinkRepresentation,

@@ -266,6 +266,14 @@ pub(super) fn execute(
             &destination,
             &work.cancel,
         )?;
+        if intent == TransferIntent::Move {
+            admit_move(
+                work.service.as_deref(),
+                &work.files,
+                &destination,
+                &work.cancel,
+            )?;
+        }
         let files = (*work.files).clone();
         files.validate()?;
         let mut staged = work.host.sink.capacity.stage_drop()?;
@@ -395,6 +403,47 @@ pub(super) fn execute(
 #[cfg(test)]
 #[path = "drag_drop_retirement_tests.rs"]
 mod retirement_tests;
+
+/// Whether a drop that moves may start: not with more than `MAX_MOVE_ROOTS` items, and not
+/// from another drive to a destination that refuses such a Move (a network location, a
+/// drive that cannot keep a replaced file recoverable). Decided before the drop is
+/// accepted, so no job starts; the Move job still refuses both itself. Where the volume
+/// facts or devices are unknown, the job decides.
+pub(super) fn admit_move(
+    service: Option<&dyn TransferService>,
+    files: &FileClipboard,
+    destination: &Path,
+    cancel: &Cancellation,
+) -> Result<(), FsError> {
+    if files.paths.len() > midnight_core::MAX_MOVE_ROOTS {
+        return Err(error(
+            io::ErrorKind::Unsupported,
+            midnight_core::MOVE_ROOTS_REFUSAL,
+        ));
+    }
+    let Some(service) = service else {
+        return Ok(());
+    };
+    let Some(refusal) = service
+        .link_destination(destination, cancel)
+        .ok()
+        .and_then(|facts| facts.cross_volume_move_refusal())
+    else {
+        return Ok(());
+    };
+    let device = |path: &Path| service.native_drop_device(path, cancel).ok().flatten();
+    let Some(target) = device(destination) else {
+        return Ok(());
+    };
+    if files
+        .paths
+        .iter()
+        .any(|source| device(source) != Some(target))
+    {
+        return Err(error(io::ErrorKind::Unsupported, refusal));
+    }
+    Ok(())
+}
 
 pub(super) fn resolve_intent(
     intent: InternalDropIntent,

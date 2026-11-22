@@ -8,7 +8,7 @@ pub(crate) use links::{DraftLinks, LinkChoiceView};
 #[derive(Clone)]
 pub(super) struct CopyContext {
     pub(super) source: PathBuf,
-    destination: PathBuf,
+    pub(super) destination: PathBuf,
     pub(super) intent: TransferIntent,
 }
 
@@ -631,12 +631,24 @@ impl Presenter {
             draft.error = "These captured items support Copy only.".into();
             return;
         }
+        // F6, a pasted Cut and a drag refuse a larger Move before any job starts.
+        if intent == TransferIntent::Move && draft.input.roots() > midnight_core::MAX_MOVE_ROOTS {
+            draft.error = midnight_core::MOVE_ROOTS_REFUSAL.into();
+            return;
+        }
         // The folder the dialog proposed (the other panel's) and a panel's folder now
         // exist. A typed folder is checked first, so that a missing one is refused
         // here instead of starting a job that cannot run.
         let known = destination == draft.destination
             || self.panes.iter().any(|pane| pane.path == destination);
         if known {
+            // A Move from another drive to a destination that refuses one does not start.
+            if let Some(message) = self.copy_move_refusal(&destination, None) {
+                if let Some(draft) = self.copies.draft.as_mut() {
+                    draft.error = message;
+                }
+                return;
+            }
             // Keeping links where none can be stored is explained once before starting.
             if let Some(message) = self.copy_links_hold(&destination, links, None) {
                 if let Some(draft) = self.copies.draft.as_mut() {
@@ -776,6 +788,10 @@ impl Presenter {
             }
         } else if !self.owned_command_scope_available() {
             self.copy_dialog_reclaim_busy(&check.token);
+        } else if let Some(message) = self.copy_move_refusal(&check.path, checked.links.as_ref()) {
+            if let Some(draft) = self.copies.draft.as_mut() {
+                draft.error = message;
+            }
         } else if let Some(message) = self.copy_links_hold(&check.path, check.links, checked.links)
         {
             // The typed folder's link handling is shown, or explained, before starting.

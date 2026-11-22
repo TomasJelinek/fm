@@ -17,6 +17,13 @@ pub const MAX_FILE_CLIPBOARD_BYTES: usize = 4 * 1024 * 1024;
 /// the process's open-file limit. Clipboard and drag payloads themselves are bounded only
 /// by `MAX_FILE_CLIPBOARD_BYTES`. Archive members hold no native handle and are exempt.
 pub const MAX_NATIVE_TRANSFER_ROOTS: usize = 4096;
+/// The most selected items one Move takes. Every Move entry point (the dialog, a pasted
+/// Cut, a drag) refuses a larger selection with `MOVE_ROOTS_REFUSAL` before a job starts;
+/// Copy has no such limit.
+pub const MAX_MOVE_ROOTS: usize = 64;
+/// Why a Move of more than `MAX_MOVE_ROOTS` items does not start.
+pub const MOVE_ROOTS_REFUSAL: &str =
+    "Move accepts at most 64 selected roots. Choose a smaller selection.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileClipboardIntent {

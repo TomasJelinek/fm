@@ -423,6 +423,7 @@ fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_link
                         network: false,
                         removable: true,
                         volume: Some(9),
+                        refuses_cross_volume_move: false,
                     },
                     same_volume: false,
                 }),

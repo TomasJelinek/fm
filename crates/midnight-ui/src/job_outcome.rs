@@ -99,15 +99,27 @@ pub(super) fn transfer(p: &CopyProgress, failed: bool, locale: &NumberLocale) ->
             format!("{} skipped items were not {verb}.", n(p.skipped))
         });
     }
+    // A link left out where no links are created has its own note in Details.
+    if p.links_left_out > 0 {
+        lines.push(if p.links_left_out == 1 {
+            "1 link was left out: no links are created there; Details names it.".to_owned()
+        } else {
+            format!(
+                "{} links were left out: no links are created there; Details names each.",
+                n(p.links_left_out)
+            )
+        });
+    }
     // Copy records a note only for a link it could not follow and so copied as a
     // link; Details lists each one with its reason.
-    if p.note_count > 0 {
-        lines.push(if p.note_count == 1 {
+    let link_notes = p.note_count.saturating_sub(p.links_left_out);
+    if link_notes > 0 {
+        lines.push(if link_notes == 1 {
             "1 link was copied as a link; Details says why.".to_owned()
         } else {
             format!(
                 "{} links were copied as links; Details says why.",
-                n(p.note_count)
+                n(link_notes)
             )
         });
     }

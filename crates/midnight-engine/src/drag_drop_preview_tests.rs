@@ -7,6 +7,8 @@ struct Service {
     native: LocalFileSystem,
     destination: PathBuf,
     different_device: bool,
+    /// The destination refuses a Move from another drive (`link_destination`).
+    refuses_moves: std::sync::atomic::AtomicBool,
     owner: std::thread::ThreadId,
     blocked: Mutex<Option<(sync_mpsc::SyncSender<()>, sync_mpsc::Receiver<()>)>>,
 }
@@ -29,6 +31,17 @@ impl TransferService for Service {
         } else {
             1
         }))
+    }
+    fn link_destination(
+        &self,
+        _: &Path,
+        _: &Cancellation,
+    ) -> Result<midnight_core::TransferLinkDestination, FsError> {
+        Ok(midnight_core::TransferLinkDestination {
+            network: true,
+            refuses_cross_volume_move: self.refuses_moves.load(std::sync::atomic::Ordering::SeqCst),
+            ..Default::default()
+        })
     }
     fn prepare_transfer_source(
         &self,
@@ -91,6 +104,7 @@ impl Harness {
             native: LocalFileSystem::new(None),
             destination,
             different_device,
+            refuses_moves: std::sync::atomic::AtomicBool::new(false),
             owner: std::thread::current().id(),
             blocked: Mutex::new(None),
         });
@@ -248,6 +262,30 @@ async fn preview_reports_devices_and_modifiers_without_reserving_or_releasing_so
                 .next()
                 .is_none()
         );
+        h.close().await;
+    }
+}
+
+/// A drag that moves from another drive to a destination that refuses such a Move (here a
+/// network location) shows as not allowed while it hovers, so it never starts a job; a
+/// Copy there is still offered, and on the same drive the Move is too.
+#[tokio::test]
+async fn preview_refuses_a_move_from_another_drive_to_a_destination_that_refuses_one() {
+    for different in [true, false] {
+        let mut h = Harness::new(different).await;
+        h.service
+            .refuses_moves
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        h.preview(1, h.destination(), InternalDropIntent::Move)
+            .await;
+        assert_eq!(
+            h.result().await,
+            (1, (!different).then_some(TransferIntent::Move)),
+            "different drive: {different}"
+        );
+        h.preview(2, h.destination(), InternalDropIntent::Copy)
+            .await;
+        assert_eq!(h.result().await, (2, Some(TransferIntent::Copy)));
         h.close().await;
     }
 }

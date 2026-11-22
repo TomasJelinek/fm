@@ -287,6 +287,33 @@ impl Presenter {
         None
     }
 
+    /// Why the open draft, a Move, does not start at `destination`: it would bring items
+    /// from another drive to a destination that refuses such a Move (a network location,
+    /// a drive that cannot keep a replaced file recoverable). Uses `checked` when the
+    /// typed folder's check just answered, otherwise the facts the dialog has for that
+    /// folder. None for a Copy, or while nothing tells: the Move job still refuses it.
+    pub(crate) fn copy_move_refusal(
+        &self,
+        destination: &Path,
+        checked: Option<&TransferLinkFacts>,
+    ) -> Option<String> {
+        let draft = self.copies.draft.as_ref()?;
+        if draft.intent != TransferIntent::Move {
+            return None;
+        }
+        let facts = match checked {
+            Some(facts) => facts,
+            None => self
+                .copies
+                .links
+                .as_ref()
+                .filter(|links| links.token == draft.token && links.destination == destination)?
+                .facts
+                .as_ref()?,
+        };
+        facts.move_refusal()
+    }
+
     /// Stops a pending question and forgets the draft's link state.
     pub(crate) fn retire_copy_draft_links(&mut self) {
         if let Some(links) = self.copies.links.take()

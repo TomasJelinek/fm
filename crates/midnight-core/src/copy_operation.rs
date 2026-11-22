@@ -249,6 +249,11 @@ pub struct CopyProgress {
     /// `note_count` keeps the exact number.
     pub notes: Vec<String>,
     pub note_count: u64,
+    /// Links left out, without a question, because the destination creates no links (a
+    /// Windows network location, a drive that cannot store links); a note names each
+    /// (`TransferDirectory::creates_no_links`). They count neither as copied nor as
+    /// skipped: the job completes.
+    pub links_left_out: u64,
     /// Present on terminal cancellation, partial completion or recorded issues.
     pub closure: Option<CopyClosureReceipt>,
 }
@@ -322,6 +327,7 @@ impl CopyProgress {
             errors: vec![],
             notes: vec![],
             note_count: 0,
+            links_left_out: 0,
             closure: None,
         }
     }

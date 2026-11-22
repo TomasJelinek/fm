@@ -14,7 +14,6 @@ mod retry;
 #[path = "move_retry_tests.rs"]
 mod retry_tests;
 
-const MAX_MOVE_ROOTS: usize = 64;
 const MAX_MOVE_ENTRIES: usize = 100_000;
 pub(super) const MAX_MOVE_DIRECTORY_DEPTH: usize = 128;
 const MAX_PROOF_PATH_BYTES: usize = 4 * 1024 * 1024;
@@ -94,11 +93,8 @@ pub(super) fn check_root_bounds<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) -> Result<(), FsError> {
     let paths: Vec<_> = paths.into_iter().collect();
-    if paths.len() > MAX_MOVE_ROOTS {
-        return Err(unsupported(
-            destination,
-            "Move accepts at most 64 selected roots. Choose a smaller selection.",
-        ));
+    if paths.len() > midnight_core::MAX_MOVE_ROOTS {
+        return Err(unsupported(destination, midnight_core::MOVE_ROOTS_REFUSAL));
     }
     // Reserve repeated native source/parent/stage/proof and receipt path storage,
     // including recovery suffixes. Reject the whole input before creating stages.
@@ -1237,7 +1233,7 @@ pub(super) fn permit(
 ) -> Result<midnight_platform_common::transfer_io::CallPermit, FsError> {
     midnight_platform_common::transfer_io::acquire_transfer_exclusive_call(cancel, path).map_err(
         |_| {
-            error(
+            move_error(
                 path,
                 io::ErrorKind::Interrupted,
                 "Move cancelled; unfinished sources will be restored without replacement.",
@@ -1246,5 +1242,5 @@ pub(super) fn permit(
     )
 }
 fn unsupported(path: &Path, message: &str) -> FsError {
-    error(path, io::ErrorKind::Unsupported, message)
+    move_error(path, io::ErrorKind::Unsupported, message)
 }

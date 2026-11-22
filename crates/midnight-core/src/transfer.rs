@@ -589,6 +589,14 @@ pub trait TransferDirectory: Send + Sync {
     ) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
         Ok(None)
     }
+    /// Why this folder creates no links at all, as a phrase for the job details: a
+    /// Windows network location, or a drive whose filesystem cannot store links (FAT32,
+    /// exFAT). A transfer then leaves each link it would create here out, without a
+    /// question, and names it. None where links may be created, or where nothing tells:
+    /// each link is then admitted (`admit_link`, `plan_link`) and a refusal is a failure.
+    fn creates_no_links(&self, _cancel: &Cancellation) -> Result<Option<String>, FsError> {
+        Ok(None)
+    }
     /// Read-only positive admission for this exact native kind/format/flags and
     /// payload on the retained destination. Reject unsupported formats, local
     /// junction forms, permissions or filesystem features explicitly; never

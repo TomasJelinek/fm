@@ -111,7 +111,31 @@ impl LinkFacts {
     }
 }
 
+/// Why a folder on a volume with these facts creates no links (`creates_no_links`): a
+/// network location, where a junction's target would be resolved on the server and a
+/// symbolic link's by each client's policy, or a filesystem without reparse points.
+fn no_links_reason(network: bool, reparse_points: bool, filesystem: &str) -> Option<String> {
+    if network {
+        Some("no links are created at a network location".into())
+    } else if !reparse_points {
+        Some(format!("this drive cannot store links ({filesystem})"))
+    } else {
+        None
+    }
+}
+
 impl Directory {
+    /// Why this folder creates no links at all (`TransferDirectory::creates_no_links`).
+    pub(super) fn no_links_reason(&self, cancel: &Cancellation) -> Result<Option<String>, FsError> {
+        checked(cancel, &self.path)?;
+        let volume = self.links.volume(self.identity.device, self)?;
+        Ok(no_links_reason(
+            volume.network,
+            volume.reparse_points,
+            &volume.filesystem,
+        ))
+    }
+
     /// The link this folder creates for `representation` (`TransferDirectory::plan_link`).
     pub(super) fn plan_link_representation(
         &self,
@@ -120,20 +144,13 @@ impl Directory {
     ) -> Result<TransferLinkPlan, FsError> {
         checked(cancel, &self.path)?;
         self.revalidate(cancel)?;
-        let volume = self.links.volume(self.identity.device, self)?;
-        if volume.network {
+        // A transfer asks `creates_no_links` first and leaves such links out; this refusal
+        // only guards other callers.
+        if let Some(mut reason) = self.no_links_reason(cancel)? {
+            reason[..1].make_ascii_uppercase();
             return Err(unsupported(
                 &self.path,
-                "No links are created at a network location, so this link is left out",
-            ));
-        }
-        if !volume.reparse_points {
-            return Err(unsupported(
-                &self.path,
-                &format!(
-                    "This drive cannot store links ({}), so this link is left out",
-                    volume.filesystem
-                ),
+                &format!("{reason}, so this link is left out"),
             ));
         }
         let (substitute, _) = representation

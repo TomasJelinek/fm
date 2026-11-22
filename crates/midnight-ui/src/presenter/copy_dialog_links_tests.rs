@@ -17,6 +17,7 @@ fn facts(
             network: false,
             removable,
             volume: Some(7),
+            refuses_cross_volume_move: false,
         },
         same_volume: false,
     }
@@ -190,6 +191,35 @@ fn copying_the_files_to_a_drive_without_links_starts_at_once() {
         &request,
         facts(TransferLinkStorage::Unsupported, false, Some("exFAT")),
     );
+    let sent = confirm(&mut p, &token, &destination, CopyLinkPolicy::FollowLinks);
+    assert_eq!(started_with(&sent), Some(CopyLinkPolicy::FollowLinks));
+}
+
+/// A Move from another drive to a destination that refuses one (here a network location)
+/// does not start from the dialog, whichever way it opened (here a paste of a Cut): it
+/// says why and suggests Copy, again on every confirmation. On the destination's own
+/// drive the Move renames and starts.
+#[test]
+fn a_move_from_another_drive_to_a_network_location_does_not_start_and_suggests_copy() {
+    let destination = std::env::temp_dir().join("share");
+    let mut network = facts(TransferLinkStorage::Unsupported, false, None);
+    network.destination.network = true;
+    network.destination.refuses_cross_volume_move = true;
+    let (mut p, token, request) = draft(&destination);
+    answer(&mut p, &request, network.clone());
+    for _ in 0..2 {
+        let sent = confirm(&mut p, &token, &destination, CopyLinkPolicy::FollowLinks);
+        assert!(sent.is_empty(), "{sent:?}");
+        assert_eq!(
+            p.copies.draft.as_ref().unwrap().error,
+            "Items from another drive cannot be moved to a network location: Move removes the \
+             originals only after verifying their copies, which it cannot do there. Copy them \
+             instead."
+        );
+    }
+    network.same_volume = true;
+    let (mut p, token, request) = draft(&destination);
+    answer(&mut p, &request, network);
     let sent = confirm(&mut p, &token, &destination, CopyLinkPolicy::FollowLinks);
     assert_eq!(started_with(&sent), Some(CopyLinkPolicy::FollowLinks));
 }

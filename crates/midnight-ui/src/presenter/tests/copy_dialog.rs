@@ -845,3 +845,77 @@ fn clipboard_copy_without_a_dialog_always_submits_immediately() {
     );
     assert!(p.copies.draft.is_none());
 }
+
+/// F6 of more than 64 items, and Ctrl+X then Ctrl+V of them, start no Move: the dialog
+/// says so in the sentence every Move entry point uses. F5 of the same items copies them.
+#[test]
+fn a_move_of_65_items_does_not_start_from_f6_or_a_paste_but_a_copy_does() {
+    let root = std::env::temp_dir().join("sixty-five");
+    let target = root.join("target");
+    let entries: Vec<_> = (0..65u64)
+        .map(|index| {
+            Entry::new(
+                EntryId(index + 1),
+                root.join(format!("item-{index:02}")),
+                EntryKind::File,
+            )
+        })
+        .collect();
+    let index = Arc::new(midnight_core::DirectoryIndex::from_entries(&entries));
+    let confirmed = |p: &mut Presenter| {
+        let token = p.copies.draft.as_ref().unwrap().token.clone();
+        let commands = RefCell::new(Vec::new());
+        p.confirm_copy_dialog(&token, &target.to_string_lossy(), &|command| {
+            commands.borrow_mut().push(command);
+            true
+        });
+        commands.into_inner()
+    };
+    for intent in [TransferIntent::Move, TransferIntent::Copy] {
+        let mut p = Presenter::new(root.clone(), target.clone());
+        p.open_captured_copy(
+            DesktopRequestId(1),
+            crate::presenter::copy_dialog::CopyContext {
+                source: root.clone(),
+                destination: target.clone(),
+                intent,
+            },
+            SelectedFiles {
+                selection: Arc::new(
+                    midnight_core::SelectionSnapshot::from_bits(index.clone(), vec![u64::MAX, 1])
+                        .unwrap(),
+                ),
+                view: index.clone(),
+                fallback: None,
+            },
+        );
+        let commands = confirmed(&mut p);
+        if intent == TransferIntent::Move {
+            assert!(commands.is_empty(), "{commands:?}");
+            assert_eq!(
+                p.copies.draft.as_ref().unwrap().error,
+                midnight_core::MOVE_ROOTS_REFUSAL
+            );
+        } else {
+            let [Command::EnqueueSelectedCopy(request)] = commands.as_slice() else {
+                panic!("F5 copies all 65 items: {commands:?}");
+            };
+            assert_eq!(request.files.selection.len(), 65);
+        }
+    }
+    let mut p = Presenter::new(root.clone(), target.clone());
+    p.start_copy(
+        FileClipboard {
+            paths: entries.iter().map(|entry| entry.path.clone()).collect(),
+            intent: FileClipboardIntent::Move,
+        },
+        target.clone(),
+        &|_| true,
+    );
+    let commands = confirmed(&mut p);
+    assert!(commands.is_empty(), "{commands:?}");
+    assert_eq!(
+        p.copies.draft.as_ref().unwrap().error,
+        midnight_core::MOVE_ROOTS_REFUSAL
+    );
+}

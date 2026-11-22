@@ -2103,6 +2103,14 @@ fn terminal_progress(mut progress: CopyProgress, cancel: &Cancellation) -> CopyP
             progress.skipped
         ));
     }
+    match progress.links_left_out {
+        0 => {}
+        1 => lines
+            .push("1 link left out where no links are created; the job details name it.".into()),
+        count => lines.push(format!(
+            "{count} links left out where no links are created; the job details name each."
+        )),
+    }
     if cancelled {
         lines.push(
             if progress.intent == TransferIntent::Move {

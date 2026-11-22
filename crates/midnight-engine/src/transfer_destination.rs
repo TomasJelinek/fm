@@ -338,6 +338,7 @@ mod tests {
                 network: false,
                 removable,
                 volume: Some(if removable { 7 } else { 1 }),
+                refuses_cross_volume_move: false,
             })
         }
         fn prepare_transfer_source(

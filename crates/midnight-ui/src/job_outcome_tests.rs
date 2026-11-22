@@ -243,6 +243,33 @@ fn skips_recovery_and_unconfirmed_source_changes_are_counted() {
     );
 }
 
+/// Links left out where no links are created are counted apart from the links copied as
+/// links; Details names each. The job completed, so only an asked-for outcome shows it.
+#[test]
+fn a_completed_copy_counts_the_links_it_left_out() {
+    let mut p = queued(TransferIntent::Copy);
+    p.state = CopyOperationState::Completed;
+    p.files_completed = 2;
+    for name in ["to-folder", "to-file"] {
+        p.add_note(format!(
+            "/source/links/{name} was left out: no links are created at a network location."
+        ));
+    }
+    p.links_left_out = 2;
+    p.add_note(
+        "/source/links/dangling was copied as a link because its target does not exist.".into(),
+    );
+    assert!(transfer(&p, false, &locale()).is_empty());
+    let text = transfer(&p, true, &locale());
+    assert!(
+        text.contains(
+            "2 links were left out: no links are created there; Details names each.\n\
+             1 link was copied as a link; Details says why."
+        ),
+        "{text}"
+    );
+}
+
 #[test]
 fn running_and_cleanly_completed_transfers_have_no_outcome() {
     let mut p = queued(TransferIntent::Copy);

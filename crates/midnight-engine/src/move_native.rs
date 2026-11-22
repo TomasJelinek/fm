@@ -75,7 +75,7 @@ impl Job {
                     None => {}
                 }
                 let failure = if destination != work.destination.path().join(&work.name) {
-                    Some(error(
+                    Some(move_error(
                         &destination,
                         io::ErrorKind::InvalidData,
                         "Native Move reported an unexpected committed destination.",
@@ -174,7 +174,7 @@ impl Job {
                 .move_work
                 .as_mut()
                 .ok_or_else(|| {
-                    error(
+                    move_error(
                         path,
                         io::ErrorKind::InvalidInput,
                         "Original directory link authority is missing.",
@@ -192,7 +192,7 @@ impl Job {
             return Ok(());
         };
         if work.native_fallback && !work.destination.capabilities().recoverable_replacement {
-            return Err(error(
+            return Err(move_error(
                 work.destination.path(),
                 io::ErrorKind::Unsupported,
                 "Cross-volume Move requires a qualified verified-copy destination; the source was retained.",

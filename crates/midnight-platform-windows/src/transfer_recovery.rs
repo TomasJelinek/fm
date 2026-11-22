@@ -288,11 +288,18 @@ pub(super) fn open_merge(
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
+    supported_volume(&directory.file)
+}
+
+/// Whether the volume that holds `folder` keeps a replaced file recoverable, as a verified
+/// Move from another drive needs: NTFS on a fixed drive. Also what the Copy/Move dialog
+/// is told before such a Move starts (`TransferLinkDestination::refuses_cross_volume_move`).
+pub(in crate::transfer) fn supported_volume(folder: &File) -> bool {
     // The volume GUID root names the volume that holds the directory even when it is
     // mounted in a folder of another drive (a DOS path's drive letter would not).
     // Shares have no volume GUID; their DOS root reports a remote drive.
-    let Ok(path) = final_path(&directory.file, VOLUME_NAME_GUID)
-        .or_else(|_| final_path(&directory.file, VOLUME_NAME_DOS))
+    let Ok(path) =
+        final_path(folder, VOLUME_NAME_GUID).or_else(|_| final_path(folder, VOLUME_NAME_DOS))
     else {
         return false;
     };
@@ -311,7 +318,7 @@ pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
         // avoids enabling an unrelated WindowsProgramming feature for one constant.
         GetDriveTypeW(root.as_ptr()) == 3
             && GetVolumeInformationByHandleW(
-                directory.file.as_raw_handle(),
+                folder.as_raw_handle(),
                 ptr::null_mut(),
                 0,
                 ptr::null_mut(),

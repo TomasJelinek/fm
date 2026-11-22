@@ -26,6 +26,9 @@ pub(super) fn link_destination(
         TransferLinkStorage::Supported
     };
     let removable = !network && crate::storage_kind::removable(path);
+    // The same volume check that a Move from another drive makes before it removes
+    // anything (`TransferCapabilities::recoverable_replacement`).
+    let refuses_cross_volume_move = !super::destination::recovery::supported_volume(&folder);
     checked(cancel, path)?;
     Ok(TransferLinkDestination {
         storage,
@@ -34,6 +37,7 @@ pub(super) fn link_destination(
         network,
         removable,
         volume: Some(u64::from(serial)),
+        refuses_cross_volume_move,
     })
 }
 
@@ -76,6 +80,8 @@ mod tests {
         // Development and CI machines keep the temporary folder on a fixed NTFS volume.
         assert_eq!(facts.storage, TransferLinkStorage::Supported, "{facts:?}");
         assert!(!facts.network && !facts.removable, "{facts:?}");
+        // A fixed NTFS volume can receive a verified Move from another drive.
+        assert!(!facts.refuses_cross_volume_move, "{facts:?}");
         assert_eq!(facts.filesystem, None);
         let again = link_destination(&temp.join(".."), &Cancellation::default());
         assert!(again.is_err(), "a dot component is refused, not resolved");

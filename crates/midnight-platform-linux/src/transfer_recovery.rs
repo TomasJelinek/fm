@@ -23,11 +23,17 @@ impl Directory {
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
+    rustix::fs::fstatfs(&*directory.file)
+        .map(|stat| supported_type(stat.f_type as u64))
+        .unwrap_or(false)
+}
+
+/// Whether a filesystem of `statfs` type `magic` keeps a replaced file recoverable, as a
+/// verified Move from another drive needs (`TransferLinkDestination::refuses_cross_volume_move`).
+pub(in crate::transfer) fn supported_type(magic: u64) -> bool {
     // Qualify local ext filesystems first. Never extend local commit/error claims to
     // NFS/SMB/unknown mounts, where a failed request can have executed on the server.
-    rustix::fs::fstatfs(&*directory.file)
-        .map(|stat| stat.f_type == 0xef53)
-        .unwrap_or(false)
+    magic == 0xef53
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -550,8 +550,14 @@ content/proof preparation. The content-copy proofs and source-removal staging
 below apply to cross-volume fallback and explicitly merged children; they are not
 required for a successful native rename.
 
-Content-only Move accepts at most 64 ordinary native file or directory roots,
-with a conservative 4 MiB active source/capture/stage/proof/receipt path reservation.
+Content-only Move accepts at most 64 ordinary native file or directory roots
+(`MAX_MOVE_ROOTS`), with a conservative 4 MiB active source/capture/stage/proof/receipt
+path reservation. Every Move entry point refuses a larger selection before a job starts,
+with the sentence "Move accepts at most 64 selected roots. Choose a smaller selection."
+(`MOVE_ROOTS_REFUSAL`): the dialog for F6 and for a pasted Cut, and the drop admission
+for a drag (`drag_drop_internal::admit_move`). The job still refuses it, naming the
+operation `move files`, as every error of a step that only Move takes does
+(`copy_operations::move_error`). A Copy has no such limit.
 Duplicate identities, overlapping roots (including a selected file beneath a
 selected directory), a destination inside a source directory, unsupported root
 authority and exceeded root budgets are rejected before writes. Preparation pins
@@ -719,7 +725,17 @@ Move verification reports are historical and superseded by this ordinary policy.
 
 Qualified same-volume native Move renames without reading or hashing contents.
 Cross-volume Move and explicit directory merges use per-file verification under
-the job's immutable full/quick policy before source removal. Native permission
+the job's immutable full/quick policy before source removal. A Move from another drive
+needs a destination that keeps a replaced file recoverable (`recoverable_replacement`:
+an NTFS folder on a fixed drive on Windows, ext2/3/4 on Linux); elsewhere, a network
+location included, the job refuses it ("Cross-volume Move requires a qualified
+verified-copy destination; the source was retained."). The dialog (F6, a pasted Cut) and
+a drag refuse it before any job starts, from the destination's facts
+(`TransferLinkDestination::refuses_cross_volume_move`, the same volume check) and the
+selection's drive: "Items from another drive cannot be moved to a network location: Move
+removes the originals only after verifying their copies, which it cannot do there. Copy
+them instead." (or "to this drive (exFAT)"). A Move on the destination's own drive
+renames and is not refused; where the facts are unknown, the job decides. Native permission
 errors do not authorize a cross-device fallback. Recursive Move uses ContentOnly;
 required modified time still
 accepts only distinct regular-file roots. Links move as links on Linux (see
@@ -1060,7 +1076,13 @@ turn a Move's rename into a copy. The dialog (`presenter/copy_dialog_links.rs`) 
 reason under the choice ("This drive cannot store links (FAT32), …", "Removable drive: …",
 "Network location: …"). An answer never changes a choice the user made. Keeping links
 where none can be stored shows a warning under the choice and holds the first
-confirmation once with that explanation; confirming again starts. A typed folder whose
+confirmation once with that explanation; confirming again starts. The job then keeps the
+dialog's promise, whatever started it (the dialog, a paste, a drag): it asks the
+destination first (`TransferDirectory::creates_no_links`) and leaves each link out
+without a question, names it in the job details ("… was left out: no links are created
+at a network location."), and completes; the outcome counts the links left out
+(`CopyProgress::links_left_out`, "2 links were left out: no links are created there;
+Details names each."). A typed folder whose
 default differs from the choice shown, while the user has not chosen, holds the
 confirmation once and shows that folder's default and reason. A confirmation before the
 answer arrives starts with the choice shown, which keeps links.
@@ -1219,7 +1241,9 @@ this, a selected link that a destination refused failed the whole job's preparat
   needs Developer Mode or administrator rights" (and that a relative target became
   absolute); a file symbolic link, or one to a network share, is reported with that reason
   and left out. A volume without reparse points (FAT32, exFAT) or a network location
-  refuses every link with that reason. What planning reads from the system is read once
+  creates no links (`creates_no_links`): the transfer leaves each link out without a
+  question and names it; `plan_link` refuses one only as a guard for other callers. Linux
+  does the same for FAT and exFAT. What planning reads from the system is read once
   per job and kept for its folders (`LinkFacts`, held by the folder the job starts from
   and shared with every folder it creates or merges into): whether symbolic links may be
   created, and each destination volume's facts (network location, reparse points,

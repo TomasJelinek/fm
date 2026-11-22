@@ -522,6 +522,17 @@ impl Job {
         }
         let source = work.source.as_ref().expect("unstarted link source");
         validate_native_source(source.as_ref())?;
+        // Where no links are created at all (a network location, a drive that cannot
+        // store them), each link is left out without a question, as the dialog said, and
+        // the job details name it.
+        if let Some(reason) = work.destination.creates_no_links(&self.cancel)? {
+            self.progress.links_left_out = self.progress.links_left_out.saturating_add(1);
+            self.progress.add_note(format!(
+                "{} was left out: {reason}.",
+                work.entry.item.path.display()
+            ));
+            return Ok(Action::Done);
+        }
         let representation = source.link_representation(&self.cancel)?;
         let plan = work.destination.plan_link(&representation, &self.cancel)?;
         let notes = self.link_notes(work, source.as_ref(), &representation, plan.note.as_deref());

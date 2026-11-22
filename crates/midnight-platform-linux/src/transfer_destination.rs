@@ -208,6 +208,11 @@ impl TransferDirectory for Directory {
             link_replacement: recoverable,
         }
     }
+    fn creates_no_links(&self, cancel: &Cancellation) -> Result<Option<String>, FsError> {
+        checked(cancel, &self.path)?;
+        Ok(super::link_destination::cannot_store_links(&self.file)
+            .map(|filesystem| format!("this drive cannot store links ({filesystem})")))
+    }
     fn admit_link(
         &self,
         representation: &midnight_core::TransferLinkRepresentation,

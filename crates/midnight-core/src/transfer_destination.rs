@@ -55,6 +55,34 @@ pub struct TransferLinkDestination {
     /// The volume's native identity (Linux device number, Windows volume serial
     /// number), to tell whether a selection is on the same drive.
     pub volume: Option<u64>,
+    /// A Move from another drive cannot end here. Such a Move copies each item, verifies
+    /// the copy and only then removes the original, which needs a destination that keeps
+    /// a replaced file recoverable: on Windows an NTFS folder on a fixed drive, on Linux
+    /// ext2, ext3 or ext4, never a network location. False when nothing tells: the Move
+    /// job still refuses such a destination itself.
+    pub refuses_cross_volume_move: bool,
+}
+
+impl TransferLinkDestination {
+    /// Why a Move from another drive does not start here, in words for the user, or None
+    /// where it can.
+    pub fn cross_volume_move_refusal(&self) -> Option<String> {
+        if !self.refuses_cross_volume_move {
+            return None;
+        }
+        let here = if self.network {
+            "to a network location".to_owned()
+        } else {
+            match self.filesystem.as_deref() {
+                Some(name) => format!("to this drive ({name})"),
+                None => "to this drive".to_owned(),
+            }
+        };
+        Some(format!(
+            "Items from another drive cannot be moved {here}: Move removes the originals \
+             only after verifying their copies, which it cannot do there. Copy them instead."
+        ))
+    }
 }
 
 /// Why the Copy/Move dialog copies the files links point to by default.
@@ -99,6 +127,15 @@ impl TransferLinkFacts {
     pub fn cannot_keep_links(&self) -> bool {
         self.destination.storage == TransferLinkStorage::Unsupported
     }
+
+    /// Why a Move of the selection does not start here: it would come from another drive
+    /// (`same_volume` is false) to a destination that refuses such a Move.
+    pub fn move_refusal(&self) -> Option<String> {
+        if self.same_volume {
+            return None;
+        }
+        self.destination.cross_volume_move_refusal()
+    }
 }
 
 /// What the Copy/Move dialog asks when it opens or its destination changes, answered by
@@ -131,6 +168,7 @@ mod tests {
                 network,
                 removable,
                 volume: None,
+                refuses_cross_volume_move: false,
             },
             same_volume: false,
         }

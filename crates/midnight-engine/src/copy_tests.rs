@@ -887,6 +887,39 @@ impl TransferService for BlockingService {
     }
 }
 
+/// A Move of more than 64 selected items that still reaches the engine (every entry point
+/// refuses it first) ends before it moves anything, naming Move and giving the sentence
+/// the entry points use; a Copy of the same items copies them all.
+#[tokio::test]
+async fn a_move_of_65_items_is_refused_as_a_move_and_a_copy_of_them_copies_all() {
+    let temp = fixture();
+    let destination = temp.path().join("destination");
+    fs::create_dir(&destination).unwrap();
+    let paths: Vec<_> = (0..65u8)
+        .map(|index| {
+            let path = temp.path().join(format!("file-{index:02}"));
+            fs::write(&path, [index]).unwrap();
+            path
+        })
+        .collect();
+    let mut h = Harness::native();
+    h.controller
+        .enqueue_move(request(1, &paths, &destination))
+        .await;
+    let refused = h.terminal(1).await;
+    assert_eq!(refused.state, CopyOperationState::Failed, "{refused:?}");
+    assert_eq!(refused.errors[0].operation, "move files", "{refused:?}");
+    assert_eq!(refused.errors[0].message, midnight_core::MOVE_ROOTS_REFUSAL);
+    assert!(paths.iter().all(|path| path.exists()));
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+    h.controller.enqueue(request(2, &paths, &destination)).await;
+    let copied = h.terminal(2).await;
+    assert_eq!(copied.state, CopyOperationState::Completed, "{copied:?}");
+    assert_eq!(copied.files_completed, 65, "{copied:?}");
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 65);
+    h.close().await;
+}
+
 #[tokio::test]
 async fn erased_service_installation_cannot_borrow_an_audited_native_witness() {
     let temp = fixture();

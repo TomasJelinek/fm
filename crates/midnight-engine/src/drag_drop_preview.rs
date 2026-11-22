@@ -196,6 +196,9 @@ pub(super) fn execute(
             &destination,
             cancel,
         )?;
+        if intent == TransferIntent::Move {
+            internal::admit_move(Some(service), &work.files, &destination, cancel)?;
+        }
         {
             let snapshots = snapshots.lock().unwrap_or_else(|e| e.into_inner());
             current_source(&snapshots[work.source_pane.index()], work.source_navigation)?;
