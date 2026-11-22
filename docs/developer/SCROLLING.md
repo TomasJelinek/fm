@@ -134,11 +134,11 @@ per notch and the reduced-motion setting for the test process until its guard dr
 A viewer's frame pump runs until its window closes, sending frames while the window moves
 and none while it rests, as winit gives a frame for every redraw the window asks for:
 also when a glide goes on without new input after waiting for the viewer's backend (a
-corrected surface, `RasterRebase`, which the first notch up after a scrollbar drag
-meets). Until
-22 November 2026 the pump stopped 250 ms after the last seam input once nothing moved,
-also during such a wait, and the rest of that glide never got a frame (acceptance
-VIEW-NOTCH-UP: one notch up moved 15 to 42 px of 100 and did not move on).
+corrected surface, `RasterRebase`). Until 22 November 2026 the pump stopped 250 ms after
+the last seam input once nothing moved, also during such a wait, and the rest of that
+glide never got a frame (acceptance VIEW-NOTCH-UP: the first notch up after a scrollbar
+drag met such a handoff, moved 15 to 42 px of 100 and did not move on; that notch meets
+none any more, see [the prepared text window](#prepared-text-window)).
 The panels' seam in `midnight-ui` drives the panels the same way; its frames end with the
 panels' scroll interaction, since panel motion waits for no backend. Tests:
 `acceptance_seams_tests` (a seam notch moves the text as a native notch
@@ -546,6 +546,14 @@ page (a page of row groups keeps their shaping), or when the width, font or zoom
 changes. Strip IDs are unique in the process, so
 the window keeps each strip's conversion and image by ID across surfaces: a scrollbar
 drag whose positions wait for their page paints, converts and uploads nothing again.
+
+A scrollbar position reads its page from some context ahead of the byte it names, so the
+page starts inside a row as often as not. It drops that row, as a backward chain drops
+its cut row, when the row after it ends at or before the named byte
+(`Worker::trim_position_start`): the page then starts at a row, and the first page read
+above it keeps its context. A page read above one that starts inside a row shows that
+row whole, so the camera moves to a corrected surface (`RasterRebase`, below), whose
+round trip paused the first notch up after a scrollbar drag until 22 November 2026.
 
 Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`) and those of
 all viewers 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`), body and gutter together,

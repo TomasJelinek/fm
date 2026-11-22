@@ -192,6 +192,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         generation: 0,
         positions: Default::default(),
         position_page: None,
+        position_row_limit: None,
         session: None,
         closing: None,
         pending_open: false,

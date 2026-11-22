@@ -374,8 +374,8 @@ input to the same observer closure the Winit hook runs:
   moves and for 250 ms after the last seam input), carried by the frame pump's timers, so
   the usual waits apply. A viewer's pump runs until its window closes and sends nothing at
   rest, so a glide that goes on after waiting for the viewer's backend (a corrected
-  surface, `RasterRebase`, as the first notch up after a scrollbar drag meets) gets its
-  frames again, as Winit gives a frame for every redraw the window asks for. The
+  surface, `RasterRebase`) gets its frames again, as Winit gives a frame for every redraw
+  the window asks for. The
   viewer seams return `None` for a window the viewer manager did not open and for a hidden
   or closed one. Seam events do not give a software window native shortcut authority: its
   Slint key events keep resolving digit shortcuts.

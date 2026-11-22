@@ -267,6 +267,9 @@ struct Worker {
     generation: u64,
     positions: crate::position_ack::Positions,
     position_page: Option<(u64, Page)>,
+    /// The byte a scrollbar position names while the forward page read for it is on its
+    /// way: that page drops the row it starts inside (`trim_position_start`).
+    position_row_limit: Option<u64>,
     /// The plugin session of the shown file. Its ready signal wakes this worker.
     session: Option<Session>,
     /// A previous session finishing its teardown; never set while `session` is. Its
@@ -446,6 +449,7 @@ pub(crate) fn run(
         generation: 0,
         positions: Default::default(),
         position_page: None,
+        position_row_limit: None,
         session: None,
         closing: None,
         pending_open: false,
@@ -821,6 +825,7 @@ impl Worker {
         self.invalidate_source_target();
         self.cancel_locate();
         self.position_page = None;
+        self.position_row_limit = None;
         let source_position = self.mode == viewer::MODE_SOURCE && position.is_some();
         if source_position {
             // An absolute seek replaces the owner of any deferred relative input.
@@ -1426,6 +1431,7 @@ impl Worker {
             }
             EventKind::Opened(_) => self.request_page(0, false, output),
             EventKind::TextPage(page) if self.viewport_request == Some(id) => {
+                let page = self.trim_position_start(page);
                 self.received_page(id, Page::text(page, &self.appearance), output);
             }
             EventKind::BinaryPage { page, bytes } if self.viewport_request == Some(id) => {

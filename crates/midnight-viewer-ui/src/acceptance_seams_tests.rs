@@ -240,7 +240,8 @@ impl Driver {
 }
 
 /// After a notch down and a rest, a notch up whose glide waits for a corrected surface
-/// (`RasterRebase`: the first page read above a scrollbar position started inside a row)
+/// (`RasterRebase`: a page read above the shown one changes the context of its first row,
+/// as the first one above a scrollbar position did while that page started inside a row)
 /// longer than the seam's settling time moves its whole distance once the surface comes,
 /// and a burst after it moves all its notches.
 fn notch_up_across_a_corrected_surface(seam: bool) {

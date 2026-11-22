@@ -308,7 +308,11 @@ impl Worker {
         // For an unloaded fragment this remains a provisional byte estimate. Do not
         // report the requested fraction as displayed until actual content arrives.
         let (anchor, backwards) = self.position_page_request(position);
+        let named = self.scrollbar_viewport(position).0;
         self.request_page_for(anchor, backwards, Some(sequence), output);
+        if !backwards && self.viewport_request.is_some() {
+            self.position_row_limit = Some(named);
+        }
         if self.viewport_request.is_none() {
             if self.mode == viewer::MODE_SOURCE {
                 self.source_position_unavailable(sequence, None, output);
@@ -573,8 +577,55 @@ impl Worker {
         }
     }
 
+    /// The extent of the loaded page's window on the scrollbar's scale.
+    fn scrollbar_extent(&self) -> f64 {
+        self.position_metrics().map_or(0.0, |(_, extent)| extent)
+    }
+
+    /// The window a scrollbar `position` names on the loaded page's scale: its first byte
+    /// (or its last, backwards), without the context `position_page_request` adds.
+    fn scrollbar_viewport(&self, position: f64) -> (u64, bool) {
+        navigation::scrollbar_viewport(position, self.length, self.scrollbar_extent())
+    }
+
+    /// A forward page read for a scrollbar position starts some context ahead of the byte
+    /// the position names (`position_page_request`), inside a row as often as not. The
+    /// first page read above it then showed that row whole and the camera had to move to a
+    /// corrected surface (`RasterRebase`), whose round trip paused the first notch up after
+    /// a scrollbar drag. Drop that row, as a backward chain drops a cut one
+    /// (`chain::trim_cut_start`), so that the page starts at a row and a page read above it
+    /// keeps its context: only when the row after it ends at or before the named byte too,
+    /// so that the position's row is no page's first row, which a Source page with a cut
+    /// end still takes as uncertain (`viewport::source_minimum_origin`). Correction reads
+    /// keep their pages whole.
+    pub(super) fn trim_position_start(&mut self, page: viewer::TextPage) -> viewer::TextPage {
+        let Some(named) = self.position_row_limit.take() else {
+            return page;
+        };
+        if !self.positions.has_pending() || !page.has_before {
+            return page;
+        }
+        let Some((second_end, _)) = page.text.match_indices('\n').nth(1) else {
+            return page;
+        };
+        let reaches = page
+            .anchors
+            .iter()
+            .find(|anchor| anchor.text_offset as usize > second_end)
+            .is_some_and(|anchor| anchor.source_offset <= named);
+        if !reaches {
+            return page;
+        }
+        let (mut page, trimmed) = super::chain::trim_cut_start(page);
+        if trimmed {
+            // The page starts at a row now: only its end can be cut.
+            page.partial_line = page.has_after && !page.text.ends_with('\n');
+        }
+        page
+    }
+
     pub(super) fn position_page_request(&self, position: f64) -> (u64, bool) {
-        let extent = self.position_metrics().map_or(0.0, |(_, extent)| extent);
+        let extent = self.scrollbar_extent();
         let (anchor, backwards) = navigation::scrollbar_viewport(position, self.length, extent);
         if backwards {
             // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN backward_calculation

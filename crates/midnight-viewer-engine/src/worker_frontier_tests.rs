@@ -1111,48 +1111,136 @@ fn table(rows: usize) -> String {
     text
 }
 
+/// What a scrollbar position at 0.4 of the table and the gestures after it showed.
+struct AfterPosition {
+    /// The thumb position and the document y of the camera after the position landed.
+    landed: (f64, f64),
+    /// Travel of a notch down, a notch up and five notches down after it.
+    notches: [Option<f64>; 3],
+    /// Corrected surfaces (`RasterRebase`) after the notch down, the notch up and the burst.
+    handoffs: [usize; 3],
+    /// Travel of a notch down and up that moves at once (reduced motion), PageDown and PageUp.
+    direct: [Option<f64>; 4],
+    window: Window,
+}
+
+fn after_position(mode: u16, wrap: bool, size: ViewerGeometry, position: f64) -> AfterPosition {
+    let mut engine = Engine::open(table(1500), mode, size, 1);
+    if wrap {
+        engine = engine.wrapped();
+    }
+    let mut window = Window::default();
+    rest(&mut engine, &mut window);
+    window.seek(&mut engine, position);
+    rest(&mut engine, &mut window);
+    let landed = (window.position, window.shown());
+    let notch = 100.0 * f64::from(size.scale);
+    let screen = f64::from(size.height);
+    let mut handoffs = [0; 3];
+    let down = try_gesture(&mut engine, &mut window, &[(notch, false)], true);
+    handoffs[0] = window.rebases;
+    let up = try_gesture(&mut engine, &mut window, &[(-notch, false)], true);
+    handoffs[1] = window.rebases - handoffs[0];
+    let burst = try_gesture(&mut engine, &mut window, &[(notch, false); 5], true);
+    handoffs[2] = window.rebases - handoffs[0] - handoffs[1];
+    let direct = [notch, -notch, screen, -screen]
+        .map(|pixels| try_gesture(&mut engine, &mut window, &[(pixels, true)], true));
+    AfterPosition {
+        landed,
+        notches: [down, up, burst],
+        handoffs,
+        direct,
+        window,
+    }
+}
+
 /// The acceptance run once saw one notch up after a scrollbar drag and a notch down move
-/// 15 to 42 px of 100 (VIEW-NOTCH-UP). The page a scrollbar position reads starts inside a
-/// row, and the first page read above it (the notch up wants screens above) shows that
-/// row whole: the worker hands the camera over to a corrected surface (`RasterRebase`).
-/// Across that handoff the window keeps the whole travel, also for the burst after it.
-/// That the seam's frames go on for the glide after the handoff is the window's test
-/// (`acceptance_seams_tests::a_notch_up_across_a_corrected_surface_*`).
+/// 15 to 42 px of 100 (VIEW-NOTCH-UP). The page read for a scrollbar position started
+/// inside a row, so the first page read above it (the notch up wants screens above) showed
+/// that row whole and the worker handed the camera over to a corrected surface
+/// (`RasterRebase`): the glide paused for that round trip and eased out again. The
+/// position's page now starts at a row, and no gesture after it needs a handoff: Text and
+/// Source, wrapped and unwrapped, a notch down, up and five down, a notch that moves at
+/// once (reduced motion) and PageDown and PageUp keep their whole travel.
 #[test]
-fn a_notch_up_after_a_scrollbar_position_keeps_its_travel_across_a_corrected_surface() {
-    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
-        let mut engine = Engine::open(table(1500), mode, geometry(1312, 720, 1.0), 1);
-        let mut window = Window::default();
-        rest(&mut engine, &mut window);
-        window.seek(&mut engine, 0.4);
-        rest(&mut engine, &mut window);
+fn a_notch_up_after_a_scrollbar_position_needs_no_corrected_surface() {
+    for (mode, wrap) in [
+        (viewer::MODE_TEXT, false),
+        (viewer::MODE_TEXT, true),
+        (viewer::MODE_SOURCE, false),
+        (viewer::MODE_SOURCE, true),
+    ] {
+        let size = geometry(1312, 720, 1.0);
+        let shown = after_position(mode, wrap, size, 0.4);
+        let what = format!("mode {mode}, wrap {wrap}");
         assert!(
-            engine
-                .worker
-                .page
-                .as_ref()
-                .is_some_and(|page| page.partial_line),
-            "mode {mode}: the scrollbar's page starts inside a row"
+            (shown.landed.0 - 0.4).abs() < 0.005,
+            "{what}: the position landed at {:?}",
+            shown.landed
         );
-        let notch = 100.0;
-        let down = try_gesture(&mut engine, &mut window, &[(notch, false)], true);
-        assert_eq!(
-            window.rebases, 0,
-            "mode {mode}: a notch down keeps its surface"
-        );
-        let up = try_gesture(&mut engine, &mut window, &[(-notch, false)], true);
-        assert_eq!(
-            window.rebases, 1,
-            "mode {mode}: the notch up crossed no handoff"
-        );
-        let burst = try_gesture(&mut engine, &mut window, &[(notch, false); 5], true);
+        assert_eq!(shown.handoffs, [0; 3], "{what}: corrected surfaces");
         let near = |moved: Option<f64>, expected: f64| {
             moved.is_some_and(|moved| (moved - expected).abs() < 0.01)
         };
+        let [down, up, burst] = shown.notches;
         assert!(
-            near(down, notch) && near(up, -notch) && near(burst, 5.0 * notch),
-            "mode {mode}: down {down:?}, up {up:?}, five down {burst:?}; dropped {:?}",
-            window.dropped
+            near(down, 100.0) && near(up, -100.0) && near(burst, 500.0),
+            "{what}: down {down:?}, up {up:?}, five down {burst:?}; dropped {:?}",
+            shown.window.dropped
+        );
+        let [at_once_down, at_once_up, page_down, page_up] = shown.direct;
+        assert!(
+            near(at_once_down, 100.0)
+                && near(at_once_up, -100.0)
+                && near(page_down, 720.0)
+                && near(page_up, -720.0),
+            "{what}: at once {at_once_down:?} and {at_once_up:?}, PageDown {page_down:?}, \
+             PageUp {page_up:?}"
         );
     }
+}
+
+/// Measurement: where a scrollbar position lands and the corrected surfaces of the gestures
+/// after it, over modes, wrapping, window sizes and positions.
+#[test]
+#[ignore = "measurement; prints landings and handoffs after scrollbar positions"]
+fn measure_handoffs_after_scrollbar_positions() {
+    let mut report = String::new();
+    let mut total = [0; 3];
+    for (mode, wrap) in [
+        (viewer::MODE_TEXT, false),
+        (viewer::MODE_TEXT, true),
+        (viewer::MODE_SOURCE, false),
+        (viewer::MODE_SOURCE, true),
+    ] {
+        for size in [
+            geometry(1312, 720, 1.0),
+            geometry(1312, 600, 1.0),
+            geometry(1312, 900, 1.5),
+        ] {
+            for position in [0.4, 0.3, 0.5] {
+                let shown = after_position(mode, wrap, size, position);
+                for (sum, count) in total.iter_mut().zip(shown.handoffs) {
+                    *sum += count;
+                }
+                let _ = writeln!(
+                    report,
+                    "mode {mode} wrap {wrap} h {} x{} at {position}: landed {:.5} y {:.1}; \
+                     handoffs {:?}; notches {:?}; at once and pages {:?}",
+                    size.height,
+                    size.scale,
+                    shown.landed.0,
+                    shown.landed.1,
+                    shown.handoffs,
+                    shown.notches,
+                    shown.direct
+                );
+            }
+        }
+    }
+    let _ = writeln!(
+        report,
+        "handoffs after the notch down, the notch up and the burst: {total:?}"
+    );
+    println!("{report}");
 }
