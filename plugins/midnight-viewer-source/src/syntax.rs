@@ -18,6 +18,8 @@ mod lua;
 mod make;
 #[path = "syntax_usda.rs"]
 mod usda;
+#[path = "syntax_words.rs"]
+mod words;
 #[path = "syntax_xml.rs"]
 mod xml;
 #[path = "syntax_yaml.rs"]
@@ -65,7 +67,8 @@ enum Mode {
     Block(u8),
     Quote(Quote),
     Raw(u8),
-    Identifier,
+    /// The rest of a name too long to classify, in the given role.
+    Identifier(u16),
     Number(common::Number),
     LineComment,
     CppRaw(cpp::Raw),
@@ -142,16 +145,45 @@ impl BatchStart {
     }
 }
 
+/// What the previous token of a common profile makes of the next name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Expect {
+    #[default]
+    Nothing,
+    /// After a keyword that declares or constructs a type (`class X`, `new X`,
+    /// `namespace X`), and after `...` in `typename... Ts`.
+    Type,
+    /// A type-context name directly before `.` or `::`: the qualified name
+    /// continues (`namespace a::b`, `using System.Text`).
+    TypePath,
+    /// A declared function (`fn x`, `def x`, `func x`).
+    Function,
+    /// `std` directly before `::`.
+    StdScope,
+    /// A name after `std::` or a nested standard namespace (`std::chrono::`).
+    Std,
+    /// A member name directly after one `.`: never a keyword or built-in type.
+    Member,
+    /// After two or more dots (`..`, `...`): an ordinary name.
+    Dots,
+    /// After `#include` and the other header directives: `<path>` is a string.
+    Header,
+    /// A Python decorator's dotted name.
+    Decorator,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct State {
     mode: Mode,
     command_start: BatchStart,
+    expect: Expect,
 }
 impl Default for State {
     fn default() -> Self {
         Self {
             mode: Mode::Normal,
             command_start: BatchStart::Command,
+            expect: Expect::Nothing,
         }
     }
 }
@@ -427,6 +459,10 @@ pub(crate) fn stream(
 #[path = "syntax_stream_tests.rs"]
 mod stream_tests;
 
+#[cfg(test)]
+#[path = "syntax_roles_tests.rs"]
+mod roles_tests;
+
 /// The string literal that a delimiter at `at` opens in `language`, if any.
 fn quote_start(language: Language, text: &str, at: usize) -> Option<Quote> {
     use Escape::*;
@@ -503,106 +539,74 @@ fn raw_start(bytes: &[u8]) -> Option<u8> {
     (bytes.get(1 + hashes) == Some(&b'"')).then_some(hashes as u8)
 }
 
-fn keyword_list(language: Language) -> &'static str {
-    match language {
-        Language::Rust => {
-            "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while"
-        }
-        Language::C => {
-            "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Bool"
-        }
-        Language::Cpp => {
-            "alignas alignof auto bool break case catch char class const constexpr continue decltype default delete do double else enum explicit export extern false float for friend if inline int long namespace new noexcept nullptr operator private protected public register reinterpret_cast return short signed sizeof static static_cast struct switch template this throw true try typedef typename union unsigned using virtual void volatile while"
-        }
-        Language::JavaScript => {
-            "async await break case catch class const continue debugger default delete do else export extends false finally for function if import in instanceof let new null of return static super switch this throw true try typeof var void while with yield"
-        }
-        Language::TypeScript => {
-            "abstract any as async await boolean break case catch class const constructor continue declare default delete do else enum export extends false finally for from function if implements import in infer instanceof interface is keyof let module namespace never new null number of private protected public readonly return static string super switch this throw true try type typeof undefined unknown var void while yield"
-        }
-        Language::Python => {
-            "False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield"
-        }
-        Language::Shell => {
-            "case do done elif else esac fi for function if in select then time until while"
-        }
-        Language::Batch => {
-            "assoc break call cd chdir cls color copy date del dir do echo else endlocal equ errorlevel exist exit for ftype geq goto gtr if in leq lss md mkdir move neq not path pause popd prompt pushd rd rem ren rename rmdir set setlocal shift start time title type ver verify vol"
-        }
-        Language::Json => "false null true",
-        Language::Toml => "false true inf nan",
-        Language::Java => {
-            "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public record return short static strictfp super switch synchronized this throw throws transient try var void volatile while true false null"
-        }
-        Language::CSharp => {
-            "abstract as async await base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using var virtual void volatile while yield"
-        }
-        Language::Go => {
-            "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var true false nil"
-        }
-        Language::Swift => {
-            "associatedtype break case catch class continue default defer deinit do else enum extension fallthrough false fileprivate for func guard if import in init inout internal is let nil open operator private protocol public repeat rethrows return self static struct subscript super switch throw throws true try typealias var where while"
-        }
-        Language::Kotlin => {
-            "as break class continue do else false for fun if in interface is null object package return super this throw true try typealias typeof val var when while by catch constructor delegate dynamic field file finally get import init param property receiver set setparam where actual abstract annotation companion const crossinline data enum expect external final infix inline inner internal lateinit noinline open operator out override private protected public reified sealed suspend tailrec vararg"
-        }
-        Language::Ruby => {
-            "BEGIN END alias and begin break case class def defined do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield"
-        }
-        // Case-insensitive languages list lowercase words.
-        Language::Sql => {
-            "select from where as join left right inner outer on group by order having limit offset insert into values update set delete create table drop alter index view distinct union all null true false and or not is like in exists case when then else end begin commit rollback"
-        }
-        Language::Yaml => "true false null True False Null TRUE FALSE NULL yes no on off",
-        Language::Xml
-        | Language::Lua
-        | Language::Usda
-        | Language::Css
-        | Language::Makefile
-        | Language::Csv
-        | Language::CsvSemicolon
-        | Language::Tsv => "",
-    }
-}
-
-fn keyword(language: Language, token: &str) -> bool {
-    const LANGUAGES: usize = Language::Tsv as usize + 1;
-    static TABLES: [OnceLock<Box<[&'static str]>>; LANGUAGES] =
-        [const { OnceLock::new() }; LANGUAGES];
-    let words = TABLES[language as usize].get_or_init(|| {
-        let mut words: Vec<_> = keyword_list(language).split_ascii_whitespace().collect();
-        words.sort_unstable();
-        words.into_boxed_slice()
-    });
-    if !matches!(language, Language::Sql | Language::Batch) {
-        return words.binary_search(&token).is_ok();
-    }
-    // Tokens are ASCII; anything longer than the buffer is longer than every keyword.
-    let mut lower = [0; 16];
-    let Some(lower) = lower.get_mut(..token.len()) else {
-        return false;
-    };
-    lower.copy_from_slice(token.as_bytes());
-    lower.make_ascii_lowercase();
-    std::str::from_utf8(lower).is_ok_and(|lower| words.binary_search(&lower).is_ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const LANGUAGES: [Language; 26] = [
+        Language::Rust,
+        Language::C,
+        Language::Cpp,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Python,
+        Language::Shell,
+        Language::Batch,
+        Language::Json,
+        Language::Toml,
+        Language::Java,
+        Language::CSharp,
+        Language::Go,
+        Language::Swift,
+        Language::Kotlin,
+        Language::Ruby,
+        Language::Sql,
+        Language::Yaml,
+        Language::Xml,
+        Language::Lua,
+        Language::Usda,
+        Language::Css,
+        Language::Makefile,
+        Language::Csv,
+        Language::CsvSemicolon,
+        Language::Tsv,
+    ];
+
     #[test]
-    fn case_insensitive_keyword_tables_fit_the_lowercase_buffer() {
+    fn case_insensitive_word_tables_fit_the_lowercase_buffer() {
         for language in [Language::Sql, Language::Batch] {
-            for word in keyword_list(language).split_ascii_whitespace() {
+            for word in words::listed(language) {
                 assert!(
                     word.len() <= 16 && word == word.to_ascii_lowercase(),
                     "{word}"
                 );
-                assert!(keyword(language, &word.to_ascii_uppercase()));
+                assert!(words::word(language, &word.to_ascii_uppercase()).is_some());
             }
         }
-        assert!(!keyword(Language::Sql, "selection"));
-        assert!(keyword(Language::Rust, "Self") && !keyword(Language::Rust, "SELF"));
+        assert!(words::word(Language::Sql, "selection").is_none());
+        assert!(words::word(Language::Sql, "VarChar").map(|w| w.role) == Some(STYLE_TYPE));
+        assert!(
+            words::word(Language::Rust, "Self").is_some()
+                && words::word(Language::Rust, "SELF").is_none()
+        );
+    }
+
+    #[test]
+    fn word_tables_list_each_word_once_and_declaring_words_are_keywords() {
+        for language in LANGUAGES {
+            let mut seen = std::collections::HashSet::new();
+            for word in words::listed(language) {
+                assert!(seen.insert(word), "{language:?} lists {word} twice");
+                assert!(word.len() <= words::NAME_BYTES, "{word}");
+            }
+            for word in words::declaring(language) {
+                assert_eq!(
+                    words::word(language, word).map(|w| w.role),
+                    Some(STYLE_KEYWORD),
+                    "{language:?} {word}"
+                );
+            }
+        }
+        assert_eq!(LANGUAGES.len(), Language::Tsv as usize + 1);
     }
 }

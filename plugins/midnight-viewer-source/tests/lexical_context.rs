@@ -38,7 +38,8 @@ fn strings(styled: &[(String, u16)]) -> Vec<&str> {
 fn rust_lifetimes_and_labels_are_not_character_literals() {
     let code = "struct Parser<'a> {\n    input: &'a str,\n}\nfn f<'b>(x: &'b u8) -> char {\n    'outer: loop { break 'outer; }\n    let c = 'x';\n    let e = '\\'';\n    let b = b'q';\n}\nlet done = 1; // comment\n";
     let styled = lex("x.rs", code);
-    assert_eq!(strings(&styled), ["'x'", "'\\''", "'q'"], "{styled:?}");
+    // A byte literal's `b` prefix belongs to its string.
+    assert_eq!(strings(&styled), ["'x'", "'\\''", "b'q'"], "{styled:?}");
     assert!(has(&styled, "let", STYLE_KEYWORD));
     assert!(has(&styled, "loop", STYLE_KEYWORD));
     assert!(has(&styled, "// comment", STYLE_COMMENT), "{styled:?}");
@@ -46,29 +47,70 @@ fn rust_lifetimes_and_labels_are_not_character_literals() {
 
 #[test]
 fn single_line_literals_end_at_an_unescaped_newline() {
-    for (name, code, keyword) in [
-        ("x.c", "char *s = \"unterminated;\nint x = 1;\n", "int"),
-        ("x.cpp", "char c = 'q;\nint x = 1;\n", "int"),
-        ("x.java", "String s = \"open;\nint x = 1;\n", "int"),
-        ("x.cs", "string s = \"open;\nint x = 1;\n", "int"),
-        ("x.go", "s := \"open\nvar x = 1\n", "var"),
-        ("x.js", "const s = 'open;\nlet x = 1;\n", "let"),
-        ("x.ts", "const s = \"open;\nlet x = 1;\n", "let"),
-        ("x.py", "s = 'open\nif x: pass\n", "if"),
-        ("x.kt", "val s = \"open\nwhile (x) {}\n", "while"),
-        ("x.swift", "let s = \"open\nwhile x {}\n", "while"),
-        ("x.bat", "echo \"open\nif exist x echo y\n", "if"),
+    // Built-in type names such as `int` take the type role, keywords the keyword role.
+    for (name, code, word, role) in [
+        (
+            "x.c",
+            "char *s = \"unterminated;\nint x = 1;\n",
+            "int",
+            STYLE_TYPE,
+        ),
+        ("x.cpp", "char c = 'q;\nint x = 1;\n", "int", STYLE_TYPE),
+        (
+            "x.java",
+            "String s = \"open;\nint x = 1;\n",
+            "int",
+            STYLE_TYPE,
+        ),
+        (
+            "x.cs",
+            "string s = \"open;\nint x = 1;\n",
+            "int",
+            STYLE_TYPE,
+        ),
+        ("x.go", "s := \"open\nvar x = 1\n", "var", STYLE_KEYWORD),
+        (
+            "x.js",
+            "const s = 'open;\nlet x = 1;\n",
+            "let",
+            STYLE_KEYWORD,
+        ),
+        (
+            "x.ts",
+            "const s = \"open;\nlet x = 1;\n",
+            "let",
+            STYLE_KEYWORD,
+        ),
+        ("x.py", "s = 'open\nif x: pass\n", "if", STYLE_KEYWORD),
+        (
+            "x.kt",
+            "val s = \"open\nwhile (x) {}\n",
+            "while",
+            STYLE_KEYWORD,
+        ),
+        (
+            "x.swift",
+            "let s = \"open\nwhile x {}\n",
+            "while",
+            STYLE_KEYWORD,
+        ),
+        (
+            "x.bat",
+            "echo \"open\nif exist x echo y\n",
+            "if",
+            STYLE_KEYWORD,
+        ),
     ] {
         let styled = lex(name, code);
         assert!(
-            has(&styled, keyword, STYLE_KEYWORD),
+            has(&styled, word, role),
             "{name}: second line stays code: {styled:?}"
         );
     }
     // Escaped newlines continue C-like and Python literals.
     let styled = lex("x.c", "char *s = \"one \\\ntwo\";\nint x = 1;\n");
     assert!(has(&styled, "two\"", STYLE_STRING), "{styled:?}");
-    assert!(has(&styled, "int", STYLE_KEYWORD));
+    assert!(has(&styled, "int", STYLE_TYPE));
 }
 
 #[test]
@@ -96,9 +138,9 @@ fn multiline_literals_still_span_lines() {
         ),
         (
             "x.java",
-            "String s = \"\"\"\ntwo\"\"\";\nint x = 1;\n",
+            "String s = \"\"\"\ntwo\"\"\";\nboolean x = true;\n",
             "two\"\"\"",
-            "int",
+            "true",
         ),
         (
             "x.sh",
@@ -108,9 +150,9 @@ fn multiline_literals_still_span_lines() {
         ),
         (
             "x.cs",
-            "var p = @\"one\ntwo\";\nint x = 1;\n",
+            "var p = @\"one\ntwo\";\nbool x = true;\n",
             "two\"",
-            "int",
+            "true",
         ),
     ] {
         let styled = lex(name, code);
@@ -175,9 +217,9 @@ fn literal_backslashes_do_not_escape_raw_or_single_quoted_delimiters() {
         ),
         (
             "x.cs",
-            "var p = @\"C:\\dir\\\";\nint q = 1;\n",
+            "var p = @\"C:\\dir\\\";\nbool q = true;\n",
             "\"C:\\dir\\\"",
-            "int",
+            "true",
         ),
         (
             "x.go",

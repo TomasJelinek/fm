@@ -14,8 +14,8 @@ fn every_declared_language_recognizes_keywords_strings_comments_and_numbers() {
         (
             "x.c",
             Language::C,
-            "int x = 42; // comment\n\"hello\"",
-            "int",
+            "static int x = 42; // comment\n\"hello\"",
+            "static",
             "// comment",
         ),
         (

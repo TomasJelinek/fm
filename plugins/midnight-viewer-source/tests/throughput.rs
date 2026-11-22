@@ -104,6 +104,105 @@ fn search_and_viewport_throughput() {
     );
 }
 
+/// Synthetic C++ in the shape of ordinary library code: preprocessor lines,
+/// namespaces, templates, classes, standard types, calls, literals and comments.
+fn cpp_lines(total: usize) -> String {
+    let mut text = String::with_capacity(total + 1024);
+    let mut n = 0usize;
+    while text.len() < total {
+        text.push_str(&format!(
+            "#include <vector>
+#if defined(BENCH_{n}) && !defined(NDEBUG)
+// Block {n}: synthetic declarations for lexer timing.
+namespace bench_{n} {{
+template <typename T, class Alloc = std::allocator<T>>
+class Widget{n} final : public Base {{
+public:
+    explicit Widget{n}(std::size_t count) : items_(count), name_(\"widget_{n}\") {{}}
+    std::vector<std::string> names() const noexcept {{ return {{name_, \"beta\"}}; }}
+    static constexpr unsigned long long mask = 0x{n:x}ull;
+    /* weight {n} */ double weight(int x, uint32_t y) const {{ return x * 1'000 + y / 2.5e3f; }}
+    bool contains(const T& value) const {{ return std::find(items_.begin(), items_.end(), value) != items_.end(); }}
+private:
+    std::unordered_map<int, double> items_;
+    std::string name_;
+}};
+}} // namespace bench_{n}
+#endif
+"
+        ));
+        n += 1;
+    }
+    text
+}
+
+/// The median, slowest and fastest of `runs` timings of `lex` in decimal
+/// megabytes per second, and the span count of the last run.
+fn mb_per_s(bytes: usize, runs: usize, mut lex: impl FnMut() -> usize) -> (f64, f64, f64, usize) {
+    let mut rates = Vec::with_capacity(runs);
+    let mut spans = 0;
+    for _ in 0..runs {
+        let started = Instant::now();
+        spans = lex();
+        rates.push(bytes as f64 / 1e6 / started.elapsed().as_secs_f64());
+    }
+    rates.sort_by(f64::total_cmp);
+    (rates[runs / 2], rates[0], rates[runs - 1], spans)
+}
+
+#[test]
+#[ignore = "timing evidence; run in release with --ignored --nocapture"]
+fn cpp_lex_throughput() {
+    use midnight_viewer_source::syntax::{self, Language, State};
+    let input = cpp_lines(8 << 20);
+    let lines: Vec<&str> = input.split_inclusive('\n').collect();
+    // One call and one style collector per complete line: the worst case.
+    let (median, low, high, spans) = mb_per_s(input.len(), 9, || {
+        let mut state = State::default();
+        let mut spans = 0;
+        for line in &lines {
+            let lexed = syntax::highlight(line, Language::Cpp, &mut state, || false).unwrap();
+            spans += lexed.spans.len();
+        }
+        spans
+    });
+    println!(
+        "lex cpp per_line mb_per_s={median:.1} min={low:.1} max={high:.1} bytes={} spans={spans}",
+        input.len()
+    );
+    let chunks = line_chunks(&input);
+    let (median, low, high, spans) = mb_per_s(input.len(), 9, || {
+        let mut state = State::default();
+        let mut spans = 0;
+        for chunk in &chunks {
+            let lexed = syntax::highlight(chunk, Language::Cpp, &mut state, || false).unwrap();
+            assert!(!lexed.truncated, "a chunk's spans fit one page");
+            spans += lexed.spans.len();
+        }
+        spans
+    });
+    println!(
+        "lex cpp chunks_32k mb_per_s={median:.1} min={low:.1} max={high:.1} bytes={} spans={spans}",
+        input.len()
+    );
+}
+
+/// Chunks of at most 32 KiB that end after a newline: one style collector each, as
+/// a page's replay and a preparation turn lex a bounded run of complete lines.
+fn line_chunks(input: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < input.len() {
+        let mut end = (start + 32 * 1024).min(input.len());
+        if end < input.len() {
+            end = start + input[start..end].rfind('\n').unwrap() + 1;
+        }
+        chunks.push(&input[start..end]);
+        start = end;
+    }
+    chunks
+}
+
 #[test]
 #[ignore = "timing evidence; run in release with --ignored --nocapture"]
 fn decode_and_lex_throughput() {
@@ -135,4 +234,19 @@ fn decode_and_lex_throughput() {
         "lex rust mib_per_s={:.1} spans={spans}",
         input.len() as f64 / MIB / seconds
     );
+    // The same input as medians of nine passes, per line and per 32 KiB chunk.
+    let lines: Vec<&str> = input.split_inclusive('\n').collect();
+    for (mode, pieces) in [("per_line", lines), ("chunks_32k", line_chunks(&input))] {
+        let (median, low, high, spans) = mb_per_s(input.len(), 9, || {
+            let mut state = State::default();
+            let mut spans = 0;
+            for piece in &pieces {
+                let lexed = syntax::highlight(piece, Language::Rust, &mut state, || false).unwrap();
+                assert!(!lexed.truncated, "a chunk's spans fit one page");
+                spans += lexed.spans.len();
+            }
+            spans
+        });
+        println!("lex rust {mode} mb_per_s={median:.1} min={low:.1} max={high:.1} spans={spans}");
+    }
 }

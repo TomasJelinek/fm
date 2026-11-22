@@ -605,6 +605,32 @@ fn cpp_custom_delimiter_raw_string_state_ignores_quotes_and_comments() {
 }
 
 #[test]
+fn cpp_types_functions_and_preprocessor_lines_are_coloured_in_the_public_plugin() {
+    let text = "#include <vector>\nstd::map<int, std::string> index(const char* key) {\n    return lookup(key, 1'024u); // cached\n}\n";
+    let page = source_page("index.cpp", text);
+    assert_eq!(page.text, text);
+    for (token, role) in [
+        ("#include", STYLE_KEYWORD),
+        ("<vector>", STYLE_STRING),
+        ("std", STYLE_TYPE),
+        ("map", STYLE_TYPE),
+        ("int", STYLE_TYPE),
+        ("string", STYLE_TYPE),
+        ("index", STYLE_FUNCTION),
+        ("const", STYLE_KEYWORD),
+        ("char", STYLE_TYPE),
+        ("return", STYLE_KEYWORD),
+        ("lookup", STYLE_FUNCTION),
+        ("1'024u", STYLE_NUMBER),
+        ("// cached", STYLE_COMMENT),
+    ] {
+        styled(&page.text, &page.spans, token, role);
+    }
+    unstyled(&page.text, &page.spans, "key");
+    page.validate().unwrap();
+}
+
+#[test]
 fn dense_yaml_span_limits_shorten_both_directions_without_losing_all_styles() {
     let text = format!("[{}0]\n", "1,".repeat(4096));
     for backwards in [false, true] {

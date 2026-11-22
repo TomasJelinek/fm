@@ -314,31 +314,28 @@ pub(super) fn stream(
                     let length = bytes[at..]
                         .iter()
                         .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
-                        .take(9)
+                        .take(super::words::NAME_BYTES + 1)
                         .count();
-                    if length <= 8 && at + length == bytes.len() && !final_chunk {
-                        if KEYWORDS
-                            .split_ascii_whitespace()
-                            .any(|word| word.starts_with(&text[start..at + length]))
-                        {
-                            break;
-                        }
+                    if length > super::words::NAME_BYTES {
+                        // Too long to classify; a continuation stays plain.
                         at += length;
                         current = State::Identifier;
-                        styles.push(start, at, STYLE_PLAIN);
-                        continue;
-                    }
-                    at += length;
-                    if length == 9 {
-                        current = State::Identifier;
                         STYLE_PLAIN
-                    } else if KEYWORDS
-                        .split_ascii_whitespace()
-                        .any(|word| word == &text[start..at])
-                    {
-                        STYLE_KEYWORD
+                    } else if at + length == bytes.len() && !final_chunk {
+                        // A keyword, a call or a plain name: the next byte decides.
+                        break;
                     } else {
-                        STYLE_PLAIN
+                        at += length;
+                        if KEYWORDS
+                            .split_ascii_whitespace()
+                            .any(|word| word == &text[start..at])
+                        {
+                            STYLE_KEYWORD
+                        } else if bytes.get(at) == Some(&b'(') {
+                            STYLE_FUNCTION
+                        } else {
+                            STYLE_PLAIN
+                        }
                     }
                 } else if byte.is_ascii_digit() {
                     at += 1;

@@ -83,6 +83,11 @@ impl Styles {
             last.end = end as u32;
             return;
         }
+        if self.spans.capacity() == 0 {
+            // One allocation for a line's or a small page's spans; an empty window
+            // (a state-only replay) never reaches here and allocates nothing.
+            self.spans.reserve(16);
+        }
         if self.spans.len() == MAX_SPANS {
             self.clipped = true;
             if self.backwards {

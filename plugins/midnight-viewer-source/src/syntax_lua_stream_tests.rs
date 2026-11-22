@@ -18,10 +18,57 @@ fn run(text: &str, ends: impl IntoIterator<Item = usize>) -> (State, Vec<Span>) 
         .expect("bounded Lua streaming");
         assert!(text.is_char_boundary(at + consumed));
         at += consumed;
-        assert!(end - at <= 32, "unbounded ambiguous Lua suffix");
+        // A name waits for the byte that tells a call from a plain name.
+        assert!(end - at <= 64, "unbounded ambiguous Lua suffix");
     }
     assert_eq!(at, text.len());
     (state, styles.finish().0)
+}
+
+#[test]
+fn lua_calls_and_function_definitions_take_the_function_role() {
+    let text = "local function helper(t) return setmetatable(t, mt) end\nfunction M.util:method(x) print(string.format(\"%d\", x)) end\n";
+    let mut from = 0;
+    let expected: Vec<_> = [
+        ("local", STYLE_KEYWORD),
+        ("function", STYLE_KEYWORD),
+        ("helper", STYLE_FUNCTION),
+        ("return", STYLE_KEYWORD),
+        ("setmetatable", STYLE_FUNCTION),
+        ("end", STYLE_KEYWORD),
+        ("function", STYLE_KEYWORD),
+        ("method", STYLE_FUNCTION),
+        ("print", STYLE_FUNCTION),
+        ("format", STYLE_FUNCTION),
+        ("\"%d\"", STYLE_STRING),
+        ("end", STYLE_KEYWORD),
+    ]
+    .into_iter()
+    .map(|(token, role)| {
+        let start = from + text[from..].find(token).unwrap();
+        from = start + token.len();
+        (start as u32, from as u32, role)
+    })
+    .collect();
+    let spans = |ends: Vec<usize>| -> Vec<_> {
+        run(text, ends)
+            .1
+            .iter()
+            .map(|span| (span.start, span.end, span.role))
+            .collect()
+    };
+    assert_eq!(spans(vec![text.len()]), expected);
+    for split in 1..text.len() {
+        assert_eq!(spans(vec![split, text.len()]), expected, "split {split}");
+    }
+    // A name longer than the classification bound stays plain before its `(`.
+    let long = format!("{}(1)\n", "f".repeat(65));
+    assert!(
+        run(&long, [long.len()])
+            .1
+            .iter()
+            .all(|span| span.role == STYLE_NUMBER)
+    );
 }
 
 #[test]
