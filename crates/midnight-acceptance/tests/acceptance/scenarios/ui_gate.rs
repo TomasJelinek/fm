@@ -28,7 +28,12 @@ use slint::{
     Brush, Color, ComponentHandle, LogicalPosition, Rgb8Pixel,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
-use std::{collections::HashMap, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 pub const FRAMED_CLOSE: &str = "internal close button in a framed window";
 pub const OVERFLOW: &str = "overflow without scroll bar";
@@ -1776,6 +1781,26 @@ fn offset(item: &ItemRc) -> (f32, f32) {
     })
 }
 
+/// How long the wheel probe waits for a viewport to follow one turn of the wheel.
+const PROBE_PAUSE: Duration = Duration::from_millis(150);
+
+/// Wait [`PROBE_PAUSE`], counted for the profile.
+fn probe_pause(app: &mut App) {
+    app.idle(PROBE_PAUSE);
+    PROBE_COUNTS.with(|counts| {
+        let (viewports, pauses) = counts.get();
+        counts.set((viewports, pauses + 1));
+    });
+}
+
+/// Count one probed viewport for the profile.
+fn probed() {
+    PROBE_COUNTS.with(|counts| {
+        let (viewports, pauses) = counts.get();
+        counts.set((viewports + 1, pauses));
+    });
+}
+
 /// Whether the viewport `item` scrolls when the wheel turns over `at`; it is scrolled
 /// back afterwards.
 pub fn scrolls(
@@ -1792,14 +1817,15 @@ pub fn scrolls(
             delta_y: if vertical { amount } else { 0.0 },
         });
     };
+    probed();
     let before = offset(item);
     let mut moved = false;
     for amount in [-60.0_f32, 60.0] {
         wheel(amount);
-        app.idle(Duration::from_millis(150));
+        probe_pause(app);
         if offset(item) != before {
             wheel(-amount);
-            app.idle(Duration::from_millis(150));
+            probe_pause(app);
             moved = true;
             break;
         }
@@ -1824,14 +1850,15 @@ fn moves(
             delta_y: if vertical { amount } else { 0.0 },
         });
     };
+    probed();
     let before = inspect::rect(item);
     let mut moved = false;
     for amount in [-60.0_f32, 60.0] {
         wheel(amount);
-        app.idle(Duration::from_millis(150));
+        probe_pause(app);
         if inspect::rect(item) != before {
             wheel(-amount);
-            app.idle(Duration::from_millis(150));
+            probe_pause(app);
             moved = true;
             break;
         }
@@ -1891,6 +1918,90 @@ pub fn settled_issues_at(app: &mut App, target: &Target, selected: f64) -> Vec<I
     )
 }
 
+/// Times [`capture`]'s phases when set to 1: each capture adds a note with its phases and
+/// [`take_profile`] sums them.
+pub const PROFILE: &str = "MIDNIGHT_ACCEPTANCE_UI_PROFILE";
+
+/// The phases of the captures since the last [`take_profile`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Profile {
+    pub captures: usize,
+    /// The fixed pause before each capture.
+    pub pause: Duration,
+    /// Settling the item tree.
+    pub settle: Duration,
+    /// The wheel probe of overflowing viewports.
+    pub probe: Duration,
+    /// The viewports the wheel probe turned the wheel over.
+    pub probed: usize,
+    /// Its pauses of [`PROBE_PAUSE`] each.
+    pub probe_pauses: usize,
+    /// Rendering the frame.
+    pub render: Duration,
+    /// Encoding and writing the screenshot.
+    pub png: Duration,
+    /// The palette's selected-text minimum, the checks of the frame and the item tree,
+    /// and recording their findings.
+    pub checks: Duration,
+}
+
+impl Profile {
+    pub fn total(&self) -> Duration {
+        self.pause + self.settle + self.probe + self.render + self.png + self.checks
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "pause {} ms, settle {} ms, wheel probe {} ms ({} viewports, {} pauses), render {} \
+             ms, PNG {} ms, checks {} ms",
+            self.pause.as_millis(),
+            self.settle.as_millis(),
+            self.probe.as_millis(),
+            self.probed,
+            self.probe_pauses,
+            self.render.as_millis(),
+            self.png.as_millis(),
+            self.checks.as_millis()
+        )
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.captures += other.captures;
+        self.pause += other.pause;
+        self.settle += other.settle;
+        self.probe += other.probe;
+        self.probed += other.probed;
+        self.probe_pauses += other.probe_pauses;
+        self.render += other.render;
+        self.png += other.png;
+        self.checks += other.checks;
+    }
+}
+
+thread_local! {
+    static PROFILED: Cell<Profile> = Cell::new(Profile::default());
+    /// The wheel probe's viewports and pauses since the capture began.
+    static PROBE_COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+/// Whether [`PROFILE`] asks for the timing of the captures.
+pub fn profiling() -> bool {
+    std::env::var(PROFILE).is_ok_and(|value| value == "1")
+}
+
+/// The sums of the captures timed on this thread since the last call.
+pub fn take_profile() -> Profile {
+    PROFILED.with(Cell::take)
+}
+
+/// The time since `clock`, which moves on to now.
+fn lap(clock: &mut Instant) -> Duration {
+    let now = Instant::now();
+    let elapsed = now.duration_since(*clock);
+    *clock = now;
+    elapsed
+}
+
 /// Settle, render, save and check one window; flags are recorded against the
 /// screenshot under `surface` (the combination and the surface's name).
 pub fn capture(
@@ -1901,14 +2012,23 @@ pub fn capture(
     name: &str,
     caption: &str,
 ) -> usize {
+    let mut clock = Instant::now();
     // Theme colours and hover states animate briefly; let them settle first.
     app.idle(Duration::from_millis(250));
+    let pause = lap(&mut clock);
     let selected = palette_minimum(app);
+    let mut checks = lap(&mut clock);
     let software = target.software(app);
     inspect::settle_tree(software.window());
+    let settle = lap(&mut clock);
+    PROBE_COUNTS.with(|counts| counts.set((0, 0)));
     let scrolling = scrolling_viewports(app, &software);
+    let probe = lap(&mut clock);
+    let (probed, probe_pauses) = PROBE_COUNTS.with(Cell::get);
     let frame = Frame::of(&software);
+    let render = lap(&mut clock);
     let shot = save(context, &frame, name, caption);
+    let png = lap(&mut clock);
     let issues = inspect_window(
         software.window(),
         &frame,
@@ -1916,7 +2036,28 @@ pub fn capture(
         &scrolling,
         selected,
     );
-    record(context, &shot, surface, issues)
+    let flagged = record(context, &shot, surface, issues);
+    checks += lap(&mut clock);
+    if profiling() {
+        let phases = Profile {
+            captures: 1,
+            pause,
+            settle,
+            probe,
+            probed,
+            probe_pauses,
+            render,
+            png,
+            checks,
+        };
+        context.note(format!("profile capture {surface}: {}", phases.describe()));
+        PROFILED.with(|profiled| {
+            let mut sum = profiled.get();
+            sum.add(&phases);
+            profiled.set(sum);
+        });
+    }
+    flagged
 }
 
 /// The gate's verdict over the scenario's flags: PASS without flags, PENDING when every

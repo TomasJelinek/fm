@@ -4,9 +4,10 @@
 //! seeded history of the first start is recalled), Reset to defaults restores them,
 //! Escape discards a preview and Enter saves. Options' page list by keyboard: Shift+Tab
 //! reaches the list from OK, Space and Enter choose the focused page, Up and Down walk the
-//! pages in their displayed order (the focus follows), the last page shown reopens in the
-//! same session and a restart opens General; Enter on a focused combo box opens its list
-//! and neither confirms nor saves Options.
+//! pages in their displayed order (the focus follows) from the focused row, not from the
+//! shown page (U-D29), the last page shown reopens in the same session and a restart opens
+//! General; Enter on a focused combo box opens its list and neither confirms nor saves
+//! Options.
 use crate::{
     Context,
     app::{App, Config},
@@ -218,8 +219,10 @@ fn step_page(app: &mut App, key: Key, topic: i32, failures: &mut Vec<String>) {
 }
 
 /// Options' page list and pickers by keyboard, from OK (where Options puts the focus):
-/// see the module comment. Leaves Options closed on a page other than General.
-fn navigation(app: &mut App, store: &SettingsStore, context: &mut Context) -> Result<(), String> {
+/// see the module comment. Leaves Options closed on a page other than General. A step
+/// that leaves Options in an unknown state ends the scenario (`Err`); the other failures
+/// are returned.
+fn navigation(app: &mut App, store: &SettingsStore) -> Result<Vec<String>, String> {
     let mut failures = Vec::new();
     let saves = store.saves();
 
@@ -361,18 +364,25 @@ fn navigation(app: &mut App, store: &SettingsStore, context: &mut Context) -> Re
     if !app.window.get_options_open() || store.saves() != saves {
         return Err("walking the page list closed or saved Options".to_owned());
     }
-    // Recorded, not judged: Up on a row that has the focus but is not the shown page
-    // (Shift+Tab from the shown last page to the one above it).
+    // Up and Down act on the focused row, not on the shown page (U-D29): Shift+Tab from
+    // the shown last page focuses the row above it without choosing it, and Up there
+    // shows the page above that row, with the focus on it.
     input::chord(app.slint(), &[Key::Shift], Key::Tab);
     app.settle();
     let focused = focused_page(app);
     input::key(app.slint(), Key::UpArrow);
-    app.settle();
-    context.note(format!(
-        "Options page list: Up on the focused {focused:?} row while {last} is shown shows {} with the focus on {:?}",
-        title(app.window.get_options_topic_index()),
-        focused_page(app)
-    ));
+    let (expected, expected_topic) = PAGES[PAGES.len() - 3];
+    let moved = options::poll(app, Duration::from_secs(2), |app| {
+        app.window.get_options_topic_index() == expected_topic
+    });
+    if focused.as_deref() != Some(above) || !moved || focused_page(app).as_deref() != Some(expected)
+    {
+        failures.push(format!(
+            "U-D29: Up on the focused {focused:?} row while {last} is shown should show {expected}, the page above the focused row, with the focus on it; it shows {} with the focus on {:?}",
+            title(app.window.get_options_topic_index()),
+            focused_page(app)
+        ));
+    }
     let shown_last = app.window.get_options_topic_index();
     if shown_last == 0 {
         return Err("the navigation must leave a page other than General shown".to_owned());
@@ -401,11 +411,9 @@ fn navigation(app: &mut App, store: &SettingsStore, context: &mut Context) -> Re
             store.saves() - saves
         ));
     }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("Options navigation:\n{}", failures.join("\n")))
-    }
+    // Options is closed again: the scenario's other checks run before these failures
+    // are reported.
+    Ok(failures)
 }
 
 fn history(commands: &[&str]) -> Vec<CommandHistoryEntry> {
@@ -614,7 +622,12 @@ pub fn general(context: &mut Context) -> Result<(), String> {
 
     // The page list and pickers by keyboard; leaves Options last shown on another page
     // than General.
-    navigation(&mut app, &store, context)?;
+    let navigation_failures = navigation(&mut app, &store)?;
+    for failure in &navigation_failures {
+        context.note(format!(
+            "failed, reported after the other checks: {failure}"
+        ));
+    }
 
     // Restart on the saved settings.
     app.shutdown()?;
@@ -785,6 +798,13 @@ pub fn general(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note("General: the seeded history was recalled (Alt+Up gave the newest command, the history picker enabled); Cancel discarded a previewed change; OK saved all six General settings (search filter, byte sizes, quick copy verification, disk I/O 2, history off, history cleared) with visible effects; a restart showed them, disabled the history picker and recalled nothing within 2 s of Alt+Up; Reset to defaults restored them and kept the tabs; Escape discarded a preview, Enter saved");
-    context.note("Options navigation: Options first opened on General with the focus on OK; Enter on the focused Disk I/O combo box opened its list without closing or saving Options and Escape closed only the list; Shift+Tab from OK reached the page list at Plugins; Space and Enter chose the focused rows; Up walked to General and Down to Plugins in the displayed order with the focus following, both stopping at the ends; the page shown last reopened in the session and a restart opened General");
+    if !navigation_failures.is_empty() {
+        app.shutdown()?;
+        return Err(format!(
+            "Options navigation:\n{}",
+            navigation_failures.join("\n")
+        ));
+    }
+    context.note("Options navigation: Options first opened on General with the focus on OK; Enter on the focused Disk I/O combo box opened its list without closing or saving Options and Escape closed only the list; Shift+Tab from OK reached the page list at Plugins; Space and Enter chose the focused rows; Up walked to General and Down to Plugins in the displayed order with the focus following, both stopping at the ends; Up on the focused Keyboard row while Plugins was shown moved from that row to Custom Commands (U-D29); the page shown last reopened in the session and a restart opened General");
     app.shutdown()
 }

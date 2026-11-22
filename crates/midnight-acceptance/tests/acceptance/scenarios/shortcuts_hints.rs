@@ -1,8 +1,9 @@
 //! What the windows say about the shortcuts, compared with the catalog: F1 keyboard help
 //! lists every action with all of its keys ("Unassigned" without one) and its context;
-//! the F10 main menu shows each item's key (Ctrl+= beside Select by mask, nothing
-//! beside Options); the panel's View and Sort menus show every key of each item's
-//! action; after Create folder is rebound and Sort by size gets a second key in Options
+//! the F10 main menu and the panel's View and Sort menus show every key of each item's
+//! action in binding order, as F1 lists them ("Ctrl+= / Num + / Ctrl++" beside Select by
+//! mask, "Delete / F8" beside Move to Trash, nothing beside Options); after Create folder
+//! is rebound and Sort by size gets a second key in Options
 //! › Keyboard, the menus, the help and the footer show the new keys at once, F7's cell
 //! is unassigned, and the new key opens the dialog.
 use crate::{
@@ -103,15 +104,20 @@ const MENU: [(&str, &str); 65] = [
     ("Exit", "app.exit"),
 ];
 
-/// Keys the menus must show, written out (the documented spellings).
-const ANCHORS: [(&str, &str); 8] = [
-    ("Select by mask…", "Ctrl+="),
-    ("Deselect by mask…", "Ctrl+-"),
+/// Keys the main menu must show, written out (the documented spellings): every key of
+/// the item's action, in binding order.
+const ANCHORS: [(&str, &str); 9] = [
+    ("Select by mask…", "Ctrl+= / Num + / Ctrl++"),
+    ("Deselect by mask…", "Ctrl+- / Num -"),
     ("Invert, folders as in Select by mask", "Num *"),
     ("Create folder…", "F7"),
+    ("Move to Trash…", "Delete / F8"),
     ("Brief view", "Alt+2"),
-    ("Find files…", "Ctrl+F"),
-    ("Calculate / cancel folder sizes", "Ctrl+Shift+S"),
+    ("Find files…", "Ctrl+F / Alt+F7"),
+    (
+        "Calculate / cancel folder sizes",
+        "Ctrl+Shift+S / Ctrl+Shift+F10",
+    ),
     ("Options", ""),
 ];
 
@@ -152,17 +158,14 @@ fn shown(key: &str) -> Result<String, String> {
     Ok(parts.join("+"))
 }
 
-/// The key a menu shows for `keys`: an unmodified function key first, otherwise the
-/// first key.
-fn primary(keys: &[String]) -> Result<String, String> {
-    let plain_function = keys.iter().find(|key| {
-        key.strip_prefix('F')
-            .is_some_and(|number| number.parse::<u8>().is_ok())
-    });
-    match plain_function.or(keys.first()) {
-        Some(key) => shown(key),
-        None => Ok(String::new()),
-    }
+/// What a menu shows for `keys`: every key in binding order, as F1 lists them, joined
+/// with " / "; nothing for an unassigned action.
+fn all_keys(keys: &[String]) -> Result<String, String> {
+    Ok(keys
+        .iter()
+        .map(|key| shown(key))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(" / "))
 }
 
 fn wait(app: &mut App, what: &str, condition: impl Fn(&App) -> bool) -> Result<(), String> {
@@ -238,13 +241,13 @@ fn menu_keys(app: &mut App) -> Result<BTreeMap<String, String>, String> {
                     && let Some(label) = inspect::label(item)
                     && label != "Close menu"
                 {
+                    // The chords follow the label: one text beside it, or under it one per
+                    // line when they do not fit beside it.
                     let texts = tools::item_texts(item);
-                    let key = texts
-                        .iter()
-                        .rev()
-                        .find(|text| **text != label)
-                        .cloned()
-                        .unwrap_or_default();
+                    let key = match texts.iter().position(|text| *text == label) {
+                        Some(at) => texts[at + 1..].join(" / "),
+                        None => texts.last().cloned().unwrap_or_default(),
+                    };
                     keys.entry(label).or_insert(key);
                 }
             });
@@ -346,11 +349,7 @@ fn compare_panel_menus(
             continue;
         }
         for ((label, key), (_, action)) in shown_rows.iter().zip(rows.iter()) {
-            let wanted = keys_of(action)
-                .iter()
-                .map(|key| shown(key))
-                .collect::<Result<Vec<_>, _>>()?
-                .join(" / ");
+            let wanted = all_keys(&keys_of(action))?;
             if *key != wanted {
                 failures.push(format!(
                     "{when}: the {menu:?} list shows {key:?} beside {label:?}, expected {wanted:?}"
@@ -412,7 +411,7 @@ fn compare(
             failures.push(format!("{when}: the main menu has no {label:?}"));
             continue;
         };
-        let wanted = primary(&keys_of(action))?;
+        let wanted = all_keys(&keys_of(action))?;
         if *key != wanted {
             failures.push(format!(
                 "{when}: the main menu shows {key:?} beside {label:?}, expected {wanted:?}"

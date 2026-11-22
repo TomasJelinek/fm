@@ -144,6 +144,25 @@ fn operable(nodes: &[Node]) -> Vec<usize> {
         .collect()
 }
 
+/// How many controls Tab can pass on its way round: the operable ones and those a scroll
+/// view or a clipping container keeps out of sight (enabled, not hidden, not inside
+/// another interactive control), which take Tab stops as well.
+fn tab_stops(nodes: &[Node]) -> usize {
+    (0..nodes.len())
+        .filter(|&index| {
+            let node = &nodes[index];
+            gate::interactive(node.role)
+                && !node.hidden
+                && node.rect.2 >= 2.0
+                && node.rect.3 >= 2.0
+                && !node.disabled
+                && node
+                    .parent
+                    .is_none_or(|parent| !gate::interactive(nodes[control_of(nodes, parent)].role))
+        })
+        .count()
+}
+
 fn inflate((x, y, w, h): inspect::Rect, by: f32) -> inspect::Rect {
     (x - by, y - by, w + 2.0 * by, h + 2.0 * by)
 }
@@ -199,7 +218,10 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
                 .map(|index| control_of(&nodes, index)),
         )
     };
-    let limit = wanted.len() * 2 + 6;
+    // A hang guard, not the measure of a cycle: the walk ends when the first stop comes
+    // back, and its budget counts the controls scrolled out of sight too, which Tab passes
+    // on its way round (a long page such as Options › Archives).
+    let limit = tab_stops(&nodes).max(wanted.len()) * 2 + 6;
     let mut forward: Vec<Option<usize>> = Vec::new();
     let mut previous = Frame::of(&software);
     let mut escaped = false;

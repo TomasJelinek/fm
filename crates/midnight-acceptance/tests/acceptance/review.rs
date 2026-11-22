@@ -25,7 +25,12 @@ use slint::{
     ComponentHandle,
     platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
 };
-use std::{path::Path, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// Window size class of a combination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,11 +150,66 @@ pub fn full_matrix() -> Vec<Combination> {
     list
 }
 
-/// Whether the full matrix was asked for (`--all-themes`, or
-/// `MIDNIGHT_ACCEPTANCE_UI_MATRIX=full`).
+/// Asks for the full matrix (`full`), one shard of it (`full:K/N`) or named combinations
+/// (`full:Blue-Desktop-Normal-x1,…`).
+const MATRIX: &str = "MIDNIGHT_ACCEPTANCE_UI_MATRIX";
+
+/// Whether the full matrix, or a part of it, was asked for (`--all-themes`, or
+/// [`MATRIX`] `full` or `full:…`).
 pub fn full_requested(context: &Context) -> bool {
     context.options.all_themes
-        || std::env::var("MIDNIGHT_ACCEPTANCE_UI_MATRIX").is_ok_and(|value| value == "full")
+        || std::env::var(MATRIX).is_ok_and(|value| value == "full" || value.starts_with("full:"))
+}
+
+/// The part of the full matrix this run sweeps, and how to describe it: all of it, shard
+/// K of N (`full:K/N`: the combinations whose position in [`full_matrix`], counted from 0,
+/// leaves the remainder K − 1 when divided by N, so that every shard gets each size class
+/// and scale factor and the N shards together sweep each combination once), or the
+/// combinations named as [`Combination::prefix`] names them (`full:<name>,<name>…`).
+fn full_part() -> Result<(Vec<Combination>, String), String> {
+    let matrix = full_matrix();
+    let value = std::env::var(MATRIX).unwrap_or_default();
+    let Some(part) = value.strip_prefix("full:") else {
+        return Ok((matrix, "every combination".to_owned()));
+    };
+    if let Some((shard, shards)) = part.split_once('/') {
+        let shard: usize = shard.trim().parse().unwrap_or(0);
+        let shards: usize = shards.trim().parse().unwrap_or(0);
+        if shard == 0 || shard > shards {
+            return Err(format!(
+                "{MATRIX}={value}: name shard K of N as full:K/N with 1 <= K <= N"
+            ));
+        }
+        let chosen = matrix
+            .into_iter()
+            .enumerate()
+            .filter(|(position, _)| position % shards == shard - 1)
+            .map(|(_, combination)| combination)
+            .collect();
+        return Ok((chosen, format!("shard {shard} of {shards}")));
+    }
+    let mut chosen = Vec::new();
+    for name in part
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let Some(combination) = matrix
+            .iter()
+            .find(|combination| combination.prefix() == name)
+        else {
+            return Err(format!(
+                "{MATRIX}={value}: {name} is not a combination of the full matrix"
+            ));
+        };
+        chosen.push(*combination);
+    }
+    if chosen.is_empty() {
+        return Err(format!(
+            "{MATRIX}={value}: name a shard (full:K/N) or combinations (full:<name>,…)"
+        ));
+    }
+    Ok((chosen, "the named combinations".to_owned()))
 }
 
 /// Where an opened surface lives.
@@ -372,7 +432,14 @@ type Step<'a> = Box<dyn FnOnce(&mut App, &mut Context) -> Result<(), String> + '
 /// Run one step; a failure (or panic) becomes a review flag and the sweep goes on after
 /// Escape has closed whatever the step left open.
 fn isolated(app: &mut App, context: &mut Context, prefix: &str, name: &str, step: Step<'_>) {
+    let began = Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(app, context)));
+    if gate::profiling() {
+        context.note(format!(
+            "profile step {prefix}/{name}: {} ms",
+            began.elapsed().as_millis()
+        ));
+    }
     let error = match result {
         Ok(Ok(())) => return,
         Ok(Err(error)) => error,
@@ -1097,6 +1164,7 @@ pub fn sweep(context: &mut Context, combinations: &[Combination]) -> Result<usiz
     let right = context.fixture.root.clone();
     let mut reviewed = 0;
     for combination in combinations {
+        let began = Instant::now();
         let (width, height) = combination.main_size();
         let mut config = Config::new(&left, &right);
         config.theme = combination.theme;
@@ -1105,7 +1173,10 @@ pub fn sweep(context: &mut Context, combinations: &[Combination]) -> Result<usiz
         config.height = height;
         config.settings = Some(seeded_commands(&left));
         let mut app = App::start(config);
+        let started = began.elapsed();
         gate::scale_main(&mut app, (width, height), combination.scale);
+        let scaled = began.elapsed();
+        gate::take_profile();
         let sweep = Sweep {
             combination: *combination,
             prefix: combination.prefix(),
@@ -1117,7 +1188,26 @@ pub fn sweep(context: &mut Context, combinations: &[Combination]) -> Result<usiz
         sweep.capture(&mut app, context, &Host::Main, "main", &caption);
         main_states(&mut app, context, &sweep);
         dialogs(&mut app, context, &sweep, &locked);
+        let swept = began.elapsed();
         app.shutdown()?;
+        if gate::profiling() {
+            let total = began.elapsed();
+            let captures = gate::take_profile();
+            let surfaces = swept.saturating_sub(scaled);
+            context.note(format!(
+                "profile {}: total {} ms = App start {} ms + size and scale {} ms + surfaces {} \
+                 ms + shutdown {} ms; surfaces = {} captures ({}) + opening and closing them {} ms",
+                sweep.prefix,
+                total.as_millis(),
+                started.as_millis(),
+                scaled.saturating_sub(started).as_millis(),
+                surfaces.as_millis(),
+                total.saturating_sub(swept).as_millis(),
+                captures.captures,
+                captures.describe(),
+                surfaces.saturating_sub(captures.total()).as_millis(),
+            ));
+        }
         reviewed += 1;
     }
     Ok(reviewed)
@@ -1154,14 +1244,21 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
 pub fn full(context: &mut Context) -> Result<(), String> {
     if !full_requested(context) {
         return Err(
-            "SKIP: the full matrix runs with --all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full"
+            "SKIP: the full matrix runs with --all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full \
+             (full:K/N for shard K of N)"
                 .to_owned(),
         );
     }
-    let matrix = full_matrix();
+    let (matrix, part) = full_part()?;
     let reviewed = sweep(context, &matrix)?;
     context.note(format!(
-        "{reviewed} combinations of the full matrix, {} screenshots",
+        "{reviewed} combinations of the full matrix's {} ({part}: {}), {} screenshots",
+        full_matrix().len(),
+        matrix
+            .iter()
+            .map(Combination::prefix)
+            .collect::<Vec<_>>()
+            .join(", "),
         context.outcome.shots.len()
     ));
     gate::verdict(context, "ui_matrix_full")
@@ -1182,7 +1279,7 @@ pub fn full_scenario() -> Scenario {
     Scenario {
         name: "ui_matrix_full",
         area: "ui",
-        summary: "Polish gate over the full matrix (--all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full): every theme and density, every size class and scale factor of the base themes.",
+        summary: "Polish gate over the full matrix (--all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full, full:K/N for shard K of N): every theme and density, every size class and scale factor of the base themes.",
         run: full,
         timeout: Duration::from_secs(300 * 60),
     }
