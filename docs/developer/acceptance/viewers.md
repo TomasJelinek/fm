@@ -96,6 +96,14 @@ runs (smoke scale, debug test builds, software rendering):
   `20261122-182535` (`viewers_scroll`) and `20261122-185939` (`viewers_files`, `viewers_presentation`,
   `viewers_selection`, `viewers_combinations`: the same results as before), Linux run `20261122-185841`
   (`viewers_scroll`).
+- On main 200589ca (with link following, 821957a1, and the acceptance seam's frames for resumed
+  glides, bc78af01), a Windows test build with these scenarios and the release packages of main
+  05710878 with the Markdown viewer plugin rebuilt from main ad91634e, the same plugin as at
+  200589ca (before 821957a1 only web, mail and fragment targets were links there): runs
+  `20261122-212918` (`viewers_controls` with the links section) and `20261122-212204` (red: the same
+  scenario with each new links check broken by a wrong expected value or outcome, each
+  seen failing with its own message). `viewers_scroll` was not run again on this commit;
+  the final run at the release commit covers it.
 
 Settled since then:
 
@@ -177,6 +185,17 @@ Settled since then:
 | C22 | Space and Backspace show the next and previous file; Alt+Right and Alt+Left too; wrapping at the ends | `viewers_controls` › next and previous file | PASS (Windows `20261122-135339`, Linux `20261122-110817`), Alt+Right/Alt+Left and the wrap from the first file to the last included |
 | C30 | Space and Backspace load the file they open as it is at that moment: a file changed after the viewer opened shows its new content | `viewers_controls` › Space and Backspace load a file changed after the viewer opened | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | C31 | A folder whose order exceeds 8 MiB of paths (long names, 1.5 times the budget): from the first file Backspace shows the last file of the window the viewer keeps around it, not the folder's last file; from the last file Space shows the window's first file (README: navigation cycles within that window) | `viewers_controls` › Space and Backspace in a folder over 8 MiB of paths | PASS (Windows `20261122-135339`, Linux `20261122-110817`): 42,225 files with 120-character names, 12.0 MiB of order; the window from either end holds 28,149 files |
+| C32 | Links in a Markdown document by keyboard: Tab focuses the first link in view, then each next one, with a focus ring around it and its target on the status line ("Link to https://example.com/manual", "Link to mailto:help@example.com?subject=Hello" without its `attach` field, "Link to #the-end in this document", a local path resolved against the document's folder, a refused link's target with the reason); Shift+Tab goes back, and from the first link off the links, with no ring left | `viewers_controls` › links: Tab and Shift+Tab through the links | PASS (Windows `20261122-212918`) |
+| C33 | Enter follows the focused web link to the presenter's URL opening (`Command::OpenUrl`), which the harness's Engine refuses here, having no desktop service: the status line says "Could not open https://example.com/manual: …" and nothing is launched, so no browser starts. The desktop stand-in, which records the address (`Launch::OpenUrl`, checked by `harness_checks`), cannot be combined with the plugin packages yet: the panels then start without a folder | `viewers_controls` › links: Enter follows the focused web link | PASS (Windows `20261122-212918`) |
+| C34 | The pointer over a link is a pointer (`link-hover`) and the status line says where the link leads; beside the link both are gone | `viewers_controls` › links: the pointer over a link | PASS (Windows `20261122-212918`) |
+| C35 | A drag over a link's text selects it (Ctrl+C copies a part of "manual") and follows nothing: no launch, and the status line says no link was followed | `viewers_controls` › links: a drag over a link selects | PASS (Windows `20261122-212918`) |
+| C36 | A click on a mail link with an `attach` field: the address handed on has no such field ("Could not open mailto:help@example.com?subject=Hello: …", refused here as in C33), and nothing is launched | `viewers_controls` › links: a click on a mail link | PASS (Windows `20261122-212918`) |
+| C37 | Refused links, clicked, each with its reason on the status line and nothing launched: an `.invalid` host ("This link points to an address that nothing can reach, so it is not followed."), `javascript:` ("Links to javascript: addresses are not followed.") and a file URL naming another computer ("Links to files on other computers are not followed.") | `viewers_controls` › links: link 3, 8 and 9 is refused | PASS (Windows `20261122-212918`) |
+| C38 | A click on `#the-end` shows its heading about 290 KB further in the same document, beyond the first page the viewer loads, in the same window; Ctrl+Home brings the links back | `viewers_controls` › links: #the-end beyond the loaded page | FAIL on Windows (`20261122-212918`): after the click the status line says "Cannot look for #the-end: Invalid or oversized viewer request" and the view stays at the top (Markdown plugin rebuilt from ad91634e, the other packages of 05710878; finding VIEW-LINK-SCAN below) |
+| C39 | A link to a folder opens it in the active panel ("Opened … in the active panel.") | `viewers_controls` › links: a folder opens in the active panel | PASS (Windows `20261122-212918`) |
+| C40 | A link to a program (`tool.exe`) shows its folder in the active panel with the cursor on it ("No viewer shows …; it is shown in the active panel."); nothing is run or launched | `viewers_controls` › links: a program is shown in the panel, never run | FAIL on Windows (`20261122-212918`): the click opens `tool.exe` in the same viewer window as text ("not a program", "Bytes 0–14 / 14"); the panel stays in the folder before and nothing is launched (finding VIEW-LINK-EXE below) |
+| C41 | A relative link to another Markdown file opens it in the same window; Alt+Shift+Left and Alt+Shift+Right, and the mouse's Back and Forward buttons, go back to the first document and forward again | `viewers_controls` › links: a relative link and the link history | Pending: not reached in `20261122-212918` (C40 left `tool.exe` in the window, so the relative link was not where Tab had found it); red seen in `20261122-212204` only as that same miss |
+| C42 | Links in the HTML viewer, whose browser hands a followed link to the same policy (web viewer API 0.3.0 with `MIDNIGHT_WEB_VIEWER_LINKS=host-v1`, which the host sets): the pointer over a web link shows "Link to https://example.com/page", a click on the web and the mail link reaches the same URL opening (refused here as in C33, the mail address without its `attach` field), a click on a fragment link scrolls the page to its block; nothing is launched | `viewers_controls` › links: the HTML viewer | Pending the final run at the release commit: in `20261122-212918` not reached (the panel was left in `links/sub` by C40), and the installed HTML viewer of main 05710878 is built with web viewer API 0.2.0, whose browser sends no link events. SKIP on Linux where the browser cannot start |
 | C23 | Space and Backspace in the HTML viewer (Chromium arbitrates the physical keys) | none | SKIP: Chromium arbitrates the physical keys through native window events, which this harness cannot deliver |
 | C24 | Escape closes the viewer | every viewer scenario (`Viewing::close`) | PASS (every viewer scenario of these runs) |
 | C25 | The window's own close button: the platform's close request (`CloseRequested`) closes the viewer and the comparator | `viewers_controls` › next and previous file (the plain-text viewer closed so); `viewers_compare` › same text in two encodings | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
@@ -204,7 +223,7 @@ Settled since then:
 | R4 | The horizontal scrollbar of a 200,000-character line | `viewers_scroll` › horizontal scrollbar | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
 | R5 | A Slint pixel delta (the harness's synthetic wheel event, 60 px) moves the content exactly its pixels in every viewer kind: one down 60 px, one up −60 px, a burst of five 300 px, the same in every viewer. This is not the product's notch (R11) | `viewers_scroll` › a Slint pixel delta moves exactly its pixels, the same travel in every viewer | PASS (Windows `20261122-104409`, `20261122-182535`; Linux `20261122-110817`, `20261122-185841`): 60 px down, −60 px up and 300 px for five in all nine viewer kinds with a scrollbar (the HTML viewer: R6) |
 | R6 | The HTML viewer and Slint's own wheel event | `viewers_scroll` › HTML Slint pixel delta | SKIP: viewer.slint drops Slint's own wheel event in the HTML mode, so a Slint pixel delta moves the page 0 px; the HTML viewer's native notch is checked in R11 |
-| R11 | One native wheel notch (through the seam) at three lines per notch moves 100 px, one up −100 px, five 500 px, in every viewer kind, HTML included; on the large log six lines per notch move 200 px and one screen per notch a screen; a notch glides (three or more position changes) and with reduced motion moves in one step | `viewers_scroll` › one wheel notch moves 100 px; the system's wheel setting and reduced motion | FAIL: VIEW-NOTCH-UP (below), on both systems and still on main d96dec97: a notch up right after a notch down rests after 15–42 px and does not move on within 5 s (Windows `20261122-182535`: TSV −15, CSV as plain text −15 px; Linux `20261122-185841`: CSV −42, TSV −29, CSV as plain text −16 px; earlier runs also the large log and Rust source). Every other kind 100, −100 and 500 px, the HTML viewer included on Windows, whose glide fell short in two of five Windows runs (87, −72, 364 px in `20261122-065626`; 53, −53, 434 px in `20261122-161039`). The large log on both systems: six lines per notch 200 px, one screen per notch 748 px, a notch glides over 13 positions, and with reduced motion moves in one step |
+| R11 | One native wheel notch (through the seam) at three lines per notch moves 100 px, one up −100 px, five 500 px, in every viewer kind, HTML included; on the large log six lines per notch move 200 px and one screen per notch a screen; a notch glides (three or more position changes) and with reduced motion moves in one step | `viewers_scroll` › one wheel notch moves 100 px; the system's wheel setting and reduced motion | FAIL in the runs on main 5ccd0eb7 and d96dec97 (Windows `20261122-182535`: TSV −15, CSV as plain text −15 px; Linux `20261122-185841`: CSV −42, TSV −29, CSV as plain text −16 px), because of VIEW-NOTCH-UP (below), a defect of the acceptance seam fixed on main ad91634e; not run again here (pending the final run at the release commit). Every other kind 100, −100 and 500 px, the HTML viewer included on Windows, whose glide fell short in two of five Windows runs (87, −72, 364 px in `20261122-065626`; 53, −53, 434 px in `20261122-161039`); a short HTML glide the right way is flagged for review (backlog VIEW-09), not failed. The large log on both systems: six lines per notch 200 px, one screen per notch 748 px, a notch glides over 13 positions, and with reduced motion moves in one step |
 | R14 | Source highlighting while a person scrolls: in a C++ file of 150 rows (about 6 KB) twelve wheel notches down and up, eight PageDowns and PageUps and a scrollbar drag never show "Preparing source highlighting…" in any frame's status line, and after each gesture the rows show their keyword, string and comment tints; in one of 56,000 rows (about 2.2 MB) the rows shown after Ctrl+End are coloured within a second and the notice, if shown, is gone once they are | `viewers_scroll` › source highlighting | The small file PASS on main d96dec97 (Windows `20261122-182535`, Linux `20261122-185841`): no "Preparing source highlighting…" in any frame's status line, every tint after each gesture. The large file PASS on Linux (coloured 915 ms after Ctrl+End, no notice) and FAIL on Windows (coloured after 1,975 ms; no notice); both with plugin packages that predate the Source plugin's part of the fix. Red, the product before the fix (main 5ccd0eb7, runs `20261122-115842`, `20261122-161039`): the small file showed "Preparing source highlighting…" while scrolling, and the large file's rows were coloured after 1,808 and 2,080 ms |
 | R12 | A PDF shows new frames while its scrollbar is dragged (at least two distinct frames that differ from the page before the drag, over 20 moves 33 ms apart), not only at the release | `viewers_scroll` › PDF, new frames while the scrollbar is dragged | PASS (Windows `20261122-104409`, `20261122-182535`; Linux `20261122-110817`, `20261122-185841`): 20 distinct frames during 20 moves 33 ms apart |
 | R13 | PDF text is sharp at a typed 400 %: three quarters of its edges between the white page and solid ink are at most 2 px wide (rendered at the zoom, not an enlarged raster) | `viewers_scroll` › PDF, sharp text at a typed 400 % zoom | PASS (Windows `20261122-104409`, `20261122-182535`; Linux `20261122-110817`, `20261122-185841`): 19,486 text edges, three quarters at most 1 px wide |
@@ -213,18 +232,22 @@ Settled since then:
 | R9 | Large log: Ctrl+End to the last line, Ctrl+Home, PageDown, the wheel down and back to the first view (followed by the shown position and the pixels: the content's accessible text is the whole prepared page) | `viewers_controls` › keyboard and wheel scrolling | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | R10 | Kinetic (touchpad) coasting | none | SKIP: not written yet; the acceptance seam's touchpad reports (`NativeWheel::Pixels` with their phases) can drive it now |
 
-VIEW-NOTCH-UP (Windows and Linux, 22 November, main 5ccd0eb7 and d96dec97): in a text viewer at rest
-after a wheel notch down, one notch up moves 15–42 px instead of 100 px and stops there;
-five seconds later the rest has not come. Reproduction: open a 1,500-row CSV (also TSV,
-the same CSV with Alt+F3, a Rust source or a 1 MiB log), drag the scrollbar to 40 %, let
-it rest, turn the wheel one notch down, wait a second, turn it one notch up. Seen: CSV −29
-and −15 px, TSV −42 px, CSV as plain text −15 px (three runs), large log −30 px, Rust
-source −15 px; five notches down right after move 500 px. Candidates in the code, not
-traced: `raster_camera.rs` `tick` drops an axis's remaining distance when the target,
-clamped to the camera's `info`, equals the origin; and the wheel motion delivers only
-pixels the prepared strips cover. The seam keeps delivering frames while the viewer's
-raster motion runs (`acceptance_seams::moving`), as winit would; the Viewer agent should
-confirm with a native wheel.
+VIEW-NOTCH-UP (Windows and Linux, 22 November, main 5ccd0eb7 and d96dec97) was a defect of the
+acceptance seam, not of the viewer. After a scrollbar position the first notch up handed the text
+camera over to a corrected surface (the position's page started inside a row, and the page read
+above it showed that row whole), and the window kept the glide's remaining distance until its next
+frame. The seam ended its frame pump 250 ms after its last input once nothing moved, also during
+that wait, so the rest of the glide never got a frame: one notch up after a notch down rested after
+15–42 px (CSV −29 and −15 px, TSV −42 px, CSV as plain text −15 px, the 1 MiB log −30 px, Rust
+source −15 px). With winit's frames the application kept the whole travel. Main ad91634e has the
+fix: the seam sends a frame after each of its inputs and whenever the window moves, as winit does
+(bc78af01), and a scrollbar position's text page starts at a row, so that notch needs no corrected
+surface (bcd61454). `viewers_scroll` was not run again for this record; the final run at the
+release commit covers R11.
+
+VIEW-LINK-SCAN (Windows, 22 November, main 200589ca, Markdown plugin of ad91634e): in a 288 KB Markdown file (`links.md` of `viewers_controls`: nine links, 4,000 filler paragraphs, then `## The end`) a click on `[the end](#the-end)` shows "Cannot look for #the-end: Invalid or oversized viewer request" and does not scroll; the heading lies beyond the first page (bytes 0–12233).
+
+VIEW-LINK-EXE (same run): a click on `[the program](tool.exe)`, a 14-byte text file next to the document, opens it in the same viewer window as text instead of showing it in the active panel with the cursor on it, as README "Links" describes for a file no viewer claims by its name; nothing is run or launched.
 
 ## File comparison (Ctrl+Shift+C)
 
@@ -403,6 +426,10 @@ delegated systemd user scope.
 - The AppArmor Install… offer (O20: reported `SKIP` with the machine's reason), the Make
   File List viewer opened from Ctrl+M (P's area, hooked here), a viewer for every file
   reached from a Find feed of archive members.
+- Alt+Left/Right cycling files after link history; the links section on Linux (no Linux
+  packages with the Markdown plugin's link targets yet); the address a followed web or mail
+  link hands to the desktop service (`Launch::OpenUrl`) in a viewer scenario: the desktop
+  stand-in (`Config::desktop`) with the plugin packages starts without a folder in the panels.
 - The comparator's own wheel notch (F15): the acceptance seam reaches viewer windows only;
   it is reported `SKIP` with that reason.
 - The SVG decoder's note naming what it left out ("Not shown: linked images, scripts.")

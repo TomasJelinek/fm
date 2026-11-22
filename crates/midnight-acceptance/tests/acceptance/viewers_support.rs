@@ -31,7 +31,7 @@ use midnight_compare_ui::{ComparatorWindow, ComparatorWindows};
 use midnight_core::{
     Cancellation, Command, Event, FONT_SIZE_MAX, FONT_SIZE_MIN, FsError, NumberLocale, PaneId,
     PathPickerService, PreferenceTheme, ShortcutChord, StorageKind, StorageService,
-    TransferService, UiDensity, ViewerAppearance, ViewerLaunch,
+    TransferService, UiDensity, ViewerAppearance, ViewerLaunch, ViewerLinkRequest,
 };
 use midnight_engine::{Engine, EngineLifetime};
 use midnight_native_filesystem_host::{InstalledProvider, SharedInstalledProvider};
@@ -358,6 +358,35 @@ impl Plugins {
             settings
                 .borrow_mut()
                 .save_viewer_preferences(change, settings_send.as_ref());
+        }));
+        // As in production (`viewers::install_link_listener`): a web or mail link followed
+        // in a viewer goes to the desktop service (recorded by `Config::desktop`'s
+        // stand-in, never opened), a folder opens and any other file is shown in the
+        // active panel; the viewer's status line hears how it went.
+        let (links, link_send, link_window) = (presenter.clone(), send.clone(), window.as_weak());
+        viewers.set_link_listener(Rc::new(move |request, reply| {
+            let Some(main) = link_window.upgrade() else {
+                return;
+            };
+            let (path, folder) = match request {
+                ViewerLinkRequest::OpenExternal(url) => {
+                    links.borrow_mut().open_external_url(
+                        url,
+                        link_send.as_ref(),
+                        Box::new(move |outcome: Result<String, String>| {
+                            reply(outcome.unwrap_or_else(|reason| reason));
+                        }),
+                    );
+                    return;
+                }
+                ViewerLinkRequest::OpenFolder(path) => (path, true),
+                ViewerLinkRequest::Reveal(path) => (path, false),
+            };
+            let shown = links
+                .borrow_mut()
+                .show_link_target(&path, folder, link_send.as_ref());
+            midnight_ui::refresh(&main, &links.borrow());
+            reply(shown);
         }));
         let opened: Rc<RefCell<Vec<Opened>>> = Rc::default();
         let copied: Rc<RefCell<Vec<String>>> = Rc::default();
