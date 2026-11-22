@@ -2,7 +2,7 @@
 
 The ordinary panel offers an unknown-folder disclosure beside directories after
 an accepted native or archive listing. The first explicit disclosure requests a
-backend tree session. Until then the panel keeps its existing flat behavior and
+backend tree session. Until then the panel keeps its flat behavior and
 operation scopes. Network discovery rows do not offer branches; an explicitly
 activated native share follows the native listing path.
 
@@ -20,13 +20,14 @@ Arc before branch, navigation, selection, or viewport requests.
 Each emitted projection waits for the UI to acknowledge its exact Arc before a
 new unsolicited publication replaces it. At most one newer publication is retained
 and coalesced on the model worker. Each pane's model worker runs for the session on
-one of the engine's resident worker threads (`midnight-engine-<n>`, a fixed pool that
-starts with the engine), outside Tokio's bounded blocking pool; if that pool refuses
+one of the engine's resident worker threads (`midnight-engine-<n>`, a fixed pool of 13
+threads that starts with the engine: `resident::Owner::start` in `engine_lifetime.rs`),
+outside Tokio's bounded blocking pool; if that pool refuses
 the worker, the pane's tree lane is closed instead. Branch listings still run as
 separate blocking jobs, so collapse and navigation proceed while an enumeration is
 blocked. A completed provider task releases its mutation permit even while
-publication delivery waits. The mailbox retains a weak receipt
-for the acknowledged view: Branch and Navigate gestures may still name that view
+publication delivery waits. The mailbox keeps a weak reference
+(`Weak<TreeProjection>`, `tree_controller/mailbox.rs`) to the acknowledged view: Branch and Navigate gestures may still name that view
 while a newer publication is travelling to the UI. The actor revalidates that the
 same occurrence remains visible and unchanged; removed, replaced, hidden or
 foreign occurrences are refused. Selection and filesystem-operation captures
@@ -38,7 +39,7 @@ publications trigger fresh observations. Replaced publications and their owners
 are retired on the model worker, never by a UI callback. These rules prevent an
 unrelated probe completion from being reported as command-queue saturation.
 
-The eight-slot command mailbox coalesces viewport observations to the latest one
+The eight-slot command mailbox (`tree_controller/mailbox.rs`) coalesces viewport observations to the latest one
 in the same pane/navigation/session. An explicit user intent may evict that
 speculative observation when the mailbox is full; it never evicts another user
 intent. Optional viewport pressure is silent, while genuinely full explicit-intent
@@ -49,7 +50,7 @@ filesystem authorization checks are relaxed.
 `Rows` reads the immutable projection directly. It does not construct a second
 complete UI model. Occurrence/session/revision tokens bind disclosure callbacks;
 root and descendant entry IDs never become interchangeable. Details, Brief and
-Thumbnails use the existing shared disclosure widget. Loading, unknown, collapsed,
+Thumbnails use the shared disclosure widget. Loading, unknown, collapsed,
 expanded, empty and failure states remain distinct. Structural publications reset
 delegates and cancel rectangle gestures. Collapsing a focused descendant moves
 the caret to its surviving visible ancestor. Loading updates preserve the panel
@@ -63,7 +64,7 @@ system link overlay remains visible. Thumbnail artwork retains its centered
 layout.
 
 Tree selection uses separate backend snapshots and at most 32 small pending
-intents for immediate visible feedback. Ctrl/Shift input, Insert/Space toggles,
+intents for immediate visible feedback (`selection_preview::PREVIEW_CAPACITY`). Ctrl/Shift input, Insert/Space toggles,
 bulk selection and rectangles submit occurrence-based requests. Context rows
 cannot be marked. Loading publications replay outstanding intents after Commit;
 a structural change retains only still-visible exact toggles, because replaying
@@ -73,20 +74,22 @@ selection releases its preview without reusing the request revision.
 Ctrl+A replaces selection with selectable top-level files (`depth == 0`);
 Ctrl+Shift+A also includes top-level folders. Both clear nested marks. Ctrl+D
 clears every mark, including folders, directory links and expanded descendants.
-Ctrl+Shift+D has no default assignment. The shared row policy drives both
+**Deselect files only** (`selection.clear-files`) has no default key, and Ctrl+Shift+D
+is unassigned. The shared row policy drives both
 backend results and immediate preview, so child rows never flash selected while
 waiting for acknowledgement. Filters still exclude hidden/context-only rows;
 explicit click/range selection of descendants remains available.
 
 Enter and unmodified double-click submit typed tree navigation for directories.
-Returned native and archive targets use the existing navigation path after
+Returned native and archive targets use the ordinary navigation path after
 checking the request, pane, session, view revision and next navigation generation.
 Regular files from the original root retain their explicit host/archive-open
 behavior by resolving `original_root_entry` against the exact retained root
 index and entries. Descendant IDs, captions and display paths never authorize
-that shortcut. Bounded visible-row hints reuse the existing viewport sampling
-and never include more than the backend's 256-row probe budget.
-Those hints are scheduled in batches within the eight-request branch queue.
+that shortcut. Bounded visible-row hints reuse the panel's viewport sampling
+and never include more than the backend's 256-row probe budget
+(`TreeViewport::MAX_ROWS`). Those hints are scheduled in batches within the
+eight-request branch queue (`QUEUE_CAPACITY` in `tree_actor.rs`).
 Showing more than eight folders is not a resource error. Completed publications
 request the visible range again, so deferred folders are checked progressively;
 an explicit expansion takes priority over queued background probes. A probe
@@ -96,7 +99,8 @@ rows and issues no child references, so a folder with more subfolders than a
 listing may hold still shows its disclosure; that limit and a child that repeats
 an ancestor are reported when the folder is listed (expanded or refreshed). A
 probe whose row was meanwhile expanded, refreshed or listed by a recursive walk is
-dropped. Branch work that cannot start, for example at the 64-level depth limit, never
+dropped. Branch work that cannot start, for example at the 64-level depth limit
+(`TreeProjection::MAX_DEPTH`), never
 ends the session: a probe is skipped silently and an explicit expansion or
 refresh reports a row diagnostic. An explicit expansion whose display projection
 would exceed the 16 MiB budget restores that branch with an error and keeps the
@@ -104,7 +108,7 @@ published rows.
 
 ## Prefix search and tree options
 
-Persistent filter and sort commands now route through the production tree worker.
+Persistent filter and sort commands run on the pane's tree worker.
 `presenter/tree_options.rs` correlates each request with its original projection,
 selection and request identity. The presenter commits sort/filter preferences only
 after accepting the matching publication, and preserves the last valid result and
@@ -112,7 +116,7 @@ retryable filter draft on rejection. Clear disables the filter without discardin
 its expression. Masks, Regex and Expression retain unselectable ancestor context;
 sort order applies independently to sibling groups without reopening the root.
 
-Typing in an adopted native/archive tree now uses the panel's literal prefix
+Typing in an adopted native/archive tree uses the panel's literal prefix
 search and optional quick-search filter. Matching examines loaded visible tree
 rows on the backend; typing does not enumerate unopened branches or extract
 archive content. The shared Unicode matcher folds valid original native names
@@ -138,23 +142,22 @@ and Cancel. A typed transient rejection retries on a later input pump; outer
 command-channel pressure also preserves the latest desired query. Correlated
 receipts and exact projection/selection identities prevent an older query or
 branch completion from focusing its obsolete first match. Query admission is
-limited to 4,096 UTF-8 bytes; invalid requests preserve the accepted view.
+limited to 4,096 UTF-8 bytes (`MAX_QUERY_BYTES` in `tree_protocol.rs`); invalid requests
+preserve the accepted view.
 
-Extension sorting now uses a shared borrowed filename accessor for key preparation
+Extension sorting uses a shared borrowed filename accessor for key preparation
 and comparison. Native entries use their actual path basename; archives use their
 raw UTF-8 member basename without inventing a native path from a caption. Locale
-extension/name keys, directories-first ordering and deterministic ties remain;
+extension/name keys, directories-first ordering and deterministic ties apply;
 missing or undecodable archive extensions stay last in either direction.
-
-The [10 November prefix-search report](../verification/2026-11-10-tree-prefix-search.md)
-records the current verification and deployment scope separately from the earlier
-filter/sort evidence below.
+Evidence: [prefix-search record](../verification/2026-11-10-tree-prefix-search.md).
 
 ## Subfolder presence
 
 Flat-panel subfolder hints are independent of tree adoption. At most 256 viewport
-directory IDs are probed against the exact completed listing, with one coalescing
-worker per pane and the existing listing capacity. A probe shares the I/O budget
+directory IDs (`FolderPresenceRequest::MAX_VISIBLE`) are probed against the exact
+completed listing, with one coalescing worker per pane and the panel's listing capacity
+(`folder_presence.rs` in `midnight-engine`). A probe shares the I/O budget
 with running scans only when its row is proven to be on a confirmed local SSD (each
 lane classifies a listing and each other device once); other rows are probed
 exclusively. Native enumeration stops at the first immediate directory or
@@ -163,7 +166,7 @@ targets. Archive probes retain the captured member and mount identity.
 Empty/has-folder hints are held in a bounded display cache. Selection, flat action
 authority and navigation stay unchanged until the user's ordinary disclosure
 click requests exact tree adoption. Navigation, refresh and viewport replacement
-cancel obsolete probes. Failed probes preserve provider details for the existing
+cancel obsolete probes. Failed probes preserve provider details for the row's
 warning tooltip and modal listing-error notice, and never become an empty-folder
 result.
 
@@ -173,34 +176,15 @@ stop at the first folder without retaining file rows, issuing node tokens or
 enriching file metadata. Repeated file records cannot change the answer; actual
 expansion retains the full provider identity and duplicate-node validation.
 File-only directories have no arbitrary record-count cutoff. Cancellation and
-the worker/I/O limits bound concurrent work; archive probes retain their existing
+the worker/I/O limits bound concurrent work; archive probes keep their
 captured-mount validation and resource policy.
 
-Native flat-panel admission now accepts `DirectoryLink` alongside ordinary
-directories for the exact captured native root. Previously, one directory link
-could discard the entire viewport batch. Archive batches still reject links and
-files; empty or unavailable native links retain individual hints without losing
-ordinary siblings' results. The admission regressions first ran **6 passed /
-2 failed / 0 ignored**. The corrected presence gate passes **12/0/0** (admission
-8 + provider 4), with compile 0 and zero source drift. The
-[current presence and Find gate](../ACTIVE_WORK.md#native-link-presence-and-find-gate)
-records the newer receipts. The corrected Windows debug build and registered
-private entrypoint pass engine/native UI startup. This admission correction does
-not add recursive presence probing or establish protected CSC access.
-
-<a id="planned-retry-diagnostics-and-recursive-expansion"></a>
+For a native root, probe admission accepts `DirectoryLink` rows alongside ordinary
+directories, so one directory link cannot discard the viewport batch. Archive batches
+still reject links and files; empty or unavailable native links keep individual hints
+without losing ordinary siblings' results. Presence probes do not recurse.
 
 ## Retry diagnostics and recursive expansion
-
-CSC warning retention was implemented in the committed/pushed UI checkpoint
-`20f507c`, with **17 passed / 0 failed** targeted presenter tests. The separate
-Engine authorization tests at `3826298` passed **5 / 0**. The
-[authorization verification note](../verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression)
-records both source/test boundaries: mocked authorization, event retention and
-helper denial/cancellation/transport. Successful native CSC access through Windows
-UAC remains unproved. The [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
-records separate application build/startup qualification; source correctness and
-startup do not establish access to protected CSC.
 
 A denied row, including `C:\Windows\CSC`, retains its warning throughout an
 explicit elevation retry until the matching current listing actually succeeds.
@@ -210,21 +194,19 @@ another denied result preserves the original row's diagnostic. Retention is
 display-only and bound to the exact committed navigation, entries/index and raw
 row identity. Replacement rows cannot inherit it. Request generations remain
 monotonic and action/session gates stay intact; late presence/tree events cannot
-clear or mark another occurrence.
+clear or mark another occurrence. Evidence:
+[authorization record](../verification/2026-11-11-directory-authorization.md#12-november-csc-warning-retention-regression).
 
-**Ctrl+click on a folder expander** routes to
-`ExpandRecursive`, including directory symlink/junction expanders within the
-existing model limits. It uses one asynchronous walk per pane through the existing
-actor's depth-first continuation. The UI captures the modifier and submits the
-typed intent; traversal stays on Backend workers. Ordinary row Ctrl+click retains
-selection semantics. Recursive expansion is implemented and tested on Windows
-with software UI coverage. The integrated gate passes **69 tree/CSC UI tests**:
-62 presenter cases (tree 44, folder presence 9, elevation 9), five disclosure
-cases and two panel cases. Compilation exits 0 with zero source drift; these
-groups overlap the earlier CSC tests and are not added to them. See the
-[recursive verification note](../verification/2026-11-12-recursive-tree.md).
+**Ctrl+click on a folder expander** sends `TreeBranchAction::ExpandRecursive`
+(`presenter/tree.rs`), also for directory symlink and junction expanders, within the
+projection's limits. Each pane runs at most one asynchronous walk, a depth-first
+continuation of the pane's tree actor (`tree_recursive.rs`). The UI captures the
+modifier and submits the typed intent; the traversal runs on backend workers. Ctrl+click
+elsewhere on a row keeps its selection meaning. Evidence:
+[recursive tree record](../verification/2026-11-12-recursive-tree.md).
 
-The recursive worker batches at most **128 returned results** or **50 ms**, with elapsed
+The recursive worker batches at most 128 returned results or 50 ms
+(`MAX_BATCH_RESULTS`, `MAX_BATCH_TIME`), with elapsed
 time checked only after an actual provider callback returns. These are scheduling
 limits, not a callback timeout or measured latency guarantee. Each batch creates
 one checkpoint/projection and waits for its exact Commit before further recursive
@@ -245,8 +227,8 @@ identity grants no operation authority. Cycles, denied children and other errors
 remain local to the affected branch. Known-empty directory links have no synthetic
 `+` expander.
 
-Allocation, work/publication and stale-occurrence guards remain unchanged.
-A budget stop keeps what the walk listed within the budgets, publishes it with
+The walk is bound by the same allocation, work/publication and stale-occurrence
+guards as a single expansion. A budget stop keeps what the walk listed within the budgets, publishes it with
 the failure on the folder it stopped at, and reports the incomplete expansion
 without a retry spin; a projection overflow still restores the last published
 tree. The panel shows rows down to tree depth 64 (the shown folder's own
@@ -255,33 +237,11 @@ entries are depth 0): a depth-64 folder with folders of its own fails on its row
 walk expands the other folders. When the walk ends early, an **Expansion
 incomplete** notice says why and shows the folder where it stopped (for the
 depth limit, the first folder it left out and how many others); like a
-navigation failure, it replaces the pane's error line for that occurrence.
-Paging beyond the retained model is
-an explicit follow-up. Architect owns the API contract, Backend owns traversal/
-cycles, and UI owns modifier/state routing. Backend's broad first run retained one
-legacy fixture failure; its refined Windows junction/Delete subset passes 11/0
-with unchanged production. Those exact scopes and the separate thumbnail RED
-are recorded in the verification note. The current registered private Windows
-runtime passes engine smoke and native UI startup; its exact EXE identity and
-startup-only qualification are recorded in the
-[current checkpoint](../ACTIVE_WORK.md#current-checkpoint). Linux now has separate
-WSL/tmpfs receipts for the original `1714d99` fixture and the updated frozen
-link-maintenance fixture, each **1 passed / 0 failed / 0 ignored** under its own
-source scope. The corrected helper's separate clipboard/copy/move gate passes
-**13/0/0** using software UI and real filesystem fixtures. These later results do
-not establish Linux desktop qualification or broaden the earlier test scopes.
-
-The historical [cap16 tree candidate](../ACTIVE_WORK.md#tree-scaling-candidate-gate)
-passed **95 unique functional cases** and Clippy with zero drift, while its debug
-opt-level 0 synthetic-provider aggregate **failed**. Wide 10k cases took
-**50.83 s** (`K=0`) and **50.01 s** (`K=1`); the depth-32 broom was censored at
-**60 s**, with **9,936 callbacks / 9,920 published entries**. The initial stale
-compiler artifact was rejected before timing. The later integrated
-[cap128 increment](../ACTIVE_WORK.md#recursive-tree-cap128-gate)
-(`2b28cc7` / `02b2f2f`) passed its single debug synthetic aggregate; the current
-`516fc158` runtime includes that source with startup-only qualification.
-These measurements include no native filesystem I/O or UI paint and establish
-no native performance or UI input-to-paint qualification.
+navigation failure, it replaces the pane's error line for that occurrence. The other
+stop reasons are an exhausted tree resource budget, a loaded branch that changed
+("Restart expansion to continue") and a branch that could not be admitted
+(`tree_recursive.rs`). Known limit: the walk does not page beyond the projection's
+bounds (10,000 rows, 16 MiB).
 
 ## Directory sizes
 
@@ -297,7 +257,7 @@ directory before its selection toggle, then advances the visible caret while the
 backend measures that original occurrence. Insert never starts measurement.
 
 The backend retains typed native/archive targets and their provider registrations.
-Native traversal reuses the existing storage-aware batch scanner and shared I/O
+Native traversal reuses the panel's storage-aware batch scanner and shared I/O
 budget. Archive traversal reads metadata with each captured directory's exact
 ancestry; overlapping selected ancestors and descendants keep independent totals.
 It does not extract archive content or fabricate native paths.
@@ -317,13 +277,8 @@ A completed scan with inaccessible entries shows its observed partial total with
 Its yellow warning glyph and clickable details remain beside the size. An inactive
 unfinished or cancelled total also retains its partial marker; neither condition
 alone is a filesystem error. The [size presenter](../../crates/midnight-ui/src/size_presentation.rs)
-and [row rendering](../../crates/midnight-ui/ui/file-entry.slint) implement this
-follow-up in current source. Earlier recorded size-presentation tests passed the
-selected size/model library groups, `size_errors` (2), `panel_warning_details` (4)
-and `tree_folder_sizes` (7); see [current evidence](../ACTIVE_WORK.md#current-checkpoint).
-The latest modal-only gate does not rerun that entire scope. These
-software UI tests do not establish full native/layout qualification. A completed
-scan with warnings is not a complete count of inaccessible contents.
+and [row rendering](../../crates/midnight-ui/ui/file-entry.slint) implement this. A
+completed scan with warnings is not a complete count of inaccessible contents.
 
 Native size scans never follow links met inside the measured folder: file
 links, directory links and junctions appear as skipped counts in the size
@@ -331,29 +286,29 @@ tooltip, without an access-error marker, and their targets are not resolved.
 Only a selected row that is itself a directory link is measured through its
 native final-path target. Stable directory identities and the active ancestry
 set still stop non-link cycles such as bind mounts. Failed resolution of a
-selected link keeps the existing detailed warning report. Providers without
+selected link keeps the detailed warning report. Providers without
 the identity service retain ordinary-directory sizing and report an
 unsupported selected link.
 The cycle-detection state grows with active traversal depth and is released as
-each branch unwinds. It has no arbitrary directory/depth cutoff; the existing
-pending-path memory budget and bounded worker/I/O capacity remain in force.
+each branch unwinds. It has no arbitrary directory/depth cutoff; the pending-path
+memory budget and bounded worker/I/O capacity apply.
 
-Each pane admits one executing job and at most eight waiting captured requests.
-Cancellation retains capacity and provider ownership until the actual calls
-return. Map publications are coalesced at most four times per second and require
+Each pane admits one executing job and at most eight waiting captured requests
+(`MAX_PENDING` in `presenter/tree_sizes.rs`). Cancellation retains capacity and
+provider ownership until the actual calls return. Map publications are coalesced at
+most four times per second (`INTERVAL`, 250 ms, in `tree_sizes.rs`) and require
 acknowledgement. A dedicated acknowledgement mailbox slot avoids losing the final
 result when ordinary commands saturate the queue. Selected-folder totals are
 computed on the backend and accepted only for the exact current selection/view.
 
-The [implementation plan](../superpowers/plans/2026-11-10-tree-folder-sizes.md)
-tracks qualification; production bridge tests are in `tests/tree_folder_sizes.rs`.
+The bridge tests are in `crates/midnight-ui/tests/tree_folder_sizes.rs`.
 
 Native, archive and tree scans attach immutable report handles to partial totals.
 Yellow warning tooltips show a real issue and counts; clicking opens all retained
 paths and reasons in the basic viewer. Red listing diagnostics have a separate
 detail action from Retry/Collapse. Full-error Copy uses the captured backend
-source. See the [diagnostic contract](PANEL_DIAGNOSTICS.md) and
-[qualification](../verification/2026-11-10-panel-warning-details.md).
+source. See the [diagnostic contract](PANEL_DIAGNOSTICS.md) and the
+[warning-details record](../verification/2026-11-10-panel-warning-details.md).
 
 ## Viewers from expanded panels
 
@@ -367,11 +322,11 @@ sort order. Subsequent panel navigation cannot change this viewer's source list.
 
 Native files keep the installed provider's content capture. Archive files retain
 their mount, source version and member/parent IDs, including the relative-resource
-scope used by the HTML viewer. Existing viewer routing, Basic mode, preferences
-and disabled-plugin choices are unchanged. Parent rows, folder descendants,
+scope used by the HTML viewer. Viewer routing, Basic mode, preferences and
+disabled-plugin choices apply as in a flat panel. Parent rows, folder descendants,
 unreadable archive members and pending projections cannot open a file viewer.
 
-Expanded branches currently contain directories only. This integration does not
+Expanded branches contain directories only. This integration does not
 grant content or mutation authority to arbitrary descendant display paths; future
 files inside attached containers need a typed provider capture before admission.
 
@@ -386,7 +341,8 @@ archive member, parent row or filter-only context ancestor.
 The model worker resolves that occurrence through its retained provider context;
 UI captions, display paths and original root IDs never become native paths. A
 bounded captured source retains the registration, request/navigation cancellation
-and one permit from the existing four-slot tree action pool. The presenter checks
+and one permit from the four-slot tree action pool (`CAPTURE_CAPACITY` in
+`tree_controller.rs`). The presenter checks
 the original pane, projection, request and returned occurrence before sending the
 captured launch. Switching the active pane cannot retarget it; source navigation,
 projection replacement or application close cancels pending work. Queue pressure
@@ -402,11 +358,11 @@ shutdown and explicit Escape/dismissal stay silent.
 
 Resolution, native regular-file validation, spawning and final provider disposal
 run on backend workers, including shutdown before an async delivery task starts.
-Existing process/launch limits and literal executable/argv handling remain. Raw
+The ordinary process/launch limits and literal executable/argv handling apply. Raw
 absolute provider paths retain valid internal `..` components; parent navigation
 itself is rejected. An external editor receives a live path, so later filesystem
 replacement and the editor's own modifications are outside a file-manager
-transaction. See the [editor qualification](../verification/2026-11-11-tree-external-editor.md).
+transaction. Evidence: [editor record](../verification/2026-11-11-tree-external-editor.md).
 
 ## Checksums from expanded panels
 
@@ -416,7 +372,7 @@ the focused regular native file is used: a folder must be marked. A flat panel
 also takes a focused folder or, on the parent row, the shown folder
 ([CHECKSUMS.md](CHECKSUMS.md#calculation-contract)).
 The exact originating pane, projection, selection revision and request are checked
-before the existing independent checksum window opens. Pending selection settles
+before the independent checksum window opens. Pending selection settles
 before capture; outer queue refusal retains the original intent. Navigation,
 reprojection or shutdown cancels pending work and late/duplicate receipts cannot
 open another window. Parent/context/link/archive/unsupported rows are excluded.
@@ -429,9 +385,9 @@ through in-flight calls even after cancellation. A selected directory contribute
 its own files; the window's Include subfolders (the algorithm dropdown's last row,
 off in every new window) adds the levels below on the next Calculate, whose
 folders are otherwise left out without rows.
-Focused sidecars still prefill the Verify page without starting it. The existing
-algorithm choices, result formatting, native manifest pickers and verified export
-contract remain in [CHECKSUMS.md](CHECKSUMS.md).
+Focused sidecars still prefill the Verify page without starting it. The algorithm
+choices, result formatting, native manifest pickers and verified export contract are
+in [CHECKSUMS.md](CHECKSUMS.md).
 
 ## Copy from expanded panels
 
@@ -457,7 +413,8 @@ the panel drops the capture silently. It reports other refusals, a busy capture
 pool included, as Copy (or Move) unavailable.
 
 Four live captured batches share an engine-wide permit pool. Opening the draft
-does not reserve a job; confirmation uses the existing 32-job FIFO copy admission.
+does not reserve a job; confirmation uses the 32-job FIFO copy admission (`MAX_JOBS` in
+`copy_operations.rs`).
 Preparation validates duplicate roots, source ancestry and native destination
 ancestry before writes. The ordinary staged copy independently reads back the
 destination under the job's frozen verification policy: Full SHA-256 by default,
@@ -476,10 +433,9 @@ Skipped, failed or canceled roots retain their marks. A completion cannot alter
 another navigation/session or move the caret. Final provider ownership from
 discarded drafts, rejected requests and shutdown is released on backend workers.
 
-The [design](../superpowers/specs/2026-11-10-tree-copy-design.md) and
-[implementation plan](../superpowers/plans/2026-11-10-tree-copy.md) track this
-integration. Engine/Slint bridge tests use actual F5/Return input and verify both
-native and archive nested-directory contents plus independent destination reads.
+See the [design](../superpowers/specs/2026-11-10-tree-copy-design.md). The engine/Slint
+bridge tests (`crates/midnight-ui/tests/tree_copy.rs`) use actual F5/Return input and
+verify native and archive nested-directory contents plus independent destination reads.
 Clipboard and destructive operations have separate authority requirements.
 
 ## Move and transfer reconciliation
@@ -502,9 +458,8 @@ cleanup tickets, including a draft abandoned after failed preparation.
 Every terminal Copy/Move result marks both adopted native tree sessions dirty,
 including failed or canceled transfers. The backend reconciles the hidden root
 and previously loaded native branches, including collapsed cached branches,
-parent-first through one provider lane. The accepted link-maintenance extension
-includes already-loaded provider-resolved native directory links and their loaded
-descendants. It does not discover unopened branches or enumerate foreign/archive
+parent-first through one provider lane. Maintenance also covers already-loaded
+provider-resolved native directory links and their loaded descendants. It does not discover unopened branches or enumerate foreign/archive
 mounts. Surviving occurrence IDs, expansion, marks, filters and sort options remain;
 deleted occurrences disappear.
 Failed parent listings retain known contents, report a diagnostic and suppress
@@ -514,7 +469,7 @@ remain intact; read-only maintenance grants no mutation, ACL or elevation author
 Maintenance waits for preceding selection acknowledgements and holds the mutation
 gate through each list/apply step, releasing it before publication backpressure.
 Queue refusal remains pending; a transfer completed during a pass causes another
-pass. Correlated terminal receipts settle only their own epoch, while navigation
+pass. Correlated terminal transfer results settle only their own epoch, while navigation
 retires the old scope. The original `TreeProjection.root` is admission authority;
 `root_actions` is the current backend-owned root listing for F3/Enter and viewer
 normalization. Newly copied root files therefore work without reopening the panel
@@ -522,13 +477,13 @@ or treating row IDs as original file IDs.
 
 See the [Move design](../superpowers/specs/2026-11-10-tree-move-design.md) and
 [reconciliation design](../superpowers/specs/2026-11-10-tree-transfer-reconciliation.md).
-Native manual refresh and filesystem notifications now use this same in-session
+Native manual refresh and filesystem notifications use this same in-session
 maintenance. They retain expanded branches, surviving marks and caret instead of
 replacing the tree with a flat panel. Archive refresh keeps its separate semantics.
 
 ## Native clipboard from expanded panels
 
-Ctrl+C and Ctrl+X now use `TreeClipboardRequest` with the exact acknowledged
+Ctrl+C and Ctrl+X use `TreeClipboardRequest` with the exact acknowledged
 projection, selection allocation/revision and optional focused occurrence.
 Pending selection feedback settles before capture. A nonempty selection wins
 over the caret; `..` and filter-only context rows cannot become clipboard targets.
@@ -537,19 +492,20 @@ only all-native batches. Archive and mixed-provider batches return Unsupported
 without replacing the native clipboard.
 
 `TreeEvent::Clipboard` returns an opaque `Arc<dyn CapturedClipboardFiles>`;
-`Command::CopyCapturedFiles` hands it to the existing clipboard worker. The UI
+`Command::CopyCapturedFiles` hands it to the clipboard worker. The UI
 calls only its cached intent accessor. The worker opens the OS clipboard,
 resolves the retained native targets, rechecks every provider context and request
 cancellation, validates the whole payload, then publishes its original Copy/Move
 intent. It retains provider ownership until the native write returns. No display
 path, member caption or extraction filename is interpreted as a native target.
 
-Four capture permits are shared with F5/F6, followed by the existing 16-request
-clipboard queue. The common capture admits as many targets as the projection holds
-(10,000 rows) and 16 MiB of newly owned capture data; each consumer keeps its own
-bound: Copy takes at most 4,096 native items (archive members are not counted)
-and a Move at most 64 roots, Delete 4,096 pinned roots, checksums and custom
-commands 4,096 items, metadata edits 256, and the clipboard 4 MiB of names. Rejected,
+Four capture permits (`CAPTURE_CAPACITY`) are shared with F5/F6, followed by the
+16-request clipboard queue (`clipboard.rs`). The common capture admits as many targets as
+the projection holds (10,000 rows) and 16 MiB of newly owned capture data
+(`tree_action_capture.rs`); each consumer keeps its own bound: Copy takes at most 4,096
+native items (archive members are not counted) and a Move at most 64 roots, Delete 4,096
+pinned roots, Custom Commands 4,096 items, metadata edits 256, and the clipboard 4 MiB of
+names; checksums take every captured row. Rejected,
 canceled and stale captures are retired on backend workers, including queue
 refusal and pending engine-command destruction during shutdown. The presenter
 keeps one pending clipboard capture and retries outer command-channel pressure
@@ -558,27 +514,25 @@ already handed to the clipboard worker reports that it may not have completed; i
 does not erase an already published OS clipboard entry.
 
 Ctrl+V retains the native panel root as its destination even when a nested row
-has focus. Copy uses the ordinary verified queue; Move intent opens the existing
-Move confirmation. Native source authority and overlap checks remain in that
+has focus. Copy uses the ordinary verified queue; Move intent opens the Move
+confirmation. Native source authority and overlap checks remain in that
 worker. Copied files use independent destination readback under the frozen
 Full/quick policy above, with per-file source removal for Move only after its
 proof and identity guards succeed. Same-volume native Move renames without
-content verification. Conflict consent and tree reconciliation remain unchanged.
+content verification. Conflict consent and tree reconciliation work as for any
+transfer.
 Cut alone does not modify files. Clipboard paths are live names, not immutable
 file identities, and external clipboard changes retain ordinary Paste behavior.
 
-The [implementation plan](../superpowers/plans/2026-11-10-tree-clipboard.md) and
-[dated evidence](../verification/2026-11-10-tree-clipboard.md) distinguish this
-source implementation and focused backend checks from pending UI/native-platform
-qualification. Virtual clipboard export requires a separate data-transfer
-protocol; this integration does not enable archive Paste, Cut or mutation.
+Evidence: [tree clipboard record](../verification/2026-11-10-tree-clipboard.md). Known
+limit: archive members cannot go on the clipboard (that needs a virtual data-transfer
+protocol), so there is no archive Cut or Paste from an expanded panel.
 
 ## Native watches and reconciliation
 
 An exactly acknowledged publication supplies the backend's watch scope: the root
-and loaded, expanded native branches visible in the projection. The accepted
-link-maintenance extension includes provider-resolved native directory links and
-their eligible loaded descendants.
+and loaded, expanded native branches visible in the projection, including
+provider-resolved native directory links and their eligible loaded descendants.
 An expanded empty branch retains observation so a new child appears. Collapsed,
 filtered-out and foreign-mount/provider branches stay outside native watch scope.
 Targets come from retained provider registrations, never from displayed paths.
@@ -601,9 +555,10 @@ observation (the native adapter stops observing after 4,096 metadata reads for
 skipped files whose enumeration lacks them) still does. Polling checks identity
 before and after observation; a
 mismatch requests maintenance rather than accepting the observation as unchanged.
-The two existing backend workers own subscriptions, metadata probes and cleanup.
-Events use a 150 ms quiet interval and a 500 ms batching ceiling; slow
-probes or output backpressure can add delay. Polling/failure retries use 15 seconds.
+Two blocking backend workers own subscriptions, metadata probes and cleanup
+(`watch.rs`). Events use a 150 ms quiet interval and a 500 ms batching ceiling
+(`PRODUCTION_TIMING`); slow probes or output backpressure can add delay. Polling/failure
+retries use 15 seconds.
 A hint the UI ignored, or whose sweep failed, is repeated at that cadence; a newer
 change always waits for its quiet interval, and a sent hint covers the changes
 counted until then, so its debounce cannot repeat it.
@@ -623,7 +578,7 @@ Failed listings retain known rows and report a diagnostic.
 
 Navigation or terminal session failure invalidates that generation immediately;
 the backend releases native/provider resources after any outstanding call returns.
-Late callbacks, sweep receipts and fatal errors cannot cancel a newer navigation.
+Late callbacks, sweep completions and fatal errors cannot cancel a newer navigation.
 After a terminal session failure the UI receives `Unavailable`; Commit and
 viewport observations of the session's last publication are then ignored rather
 than answered with a retryable rejection. Watch diagnostics do not turn into
@@ -631,7 +586,8 @@ Commit retries.
 
 Each maintenance list/apply step holds every transfer-namespace share, so no
 transfer runs during it and maintenance waits for running transfers. While it
-waits, the model worker retries that admission every 25 ms instead of queueing
+waits, the model worker retries that admission every 25 ms (`NAMESPACE_POLL` in
+`tree_refresh.rs`) instead of queueing
 on the fair gate, so a waiting tree never reserves shares that a new transfer
 needs. Explicit, recursive and probe listings take no namespace share; they show
 the live namespace and proceed while maintenance waits for a transfer.
@@ -648,11 +604,9 @@ acknowledgements, so changing many loaded branches costs that many round trips.
 When a pass ends without a newer publication, its watch fence settles against
 the already acknowledged projection.
 
-See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md).
-The earlier [verification record](../verification/2026-11-10-tree-watch.md) retains
-its dated scope; [ACTIVE_WORK](../ACTIVE_WORK.md#current-checkpoint) records current
-qualification. This does not add archive watches, generic watch providers or the
-remaining tree operation consumers.
+See the [watch design](../superpowers/specs/2026-11-10-tree-watch-design.md) and the
+[watch record](../verification/2026-11-10-tree-watch.md). Known limit: archive panels
+and other providers have no watches.
 
 When the adopted session of the displayed root fails (`Unavailable`), the
 presenter stops sending that session's Commit, viewport, branch and size requests,
@@ -688,11 +642,11 @@ execution are not chased, and destructive traversal never follows a child that
 has become a junction/link. Captured ancestry only removes duplicate selection
 roots; it is not a retained proof of every intermediate filesystem identity.
 
-Preparation pins every remaining target through the existing platform mutation
+Preparation pins every remaining target through the platform mutation
 service; returned paths, count and immutable capture scope are checked. Display
 `source_directory` is only presentation/refresh context and is never authorization.
-Flat mutation snapshot and immediate-parent checks are not relaxed. Junctions and
-links use the existing link-removal semantics; destructive traversal does not follow
+Flat mutation snapshot and immediate-parent checks apply. Junctions and
+links use the ordinary link-removal semantics; destructive traversal does not follow
 their targets. Unsupported archive/mixed selections never fall back to extracted
 files or permanent deletion.
 
@@ -701,14 +655,14 @@ then uses the same `JobProgressWindow` as Copy/Move. Cancelled confirmation crea
 no visible job. Rejected, stale and duplicate captures retain a backend reclamation
 owner. Terminal mutations queue loaded native-tree reconciliation, preserving the
 expanded view instead of replacing it with a flat listing. Capture and operation
-budgets remain the existing bounded backend limits; this is not archive write support.
+budgets are the bounded backend limits above; archives stay read-only.
 
 ## Rename from expanded native panels
 
 F2 captures the focused real occurrence independently of marked selection. The exact
 acknowledged projection, request and row are checked by the tree worker; a displayed
 path, caption or original root EntryId cannot authorize a mutation. Native root files
-and expanded native directories use the existing Rename dialog. Parent and context-only
+and expanded native directories use the Rename dialog. Parent and context-only
 rows are rejected; archive occurrences never acquire native write authority. Expanded
 branches remain folder-only: this does not introduce arbitrary descendant file rows.
 
@@ -716,28 +670,27 @@ branches remain folder-only: this does not introduce arbitrary descendant file r
 is not a filesystem snapshot. Native identity is pinned during mutation preparation.
 The shared four-slot
 capture admission pool also bounds its cleanup ownership. Each capture reserves one
-slot from the existing runtime-independent retirement domain before provider capture;
+slot from the runtime-independent retirement domain before provider capture;
 its native target and registration are destroyed before its capture permit is returned.
 The final source may safely leave a queued reply or UI pending request on any thread.
 The operation worker retains native prepared pins ahead of that source in destruction
-order. No extra cleanup thread or unbounded owner queue is introduced.
+order. No extra cleanup thread or unbounded owner queue is used.
 
-Preparation uses the existing platform mutation service and checks the returned native
+Preparation uses the platform mutation service and checks the returned native
 path and immutable capture scope. The normal confirmation, name validation, cancellation,
 versioned overwrite consent and recovery behavior applies. No rename runs before
 confirmation, and later navigation cannot retarget admitted work. Before admission,
 navigation, reprojection and shutdown cancel pending captures; queue pressure retries
 the same focused occurrence. Completion reconciles loaded native branches through the
-existing tree maintenance route, rather than replacing the panel with a flat listing.
+tree maintenance route, rather than replacing the panel with a flat listing.
 
 F7 retains pane-location authority: it creates under the current pane directory, not the
-focused expanded descendant. Flat immediate-parent checks remain unchanged. See the
-[Rename verification](../verification/2026-11-12-native-tree-rename.md) for the exact
-qualified cases and remaining limitations.
+focused expanded descendant. Flat immediate-parent checks apply. Evidence and limits:
+[Rename record](../verification/2026-11-12-native-tree-rename.md).
 
 ## Metadata from expanded native panels
 
-Attributes, timestamps and filename case use the existing metadata editor after an
+Attributes, timestamps and filename case use the metadata editor after an
 exact acknowledged tree capture. Marked real occurrences win over focus; with no
 marks, the focused selectable occurrence is captured. Parent/context-only rows,
 archives and mixed native/virtual selections never receive native mutation
@@ -746,7 +699,7 @@ authority. No displayed path or extracted temporary file becomes a target.
 `CapturedMetadataSources` retains native provider registrations through the same
 four-slot capture pool and runtime-independent retirement domain as Rename. The
 ordinary operation controller reserves the complete batch from its shared
-256-target metadata pin budget before opening native targets, then checks the
+256-target metadata pin budget (`MAX_METADATA_TARGETS`) before opening native targets, then checks the
 captured scope and returned target count again. Native pins close before retained
 provider ownership. Preparation, traversal, mutation and final resource cleanup
 remain on backend workers.
@@ -763,7 +716,7 @@ kinds are checked again during preparation. Separate hard-link names remain
 separate selected entries. This is live subtree traversal, not a snapshot or a
 promise to chase descendants moved elsewhere after capture.
 
-The existing explicit patch preview, exact revision confirmation, conflict tokens,
+The explicit patch preview, exact revision confirmation, conflict tokens,
 cancellation and partial-result behavior apply. Outer command refusal and transient
 tree-capture admission refusal retain the original intent for a later input pump,
 with one-pump deferral to prevent receipt loops. Provider/target resource limits
@@ -772,8 +725,7 @@ reprojection, replacement or shutdown cancels pending captures. After admission,
 navigation cannot retarget the pinned job. Terminal metadata jobs reconcile loaded
 native branches through tree maintenance and preserve the expanded panel.
 
-See [metadata verification](../verification/2026-11-12-native-tree-metadata.md)
-for the actual test scope and remaining platform/desktop limits.
+Evidence and limits: [metadata record](../verification/2026-11-12-native-tree-metadata.md).
 
 ## Native Custom Commands
 
@@ -787,17 +739,17 @@ the parent row without turning `..` into an argument.
 The worker resolves only retained native provider targets and preserves each source
 kind. Context-only rows never supply file arguments. Mixed archive/provider
 arguments and revoked captures are refused; display paths and temporary exports never supply argument authority. The
-captured native root must match the original active-directory context. Existing
-native entry/directory pins, command preflight and process admission are reused.
+captured native root must match the original active-directory context. The flat
+panel's native entry/directory pins, command preflight and process admission are reused.
 Whole-capture validation precedes preparation; each process then revalidates only
 its immutable source IDs and native pin scope. Provider owners and pins stay alive
-through the actual native launch call and retire on the existing worker domain.
+through the actual native launch call and retire on the backend retirement domain.
 
 Pending marks settle before capture. Queue pressure retains the original command,
 focus and locations for retry; navigation, reprojection, settings-preview edits or
 shutdown cancel pending captures. Accepted launches survive later panel navigation.
-Marks and expanded branches remain unchanged. See
-[verification](../verification/2026-11-12-tree-custom-commands.md) for test scope.
+Marks and expanded branches stay as they are. Evidence:
+[Custom Commands record](../verification/2026-11-12-tree-custom-commands.md).
 
 ## Directory comparison with expanded branches
 
@@ -815,10 +767,11 @@ occurrence-based replacement.
 
 The result is correlated with both original panel paths, navigation IDs, displayed
 projections and settled selection revisions before either preview changes. A flat
-panel keeps its existing immutable selection snapshot. A tree panel queues a
+panel keeps its immutable selection snapshot. A tree panel queues a
 `TreeSelectionReplacement` through its normal selection worker and displays the
 bounded preview immediately. The replacement contains only numeric occurrence
-identities and selection bits, at most 512 KiB; it retains no projection, provider,
+identities and selection bits, at most 512 KiB (`TreeSelectionReplacement::MAX_BYTES`);
+it retains no projection, provider,
 path or report owners. The model worker validates every occurrence, allowing
 metadata-only updates but rejecting changed row identity, hierarchy or selection
 eligibility. UI lookup and mailbox admission do not walk the whole tree.
@@ -841,7 +794,7 @@ worker against its captured native root listing and a bounded cached visibility
 set. Hidden, errored and virtual rows do not supply automatic counterparts.
 Marked folders, more than two marks, pending selection changes or otherwise
 unresolved inputs open the ordinary File A / File B choice. File comparison keeps
-its existing native validation and does not export archive members implicitly.
+its native validation and does not export archive members implicitly.
 
 ## Properties and native menus in expanded branches
 
@@ -851,10 +804,10 @@ right-clicking an unmarked item captures that item without changing the marks.
 The synthetic parent and context-only ancestors are not action targets.
 Properties, file opening and system menus resolve native paths on admitted backend
 workers and retain the source through the native call. UI labels are never paths
-with authority. Captured desktop work uses the existing bounded process and
-cleanup ownership.
+with authority. Captured desktop work uses the bounded process and cleanup
+ownership of flat panels.
 
-Managed Copy/Cut/Delete/Rename verbs re-enter the existing typed action flows.
+Managed Copy/Cut/Delete/Rename verbs re-enter the typed action flows above.
 Paste into one captured folder resolves that destination on the backend; ordinary
 panel paste keeps its panel-location authority. Rename and Delete retain their
 confirmation/overwrite/progress behavior. Providers without native authority are
@@ -864,58 +817,39 @@ A managed menu choice requires the original projection and settled selection.
 Navigation, changed marks or a new projection require reopening the menu; this
 includes conservative refusal after metadata or disclosure publications. The
 command cannot silently act on a different row. Unsupported system menus use the
-existing fallback menu. Virtual clipboard export remains separate work.
+fallback menu. Known limit: there is no virtual clipboard export.
 
 ## Remaining integration
 
-TREE-01 remains partially integrated. Native Delete, Rename and metadata editing join the typed capture
-consumers described above: viewers, external editor, checksums, Custom Commands,
-Copy/Move and native clipboard/drag operations. This is not generic provider write support. Native Properties and context menus
-use the typed consumers above; virtual clipboard export remains guarded. Native
-directory comparison is described above.
+Expanded panels support the typed capture consumers above: viewers, the external
+editor, checksums, Custom Commands, Copy/Move, the native clipboard and drag, Delete,
+Rename, metadata editing, Properties and context menus, and directory and file
+comparison. Mutations are native only; other providers get no write support. TREE-01 in
+the [backlog](../IMPLEMENTATION_BACKLOG.md) tracks what is left.
 Original flat panels remain available; opening a folder returns to the ordinary
 operation path. Pane-directory actions such as terminal, bookmarks, creation and
-paste destinations keep their existing location authority. Native immediate-parent
-checks and the flat `SelectedFiles` contract are unchanged.
+paste destinations keep their pane-location authority. Native immediate-parent
+checks and the flat `SelectedFiles` contract apply.
 
-Browsable container discovery/attachment remains pending: branches do not expand
-archive files, native or inside archives. Enter on an archive file in the panel's own
+Known limit: branches do not expand archive files, native or inside archives. Enter on an archive file in the panel's own
 folder opens it through the flat panel, including an
 [archive inside an archive](../ARCHIVE_FORMATS.md#archives-inside-archives); archive
 members in expanded branches below it do not open. Navigation retires the tree and establishes a new flat selection
 scope; it does not restore stale pre-tree marks. Native refresh retains the adopted
 session through the maintenance path described above.
-No production tree completion
-claim follows from widget or presenter tests alone.
 
 The integration tests in `crates/midnight-ui/tests/tree_panel.rs` exercise the
 installed Rust/Slint bridge. Presenter tests in
 `crates/midnight-ui/src/presenter/tests/tree.rs` cover admission, selection,
-navigation, focus and operation fences. Existing disclosure tests cover mouse,
-touch, all three layouts, both panes, stale presses and compact geometry.
+navigation, focus and operation fences. The disclosure tests
+(`crates/midnight-ui/tests/tree_disclosure.rs`) cover mouse, touch, all three layouts,
+both panes, stale presses and compact geometry.
 
 ## Filter and sort evidence
 
-The 9 November 2026 Windows debug logs under `_build/qa/tree-filters/` qualify the
-current source routing beyond the earlier
-[panel admission report](../verification/2026-11-09-tree-panel-admission.md):
-
-- `backend/green-actor.log`: 73 scoped engine units passed.
-- `backend/green-controller.log`: 14 production controller and seven tree-filter
-  integrations passed, including native/archive roots, stale selection, queue
-  pressure and cancellation on native/archive/Network navigation or shutdown.
-- `ui/final-green.log` (22:30): 668 UI units, four Engine/Slint tree-filter
-  integrations and one tree-panel bridge test passed. Controls exercise apply,
-  clear, sorting and Cancel across layouts, inactive archive panels, stale
-  receipts after navigation and branch completion overtaking a request.
-- `ui/clippy-green.log` records the successful UI all-target lint rerun with
-  `-D warnings`; its engine dependency still emits the separately documented
-  13 unused/dead-code warnings. This is not a strict workspace result.
-
-These are backend/software-window checks, not installed native application or
-Linux desktop qualification for filter/sort. The earlier
-[controller Windows/Linux checks](../verification/2026-11-09-tree-controller-integration.md),
-[probe scheduling and Windows debug deployment](../verification/2026-11-09-tree-budget.md)
-and [top-level Ctrl+A checks](../verification/2026-11-09-tree-select-all.md)
-retain their narrower dated scopes. Full native plugin/UI workflows, release
-qualification and the remaining operation consumers above stay open.
+The filter, sort and quick-search tests are in `crates/midnight-ui/tests/tree_filters.rs`,
+`tree_prefix_search.rs` and `presenter/tree_options_tests.rs`. Dated records:
+[panel admission](../verification/2026-11-09-tree-panel-admission.md),
+[controller checks](../verification/2026-11-09-tree-controller-integration.md),
+[probe scheduling](../verification/2026-11-09-tree-budget.md) and
+[top-level Ctrl+A](../verification/2026-11-09-tree-select-all.md).

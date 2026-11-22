@@ -1,15 +1,16 @@
 # Native transfer service
 
-These are internal Rust contracts in `midnight-core::transfer`, implemented by
-the separate Windows and Linux adapters. They are not Rust trait objects exposed
-across a plugin ABI. Archive extraction supplies a brokered `TransferSource` and
+These are internal Rust contracts of `midnight-core` (`src/transfer*.rs`, re-exported at
+the crate root), implemented by the separate Windows and Linux adapters
+(`midnight-platform-windows`, `midnight-platform-linux`); the shared copy verification is in
+`midnight-platform-common`. They are not Rust trait objects exposed across a plugin ABI. Archive extraction supplies a brokered `TransferSource` and
 uses the same native destination and verification state machine.
 
 ## Verification and ownership
 
-`VerifiedFileCopy` performs bounded 256 KiB steps: source read/stage write,
-flush/sync, independent stage readback, then publication. The immutable job policy
-defaults to full SHA-256 and exact length. Explicit `SizeAndSamples` compares
+`VerifiedFileCopy` works in bounded steps through one 256 KiB buffer: source read/stage
+write, flush/sync, independent stage readback, then publication. The immutable job policy
+(`TransferVerification`) defaults to full SHA-256 and exact length (`FullSha256`). Explicit `SizeAndSamples` compares
 exact length and first/middle/last 64 KiB (all bytes for files up to 192 KiB), retaining
 at most 192 KiB of source evidence gathered during streaming. It cannot detect
 corruption between samples. It revalidates the opened source
@@ -38,8 +39,8 @@ engine locale from either slot. Enumerated, inspected and automatically resolved
 no entry metadata.
 
 Copy/Move jobs start at once and run concurrently on every storage class; the
-configured disk-I/O limit ([Disk operations](DISK_OPERATIONS.md); Automatic is four)
-interleaves their native steps. Where their native namespace footprints overlap,
+configured disk-I/O limit ([Disk operations](DISK_OPERATIONS.md); Automatic is four,
+`DiskIoConcurrency::AUTOMATIC_LIMIT`) interleaves their native steps. Where their native namespace footprints overlap,
 only the overlapping item waits for the job that already holds it; a job that would
 read what another job changes waits as a whole. A job whose footprint is unknown
 (the opaque lane) runs alone: it waits for the other jobs and they wait for it, saying
@@ -47,13 +48,11 @@ read what another job changes waits as a whole. A job whose footprint is unknown
 that they use the same folders. Each
 job performs one native call at a time and holds its disk slot only while it
 executes native steps; see
-[operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). More
-than one stream within a job still requires positive local SSD classification at
-both endpoints and shared budgets. The
-[local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md)
-found substantial component gains for large/mixed files, but abnormal small-file
-audit delays left its full qualification incomplete; it authorizes no within-job
-parallel streams.
+[operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). A job never
+copies in parallel streams: the
+[local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md) measured
+substantial gains for large and mixed files on local SSDs, but unexplained small-file
+delays left it inconclusive (IO-01 in the [backlog](../IMPLEMENTATION_BACKLOG.md)).
 
 Windows stages use a twenty-character basename, `.me-` plus sixteen random hex
 characters. Exclusive creation is relative to a held directory handle, without a
@@ -80,10 +79,12 @@ prove removal. See [staging and cancellation](../superpowers/specs/2026-11-10-tr
 | `prepare_replacement` | Bind an unpublished stage to a basename, target pin and explicit policy without namespace mutation. Also works after readback. |
 | `publish_no_replace` | Publish exclusively. Ignores a previous replacement binding, so choosing another name never silently replaces its destination. |
 | `publish_replace` | Publish only under the explicit bound policy; enforce its basename and revalidate the pin. |
+| `link_replacement` | A staged link may replace a consented file or link under the recoverable policy (`StagedTransferLink::publish_replace`); see [recreating a link](#recreating-a-link). |
 
-Default optional methods return Unsupported. Windows currently advertises
-recoverable replacement on local fixed NTFS; Linux qualifies local ext
-filesystems. Network, removable and unknown replacement semantics are not
+Default optional methods return Unsupported. Windows advertises recoverable
+replacement only for NTFS on a fixed drive (`transfer_recovery::supported_volume`), and
+no `link_replacement`; Linux advertises both only for ext2, ext3 and ext4 (`statfs` type
+`0xEF53`, `transfer_recovery::supported_type`). Network, removable and unknown replacement semantics are not
 silently treated as equivalent. Other no-replace and merge operations retain
 their own provider capability/error behavior.
 
@@ -95,7 +96,8 @@ Windows refuses that rename while any entry below the folder is open, and virus
 scanners open files for a moment after they are written. The Move does not wait for
 that inside its namespace turn, which every other transfer waits for before its own
 name changes; it stops with its Retry/Skip/Cancel decision. (Rename and the metadata
-editor's case change wait such a refusal out for about one second.)
+editor's case change repeat such a refused folder rename for up to one second, the waits
+doubling from 10 ms: `RENAME_RETRY_BUDGET` in `mutation_native.rs`.)
 `native_entries_moved` and items/s express this work separately from copied bytes.
 Committed errors retain their recovery facts and cannot replay a source transfer.
 On Linux a published native Move removes its empty stage first and then syncs the
@@ -103,10 +105,10 @@ source and target folders once each (two folder fsyncs, one ext4 journal commit)
 stage that cannot be removed is synced with both folders and the Move reports it as
 needing recovery; a replacement's stage, which keeps the displaced entry as recovery
 data, is synced with both folders.
-The [current policy and API design](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md)
-supersedes earlier unconditional SHA-256 and same-volume-copy descriptions below;
-full-hash proof discussions describe the default mode, and sampled proofs retain
-the same identity/revision/publication guards with bounded range reads.
+The reasoning is in the
+[policy and API design](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md).
+Full-hash proofs below describe the default mode; sampled proofs keep the same identity,
+revision and publication guards with bounded range reads.
 
 ### Move durability on Windows
 
@@ -114,8 +116,8 @@ A Move reports a change as unconfirmed only when a step it takes to save that ch
 disk fails, never merely because a platform has no such step. The provider says so in
 `durability_confirmed` of `TransferNativeMoveOutcome::Moved` (and of the source
 removals below); the engine counts each unconfirmed one in
-`source_removal_durability_unconfirmed`, which gives the job a closure receipt, so it
-ends "Completed with warnings" with "Source changes the system could not confirm as
+`CopyProgress::source_removal_durability_unconfirmed`, which gives the job a
+`CopyClosureReceipt`, so it ends "Completed with warnings" with "Source changes the system could not confirm as
 saved to disk: N" (WIN-6 in the [Windows acceptance record](acceptance/windows.md)).
 
 After a committed native rename, Windows flushes (`FlushFileBuffers`) the destination
@@ -135,11 +137,12 @@ retained handles of the folders the rename changed, and the engine runs the pend
 confirmations in one round (`TransferDurabilityRound`), in which each folder is flushed
 once for all of them: before the job removes a folder (a pending confirmation can hold
 it, and a folder could not be saved once removed), when 64 are pending (each holds two or
-three folder handles) and when the job ends, whatever its outcome. A Move of N entries
+three folder handles; `MAX_PENDING_CONFIRMATIONS` and `confirm_pending` in
+`move_worker.rs`) and when the job ends, whatever its outcome. A Move of N entries
 from one folder to another flushes the two folders once instead of N times each, and a
 merge flushes a source folder and its destination once for all its entries before the
 emptied folder is removed. Rename's replacement (`try_native_move`) flushes before it
-returns, as before. A folder's result counts for every rename of the round that
+returns. A folder's result counts for every rename of the round that
 changed it:
 
 - Every flush succeeds: the rename is confirmed.
@@ -153,32 +156,22 @@ changed it:
   right) or another program holds the folder without write sharing. The rename stays
   committed and is unconfirmed.
 
-What that confirms depends on the filesystem; only NTFS was available on the
-development machine:
+What that confirms depends on the filesystem; only NTFS was measured:
 
-- NTFS (measured, Windows 11 on an NVMe SSD): the destination folder's flush right
-  after a rename took 0.047 ms on average (200 renames), the source folder's flush right
-  after it 0.004 ms, as long as flushing an unchanged folder (0.002 ms), which suggests
-  the first flush already wrote NTFS's log for the whole rename; the rename itself took
-  0.11 ms. Per native Move call the two reopens and flushes took 0.14 ms of 0.6 ms
-  (debug build, 400 Moves, a machine shared with builds). Saved together, 64 renames
-  from one folder to another needed 2 flushes and 28–34 ms instead of 128 flushes and
-  41–52 ms (0.44–0.53 instead of 0.64–0.82 ms per rename; debug build, three runs each,
-  a machine shared with builds). Confirming a verified file removal (looking its name up
-  in its private stage, reopening and flushing the stage) took 0.16–0.18 ms per file
-  (200 files, three runs), next to 0.22–0.24 ms for its disposition, the closing of its
-  handles and the stage's removal. On a disk whose cache flush is slow a Move waits for
-  that flush once per folder and round, and once per removed file for its stage, as a
-  Linux Move waits for its folder fsyncs.
-- FAT and exFAT (not measured: no such volume without administrator rights): the FAT
+- NTFS: right after the destination folder's flush, the source folder's flush costs
+  about as much as flushing an unchanged folder, which suggests that the first flush
+  already writes NTFS's log for the whole rename. Saved together, the renames of a Move
+  between two folders flush each folder once per round instead of once per rename. On a
+  disk whose cache flush is slow a Move waits for that flush once per folder and round,
+  and once per removed file for its stage, as a Linux Move waits for its folder fsyncs.
+- FAT and exFAT (not measured): the FAT
   driver whose source Microsoft publishes (FastFAT) accepts a flush of a folder other
   than the root without writing its entries, so such a Move counts as confirmed
   without the Move writing them. Whether they survive a power loss depends on the
   drive's write caching: with Quick removal, the default removal policy for external
   drives since Windows 10 version 1809, Windows does not cache their writes.
-- ReFS, including Dev Drives (not measured: creating one needs administrator rights),
-  and network shares (the flush is the file server's): a flush refused as not
-  supported counts as above.
+- ReFS, including Dev Drives (not measured), and network shares (the flush is the file
+  server's): a flush refused as not supported counts as above.
 
 Source removals by delete disposition are a cross-volume Move's verified file removal
 (from its private stage), the removal of a folder a Move emptied (a cross-volume Move,
@@ -207,24 +200,24 @@ before it is counted:
 - Otherwise it stays `DeletePending` and unconfirmed, and both are then true: the name
   is still there (another handle on the deleting object is still open) or its folder
   could not be saved (for example another program holds it without write sharing). A
-  filesystem without POSIX delete refuses the removal itself, as before; a cross-volume
+  filesystem without POSIX delete refuses the removal itself; a cross-volume
   file removal requires local fixed NTFS anyway.
 
-The contract for this (decided for WIN-6): a `TransferDurabilityConfirmation` completes a
+The contract (`transfer_move.rs` in `midnight-core`): a `TransferDurabilityConfirmation` completes a
 committed change later and says whether it is saved (for a removal, whether its name is
 gone too); `confirm` takes the round, which saves each folder at most once. The
 finalizer's and the capture's `take_removal_confirmation` and the two capture traits'
 `try_native_move_deferred` hand one over; their defaults hand none over and
 `try_native_move_deferred` defaults to `try_native_move`. The engine counts a change that
-has a confirmation by the confirmation alone. Linux hands none over, and its Move is
-unchanged.
+has a confirmation by the confirmation alone. Linux hands none over; its native Move syncs
+its folders itself, as described above.
 
 ## Change-time drift (VIEW-05)
 
 Native revisions include the change time (Windows ChangeTime, Linux ctime). It also
-moves on metadata-only updates: on the Windows development machine endpoint
-protection moves it on freshly written files one or two seconds after they are
-written, with the file ID, length and LastWriteTime unchanged. Copy and Move compare
+moves on metadata-only updates: on Windows, endpoint protection software was seen
+moving it on freshly written files a second or two after they were written, with the
+file ID, length and LastWriteTime unchanged. Copy and Move compare
 their pinned revisions under `TransferRevisionPolicy::AcceptChangeTimeOnly`
 (`TRANSFER_REVISIONS` in the engine): a revision whose change time alone moved is
 unchanged, and every other captured field still counts.
@@ -233,20 +226,20 @@ unchanged, and every other captured field still counts.
 | --- | --- | --- |
 | Conflict pin (`prepare_target_with`), including recoverable replacement and native Move replacement | `AcceptChangeTimeOnly` | Identity; Windows length, LastWriteTime, creation time and attributes; Linux length, mtime and mode |
 | Move capture of the source (its own binding pin) and Move children | `AcceptChangeTimeOnly` (`prepare_move_source_with_policy`) | As a conflict pin |
-| Revalidation of Copy sources (`prepare_transfer_source_with_policy`), Move sources and their children | Linux `AcceptChangeTimeOnly`; Windows has never compared ChangeTime here | Identity; length and modification time (Windows also creation time) |
+| Revalidation of Copy sources (`prepare_transfer_source_with_policy`), Move sources and their children | Linux `AcceptChangeTimeOnly`; Windows does not compare ChangeTime here (`transfer_source.rs`) | Identity; length and modification time (Windows also creation time) |
 | Verification read guards, modified-time pins, planned-source namespace pins, Move finalization | Always `AcceptChangeTimeOnly`; only Copy and Move use them | As a conflict pin; Linux namespace pins compare length and mtime |
 | The archive file of archive members copied out, before each chunk and each Retry ([archive members as a source](#archive-members-as-a-source)) | `AcceptChangeTimeOnly` since 21 November, like every capture of an archive | Identity, length and modification time (Windows LastWriteTime, Linux mtime) |
 
-Exact revisions remain for every other consumer of the same services:
-`prepare_target`, `prepare_transfer_source`, `prepare_transfer_source_with_links`,
-`prepare_move_source` and `prepare_move_source_with_links` keep their exact
-behaviour, so user-command scope pins, checksum manifest and file-list outputs,
-checksum sources, Rename (including its replacement capture) and drag previews are
-unchanged. The policy-taking methods default to their exact counterparts for
-providers without native change times.
+Every other consumer of the same services keeps exact revisions: `prepare_target`,
+`prepare_transfer_source`, `prepare_transfer_source_with_links`, `prepare_move_source`
+and `prepare_move_source_with_links` compare every captured field, so user-command scope
+pins, checksum manifest and file-list outputs, checksum sources, Rename (including its
+replacement capture) and drag previews treat a moved change time as a change. The
+policy-taking methods default to their exact counterparts for providers without native
+change times.
 
 A same-length rewrite that restores the modification time differs from the pinned
-revision only in its change time, so these Copy and Move checks no longer detect it.
+revision only in its change time, so these Copy and Move checks do not detect it.
 On Windows, a Copy source denies write sharing from when its job opens it to read it,
 before the copy is staged (before that, while its job waits, a write is detected only
 through these fields; see
@@ -309,8 +302,9 @@ Replace all. A stale job/version response cannot authorize a new conflict.
 Skip, another name and Cancel remain available when replacement is unsupported.
 A conflict Skip (Skip, Skip all, or Skip for a name inside a merged folder) keeps
 the existing destination and is not an error: when such skips are the only
-exceptions, the job ends Completed without a failure notice, and Jobs details
-count the skipped entries. An I/O error the user skips is still an error: the job
+exceptions, the job's state is Completed, shown as "Completed with warnings"
+(`job_presentation.rs`), and its outcome counts the skipped items ("1 skipped item was
+not copied."). An I/O error the user skips is still an error: the job
 ends Completed with errors, or Failed when nothing was transferred.
 
 ## I/O errors and progress lifetime
@@ -318,7 +312,7 @@ ends Completed with errors, or Failed when nothing was transferred.
 `CopyEvent::Failure` carries a `CopyFailure` with operation ID, monotonically
 increasing decision version, `CopyErrorStage`, native error and separate source
 and destination paths. `can_retry` and `can_skip` are capabilities, not UI guesses.
-Decisions use the existing `Command::DecideCopy` route. A stale version, wrong job
+Decisions use `Command::DecideCopy`. A stale version, wrong job
 or unsupported choice leaves the pending decision unchanged. Error Retry and
 Skip All never provide consent to replace or merge a conflicting destination.
 
@@ -416,9 +410,10 @@ and [Salamander reference audit](../verification/2026-11-08-transfer-error-refer
 ## Activity charts
 
 Copy, Move and Delete expose `Arc<OperationThroughput>` snapshots alongside their
-existing progress. Engine-owned `Tracker` instances sample monotonic elapsed time
-and actual cumulative counters every 250 ms. Each snapshot retains at most 240
-intervals spanning the whole operation. When full, adjacent intervals are combined
+progress. Engine-owned `Tracker` instances (`operation_throughput.rs` in
+`midnight-engine`) sample monotonic elapsed time and actual cumulative counters every
+250 ms (`CADENCE`). Each snapshot retains at most 240 intervals (`MAX_SAMPLES`) spanning
+the whole operation. When full, adjacent intervals are combined
 and future intervals use the same coarser resolution. Original timestamps and
 per-series measured maxima survive, so early peaks remain visible; the vertical
 scale follows the recent sustained rate instead, so an older peak above it is
@@ -429,7 +424,7 @@ not aggregated peaks. Each operation's progress window displays that job's chart
 the Jobs ledger has none. The UI caches chart geometry per job by snapshot identity
 and never measures I/O itself.
 
-The Copy/Move timer publishes the latest progress on each existing 250 ms tick,
+The Copy/Move timer publishes the latest progress on each 250 ms tick,
 including a sample already collected by the native I/O worker. Sampling a rate
 and delivering that status are independent decisions. A full UI outbox drops only
 that periodic attempt; the next tick tries the latest snapshot without blocking
@@ -448,16 +443,15 @@ blocked. Waiting/cancelling/terminal states show zero current speed; real work
 completed by an already running native call after cancellation still enters the
 history. Short final intervals are merged into the previous sample when necessary,
 and short completed jobs retain a visible point. Counter resets rebase measurement
-instead of producing negative rates. Terminal chart history remains with the
-existing session-only Jobs record and is not written to settings.
+instead of producing negative rates. Terminal chart history stays with the
+session-only Jobs record and is not written to settings.
 
 The shared Slint chart appears in each operation progress window; Jobs is a
 ledger whose Open action reopens that operation or its retained details. Its horizontal scale contracts from time zero as the operation grows, and
 its vertical scale rises with a higher peak and settles back to the recent sustained
 rate within seconds, which pauses and stalls do not lower. The filled write/deletion
 series, separate verification line and text labels adapt to the theme and dialog
-size. Existing queue, confirmation, cancellation,
-checksum and source-removal policies are unchanged. See the
+size. See the
 [chart design](../superpowers/specs/2026-11-10-operation-speed-chart-design.md).
 
 ## Remaining-work estimates
@@ -467,7 +461,7 @@ without retaining a file list or reading contents. The engine publishes optional
 `TransferRemainingWork` write/read byte counts. A file of length L and verification
 range length V needs L+V byte-work for Copy, or L+5V for cross-volume Move: initial
 readback plus source/destination proof passes before and after source capture.
-This is advisory work accounting; it cannot grant publication or source-removal
+This is advisory work accounting (`copy_work_budget.rs`); it cannot grant publication or source-removal
 permission. Native rename retains root-only discovery and does not acquire a
 recursive scan or byte budget.
 
@@ -476,7 +470,7 @@ state. The After proof is outstanding again on an explicit removal Retry, includ
 before its next `begin_validation` call resets the old proof counter. Cumulative
 I/O counters remain activity only. The UI divides remaining byte-work by the
 backend's averaged combined write/readback rate (an 8-second time constant over
-activity time) and blends it with the remaining items at the averaged item rate,
+activity time, `SMOOTHING` in `operation_throughput.rs`) and blends it with the remaining items at the averaged item rate,
 the more toward items the smaller the files that remain
 ([operation progress](OPERATION_PROGRESS.md#verification-and-charts)). It suppresses
 unavailable, failed or skipped estimates; a paused job keeps its estimate, marked
@@ -529,30 +523,32 @@ recovery ownership transfers, Drop closes handles but never removes retained
 objects. Apart from that no-replace restore of a captured old file, no implicit
 rollback or recovery garbage collection is performed.
 
-Jobs shows the exact recovery count and the first 16 paths. Transfer and deletion
-receipts remain throughout the session until explicitly cleared; history is not
-persisted across restart. Copy details while available. The files themselves remain on disk until explicitly
-removed. This is not a persistent recovery catalogue or an automatic Undo action.
+Jobs shows the exact recovery count and the first 16 paths (`CopyProgress::recovery_count`
+and `recovery_paths`). Transfer and deletion records stay in Jobs for the session until
+they are cleared there; they are not persisted across restarts. **Copy details** copies a
+listed record's details. The recovery files remain on disk until explicitly removed. This
+is not a persistent recovery catalogue or an automatic Undo action.
 
 ## Bounded ordinary Move
 
-Explicit Move uses the same FIFO, admission, mutation exclusion, cancellation and
-completion receipts as Copy. F6 retains the captured native selection and other
+Explicit Move uses the same FIFO admission, mutation exclusion, cancellation and
+completion records (`CopyClosureReceipt`) as Copy. F6 retains the captured native selection and other
 pane destination in a typed Move draft; Cut publishes native Move clipboard
 intent. Pasting a Move clipboard opens confirmation. `ClipboardMoveRequest` keeps
 an `Arc<FileClipboard>` so confirming or retrying never clones raw paths on the
 UI; `CopyInput` unwraps/clones it only in blocking preparation. Ordinary Copy and
-archive Copy keep their existing routes. Native formats retain raw paths; no
+archive Copy keep their own routes. Native formats retain raw paths; no
 shell parses file names.
 
-Qualified native same-volume Move takes the rename route described above before
+A native same-volume Move takes the rename route described above before
 content/proof preparation. The content-copy proofs and source-removal staging
 below apply to cross-volume fallback and explicitly merged children; they are not
 required for a successful native rename.
 
 Content-only Move accepts at most 64 ordinary native file or directory roots
-(`MAX_MOVE_ROOTS`), with a conservative 4 MiB active source/capture/stage/proof/receipt
-path reservation. Every Move entry point refuses a larger selection before a job starts,
+(`MAX_MOVE_ROOTS` in `file_clipboard.rs`), with a conservative 4 MiB reservation for the
+paths that its sources, captures, stages and proofs hold (`MAX_PROOF_PATH_BYTES` in
+`move_worker.rs`). Every Move entry point refuses a larger selection before a job starts,
 with the sentence "Move accepts at most 64 selected roots. Choose a smaller selection."
 (`MOVE_ROOTS_REFUSAL`): the dialog for F6 and for a pasted Cut, and the drop admission
 for a drag (`drag_drop_internal::admit_move`). The job still refuses it, naming the
@@ -562,13 +558,14 @@ Duplicate identities, overlapping roots (including a selected file beneath a
 selected directory), a destination inside a source directory, unsupported root
 authority and exceeded root budgets are rejected before writes. Preparation pins
 all root authorities and root-file stages. Recursive traversal admits one child
-at a time, with at most 128 active directory frames and 100,000 admitted entries;
+at a time, with at most 128 active directory frames and 100,000 admitted entries
+(`MAX_MOVE_DIRECTORY_DEPTH` and `MAX_MOVE_ENTRIES` in `move_worker.rs`);
 the child's native authority and file proof support are checked before its copy.
 A later child that cannot be prepared for Move pauses alone (see the I/O errors
 above); an exceeded traversal budget stops unfinished work and retains earlier
 completed moves. Windows source DELETE authority is obtained
 before each source's copy, separately from Copy's unchanged read-only pin.
-Protected source parents and qualified local NTFS/ext semantics are mandatory;
+Protected source parents and local NTFS (Windows) or ext2/3/4 (Linux) are required;
 unsupported parents suggest Copy, never permission weakening or silent fallback.
 Inside the moved tree Linux follows Delete's rule instead: a folder of that tree
 (the selected folder or a folder below it) that the user owns and that lacks owner
@@ -593,8 +590,7 @@ contains the selection is never changed, so a write-protected one still stops th
 Move at preparation ([security](../../SECURITY.md)), before anything is copied for the
 item: a permission error that names it ("Permission denied: it cannot be moved out of
 its folder, …"; a read-only mount says so instead) and, like every other transfer
-error, offers Retry, Skip and Skip all of this error type (T-E06; until 21 November it
-was an Unsupported error that ended the job without a question). Skip leaves the item
+error, offers Retry, Skip and Skip all of this error type. Skip leaves the item
 in its folder, and a job left with nothing to do ends at once, Failed, with the item's
 error and its skip (`Preparation::is_last_root`). Nothing was copied for it, so there is
 no verified copy to account for. Windows needs nothing here: a folder's read-only
@@ -611,7 +607,7 @@ Optional contracts default to Unsupported:
 | `prepare_move_source` | Retain the actual source reader plus opaque root authority, without changing source names. |
 | `TransferSource::next_move_child` | Open one child relative to the held directory without following links, returning explicit Move authority. Ordinary Copy sources refuse this method. |
 | `TransferSource::next_move_child_or_failure` / `prepare_move_child` | The next Move child, or that child's own failure apart from its folder's (the default reports every failure as the folder's); prepare a failed child again by name for Retry. Wrappers that forward `next_move_child_with_links` forward both. |
-| `prepare_move_destination` | Qualify retained stage read and final-name proof support before copying. |
+| `prepare_move_destination` | Confirm retained stage reads and final-name proof support before copying. |
 | `rewind_for_validation` | Rewind the existing source/stage file object and obtain a fresh handle-only revision guard; no old source pathname reopen. |
 | `revalidate_publication` | Check held destination directory/final basename against the exact held stage identity, without following replacement links. |
 | `TransferMoveCapture::capture` | Temporarily stage the held source under its raw basename in a private sibling directory. Structured outcomes describe actual mutation; this call does not delete data. |
@@ -640,8 +636,8 @@ Drop never removes originals. Regular-file removal on Windows requires local fix
 files. Windows refuses readonly files and any named alternate
 data stream, including empty streams that were not copied and verified.
 
-Linux now supports live-validated removal of owned, single-link regular files on
-qualified local ext filesystems with protected source parents. Preflight retains
+Linux supports live-validated removal of owned, single-link regular files on
+local ext2/3/4 filesystems with protected source parents. Preflight retains
 a read lease before publication, refusing existing writers or writable mappings.
 A dedicated thread blocks only its own SIGIO, receives the thread-directed
 lease-break notifications and releases a breaking lease at once, so another program
@@ -657,7 +653,7 @@ refuse removal. A writer that opens the source between the final check and the
 unlink is not detected.
 Private staging does not isolate malicious same-UID/root namespace mutation.
 Unsupported source filesystems/kinds/rights fail before that entry's publication without a
-silent downgrade to Copy. See [native qualification and race evidence](../verification/2026-11-08-ordinary-move.md).
+silent downgrade to Copy. Race evidence: [ordinary Move record](../verification/2026-11-08-ordinary-move.md).
 
 On Windows, a Read oplock probe on an asynchronous exact-object `ReOpenFile`
 handle rejects preexisting writable mapped sections. Its pending IO is cancelled
@@ -669,7 +665,7 @@ the held stage, that the staged name is gone and flushes the stage, and the empt
 stage is removed, before the next file
 ([Move durability on Windows](#move-durability-on-windows)). External readers can
 retain bytes after logical name removal; physical storage release is not promised. Named stream sharing is per stream: no whole-file snapshot/CAS claim is
-made. Qualification is repeated before removal and late ADS changes refuse it.
+made. These checks are repeated before removal, and a late stream change refuses it.
 
 A skip retains that entry or subtree and all of its active source ancestors.
 Other siblings can still finish. Source directories are removed in postorder,
@@ -716,14 +712,12 @@ disposition/durability counters include empty-directory removals. They do not
 measure reclaimed space.
 No destination rollback or batch rollback is attempted.
 
-Salamander `src/worker.cpp` cross-volume `DoMoveFile` calls `DoCopyFile`, then
-deletes that file's source on successful non-skipped copy (around lines6067–6080).
-FM follows this per-file interaction with independent destination readback under
-the selected policy (full SHA-256 by default), held-object deletion and no
-readonly/ACL weakening. Earlier retained-source
-Move verification reports are historical and superseded by this ordinary policy.
+This per-file order (copy one file, then remove its source once the copy succeeded and
+was not skipped) is the one Salamander's cross-volume Move uses. Midnight Explorer adds
+independent destination readback under the selected policy (full SHA-256 by default),
+held-object deletion and no read-only or ACL weakening.
 
-Qualified same-volume native Move renames without reading or hashing contents.
+A same-volume native Move renames without reading or hashing contents.
 Cross-volume Move and explicit directory merges use per-file verification under
 the job's immutable full/quick policy before source removal. A Move from another drive
 needs a destination that keeps a replaced file recoverable (`recoverable_replacement`:
@@ -739,20 +733,20 @@ on the destination's own drive
 renames and is not refused; where the facts are unknown, the job decides. Native permission
 errors do not authorize a cross-device fallback. Recursive Move uses ContentOnly;
 required modified time still
-accepts only distinct regular-file roots. Links move as links on Linux (see
-[links](#links-in-copy-and-move)); hardlinks, virtual providers and broader metadata
-remain separate unfinished scope. No phase promises an atomic
-snapshot or batch rollback under arbitrary concurrent mutation. See
-[recursive native qualification](../verification/2026-11-08-recursive-move.md).
+accepts only distinct regular-file roots. Under `Preserve` links move as links on Windows
+and Linux (see [links](#links-in-copy-and-move)). Hard links, virtual providers and broader
+metadata are not handled yet (MOVE-01 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). No
+phase promises an atomic snapshot or batch rollback under arbitrary concurrent mutation.
+Recursive Move evidence: [recursive Move record](../verification/2026-11-08-recursive-move.md).
 
 ## Required modified time
 
-Existing requests and constructors remain `ContentOnly`. An explicit
+Requests and constructors default to `ContentOnly`. An explicit
 `Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
 `TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
 selection or shared clipboard input, with an explicit Copy/Move intent.
-The first slice accepts at most 64 distinct native regular-file roots within the
-existing 4 MiB proof-path reservation. Directories, links, virtual sources and
+It accepts at most 64 distinct native regular-file roots within the 4 MiB proof-path
+reservation. Directories, links, virtual sources and
 unsupported providers are refused without a policy downgrade. The UI option is
 described separately in [transfer options](TRANSFER_OPTIONS.md).
 
@@ -761,8 +755,8 @@ content writes. Source pins capture a consistent native modified time and
 revision before any source data read, retaining the existing file object through
 `Arc<File>`. This adds no source write authority or pathname reopen. Native read
 errors propagate; continuously changing metadata is refused after bounded
-capture attempts. Existing stages and constructors retain their original rights;
-Windows requests WRITE_ATTRIBUTES only on newly owned required-metadata stages.
+capture attempts. Other stages keep their rights; Windows requests WRITE_ATTRIBUTES
+only on newly owned required-metadata stages.
 
 For a copied file, source streaming and independent destination readback complete
 under the frozen full/quick policy first. The source metadata pin is revalidated;
@@ -771,7 +765,7 @@ unpublished stage, synchronized and read back exactly, then the source pin is
 checked again. Readback has no rounding tolerance. A metadata failure cannot
 publish that file or create a Move proof. Before publication, both the source pin
 and stage time are checked again; validation errors are terminal. A late conflict
-reuses this same verified stage through existing replacement preparation.
+reuses this same verified stage through replacement preparation.
 
 Preflight establishes kinds and capabilities, not that every source timestamp is
 representable by every destination. Value-specific destination precision failures
@@ -780,7 +774,7 @@ files may remain published; a failure at this stage prevents removal of that sou
 and stops subsequent Move work. There is no silent switch to content-only copying.
 
 Move proofs retain the metadata pin and expected modified time alongside their
-existing source/stage/digest/length. The selected-policy source/destination proof,
+source, stage, digest and length. The selected-policy source/destination proof,
 fresh native read guards and exact final-name checks remain mandatory. Full mode
 hashes both objects; quick mode retains its exact-length/sample guarantee. Expected
 source and
@@ -793,10 +787,10 @@ an exceptional restoration conflict preserves and reports the exact staged bytes
 
 Windows preserves native 100 ns values and explicitly refuses reserved/unsettable
 FILETIME values; Linux preserves native nanoseconds, including supported negative
-epoch values, with access time left to its existing policy. Timestamp readback is
+epoch values, and leaves the access time unchanged (`UTIME_OMIT`). Timestamp readback is
 verified after native synchronization, and native tests also check the final
-closed file. Current native filesystem coverage is NTFS on Windows and ext on
-Linux; this does not broaden remote commit or power-loss guarantees. Native
+closed file. Native tests cover NTFS on Windows and ext on Linux; this does not
+extend remote commit or power-loss guarantees. Native
 version checks are still not immutable snapshots.
 
 ## Progressive selection feedback
@@ -829,9 +823,8 @@ before native root/loaded-branch reconciliation. See the
 A file list on the clipboard or in a drag and drop holds any number of paths. Its names
 are bounded instead, at most 4 MiB (`MAX_FILE_CLIPBOARD_BYTES`), which bounds the memory
 that a payload from another program can take. CF_HDROP and URI lists have no item limit,
-and since 21 November neither have the decoders, Ctrl+C, a drag to another application
-or the panel selection resolved for them (`file_targets::resolve_payload`); lists of
-more than 4,096 paths were refused before.
+and neither have the decoders, Ctrl+C, a drag to another application or the panel
+selection resolved for them (`file_targets::resolve_payload`).
 
 One Copy, Move, Paste or drop of native items takes at most 4,096 of them
 (`MAX_NATIVE_TRANSFER_ROOTS`). Preparation opens every selected item and its parent
@@ -846,10 +839,11 @@ native roots). Content-only Move keeps its own limit of 64 roots.
 
 Inline-tree captures take every row their projection can select, within the projection's
 own bounds: 10,000 rows and 16 MiB of newly owned target memory
-(`TreeProjection::MAX_ROWS` and `MAX_BYTES`; 4,096 targets and 4 MiB until 21 November).
+(`TreeProjection::MAX_ROWS` and `MAX_BYTES`, applied in `tree_action_capture.rs`).
 Each consumer bounds what it holds per item: an inline-tree Delete pins at most 4,096
-roots before its confirmation; checksums, Custom Commands, Properties and system menus
-take 4,096 items; metadata edits take 256.
+roots before its confirmation (`MAX_CAPTURED_DELETE_ROOTS`); Custom Commands, Properties
+and system menus take 4,096 items; metadata edits take 256 (`MAX_METADATA_TARGETS`);
+checksums take every captured row.
 
 ## Windows namespace pins
 
@@ -883,8 +877,7 @@ change up to its native operation are one batch, and the host's refresh of the p
 the change touched is another. A batch changes no names; an external rename during a
 batch is seen by the next batch, as by a check that ran just before the rename, and a
 check that fails is never kept. A copied file's stage creation and publication thus
-check the destination's ancestry four times instead of eleven (44 instead of 121
-ancestor opens for a folder 12 levels deep; WIN-8 in the
+check the destination's ancestry four times (WIN-8 in the
 [Windows acceptance record](acceptance/windows.md)).
 
 A turn reserves each pin at most once. The pin of a private directory that the turn
@@ -922,7 +915,7 @@ build volume does not provide
 A job prepares its selected items, to plan its namespace claims, before admission grants
 it, and keeps what it prepared while it waits for granted jobs that may still change those
 items and the folders around them. Windows checks the sharing of every open handle
-(measured on NTFS, Windows 11, 2026-11-21):
+(measured on NTFS under Windows 11):
 
 - While any handle on a folder denies write sharing, every rename into that folder fails
   with `ERROR_SHARING_VIOLATION` (32): another job publishing a copied file, a recovery
@@ -958,9 +951,7 @@ planned item, or the job reports "Planned native source changed". A file must ke
 whole revision; a folder only its identity, kind and path, since its modification time
 (and a size, where a platform reports one) changes whenever an entry is added to it or
 removed from it, as when the job it waited for publishes into it. What the folder holds
-is checked entry by entry when it is listed. Before 21 November a waiting Copy of a
-folder that the busy job wrote into ended Failed on such volumes and copied it where
-lookups are unqualified.
+is checked entry by entry when it is listed.
 
 While a job copies, discovers or moves a folder, and while it follows a directory link into
 a target folder, it holds that folder with read and write sharing: the folder's own name
@@ -971,15 +962,12 @@ guarded by its own handle. A file being read and verified still denies write and
 sharing until it is done, so its content and name cannot change, and a program that
 already writes it makes its open fail (`os error 32`) instead.
 
-Before this, a Copy waiting to read a busy job's output held that folder with read-only
-sharing while it was prepared, so the busy job failed to publish its next file there (CI run
-44841450903, `reading_the_busy_copys_output_waits_for_it_with_its_reason`); where lookups
-are unqualified (8.3 names enabled) the waiting Copy kept that handle for its whole wait.
-`transfer::source::sharing_tests` and
-`immediate_start::the_busy_copy_publishes_into_output_that_a_waiting_copy_prepared` cover
-it.
+`transfer::source::sharing_tests` (Windows) and the engine's
+`immediate_start::the_busy_copy_publishes_into_output_that_a_waiting_copy_prepared` and
+`immediate_start::reading_the_busy_copys_output_waits_for_it_with_its_reason` cover this: a
+Copy that waits to read a busy job's output does not keep that job from publishing there.
 
-Still open: a prepared Move item takes its guard at once (DELETE access, delete sharing
+Known limit: a prepared Move item takes its guard at once (DELETE access, delete sharing
 denied on the item, and traverse access with delete sharing denied on its folder). Other
 jobs can publish into a moved folder, but a granted job that renames or removes that item
 or its folder meanwhile fails with a sharing violation; where two Moves meet there,
@@ -1030,7 +1018,8 @@ remembers up to 64 folders per batch). An external rename of an ancestor during 
 batch is seen by the next batch, as by a walk that ran just before the rename.
 
 The Linux namespace unit tests create their fixtures in the temporary folder
-(`TMPDIR`), which must therefore lie on a qualified mount; below a bind-mounted folder,
+(`TMPDIR`), which must therefore lie on a mount with exact lookup keys (above); below a
+bind-mounted folder,
 such as a container's `_build`, they stop with "fixture requires qualified local byte
 lookup".
 
@@ -1045,8 +1034,9 @@ and for Copy and Move (`crates/midnight-ui/src/transfer_link_option.rs`):
 | Copy the files links point to | `FollowLinks` | a followed link becomes the file or folder it points to | the same copy, verified like any copy, then only the link is removed |
 | Keep links as links | `Preserve` | each link is recreated with its exact target | each link is moved itself |
 
-`FollowDirectoryContents` and `EmptyDirectories` remain for their existing callers; the
-dialog no longer sends them.
+The dialog sends only these two. `Reject`, the type's default, refuses links;
+`FollowDirectoryContents` and `EmptyDirectories` are still implemented by the adapters, but
+the dialog does not send them.
 
 ### The default and why
 
@@ -1071,7 +1061,7 @@ what the volume reports is read; nothing is written to find out:
 
 `TransferLinkFacts::copy_files_by_default` copies the files for a destination that cannot
 store links, a network location (Windows) and a removable drive, unless the selection's
-folder is on that same removable drive; elsewhere links stay links. Decision: within one
+folder is on that same removable drive; elsewhere links stay links. The reason: within one
 removable drive the links already live on it, and following them would duplicate data and
 turn a Move's rename into a copy. The dialog (`presenter/copy_dialog_links.rs`) gives the
 reason at the start of the choice's tooltip, which is also its accessible description
@@ -1090,8 +1080,8 @@ default differs from the choice shown, while the user has not chosen, holds the
 confirmation once and shows that folder's default and reason. A confirmation before the
 answer arrives starts with the choice shown, which keeps links.
 
-Copy and Move to FAT32 and exFAT are refused on both platforms by requirements older than
-this choice (Linux stages need `O_TMPFILE`; Windows transfers need 128-bit file IDs), so
+Copy and Move to FAT32 and exFAT are refused on both platforms by other requirements
+(Linux stages need `O_TMPFILE`; Windows transfers need 128-bit file IDs), so
 there the choice only decides what the dialog shows and says; on a removable NTFS, ext4
 or other link-capable drive it decides what is written.
 
@@ -1192,12 +1182,11 @@ serial number and file ID, so it holds across volumes (`transfer::source::volume
 run with `NATIVE_MOVE_OTHER_VOLUME_ROOT`). Kept as links, with the reason, are a link
 whose target is missing or unreadable, a remote target (a UNC path or a mapped network
 drive), a volume mounted in a folder, a reparse point anywhere on a target's way, and a
-folder that contains the link. Decision: these refusals stay (they are what the earlier
-`FollowDirectoryContents` refused as errors); under `FollowLinks` such a link is kept as a
-link instead of failing the job, which this design needs and which is safe because a kept
-link is never opened through. Linux follows a link to a network filesystem and resolves
-links and mount points on a target's way; on Windows each of these still needs its own
-qualification.
+folder that contains the link. `FollowDirectoryContents` reports these as errors; under
+`FollowLinks` such a link is kept as a link instead of failing the job, which is safe
+because a kept link is never opened through. Known limit: Linux follows a link to a network
+filesystem and resolves links and mount points on a target's way; Windows follows none of
+these.
 
 Only links followed inside one another count against the budget of 128, wherever they
 lead: Copy has no fixed depth limit for ordinary folders under any policy (Move keeps its
@@ -1215,8 +1204,7 @@ Copy recreates a link (engine `LinkCopy`): the destination plans it
 (`TransferDirectory::plan_link`, after `admit_link`), then a private stage, sync, an
 independent readback that must equal the planned representation, a revalidation of source
 and stage, then publication. A link the destination cannot create is reported when the job
-reaches it, with Skip and Skip all, and the other selected items are still copied (before
-this, a selected link that a destination refused failed the whole job's preparation).
+reaches it, with Skip and Skip all, and the other selected items are still copied.
 
 - Linux: the stage is `item` in a new owner-only `.midnight-link-<random>` directory
   beneath the protected destination folder (`symlinkat` relative to the held directory),
@@ -1250,8 +1238,8 @@ this, a selected link that a destination refused failed the whole job's preparat
   per job and kept for its folders (`LinkFacts`, held by the folder the job starts from
   and shared with every folder it creates or merges into): whether symbolic links may be
   created, and each destination volume's facts (network location, reparse points,
-  filesystem name), keyed by the volume's serial number. Decision: the `midnight-elevation` helper is not
-  used to create links; it is a one-shot elevated directory reader (and the AppArmor
+  filesystem name), keyed by the volume's serial number. The `midnight-elevation` helper
+  does not create links: it is a one-shot elevated directory reader (and the AppArmor
   installer on Linux), and letting an elevated process create links at destinations the
   unelevated application chooses would widen its authority beyond reading.
 
@@ -1300,7 +1288,7 @@ entries one by one (a file by its own rename where it can) and removes it once e
 for a merge (`Job::copies_instead_of_renaming`); a folder on another volume takes the
 cross-volume route that its failed rename would have taken. The folder's removal follows
 its links' outcomes: a link kept in it (skipped, failed, or not removed) keeps the folder.
-Not handled: a link inside the moved folder whose target lies in the same folder and was
+Known limit: a link inside the moved folder whose target lies in the same folder and was
 already moved by then is no longer found, and is moved as a link with "its target does not
 exist" in the job details.
 
@@ -1374,11 +1362,7 @@ sources and earlier completed moves. Remaining directory metadata preservation
 needs its own declared postorder capability. Physical storage reclamation and
 atomic tree snapshots remain outside the contract.
 
-Planned, not implemented: native selections larger than the 4,096 roots of
-[selection sizes](#selection-sizes) need roots that are opened one at a time. A job would
-keep the selected paths (or the captured selection) and only the identities of roots it
-has not opened yet, open each root just before it copies it and check that identity, and
-total its discovery root by root, so that open handles follow folder depth instead of
-selection size. The protection of later roots from earlier copies (`protected_roots`),
-duplicate and ancestor checks and the root count shown in progress then rely on those
-identities, captured in one pass that closes each root again.
+Known limit: one native transfer takes at most 4,096 roots
+([selection sizes](#selection-sizes)), because preparation keeps every root open. Opening
+roots one at a time, so that open handles follow folder depth instead of selection size,
+is planned but not implemented.

@@ -9,7 +9,7 @@ need verification on the native renderer.
 GPU acceleration is optional. Retained viewer content uses ordinary clipped Slint
 images and continuous transforms, with the same camera/input contract on GPU and
 CPU renderers. A lack of a usable GPU must not disable browsing, viewer controls
-or file operations. Qualify software output separately; GPU timing cannot stand
+or file operations. Measure software output separately; GPU timing cannot stand
 in for CPU timing, and a successful startup does not prove every font/glyph case.
 
 ## Input contract
@@ -75,8 +75,8 @@ The panels read Windows' lines per notch (`SPI_GETWHEELSCROLLLINES`,
 `wheel_setting.rs`, as the viewer does) and its animation effects
 (`SPI_GETCLIENTAREAANIMATION`, `motion_preference.rs`) with the window's first
 native event and whenever it regains the focus. With animation effects off, panel
-wheel input moves at once and the row alignment is immediate. Other systems keep
-three lines per notch, and their reduced-motion settings are not read yet. The viewers
+wheel input moves at once and the row alignment is immediate. Other systems use
+three lines per notch, and their reduced-motion settings are not read (a known limit). The viewers
 honour the animation setting too ([wheel distance](#wheel-distance)).
 
 Every cursor-navigation key reveals the cursor row, also where the cursor stays:
@@ -88,15 +88,7 @@ callback), which uses the ordinary reveal (`file-pane.slint` `reveal-cursor`):
 a row above the view comes to the top edge and a row below it to the bottom edge,
 at once, without row alignment afterwards. Refreshes, Insert and Space that keep the
 row (on the last row), and the wheel reveal nothing; otherwise the cursor is
-revealed only when it or the folder changes. Until 22 November 2026 a key that left
-the cursor in place revealed nothing either, so Home on the first row left a
-wheel-scrolled list where it was.
-
-From 19 to 21 November 2026 the Details and Brief views drew whole rows only and
-nothing aligned the rest position, so every fractional rest (a notch of 60 px over
-22 px rows, any touchpad scroll, a cursor revealed at the bottom edge) left a
-blank band of up to one row below the column header or at the list's bottom, and
-rows popped in and out at both edges while scrolling.
+revealed only when it or the folder changes.
 
 ## Wheel distance
 
@@ -104,11 +96,9 @@ One wheel notch (one winit line) moves content by `midnight_ui_input::notch_pixe
 the shared line distance `LINE_PIXELS`, 100 logical px (Chromium's 100/3 px per line),
 at Windows' default of three lines per notch, in proportion to other settings (1 to 100
 lines), or one screen (the content's visible height) when Windows scrolls one screen at
-a time. It was Slint's own 60 px until 21 November 2026, when the user asked for faster
-scrolling with the same feel: the glide's 200 ms ease-out and the momentum decay are
-unchanged, so a notch travels 5/3 as far on the same curve. A Windows precision
-touchpad reports its finger motion and its system momentum as wheel lines, so its
-travel grows by the same factor.
+a time (`wheel_lines.rs`; `LINE_PIXELS` is in `kinetic_native.rs`). A Windows precision
+touchpad reports its finger motion and its system momentum as wheel lines, so they use
+the same distance per line.
 
 Each host reads the system setting and supplies it; nothing queries it per notch. The
 viewer reads `SPI_GETWHEELSCROLLLINES` (`midnight-viewer-ui/src/wheel_setting.rs`)
@@ -126,7 +116,8 @@ each window's first native event and whenever it gains the focus. A wheel notch 
 scroll key then move their whole distance on the next frame in the Text, Source, Markdown
 and hex views, over PDF and image tiles and over an HTML page, and the shared
 `NativeScroll` synthesises no touchpad momentum (`set_reduce_motion`); a touchpad's own
-system momentum stays the system's. Linux and macOS report no such setting yet.
+system momentum stays the system's. On other systems the setting is not read (a known
+limit).
 
 Tests: `midnight-ui-input` `wheel_lines::tests` (the default, proportions, bounds, one
 screen per notch); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
@@ -145,7 +136,8 @@ The panels' seam in `midnight-ui` behaves the same way. Tests: `acceptance_seams
 
 ## Touchpad momentum (kinetic scrolling)
 
-`KineticScroll` (`midnight-ui-input/src/kinetic.rs`) is the only momentum model.
+`KineticScroll` (`midnight-ui-input/src/kinetic.rs`, which also holds every constant
+below) is the only momentum model.
 It is pure policy (no Winit or Slint types) and is owned per window by
 `NativeScroll`, which the main window, viewer, comparator and every dialog already
 install. Feeding it is `kinetic_native.rs`:
@@ -170,8 +162,8 @@ install. Feeding it is `kinetic_native.rs`:
   an unphased stream coasts only after a clear flick: at least 700 px/s, and its
   newest two reports at least three quarters of the stroke's average (not slowing
   to a stop). A deliberate stop at a steady high speed can still coast there.
-- Momentum decays exponentially with a 0.8 s time constant, longer than iOS's
-  default deceleration (0.5 s) after hands-on feedback: total travel is velocity ×
+- Momentum decays exponentially with a 0.8 s time constant, chosen by feel to be
+  longer than iOS's default deceleration (0.5 s): total travel is velocity ×
   0.8 s, so a 2000 px/s flick glides about 1600 px, 71% of it within the first
   second, and then eases out over about four seconds. It ends below 12 px/s, 0.2 px
   per 60 Hz frame, so the dropped 9.6 px crawl is invisible. Panels, viewers and the comparator share these values, so the
@@ -264,73 +256,52 @@ the page one frame at a time:
 - A wheel notch over the page glides through the shared `WheelMotion` exactly as in
   the text viewer: the viewer's notch distance (`image_motion::notch_pixels`, see
   [Wheel distance](#wheel-distance)) over 200 ms, only undelivered distance adding
-  up, a reversal dropping the old remainder. Each native redraw (8 ms wakes)
+  up, a reversal dropping the old remainder. Each native redraw (8 ms wakes,
+  `WHEEL_FRAME` in `wheel_motion.rs`)
   sends that frame's share as one physical-pixel `Wheel` command, so the page travels
   as far, at the same scale, over the same time. A command the backend queue refuses
   goes out again on the next frame before the glide's clock moves on.
 - The provider starts Chromium with `disable-smooth-scrolling`. CEF's windowless
   wheel events are not precise deltas, and Chromium eases each of them over about
   170 ms (one 120 px event painted as 2, 7, 16, … 120 px over 12 frames); every
-  per-frame delta would be eased again. Keyboard scrolling now jumps at once too, like
-  the text viewer's.
+  per-frame delta would be eased again (`SMOOTH_SCROLLING_OFF` in the provider's
+  `native/input.rs`). Keyboard scrolling therefore jumps at once too, like the text
+  viewer's.
 - Touchpad pixels and X11 finger lines (at `LINE_PIXELS` per line, as in the text
   viewer) reach the page at once, one command per report; Linux momentum arrives
   through the shared kinetic scroller's sink, one command per frame.
-- A wheel with Ctrl, Alt or Super acts once: unglided, with the previous 40 px line,
+- A wheel with Ctrl, Alt or Super acts once: unglided, with a 40 px line (`ACTING_LINE`),
   so Chromium's own Ctrl+wheel zoom (120 units per step) keeps its rate. Shift+wheel
   glides and Chromium scrolls it horizontally.
 - Edges: the page paints a frame only when it moves. Once it has painted since a
   glide or touchpad stream began, 120 ms without a newer presented frame ends the
-  glide and stops momentum, instead of sending the rest of the deltas into the edge.
-  Before that first frame the position is unknown for up to a second: the first
-  scroll of a freshly loaded page took Chromium 350–650 ms to paint (4 of 96 measured
-  gestures), and a glide or momentum is not cut short meanwhile. A page that has not
-  painted a second after the scroll began is taken to be at its edge already. A
+  glide and stops momentum, instead of sending the rest of the deltas into the edge
+  (`STALL` in `web_input.rs`). Before that first frame the position is unknown for up
+  to a second (`FIRST_PAINT`): the first scroll of a freshly loaded page can take
+  Chromium several hundred milliseconds to paint, and a glide or momentum is not cut
+  short meanwhile. A page that has not painted a second after the scroll began is
+  taken to be at its edge already. A
   press, key, touch, pinch, focus loss, touchpad motion, an acting wheel, a wheel
   outside the page or an open popup stops the glide at once, as do a new document,
   mode or layout.
 
-Measured on Linux X11 (CEF 156 debug provider with `diagnostic-timing`, driven over
-MWV1 without the host, 640 × 400 CSS px of a 30,000 px page, notches 24 ms apart,
-medians of four fresh pages; the text viewer's distances come from the real viewer
-UI under a test clock, and the new HTML commands were checked equal to them frame by
-frame). These runs predate the faster notch of 21 November 2026 (60 → 100 px at the
-system's default, [Wheel distance](#wheel-distance)); the page follows the text viewer's
-distance, and its timing was not measured again:
-
-| Scale, notches | Text viewer | HTML before: travel, done | HTML after: travel, done | Page behind text viewer (median) |
-| --- | --- | --- | --- | --- |
-| 1x, 1 | 60 px, 200 ms | 40 px, 172 ms | 60 px, 214 ms | 51 → 9 ms |
-| 1x, 3 | 180 px, 248 ms | 120 px, 254 ms | 180 px, 259 ms | 71 → 9 ms |
-| 1x, 10 | 600 px, 416 ms | 400 px, 397 ms | 600 px, 433 ms | 83 → 9 ms |
-| 2x, 1 | 120 px, 200 ms | 80 px, 194 ms | 120 px, 212 ms | 59 → 16 ms |
-| 2x, 3 | 360 px, 248 ms | 240 px, 236 ms | 360 px, 275 ms | 68 → 17 ms |
-| 2x, 10 | 1200 px, 416 ms | 800 px, 378 ms | 1200 px, 437 ms | 61 → 15 ms |
-
-Before, the host sent 40 px per notch at once and Chromium eased it; the same per-frame
-deltas with Chromium's easing still on lag 90–161 ms. A touchpad stream of 12 px
-reports every 10 ms lagged the finger by 130 ms (1x) and 119 ms (2x) before and by 7
-and 13 ms after. Chromium keeps up with one delta per frame: at the measurement's
-8 ms cadence about two deltas share each painted frame, and the provider's wheel
-trace (`wheel_paint_elapsed_us`, wheel dispatch to the next view paint) stays at a
-median of 2.3–4.4 ms and at most 17 ms, also on a long text page (3.3 ms median, 8.6 ms
-at most); the host therefore sends one delta per redraw without further coalescing.
-Ctrl+wheel still zooms to 110% after three notches, a horizontal or Shift wheel moves
-120 px sideways, and sixty 1 px events move 60 px. On Windows CEF reads `WHEEL_DELTA`
-units scaled by the system's wheel lines; the provider's Windows adapter converts
-(plugin README).
+Chromium keeps up with one delta per frame: measured on Linux X11 with the provider's
+`diagnostic-timing` feature, its wheel trace (`wheel_paint_elapsed_us` in the provider's
+`trace.rs`, wheel dispatch to the next view paint) stayed within a frame, so the host
+sends one delta per redraw without further coalescing, and the page follows the text
+viewer's travel frame by frame. On Windows CEF reads `WHEEL_DELTA` units scaled by the
+system's wheel lines; the provider's Windows adapter converts them (plugin README).
 
 Tests: `midnight-viewer-ui` `web_wheel_tests` (one, three and ten notches, a reversal
 and a horizontal notch sent frame by frame exactly as the text viewer scrolls, at 1x
 and 2x; the glide and momentum stop once the page stops painting, are not cut short
 before its first frame, and stop a second after a scroll that never paints began; X11
-lines; Ctrl+wheel unchanged); the provider's `native::input` tests (sub-DIP
+lines; Ctrl+wheel acting once); the provider's `native::input` tests (sub-DIP
 accumulation, a glide's last DIP despite float rounding, a gesture's rest carried and
 dropped at its end, a notch within one wheel unit's scroll at 1–20 lines on Windows)
 and the opt-in
 `native_runtime` `chromium_applies_each_wheel_event_at_once` (one event scrolls its
-whole distance in the next frame and stops at the top; it fails against the old
-provider with frames at 2, 7, 16, … 120 px).
+whole distance in the next frame and stops at the top).
 
 ## Rendering and bounded work
 
@@ -442,7 +413,7 @@ and change together ([record](../verification/2026-11-19-slint-build-speed.md)).
 `midnight-ui-input::NativeScroll` handles the paths that these scroll bars and
 Slint Fluent 1.18.1 update immediately: wheel input on scrollbar overlays and the
 application's vertical-to-horizontal command-directory strip. Ordinary `ScrollView`
-and `ListView` content keeps the SDK's existing wheel and touch physics. The observer
+and `ListView` content keeps the SDK's wheel and touch physics. The observer
 replaces unphased `LineDelta` notches with fractional events on native redraw and,
 on Linux, delivers touchpad finger motion itself (see Touchpad momentum); other
 precise pixel input and scrollbar dragging retain their own handling. Closed combo boxes do not receive synthetic selection events.
@@ -457,12 +428,12 @@ SDK scrollbar wheel handler before changing the offset, including native pixel
 and phased input that passes through unchanged. Find therefore releases
 cursor-following without changing the selected result.
 
-Main-window input gives the existing file-panel observer first refusal and uses
+Main-window input gives the file-panel observer first refusal and uses
 the same notification for its scrollbar wheel input. The
 shared observer covers the remaining main-window surfaces, native dialogs and
 working tools created by `DialogHost`, the comparator's file chooser and standard
-scrollbar controls, and ancillary scrollbar controls in viewer windows. Existing viewer input
-observers remain responsible for their content surfaces.
+scrollbar controls, and ancillary scrollbar controls in viewer windows. The viewer
+windows' own input observers remain responsible for their content surfaces.
 
 This integration assumes the pinned Winit backend: it does not override
 `create_child_window_adapter`, so both standard SDK combo-box popups and custom
@@ -485,15 +456,15 @@ vertical camera as the body. Text/image mode, search and typography remain
 independent. See [the prepared text window](#prepared-text-window) below.
 
 Coordinates use the effective bounded raster viewport, not necessarily the full
-physical window: the existing geometry cap can reduce large high-DPI viewports.
-The frontend maps each axis using `info.viewport / content_size`. Each strip becomes
+physical window: the geometry cap can reduce large high-DPI viewports. The
+frontend maps each axis relative to that viewport (`info.viewport`). Each strip becomes
 one image when it first arrives, and it keeps that image and its row in the window's
 strip model while later frames still show it (`raster_presentation.rs`). Rows are only
-appended and removed, at heights below a base that moves at most every 32 screens;
-`raster-bands-origin` places the base below the page origin. The renderer uploads a
-row's texture again whenever that row changes, and every row's when the model is
-replaced: replacing the model for each new strip list re-uploaded all shown strips
-several times a second. A camera at rest stands on a whole raster pixel, where strips
+appended and removed, at heights below a base that moves at most every 32 screens
+(`STRIP_BASE_SCREENS`); `raster-bands-origin` places the base below the page origin. The
+renderer uploads a row's texture again whenever that row changes, and every row's when
+the model is replaced, so the model is kept: replacing it for each new strip list would
+upload all shown strips again several times a second. A camera at rest stands on a whole raster pixel, where strips
 are exact; old replies cannot pull a newer gesture backward.
 
 Absolute camera requests coalesce without crossing selection or context changes.
@@ -577,39 +548,22 @@ provider can stop earlier at a byte budget of its own: the basic and source view
 send at most about 8 KiB, which for rows of a few hundred bytes is no taller than the
 viewport. The engine then reads the contiguous
 next range (backwards, the previous one) and joins the replies into one page, up to
-the request's line budget and at most 120 KiB (`PAGE_BYTES`, `worker_chain.rs`), so
+the request's line budget and at most 120 KiB (`viewport::PAGE_BYTES`, joined in
+`worker_chain.rs`), so
 such rows scroll like short ones. A page of row groups holds the rows it keeps of the
 shown page and at most 120 KiB more per request, up to 1 MiB (`MAX_ROWS_BYTES`), and no
 row it reads grows past 120 KiB or 4,096 colour spans (`worker_chain::Budget`). A joined
 backward page whose first row may be cut
 drops that row: a row's tail never shows as a line of its own. An incomplete
 byte-limited fragment that is still shorter than a viewport (a row longer than that
-bound) temporarily retains the existing viewport renderer rather than inventing
+bound) temporarily falls back to the viewport renderer rather than inventing
 continuous coverage or EOF.
 
-Measured on 21 November 2026, single runs on a loaded machine
-([record](../verification/2026-11-21-prepared-text-window.md)). In the timed
-co-simulation (`worker_prepared_tests.rs`, release) with the former 60 px notch, a
-40-notch wheel spin over a 100 MB file stalled 13 frames before and none after at 1x,
-and 31 and none at 2x. The worker's time for the gesture fell from 664 to 29 ms, and
-from 908 to 58 ms at 2x. Prepared strips held at most 35 MiB at 1x and 62 MiB at 2x
-(the budget is 64 MiB). With the 100 px notch the same spin, about five screens a
-second, stalls 3 frames at 1x and 4 at 2x. Unwrapped rows wider than the window still
-stall as before (88 of 103 frames for 2400-byte rows, 93 of 109 before): a page of at
-most 120 KiB holds too few of them to prepare screens ahead. In the native probe,
-frames later than 25 ms within a wheel notch fell from 54 to 6 for Text at 1x, from 68
-to 3 at 2x, and from 98 to 4 for Source at 2x. Source at 1x is unresolved: one run
-under build load had 25 late frames, against 15 before.
-
-On 22 November the co-simulation's window was made to glide like the real camera, whose
-requests are settled only once their wheel motion ends: with it the fast spin stalls no
-frame before or after, so its 3 and 4 stalled frames came from the model. Since then a
-Source scrollbar drag whose positions wait for their page paints no strip again (5
-strips over a 61-frame drag before), and eight PageDowns over 100 MB stall no frame (3
-to 6 before) ([follow-up](../verification/2026-11-22-text-scrolling-follow-up.md)). Unwrapped
-rows wider than the window stalled until their pages were laid out in [row
-groups](#row-groups): every refill shaped its whole page of at most 120 KiB again for at
-most a guard (256 px) of travel.
+The timed co-simulation (`worker_prepared_tests.rs`) checks these rules against a
+camera that glides like the real one. Measurements:
+[prepared text window](../verification/2026-11-21-prepared-text-window.md) and
+[follow-up](../verification/2026-11-22-text-scrolling-follow-up.md); unwrapped rows wider
+than the window rely on [row groups](#row-groups).
 
 Native GPU allocation stalls are addressed separately by the pinned FemtoVG
 [upload cache](../../vendor/README.md). In-flight buffers become reusable only
@@ -617,11 +571,10 @@ after successful GPU completion and remapping. The pool is bounded, adds no
 blocking wait or extra submission, and keeps input/presentation independent of
 source I/O.
 
-See the [implementation and acceptance plan](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
-and [viewer measurements](../verification/2026-11-11-viewer-pixel-scroll.md).
-Backend/camera tests and a correct transform do not by themselves qualify native
-60 Hz performance; sustained refills, idle restart and real rendered pixels
-remain part of the measurement gate.
+Viewer measurements: [pixel-scroll record](../verification/2026-11-11-viewer-pixel-scroll.md).
+Backend and camera tests and a correct transform do not show native 60 Hz
+performance; that needs native measurements of sustained refills, idle restart and
+rendered pixels ([native measurements](../NATIVE_SCROLL_VERIFICATION.md)).
 
 ### Row groups
 
@@ -649,18 +602,9 @@ the highlight of the row selected whole, can differ by a few pixels between one 
 row groups; glyphs, carets, hit tests and copies do not use that advance
 ([record](../verification/2026-11-22-long-rows-row-groups.md)).
 
-Measured on 22 November 2026 in the release co-simulation, single paired runs on the
-loaded development machine. Over unwrapped 2400-byte rows at 1x, the 40-notch spin with
-the 100 px notch stalled 137 of 165 frames before and 5 of 117 after (11 in a second run
-of the same build, and 0 and 18 in two runs of the build before its last change), and
-with the 60 px notch 79 and none, 96 and none at 2x. A touchpad flick stalls no frame (48
-before), eight PageDowns 120 ms apart 55 (206 before), and the spin shaped 481 KiB
-instead of 2280 KiB: each refill shaped the rows it added and at most the group its new
-edge cut, 125,209 bytes for 122,880 added, for instance. The 40-notch spin still stalls
-a few frames under load: a refill's worker turn takes 80 to 130 ms (about 37 ms shaping
-its 120 KiB, the rest placing the reused groups and painting the strips at its old edge),
-and the co-simulation answers a plugin read, 8 KiB or about three such rows, only
-between worker turns. Wrapped rows, 60-byte rows and Source stall no frame, as before.
+Known limit: a fast wheel spin over unwrapped rows wider than the window can still stall
+a few frames under load, because one refill's worker turn shapes up to 120 KiB and places
+the reused groups ([measurements](../verification/2026-11-22-long-rows-row-groups.md)).
 
 ### Source highlighting
 
@@ -698,18 +642,10 @@ only for what the shown page needs (`worker_syntax.rs`):
   source ranges within the page. The Source viewer's checkpoints and preparation state stay
   within their fixed 256 records and 64 KiB per file.
 
-Measured on 22 November 2026 in the worker's co-simulations with a model of the Source
-viewer's checkpoints, release builds, three runs each on the loaded development machine
-([record](../verification/2026-11-22-source-highlighting.md)). Over 150 rows of synthetic C++
-(6 KB), twelve wheel notches prepared the file 25 times and showed the notice 23 times before,
-a touchpad flick prepared it 102 times, and the worker spent up to a second on gestures; after
-the change no gesture prepares, refreshes or notices anything, and the page holds the whole
-file instead of the refresh's rows (1 KiB after eight PageDowns before). Over 2.2 MB the
-gestures after a jump to 30 % prepared 3 to 61 times each before and none after; the jump's
-rows are prepared once, in three requests of 256 KiB, and show plain for 8 frames. No gesture
-stalled a frame over either file, before or after. In 16 MB a jump to 80 %, a walk of
-12.8 MB, showed its rows plain for about 100 frames and the notice once; the first gesture
-after it stalled a frame or two on a refill, with no highlighting work (not measured before).
+The constants are in the Source viewer's `checkpoints.rs` (128 spread checkpoints, 126
+recent lines, 256 records) and in `worker_syntax.rs` (`MAX_SCAN_BYTES`, `PLAIN_GAP`,
+`MAX_REFRESH_LINES`, `REFRESH_REACH`, `NOTICE_DELAY`). Measurements:
+[source highlighting record](../verification/2026-11-22-source-highlighting.md).
 
 ## Scrollbar coverage and small source blocks
 
@@ -729,12 +665,10 @@ the same path. Partial pages use their actual loaded bounds; file length alone
 cannot prove complete coverage.
 
 Text/source files no larger than 8 KiB already fit a fixed source block. Their
-request may use the existing 512-line ceiling instead of splitting that block
-solely because the window is short. Byte budgets remain unchanged; larger files
-still request viewport-sized fragments. This does not introduce file-sized memory
-allocation or eager loading for large files.
+request may use the 512-line ceiling instead of splitting that block solely because
+the window is short. The byte budgets stay as above; larger files request
+viewport-sized fragments. Nothing allocates file-sized memory or loads a large file
+eagerly.
 
-The exact user JSON/XML cases pass wheel and scrollbar checks with both GPU and
-software rendering. Some late frame gaps remain, so the result is not a uniform
-60 Hz guarantee. See the final qualification in
-[viewer verification](../verification/2026-11-11-viewer-pixel-scroll.md).
+Known limit: some late frame gaps remain, so there is no uniform 60 Hz guarantee
+([viewer record](../verification/2026-11-11-viewer-pixel-scroll.md)).

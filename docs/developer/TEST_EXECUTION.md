@@ -12,18 +12,21 @@ build step (native backend only). Run them on their own once the toolchain and
 Python 3.12+ are installed:
 
 ```text
-pwsh -NoProfile -File scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]]
-bash scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]]
+pwsh -NoProfile -File scripts\validate.ps1 [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
+bash scripts/validate.sh [debug|release] [--strict] [--offline] [--dry-run] [--jobs N] [--only ID[,ID...]] [--plugin-sdk CONFIG] [--worker-sdk CONFIG] [--web-sdk CONFIG]
 ```
+
+`--offline` (or `CARGO_NET_OFFLINE=true`) forbids downloads. The `--*-sdk` options use an
+already packaged SDK bundle instead of packaging one, as CI's plugin jobs download theirs.
 
 Builds and tests use every logical CPU: Cargo's build jobs, libtest's test threads
 and the native dav1d builds of the raster plugins. `--jobs N` limits all of them to N
 (it sets `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` for every step);
 `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` set by the caller have the same effect.
 `--dry-run` prints every step with its commands, the variables they use and why a step
-would be skipped, and runs nothing. Both scripts list the same 40 steps in CI's job
-order (a test keeps them in step); a step that belongs to the other platform is
-listed as skipped:
+would be skipped, and runs nothing. Both scripts list the same 42 steps in CI's job
+order (`test_validate.py` keeps them in step); a step that belongs to the other platform
+is listed as skipped:
 
 | CI job | Steps |
 | --- | --- |
@@ -34,7 +37,7 @@ listed as skipped:
 | not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix), `html-viewer` (`--no-default-features`, without native CEF) |
 | `archive-filesystem`, `filesystem-libraries` | `archive` (tests, release package, fixture export), `filesystem-api`, `filesystem-native` and `filesystem-network` (tests, release package) |
 | `scripts-and-lint` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5` |
-| `check` | `workspace-tests`, `trash-qualification`, `bad-descriptor`, the ten ignored qualification steps, `x11-dnd`, `x11-clipboard` |
+| `check` | `workspace-tests`, `trash-qualification`, `bad-descriptor`, the eleven steps that run ignored tests after the gates (`host-plugin-ignored`, `viewer-engine-ignored`, `native-fs-ignored`, `engine-native-ignored`, `network-metadata-ignored`, `app-native-viewers`, `image-process-ignored`, `pdf-process-ignored`, `archive-worker-ignored`, `archive-nested-ignored`, `archive-streaming-ignored`), `x11-dnd`, `x11-clipboard` |
 | `release` | `host-build` and `smoke-test` for the selected profile |
 
 CI runs the `public-sdk` and `public-worker-sdk` jobs on ubuntu-24.04 only; its
@@ -116,8 +119,8 @@ a CI build exactly; see [CI jobs and build time](#ci-jobs-and-build-time));
 the filesystem API tests run once instead of in both filesystem jobs; and the two
 modules above that CI does not build yet are included when their inputs exist.
 Validation does not run inside `build.sh`'s Docker backend: the build image has no
-Xvfb, mounts the source read-only and has not been qualified for the tests, so
-`build.sh --validate` refuses Docker.
+Xvfb, mounts the source read-only and is not set up for the tests, so
+`build.sh --validate` refuses Docker (exit status 2).
 
 ## CI jobs and build time
 
@@ -152,10 +155,11 @@ no Cargo configuration sets a job count. Limit them where several builds share a
 machine, or where memory is short (one generated UI crate alone needs up to 7 GB): with
 Cargo's `-j N`, the scripts' `--jobs N` (`validate.*`, `ci-workspace-tests.py`) or
 `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`. On Windows,
-`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe` (the pinned toolchain's LLVM linker) made the test executables of a CI-equivalent build about a
-fifth faster to build on the development machine, and every test passed; on the hosted
-runners it made no measurable difference, so CI does not use it. Set it only for test
-builds: release builds keep the MSVC linker.
+`CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=rust-lld.exe` (the pinned toolchain's LLVM
+linker) can build the test executables faster on a developer machine; on the hosted
+runners it made no measurable difference, so CI does not use it
+([CI time](../verification/2026-11-21-ci-time.md)). Set it only for test builds: release
+builds keep the MSVC linker.
 
 ## Acceptance suite
 
@@ -170,8 +174,7 @@ its build steps, and on Windows `pwsh -File scripts\acceptance.ps1` builds and r
 synthetic input against a generated fixture tree and writes an HTML report below
 `_build/acceptance/` on every platform, unless `MIDNIGHT_ACCEPTANCE_RUN_DIR` (or
 `--run-dir` of `scripts\acceptance.ps1` and of the test executable) names another
-absolute folder ([results](ACCEPTANCE.md#results)); the recorded Windows runs chose
-`_build\acceptance-win`. Its only test target
+absolute folder ([results](ACCEPTANCE.md#results)). Its only test target
 requires the `acceptance` feature of `crates/midnight-acceptance`, so
 `cargo test --workspace` and `scripts/ci-workspace-tests.py` never build or run it.
 See [the acceptance suite](ACCEPTANCE.md) and its
@@ -196,7 +199,7 @@ binary: `tests/integration.rs` declares every other `tests/*.rs` file as a modul
 and Cargo `autotests` is disabled, so each test is named `<file>::<test>`. A guard
 test, `every_test_file_is_a_module`, fails when a new file is not declared. One
 binary per crate avoids one link step, one executable and one cold process start
-per test file; select a former file with a module filter such as `shortcuts::`.
+per test file; select one file's tests with a module filter such as `shortcuts::`.
 `midnight-worker-platform` and `midnight-platform-windows` keep one binary per
 file because their tests change or inspect process-wide containment and terminal
 state. In `midnight-worker-platform` a topic's Linux-only tests are the `linux`
@@ -226,24 +229,22 @@ the binary's entry point and therefore also refuse a module file declared there.
 Some `midnight-engine` integration test files include library sources with
 `#[path]` to reach their `#[cfg(test)]` internals (checksums, retirement, file
 targets). `cfg(test)` holds there too, so each include also compiles and runs the
-unit tests that those sources declare: on Windows 193 of the executable's 485 tests are
-library unit tests run again (they take 1.3–2.5 s alone; [CI time](../verification/2026-11-21-ci-time.md)).
+unit tests that those sources declare: on Windows a large share of that executable's
+tests are library unit tests run again ([CI time](../verification/2026-11-21-ci-time.md)).
 No `cfg` tells the library's test build from such an include, and declaring the test
 modules inside a macro would hide their files from `cargo fmt`, which follows no `mod`
 inside a macro call; a new `#[path]` include of a source with unit tests adds them again.
 
 On Windows with Microsoft Defender real-time protection, the first start of a newly
-linked test executable costs about 1.3 s plus 0.17 s per MB (0.8 to 2.2 s below 5 MB,
-17.6 s for the 108 MB `me` test executable), a later start 0.01 to 0.1 s. Most of the
-cost follows a new file content (a byte-identical copy of a known executable costs
-about a fifth), and it returns after some minutes without a start. A test run right
-after a build pays it once per new executable, so fewer and smaller executables save
-time even where they hold no test; Linux has no such cost. When comparing test times,
-compare runs in the same state (each executable newly linked, or each one started
-moments before) and say which. Single first starts vary widely (an unchanged 1.1 MB
-executable took 1.2 s in one probe and 9.5 s in another), so compare first starts of the
-executables that a change adds, removes or resizes over several samples each, not as the
-difference of two sums of single starts ([test speed pass](../verification/2026-11-18-test-speed-pass.md)).
+linked test executable takes a second or more, growing with its size, and a later start a
+small fraction of that. Most of the cost follows new file content, and it returns after
+some minutes without a start. A test run right after a build pays it once per new
+executable, so fewer and smaller executables save time even where they hold no test;
+Linux has no such cost. When comparing test times, compare runs in the same state (each
+executable newly linked, or each one started moments before) and say which. Single first
+starts vary widely, so compare first starts of the executables that a change adds,
+removes or resizes over several samples each, not as the difference of two sums of
+single starts ([test speed pass](../verification/2026-11-18-test-speed-pass.md)).
 
 The `midnight-engine` library test executable re-runs itself for ten Copy seal
 tests (`copy_seal_tests.rs`, `copy_finish_seal_tests.rs` and
@@ -258,15 +259,15 @@ runner that terminates the parent process itself must also terminate those child
 When reproducing a failed CI job, match its workspace/package selection,
 feature flags, profile, target, toolchain and lockfile. A targeted `-p` pass does
 not establish workspace feature equivalence: shared dependencies can resolve
-with different features. Retain the exact commands and resolved graph/features
-with the receipt, state any differences and limit qualification to that scope.
+with different features. Record the exact commands and the resolved graph and
+features, state any differences, and claim results only for that scope.
 Independent plugins still use their own workspace and normal configuration;
 this does not require blanket workspace builds for independent plugin checks.
 
 CI's `check` job runs the workspace in `scripts/ci-workspace-tests.py` gates
 (`cargo test --workspace` with every member's active features, one gate per
 target kind and bounded batches of integration names; a same-name group such as
-the ten `integration` binaries stays one indivisible gate). Successful
+the crates' `integration` binaries stays one indivisible gate). Successful
 integration executables are retired to bound disk use. Its later ignored-test
 steps keep that selection instead of `cargo test -p`, which would rebuild shared
 dependencies with one package's narrower features:
@@ -347,7 +348,6 @@ Multiple filters for the same artifact share one listing process and one test pr
 The default process limit is the smaller of four and the available CPU count. `--jobs 1` runs headless targets serially; `--jobs 2` through `--jobs 4` request bounded parallel execution. The limit is also clamped to CPU count, target count and `--thread-budget`. The total libtest thread budget defaults to available CPUs and is divided between child processes; an inherited smaller `RUST_TEST_THREADS` limit is preserved. Tests may create their own threads, so this is a libtest worker budget, not a system-wide thread guarantee. Prefer `--jobs 1` for targets that intentionally share a caller-provided fixture.
 
 Each artifact runs from its package manifest directory, with private `TEMP`, `TMP` and `TMPDIR` directories. Caller-provided installed-provider variables and `MIDNIGHT_NATIVE_TEST_ROOT` remain intact. Do not parallelize targets that mutate the same external fixture simply because their temporary directories differ.
-
 UI software-render snapshots are off by default, as in CI: the runner does not pass `MIDNIGHT_UI_RENDER_DIR` to its children, even when the caller sets it. `--render-snapshots` gives each artifact a private `render` directory beside its logs instead. `midnight-ui` tests then write every snapshot there as `<test>--<snapshot>.bmp`, where `<test>` is the libtest test name with `::` replaced by `.`, and geometry sweeps render every theme and combination instead of only their reference case, so such a run takes much longer. `MIDNIGHT_UI_RENDER_FILTER`, when set, still limits the written snapshots to names that contain it.
 
 ### Private plugin installation root
@@ -398,7 +398,7 @@ system, because the probe is compiled with it (`compiler_identity` in
 `scripts/tests/user-command-probe/assertions.rs`); without it these tests fail. They
 are the `user_commands` integration tests and `user_command_terminal_tests` of both
 platform crates and `tree_user_command_process::` in the `midnight-ui` integration
-binary; the failure was observed on Linux.
+binary.
 
 Those tests use actual subprocesses and a socket rendezvous to prove simultaneous execution, bounded admission, output isolation and cleanup of owned processes while an unrelated process stays alive. They also cover filter coalescing, no-match refusal, receipt/path and independent-workspace validation, changed artifacts and anchored result parsing. They demonstrate runner behavior, not a Rust throughput improvement; report measured elapsed times with the actual selected suite and cache state when comparing runs.
 
@@ -456,8 +456,8 @@ them locally:
    `CARGO_TARGET_DIR` to its build root and `CARGO_INCREMENTAL=0`,
    `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`, as the build scripts do.
 3. Write the large read-only ZIP with `py -3 -B scripts/archive-test-zip.py _build/archive-test.zip`
-   (Linux: `python3 -B`). It is above the former 64 MiB source limit and never
-   replaces an existing file.
+   (Linux: `python3 -B`). It is larger than 64 MiB and never replaces an existing
+   file.
 4. Set `HOST_TEST_INSTALL_ROOT`, `ARCHIVE_TEST_INSTALL_ROOT` and
    `ARCHIVE_CAPTURE_INSTALLATION` to `<root>`, `ARCHIVE_WORKER` to the packaged
    executable, and `MIDNIGHT_ARCHIVE_FIXTURES` and `MIDNIGHT_ARCHIVE_TEST_ZIP` to the
