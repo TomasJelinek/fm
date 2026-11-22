@@ -984,3 +984,48 @@ fn panel_view_previous_defaults_only_remain_when_explicitly_saved() {
         assert_eq!(action(&saved, salamander, ShortcutContext::Files), None);
     }
 }
+
+#[test]
+fn the_elevated_terminal_is_one_unbound_command_a_user_can_bind_everywhere() {
+    let definition = shortcut_catalog()
+        .iter()
+        .find(|definition| definition.id == "command.open-terminal-elevated")
+        .expect("the terminal button's Ctrl+click is a listed command");
+    let label = if cfg!(windows) {
+        "Open terminal as administrator"
+    } else {
+        "Open root terminal (sudo)"
+    };
+    assert_eq!(definition.label, label);
+    assert!(definition.defaults.is_empty(), "no default key");
+    let map = ShortcutMap::new(&[]).unwrap();
+    assert!(
+        map.bindings("command.open-terminal-elevated")
+            .unwrap()
+            .is_empty()
+    );
+    // Ctrl+Enter keeps its default; the focused terminal button handles it itself.
+    assert_eq!(
+        action(&map, "Ctrl+Enter", ShortcutContext::Other),
+        None,
+        "nothing takes Ctrl+Enter from a focused button"
+    );
+    let bound = ShortcutMap::new(&[ShortcutBinding {
+        action: "command.open-terminal-elevated".into(),
+        keys: vec!["Ctrl+Alt+T".into()],
+    }])
+    .unwrap();
+    for context in [
+        ShortcutContext::Files,
+        ShortcutContext::Search,
+        ShortcutContext::Command,
+        ShortcutContext::Other,
+    ] {
+        assert_eq!(
+            action(&bound, "Ctrl+Alt+T", context).as_deref(),
+            Some("command.open-terminal-elevated"),
+            "{context:?}"
+        );
+    }
+    assert_eq!(action(&bound, "Ctrl+Alt+T", ShortcutContext::Viewer), None);
+}

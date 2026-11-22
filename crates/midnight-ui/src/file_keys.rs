@@ -18,6 +18,8 @@ pub(crate) enum WindowAction {
     InsertFullPath,
     InsertPath(i32),
     ExecuteCommand,
+    /// The terminal button's Ctrl+click: the selected shell, elevated.
+    ElevatedTerminal,
     CommandHistory(bool),
     FocusFiles,
     Volumes(i32),
@@ -222,6 +224,7 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "command.insert-left-path" => FileKey::Window(W::InsertPath(0)),
         "command.insert-right-path" => FileKey::Window(W::InsertPath(1)),
         "command.execute" => FileKey::Window(W::ExecuteCommand),
+        "command.open-terminal-elevated" => FileKey::Window(W::ElevatedTerminal),
         "command.history-older" => FileKey::Window(W::CommandHistory(true)),
         "command.history-newer" => FileKey::Window(W::CommandHistory(false)),
         "command.focus-files" => FileKey::Window(W::FocusFiles),

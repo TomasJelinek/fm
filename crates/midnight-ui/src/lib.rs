@@ -1335,6 +1335,9 @@ pub fn install_with_owned(
     callback!(on_open_terminal, |_w, p, s| {
         p.open_terminal(s);
     });
+    callback!(on_open_terminal_elevated, |_w, p, s| {
+        p.open_terminal_elevated(s);
+    });
     callback!(on_history_choice, |w, p, s, id, forward, token| {
         if p.choose_history_entry(pane(id), forward, token.as_str(), s) {
             p.active = pane(id);

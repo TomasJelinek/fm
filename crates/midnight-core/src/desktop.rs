@@ -377,6 +377,29 @@ pub struct TerminalRequest {
     pub mode: TerminalMode,
 }
 
+/// `FsError::operation` of an elevated terminal (`TerminalMode::Elevated`) that did
+/// not start because the user declined the system's consent prompt (Windows UAC).
+const TERMINAL_CONSENT_DECLINED: &str = "start administrator terminal";
+
+/// What a platform adapter returns when the user declines the consent prompt for an
+/// elevated terminal: a choice, not a failure, which the UI states on its status line
+/// instead of reporting an error.
+pub fn terminal_consent_declined(working_directory: &Path) -> FsError {
+    FsError::from_io(
+        TERMINAL_CONSENT_DECLINED,
+        working_directory,
+        std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "The administrator terminal was not started.",
+        ),
+    )
+}
+
+/// Whether `error` is `terminal_consent_declined`, rather than a failure to report.
+pub fn is_terminal_consent_declined(error: &FsError) -> bool {
+    error.operation == TERMINAL_CONSENT_DECLINED && error.kind == std::io::ErrorKind::Interrupted
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DesktopRequestId(pub u64);
 
@@ -898,5 +921,24 @@ mod tests {
             started.elapsed() < failure_wait / 2,
             "the default wait must return when its thread is unparked"
         );
+    }
+
+    #[test]
+    fn a_declined_consent_prompt_is_told_apart_from_failures() {
+        let declined = terminal_consent_declined(Path::new("C:\\文档"));
+        assert!(is_terminal_consent_declined(&declined));
+        assert_eq!(declined.path, Path::new("C:\\文档"));
+        // Another operation's interruption, or another error of this one, is a failure.
+        let interrupted = FsError::from_io(
+            "launch terminal",
+            Path::new("C:\\文档"),
+            std::io::ErrorKind::Interrupted.into(),
+        );
+        assert!(!is_terminal_consent_declined(&interrupted));
+        let failed = FsError {
+            kind: std::io::ErrorKind::PermissionDenied,
+            ..declined
+        };
+        assert!(!is_terminal_consent_declined(&failed));
     }
 }

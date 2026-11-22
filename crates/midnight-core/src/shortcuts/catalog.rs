@@ -564,6 +564,18 @@ fn build() -> Vec<ShortcutDefinition> {
         Command,
         &["Escape"],
     );
+    // The terminal button's Ctrl+click: the selected shell, elevated. Listed without a
+    // default key so it can be found and bound.
+    add(
+        "command.open-terminal-elevated",
+        if cfg!(windows) {
+            "Open terminal as administrator"
+        } else {
+            "Open root terminal (sudo)"
+        },
+        Global,
+        &[],
+    );
     add(
         "drive.left",
         "Choose left panel volume",

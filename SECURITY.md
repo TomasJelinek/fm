@@ -393,6 +393,19 @@ inspected as possibly holding the item; neither is described as unneeded.
   draft before selecting an incompatible grammar. Explicit POSIX elevation keeps
   the same grammar and still requires Run/Enter; passwords belong only to sudo's
   own terminal interaction. No password or elevated-mode preference is stored.
+  The terminal button's Ctrl+click (Ctrl+Enter or Ctrl+Space on the focused button,
+  or the unbound "Open terminal as administrator" command) opens the selected shell
+  elevated in the active pane's folder, with no command. Midnight Explorer itself
+  never elevates for it; only the launched shell runs elevated, after the system's
+  own consent. On Windows the Shell's `runas` verb (`ShellExecuteExW`) receives the
+  absolute path of the system's PowerShell or cmd (cmd from the system directory,
+  never from `PATH`), the shell's fixed arguments and the folder as separate fields,
+  never a command line built from a path or name; Windows starts it only after UAC
+  consent, and a declined prompt is a status message. A folder on a network or
+  `subst` drive of the user's own sign-in, which elevated programs do not see, is
+  refused before any prompt. On Linux the system terminal runs `/usr/bin/sudo` (or
+  `/bin/sudo`, never from `PATH`) as an argument vector in that folder, and sudo asks
+  for the password in that terminal; without sudo nothing starts.
   No terminal is started by selection, navigation, icons or path insertion.
   Native Properties is also an explicit host-UI action. Unsupported native
   properties fall back to read-only metadata rather than opening/executing files.

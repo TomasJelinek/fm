@@ -103,6 +103,7 @@ pub(crate) fn dispatch_window(window: &MainWindow, pane: i32, action: WindowActi
             displayed_pane(position)
         }),
         A::ExecuteCommand => window.invoke_execute_command(),
+        A::ElevatedTerminal => window.invoke_open_terminal_elevated(),
         A::CommandHistory(older) => window.invoke_command_history_step(older),
         A::FocusFiles => window.invoke_focus_files(),
         A::Volumes(position) => window.invoke_open_volume_menu(displayed_pane(position)),

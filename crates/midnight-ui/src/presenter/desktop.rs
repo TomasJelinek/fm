@@ -69,6 +69,9 @@ pub(crate) struct DesktopState {
     pub(super) notice_navigation: Option<(PaneId, NavigationId, u64, PathBuf)>,
     pub(crate) notice_generation: i32,
     pub(crate) terminal_pending: Option<DesktopRequestId>,
+    /// The pending launch asked for an elevated terminal (Ctrl+click): a declined
+    /// consent prompt is then a status, not an error.
+    pub(crate) terminal_pending_elevated: bool,
     pub(crate) terminal_mode: TerminalMode,
     pub(crate) draft_nonempty: bool,
     pub(crate) draft_shell: Option<ShellFlavor>,
@@ -363,6 +366,8 @@ impl Presenter {
                 if !self.desktop.requests.remove(&request) {
                     return None;
                 }
+                let elevated_terminal = self.desktop.terminal_pending == Some(request)
+                    && std::mem::take(&mut self.desktop.terminal_pending_elevated);
                 if self.desktop.terminal_pending == Some(request) {
                     self.desktop.terminal_pending = None;
                 }
@@ -375,7 +380,10 @@ impl Presenter {
                         }
                     }
                     Ok(DesktopActionResult::TerminalStarted { history, .. }) => {
-                        let status = if history.command.is_empty() {
+                        let status = if elevated_terminal && history.shell != ShellFlavor::Posix {
+                            // Windows started it after the user's consent.
+                            "Administrator terminal opened"
+                        } else if history.command.is_empty() {
                             "Terminal opened"
                         } else {
                             "Command opened in terminal"
@@ -430,6 +438,13 @@ impl Presenter {
                             self.desktop.open_directories[pane.index()] =
                                 Some((navigation, target));
                         }
+                    }
+                    // Declining the consent prompt is the user's choice: say so quietly.
+                    Err(error)
+                        if elevated_terminal
+                            && midnight_core::is_terminal_consent_declined(&error) =>
+                    {
+                        self.desktop.status = "The administrator terminal was not started.".into();
                     }
                     Err(error) => self.desktop.report(
                         "Desktop action failed",
@@ -565,15 +580,27 @@ impl Presenter {
         if text.trim().is_empty() {
             return false;
         }
-        self.launch_terminal(text, send)
+        self.launch_terminal(text, self.effective_terminal_mode(), send)
     }
 
     /// Open an interactive shell without submitting or changing the editor draft.
     pub(crate) fn open_terminal(&mut self, send: &dyn Fn(Command) -> bool) -> bool {
-        self.launch_terminal("", send)
+        self.launch_terminal("", self.effective_terminal_mode(), send)
     }
 
-    fn launch_terminal(&mut self, text: &str, send: &dyn Fn(Command) -> bool) -> bool {
+    /// The terminal button's Ctrl+click: the selected shell, elevated, in the active
+    /// panel's folder. Windows asks for consent (UAC) and sudo for a password in the
+    /// terminal; this process itself never elevates.
+    pub(crate) fn open_terminal_elevated(&mut self, send: &dyn Fn(Command) -> bool) -> bool {
+        self.launch_terminal("", TerminalMode::Elevated, send)
+    }
+
+    fn launch_terminal(
+        &mut self,
+        text: &str,
+        mode: TerminalMode,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
         if !self.native_action_allowed(self.active) {
             return false;
         }
@@ -592,7 +619,7 @@ impl Presenter {
             command: text.into(),
             working_directory: self.panes[self.active.index()].display_path().to_owned(),
             shell,
-            mode: self.effective_terminal_mode(),
+            mode,
         };
         if !send(Command::LaunchTerminal { request, terminal }) {
             self.desktop.report(
@@ -603,6 +630,7 @@ impl Presenter {
         }
         self.desktop.requests.insert(request);
         self.desktop.terminal_pending = Some(request);
+        self.desktop.terminal_pending_elevated = mode == TerminalMode::Elevated;
         self.desktop.status = "Opening terminal…".into();
         true
     }

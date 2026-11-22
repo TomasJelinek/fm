@@ -16,8 +16,16 @@ export component TerminalControl inherits Rectangle {
         ? [@image-url("icons/powershell.svg"), @image-url("icons/cmd.svg")]
         : [root.action-icons.terminal.width > 0 ? root.action-icons.terminal
             : @image-url("icons/cmd.svg"), @image-url("icons/terminal-root.svg")];
+    // What a click opens, and what a Ctrl+click opens instead: the same shell elevated.
+    // On Linux the sudo choice is already a root shell.
+    private property <string> launch-hint: root.windows-shells
+        ? "Open " + root.model[root.current-index] + " in this folder. Ctrl+click: open it as administrator."
+        : root.current-index == 1 ? "Open a root shell with sudo in this folder."
+        : "Open a terminal in this folder. Ctrl+click: open a root shell with sudo.";
     callback selected(int);
     callback launch();
+    // Ctrl+click, or Ctrl+Enter or Ctrl+Space on the focused button.
+    callback launch-elevated();
     callback dismissed();
     width: Theme.tool-width + (Theme.touch ? 26px : 22px);
     height: Theme.control-height;
@@ -31,9 +39,11 @@ export component TerminalControl inherits Rectangle {
             icon: root.shell-icons[root.current-index];
             native-icon: root.shell-icons[root.current-index];
             action-glyph: false;
-            hint: "Open " + root.model[root.current-index] + "\nWorking folder: " + root.working-directory;
+            hint: root.launch-hint + "\nWorking folder: " + root.working-directory;
             enabled: root.ready;
+            control-action: true;
             clicked => { root.launch(); }
+            control-clicked => { root.launch-elevated(); }
         }
         CompactPicker {
             width: (Theme.touch ? 26px : 22px) - 1px; minimum-control-width: 0px;

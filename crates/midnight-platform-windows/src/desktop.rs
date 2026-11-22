@@ -1,4 +1,6 @@
 use crate::WindowsFileSystem;
+#[path = "terminal_elevated.rs"]
+mod elevated;
 #[path = "desktop_properties.rs"]
 mod properties;
 #[path = "user_command_cwd.rs"]
@@ -51,6 +53,10 @@ impl TerminalService for WindowsFileSystem {
         &self,
         request: &TerminalRequest,
     ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        // As administrator through the Shell; the normal spawn below refuses elevation.
+        if request.mode == TerminalMode::Elevated {
+            return elevated::launch(request);
+        }
         validate_terminal_request(request).map_err(|error| {
             FsError::from_io("launch terminal", &request.working_directory, error)
         })?;

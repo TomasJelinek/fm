@@ -16,7 +16,7 @@ use windows_sys::Win32::{
     Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::Threading::{
         CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess,
-        PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW, WaitForSingleObject,
+        GetProcessId, PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW, WaitForSingleObject,
     },
     UI::WindowsAndMessaging::SW_HIDE,
 };
@@ -95,6 +95,21 @@ impl TerminalProcess for NativeProcess {
 
 pub(crate) fn spawn(spec: &LaunchSpec) -> io::Result<Box<dyn TerminalProcess>> {
     spawn_inner(spec, false)
+}
+
+/// A terminal that Windows started for us (the Shell's `runas`), tracked and reaped
+/// like one this module spawned.
+pub(crate) fn tracked(handle: OwnedHandle) -> io::Result<Box<dyn TerminalProcess>> {
+    // SAFETY: a live owned process handle; the query transfers nothing.
+    let id = unsafe { GetProcessId(handle.as_raw_handle()) };
+    if id == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Box::new(NativeProcess {
+        handle,
+        id,
+        status: None,
+    }))
 }
 
 pub(crate) fn spawn_with_environment(

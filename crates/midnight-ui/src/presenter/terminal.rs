@@ -483,4 +483,157 @@ mod tests {
         assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
         assert_eq!(p.effective_terminal_mode(), TerminalMode::Standard);
     }
+
+    /// A presenter on `host` with the right panel active in a folder whose name would
+    /// break out of a quoted shell string.
+    fn elevation_presenter(host: ShellFlavor, index: i32) -> (Presenter, PathBuf) {
+        let right = PathBuf::from("right/x\" & calc & \" 文档");
+        let mut p = Presenter::new("left".into(), right.clone());
+        p.active = PaneId::Right;
+        p.apply(Event::DesktopContext {
+            system_locations: Vec::new(),
+            network_position: 0,
+            shell: host,
+            locations: vec![],
+        });
+        p.change_terminal(index, false, &|_| panic!("a shell choice cannot launch"));
+        (p, right)
+    }
+
+    /// Opens a terminal (Ctrl+click when `elevated`) and returns what was sent.
+    fn launch(p: &mut Presenter, elevated: bool) -> (DesktopRequestId, TerminalRequest) {
+        let sent = RefCell::new(Vec::new());
+        let send = |command| {
+            sent.borrow_mut().push(command);
+            true
+        };
+        assert!(if elevated {
+            p.open_terminal_elevated(&send)
+        } else {
+            p.open_terminal(&send)
+        });
+        match sent.into_inner().pop() {
+            Some(Command::LaunchTerminal { request, terminal }) => (request, terminal),
+            other => panic!("unexpected terminal dispatch: {other:?}"),
+        }
+    }
+
+    fn finish(
+        p: &mut Presenter,
+        request: DesktopRequestId,
+        result: Result<DesktopActionResult, FsError>,
+    ) {
+        p.apply(Event::DesktopActionFinished { request, result });
+    }
+
+    fn started(shell: ShellFlavor) -> Result<DesktopActionResult, FsError> {
+        Ok(DesktopActionResult::TerminalStarted {
+            process_id: 1,
+            history: CommandHistoryEntry {
+                command: String::new(),
+                shell,
+            },
+        })
+    }
+
+    #[test]
+    fn ctrl_click_opens_the_selected_shell_elevated_and_a_plain_click_as_before() {
+        for (host, index, shell, plain) in [
+            (
+                ShellFlavor::PowerShell,
+                0,
+                ShellFlavor::PowerShell,
+                TerminalMode::Standard,
+            ),
+            (
+                ShellFlavor::PowerShell,
+                1,
+                ShellFlavor::Cmd,
+                TerminalMode::Standard,
+            ),
+            (
+                ShellFlavor::Posix,
+                0,
+                ShellFlavor::Posix,
+                TerminalMode::Standard,
+            ),
+            // The sudo choice is already elevated; Ctrl+click opens the same.
+            (
+                ShellFlavor::Posix,
+                1,
+                ShellFlavor::Posix,
+                TerminalMode::Elevated,
+            ),
+        ] {
+            let (mut p, right) = elevation_presenter(host, index);
+            for (elevated, mode) in [(false, plain), (true, TerminalMode::Elevated)] {
+                let (request, terminal) = launch(&mut p, elevated);
+                assert_eq!(
+                    (terminal.shell, terminal.mode),
+                    (shell, mode),
+                    "{host:?} choice {index}, Ctrl {elevated}"
+                );
+                assert_eq!(terminal.working_directory, right);
+                assert!(
+                    terminal.command.is_empty(),
+                    "an interactive shell, no command"
+                );
+                assert!(!launch_admitted(&mut p), "one launch at a time");
+                finish(&mut p, request, started(shell));
+                let opened = if elevated && host == ShellFlavor::PowerShell {
+                    "Administrator terminal opened"
+                } else {
+                    "Terminal opened"
+                };
+                assert_eq!(p.desktop.status, opened);
+            }
+            // Ctrl+click neither changes the choice nor makes it elevated.
+            assert_eq!(p.effective_shell(), Some(shell));
+            assert_eq!(p.effective_terminal_mode(), plain);
+        }
+    }
+
+    fn launch_admitted(p: &mut Presenter) -> bool {
+        p.open_terminal_elevated(&|_| panic!("a pending launch admits no other"))
+    }
+
+    #[test]
+    fn a_declined_administrator_prompt_is_a_quiet_status_and_other_failures_are_reported() {
+        let (mut p, right) = elevation_presenter(ShellFlavor::PowerShell, 1);
+        let (request, _) = launch(&mut p, true);
+        finish(
+            &mut p,
+            request,
+            Err(midnight_core::terminal_consent_declined(&right)),
+        );
+        assert_eq!(
+            p.desktop.status,
+            "The administrator terminal was not started."
+        );
+        assert!(p.desktop.notice.is_none(), "declining is not an error");
+        assert!(p.desktop.terminal_pending.is_none());
+
+        // A failed elevated launch names its cause.
+        let (request, _) = launch(&mut p, true);
+        finish(
+            &mut p,
+            request,
+            Err(FsError::from_io(
+                "start administrator terminal",
+                &right,
+                std::io::ErrorKind::NotFound.into(),
+            )),
+        );
+        assert!(p.desktop.notice.is_some(), "a failure is reported");
+
+        // Only an elevated launch can end quietly.
+        p.desktop.notice = None;
+        let (request, _) = launch(&mut p, false);
+        finish(
+            &mut p,
+            request,
+            Err(midnight_core::terminal_consent_declined(&right)),
+        );
+        assert!(p.desktop.notice.is_some());
+    }
 }

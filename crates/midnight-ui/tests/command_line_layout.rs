@@ -167,7 +167,9 @@ fn command_editor_and_controls_match_the_footer_across_themes_and_font_sizes() {
     // every theme but software-rendered for the first one; the shell-split hover is a
     // pixel check and still renders in every theme.
     let themes = midnight_core::PreferenceTheme::ALL.map(|theme| theme.index());
-    let launch_label = format!("Open PowerShell\nWorking folder: {path}");
+    let launch_label = format!(
+        "Open PowerShell in this folder. Ctrl+click: open it as administrator.\nWorking folder: {path}"
+    );
     let controls = [
         ("Command shell".to_owned(), AccessibleRole::Combobox, 1.0),
         (
@@ -281,7 +283,7 @@ fn compact_command_row_preserves_shell_history_run_and_keyboard_focus() {
         let before_launch = launched.get();
         ui::click_root(
             &test.window,
-            "Open cmd\nWorking folder: C:\\文档",
+            "Open cmd in this folder. Ctrl+click: open it as administrator.\nWorking folder: C:\\文档",
             AccessibleRole::Button,
         );
         assert_eq!(launched.get(), before_launch + 1);

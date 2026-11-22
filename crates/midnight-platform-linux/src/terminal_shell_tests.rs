@@ -25,7 +25,7 @@ fn launch_shell(shell: &Path, source: &str, home: &Path, cwd: &Path, input: &[u8
         working_directory: cwd.into(),
     };
     let terminal =
-        terminal_command_with_shell(Path::new("/usr/bin/xterm"), &request, shell).unwrap();
+        terminal_command_with_shell(Path::new("/usr/bin/xterm"), &request, shell, None).unwrap();
     let mut arguments = terminal.get_args();
     assert_eq!(arguments.next(), Some(OsStr::new("-e")));
     let mut child = Command::new(arguments.next().unwrap())
@@ -168,7 +168,7 @@ fn the_configured_alternative_launches_a_recognized_terminal_with_its_own_option
             working_directory: PathBuf::from("/"),
         };
         let command =
-            terminal_command_with_shell(&executable, &request, Path::new("/bin/sh")).unwrap();
+            terminal_command_with_shell(&executable, &request, Path::new("/bin/sh"), None).unwrap();
         let arguments: Vec<_> = command.get_args().take(options.len()).collect();
         assert_eq!(
             arguments,

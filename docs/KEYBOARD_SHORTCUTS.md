@@ -194,6 +194,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+P in files or command editor | Insert the active pane path, ending in a native path separator, at the command selection |
 | Ctrl+[ / Ctrl+] (also with Shift) | Insert the left / right pane path, ending in a native path separator, at the command selection |
 | Ctrl+Space | Available to the input method (IME); Ctrl+P inserts the path |
+| Ctrl+click on the terminal button, or Ctrl+Enter / Ctrl+Space while it has keyboard focus | Open the selected shell elevated in the active pane's folder: as administrator after Windows asks for consent (UAC), or a root shell through sudo on Linux. The same command, **Open terminal as administrator** (Linux: **Open root terminal (sudo)**), has no default key and can be assigned in Options › Keyboard |
 | Enter in command editor | Explicitly submit the command to the selected system terminal |
 | Alt+↑ / Alt+↓ in command editor | Rotate to older / newer stored commands, wrapping; terminal type stays unchanged |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |
@@ -352,7 +353,12 @@ Available capacity appears at the right and
 comes from the displayed directory's filesystem query, including mount/junction targets.
 
 The terminal icon opens a new interactive terminal without submitting the draft;
-its adjacent arrow selects the shell. The command directory ends with `>`.
+its adjacent arrow selects the shell. Ctrl+click opens the selected shell
+elevated instead: Windows asks for consent and a declined prompt only says so on
+the status line; on Linux sudo asks for the password in the terminal. Programs
+run as administrator on Windows do not see network or `subst` drives of your own
+sign-in, so a folder on one is refused with that reason before any prompt. The
+command directory ends with `>`.
 Command history recalls a draft without
 running it; only the configured Execute command shortcut or Run submits it.
 Options > General groups Panels and Command line settings, including

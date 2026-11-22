@@ -711,6 +711,8 @@ export component MainWindow inherits Window {
     }
     callback terminal-changed(int);
     callback open-terminal();
+    // The terminal button's Ctrl+click: the selected shell, elevated.
+    callback open-terminal-elevated();
     callback command-edited(bool);
     public function apply-preferences(theme: int, density: int) {
         Theme.scheme = theme;
@@ -1153,6 +1155,7 @@ export component MainWindow inherits Window {
                     working-directory: root.command-directory; hint: root.command-hint;
                     selected(index) => { root.terminal-changed(index); root.focus-command(); }
                     launch => { root.open-terminal(); root.focus-command(); }
+                    launch-elevated => { root.open-terminal-elevated(); root.focus-command(); }
                     dismissed => { root.focus-command(); }
                 }
                 command-content := Rectangle {

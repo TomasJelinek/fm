@@ -500,7 +500,7 @@ fn terminal_split_control_selects_shell_separately_and_launch_keeps_draft() {
     ui.draw();
     ui::click_root(
         &ui.window,
-        "Open cmd\nWorking folder: C:\\文档",
+        "Open cmd in this folder. Ctrl+click: open it as administrator.\nWorking folder: C:\\文档",
         AccessibleRole::Button,
     );
     ui.draw();
@@ -519,7 +519,7 @@ fn terminal_split_control_selects_shell_separately_and_launch_keeps_draft() {
     assert!(submitted.borrow().is_empty());
     let main_button = ui::root_item(
         &ui.window,
-        "Open cmd\nWorking folder: C:\\文档",
+        "Open cmd in this folder. Ctrl+click: open it as administrator.\nWorking folder: C:\\文档",
         AccessibleRole::Button,
     );
     main_button.accessible_action(&AccessibilityAction::Default);

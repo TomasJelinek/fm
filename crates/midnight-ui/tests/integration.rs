@@ -171,6 +171,7 @@ mod small_window;
 mod splitter_preferences;
 mod status_bar;
 mod tabs_bookmarks;
+mod terminal_elevated;
 mod themes;
 mod thumbnail_grid_rows;
 mod thumbnail_options;

@@ -32,10 +32,15 @@ export component NavigationButton inherits Rectangle {
     // Border while the button has no keyboard focus. Callers set this instead
     // of `border-color`, which would hide the keyboard focus indicator.
     in property <brush> rest-border: transparent;
+    // A second action (the terminal button's: as administrator): a Ctrl+click, or
+    // Ctrl+Enter or Ctrl+Space with keyboard focus, runs `control-clicked` instead.
+    // Without it a Ctrl+click is an ordinary click.
+    in property <bool> control-action;
     out property <bool> hovered: area.has-hover;
     out property <bool> focused: focus.has-focus && NavigationFocus.keyboard;
     callback clicked();
     callback middle-clicked();
+    callback control-clicked();
     width: Theme.touch ? Theme.tool-width : 24px;
     height: Theme.control-height;
     border-radius: 3px;
@@ -63,9 +68,10 @@ export component NavigationButton inherits Rectangle {
         enabled: root.enabled;
         key-pressed(event) => {
             NavigationFocus.keyboard = true;
-            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
+            if !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta
                 && (event.text == Key.Return || event.text == Key.Space) {
-                root.clicked(); return accept;
+                if !event.modifiers.control { root.clicked(); return accept; }
+                if root.control-action { root.control-clicked(); return accept; }
             }
             reject
         }
@@ -76,6 +82,8 @@ export component NavigationButton inherits Rectangle {
             private property <string> pressed-context;
             private property <bool> middle-pressed;
             private property <bool> left-pressed;
+            // Ctrl held when the left button went down.
+            private property <bool> control-pressed;
             pointer-event(event) => {
                 if event.kind == PointerEventKind.down {
                     NavigationFocus.keyboard = false;
@@ -83,6 +91,7 @@ export component NavigationButton inherits Rectangle {
                     self.pressed-context = root.press-context;
                     self.middle-pressed = event.button == PointerEventButton.middle;
                     self.left-pressed = event.button == PointerEventButton.left;
+                    self.control-pressed = event.modifiers.control;
                 } else if event.kind == PointerEventKind.up
                     && event.button == PointerEventButton.middle && self.middle-pressed {
                     if !root.press-cancelled && self.has-hover && self.pressed-id == root.identity
@@ -96,7 +105,8 @@ export component NavigationButton inherits Rectangle {
             }
             clicked => {
                 if !root.press-cancelled && self.left-pressed && self.pressed-id == root.identity && self.pressed-revision == root.model-revision && self.pressed-context == root.context {
-                    focus.focus(); root.clicked();
+                    focus.focus();
+                    if root.control-action && self.control-pressed { root.control-clicked(); } else { root.clicked(); }
                 }
             }
         }

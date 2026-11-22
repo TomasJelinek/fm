@@ -23,6 +23,10 @@ const DESKTOP_TERMINALS: &[(&str, &str)] = &[
     ("XFCE", "/usr/bin/xfce4-terminal"),
 ];
 const FALLBACK_TERMINAL: &str = "/usr/bin/xterm";
+/// Where sudo is taken from for a root shell, in order; never from `PATH`.
+const SUDO_CANDIDATES: [&str; 2] = ["/usr/bin/sudo", "/bin/sudo"];
+const NO_SUDO: &str =
+    "sudo is not installed in /usr/bin or /bin, so a root terminal cannot be opened.";
 const INTERACTIVE_WRAPPER: &str = include_str!("terminal_prompt.sh");
 const COMMAND_WRAPPER: &str = concat!(
     "_me_terminal_shell=$2\neval \"$1\"\nset -- \"$_me_terminal_shell\"\n",
@@ -50,20 +54,20 @@ impl TerminalService for LinuxFileSystem {
         validate_terminal_request(request).map_err(|error| {
             FsError::from_io("launch terminal", &request.working_directory, error)
         })?;
-        if request.mode == TerminalMode::Elevated && !is_executable(Path::new("/usr/bin/sudo")) {
-            return Err(FsError::from_io(
-                "find sudo",
-                &request.working_directory,
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "sudo is not installed at /usr/bin/sudo",
-                ),
-            ));
-        }
+        let sudo = match request.mode {
+            TerminalMode::Standard => None,
+            TerminalMode::Elevated => Some(sudo_executable(is_executable).ok_or_else(|| {
+                FsError::from_io(
+                    "find sudo",
+                    &request.working_directory,
+                    io::Error::new(io::ErrorKind::NotFound, NO_SUDO),
+                )
+            })?),
+        };
         let executable = terminal_executable().map_err(|cause| {
             FsError::from_io("find system terminal", &request.working_directory, cause)
         })?;
-        terminal_command(&executable, request)
+        terminal_command(&executable, request, sudo)
             .and_then(|mut command| command.spawn())
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|error| FsError::from_io("launch terminal", &request.working_directory, error))
@@ -140,7 +144,7 @@ fn prepare_user_terminal_with(
             ),
         ));
     }
-    let mut command = terminal_command(executable, request).map_err(|cause| {
+    let mut command = terminal_command(executable, request, None).map_err(|cause| {
         FsError::from_io("Custom Command terminal", &request.working_directory, cause)
     })?;
     for key in midnight_core::USER_COMMAND_ENVIRONMENT {
@@ -153,12 +157,26 @@ fn prepare_user_terminal_with(
     Ok(command)
 }
 
-fn terminal_command(executable: &Path, request: &TerminalRequest) -> io::Result<Command> {
+/// The terminal for `request`: `sudo` is the system sudo for an elevated request.
+fn terminal_command(
+    executable: &Path,
+    request: &TerminalRequest,
+    sudo: Option<&Path>,
+) -> io::Result<Command> {
     terminal_command_with_shell(
         executable,
         request,
         &interactive_shell(std::env::var_os("SHELL").as_deref()),
+        sudo,
     )
+}
+
+/// The first installed sudo of `SUDO_CANDIDATES`.
+fn sudo_executable(installed: impl Fn(&Path) -> bool) -> Option<&'static Path> {
+    SUDO_CANDIDATES
+        .into_iter()
+        .map(Path::new)
+        .find(|path| installed(path))
 }
 
 fn interactive_shell(preferred: Option<&std::ffi::OsStr>) -> PathBuf {
@@ -279,6 +297,7 @@ fn terminal_command_with_shell(
     executable: &Path,
     request: &TerminalRequest,
     shell: &Path,
+    sudo: Option<&Path>,
 ) -> io::Result<Command> {
     validate_terminal_request(request)?;
     if !executable.is_absolute()
@@ -299,7 +318,10 @@ fn terminal_command_with_shell(
     if request.mode == TerminalMode::Elevated {
         // Password interaction belongs entirely to sudo inside the external terminal.
         // No -S flag, password pipe, output capture, or implicit elevation is used.
-        command.args(["/usr/bin/sudo", "--"]);
+        let sudo = sudo
+            .filter(|sudo| sudo.is_absolute())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, NO_SUDO))?;
+        command.arg(sudo).arg("--");
     }
     if request.command.is_empty() {
         command.args(["/bin/sh", "-c", INTERACTIVE_WRAPPER, "midnight-terminal"]);
@@ -547,6 +569,7 @@ mod tests {
                     Path::new(executable),
                     &request,
                     Path::new("/bin/bash"),
+                    Some(Path::new("/usr/bin/sudo")),
                 )
                 .unwrap();
                 let mut expected = prefix.clone();
@@ -585,7 +608,7 @@ mod tests {
                 working_directory: directory.into(),
             };
             assert_eq!(
-                terminal_command(Path::new("/usr/bin/xterm"), &request)
+                terminal_command(Path::new("/usr/bin/xterm"), &request, None)
                     .unwrap_err()
                     .kind(),
                 io::ErrorKind::InvalidInput
@@ -673,7 +696,7 @@ mod tests {
             command: text.into(),
             working_directory: directory.clone(),
         };
-        let command = terminal_command(Path::new("/usr/bin/xterm"), &request).unwrap();
+        let command = terminal_command(Path::new("/usr/bin/xterm"), &request, None).unwrap();
         assert_eq!(command.get_current_dir(), Some(directory.as_path()));
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
@@ -699,7 +722,12 @@ mod tests {
             shell: ShellFlavor::Posix,
             mode: midnight_core::TerminalMode::Elevated,
         };
-        let command = terminal_command(Path::new("/usr/bin/xterm"), &request).unwrap();
+        let command = terminal_command(
+            Path::new("/usr/bin/xterm"),
+            &request,
+            Some(Path::new("/usr/bin/sudo")),
+        )
+        .unwrap();
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
             &args[..5],
@@ -723,6 +751,55 @@ mod tests {
     }
 
     #[test]
+    fn a_root_shell_takes_sudo_from_the_system_directories_and_runs_in_the_folder_as_argv() {
+        // Found in this order, never through PATH.
+        assert_eq!(sudo_executable(|_| true), Some(Path::new("/usr/bin/sudo")));
+        assert_eq!(
+            sudo_executable(|path| path == Path::new("/bin/sudo")),
+            Some(Path::new("/bin/sudo"))
+        );
+        assert_eq!(sudo_executable(|_| false), None);
+        // A folder named `x" & calc & "`: data on the process, never shell source.
+        let directory = PathBuf::from("/srv/x\" & calc & \"/文档 ; $(id)");
+        let request = TerminalRequest {
+            shell: ShellFlavor::Posix,
+            mode: TerminalMode::Elevated,
+            command: String::new(),
+            working_directory: directory.clone(),
+        };
+        let terminal = |sudo| {
+            terminal_command_with_shell(
+                Path::new("/usr/bin/xterm"),
+                &request,
+                Path::new("/bin/bash"),
+                sudo,
+            )
+        };
+        let command = terminal(Some(Path::new("/bin/sudo"))).unwrap();
+        let arguments: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            arguments,
+            [
+                "-e",
+                "/bin/sudo",
+                "--",
+                "/bin/sh",
+                "-c",
+                INTERACTIVE_WRAPPER,
+                "midnight-terminal",
+                "/bin/bash",
+            ]
+            .map(OsStr::new)
+        );
+        assert_eq!(command.get_program(), "/usr/bin/xterm");
+        assert_eq!(command.get_current_dir(), Some(directory.as_path()));
+        // Without sudo there is no root shell, and the reason says so.
+        let error = terminal(None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), NO_SUDO);
+    }
+
+    #[test]
     fn linux_rejects_foreign_shells_without_implicit_fallback() {
         for shell in [ShellFlavor::PowerShell, ShellFlavor::Cmd] {
             let request = TerminalRequest {
@@ -732,7 +809,7 @@ mod tests {
                 mode: midnight_core::TerminalMode::Standard,
             };
             assert_eq!(
-                terminal_command(Path::new("/usr/bin/xterm"), &request)
+                terminal_command(Path::new("/usr/bin/xterm"), &request, None)
                     .unwrap_err()
                     .kind(),
                 io::ErrorKind::Unsupported
