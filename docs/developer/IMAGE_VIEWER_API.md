@@ -502,4 +502,4 @@ cleanup completes. In one recorded run on a 2x1 BMP, cold Open to exact CPU pixe
 took about 254 ms and Open of a ready spare about 139 ms, preparation being a
 separate interval of about 205 ms; engine refill and the application UI were not
 timed, and other images, scrolling, idle memory and peak resources are not measured
-([evidence](../ACTIVE_WORK.md#image-prewarming-source-and-evidence)).
+([evidence](../verification/2026-11-13-checkpoint-evidence-history.md#image-prewarming-source-and-evidence)).

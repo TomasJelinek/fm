@@ -94,7 +94,7 @@ deployed and no tree-performance candidate is included.
 Owned job cleanup completed. The extra blanket pre-cleanup PID assertion failed
 on PID 29940; its identity/path/parent lifetime remains unclassified. Natural
 shutdown of all auxiliary processes remains unqualified. The later
-[image-spare shutdown correction](../ACTIVE_WORK.md#image-spare-shutdown-gate) is committed and
+image-spare shutdown correction is committed and
 passes its scoped gates, but is absent from this runtime. PID 29940 remains
 unattributed. No smoke retry or new-runtime performance harness run occurred. Startup
 does not qualify large-tree speed, complete viewer workflows or physical Linux UI.
@@ -222,7 +222,7 @@ both source increments.
 
 
 The later cap128 measurements and their synthetic-only limits remain in the
-[current cap128 section](../ACTIVE_WORK.md#recursive-tree-cap128-gate).
+cap128 section of that date's ACTIVE_WORK.md (in its Git history).
 
 ## Selected local gates and Linux/probe provenance
 
@@ -432,7 +432,7 @@ workspace/remote CI pass or accepted UAC/polkit qualification.
 
 The pending/failure wording below is the earlier recorded boundary. Subsequent
 exact-head `9176272` remote CI is 20/20 GREEN; current `174c5fd` format failures
-and debug-retry state are in the [current ledger](../ACTIVE_WORK.md#retained-remote-ci-boundary).
+and debug-retry state are in the [current ledger](#retained-remote-ci-boundary).
 
 The newer retained failure is source `02b2f2f`, run `43367992268`, job
 `131699200987`: the job stops on the two worker libtest Clippy warnings. The

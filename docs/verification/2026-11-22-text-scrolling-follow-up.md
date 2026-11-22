@@ -207,8 +207,8 @@ after; their times differ within the noise of single runs.
 
 ## Commands and results
 
-All builds ran in a shared build slot, with `CARGO_TARGET_DIR=C:\fmb\txt-target` and
-`CARGO_INCREMENTAL=0`; the test executables ran outside it with `--test-threads 4`.
+All builds ran in a shared build slot, with a target folder of their own
+(`CARGO_TARGET_DIR`) and `CARGO_INCREMENTAL=0`; the test executables ran outside it with `--test-threads 4`.
 
 - `cargo test --no-run -p midnight-viewer-engine -p midnight-viewer-ui -p midnight-ui-input
   -p midnight-compare-ui --lib --tests --locked --offline -j 4`:
@@ -230,7 +230,7 @@ All builds ran in a shared build slot, with `CARGO_TARGET_DIR=C:\fmb\txt-target`
   - `a_retained_pan_past_a_tall_table_continues_at_the_page_boundary` with Markdown pages
     prefetched at rest (no seam request).
 - Release measurements: `cargo test --release --no-run -p midnight-viewer-engine --lib
-  --target-dir C:\fmb\step2-rel`, then each executable with
+  --target-dir <release target folder>`, then each executable with
   `measure_prepared_text_scrolling --ignored --nocapture --test-threads 1` (`PREPARED_NOTCH`
   60 and 100) and `measure_prepared_modes`.
 - Not run:
