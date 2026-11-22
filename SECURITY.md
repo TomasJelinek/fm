@@ -6,8 +6,8 @@ size plus three 64 KiB samples (first/middle/last; files up to 192 KiB fully com
 This weaker mode can miss corruption between samples; it never disables identity,
 source-change, I/O-error, sync, overwrite or publication checks. Jobs freeze the
 selected policy at admission and report which guarantee was checked. Native
-same-volume Move renames without reading contents. See the
-[current transfer contract](docs/superpowers/specs/2026-11-10-transfer-verification-and-native-move.md).
+same-volume Move renames without reading contents. See
+[verification and ownership](docs/developer/TRANSFERS.md#verification-and-ownership).
 UI code handles input and presentation only. Filesystem
 access, large sorts/indexes, checksum work, large-object reclamation and diagnostic
 file encoding/writes execute in backend workers.
@@ -21,94 +21,110 @@ path, including when cancellation or construction failure was the original cause
 Existing destination originals, unfinished sources and earlier completed files are
 preserved; a filesystem refusal cannot be reported as successful cleanup.
 
-The Chromium HTML viewer has a separate browser-process profile. CEF's
-renderer sandbox remains enabled; the decoder's single-process policy is not
-weakened. HTML starts offline with scripts disabled. Enabling online mode revokes
-all local relative resources and recreates the browser/context; scripts require
-explicit online permission. Captured main-document content can then be read and
-transmitted by scripts. Local paths, shell execution, downloads and permission
-prompts are unavailable to web content. The backend owns private session state,
-resource containment, process-tree budgets and cleanup. See the
-[interactive viewer contract](docs/developer/WEB_VIEWER_API.md).
-When the dynamic loader stops the Linux browser before its first message (exit status
-127: a shared library it needs is missing), the viewer names the missing libraries
-instead of a stopped transport. The host finds them by reading, never executing, the
-ELF dynamic sections of the viewer executable and of the libraries it needs, looked up as
-glibc's loader looks them up (DT_RPATH/DT_RUNPATH, `/etc/ld.so.cache`, the default
-folders): no `ldd` or loader runs, only regular files are opened (without blocking on a
-FIFO), every read is bounded and at most 1,024 objects are read. A library name from
-those files appears in the message only as letters, digits and `._+-` (anything else is
-masked) and in the suggested install command only when it consists of them. The check
-runs only after such a failure, so it can never keep a working browser from starting.
-On Linux systems where AppArmor restricts unprivileged user namespaces, the optional
-`midnight-explorer-html-viewer` profile grants only `userns` to one installation's
-viewer executable and confines nothing else; there is one such profile per machine, so
-installing it for another installation moves the permission there (the installer says
-which installation lost it). Without it, or a setuid-root `chrome-sandbox`, the viewer
-reports the missing permission and never starts Chromium without its sandbox. Where the
-kernel itself denies user namespaces to programs without administrator rights
-(`kernel.unprivileged_userns_clone` or `user.max_user_namespaces` is 0, confirmed by a
-refused namespace probe), no profile could help: the viewer names that setting, says what
-an administrator can change, and offers no profile. Its message suggests `sudo` with the
-installation's `install-html-viewer-apparmor.sh` only when that script is no link and it
-and every folder above it are owned by root and not group- or other-writable; for any
-other installer, which a program running as the user could have replaced, it asks for an
+The Chromium HTML viewer has a separate browser-process profile. CEF's renderer sandbox
+remains enabled; the decoder's single-process policy is not weakened. HTML starts
+offline with scripts disabled. Enabling online mode revokes all local relative resources
+and recreates the browser/context; scripts require explicit online permission. Captured
+main-document content can then be read and transmitted by scripts. Local paths, shell
+execution, downloads and permission prompts are unavailable to web content. Office
+previews use the same browser with online mode refused. The backend owns private session
+state, resource containment, process-tree budgets and cleanup: on Windows a job object
+limits the browser to 32 processes and 2 GiB and ends them when it closes; on Linux the
+browser starts only in its own cgroup inside a writable cgroup-v2 delegation, limited to
+256 tasks and 2 GiB without swap
+(`crates/midnight-worker-platform/src/browser_windows.rs`,
+`browser_cgroup_linux.rs`). See the [interactive viewer
+contract](docs/developer/WEB_VIEWER_API.md). When the dynamic loader stops the Linux
+browser before its first message (exit status 127: a shared library it needs is
+missing), the viewer names the missing libraries instead of a stopped transport. The
+host finds them by reading, never executing, the ELF dynamic sections of the viewer
+executable and of the libraries it needs, looked up as glibc's loader looks them up
+(DT_RPATH/DT_RUNPATH, `/etc/ld.so.cache`, the default folders): no `ldd` or loader runs,
+only regular files are read (any other file found is opened without blocking and closed
+unread), every read is bounded and the search follows at most 1,024 objects
+(`crates/midnight-worker-platform/src/browser_libraries_linux.rs`). A library name from
+those files appears in the message only as ASCII letters, digits and `._+-` (anything
+else is masked) and in the suggested install command only when it consists of them. The
+check runs only after such a failure, so it can never keep a working browser from
+starting. On Linux systems where AppArmor restricts unprivileged user namespaces, the
+optional `midnight-explorer-html-viewer` profile grants only `userns` to one
+installation's viewer executable (for a source checkout, to that of every build under
+its `_build`) and confines nothing else; there is one such profile per machine, so
+installing it for another installation moves the permission there (the script says which
+installation lost it; **Install…** does not). Without it, or a setuid-root
+`chrome-sandbox`, the viewer reports the missing permission and never starts Chromium
+without its sandbox. Where the kernel itself denies user namespaces to programs without
+administrator rights (`kernel.unprivileged_userns_clone` or `user.max_user_namespaces`
+is 0, confirmed by a namespace probe that the kernel refuses or that finds no namespace
+left), no profile could help: the viewer names that setting, says what an administrator
+can change, and offers no profile. Its message suggests `sudo` with the installation's
+`install-html-viewer-apparmor.sh` only when that script is no link and it and every
+folder above it are owned by root and not group- or other-writable; for any other
+installer, which a program running as the user could have replaced, it asks for an
 administrator to install the package's profile instead. The script follows the same rule
 for the `sudo` command it suggests itself, and the package README never suggests `sudo`
 with a copy that the user can change. Installing the profile for a path that can be
 changed without root extends that permission to any program placed there; the script
-refuses a path through a folder that users other than its owner can write to (even a
-sticky one such as `/tmp`), where another user could place a program at the viewer's path,
-now or once the installation is gone. A group-writable folder still counts as writable
-by its owner alone when its group is the owner's private group: the owner's primary
-group, named like the owner, which no other account in `/etc/passwd` has as its primary
-group and which lists no other member in `/etc/group` (as on distributions with user
-private groups and a umask of 002, such as Debian, Ubuntu and Fedora). Only those local
-files decide: a user known only to a directory service, or files that include one
-(lines starting with `+` or `-`), have no private group. **Install…** below applies the
-same rule (`scripts/install-html-viewer-apparmor.sh` and
+refuses a path through a folder whose permission bits let users other than its owner
+write to it (even a sticky one such as `/tmp`), where another user could place a program
+at the viewer's path, now or once the installation is gone. It checks the viewer's
+folder and every folder above it, or for a checkout `_build` and every folder above it.
+Only the mode bits decide: a POSIX access ACL that lets another user write is not
+detected, and the build folders below a checkout's `_build` are not checked. A
+group-writable folder still counts as writable by its owner alone when its group is the
+owner's private group: the owner's primary group, named like the owner, which no other
+account in `/etc/passwd` has as its primary group and which lists no other member in
+`/etc/group` (as on distributions with user private groups and a umask of 002, such as
+Debian, Ubuntu and Fedora). Only those local files decide: a user known only to a
+directory service, or files that include one (lines starting with `+` or `-`), have no
+private group. **Install…** below applies the same rule
+(`scripts/install-html-viewer-apparmor.sh` and
 `crates/midnight-elevation/src/sandbox_profile_linux.rs`).
 
-The viewer can also install that profile itself, but only after an HTML document's
-browser was refused for exactly this reason (a typed refusal, never message text) and
-only when the user chooses **Install…** there. Nothing is checked, offered or installed
-at startup, by packaging or for any other document. The button is offered only when
-`/usr/bin/pkexec` and every folder above it are no links, belong to root and are neither
-group- nor other-writable (the check the authorized listing uses; it is repeated right
-before pkexec runs) and the installation's canonical path qualifies (below), including
-that no folder on the way to the viewer (its own folder up to `/`, or a checkout's
-`_build` up to `/`) can be written by users other than its owner, as the script requires;
-otherwise the viewer shows the manual instructions above. Before anyone is asked, the
-notice names the viewer path the permission is for and that one installation at a time
-has it, and, where someone other than root can change a folder on that path (a per-user
-installation, an extracted package or a checkout), warns that a program put at that path
-could use user namespaces too. A backend thread, never the UI thread,
-then runs exactly `/usr/bin/pkexec --disable-internal-agent /bin/sh -c '<script>'`
-with `LC_ALL=C` as its only change to the environment, so that pkexec's own messages are
-English, where the script is a constant compiled into the application
+The viewer can also install that profile itself, but only after the browser of an HTML
+document or an Office preview was refused for exactly this reason (a typed refusal,
+never message text) and only when the user chooses **Install…** there. Nothing is
+checked, offered or installed at startup, by packaging or for any other document. The
+button is offered only when `/usr/bin/pkexec` and every folder above it are no links,
+belong to root and are neither group- nor other-writable (the check the authorized
+listing uses; it is repeated right before pkexec runs) and the installation's canonical
+path qualifies (below), including that no folder on the way to the viewer (its own
+folder up to `/`, or a checkout's `_build` up to `/`) can be written by users other than
+its owner, as the script requires; otherwise the viewer shows the manual instructions
+above. Before anyone is asked, the notice names the viewer path the permission is for
+and that one installation at a time has it, and, where someone other than root can
+change a folder on that path (a per-user installation, an extracted package or a
+checkout), warns that a program put at that path could use user namespaces too. A
+backend thread, never the UI thread, then runs exactly
+`/usr/bin/pkexec --disable-internal-agent /bin/sh -c '<script>'` with `LC_ALL=C` as its
+only change to the environment, so that pkexec's own messages are English, where the
+script is a constant compiled into the application
 (`crates/midnight-elevation/src/sandbox_profile_linux.rs`). As root, that script only:
-sets `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and `umask 022`; reads the profile text from
-its standard input into a `mktemp` file in `/etc/apparmor.d` (a dot name, which AppArmor
-skips when it loads the folder); refuses an empty text; makes the file mode 0644; checks
-it with `apparmor_parser -QTK`; renames it over `/etc/apparmor.d/midnight-explorer-html-viewer`
-(`mv -T`, so a folder there is never written into); and loads it with `apparmor_parser -r`.
-Its own failures exit 1, so 126 and 127 come only from pkexec: a dismissed, refused or
-unobtainable authorization, which changes nothing. Install… then asks again, except when
-pkexec found no authentication agent in the session (status 127 with its message "No
-authentication agent found"): asking again could never work there, so the viewer
-withdraws Install… and says why, with the manual instructions. Closing the window stops
-an authorization that is still pending; a command that pkexec already runs as root cannot
-be stopped, is waited for, and its own result counts. No file of the installation or source checkout is
-executed, sourced or read as root, because the user may be able to change them: neither
-`install-html-viewer-apparmor.sh` nor the viewer runs there. The unprivileged application
-generates the text with the script's rules (a test compares it with the script's
-`--print` output) from the canonical installation path, which may contain only letters,
-digits, spaces and `._+-@:`; the attachment is quoted and the only `*` is the one the
-checkout pattern `<checkout>/_build/*/viewers/…` adds, so a path can neither end the
-quoted attachment nor add rules. Polkit authorizes that constant command, not the text,
-and a program running as the user could ask polkit for any root command itself, so the
-text gives such a program nothing beyond what the administrator authorizes. Unlike the
-script, the button does not remove other files that define the same profile.
+sets `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and `umask 022`; stops if `apparmor_parser` is
+missing; reads the profile text from its standard input into a `mktemp` file in
+`/etc/apparmor.d` (a dot name, which AppArmor skips when it loads the folder), which it
+removes again on exit; refuses an empty text; makes the file mode 0644; checks it with
+`apparmor_parser -QTK`; renames it over `/etc/apparmor.d/midnight-explorer-html-viewer`
+(`mv -T`, so a folder there is never written into); and loads it with
+`apparmor_parser -r`. Its own failures exit 1, so 126 and 127 come only from pkexec: an
+authorization that was dismissed, refused or not obtained, or an error of pkexec itself
+(for example an environment value it refuses), none of which changes anything. Install…
+then asks again, except when pkexec found no authentication agent in the session (status
+127 with its message "No authentication agent found"): asking again could never work
+there, so the viewer withdraws Install… and says why, with the manual instructions.
+Closing the window stops an authorization that is still pending; a command that pkexec
+already runs as root cannot be stopped, is waited for, and its own result counts. No
+file of the installation or source checkout is executed, sourced or read as root,
+because the user may be able to change them: neither `install-html-viewer-apparmor.sh`
+nor the viewer runs there. The unprivileged application generates the text with the
+script's rules (a test compares it with the script's `--print` output) from the
+canonical installation path, which may contain only ASCII letters, digits, spaces and
+`._+-@:`; the attachment is quoted and the only `*` is the one the checkout pattern
+`<checkout>/_build/*/viewers/…` adds, so a path can neither end the quoted attachment
+nor add rules. Polkit authorizes that constant command, not the text, and a program
+running as the user could ask polkit for any root command itself, so the text gives such
+a program nothing beyond what the administrator authorizes. Unlike the script, the
+button does not remove other files that define the same profile.
 
 Checksum manifests are untrusted input. The checksum worker reads a manifest as a
 stream of lines (its memory follows the entries, a short name and a fixed-length digest
@@ -148,15 +164,16 @@ Move roots fail before source preparation or destination mutation. Native pins
 are dropped before their retained provider lease, including failed preparation;
 stage-cleanup tickets retain the provider without retaining source handles.
 
-Terminal transfers request read-only reconciliation of the native root and its
-already loaded native branches. Each listing and its application share the
-mutation gate, so temporary Move staging cannot become a published tree. Original
-admission snapshots remain immutable; current root file actions use a separate
-backend-built snapshot with validated identities. Failed listings retain known
-rows and show an error. This does not grant authority to display paths or enable
-unimplemented tree deletion or other destructive consumers. Native tree clipboard
-publication uses the separate captured-source contract below; virtual exports
-remain unsupported.
+Terminal transfers request read-only reconciliation of the native root and its already
+loaded native branches. Each listing and its application share the mutation gate, so
+temporary Move staging cannot become a published tree. Original admission snapshots
+remain immutable; current root file actions use a separate backend-built snapshot with
+validated identities. Failed listings retain known rows and show an error.
+Reconciliation grants no authority to display paths. Tree Delete, Rename, attribute
+edits and custom commands act only on exact captured native occurrences, through their
+own captures ([inline trees](docs/developer/INLINE_TREES.md)). Native tree clipboard
+publication uses the separate captured-source contract below; virtual exports remain
+unsupported.
 
 Native manual refresh and batched filesystem notifications share that maintenance
 path. Parent-first reconciliation includes already-loaded provider-resolved
@@ -190,46 +207,50 @@ spawn replacement workers or terminate OS threads. See the
 [network contract](docs/developer/NETWORK_FILESYSTEM.md) for platform and current
 authentication limitations.
 
-## Current browsing and explicit-operation milestone
+<a id="current-browsing-and-explicit-operation-milestone"></a>
 
-Rename/F2, empty-file creation/Shift+F4, create-directory/F7 and deletion are
-explicit, confirmed operations. Empty-file creation accepts one basename and uses
-exclusive creation. A name the panel lists as a file is asked about first, and only
-the dialog's Replace file button (never a repeated or held Enter) replaces it: an
-empty file is published through verified staging and recoverable replacement in the
-folder pinned at preparation, the original is kept in a private recovery folder and
-the completion reports its path. It never truncates a file or replaces a folder,
-link or special entry.
+## Browsing and explicit operations
+
+Rename/F2, empty-file creation/Shift+F4, create-directory/F7 and deletion are explicit,
+confirmed operations. Empty-file creation accepts one basename and uses exclusive
+creation. A name the panel lists as a file is asked about first, and only the dialog's
+Replace file button (never a repeated or held Enter) replaces it: an empty file is
+published through verified staging and recoverable replacement in the folder pinned at
+preparation, the original is kept in a private recovery folder and the completion
+reports its path. It never truncates a file or replaces a folder, link or special entry.
 Preparation pins native identity before showing the confirmation; navigation never
 retargets a queued job. The backend permits at most 32 preparing/prepared/queued/
-running mutation jobs and 32 copy jobs, two mutation preparation workers and one
-active mutating job across both queues. Copy admission is FIFO, including native
-drop reservations awaiting UI handoff. Existing-entry mutation confirmations wait
-for all copies still outstanding at confirmation before acquiring the shared gate;
-an incomplete predecessor rejects the mutation for explicit review. Later copies
-and new-entry creation jobs are independent; an empty file replacing an existing
-one waits like any other existing-entry change. Native handles
-scale with the selected root count and traversal depth; resource failure is an
-error, never permission to substitute a target. Duplicate operation IDs cannot
-execute twice. Rename collisions require the shared, versioned overwrite prompt; explicit
-replacement retains the displaced destination for recovery. Without consent, the
-existing destination stays unchanged. F7 accepts explicit absolute or panel-relative
+running mutation jobs and 32 copy jobs, and two mutation preparation workers. Each
+mutation job (a rename, creation, deletion or attribute edit) runs alone: it takes every
+share of the namespace gate, of which each running Copy or Move holds one, so it never
+overlaps a transfer or another mutation job (`transfer_leases::NAMESPACE_WEIGHT`). Copy
+admission is FIFO, including native drop reservations awaiting UI handoff.
+Existing-entry mutation confirmations wait for all copies still outstanding at
+confirmation before acquiring the shared gate; an incomplete predecessor rejects the
+mutation for explicit review. Later copies and new-entry creation jobs are independent;
+an empty file replacing an existing one waits like any other existing-entry change.
+Native handles scale with the selected root count and traversal depth; resource failure
+is an error, never permission to substitute a target. Duplicate operation IDs cannot
+execute twice. Rename collisions require the shared, versioned overwrite prompt;
+explicit replacement retains the displaced destination for recovery. Without consent,
+the existing destination stays unchanged. F7 accepts explicit absolute or panel-relative
 paths, including `..` outside the captured panel. It walks components through native
-handles without following entered links or lexically collapsing an untraversed
-component before `..`. Explicit creation paths may cross drives/mounts; this does
-not relax recursive destructive traversal. The final directory must be new, and
-partial intermediate creation is retained on failure or cancellation. Empty-file
-creation still accepts only one basename. See the [F7 path contract](docs/superpowers/specs/2026-11-06-create-any-path.md).
+handles without following entered links or lexically collapsing an untraversed component
+before `..`. Explicit creation paths may cross drives/mounts; this does not relax
+recursive destructive traversal. The final directory must be new, and partial
+intermediate creation is retained on failure or cancellation. Empty-file creation still
+accepts only one basename. See the [F7 path
+contract](docs/superpowers/specs/2026-11-06-create-any-path.md).
 
-Delete/F8 uses only system Trash; Shift+Delete/Shift+F8 explicitly requests
-permanent deletion after a distinct confirmation. Unavailable Trash never triggers
-permanent deletion. Windows uses the dedicated Shell recycle method, which can
-reject paths beyond its own limit even though rename/create/permanent operations
-support long paths. Linux initially supports same-device home Trash only and
-requires Linux 5.6+ openat2. Destructive traversal never intentionally follows
-symlinks/junctions/mount boundaries. These are live operations, not atomic snapshots;
-cancellation retains completed changes. Normal window close requests cancellation
-and waits responsively for terminal job events before exiting.
+Delete/F8 uses only system Trash; Shift+Delete/Shift+F8 explicitly requests permanent
+deletion after a distinct confirmation. Unavailable Trash never triggers permanent
+deletion. Windows uses the dedicated Shell recycle method, which can reject paths beyond
+its own limit even though rename/create/permanent operations support long paths. Linux
+supports only the home Trash, and only for items on the same filesystem as that Trash;
+deletion requires Linux 5.6 or later (`openat2`). Destructive traversal never
+intentionally follows symlinks/junctions/mount boundaries. These are live operations,
+not atomic snapshots; cancellation retains completed changes. Normal window close
+requests cancellation and waits responsively for terminal job events before exiting.
 
 Deleting changes permissions only inside the tree the user confirmed. On Linux, a
 folder of that tree (a selected folder or any folder below it) that the current user
@@ -446,33 +467,31 @@ inspected as possibly holding the item; neither is described as unneeded.
   the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
   the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Supported schemas through version 35 include window geometry, monitor identity
-  and a validated integer panel split ratio,
-  typed Network tabs, panel modes, native and archive bookmarks, fonts, command history, shortcuts,
-  filters, editor, viewer, archive, preview size, archive-preview and filename-color choices,
-  file comparator rules (version 33), the text rendering choice (version 34) and the
-  hidden-files and selection-by-mask choices (version 35). Earlier
-  schemas migrate with explicit defaults; unsupported fields and versions fail
-  atomically. Viewer options store presentation choices, never query text,
-  document contents or per-file reading positions.
-  Archive previews have a separate default-on preference, while their network
-  admission still follows the actual container storage classification and the
-  network opt-in. Disabling archive previews immediately hides retained member
-  pixels and rejects late archive frames; the next normal scheduling pulse removes
-  their targets and requests backend cancellation. Source access and decoding stay
-  on backend workers.
-  Shortcut settings accept only known semantic action
-  IDs and bounded key chords, never executable commands. Duplicate, malformed and
-  overlapping bindings fail validation atomically. Native editor/IME chords cannot be
-  reassigned to broad application actions.
-  Its 4MiB aggregate bound is a settings resource limit, not a path-length limit.
-  Native path encodings are lossless and platform-specific; malformed/foreign
-  encodings, duplicate IDs/slots and NUL paths are rejected. Late initial loads
-  must preserve unrelated saved data when local edits already occurred.
-  Native readers reject symlinks/reparse points and special files rather than
-  blocking on FIFOs or opening their targets. Own exclusive temp creation and
-  atomic publication preserve existing settings on failure. File sync is used;
-  no power-loss durability of the parent directory entry is claimed.
+  Supported schemas through version 36 include window geometry, monitor identity and a
+  validated integer panel split ratio, typed Network tabs, panel modes, native and
+  archive bookmarks, fonts, command history, shortcuts, filters, editor, viewer,
+  archive, preview size, archive-preview and filename-color choices, file comparator
+  rules (version 33), the text rendering choice (version 34), the hidden-files and
+  selection-by-mask choices (version 35) and the document layout chosen last in the
+  viewer, Paged or Continuous (version 36). Earlier schemas migrate with explicit
+  defaults; unsupported fields and versions fail atomically. Viewer options store
+  presentation choices, never query text, document contents or per-file reading
+  positions. Archive previews have a separate default-on preference, while their network
+  admission still follows the actual container storage classification and the network
+  opt-in. Disabling archive previews immediately hides retained member pixels and
+  rejects late archive frames; the next normal scheduling pulse removes their targets
+  and requests backend cancellation. Source access and decoding stay on backend workers.
+  Shortcut settings accept only known semantic action IDs and bounded key chords, never
+  executable commands. Duplicate, malformed and overlapping bindings fail validation
+  atomically. Native editor/IME chords cannot be reassigned to broad application
+  actions. Its 4MiB aggregate bound is a settings resource limit, not a path-length
+  limit. Native path encodings are lossless and platform-specific; malformed/foreign
+  encodings, duplicate IDs/slots and NUL paths are rejected. Late initial loads must
+  preserve unrelated saved data when local edits already occurred. Native readers reject
+  symlinks/reparse points and special files rather than blocking on FIFOs or opening
+  their targets. Own exclusive temp creation and atomic publication preserve existing
+  settings on failure. File sync is used; no power-loss durability of the parent
+  directory entry is claimed.
 - Command history intentionally persists exact user-submitted text only after a
   successful terminal launch, never command output or passwords collected by Midnight Explorer.
   Commands can contain secrets; the user authorized persistence and can disable
@@ -547,9 +566,17 @@ inspected as possibly holding the item; neither is described as unneeded.
 - There is no application-wide path-length ceiling or `MAX_PATH` buffer.
   Provider/OS limits are reported without truncation. Future FTP/remote locations
   have provider-owned path semantics and separate credentials, not host-OS paths.
-- Core, engine and composition forbid handwritten unsafe Rust. UI denies unsafe
-  code with an exception scoped to generated Slint bindings. The small Win32
-  adapter's unsafe calls require an explicit safety explanation.
+- Unsafe Rust is forbidden (`forbid(unsafe_code)`) in core, engine, the application
+  crate, the platform facade and common platform code, the viewer, rendering, comparison
+  and Office-preview crates and the web, archive, media, image and thumbnail hosts. The
+  UI, viewer UI, comparator UI, media output and Linux platform crates deny it and allow
+  it only in named modules: the generated Slint bindings, the native dialog, drag-input
+  and window-position adapters, the Windows motion and wheel settings, audio output, and
+  Linux calls that rustix does not wrap (locale, sort keys, `setrlimit` before `exec`,
+  `fchmodat2`, the XFS geometry query and the Move's read lease). FFI lives in the
+  Windows platform adapter, the plugin host, the native filesystem host, the worker
+  platform and the elevation helper. By the [code style](CODE_STYLE.md) every unsafe
+  block carries a `SAFETY` explanation; review enforces this, not the compiler.
 - Potentially blocking calls are bounded and run on workers. Navigation results
   are generation-tagged, command/result queues are bounded, and cancellation does
   not pretend a still-running OS call has stopped. One pane reserves its own
@@ -568,11 +595,13 @@ inspected as possibly holding the item; neither is described as unneeded.
 - The explicit developer `--snapshot` option is a file write, not a browsing
   operation. PNG encoding/writing runs in a backend worker and uses exclusive
   creation; an existing file or symlink is never overwritten.
-- Tests and development scripts follow the same literal-argument policy. Windows
-  junction fixtures are created natively through the Win32 reparse-point API
-  (`FSCTL_SET_REPARSE_POINT`, no shell); the remaining ones use a fixed trusted
-  PowerShell script via `-File`. Temporary paths are parameter data, never `cmd /C`
-  command text.
+- Tests and development scripts follow the same literal-argument policy: temporary paths
+  are parameter data, never `cmd /C` command text. Windows junction fixtures are created
+  through the Win32 reparse-point API (`FSCTL_SET_REPARSE_POINT`, no shell) or a fixed
+  PowerShell script run with `-File`. Three engine test fixtures break this rule and are
+  defects: they run `cmd.exe /c mklink /J` with the paths in its command text
+  (`private_spool_windows_tests.rs`, `tests/support/checksum_verify_links_windows.rs`
+  and `tests/tree_link_native_windows.rs`).
 
 The directory model still uses memory proportional to the number of entries.
 Worker/front-queue bounds are not a promise that arbitrarily large directories
@@ -610,22 +639,17 @@ Cannot open folder message after the retry states the requirement, both when no
 helper is installed beside the executable (per-user deployments omit it) and for a
 helper in a refused location.
 
-Builds before this check accepted a helper beside their executable through the plugin
-trust policy alone, and earlier versions left the helper in folders that their user
-can change: the deployment scripts copied it into Windows private runtimes, the Linux
-per-user instructions installed `$HOME/.local/bin/midnight-elevated-listing`, release
-packages contain it beside `me` (so an earlier Windows ZIP extracted into the user
-profile, as its README suggested, or an earlier Linux archive extracted into a
-user-owned folder and run as `./me` has it there), and build output holds it beside
-`me`. In each such installation any process running as that user can replace the
-helper that the older `me` then runs as Administrator or root. Current builds refuse
-such a copy, so deleting it loses nothing: replace each such installation with a
-current build, deployment or package, or at least delete its
-`midnight-elevated-listing` helper. No script does this for them: `build.bat`
+**Older installations.** Earlier builds took the helper from beside their executable on
+the plugin trust policy alone, and earlier deployment scripts (Windows private
+runtimes), Linux per-user instructions (`$HOME/.local/bin`), release packages extracted
+into a user-owned folder and build output left it in folders that their user can change.
+There any process running as that user can replace the helper that the older `me` runs
+as Administrator or root. Current builds refuse such a copy, so deleting it loses
+nothing: replace each such installation with a current build, deployment or package, or
+at least delete its `midnight-elevated-listing`. No script does this: `build.bat`
 retires only build deployments that it marked itself, so installations made directly
-with `scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`) and build
-deployments made before that retirement existed are never removed, and nothing
-touches extracted packages or per-user copies.
+with `scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`), older build
+deployments, extracted packages and per-user copies stay.
 
 The channel is bound by process identity. On Windows the parent checks the pipe
 client PID against the launched process; the helper checks the pipe server PID and
@@ -639,13 +663,14 @@ only rejects a stale or foreign helper and authenticates nothing.
 The helper lists one directory from enumeration metadata without opening any entry;
 Windows classifies links from their own attributes, and Linux follows a symbolic link
 only with `stat` to classify a directory link. Frames are bounded (64 MiB, 250,000
-entries, 256 KiB names, 16 KiB errors) and truncation is an error. Both ends wait on
-I/O readiness, observing cancellation and the five-minute deadline within a bounded
-slice. The helper ends its own process when the requester disconnects, sends further
-data, exits or the deadline passes, even while a directory read is blocked. At most
-two helpers can be pending or live per process. Actual UAC/polkit consent is not
-exercised by automated tests; see the
-[first qualification record](docs/verification/2026-11-11-directory-authorization.md).
+entries, 256 KiB names, 16 KiB errors) and truncation is an error. Both ends wait on I/O
+readiness, observing cancellation and the five-minute deadline within a bounded slice.
+The helper ends its own process when the requester disconnects, sends further data,
+exits or the deadline passes, even while a directory read is blocked. At most two
+authorization processes, helpers or the HTML viewer's **Install…** on Linux, can be
+pending or live per process. Actual UAC/polkit consent is not exercised by automated
+tests; see the [verification
+record](docs/verification/2026-11-11-directory-authorization.md).
 
 ## Verified clipboard copying and the copy contract
 
@@ -673,28 +698,27 @@ display strings nor temporary extraction paths are exported. Native tree Paste
 uses the captured panel root, not its focused child, and preserves the clipboard's
 Copy/Move intent and ordinary Move confirmation. This grants no archive writes.
 
-Copying is conservative on all storage classes in this milestone. Each copy job
-runs one native I/O step at a time, including source reads, destination writes and
-independent verification reads; running jobs share the configured disk-I/O limit step
-by step. A Copy or Move starts at once unless the user chose **Wait for other
-operations to finish**: its namespace admission is an immediate check-and-claim of the
-job's own pins against the committed facts of the jobs already granted, never a wait
-for another job's turn. Only real overlaps wait, item by item: a selected item that a
-granted job claims or has deferred waits alone until its first change that no earlier
-job refuses, while the rest of the job goes on. A job waits as a whole only when a
-footprint it changes is unknown, when it would read what another job changes, or
-behind an older waiting job that shares an item. A followed directory keeps its own
-claim like any source, so another job's writes into it still wait; a link nested in it
-can lead elsewhere, and reads there are not protected against another job's writes (a
-followed source is never changed). A root a job only reads whose geometry is unknown
-(a followed link, a provider without native geometry) is left unclaimed instead of
-holding other jobs back, and reads through it are unprotected. Cancellation retains
-capacity until the in-flight native call and cleanup actually return.
-Future parallel streams within one Copy/Move job are permitted only when **both
-source and destination are positively identified as local SSDs**, with a shared
-physical-device scheduler. HDD, network, unknown or failed classification on either
-endpoint requires one stream per job; an SSD at the other endpoint does not override
-this. SSD-to-SSD copying within one job also remains serial today.
+Copying is conservative on all storage classes. Each copy job runs one native I/O step
+at a time, including source reads, destination writes and independent verification
+reads; running jobs share the configured disk-I/O limit step by step. A Copy or Move
+starts at once unless the user chose **Wait for earlier transfers**: its namespace
+admission is an immediate check-and-claim of the job's own pins against the committed
+facts of the jobs already granted, never a wait for another job's turn. Only real
+overlaps wait, item by item: a selected item that a granted job claims or has deferred
+waits alone until its first change that no earlier job refuses, while the rest of the
+job goes on. A job waits as a whole only when a footprint it changes is unknown, when it
+would read what another job changes, or behind an older waiting job that shares an item.
+A followed directory keeps its own claim like any source, so another job's writes into
+it still wait; a link nested in it can lead elsewhere, and reads there are not protected
+against another job's writes (a followed source is never changed). A root a job only
+reads whose geometry is unknown (a followed link, a provider without native geometry) is
+left unclaimed instead of holding other jobs back, and reads through it are unprotected.
+Cancellation retains capacity until the in-flight native call and cleanup actually
+return. One Copy or Move job copies through one stream, SSD to SSD included. The rule
+for any parallel streams within a job: they are permitted only when **both source and
+destination are positively identified as local SSDs**, with a shared physical-device
+scheduler. HDD, network, unknown or failed classification on either endpoint requires
+one stream per job; an SSD at the other endpoint does not override this.
 
 Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
 through the ordinary Copy route is rejected. Explicit native Move accepts at most
@@ -834,20 +858,23 @@ xattrs, sparse allocation, timestamps or links. Windows file sync does not promi
 power-loss durability of the parent entry; Linux separately reports parent-sync
 failure even if publication succeeded.
 
-Explicit RequireModifiedTime accepts at most 64 distinct native regular-file roots
-within the 4 MiB proof-path reservation. It captures metadata from retained source
-handles before data reads and preflights every source pin and owned destination
-stage before content writes. After the selected content-verification gate, the exact stage
-modified time is set, synced and independently read back without rounding
-tolerance. Value-specific precision failures happen on unpublished stages after
-data verification; earlier completed files may remain, but such a failure prevents
-removal of that source and stops subsequent Move work. Unsupported directories, links and virtual sources never
-silently downgrade to ContentOnly. Source write attributes are not requested;
-Windows adds WRITE_ATTRIBUTES only to owned required-metadata stages.
-Source/destination times supplement, never replace, the selected content checks
-and fresh native read guards. Published targets are never rewritten to hide a mismatch;
-late pre-deletion errors restore originals without replacement. Access/creation time, attributes,
-permissions, ACLs, xattrs, streams and link preservation remain separate features.
+Explicit RequireModifiedTime (**Preserve exact modified time**) accepts only distinct
+native regular-file roots. The Copy/Move dialog offers it for 1 to 64 of them; the
+backend itself takes up to the 4,096-item transfer limit for Copy and 64 roots for Move,
+within the Move's 4 MiB proof-path reservation. It captures metadata from retained
+source handles before data reads and preflights every source pin and owned destination
+stage before content writes. After the selected content-verification gate, the exact
+stage modified time is set, synced and independently read back without rounding
+tolerance. Value-specific precision failures happen on unpublished stages after data
+verification; earlier completed files may remain, but such a failure prevents removal of
+that source and stops subsequent Move work. Unsupported directories, links and virtual
+sources never silently downgrade to ContentOnly. Source write attributes are not
+requested; Windows adds WRITE_ATTRIBUTES only to owned required-metadata stages.
+Source/destination times supplement, never replace, the selected content checks and
+fresh native read guards. Published targets are never rewritten to hide a mismatch; late
+pre-deletion errors restore originals without replacement. Access/creation time,
+attributes, permissions, ACLs, xattrs, streams and link preservation remain separate
+features.
 
 Copy-fallback Move preflight obtains source mutation authority separately from Copy,
 retains every actual source reader and empty stage, and verifies native source
@@ -1203,20 +1230,21 @@ exists. Internal panel dragging remains available. X11 incremental transfers are
 bounded and timed out. Move proposals may negotiate Copy only when the source
 explicitly offers Copy; a Move-only offer is rejected.
 
-<a id="dynamic-viewers-and-planned-filesystem-plugins"></a>
-
 ## Dynamic viewers and filesystem plugins
 
-The [plugin interface design](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
-defines the implementation boundary. Basic text/binary, source and Markdown viewers
-are separate removable libraries under the installation's `viewers/` root. The
-`filesystems/` contains independent archive workers and separate Windows/Linux
-native libraries. Native panel Browse/Stat/Storage and native F3 capture require
-the installed native provider, with no built-in fallback on provider failure.
-Writes, watches and other explicit host services have not yet migrated to generic
-provider capabilities. The native host shares the same protected installation
-checks as the viewer host; optional ABI1.1 volume details preserve unavailable
-fields and conservative physical-device classifications.
+The [plugin interface
+design](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)
+defines the implementation boundary. Viewers are separate removable packages under the
+installation's `viewers/` root: the basic text/binary, source and Markdown viewers are
+native libraries, and the image, PDF and HTML viewers run their content in separate
+worker or browser processes. `filesystems/` holds the archive worker and the separate
+Windows/Linux native and network libraries, and `thumbnailers/` the thumbnail workers.
+Native panel Browse/Stat/Storage and native F3 capture require the installed native
+provider, with no built-in fallback on provider failure. Writes, watches and other
+explicit host services have not yet migrated to generic provider capabilities. The
+native host shares the same protected installation checks as the viewer host; optional
+ABI1.1 volume details preserve unavailable fields and conservative physical-device
+classifications.
 
 - Native plugins run with application authority. Neither a C ABI nor capability
   validation isolates malicious code, memory faults or a stuck native parser.
@@ -1230,20 +1258,20 @@ fields and conservative physical-device classifications.
   DACL/owner checks; Linux uses native uid/mode and sticky-directory rules. A private
   child inside a replaceable parent is insufficient. This does not turn trusted
   native code into a sandbox or authenticate a publisher's identity.
-- Plugin projects share one Git repository but depend only on the public API/SDK,
-  except the in-repository path dependencies that the
-  [developer guide](docs/developer/README.md) lists (PLUGIN-01 in the
-  [backlog](docs/IMPLEMENTATION_BACKLOG.md)). Their independent Cargo workspaces
-  contain their tests and have no write access to the host application's sources.
-  CI checks the basic, source, Markdown, image and PDF viewers, the image thumbnailer, the viewer conformance fixture and the
-  Windows/Linux native, network and archive filesystems from exported directories,
-  without host sources: viewers and workers against the released public SDK
-  bundles, filesystem libraries against the checked-in public filesystem API/SDK.
-  The HTML viewer, the video thumbnailer and the macOS native filesystem have no CI
-  job yet.
-  Building, testing or installing a plugin must never patch host sources or the
-  executable. Integration tests consume a released host binary in a temporary
-  distribution; extending host API requires a separate host-owned change.
+- Plugin projects share one Git repository but depend only on the public API/SDK, except
+  the in-repository path dependencies that the [developer
+  guide](docs/developer/README.md) lists (PLUGIN-01 in the
+  [backlog](docs/IMPLEMENTATION_BACKLOG.md)). Their independent Cargo workspaces contain
+  their tests and have no write access to the host application's sources. CI checks the
+  basic, source, Markdown, image and PDF viewers, the image thumbnailer, the viewer
+  conformance fixture and the Windows/Linux native, network and archive filesystems from
+  exported directories, without host sources: viewers and workers against the released
+  public SDK bundles, filesystem libraries against the checked-in public filesystem
+  API/SDK. CI also lints and tests the video thumbnailer's platform helpers (the system
+  decoders), but not its bundled-FFmpeg helpers; the HTML viewer and the macOS native
+  filesystem have no CI job. Building, testing or installing a plugin must never patch
+  host sources or the executable. Integration tests consume a released host binary in a
+  temporary distribution; extending host API requires a separate host-owned change.
 - Shared Windows host builds can resolve a private runtime published by explicit
   deployment. By default a protected per-user launcher pointer for the launch
   executable's native path selects the registration, but only while that executable
@@ -1271,20 +1299,18 @@ fields and conservative physical-device classifications.
   controls (U+202A-U+202E, U+2066-U+2069) as `\u202E`-style escapes, the source
   and Markdown viewers show them as U+FFFD, and terminal controls appear as
   escapes or control pictures. Copy and search use the displayed text.
-- The native content broker provides LiveValidated reads, not a filesystem snapshot:
-  it prepares identity, opens without following links, and checks revision before
-  and after reads. Replaced/changed files report an error. Viewer captures and,
-  since 21 November, archive file captures accept a revision whose change time alone
-  moved (VIEW-05: same volume, file ID, length and LastWriteTime on Windows; same
-  device, inode, length and mtime on Linux), as endpoint protection moves it on
-  freshly written files and on archives hours later; a same-length rewrite that
-  restores the modification time is then not detected while a file is displayed or
-  an archive is open, nor when a saved tab or Hot Path reopens that archive. A
-  different file at the path, a link and every other change are still refused.
-  Reads are bounded to 256 KiB and use u64 offsets. Four live sessions share the
-  host limits; decoded pages, wire items, retained service replies and raster
-  surfaces have separate explicit budgets. Selection/copy is limited to the loaded
-  page.
+- The native content broker provides LiveValidated reads, not a filesystem snapshot: it
+  prepares identity, opens without following links, and checks revision before and after
+  reads. Replaced/changed files report an error. Viewer captures and archive file
+  captures accept a revision whose change time alone moved (VIEW-05: same volume, file
+  ID, length and LastWriteTime on Windows; same device, inode, length and mtime on
+  Linux), as endpoint protection moves it on freshly written files and on archives hours
+  later; a same-length rewrite that restores the modification time is then not detected
+  while a file is displayed or an archive is open, nor when a saved tab or Hot Path
+  reopens that archive. A different file at the path, a link and every other change are
+  still refused. Reads are bounded to 256 KiB and use u64 offsets. Four live sessions
+  share the host limits; decoded pages, wire items, retained service replies and raster
+  surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.
 - Markdown returns semantic text blocks and inert link metadata. The host does not
   execute HTML/scripts or load remote images, styles, fonts or links. Source syntax
   definitions are packaged code, never executable configuration from the opened folder.
@@ -1373,23 +1399,23 @@ fields and conservative physical-device classifications.
   thread (their warnings are discarded with stderr). A missing decoder is a codec number
   and the families tried; the host words it with the distribution's package names and
   never installs anything.
-- The built-in Office contents preview parses captured DOCX/XLSX/PPTX/ODT/ODS/ODP
-  bytes on viewer backend workers into bounded inert HTML: no scripts, macros (VBA
-  projects and ODF `Basic/`/`Scripts/` libraries are never read), formula
-  evaluation, external links or resources. Before `zip` builds its index, a
-  preflight checks every central record and local header: extra fields must be exact
-  record sequences (unused records such as Office's 0xA220 padding are skipped,
-  ZIP64 values are resolved, a Unicode path record naming another part is refused);
-  local and central names, flags, methods, CRCs and sizes must agree; members must
-  not overlap, checked before each header's variable part is read; names are unique
-  and safe, with no symbolic links; an archive comment cannot hide another
-  directory. `zip` then indexes a canonical directory without extra fields or
-  comments. Encryption, OLE compound files, compression other than stored or
-  Deflate, split and ZIP64 archives, DTDs and non-UTF-8 XML are refused. Limits: a
-  256 MiB file, 10,000 parts, an 8 MiB central directory, 4 GiB per part, 256 MiB of
-  reads and unpacked data per page, and XML tokens of 64 KiB nested at most 128
-  deep. Markup the preview does not read is skipped and never shown as document
-  text ([package rules](docs/developer/VIEWER_PREFERENCES.md#office-packages-what-opens-and-what-is-refused)).
+- The built-in Office contents preview parses captured DOCX/XLSX/PPTX/ODT/ODS/ODP bytes
+  on viewer backend workers into bounded inert HTML: no scripts, macros (VBA projects
+  and ODF `Basic/`/`Scripts/` libraries are never read), formula evaluation, external
+  links or resources. Before `zip` builds its index, a preflight checks every central
+  record and local header: extra fields must be exact record sequences (unused records
+  such as Office's 0xA220 padding are skipped, a header's ZIP64 values are resolved, a
+  Unicode path record naming another part is refused); local and central names, flags,
+  methods, CRCs and sizes must agree; members must not overlap, checked before each
+  header's variable part is read; names are unique and safe, with no symbolic links; an
+  archive comment cannot hide another directory. `zip` then indexes a canonical
+  directory without extra fields or comments. Encryption, OLE compound files,
+  compression other than stored or Deflate, split archives, archives with a ZIP64 end
+  record, DTDs and non-UTF-8 XML are refused. Limits: a 256 MiB file, 10,000 parts, an 8
+  MiB central directory, 4 GiB per part, 256 MiB of reads and unpacked data per page,
+  and XML tokens of 64 KiB nested at most 128 deep. Markup the preview does not read is
+  skipped and never shown as document text ([package
+  rules](docs/developer/VIEWER_PREFERENCES.md#office-packages-what-opens-and-what-is-refused)).
 - SVG images and thumbnails use the shared image decoder inside the restricted image
   workers. Scripts and event attributes never run; `foreignObject` is skipped (a
   `switch` draws its SVG fallback); links to files or URLs (images, `use`, paint,
