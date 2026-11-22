@@ -1,7 +1,9 @@
 //! Native test fixtures without spawning a shell: directory junctions and
 //! non-surrogate (filter-style) reparse points, set with `FSCTL_SET_REPARSE_POINT`, and
 //! DACLs that deny Everyone chosen rights, set through the object's own handle.
-//! Standalone (std and windows-sys only) so integration tests can include it by path.
+//! Standalone (std and windows-sys only, and tempfile for `build_temp` in tests) so
+//! integration tests can include it by path. Other packages' tests reach [`new_junction`]
+//! through the crate's `test-fixtures` feature.
 #![allow(dead_code, reason = "each test binary uses a subset of the fixtures")]
 use std::{
     ffi::OsString,
@@ -111,6 +113,19 @@ pub fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
         buffer.extend(unit.to_le_bytes());
     }
     control(&open_for_reparse(link)?, FSCTL_SET_REPARSE_POINT, &buffer)
+}
+
+/// Creates `link` as a new directory junction to `target`, which need not exist; a relative
+/// target is made absolute against the working folder, as `mklink /J` does. Both paths are
+/// only data of one `FSCTL_SET_REPARSE_POINT` request: no shell or command line sees them,
+/// so `%`, `!`, `^`, `&` and spaces in them stay literal. The new directory is removed
+/// again when it cannot become the junction.
+pub fn new_junction(link: &Path, target: &Path) -> io::Result<()> {
+    let target = std::path::absolute(target)?;
+    std::fs::create_dir(link)?;
+    create_junction(link, &target).inspect_err(|_| {
+        let _ = std::fs::remove_dir(link);
+    })
 }
 
 fn guid_buffer(tag: u32, data: &[u8]) -> Vec<u8> {
@@ -331,6 +346,7 @@ pub fn restore_dacl(path: &Path, saved: &SavedDacl) -> io::Result<()> {
 }
 
 /// A fresh directory below the repository's `_build/tmp`, removed on drop.
+#[cfg(test)]
 pub fn build_temp(prefix: &str) -> tempfile::TempDir {
     let root = build_tmp_root();
     tempfile::Builder::new()

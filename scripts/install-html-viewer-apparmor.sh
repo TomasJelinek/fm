@@ -94,23 +94,73 @@ private_group() {
         }' "$passwd" "${4:-/etc/group}"
 }
 
-# The first of folder $1 and the folders above it that users other than its owner can
-# write to (even a sticky one such as /tmp; its group only if that is not the owner's
-# private group), or that cannot be inspected; nothing (and status 1) when there is none.
+# Whether $1 itself, never what a link names, carries an ACL, which `ls -l` marks with a +
+# after the permissions: a POSIX access or default ACL, or an NFSv4 ACL. One that cannot be
+# listed counts as carrying one.
+has_acl() {
+    local listing
+    listing=$(LC_ALL=C ls -ld -- "$1") || return 0
+    case ${listing%% *} in
+        *+) return 0 ;;
+    esac
+    return 1
+}
+
+# Whether only its owner can write to $1, which is not followed if it is a link: no other
+# user can (not even through a sticky folder such as /tmp), and its group only if that is
+# the owner's private group and $1 carries no ACL. With a POSIX ACL the group bits are the
+# ACL's mask, which bounds what its named users and groups may do: without group write they
+# cannot write, and with it any ACL refuses. The viewer applies the same rule.
+only_its_owner_writes() {
+    local status mode owner group
+    status=$(stat -c '%a %u %g' -- "$1") && read -r mode owner group <<<"$status" &&
+        [ $((8#$mode & 8#002)) -eq 0 ] &&
+        { [ $((8#$mode & 8#020)) -eq 0 ] || { private_group "$owner" "$group" && ! has_acl "$1"; }; }
+}
+
+# The first of $1 and the folders above it that users other than its owner can write to, or
+# that cannot be inspected; nothing (and status 1) when there is none.
 shared_folder() {
-    local folder=$1 status mode owner group
+    local path=$1
     while :; do
-        if ! status=$(stat -c '%a %u %g' -- "$folder") ||
-            ! read -r mode owner group <<<"$status" ||
-            [ $((8#$mode & 8#002)) -ne 0 ] ||
-            { [ $((8#$mode & 8#020)) -ne 0 ] && ! private_group "$owner" "$group"; }; then
-            printf '%s\n' "$folder"
+        if ! only_its_owner_writes "$path"; then
+            printf '%s\n' "$path"
             return 0
         fi
-        [ "$folder" != / ] || return 1
-        folder=$(dirname -- "$folder")
+        [ "$path" != / ] || return 1
+        path=$(dirname -- "$path")
     done
 }
+
+# Below a checkout's _build folder $1, the first path on the way down to the viewer of a
+# build that the checkout's pattern names (every build folder, its viewers folder, the
+# viewer's folder and the viewer, as far as they exist and are no links) that users other
+# than its owner can write to; $1 itself when its builds cannot be listed; nothing (and
+# status 1) when there is none. AppArmor attaches to an executable's real path, which a
+# link here leaves, so what a link names never counts, and a file here holds no build.
+# Runs in a subshell: the globs below see hidden names, as AppArmor's * does.
+shared_builds() (
+    shopt -s dotglob nullglob
+    if [ ! -r "$1" ] || [ ! -x "$1" ]; then
+        printf '%s\n' "$1"
+        exit 0
+    fi
+    for build in "$1"/*; do
+        for path in "$build" "$build/viewers" "$build/${VIEWER%/*}"; do
+            [ -d "$path" ] && [ ! -L "$path" ] || continue 2
+            if ! only_its_owner_writes "$path"; then
+                printf '%s\n' "$path"
+                exit 0
+            fi
+        done
+        path=$build/$VIEWER
+        if [ -e "$path" ] && [ ! -L "$path" ] && ! only_its_owner_writes "$path"; then
+            printf '%s\n' "$path"
+            exit 0
+        fi
+    done
+    exit 1
+)
 
 # Whether only root can change $1 and every folder above it: no link, owned by root and
 # neither group- nor other-writable. Running a script that someone else could have replaced
@@ -127,8 +177,10 @@ only_root_can_change() {
 }
 
 # The executable the profile attaches to: one exact path, or every build of a checkout.
+# Users other than its owner may write to nothing on the way to it: the viewer, or the
+# checkout's _build, and every folder above it, and each build below that _build.
 attachment() {
-    local root=$1 path folder shared
+    local root=$1 path shared
     if [ -z "$root" ]; then
         if [ -f "$script_dir/$VIEWER" ]; then
             root=$script_dir
@@ -145,15 +197,18 @@ attachment() {
             fail "$root contains characters that AppArmor reads as patterns; use a path of letters, digits, spaces and ._+-@: instead" ;;
     esac
     if [ -f "$root/$VIEWER" ]; then
-        path=$root/$VIEWER folder=$root/${VIEWER%/*}
+        path=$root/$VIEWER
+        shared=$(shared_folder "$path") || shared=
     elif [ -f "$root/midnight-viewer-html" ] && [ "$(basename -- "$root")" = midnight-viewer-html ]; then
-        path=$root/midnight-viewer-html folder=$root
+        path=$root/midnight-viewer-html
+        shared=$(shared_folder "$path") || shared=
     elif [ -d "$root/_build" ] && [ -f "$root/Cargo.toml" ]; then
-        path=$root/_build/*/$VIEWER folder=$root/_build
+        path=$root/_build/*/$VIEWER
+        shared=$(shared_folder "$root/_build" || shared_builds "$root/_build") || shared=
     else
         fail "$root contains neither $VIEWER nor a source checkout's _build folder"
     fi
-    if shared=$(shared_folder "$folder"); then
+    if [ -n "$shared" ]; then
         fail "users other than its owner can write to $shared, so they could put another program at the viewer's path, now or once the installation is gone; use an installation in folders that only their owners can change"
     fi
     printf '%s\n' "$path"

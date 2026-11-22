@@ -19,6 +19,10 @@ midnight-platform-linux.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+# The Windows tests' directory junction (tests/windows.rs), set natively without a shell.
+[target.'cfg(windows)'.dev-dependencies]
+midnight-platform-windows = { workspace = true, features = ["test-fixtures"] }
+
 # The facade has no unit tests, so `cargo test` neither builds nor starts an empty
 # test harness for it; `library_has_no_unit_tests` in tests/integration.rs fails if
 # one is added while this is set.

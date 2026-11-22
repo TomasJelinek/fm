@@ -13,13 +13,13 @@ use crate::{
 };
 use midnight_core::Cancellation;
 use std::{
-    ffi::OsStr,
+    ffi::{CStr, CString, OsStr},
     fs,
     io::{self, Read, Write},
-    os::unix::{fs::MetadataExt, process::ExitStatusExt},
+    os::unix::{ffi::OsStrExt, fs::MetadataExt, process::ExitStatusExt},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    thread,
+    ptr, thread,
     time::Duration,
 };
 
@@ -31,6 +31,12 @@ mod tests;
 const PROFILE: &str = "midnight-explorer-html-viewer";
 /// The viewer executable below an installation folder.
 const VIEWER: &str = "viewers/midnight-viewer-html/midnight-viewer-html";
+/// The extended attribute of a POSIX access ACL.
+const ACCESS_ACL: &CStr = c"system.posix_acl_access";
+/// The extended attribute of a folder's POSIX default ACL, which its new entries inherit.
+const DEFAULT_ACL: &CStr = c"system.posix_acl_default";
+/// The extended attribute of an NFSv4 ACL.
+const NFS4_ACL: &CStr = c"system.nfs4_acl";
 /// The viewer's package folder, and the name of its executable.
 const PACKAGE: &str = "midnight-viewer-html";
 /// The shell that pkexec runs as root.
@@ -86,9 +92,10 @@ impl SandboxProfile {
     /// administrator can install it from here: `/usr/bin/pkexec` and every folder above it
     /// belong to root and only root can change them, and the executable is the HTML viewer
     /// of an installation, or of a build in a source checkout, whose path AppArmor can name
-    /// without reading a character as a pattern and on whose way no folder can be written
-    /// by users other than its owner (not even a sticky one such as /tmp). Inspects the
-    /// file system; runs nothing.
+    /// without reading a character as a pattern and on whose way, from `/` down to the
+    /// viewer (to the viewer of every build of a checkout), users other than its owner can
+    /// write to nothing (not even a sticky folder such as /tmp). Inspects the file system;
+    /// runs nothing.
     pub fn for_browser(executable: &Path) -> Option<Self> {
         offer(executable, trusted_pkexec)
     }
@@ -100,9 +107,9 @@ impl SandboxProfile {
     }
 
     /// Whether someone other than root, such as any program the user runs, can change a
-    /// folder on the way to [`Self::attachment`] (a per-user installation, an extracted
-    /// package or a checkout), and so put a program at that path, which the profile then
-    /// lets use user namespaces as well.
+    /// folder or viewer on the way to [`Self::attachment`] (a per-user installation, an
+    /// extracted package or a checkout), and so put a program at that path, which the
+    /// profile then lets use user namespaces as well.
     pub fn changeable(&self) -> bool {
         self.changeable
     }
@@ -129,11 +136,11 @@ fn offer(executable: &Path, trusted: impl FnOnce() -> io::Result<()>) -> Option<
 fn profile_for(executable: &Path) -> io::Result<SandboxProfile> {
     // AppArmor attaches a profile to the executable's real path.
     let executable = fs::canonicalize(executable)?;
-    let (attachment, folder) = attachment(&installation(&executable)?)?;
+    let (attachment, way) = attachment(&installation(&executable)?)?;
     if !covers(&attachment, &executable) {
         return Err(unusable("its profile would not attach to the HTML viewer"));
     }
-    let changeable = changeable(&folder)?;
+    let changeable = changeable(&way)?;
     Ok(SandboxProfile {
         text: profile_text(&attachment),
         attachment,
@@ -162,11 +169,11 @@ fn installation(executable: &Path) -> io::Result<PathBuf> {
 
 /// The executable path that the profile for `installation` attaches to, by the rules of
 /// the installer's `attachment`: the folder's own viewer, the package folder's executable,
-/// or every build of a source checkout; with the last folder of that path that names no
-/// pattern. Like the installer, it refuses a canonical folder path with any character but
-/// letters, digits, spaces and `._+-@:` (see `nameable`), and a path through a folder that
-/// users other than its owner can write to (see `changeable`).
-fn attachment(installation: &Path) -> io::Result<(String, PathBuf)> {
+/// or every build of a source checkout; with every path on the way from `/` to the viewers
+/// it names (see `up` and `down`). Like the installer, it refuses a canonical folder path
+/// with any character but letters, digits, spaces and `._+-@:` (see `nameable`), and a way
+/// through a path that users other than its owner can write to (see `shared`).
+fn attachment(installation: &Path) -> io::Result<(String, Vec<PathBuf>)> {
     if !installation.is_dir() {
         return Err(unusable("its installation is not a folder"));
     }
@@ -175,48 +182,127 @@ fn attachment(installation: &Path) -> io::Result<(String, PathBuf)> {
         .to_str()
         .filter(|text| nameable(text))
         .ok_or_else(|| unusable("its path contains characters that AppArmor reads as patterns"))?;
+    // Every path whose writers decide what runs at the attached path: the viewer, or a
+    // checkout's _build, and every folder above it, then each build below that _build.
     let viewer = root.join(VIEWER);
-    let (attachment, folder) = if viewer.is_file() {
-        let folder = viewer.parent().unwrap_or(&root).to_owned();
-        (format!("{text}/{VIEWER}"), folder)
+    let (attachment, way) = if viewer.is_file() {
+        (format!("{text}/{VIEWER}"), up(&viewer))
     } else if root.join(PACKAGE).is_file() && root.file_name() == Some(OsStr::new(PACKAGE)) {
-        (format!("{text}/{PACKAGE}"), root.clone())
+        (format!("{text}/{PACKAGE}"), up(&root.join(PACKAGE)))
     } else if root.join("_build").is_dir() && root.join("Cargo.toml").is_file() {
-        (format!("{text}/_build/*/{VIEWER}"), root.join("_build"))
+        let builds = root.join("_build");
+        let mut way = up(&builds);
+        way.extend(down(&builds)?);
+        (format!("{text}/_build/*/{VIEWER}"), way)
     } else {
         return Err(unusable(
             "its installation holds neither the viewer nor a source checkout's _build",
         ));
     };
-    if let Some(shared) = shared_folder(&folder) {
+    if let Some(shared) = shared(&way) {
         return Err(unusable(format!(
             "users other than its owner can write to {}, so they could put another program \
              at the viewer's path, now or once the installation is gone",
             shared.display()
         )));
     }
-    Ok((attachment, folder))
+    Ok((attachment, way))
 }
 
-/// The first of `folder` and the folders above it that users other than its owner can
-/// write to, even a sticky one such as /tmp, or that cannot be inspected. The installer's
-/// `shared_folder`.
-fn shared_folder(folder: &Path) -> Option<PathBuf> {
+/// `path` and every folder above it. The installer's `shared_folder` walks them.
+fn up(path: &Path) -> Vec<PathBuf> {
+    path.ancestors().map(Path::to_owned).collect()
+}
+
+/// Below a checkout's `_build` folder `builds`, the way down to the viewer of each build
+/// that the checkout's pattern names: every build folder, its `viewers` folder, the
+/// viewer's folder and the viewer, as far as they exist and are no links. AppArmor
+/// attaches to an executable's real path, which a link here leaves, so what a link names
+/// never counts, and a file here holds no build. The installer's `shared_builds`.
+fn down(builds: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut entries = fs::read_dir(builds)?
+        .map(|entry| Ok(entry?.path()))
+        .collect::<io::Result<Vec<PathBuf>>>()?;
+    entries.sort();
+    let real = |path: &Path| fs::symlink_metadata(path).ok().filter(|m| !m.is_symlink());
+    let mut way = Vec::new();
+    'builds: for build in entries {
+        let viewer = build.join(VIEWER);
+        // The build folder, `viewers` and the viewer's folder, outermost first.
+        let mut folders: Vec<&Path> = viewer
+            .ancestors()
+            .skip(1)
+            .take_while(|folder| folder.starts_with(&build))
+            .collect();
+        folders.reverse();
+        for folder in folders {
+            if !real(folder).is_some_and(|metadata| metadata.is_dir()) {
+                continue 'builds;
+            }
+            way.push(folder.to_owned());
+        }
+        if real(&viewer).is_some() {
+            way.push(viewer);
+        }
+    }
+    Ok(way)
+}
+
+/// The first path of `way` that users other than its owner can write to (even a sticky
+/// folder such as /tmp), or that cannot be inspected. A link is not followed.
+fn shared(way: &[PathBuf]) -> Option<&Path> {
     let accounts = Accounts::read();
-    folder
-        .ancestors()
-        .find(|folder| {
-            !fs::symlink_metadata(folder).is_ok_and(|metadata| {
-                only_its_owner_writes(metadata.mode(), metadata.uid(), metadata.gid(), &accounts)
-            })
+    way.iter().map(PathBuf::as_path).find(|path| {
+        !fs::symlink_metadata(path).is_ok_and(|metadata| {
+            only_its_owner_writes(
+                metadata.mode(),
+                metadata.uid(),
+                metadata.gid(),
+                &accounts,
+                || may_have_acl(path, metadata.is_dir()),
+            )
         })
-        .map(Path::to_owned)
+    })
 }
 
-/// Whether only the owner `uid` can write to a folder of `mode` and group `gid`: no other
-/// user can, and its group only if that is the owner's private group.
-fn only_its_owner_writes(mode: u32, uid: u32, gid: u32, accounts: &Accounts) -> bool {
-    mode & 0o002 == 0 && (mode & 0o020 == 0 || accounts.private_group(uid, gid))
+/// Whether only the owner `uid` can write to a path of `mode` and group `gid`: no other
+/// user can, and its group only if that is the owner's private group and it carries no
+/// ACL, which `acl` tells and is asked only then. With a POSIX ACL the group bits are the
+/// ACL's mask, which bounds what its named users and groups may do: without group write
+/// they cannot write, and with it any ACL refuses. The copy staging's rule
+/// (`private_writers_only` in `crates/midnight-platform-linux/src/ownership.rs`).
+fn only_its_owner_writes(
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    accounts: &Accounts,
+    acl: impl FnOnce() -> bool,
+) -> bool {
+    mode & 0o002 == 0 && (mode & 0o020 == 0 || (accounts.private_group(uid, gid) && !acl()))
+}
+
+/// Whether `path` itself, never what a link names, may carry an ACL, which `ls -l` marks
+/// with a `+`: a POSIX access ACL or, on a `folder`, a POSIX default ACL, or an NFSv4 ACL.
+/// Only a missing attribute (ENODATA) or a filesystem without such ACLs (EOPNOTSUPP) proves
+/// that it carries none; any other failure counts as one, as for the copy staging's
+/// `may_have_access_acl`.
+fn may_have_acl(path: &Path, folder: bool) -> bool {
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return true;
+    };
+    let mut names = [ACCESS_ACL, NFS4_ACL]
+        .into_iter()
+        .chain(folder.then_some(DEFAULT_ACL));
+    names.any(|name| {
+        // SAFETY: a terminated path and attribute name; with no buffer the call writes
+        // nothing and only reports the value's size.
+        let size = unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), ptr::null_mut(), 0) };
+        size >= 0
+            || !matches!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ENODATA | libc::EOPNOTSUPP)
+            )
+    })
 }
 
 /// The local account files, `/etc/passwd` and `/etc/group`, for `Accounts::private_group`.
@@ -299,13 +385,12 @@ impl Accounts {
     }
 }
 
-/// Whether someone other than root owns `folder` or a folder above it (`attachment` has
-/// refused any that others can write to), and could therefore put a program at the
-/// attached path.
-fn changeable(folder: &Path) -> io::Result<bool> {
+/// Whether someone other than root owns a path of `way` (`attachment` has refused any that
+/// others can write to), and could therefore put a program at the attached path.
+fn changeable(way: &[PathBuf]) -> io::Result<bool> {
     let mut changeable = false;
-    for folder in folder.ancestors() {
-        changeable |= fs::symlink_metadata(folder)?.uid() != 0;
+    for path in way {
+        changeable |= fs::symlink_metadata(path)?.uid() != 0;
     }
     Ok(changeable)
 }

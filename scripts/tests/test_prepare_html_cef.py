@@ -5,7 +5,6 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -135,15 +134,12 @@ class PrepareHtmlCef(unittest.TestCase):
         self.output.parent.mkdir(parents=True)
         outside = self.root / "outside"
         outside.mkdir()
+        # A junction set natively on Windows: no shell or command line sees either path.
+        directory_link(self.output, outside)
         if os.name == "nt":
-            subprocess.run(
-                ["cmd.exe", "/d", "/c", "mklink", "/J", str(self.output), str(outside)],
-                check=True, capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW)
             self.addCleanup(os.rmdir, self.output)
             self.assertTrue(self.output.lstat().st_file_attributes & 0x400)
         else:
-            self.output.symlink_to(outside, target_is_directory=True)
             self.addCleanup(self.output.unlink)
         self.assertTrue(self.output.samefile(outside))
         with self.assertRaisesRegex(ValueError, "links/reparse points"):

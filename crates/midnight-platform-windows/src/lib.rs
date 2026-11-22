@@ -49,8 +49,12 @@ mod storage_kind;
 mod terminal_process;
 #[cfg(test)]
 mod test_child;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 mod test_fixtures;
+/// A directory junction for other packages' tests, set natively without a shell: see the
+/// `test-fixtures` feature in Cargo.toml.
+#[cfg(feature = "test-fixtures")]
+pub use test_fixtures::new_junction;
 mod transfer;
 mod volume_details;
 mod volume_information;

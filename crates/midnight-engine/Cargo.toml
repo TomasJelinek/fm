@@ -33,6 +33,11 @@ midnight-platform.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
+# The Windows tests' directory junctions (tests/support/checksum_verify_links_windows.rs),
+# set natively without a shell or command line.
+[target.'cfg(windows)'.dev-dependencies]
+midnight-platform-windows = { workspace = true, features = ["test-fixtures"] }
+
 [[test]]
 name = "integration"
 path = "tests/integration.rs"

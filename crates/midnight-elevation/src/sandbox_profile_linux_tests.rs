@@ -74,7 +74,7 @@ fn nameable_base(base: &Path) -> bool {
     if !nameable {
         eprintln!("{} is no path AppArmor can name: skipped", base.display());
     }
-    if let Some(shared) = shared_folder(base) {
+    if let Some(shared) = shared(&up(base)) {
         eprintln!(
             "{} can be written by other users: skipped",
             shared.display()
@@ -198,7 +198,9 @@ fn a_path_through_a_folder_others_can_write_to_is_refused_as_the_installer_refus
         fs::create_dir(&shared).unwrap();
         fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
         let owner = fs::metadata(&shared).unwrap();
-        let refused = !only_its_owner_writes(mode, owner.uid(), owner.gid(), &Accounts::read());
+        let acl = || may_have_acl(&shared, true);
+        let refused =
+            !only_its_owner_writes(mode, owner.uid(), owner.gid(), &Accounts::read(), acl);
         let installation = shared.join("me");
         let executable = viewer(&installation);
         match profile_for(&executable) {
@@ -247,6 +249,210 @@ fn a_path_through_a_folder_others_can_write_to_is_refused_as_the_installer_refus
     }
 }
 
+/// The application refuses the viewer `executable` because users other than its owner can
+/// write to `shared`, and the installer refuses its `installation` too.
+fn assert_refused(installation: &Path, executable: &Path, shared: &Path, case: &str) {
+    match profile_for(executable) {
+        Err(error) => assert!(
+            error
+                .to_string()
+                .contains(&format!("can write to {},", shared.display())),
+            "{case}: {error}"
+        ),
+        Ok(profile) => panic!("{case}: offered for {}", profile.attachment),
+    }
+    if let Some(bash) = bash() {
+        assert_eq!(printed(bash, installation), None, "{case}: the installer");
+    }
+}
+
+/// The application offers the profile for the viewer `executable`, and the installer
+/// prints the same text for its `installation`.
+fn assert_accepted(installation: &Path, executable: &Path, case: &str) {
+    let profile = profile_for(executable).unwrap_or_else(|error| panic!("{case}: {error}"));
+    if let Some(bash) = bash() {
+        assert_eq!(
+            printed(bash, installation),
+            Some(profile.text),
+            "{case}: the installer"
+        );
+    }
+}
+
+#[test]
+fn every_path_down_to_the_viewers_is_checked_as_the_installer_checks_it() {
+    let (_temp, base) = base();
+    if !nameable_base(&base) {
+        return;
+    }
+    // The profile of a checkout names the viewer of every build, so each build counts down
+    // to its viewer: its folder, `viewers`, the viewer's folder and the viewer itself, and a
+    // build folder without a viewer, where anybody could add one. Here anybody can write to
+    // the path: a folder sticky like /tmp, or the viewer itself.
+    let places = [
+        "_build/debug",
+        "_build/debug/viewers",
+        "_build/debug/viewers/midnight-viewer-html",
+        "_build/debug/viewers/midnight-viewer-html/midnight-viewer-html",
+        "_build/empty",
+    ];
+    for (index, place) in places.into_iter().enumerate() {
+        let root = base.join(format!("checkout-{index}"));
+        let executable = checkout(&root, "debug");
+        let shared = root.join(place);
+        fs::create_dir_all(root.join("_build/empty")).unwrap();
+        let mode = if shared.is_dir() { 0o1777 } else { 0o777 };
+        fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
+        assert_refused(&root, &executable, &shared, place);
+    }
+    // An installation's viewer that anybody can replace.
+    let installation = base.join("installation");
+    let executable = viewer(&installation);
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_refused(&installation, &executable, &executable, "installed viewer");
+    // AppArmor attaches to the real path, which a link below _build leaves: what it names
+    // does not count, nor does a file there, which can hold no build.
+    let open = base.join("open");
+    fs::create_dir(&open).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o1777)).unwrap();
+    let root = base.join("linked");
+    let executable = checkout(&root, "debug");
+    std::os::unix::fs::symlink(&open, root.join("_build/elsewhere")).unwrap();
+    fs::create_dir(root.join("_build/release")).unwrap();
+    std::os::unix::fs::symlink(&open, root.join("_build/release/viewers")).unwrap();
+    let stamp = root.join("_build/stamp");
+    fs::write(&stamp, b"").unwrap();
+    fs::set_permissions(&stamp, fs::Permissions::from_mode(0o666)).unwrap();
+    assert_accepted(&root, &executable, "links and files below _build");
+}
+
+/// A POSIX ACL in the kernel's xattr format (version 2, then tag, permissions and id of each
+/// entry in tag order; the ids of unnamed entries are undefined): `user::rwx
+/// user:<another>:<named> group::r-x mask::<named> other::r-x`, so `named` is what the other
+/// user (nobody) may do and the mode's group bits, which show the mask, read `named`.
+fn acl(owner: u32, named: u16) -> Vec<u8> {
+    let other = if owner == 65534 { 65533 } else { 65534 };
+    let mut acl = 2u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in [
+        (0x01u16, 7u16, u32::MAX),
+        (0x02, named, other),
+        (0x04, 5, u32::MAX),
+        (0x10, named, u32::MAX),
+        (0x20, 5, u32::MAX),
+    ] {
+        acl.extend_from_slice(&tag.to_le_bytes());
+        acl.extend_from_slice(&permissions.to_le_bytes());
+        acl.extend_from_slice(&id.to_le_bytes());
+    }
+    acl
+}
+
+/// Gives `path` the ACL `name` that lets another user do `named` (see `acl`); false, after
+/// printing SKIP, where its filesystem has no POSIX ACLs.
+fn set_acl(path: &Path, name: &CStr, named: u16) -> bool {
+    let value = acl(fs::metadata(path).unwrap().uid(), named);
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a terminated path and attribute name, and a value that outlives the call.
+    let set = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+        )
+    };
+    if set == 0 {
+        return true;
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+        eprintln!("SKIP ACL-shared folders: the temporary filesystem has no POSIX ACLs");
+        return false;
+    }
+    panic!("setting a POSIX ACL failed: {error}");
+}
+
+/// Removes the ACL `name` of `path`; the mode keeps the former mask as its group bits.
+fn remove_acl(path: &Path, name: &CStr) {
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a terminated path and attribute name.
+    let removed = unsafe { libc::removexattr(path.as_ptr(), name.as_ptr()) };
+    assert_eq!(removed, 0, "{}", io::Error::last_os_error());
+}
+
+#[test]
+fn a_private_group_folder_with_an_acl_is_refused_as_the_installer_refuses_it() {
+    let (_temp, base) = base();
+    if !nameable_base(&base) {
+        return;
+    }
+    // A folder carries no ACL unless one is set; one that cannot be read counts as one.
+    assert!(!may_have_acl(&base, true));
+    assert!(may_have_acl(&base.join("missing"), true));
+    let probe = fs::metadata(&base).unwrap();
+    if !Accounts::read().private_group(probe.uid(), probe.gid()) {
+        eprintln!(
+            "SKIP ACL-shared folders: group {} is not this user's private group",
+            probe.gid()
+        );
+        return;
+    }
+    // With a POSIX ACL the group bits are its mask: 0775 in the owner's private group then
+    // lets the ACL's other user write as well, anywhere on the way to a viewer.
+    let installation = |name: &str| {
+        let root = base.join(name).join("me");
+        let executable = viewer(&root);
+        (root, executable)
+    };
+    let built = |name: &str| {
+        let root = base.join(name);
+        let executable = checkout(&root, "debug");
+        (root, executable)
+    };
+    let mut cases = Vec::new();
+    let (root, executable) = installation("above");
+    let shared = root.parent().unwrap().to_owned();
+    cases.push(("above an installation", shared, root, executable));
+    let (root, executable) = installation("folder");
+    let shared = executable.parent().unwrap().to_owned();
+    cases.push(("the viewer's folder", shared, root, executable));
+    let (root, executable) = installation("file");
+    cases.push(("the viewer", executable.clone(), root, executable));
+    let (root, executable) = built("build");
+    cases.push(("a checkout's _build", root.join("_build"), root, executable));
+    let (root, executable) = built("debug");
+    let shared = root.join("_build/debug");
+    cases.push(("a build folder", shared, root, executable));
+    let (root, executable) = built("inner");
+    let shared = executable.parent().unwrap().to_owned();
+    cases.push(("a build's viewer folder", shared, root, executable));
+    for (case, shared, root, executable) in cases {
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o775)).unwrap();
+        if !set_acl(&shared, ACCESS_ACL, 7) {
+            return;
+        }
+        assert_eq!(fs::metadata(&shared).unwrap().mode() & 0o7777, 0o775);
+        assert_refused(&root, &executable, &shared, case);
+        // The ACL alone made the difference: the same 0775 folder without it is accepted.
+        remove_acl(&shared, ACCESS_ACL);
+        assert_eq!(fs::metadata(&shared).unwrap().mode() & 0o7777, 0o775);
+        assert_accepted(&root, &executable, case);
+    }
+    // A default ACL, which `ls -l` shows as well, counts the same.
+    let (root, executable) = installation("default");
+    let shared = root.parent().unwrap();
+    fs::set_permissions(shared, fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(set_acl(shared, DEFAULT_ACL, 7));
+    assert_refused(&root, &executable, shared, "a default ACL");
+    // Without group write the mask lets nobody else write, whatever the ACL names.
+    let (root, executable) = installation("read-only");
+    let shared = root.parent().unwrap();
+    assert!(set_acl(shared, ACCESS_ACL, 5));
+    assert_eq!(fs::metadata(shared).unwrap().mode() & 0o7777, 0o755);
+    assert_accepted(&root, &executable, "an ACL without write");
+}
+
 #[test]
 fn only_a_private_group_may_share_its_owners_write_access() {
     let passwd = b"root:x:0:0::/root:/bin/sh\n\
@@ -258,18 +464,28 @@ fn only_a_private_group_may_share_its_owners_write_access() {
         passwd: passwd.to_vec(),
         group: b"root:x:0:\nalice:x:1000:\nusers:x:100:bob\ncarol:x:1002:\n".to_vec(),
     };
+    // `acl` tells whether the folder carries an ACL.
+    let writes = |mode: u32, uid: u32, gid: u32, acl: fn() -> bool| {
+        only_its_owner_writes(mode, uid, gid, &accounts, acl)
+    };
     // Alice's own group, named like her and listing nobody else, is private.
     assert!(accounts.private_group(1000, 1000));
-    assert!(only_its_owner_writes(0o40775, 1000, 1000, &accounts));
+    assert!(writes(0o40775, 1000, 1000, || false));
+    // Unless the folder carries an ACL: its group bits are then the ACL's mask, which lets
+    // the ACL's named users and groups write.
+    assert!(!writes(0o40775, 1000, 1000, || true));
+    // The ACL is read only when group write would admit the folder: the mask bounds every
+    // named entry, so without group write nobody but the owner can write.
+    let unread = || -> bool { unreachable!("the ACL decides nothing here") };
     // A shared group, a group that is also another user's primary group, or a group
     // other than the owner's primary group is not.
-    assert!(!only_its_owner_writes(0o40775, 1001, 100, &accounts));
+    assert!(!writes(0o40775, 1001, 100, unread));
     assert!(!accounts.private_group(1002, 1002));
     assert!(!accounts.private_group(1000, 1002));
     // Write access for others is never accepted, and owner-only folders always are.
-    assert!(!only_its_owner_writes(0o41777, 1000, 1000, &accounts));
-    assert!(!only_its_owner_writes(0o40757, 1000, 1000, &accounts));
-    assert!(only_its_owner_writes(0o40755, 1001, 100, &accounts));
+    assert!(!writes(0o41777, 1000, 1000, unread));
+    assert!(!writes(0o40757, 1000, 1000, unread));
+    assert!(writes(0o40755, 1001, 100, unread));
     // A member listed besides the owner, or accounts that include a directory service.
     let listed = Accounts {
         passwd: passwd.to_vec(),
@@ -304,7 +520,7 @@ fn the_profile_names_its_viewer_path_and_whether_others_than_root_can_change_it(
         format!("{}/_build/*/{VIEWER}", checkout_root.display())
     );
     // Only folders that root owns are not changeable; `/` is one.
-    assert!(!changeable(Path::new("/")).unwrap());
+    assert!(!changeable(&up(Path::new("/"))).unwrap());
 }
 
 #[test]

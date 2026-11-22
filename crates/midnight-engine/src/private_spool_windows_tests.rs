@@ -1,7 +1,6 @@
 use super::super::{SpoolContent, SpoolRoot, create_private_spool, spool_roots};
 use super::*;
 use midnight_worker_platform::spool::PrivateSpoolDirectory;
-use std::path::Path;
 
 fn kept(path: impl Into<PathBuf>) -> SpoolRoot {
     SpoolRoot {
@@ -74,28 +73,6 @@ fn account_labels_keep_non_ascii_names_distinct() {
     assert_eq!(labels.len(), names.len());
 }
 
-/// `mklink /J` is a cmd.exe builtin and needs no privilege. The fixture paths
-/// contain no quote or `%`, which cmd would reinterpret.
-fn junction(link: &Path, target: &Path) {
-    use std::os::windows::process::CommandExt;
-    let mut command = OsString::from("/d /v:off /c mklink /J \"");
-    command.push(link);
-    command.push("\" \"");
-    command.push(target);
-    command.push("\"");
-    let output = std::process::Command::new("cmd.exe")
-        .raw_arg(command)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success() && link.is_dir(),
-        "mklink /J {link:?} {target:?}: {}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 #[test]
 fn linked_foreign_and_shared_roots_are_refused_for_the_last_candidate() {
     let temporary = tempfile::tempdir().unwrap();
@@ -104,7 +81,8 @@ fn linked_foreign_and_shared_roots_are_refused_for_the_last_candidate() {
     let target = temporary.path().join("target");
     drop(PrivateSpoolDirectory::open(&target).unwrap());
     let linked = temporary.path().join("linked");
-    junction(&linked, &target);
+    crate::native_test_links::create(&linked, &target);
+    assert!(linked.is_dir(), "the junction leads to its target");
     // Owned by TrustedInstaller, with access for other accounts.
     let foreign =
         std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);

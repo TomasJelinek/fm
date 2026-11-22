@@ -6,25 +6,10 @@
 //! reasons, and a relative directory symbolic link kept relative where this process may
 //! create one (SKIP otherwise; the stage tests cover the junction in its place).
 use super::*;
+use crate::native_test_links::create as junction;
 use std::os::windows::fs::MetadataExt;
 
 const REPARSE_POINT: u32 = 0x400;
-
-/// A junction `link` to the folder `target`, created by `mklink /J`, which needs no
-/// privilege.
-fn junction(link: &Path, target: &Path) {
-    // `mklink` reads a `/` in a path as the start of a switch: name each folder with `\`.
-    let native = |path: &Path| path.components().collect::<PathBuf>();
-    let system =
-        PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32");
-    let output = std::process::Command::new(system.join("cmd.exe"))
-        .args(["/d", "/c", "mklink", "/J"])
-        .arg(native(link))
-        .arg(native(target))
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "fixture junction: {output:?}");
-}
 
 fn is_link(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.file_attributes() & REPARSE_POINT != 0)

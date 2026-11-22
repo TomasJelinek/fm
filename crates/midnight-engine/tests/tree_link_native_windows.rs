@@ -20,34 +20,9 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-mod links {
-    /// Create a real junction with the shell built-in. Junctions need no symlink
-    /// privilege, and `cmd.exe` starts far faster than a PowerShell host.
-    pub fn create(link: &std::path::Path, target: &std::path::Path) {
-        use std::os::windows::process::CommandExt;
-        // Quote every path for cmd.exe: fixture names contain `&` and spaces.
-        // Windows paths cannot contain `"`.
-        let quoted = |path: &std::path::Path| {
-            let mut quoted = std::ffi::OsString::from("\"");
-            quoted.push(super::ordinary_path(path.to_owned()));
-            quoted.push("\"");
-            quoted
-        };
-        let output = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
-            .raw_arg(quoted(link))
-            .raw_arg(quoted(target))
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW; the fixture needs no visible shell.
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success() && link.is_dir(),
-            "mklink /J failed: {}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-}
+// Real junctions, set natively: fixture names contain `&` and spaces, which stay data.
+#[path = "support/checksum_verify_links_windows.rs"]
+mod links;
 
 const WAIT: Duration = Duration::from_secs(10);
 const LOOP: &str = "00-ancestor-loop";
@@ -168,6 +143,7 @@ async fn native_junction_tree_keeps_alias_actions_and_rejects_only_ancestor_loop
     fs::create_dir(&root).unwrap();
     fs::create_dir(&target).unwrap();
     links::create(&target.join(LOOP), &root);
+    assert!(target.join(LOOP).is_dir());
     fs::create_dir_all(target.join(READABLE).join("leaf")).unwrap();
     let sentinel = target.join("sentinel.txt");
     fs::write(&sentinel, b"unchanged target contents").unwrap();
@@ -175,6 +151,7 @@ async fn native_junction_tree_keeps_alias_actions_and_rejects_only_ancestor_loop
     for alias in &aliases {
         // Junctions require no symlink privilege; fixture failure is a failure.
         links::create(alias, &target);
+        assert!(alias.is_dir());
     }
 
     let filesystem = Arc::new(LocalFileSystem::new(None));

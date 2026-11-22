@@ -214,12 +214,14 @@ installation on shared computers.
 Install… writes the same profile as the script (one that covers every build of a
 source checkout), but runs no file of the installation as root; unlike the script it
 does not remove other files that define the profile by hand. For both, the
-installation path may contain only letters, digits, spaces and `._+-@:`, and may pass
-through no folder that users other than its owner can write to. Both accept a folder
-that its group can write to when that group is the owner's private group: the owner's
-primary group, named like the owner, which no other account in `/etc/passwd` has as its
-primary group and which lists no other member in `/etc/group` (a umask of 002 leaves
-the folders a user creates like this on Debian, Ubuntu or Fedora). Without the profile,
+installation path may contain only letters, digits, spaces and `._+-@:`, and users
+other than its owner may write to nothing on the way from `/` down to the viewer (for
+a source checkout, to the viewer of each of its builds). Both accept a folder or viewer
+without an ACL (`ls -l` shows one as `+`) that its group can write to when that group
+is the owner's private group: the owner's primary group, named like the owner, which
+no other account in `/etc/passwd` has as its primary group and which lists no other
+member in `/etc/group` (a umask of 002 leaves the folders a user creates like this on
+Debian, Ubuntu or Fedora). Without the profile,
 and without Install…, the HTML viewer explains this instead of showing the page. It
 names the command for its installation only when the script is no link and it and every
 folder above it belong to root and only root can change them; otherwise (a per-user

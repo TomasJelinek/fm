@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# `new_junction` (src/test_fixtures.rs) for other packages' Windows tests: a directory
+# junction set with FSCTL_SET_REPARSE_POINT, so no shell or command line sees a fixture
+# path (SECURITY.md). Only dev-dependencies enable it; the application builds without it.
+test-fixtures = []
+
 [target.'cfg(windows)'.dependencies]
 midnight-core.workspace = true
 midnight-platform-common.workspace = true

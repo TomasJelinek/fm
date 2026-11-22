@@ -72,40 +72,44 @@ administrator to install the package's profile instead. The script follows the s
 for the `sudo` command it suggests itself, and the package README never suggests `sudo`
 with a copy that the user can change. Installing the profile for a path that can be
 changed without root extends that permission to any program placed there; the script
-refuses a path through a folder whose permission bits let users other than its owner
-write to it (even a sticky one such as `/tmp`), where another user could place a program
-at the viewer's path, now or once the installation is gone. It checks the viewer's
-folder and every folder above it, or for a checkout `_build` and every folder above it.
-Only the mode bits decide: a POSIX access ACL that lets another user write is not
-detected, and the build folders below a checkout's `_build` are not checked. A
-group-writable folder still counts as writable by its owner alone when its group is the
-owner's private group: the owner's primary group, named like the owner, which no other
-account in `/etc/passwd` has as its primary group and which lists no other member in
-`/etc/group` (as on distributions with user private groups and a umask of 002, such as
-Debian, Ubuntu and Fedora). Only those local files decide: a user known only to a
-directory service, or files that include one (lines starting with `+` or `-`), have no
-private group. **Install…** below applies the same rule
-(`scripts/install-html-viewer-apparmor.sh` and
+refuses a path where users other than its owner can write to anything on the way from `/`
+down to the viewer (even a sticky folder such as `/tmp`), where another user could place a
+program at the viewer's path, now or once the installation is gone. For a source
+checkout, whose profile names the viewer of every build, that way leads down through its
+`_build` to each build: every folder in `_build`, its `viewers` folder, the viewer's
+folder and the viewer, as far as they exist; a link there is not followed, because
+AppArmor attaches to an executable's real path, which the link leaves. A group-writable
+folder or viewer still counts as writable by its owner alone when it carries no ACL and
+its group is the owner's private group: the owner's primary group, named like the owner,
+which no other account in `/etc/passwd` has as its primary group and which lists no other
+member in `/etc/group` (as on distributions with user private groups and a umask of 002,
+such as Debian, Ubuntu and Fedora). Only those local files decide: a user known only
+to a directory service, or files that include one (lines starting with `+` or `-`), have
+no private group. With a POSIX ACL the group permission bits are the ACL's mask, which can
+let named users or groups write, so any ACL that `ls -l` marks with `+` (a POSIX access or,
+on a folder, default ACL, or an NFSv4 ACL) refuses group write; without group write the
+mask lets nobody but the owner write, whatever the ACL names. **Install…** below applies the
+same rule (`scripts/install-html-viewer-apparmor.sh` and
 `crates/midnight-elevation/src/sandbox_profile_linux.rs`).
 
 The viewer can also install that profile itself, but only after the browser of an HTML
 document or an Office preview was refused for exactly this reason (a typed refusal,
 never message text) and only when the user chooses **Install…** there. Nothing is
 checked, offered or installed at startup, by packaging or for any other document. The
-button is offered only when `/usr/bin/pkexec` and every folder above it are no links,
-belong to root and are neither group- nor other-writable (the check the authorized
-listing uses; it is repeated right before pkexec runs) and the installation's canonical
-path qualifies (below), including that no folder on the way to the viewer (its own
-folder up to `/`, or a checkout's `_build` up to `/`) can be written by users other than
-its owner, as the script requires; otherwise the viewer shows the manual instructions
-above. Before anyone is asked, the notice names the viewer path the permission is for
-and that one installation at a time has it, and, where someone other than root can
-change a folder on that path (a per-user installation, an extracted package or a
-checkout), warns that a program put at that path could use user namespaces too. A
-backend thread, never the UI thread, then runs exactly
-`/usr/bin/pkexec --disable-internal-agent /bin/sh -c '<script>'` with `LC_ALL=C` as its
-only change to the environment, so that pkexec's own messages are English, where the
-script is a constant compiled into the application
+button is offered only when
+`/usr/bin/pkexec` and every folder above it are no links, belong to root and are neither
+group- nor other-writable (the check the authorized listing uses; it is repeated right
+before pkexec runs) and the installation's canonical path qualifies (below), including
+that users other than its owner can write to nothing on the way from `/` down to the
+viewer (for a checkout, to the viewer of each of its builds), as the script requires;
+otherwise the viewer shows the manual instructions above. Before anyone is asked, the
+notice names the viewer path the permission is for and that one installation at a time
+has it, and, where someone other than root owns a folder or viewer on that way (a per-user
+installation, an extracted package or a checkout), warns that a program put at that path
+could use user namespaces too. A backend thread, never the UI thread,
+then runs exactly `/usr/bin/pkexec --disable-internal-agent /bin/sh -c '<script>'`
+with `LC_ALL=C` as its only change to the environment, so that pkexec's own messages are
+English, where the script is a constant compiled into the application
 (`crates/midnight-elevation/src/sandbox_profile_linux.rs`). As root, that script only:
 sets `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and `umask 022`; stops if `apparmor_parser` is
 missing; reads the profile text from its standard input into a `mktemp` file in
@@ -634,10 +638,8 @@ inspected as possibly holding the item; neither is described as unneeded.
 - Tests and development scripts follow the same literal-argument policy: temporary paths
   are parameter data, never `cmd /C` command text. Windows junction fixtures are created
   through the Win32 reparse-point API (`FSCTL_SET_REPARSE_POINT`, no shell) or a fixed
-  PowerShell script run with `-File`. Three engine test fixtures break this rule and are
-  defects: they run `cmd.exe /c mklink /J` with the paths in its command text
-  (`private_spool_windows_tests.rs`, `tests/support/checksum_verify_links_windows.rs`
-  and `tests/tree_link_native_windows.rs`).
+  PowerShell script run with `-File`; other packages' tests reach the reparse-point
+  fixture through the `test-fixtures` feature of `midnight-platform-windows`.
 
 The directory model still uses memory proportional to the number of entries.
 Worker/front-queue bounds are not a promise that arbitrarily large directories

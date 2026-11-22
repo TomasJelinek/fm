@@ -36,6 +36,7 @@ mod find_sort_after_stop;
 mod folder_size_warnings;
 mod folder_sizes;
 mod hidden_entries_unix;
+mod junction_fixture_windows;
 mod locale_datetime;
 mod locale_sorting;
 mod navigation;
