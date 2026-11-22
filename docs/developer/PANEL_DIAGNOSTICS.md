@@ -32,14 +32,15 @@ concurrent failure.
 
 `Command::OpenSizeWarnings` carries the retained report, request ID and cancellation.
 Two report readers on the engine's resident worker threads (outside Tokio's blocking
-pool) and eight pending slots bound report snapshot and preview requests. The
+pool) and eight pending slots (`WORKERS`, `PENDING` in `size_warning_requests.rs`) bound
+report snapshot and preview requests. The
 matching `Event::SizeWarningsReady` returns an immutable `GeneratedTextSource`.
 Stale results, queue rejection and shutdown retire ownership on backend workers. No
 source reads, report writes or final native-file destruction belong on the UI
 thread.
 
 Native scans keep one lazy log per I/O lane (four lanes by default, up to 32 with a
-Manual **Disk I/O concurrency** setting); archive scans share a depth-first log with
+Manual **Disk I/O concurrency** setting, `DiskIoConcurrency`); archive scans share a depth-first log with
 exact subtree ranges. A snapshot never sees partial records or later
 appends. Rerunning, navigating or evicting a cache does not change an opened report.
 Backing storage remains until the lane/generation owner and all readers release it;
@@ -153,31 +154,28 @@ this modal or request authorization.
 **Retry with authorization** appears only after the backend offers a denied
 navigation receipt for that exact pane, generation and destination. Showing or
 expanding the message never invokes authorization. The button sends only the
-retained receipt IDs through the existing directory-listing service; no displayed
+retained receipt IDs through the directory-listing service; no displayed
 path grants authority. Closing/replacing the message, a new error occurrence or
 navigation prevents an obsolete dialog callback from authorizing anything.
 
-The existing Windows helper uses the OS UAC prompt; Linux uses the desktop polkit
-agent through `pkexec`. An engine without an authorization service does not
-advertise the button. Denial, cancellation and queue failure remain explicit errors
-and preserve the existing listing; no silent retry, ACL change or privileged host
-launch is introduced. The helper grants one read-only directory listing and does not
+The Windows helper uses the UAC prompt; Linux uses the desktop polkit agent through
+`pkexec`. An engine without an authorization service does not advertise the button.
+Denial, cancellation and queue failure remain explicit errors and keep the current
+listing; there is no silent retry, ACL change or privileged host launch. The helper grants one read-only directory listing and does not
 grant file content or mutation permissions. It runs only from an installation that
 standard users cannot change (administrator-protected on Windows, root-owned on
 Linux). Elsewhere the button still appears and the retry is refused with an
 explanation of that requirement, which **Cannot open folder** shows. A missing
-helper, as in the current per-user installations, is refused as not found. A helper
+helper, as in per-user installations, is refused as not found. A helper
 that is present but unprotected, as in build output or in a release folder extracted
 where standard users can change it, is refused as access denied. The presenter
 (`show_navigation_error`) shows an ordinary access-denied failure as "Access to this
 folder was denied.", but for the navigation that an authorized retry started it
 shows the failure's own reason, so that refusal states the requirement too. When
 the folder was opened from a row of a flat native listing, that row's red
-diagnostic icon also shows it. See the
-[directory authorization helper](../../SECURITY.md#directory-authorization-helper)
-for the current contract; the
-[first qualification record](../verification/2026-11-11-directory-authorization.md)
-keeps its dated scope.
+diagnostic icon also shows it. Contract:
+[directory authorization helper](../../SECURITY.md#directory-authorization-helper).
+Evidence: [authorization record](../verification/2026-11-11-directory-authorization.md).
 
 A generated report title is only a display label and never authority to reopen a
 native path. Missing size-report viewer support and diagnostic read failures are
@@ -185,5 +183,4 @@ reported explicitly. If the initial settings read failed, the disabled-viewer
 policy is unknown and viewers stay unavailable for the session; reports, F3,
 Find, Make File List and Compare then say so instead of asking to try again.
 
-See the [implementation plan](../superpowers/plans/2026-11-10-size-warning-reports.md)
-and [tree backend evidence](../verification/2026-11-10-tree-diagnostic-details.md).
+Evidence: [tree diagnostic details record](../verification/2026-11-10-tree-diagnostic-details.md).

@@ -6,12 +6,12 @@ discovering viewers, image/PDF providers, thumbnailers or native, network and
 archive filesystems, and before locating the directory authorization helper.
 This is an internal host API, not a public plugin ABI change. Hashing, registration
 reads and filesystem checks run on workers. UI code receives results through its
-existing messages. Explicit-root host APIs remain available for integration tests.
+messages. Explicit-root host APIs remain available for integration tests.
 
 On Windows, a protected executable and parent directory take precedence. Adjacent
 packages in a manually assembled installation may be absent; their absence never triggers fallback to another
 installation. Linux and other platform implementations retain executable-relative
-discovery and their existing loader support/limitations.
+discovery and their loader support and limitations.
 
 For a shared Windows executable, `MIDNIGHT_VERIFY_RUNTIME_SHA256` selects
 own-EXE verification. Absent or `0` is **OFF**; `1` enables the legacy strict
@@ -21,7 +21,7 @@ adds no GUI/preferences setting; the result or error is cached until restart.
 OFF hashes neither the launch EXE nor the selected runtime EXE. A protected
 per-launch-path pointer at
 `%USERPROFILE%/.midnight-explorer/plugin-runtimes/launchers/<path-key>.toml`
-selects the existing schema-1 registration. Native normalized raw UTF-16 path,
+selects the schema-1 registration. Native normalized raw UTF-16 path,
 length and LastWriteTime provide identity/staleness hints; ChangeTime is excluded.
 Rust and PowerShell use `GetFinalPathNameByHandleW` for native normalization.
 The path-key SHA names a short path; it hashes path material, not EXE contents.
@@ -30,7 +30,7 @@ not fall back to another registration or choose the newest runtime.
 
 ON hashes the exact running EXE and follows the legacy protected
 `%USERPROFILE%/.midnight-explorer/plugin-runtimes/<sha256>.toml` registration.
-Both routes retain the existing registration schema:
+Both routes use the registration schema:
 
 ```toml
 schema_version = 1
@@ -47,15 +47,16 @@ matches builds; it is not publisher authentication and does not secure a shared
 EXE that the user has already run. OFF retains ACL/owner, reparse-point,
 regular-file, manifest, platform, package and ABI guards without claiming equal EXE bytes.
 
-The registration directory, record, target and ancestors retain the existing
-owner/DACL policy. Original path components are checked for reparse points before
+The registration directory, record, target and ancestors keep the owner/DACL
+policy. Original path components are checked for reparse points before
 canonicalization can conceal a junction. Content-read and registration handles
 are opened without following the final reparse point, with read sharing only,
 excluding writes/renames during the read. OFF source metadata handles do not
 promise data-write exclusion. Deployment retains a separate `0x81` read lease
 through copying and both publications. Guarded record reads retain length/native-revision checks; OFF EXE
 staleness hints use only length/LastWriteTime. Records have a 1 MiB budget; ON
-executable hashing has a 512 MiB budget and uses a 64 KiB buffer.
+executable hashing has a 512 MiB budget and uses a 64 KiB buffer
+(`MAX_REGISTRATION_BYTES`, `MAX_EXECUTABLE_BYTES` in `installation_windows.rs`).
 These are resource budgets, not product path-length restrictions.
 
 Registration is separate from the preferences/cache tree: an existing AppData
@@ -95,16 +96,15 @@ installation, and `-CreateDesktopShortcut` if wanted. The lower-level deployment
 tool retains selective package options for specialist fixtures. It creates a new runtime
 installation under the user profile, verifies copied bytes with SHA-256 readback,
 and then publishes the legacy record before the protected per-launch-path pointer,
-using exclusive temporary files and atomic replacement. Existing hash-only
-registrations need one deployment refresh for default-OFF selection.
+using exclusive temporary files and atomic replacement.
 It refuses unsafe pre-existing directories/records and never repairs their ACLs.
 It changes permissions only on new deployment/registration directories and deployed
 files. Installations made with `deploy-private.ps1` without `-ReplaceBuildDeployment`
 are retained. `build.bat` (through `deploy-build.ps1`, which passes
 `-ReplaceBuildDeployment` to `deploy-private.ps1`) marks its installation and, after
 registering it, removes earlier deployments marked for the same build output that no
-launcher pointer selects and no running process uses. Build deployments made before
-this marker existed are never removed automatically. Build deployments of one build
+launcher pointer selects and no running process uses; an unmarked deployment is never
+removed automatically. Build deployments of one build
 output run one at a time per logon session. Compiler/test output stays under `_build`.
 Replace compatible plugin packages with the app closed, then restart; there is
 no per-plugin content pin. The EXE hash in an ON registration selects a runtime;
@@ -119,27 +119,16 @@ listing needs an installation that only administrators can change, for example a
 folder below `C:\Program Files` ([installation steps](../../README.md#build-and-run));
 see the [directory authorization helper](../../SECURITY.md#directory-authorization-helper).
 From a per-user runtime, Retry with authorization is refused with an explanation of
-this requirement; plugin loading is unaffected. A runtime from an earlier deployment
-that still copied the helper keeps that copy. Builds with this protected-location check
-refuse it, because the runtime's user can change it; an older `me.exe` in such a
-runtime may still use it until the runtime is removed.
+this requirement; plugin loading is unaffected. A helper found in a per-user runtime is
+refused, because the runtime's user can change it.
 
 Tests use `-RegistrationDirectory` with a protected disposable fixture. That
 override requires `-RegisterRuntime`; no test needs to edit the actual profile.
 With `-ReplaceBuildDeployment`, `deploy-private.ps1` refuses `-Destination` and always
 deploys directly below the profile, so the retirement test points `USERPROFILE` at a
 disposable directory.
-See [the resolution design](../superpowers/specs/2026-11-07-trusted-runtime-resolution.md)
-and [verification](../verification/2026-11-07-trusted-runtime-resolution.md).
-
-Windows qualification of the default-OFF selection (16–17 November 2026 checkpoint
-in [active work](../ACTIVE_WORK.md)): Rust plugin-host tests passed **97 / 0 failed /
-6 ignored**. Prior policy coverage includes all **33 installation selectors**;
-these are retained scopes, not additive totals. Native PowerShell scripts passed;
-fresh Rust public-API children consumed a PS-produced pointer with flag absent,
-`0` and `1`, all passed. Package formatting and strict Clippy passed with zero
-errors/warnings; meaningful old-source RED is retained. Manual restart/update,
-UNC and Linux qualification were not part of it. The later build-deployment
-retirement and the omission of the authorization helper from private deployments
-are covered by `scripts/tests/test-build-deployment-retirement.ps1` and
-`scripts/tests/test-private-deployment.ps1`, not by this qualification.
+Tests: the plugin host's installation tests (`installation_windows_tests.rs`), and
+`scripts/tests/test-private-deployment.ps1` and
+`scripts/tests/test-build-deployment-retirement.ps1` for deployment, retirement and the
+omitted authorization helper. Design: [resolution design](../superpowers/specs/2026-11-07-trusted-runtime-resolution.md);
+evidence: [resolution record](../verification/2026-11-07-trusted-runtime-resolution.md).

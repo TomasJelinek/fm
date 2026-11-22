@@ -3,7 +3,7 @@
 Opening `..`, pressing Backspace, clicking the panel's Up button, or choosing an
 ancestor breadcrumb focuses the immediate child directory through which the
 previous location was reached. This changes the keyboard cursor only; it does
-not add checkbox selection. Existing cursor revelation scrolls that row into view.
+not add checkbox selection. The ordinary cursor reveal scrolls that row into view.
 
 Native navigation carries the raw child `PathBuf` in the accepted listing
 request. Streaming entries can resolve it before completion, and the final sorted
@@ -18,18 +18,19 @@ A folder with nothing else to show still lists `..`, and the panel says why belo
 it: "This folder is empty", "All 3 items here are hidden" (entries the Show hidden
 files setting leaves out), "None of the 3 items here match the filter" (the panel
 filter), or "No matching names" ("Searching…" until the result arrives) for a quick
-search whose filter shows only matches. The text takes no focus, keys or clicks:
+search whose filter shows only matches (`presenter/search.rs`). The text takes no focus,
+keys or clicks:
 Enter on `..` and Backspace still go up.
 
 A rejected navigation does not change the cursor. Failed listings restore the
 previous view; stale generations cannot apply a focus hint. Deliberate cursor
 movement during loading, including back onto `..`, overrides automatic return
 focus. A missing child is not inserted. Persistent filters keep a visible child
-focused and otherwise use the existing visible-row fallback; pending filters
+focused and otherwise use the visible-row fallback; pending filters
 continue to prohibit operations on hidden rows.
 
 Cursor revelation waits for the virtualized repeater to expose sufficient content
-height after model reset. The pending request captures the existing location
+height after model reset. The pending request captures the current location
 input-context token, path and cursor; a superseding location/cursor invalidates
 it, including locations with equal display captions. User scrolling or selection
 autoscroll cancels the request. The latest explicit reveal remains valid for
@@ -59,5 +60,4 @@ child, stale batches, deliberate focus changes and persistent filters.
 
 These are software-window input tests, not native desktop or GPU tests. Detailed,
 Brief and Thumbnails layouts share the same reveal mechanism and each has a
-parent-return case. Passing these checks does not identify the cause of a jump
-reported against a different deployed executable.
+parent-return case.

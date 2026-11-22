@@ -3,8 +3,7 @@
 The panel background owns rubber-band gestures. Each layout reserves a 10 logical
 pixel background gutter immediately before the pinned Fluent scrollbar. Empty
 space below rows and unused Brief/Thumbnail cells also accepts a left mouse drag.
-Existing row pointer areas retain click, modifier click and native file drag
-behavior. A plain background click only focuses the panel.
+Row pointer areas keep click, modifier click and native file drag behavior. A plain background click only focuses the panel.
 
 Movement of six logical pixels starts the rectangle. Unmodified dragging replaces
 the marked set, Shift adds, Ctrl toggles and Ctrl+Shift adds. Modifiers are captured
@@ -21,7 +20,7 @@ streaming and pending search/selection work do not expose an unstable source.
 
 ## Shared contract
 
-`SelectionRanges` validates at most 4096 sorted nonoverlapping inclusive spans
+`SelectionRanges` validates at most 4096 (`MAX_SPANS`) sorted nonoverlapping inclusive spans
 against a captured source extent. Details/Thumbnails map row-major cells; Brief
 maps column-major cells inside vertically stacked pages. Parent navigation rows
 are excluded. Contiguous large rectangles compact; too many separated spans report
@@ -44,13 +43,13 @@ allowing old large listings to be reclaimed by backend retirement. Its cancellat
 token suppresses a preview even when cancellation arrives during a presenter
 borrow; actual clearing/repaint can wait for the next short timer turn. Model
 notifications happen after mutable presenter and gesture borrows have ended.
-Stale archive response indexes and selected sets enter the existing retirement
+Stale archive response indexes and selected sets enter the retirement
 queue, including the last owner of an obsolete listing.
 
 ## Selection by mask
 
-Select and Deselect by mask (Ctrl+= and Ctrl+−, keypad + and −, F10) and the
-keypad's invert reuse the
+Select and Deselect by mask (Ctrl+= or Ctrl++ and Ctrl+−, keypad + and −, or the F10
+menu) and the keypad's invert (*) reuse the
 three selection backends. `SelectionAction::Mask`, `ArchiveSelectionAction::Mask`
 and `TreeSelectionAction::Mask` carry one `MaskSelection` (pattern, select or
 deselect, folders). The worker compiles the pattern with the panel filter's Masks
@@ -68,7 +67,7 @@ only grows, across openings too, and the pattern), the engine's filter validatio
 controller (`crates/midnight-engine/src/filters.rs`) answers only the latest one
 with `Event::SelectionMaskValidated`, and
 `midnight_platform_common::filter::validate_selection_mask` compiles exactly the
-matcher the selection workers compile, refusing one over its 2 MiB budget (for
+matcher the selection workers compile, refusing one over its 2 MiB budget (`REGEX_BYTES`; for
 example thousands of `?`) with a reason. The dialog stays open until the answer;
 an invalid or over-budget mask keeps it open with the reason and is neither applied
 nor remembered, and answers to an earlier OK or a closed dialog are dropped.
@@ -82,13 +81,9 @@ panel it inverts the list's marks the same way. The presenter keeps the dialog
 draft and saves the last mask and folder choice (`MaskSelectionPreferences`) only
 after the backend accepted the mask and its selection request was accepted.
 
-## Verification
+## Tests
 
-The implementation plan is
-[`2026-11-07-rubber-band-selection.md`](../superpowers/plans/2026-11-07-rubber-band-selection.md).
-Evidence and qualification limits are recorded under `_build/goal/selection/`.
-Focused suites are core `selection_ranges`, engine `selection::tests::rectangle`
-and `archive_selection`, UI unit `selection_rectangle` and actual input
-`selection_rectangle_ui`. Existing `drag_drop` tests qualify unchanged row gesture
-ownership. Windows/Linux final UI checks are coordinated with checksum integration;
-consult the report rather than inferring completed qualification from source alone.
+Core `selection_ranges`, engine `selection::tests::rectangle` and `archive_selection`,
+UI unit `selection_rectangle` and input-level `selection_rectangle_ui`; the `drag_drop`
+tests cover row gesture ownership. Design:
+[rubber-band selection plan](../superpowers/plans/2026-11-07-rubber-band-selection.md).

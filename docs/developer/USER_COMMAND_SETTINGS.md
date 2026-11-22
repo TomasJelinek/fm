@@ -18,7 +18,7 @@ Discard before reordering. Escape, right-click, pointer cancellation, closing Op
 configuration and releases outside the actually visible list cancel the drag.
 
 The gesture captures the command ID and immutable configuration revision, rather
-than retaining a row index. Drop validates that capture before calling the existing
+than retaining a row index. Drop validates that capture before calling the
 list transaction. Its visible bounds intersect the list and Options content scroll
 viewport, including small-window and ancestor clipping, and exclude overlay
 scrollbar controls. The interaction follows
@@ -129,7 +129,8 @@ It does not open the Jobs window. The
 read-only result shows the program, working directory, separate argv elements and
 per-item expansion, or the literal terminal script and captured environment. Its
 display is bounded: at most four processes and sixteen arguments per program, each
-value shortened to 256 bytes, with argument and environment values Debug-escaped;
+value shortened to 256 bytes (`user_command_presentation.rs`), with argument and
+environment values Debug-escaped;
 omitted processes and arguments are stated. Jobs details show a captured preview
 with the same bounded display.
 Preview never runs the command or saves the draft. Disabled commands can be previewed;
@@ -143,28 +144,15 @@ action by stable ID; deleting that action clears its pending candidate, so a lat
 Assign callback cannot bind a different action. Dynamic commands have no default
 keys and are scoped to the file list outside filename search.
 
-The page uses the existing Options scrolling body and fixed close footer. Its
+The page uses the Options scrolling body and fixed close footer. Its
 validation debounce does not replace live text fields, preventing cursor resets
 while editing. Command count, argument count and aggregate configuration limits
 come from the core; malformed or oversized inputs are rejected with visible
 validation instead of truncated.
 
-The 13 November form polish has source-authored regression tests; their execution
-and runtime qualification remain **pending**. No coverage by the currently
-qualified private executable is claimed for these changes.
-
 Focused checks live in `presenter/user_command_settings_tests.rs`, the pure form
-tests and `tests/user_command_settings_ui.rs`. Qualification evidence is recorded
-in [the settings report](../verification/2026-11-07-custom-command-settings.md);
-raw test output remains under `_build/goal/commands/`.
-The earlier settings target passed 12 software-window cases on Windows and Linux;
-that evidence predates the argument-row/native-picker refactor. Current refactor
-qualification is recorded separately under `_build/goal/commands-refactor/`.
-See [the refactor verification](../verification/2026-11-07-user-menu-refactor.md)
-for the fresh 510 Windows / 506 Linux functional scope and remaining strict gate.
-The checks exercise pointer, keyboard and widget accessibility actions;
-real-desktop acceptance is qualified separately.
-
-The 2026-11-12 compact list, inert separator, explicit execution choice and native
-icon routing changes are covered in
-[the current settings verification](../verification/2026-11-12-compact-custom-commands.md).
+tests and `tests/user_command_settings_ui.rs`; they exercise pointer, keyboard and widget
+accessibility actions in software windows. Evidence:
+[settings record](../verification/2026-11-07-custom-command-settings.md),
+[refactor record](../verification/2026-11-07-user-menu-refactor.md) and
+[compact list record](../verification/2026-11-12-compact-custom-commands.md).

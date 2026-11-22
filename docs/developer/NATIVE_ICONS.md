@@ -33,7 +33,7 @@ enlarges it.
 The backend's icon actor treats a request as naming an icon (`IconKey` at
 `DEFAULT_EDGE`) and loads it at the edges its kind is drawn at (`IconEdges::of`,
 through `IconService::icon_edge`). It remembers the edges of its 256 most recently
-requested icons, so a listing asks for each type once. After an edge change it
+requested icons (`DESKTOP_ICON_CAPACITY`), so a listing asks for each type once. After an edge change it
 loads only what is missing, most recently requested icon first, behind any new
 request. The UI keeps one bitmap per icon and edge and gives each place the bitmap
 of its edge, else the next larger, else the largest: a placeholder shows at once
@@ -72,11 +72,12 @@ premultiplied alpha (Catmull-Rom when enlarging).
 Program and icon-file artwork (command buttons, the icon picker and program tiles)
 is read from the icon group itself. A module is mapped as a data file and image
 resource (`LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE`); an icon file
-is read whole, at most 16 MiB. Frames are ranked for the edge: the smallest frame
+is read whole, at most 16 MiB (`MAX_ICON_FILE_BYTES` in `icons_executable.rs`). Frames are ranked for the edge: the smallest frame
 at least that large, else the largest; among frames of one size the one with the
 most colors. The system decodes the frame at its own size, including PNG frames
 of 256 px and more (`CreateIconFromResourceEx`), and it is reduced once. Bounds:
-64 frames per group, 4 MiB per frame, 1,024 px per side. Formats read only in
+64 frames per group, 4 MiB per frame, 1,024 px per side (`MAX_FRAMES`,
+`MAX_FRAME_BYTES`, `MAX_FRAME_EDGE`). Formats read only in
 part, such as 16-bit programs and icon libraries, fall back to the Shell's own
 extraction at the edge (`SHDefExtractIconW`).
 
@@ -96,11 +97,12 @@ last. Within a theme the directories are ranked for the edge in device pixels
 5. directories of unknown size.
 
 Each directory is searched for `<name>.png`, then `<name>.svg`. A PNG is reduced
-once (`icon_scale::fit`); an SVG is rendered at exactly the edge by the existing
-resvg 0.48.1 dependency, with the bounds of explicitly chosen artwork: at most
-512 KiB, UTF-8 only, no DTD, 4,096 elements and a bounded expansion of `<use>`
-references, and no external images or fonts. Files resolve only inside the fixed
-system icon roots. A lookup tries at most 16,384 files. Linux reads no listed
+once (`icon_scale::fit`); an SVG is rendered at exactly the edge by the resvg 0.48.1
+dependency, with the bounds of explicitly chosen artwork (UTF-8 only, no DTD, 4,096
+elements and a bounded expansion of `<use>` references, no external images or fonts),
+except that a theme SVG may have 512 KiB instead of 128 KiB (`MAX_THEME_SVG_BYTES` in
+`icon_svg.rs`). Files resolve only inside the fixed system icon roots. A lookup tries at
+most 16,384 files (`MAX_PROBES` in `icons.rs`). Linux reads no listed
 file's content for artwork.
 
 ## Per-file artwork
@@ -130,7 +132,8 @@ preview:
    artwork of the current view for a tile still visible.
 
 The artwork is retained like a preview, in the thumbnail image cache: least
-recently used first, at most 54 MiB of pixels and 4,096 images, and visible
+recently used first, at most 54 MiB of pixels and 4,096 images (`MAX_BYTES`, `MAX_IMAGES`
+in `thumbnail_image_cache.rs`), and visible
 images are never evicted to make room. A 216 px tile costs 182 KiB, so a full
 request budget of 256 program tiles (45.6 MiB) fits; artwork at least as large as
 a tile also covers it after a change of scale.
@@ -141,7 +144,8 @@ Type icons are shared per type and edge. Each costs edge² × 4 bytes per drawn
 place: a type drawn as a 45 px row and a 216 px tile 190 KiB. The engine
 remembers 256 icons and the UI holds them all at their edges (about 48 MiB for
 256 types with 216 px tiles, about 2 MiB with 45 px rows only); its 128 MiB
-ceiling only stops bitmaps of edges nobody draws from piling up.
+ceiling (`IMAGE_CACHE_BYTES` in `presenter/desktop.rs`) only stops bitmaps of edges
+nobody draws from piling up.
 
 ## Tests and measurement
 
@@ -164,5 +168,4 @@ budget) and `icon_view::tests` (the action edge follows the scale). Linux
 (`midnight-platform-linux`): `icons::theme::tests` (directory ranking with scalable
 ranges and scales) and `icons::tests` (SVG artwork rendered at the exact size before a
 larger bitmap is reduced, SVG in fixed directories and pixmaps, oversized SVG
-refused). Results and the measurement are in the
-[verification record](../verification/2026-11-21-native-icon-resolution.md).
+refused). Measurements: [native icon record](../verification/2026-11-21-native-icon-resolution.md).

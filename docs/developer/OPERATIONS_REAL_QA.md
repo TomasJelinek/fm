@@ -8,44 +8,17 @@ A passing case removes its directory. A failing case keeps it with its per-case
 of passing cases too ([test fixtures](TEST_EXECUTION.md#test-fixtures-under-_buildqa)).
 The presence of a directory is not a pass.
 
-## Recorded execution, 2026-11-10
+## Expected results
 
-The ordinary target completed with **14 passed, 0 failed, 1 manual recycle case
-ignored**, in 4.81 seconds. The corpus held 271 files totaling 9,996,785 bytes.
-Full verification read all 9,996,785 bytes; sampled verification read 1,673,696
-bytes. Both copied trees matched independent full-file SHA-256 manifests. The
-same-volume directory Move retained native identity and reported zero content
-copy, verification, and validation bytes. Eight exact cancellation gates passed
-across the two verification modes, and all retained-stage directories were empty
-after explicit cleanup and native handle release. Evidence is in
-`_build/qa/operations-find/native-green.log` and the individual retained fixtures.
-That run predates the transfer namespace registry. During the deep code review of
-17–18 November the corpus test
-`real_directory_corpus_matches_independent_sha256_for_both_policies` alone took
-longer; no dated profile attributes the difference yet (PERF-04 in the
-[backlog](../IMPLEMENTATION_BACKLOG.md)).
-
-The explicit recycle test first failed inside the restricted execution sandbox
-with `0x80270021`, the pinned Windows SDK's `COPYENGINE_E_ACCESS_DENIED_SRC`.
-Running the **same built test** outside the sandbox against a fresh owned fixture
-then passed, 1/1 in 0.09 seconds. The sandbox failure and successful desktop-context
-run are retained separately in `recycle-native.log` and `recycle-desktop.log` under
-the same QA output directory. No permanent deletion fallback or global Recycle
-Bin cleanup occurred.
-
-Initial harness runs exposed incorrect QA assumptions, subsequently corrected:
-Skip produces `CompletedWithErrors` with a skip count (since 20 November 2026 a
-conflict Skip ends `Completed` with the skip count, and only a skipped I/O error
-still ends `CompletedWithErrors`; the Windows harness expects this but was not
-rerun on Windows); invalid source ancestry
-fails immediately without a Retry prompt; a later queued cancellation acknowledges
-`CancelRequested` before its FIFO terminal event; and Windows staging deletion
-can remain pending until the owned native handle closes. The engine performs that
-handle release before terminal progress. No production transfer fix was justified
-by those observations. Earlier failed/incomplete logs remain as diagnostic history.
-
-These are backend and native API results. They do not qualify a full release or
-claim physical desktop keyboard/mouse/Shell handoff automation.
+A conflict Skip ends the job `Completed` with the skip count, and only a skipped I/O
+error ends it `CompletedWithErrors`; invalid source ancestry fails at once without a
+Retry prompt; a later queued cancellation acknowledges `CancelRequested` before its FIFO
+terminal event; and Windows staging deletion can stay pending until the owned native
+handle closes, which the engine does before terminal progress. The target tests the
+backend and native APIs; it does not automate a physical keyboard, mouse or Shell
+handoff. The run time of `real_directory_corpus_matches_independent_sha256_for_both_policies`
+is tracked as PERF-04 in the [backlog](../IMPLEMENTATION_BACKLOG.md). Recorded run:
+[operations and Find record](../verification/2026-11-10-operations-find.md).
 
 ## Running the checks
 
@@ -92,8 +65,8 @@ or Shell drag/drop session was automated.
 
 The phase gates above are deterministic boundaries between real native calls.
 They do not claim to interrupt an in-flight OS write at an arbitrary byte.
-Existing engine unit cases supplement those boundaries with controlled native
-adapter gates and injected errors:
+Engine unit tests supplement those boundaries with controlled native adapter gates
+and injected errors:
 
 ```powershell
 cargo test -p midnight-engine --lib queued_cancel_removes_only_unpublished_output_after_blocked_native_io -- --nocapture
@@ -116,11 +89,7 @@ observed test result without upgrading the product's sampled guarantee.
 
 ## Salamander comparison used for the matrix
 
-The local reference tree `<salamander-source>\src` was inspected without
-changes. Its `worker.cpp` defines separate Skip All state for read, write,
-overwrite, move, delete, directory creation, and metadata errors (around lines
-989–1012), and explicit Retry/Cancel dispatches (including around lines 2517–2592).
-Its copy/move dialog and drag/drop call paths live in `fileswn8.cpp`,
-`fileswn6.cpp`, and `fileswnb.cpp`. These paths informed the scenario categories;
-this suite does not claim feature equivalence for Salamander's alternate streams,
-encryption, network reconnect, archive, or plugin operations.
+The scenario categories follow Salamander's copy/move worker: separate Skip All state
+for read, write, overwrite, move, delete, directory creation and metadata errors, and
+explicit Retry and Cancel. The suite does not claim feature equivalence for Salamander's
+alternate streams, encryption, network reconnect, archive or plugin operations.

@@ -9,7 +9,7 @@ the selection stays in place. Ordinary typing is not modified.
 Spaces, quotes, combining characters and other Unicode are literal. Paste does
 not trim, unquote, normalize, expand variables, interpret URIs or open a folder.
 Enter remains the navigation action. Breadcrumb/provider identities and unchanged
-raw native paths retain their existing navigation routes.
+raw native paths keep their navigation routes.
 
 Enter takes edited text without its surrounding whitespace and without one pair of
 surrounding double quotes, which Windows "Copy as path" adds; a separator that Paste
@@ -20,11 +20,9 @@ worker that failed to list the path asks the provider what it names
 (`browse_directory_identity`, following links) and sends `Event::ListingNotAFolder`
 before the failure; only the path editor's request, while still pending, then lists
 the folder with the file as its focus hint. The worker asks only after a "not a
-directory" failure (`io::ErrorKind::NotADirectory`). Since 22 November the installed
-native filesystem package, the application's only browsing provider, fails a listing
-of a file that way too (ACC WP2: its host reported it as invalid data, so Enter showed
-"Cannot open folder" and the panel stayed where it was); see the
-[native filesystem API](NATIVE_FILESYSTEM_API.md). Other navigations keep their failure and
+directory" failure (`io::ErrorKind::NotADirectory`); the installed native filesystem
+package, the application's only browsing provider, fails a listing of a file that way
+(see the [native filesystem API](NATIVE_FILESYSTEM_API.md)). Other navigations keep their failure and
 recovery, and a missing path its error. A final separator does not make a file's
 path a folder's, as Paste ends every path with one. A file that the panel's own
 listing shows gets the cursor without a navigation. A Windows folder ignores letter
@@ -41,11 +39,12 @@ opens the file's folder with the cursor on the file. Tests: presenter `typed_pat
 one search-results case in `find_feed_tests` and the platform cases in the presenter's
 `windows`/`unix` tests and `name_case_windows`; the engine's `not_a_folder` unit and
 `navigation_not_a_folder` integration tests, the latter also through the installed
-native package (opt-in, `MIDNIGHT_NATIVE_TEST_INSTALLATION`), and the native host's
+native package (opt-in, `MIDNIGHT_NATIVE_TEST_INSTALLATION`; CI's `engine-native-ignored`
+step), and the native host's
 `a_listing_of_a_node_that_is_no_directory_is_not_a_directory`; the UI integration modules
 `path_bar_file` and `path_bar_file_windows`, and `tooltips`.
 
-Clipboard text is read by the existing bounded backend worker, with a 4 MiB
+Clipboard text is read by the bounded backend clipboard worker, with a 4 MiB
 encoded-payload resource policy. This is not a path-length restriction. Invalid
 encoding, NUL or line breaks produce an explicit error with the editor unchanged;
 single-line input must not silently replace a native filename's line break.
@@ -55,7 +54,7 @@ Each reply belongs to the captured pane, location generation, editor lifetime,
 text, selection and composition. Typing, selection changes, navigation, switching
 editors, Escape, a newer paste or host shutdown invalidates the old reply.
 Queue refusal reports a visible error. Stale payloads are reclaimed through the
-existing backend retirement route.
+backend retirement route.
 
 The path-only widget uses native TextInput editing and owns its Paste menu route;
 other LineEdits are unchanged. A small adapter uses the pinned Slint committed
@@ -66,17 +65,15 @@ reject private-use Unicode; neither is used for insertion.
 
 Windows reads bounded CF_UNICODETEXT and rejects unpaired UTF-16 rather than
 creating a replacement-character path. Linux reuses bounded X11/XWayland selection
-transfers or the existing Wayland MIME/pipe reader. Linux clipboard ownership is
+transfers or the Wayland MIME/pipe reader. Linux clipboard ownership is
 initialized lazily so text reads do not require an unrelated arboard owner first.
-The pinned Slint Winit clipboard also uses arboard data-control or X11/XWayland;
-there is no additional seat-specific clipboard capability being removed here.
-Native Wayland still requires the compositor's supported data-control protocol;
-missing capabilities are reported explicitly. Software/transport-selection tests
-do not constitute qualification on every native compositor.
+The pinned Slint Winit clipboard also uses arboard data-control or X11/XWayland.
+Native Wayland requires the compositor's data-control protocol; missing capabilities are
+reported explicitly. Known limit: the tests do not cover every native compositor.
 
-Linux middle-click primary-selection editing retains Slint's existing behavior;
+Linux middle-click primary-selection editing keeps Slint's own behavior;
 the explicit path-paste operation covers keyboard and context-menu Paste.
 
 Focused tests: `path_paste_ui`, UI presenter path-paste tests, engine clipboard
-tests and separate native clipboard text/transport tests. Investigation and causal
-RED/GREEN evidence are retained under `_build/goal/path-paste/`.
+tests and separate native clipboard text/transport tests. Evidence:
+[path paste record](../verification/2026-11-07-path-paste.md).
