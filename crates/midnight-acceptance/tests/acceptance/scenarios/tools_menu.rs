@@ -1,15 +1,18 @@
 //! Help (F1), Drive information (Ctrl+F1) and the main menu (F10): every menu item is
 //! clicked and its result checked (a dialog, window, popup or effect), then
-//! cancelled or undone. Nothing is ever confirmed; Exit comes last.
+//! cancelled or undone. Nothing is ever confirmed; Exit comes last. An action with
+//! several chords lists them all, joined with " / ", and its tooltip names them.
 use crate::{
     Context,
     app::{self, App, Config},
-    input, inspect, panel,
+    input, inspect,
+    launches::Launch,
+    panel,
     scenarios::transfers::snapshot,
     tools_support::{self as tools},
 };
 use i_slint_core::{item_tree::ItemRc, items::AccessibleRole};
-use midnight_core::PaneId;
+use midnight_core::{PaneId, TerminalMode};
 use midnight_ui::{FileListPresentation, HotPathsPresentation, PanelChoices};
 use slint::{
     ComponentHandle, Model,
@@ -23,6 +26,13 @@ use std::{
 };
 
 const SIZE: (u32, u32) = (900, 640);
+
+/// The terminal button's Ctrl+click in the Tools category, named as the platform names it.
+const ELEVATED_TERMINAL: &str = if cfg!(windows) {
+    "Open terminal as administrator"
+} else {
+    "Open root terminal (sudo)"
+};
 
 /// Nothing open on top of the panels.
 fn quiet(app: &App) -> bool {
@@ -171,6 +181,7 @@ const MENU: [(&str, &[&str]); 5] = [
             "Calculate / cancel folder sizes",
             "Drive information",
             "Command line",
+            ELEVATED_TERMINAL,
             "Configure Custom Commands…",
             "Connect network drive…",
             "Disconnect network drive…",
@@ -254,6 +265,29 @@ fn menu(app: &mut App, label: &str) -> Result<(), String> {
     }
     input::click(main.window(), AccessibleRole::Button, label)?;
     app.settle();
+    Ok(())
+}
+
+/// Every chord of `label`'s action in one text beside the item, joined with " / " in the
+/// order Options › Keyboard lists them, and the item's tooltip naming the item and those
+/// chords ("<label> (<chords>)"; a disabled item's tooltip adds a line saying why).
+fn joined_chords(app: &mut App, label: &str, chords: &str) -> Result<(), String> {
+    open_menu(app, category(label)?)?;
+    let main = app.main.clone();
+    let anchor = menu_anchor(app)?;
+    let item = tools::scroll_to(app, main.window(), &anchor, AccessibleRole::Button, label)?;
+    let texts = tools::item_texts(&item);
+    let tooltip = format!("{label} ({chords})");
+    let tips = tools::hover_tooltip(app, main.window(), &item);
+    if !texts.iter().any(|text| text == chords)
+        || !tips
+            .iter()
+            .any(|tip| tip.lines().next() == Some(tooltip.as_str()))
+    {
+        return Err(format!(
+            "the menu item {label:?} shows {texts:?} with the tooltip {tips:?}; expected the keys {chords:?} and the tooltip {tooltip:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -457,6 +491,16 @@ pub fn main_menu(context: &mut Context) -> Result<(), String> {
         if name == "Tools" {
             app.screenshot(context, "main-menu-tools", "Main menu, Tools category");
         }
+    }
+    // An action with several chords lists them all, joined, as Options › Keyboard does.
+    for (label, chords) in [
+        ("Delete permanently…", "Shift+Delete / Shift+F8"),
+        (
+            "Calculate / cancel folder sizes",
+            "Ctrl+Shift+S / Ctrl+Shift+F10",
+        ),
+    ] {
+        joined_chords(&mut app, label, chords)?;
     }
     dismiss(&mut app, "the main menu")?;
 
@@ -778,5 +822,46 @@ pub fn main_menu(context: &mut Context) -> Result<(), String> {
         context.note(line.clone());
     }
     context.note("every main menu item opened its dialog, window or popup (cancelled with Escape) or had its effect (undone); Exit hid the main window");
-    app.shutdown()
+    app.shutdown()?;
+    // The elevated terminal runs in an application of its own, with the desktop stand-in
+    // that records terminals instead of starting them.
+    context.note(elevated_terminal(&left, &right)?);
+    Ok(())
+}
+
+/// The Tools category's elevated terminal (the terminal button's Ctrl+click), with the
+/// desktop stand-in: an elevated terminal of the selected shell in the active panel's
+/// folder is asked for and recorded, never started (no consent prompt, no sudo).
+fn elevated_terminal(left: &Path, right: &Path) -> Result<String, String> {
+    let mut app = App::start(Config {
+        desktop: true,
+        ..Config::new(left, right)
+    });
+    let result = menu(&mut app, ELEVATED_TERMINAL).and_then(|()| {
+        wait(&mut app, "the elevated terminal to be recorded", |app| {
+            !app.launches.all().is_empty()
+        })?;
+        let folder = app.location(PaneId::Left);
+        match app.launches.all().as_slice() {
+            [Launch::Terminal { request, .. }]
+                if request.mode == TerminalMode::Elevated
+                    && request.command.is_empty()
+                    && Some(&request.working_directory) == folder.as_ref() =>
+            {
+                Ok(format!(
+                    "{ELEVATED_TERMINAL}: an elevated {:?} terminal in the left panel's folder was recorded, not started",
+                    request.shell
+                ))
+            }
+            other => Err(format!(
+                "{ELEVATED_TERMINAL}: launches {other:?}, the left panel in {folder:?}; expected one elevated terminal there"
+            )),
+        }
+    });
+    let dismissed = dismiss(&mut app, "the elevated terminal");
+    let shutdown = app.shutdown();
+    let note = result?;
+    dismissed?;
+    shutdown?;
+    Ok(note)
 }

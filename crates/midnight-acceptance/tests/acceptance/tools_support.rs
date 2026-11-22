@@ -1,6 +1,8 @@
 //! Helpers of the tools scenarios (`scenarios/tools_*.rs`): tool windows, popups and
-//! tooltips, accessible states, file times and sparse files, and independent SHA-1 and
-//! SHA-512 implementations for checking the Checksums window.
+//! tooltips, accessible states, the in-process clipboard's copies, fitted dialog footers
+//! with More…, context menus, the rows of selectable result lists and their cursor, file
+//! times and sparse files, and independent SHA-1 and SHA-512 implementations for checking
+//! the Checksums window.
 use super::{
     app::{self, App},
     input, inspect,
@@ -8,13 +10,17 @@ use super::{
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
-    items::{AccessibleRole, ComplexText, SimpleText},
+    items::{AccessibleRole, ComplexText, SimpleText, StyledTextItem},
     window::{WindowInner, WindowKind},
 };
+use midnight_core::FileClipboard;
 use midnight_ui::NoticePresentation;
 use slint::{
     ComponentHandle, LogicalPosition,
-    platform::{Key, WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
+    platform::{
+        Key, PointerEventButton, WindowAdapter, WindowEvent,
+        software_renderer::MinimalSoftwareWindow,
+    },
 };
 use std::{
     fs,
@@ -220,13 +226,18 @@ pub fn close_tool(app: &mut App, window: &Tool, what: &str) {
     });
 }
 
-/// The text of a Text item.
+/// The text of a Text item, or of a styled text (a text-mode tooltip).
 pub fn text_of(item: &ItemRc) -> Option<String> {
     if let Some(text) = item.downcast::<SimpleText>() {
         return Some(text.as_pin_ref().text().to_string());
     }
-    item.downcast::<ComplexText>()
-        .map(|text| text.as_pin_ref().text().to_string())
+    if let Some(text) = item.downcast::<ComplexText>() {
+        return Some(text.as_pin_ref().text().to_string());
+    }
+    // A Tooltip in text mode (`Tooltip { text: @markdown(...) }`, as the viewers use) draws a
+    // StyledText: its raw text, without the markup.
+    item.downcast::<StyledTextItem>()
+        .map(|text| i_slint_core::styled_text::get_raw_text(&text.as_pin_ref().text()).into_owned())
 }
 
 /// Every non-empty visible text below `item`, in tree order.
@@ -456,6 +467,437 @@ pub fn number(text: &str) -> Option<u64> {
 pub fn count_before(text: &str, unit: &str) -> Option<u64> {
     text.split(" · ")
         .find_map(|part| part.strip_suffix(unit).map(str::trim).and_then(number))
+}
+
+// ---------------------------------------------------------------------------------------
+// The in-process clipboard
+
+/// How many copies the in-process clipboard (`Config::clipboard`) has taken so far, of
+/// text or files: take it before an action, and [`copied`] or [`wait_copied`] see that
+/// action's copy only, also when it puts the same text there again. 0 without one.
+pub fn clipboard_writes(app: &App) -> u64 {
+    app.clipboard
+        .as_ref()
+        .map_or(0, |clipboard| clipboard.writes())
+}
+
+/// The text on the in-process clipboard when something was copied since `before` (a
+/// [`clipboard_writes`] count); None while nothing was.
+pub fn copied(app: &App, before: u64) -> Option<String> {
+    let clipboard = app.clipboard.as_ref()?;
+    if clipboard.writes() > before {
+        clipboard.text()
+    } else {
+        None
+    }
+}
+
+/// Wait for a copy of text since `before`; returns it. The limit is a hang guard: a copy
+/// goes through the Engine's command queue and arrives within a few frames.
+pub fn wait_copied(app: &mut App, before: u64, what: &str) -> Result<String, String> {
+    wait_copied_within(app, before, what, Duration::from_secs(15))
+}
+
+/// [`wait_copied`] with its own hang guard, for copies of many megabytes.
+pub fn wait_copied_within(
+    app: &mut App,
+    before: u64,
+    what: &str,
+    limit: Duration,
+) -> Result<String, String> {
+    if app.clipboard.is_none() {
+        return Err(format!(
+            "{what}: the scenario installed no clipboard (Config::clipboard)"
+        ));
+    }
+    let deadline = Instant::now() + limit;
+    loop {
+        app.settle();
+        if let Some(text) = copied(app, before) {
+            return Ok(text);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{what} copied nothing (the clipboard holds {:?})",
+                app.clipboard
+                    .as_ref()
+                    .and_then(|clipboard| clipboard.text())
+            ));
+        }
+        app.idle(Duration::from_millis(10));
+    }
+}
+
+/// Exactly one copy since `before`, of the text `expected`. An action that must copy
+/// nothing is proven that way without a fixed wait: a known copy after it (the barrier)
+/// is the only one, because the Engine takes the presenter's copies in the order they
+/// were asked for.
+pub fn only_copy(app: &mut App, before: u64, expected: &str, what: &str) -> Result<(), String> {
+    let text = wait_copied(app, before, what)?;
+    let copies = clipboard_writes(app) - before;
+    if copies != 1 || text != expected {
+        return Err(format!(
+            "{what}: {copies} copies, the clipboard holds {text:?}, expected one copy of {expected:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Wait for a copy of files since `before` (Ctrl+C or Ctrl+X in a panel); returns them.
+pub fn wait_copied_files(app: &mut App, before: u64, what: &str) -> Result<FileClipboard, String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        app.settle();
+        if let Some(clipboard) = app.clipboard.as_ref()
+            && clipboard.writes() > before
+            && let Some(files) = clipboard.files()
+        {
+            return Ok(files);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("{what} put no files on the clipboard"));
+        }
+        app.idle(Duration::from_millis(10));
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Fitted dialog footers, More… and context menus
+
+/// A button of a window or of one of its menus.
+#[derive(Clone, Debug)]
+pub struct Action {
+    pub label: String,
+    pub enabled: bool,
+    /// Its tooltip and accessible description (which also says why it is disabled).
+    pub description: String,
+    /// Window coordinates.
+    pub rect: inspect::Rect,
+}
+
+impl Action {
+    fn of(item: &ItemRc) -> Self {
+        Self {
+            label: inspect::label(item).unwrap_or_default(),
+            enabled: enabled(item),
+            description: description(item),
+            rect: inspect::visible_rect(item).unwrap_or_else(|| inspect::rect(item)),
+        }
+    }
+}
+
+/// What a fitted dialog footer (`DialogFooter` with `footer-actions`) shows: the actions
+/// that are buttons, left to right, More… when some do not fit and the actions in its
+/// menu, and the dismiss button at the end of the row.
+#[derive(Clone, Debug)]
+pub struct Footer {
+    pub buttons: Vec<Action>,
+    pub more: Option<Action>,
+    /// The actions in the More… menu, in order (opened with a click and closed with
+    /// Escape to read them).
+    pub menu: Vec<Action>,
+    pub dismiss: Action,
+}
+
+impl Footer {
+    pub fn labels(&self) -> Vec<String> {
+        self.buttons
+            .iter()
+            .map(|action| action.label.clone())
+            .collect()
+    }
+
+    pub fn menu_labels(&self) -> Vec<String> {
+        self.menu
+            .iter()
+            .map(|action| action.label.clone())
+            .collect()
+    }
+
+    /// Every action the footer offers, as a button or in More….
+    pub fn all(&self) -> impl Iterator<Item = &Action> {
+        self.buttons.iter().chain(&self.menu)
+    }
+}
+
+/// The buttons of the window's topmost popup (a menu), in order: those in view, or with
+/// `scrolled` also those its scrolling list holds out of view (a long menu in a short
+/// window scrolls; its entries exist all the same).
+fn menu_entries(window: &slint::Window, scrolled: bool) -> Vec<Action> {
+    let roots = inspect::roots(window);
+    let mut found = Vec::new();
+    if roots.len() > 1
+        && let Some(top) = roots.last()
+    {
+        inspect::walk(top, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && (scrolled || item.is_visible())
+                && inspect::label(item).is_some_and(|label| !label.is_empty())
+            {
+                found.push(Action::of(item));
+            }
+        });
+    }
+    found
+}
+
+/// The buttons in view in the window's topmost popup (a menu), in order.
+pub fn popup_actions(window: &slint::Window) -> Vec<Action> {
+    menu_entries(window, false)
+}
+
+/// The window's fitted footer: the row of buttons that ends with the dismiss button
+/// (`dismiss`, its last button with that label); More… is opened with a click to read
+/// its menu, then closed with Escape.
+pub fn footer_actions(
+    app: &mut App,
+    window: &slint::Window,
+    dismiss: &str,
+) -> Result<Footer, String> {
+    if popup_open(window) {
+        return Err("a popup is open over the footer".into());
+    }
+    let main = inspect::roots(window)
+        .into_iter()
+        .next()
+        .ok_or("the window has no item tree")?;
+    let mut buttons = Vec::new();
+    inspect::walk(&main, &mut |item| {
+        if item.accessible_role() == AccessibleRole::Button
+            && item.is_visible()
+            && inspect::visible_rect(item).is_some()
+        {
+            buttons.push(Action::of(item));
+        }
+    });
+    let close = buttons
+        .iter()
+        .rfind(|action| action.label == dismiss)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "no {dismiss:?} button; buttons {:?}",
+                buttons
+                    .iter()
+                    .map(|action| &action.label)
+                    .collect::<Vec<_>>()
+            )
+        })?;
+    let middle = close.rect.1 + close.rect.3 / 2.0;
+    let mut row: Vec<Action> = buttons
+        .into_iter()
+        .filter(|action| {
+            action.rect.1 <= middle
+                && action.rect.1 + action.rect.3 >= middle
+                && action.rect.0 + action.rect.2 <= close.rect.0 + 0.5
+        })
+        .collect();
+    row.sort_by(|a, b| a.rect.0.total_cmp(&b.rect.0));
+    let more = row.iter().position(|action| action.label == "More…");
+    let more = more.map(|index| row.remove(index));
+    let mut menu = Vec::new();
+    if let Some(more) = &more {
+        input::click_at(
+            window,
+            LogicalPosition::new(
+                more.rect.0 + more.rect.2 / 2.0,
+                more.rect.1 + more.rect.3 / 2.0,
+            ),
+        );
+        app.settle();
+        if !popup_open(window) {
+            return Err("a click on More… opened no menu".into());
+        }
+        // A short window's menu scrolls: its entries out of view count too.
+        menu = menu_entries(window, true);
+        input::key(window, Key::Escape);
+        app.settle();
+        if popup_open(window) {
+            return Err("Escape did not close the More… menu".into());
+        }
+    }
+    Ok(Footer {
+        buttons: row,
+        more,
+        menu,
+        dismiss: close,
+    })
+}
+
+/// The window rectangle of the item that has the keyboard focus, if any.
+pub fn focused_rect(window: &slint::Window) -> Option<inspect::Rect> {
+    WindowInner::from_pub(window)
+        .focus_item
+        .borrow()
+        .upgrade()
+        .map(|item| inspect::rect(&item))
+}
+
+/// Whether the keyboard focus is on (inside) the area `rect`.
+pub fn focus_in(window: &slint::Window, rect: inspect::Rect) -> bool {
+    focused_rect(window).is_some_and(|(x, y, w, h)| {
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        cx >= rect.0 && cx <= rect.0 + rect.2 && cy >= rect.1 && cy <= rect.1 + rect.3
+    })
+}
+
+/// A right click (press and release of the right button) at `position`.
+pub fn right_click_at(window: &slint::Window, position: LogicalPosition) {
+    let button = PointerEventButton::Right;
+    input::move_to(window, position);
+    window.dispatch_event(WindowEvent::PointerPressed { position, button });
+    window.dispatch_event(WindowEvent::PointerReleased { position, button });
+}
+
+/// How a context menu is opened.
+#[derive(Clone, Copy, Debug)]
+pub enum MenuBy {
+    /// A right click on this point (a row).
+    Pointer(LogicalPosition),
+    /// Shift+F10 on the focused list.
+    ShiftF10,
+    /// The Menu (application) key.
+    MenuKey,
+}
+
+/// Open a context menu `by` the pointer or a key; returns its entries (the menu stays
+/// open for the caller to choose one or press Escape).
+pub fn context_menu(
+    app: &mut App,
+    window: &slint::Window,
+    by: MenuBy,
+) -> Result<Vec<Action>, String> {
+    match by {
+        MenuBy::Pointer(position) => right_click_at(window, position),
+        MenuBy::ShiftF10 => input::chord(window, &[Key::Shift], Key::F10),
+        MenuBy::MenuKey => input::key(window, Key::Menu),
+    }
+    app.settle();
+    if !popup_open(window) {
+        return Err(format!("{by:?} opened no context menu"));
+    }
+    Ok(popup_actions(window))
+}
+
+/// Choose the entry `label` of the open menu with a click.
+pub fn choose(app: &mut App, window: &slint::Window, label: &str) -> Result<(), String> {
+    let entry = popup_actions(window)
+        .into_iter()
+        .find(|action| action.label == label)
+        .ok_or_else(|| {
+            format!(
+                "the menu has no {label:?}: {:?}",
+                popup_actions(window)
+                    .iter()
+                    .map(|action| &action.label)
+                    .collect::<Vec<_>>()
+            )
+        })?;
+    if !entry.enabled {
+        return Err(format!("the menu's {label:?} is disabled"));
+    }
+    let (x, y, w, h) = entry.rect;
+    input::click_at(window, LogicalPosition::new(x + w / 2.0, y + h / 2.0));
+    app.settle();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------
+// Rows of selectable result lists (Find results, Checksum results)
+
+/// A row a virtualized list has instantiated, with its accessible state.
+#[derive(Clone, Debug)]
+pub struct ListRow {
+    pub index: usize,
+    pub label: String,
+    pub selected: bool,
+    /// Window coordinates of the whole row.
+    pub rect: inspect::Rect,
+    /// Whether the whole row is inside the list's visible area.
+    pub whole: bool,
+}
+
+impl ListRow {
+    /// The first field of the label: the name of a Find or Checksum result.
+    pub fn name(&self) -> &str {
+        self.label.split(" · ").next().unwrap_or_default()
+    }
+}
+
+/// The rows of the list labelled `list` that are in view, in order. A virtualized list
+/// instantiates rows for its viewport while it is drawn, so the window is drawn first.
+pub fn list_rows(window: &MinimalSoftwareWindow, list: &str) -> Vec<ListRow> {
+    let _ = app::render(window);
+    let mut rows = Vec::new();
+    if let Some(found) = inspect::find(window.window(), AccessibleRole::List, list) {
+        let area = inspect::visible_rect(&found);
+        inspect::walk(&found, &mut |item| {
+            if item.accessible_role() == AccessibleRole::ListItem
+                && item.is_visible()
+                && inspect::visible_rect(item).is_some()
+                && let Some(label) = inspect::label(item)
+            {
+                let index = property(item, AccessibleStringProperty::ItemIndex)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(usize::MAX);
+                let rect = inspect::rect(item);
+                let whole = area.is_some_and(|(x, y, w, h)| {
+                    rect.1 >= y - 0.5
+                        && rect.1 + rect.3 <= y + h + 0.5
+                        && rect.0 >= x - 0.5
+                        && rect.0 < x + w
+                });
+                rows.push(ListRow {
+                    index,
+                    label,
+                    selected: property(item, AccessibleStringProperty::ItemSelected).as_deref()
+                        == Some("true"),
+                    rect,
+                    whole,
+                });
+            }
+        });
+    }
+    rows.sort_by_key(|row| row.index);
+    rows.dedup_by_key(|row| row.index);
+    rows
+}
+
+/// The names of the selected rows in view, in order.
+pub fn selected_names(window: &MinimalSoftwareWindow, list: &str) -> Vec<String> {
+    list_rows(window, list)
+        .into_iter()
+        .filter(|row| row.selected)
+        .map(|row| row.name().to_owned())
+        .collect()
+}
+
+/// The row that has the list's cursor, as the list draws it: the cursor's row has a
+/// full-height stroke at its left edge (3 px of `Theme.cursor-edge`), which no other row
+/// has; a selected row's square sits in the middle of the edge only. Reads the rendered
+/// pixels just inside the row's top edge, on the stroke and right of it: they differ on
+/// the cursor's row alone. None when no whole row in view, or more than one, shows it.
+pub fn cursor_row(window: &MinimalSoftwareWindow, list: &str) -> Option<ListRow> {
+    let rows = list_rows(window, list);
+    let (width, height, pixels) = app::render(window);
+    let at = |x: f32, y: f32| -> Option<slint::Rgb8Pixel> {
+        let (x, y) = (x.floor() as i64, y.floor() as i64);
+        (x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height)
+            .then(|| pixels[y as usize * width + x as usize])
+    };
+    let differs = |a: slint::Rgb8Pixel, b: slint::Rgb8Pixel| {
+        a.r.abs_diff(b.r) as u32 + a.g.abs_diff(b.g) as u32 + a.b.abs_diff(b.b) as u32 > 48
+    };
+    let mut found = rows.into_iter().filter(|row| {
+        let (x, y, _, h) = row.rect;
+        row.whole
+            && h >= 10.0
+            && [y + 2.0, y + h - 3.0].into_iter().all(|line| {
+                matches!((at(x + 1.0, line), at(x + 6.0, line)), (Some(edge), Some(inside)) if differs(edge, inside))
+            })
+    });
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
 }
 
 pub fn set_modified(path: &Path, time: SystemTime) -> Result<(), String> {

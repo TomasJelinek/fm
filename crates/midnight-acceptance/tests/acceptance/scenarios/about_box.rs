@@ -1,6 +1,9 @@
 //! The About box, driven with the pointer and keys: opened from the toolbar's
-//! application icon; the About tab (version, Built with, Libraries) laid out with room
-//! between its lines; the Licenses tab: the count, the filter ("K of N", no match,
+//! application icon; the About tab (Version, a Copyright row with the year and the owner's
+//! name, Built with, Libraries, in one label column; no Author row) laid out with room
+//! between its lines; Saturn drawn in the sky clear of the title and the icon, no
+//! crescent moon; the Licenses tab: the count,
+//! the filter ("K of N", no match,
 //! cleared), a click selecting a library (selected state, the "›" open mark, View
 //! license enabled), hover marking only the hovered row, the pointer cursor over rows,
 //! the mark's click, View license, a double-click, Enter in the list and in the filter,
@@ -278,6 +281,102 @@ fn spacing(texts: &[(String, Rect)], wanted: &[&str], minimum: f32) -> Result<f3
     Ok(tightest)
 }
 
+const COPYRIGHT_LABEL: &str = "Copyright";
+const COPYRIGHT: &str = "© 2026 Tomas Jelinek";
+/// The owner's name alone, as the removed Author row showed it.
+const NAME: &str = "Tomas Jelinek";
+
+/// The Copyright row reads exactly the copyright line, its value in the Version row's
+/// column (one label column for every row); there is no Author row, and the name never
+/// stands alone.
+fn copyright(shown: &[(String, Rect)]) -> Result<(), String> {
+    if row_value(shown, COPYRIGHT_LABEL).as_deref() != Some(COPYRIGHT) {
+        return Err(format!(
+            "the About tab's Copyright row shows {:?}, not {COPYRIGHT:?}",
+            row_value(shown, COPYRIGHT_LABEL)
+        ));
+    }
+    if let Some((text, _)) = shown
+        .iter()
+        .find(|(text, _)| text == "Author" || text == NAME)
+    {
+        return Err(format!(
+            "the About tab still shows {text:?}: the Author row is gone"
+        ));
+    }
+    let value_x = |label: &str| {
+        let value = row_value(shown, label)?;
+        shown
+            .iter()
+            .find(|(text, _)| *text == value)
+            .map(|(_, rect)| rect.0)
+    };
+    match (value_x("Version"), value_x(COPYRIGHT_LABEL)) {
+        (Some(version), Some(copyright)) if (version - copyright).abs() <= 1.0 => Ok(()),
+        (version, copyright) => Err(format!(
+            "the Copyright row's value starts at x {copyright:?}, the Version row's at {version:?}: not one column"
+        )),
+    }
+}
+
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+}
+
+/// Saturn is in the sky beside the application's icon, drawn (its gold planet and rings
+/// in the rendered pixels), and covers neither the title nor the icon; the crescent moon
+/// it replaced is gone.
+fn saturn(app: &mut App, shown: &[(String, Rect)]) -> Result<(), String> {
+    let planet = inspect::find(app.slint(), AccessibleRole::Image, "Saturn")
+        .and_then(|item| inspect::visible_rect(&item))
+        .ok_or("the sky shows no Saturn")?;
+    let icon = inspect::find(app.slint(), AccessibleRole::Image, "Midnight Explorer icon")
+        .and_then(|item| inspect::visible_rect(&item))
+        .ok_or("the sky shows no application icon")?;
+    let title = shown
+        .iter()
+        .find(|(text, _)| text == "Midnight Explorer")
+        .map(|(_, rect)| *rect)
+        .ok_or("the sky shows no title")?;
+    if overlaps(planet, icon) || overlaps(planet, title) {
+        return Err(format!(
+            "Saturn at {planet:?} overlaps the icon at {icon:?} or the title at {title:?}"
+        ));
+    }
+    let moons: Vec<String> = inspect::labels(app.slint(), AccessibleRole::Image)
+        .into_iter()
+        .filter(|label| {
+            let label = label.to_lowercase();
+            label.contains("moon") || label.contains("crescent")
+        })
+        .collect();
+    if !moons.is_empty() {
+        return Err(format!("the sky still shows {moons:?}"));
+    }
+    // Drawn: warm, bright pixels (the planet's gold, the rings) inside its square, which
+    // the dark blue sky around it does not have.
+    let (width, height, pixels) = crate::app::render(&app.main);
+    let (x0, y0) = (planet.0.max(0.0) as usize, planet.1.max(0.0) as usize);
+    let (x1, y1) = (
+        ((planet.0 + planet.2) as usize).min(width),
+        ((planet.1 + planet.3) as usize).min(height),
+    );
+    let warm = (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|(x, y)| {
+            let pixel = pixels[y * width + x];
+            pixel.r >= 140 && pixel.r as i32 - pixel.b as i32 >= 50
+        })
+        .count();
+    // The sky around is dark blue (no warm pixel); a few tiny warm stars may fall inside.
+    if warm < 20 {
+        return Err(format!(
+            "Saturn's square at {planet:?} holds {warm} warm pixels: it is not drawn"
+        ));
+    }
+    Ok(())
+}
+
 fn click_point(app: &mut App, x: f32, y: f32) {
     input::click_at(app.slint(), LogicalPosition::new(x, y));
     app.settle();
@@ -401,12 +500,18 @@ fn checks(
             row_value(&shown, "Version")
         ));
     }
+    // The Copyright row, and no Author row.
+    if let Err(error) = copyright(&shown) {
+        failures.push(error);
+    }
     match spacing(
         &shown,
         &[
             "A focused, two-pane file manager.",
             "Built for keyboard and mouse alike: fast panels, tabs, previews, archives as folders and a command line within reach.",
             "Version",
+            COPYRIGHT_LABEL,
+            COPYRIGHT,
             "Built with",
             "Libraries",
         ],
@@ -416,6 +521,9 @@ fn checks(
             "About tab: the tightest gap between its lines is {gap:.0}px"
         )),
         Err(error) => failures.push(format!("the About tab is cramped: {error}")),
+    }
+    if let Err(error) = saturn(app, &shown) {
+        failures.push(error);
     }
     app.screenshot(context, "about-tab", "About, the About tab");
 

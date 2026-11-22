@@ -4,7 +4,11 @@
 //! OK under the typed path, and scrolls the result columns sideways with Left and Right;
 //! a compact window names its field "Query", hides the query area while a search runs
 //! and, with text larger than 20 px, shows the idle status above the results; a column
-//! drag never sorts and its width is kept for the next search.
+//! drag never sorts and its width is kept for the next search. The fitted footer: its
+//! buttons and More… hold every action once, those in More… the first of their order,
+//! each whole and 8 px from the next, at 1000, 560 and 320 px and with 32 px text at
+//! 320×200; More… by pointer (an entry runs) and from the keyboard (Tab, Space, Enter,
+//! Escape); the details page keeps Back.
 use crate::{
     Context,
     app::{self, App, Config},
@@ -75,7 +79,10 @@ pub fn layout(context: &mut Context) -> Result<(), String> {
     let root = context.work.join("layout");
     tree(&root)?;
     let mut findings = Findings::default();
-    let mut app = App::start(Config::new(&root, &context.work));
+    let mut config = Config::new(&root, &context.work);
+    // More…'s Copy details reaches the in-process clipboard.
+    config.clipboard = true;
+    let mut app = App::start(config);
     let window = open_find(&mut app)?;
     findings.check(
         "Blue at the preferred size",
@@ -87,6 +94,23 @@ pub fn layout(context: &mut Context) -> Result<(), String> {
     findings.check(
         "a compact window",
         compact(&mut app, context, &window, false),
+    );
+    findings.check(
+        "the footer and More…",
+        footer_more(&mut app, context, &window, &root),
+    );
+    find::close(&mut app, &window);
+    app.shutdown()?;
+    // The largest text Options offers (32 px) at the minimum size: the details page
+    // keeps Back whole beside More….
+    let store = SettingsStore::seeded(|preferences| preferences.desktop_font_size = 32);
+    let mut config = Config::new(&root, &context.work);
+    config.settings = Some(store);
+    let mut app = App::start(config);
+    let window = open_find(&mut app)?;
+    findings.check(
+        "the footer with 32 px text at 320×200",
+        footer_large_text(&mut app, context, &window),
     );
     find::close(&mut app, &window);
     app.shutdown()?;
@@ -122,6 +146,349 @@ pub fn layout(context: &mut Context) -> Result<(), String> {
     app.shutdown()?;
     context.note("Find window layout clean in Blue, Dark and Touch (24 px) at preferred, narrow and compact sizes; narrow stacking and sideways column scrolling; compact Query field, hidden query area while searching, status above the results with large text; a column drag never sorts and its width is kept");
     findings.into_result()
+}
+
+/// The query page's footer actions, in order, and the order in which they move into
+/// More… when the footer is too narrow.
+const QUERY_ACTIONS: [&str; 6] = ["Find", "Go to file", "View", "Edit", "Open", "Copy details"];
+const QUERY_DROPS: [&str; 5] = ["Copy details", "Open", "Edit", "View", "Go to file"];
+/// The details page's.
+const DETAILS_ACTIONS: [&str; 3] = ["Find", "Copy", "Back"];
+const DETAILS_DROPS: [&str; 2] = ["Copy", "Find"];
+
+/// The fitted footer at `size`: the buttons and the actions in More… make up the page's
+/// whole set once each; the moved ones are the first of `drops`; every button (More…
+/// and Close included) is whole inside the window, 8 px from the next, and no layout
+/// finding names one of them.
+fn footer_fit(
+    app: &mut App,
+    context: &mut Context,
+    window: &Tool,
+    (width, height): (u32, u32),
+    (actions, drops): (&[&str], &[&str]),
+    name: &str,
+) -> Result<tools::Footer, String> {
+    app::layout_tool(window, width, height);
+    app.settle();
+    let w = window.window();
+    let footer =
+        tools::footer_actions(app, w, "Close").map_err(|error| format!("{name}: {error}"))?;
+    app.screenshot_window(
+        context,
+        window,
+        name,
+        &format!("The footer at {width}×{height}"),
+    );
+    let shown = footer.labels();
+    let moved = footer.menu_labels();
+    let mut problems = Vec::new();
+    let mut every: Vec<String> = shown.iter().chain(&moved).cloned().collect();
+    every.sort();
+    let mut wanted: Vec<String> = actions.iter().map(|label| (*label).to_owned()).collect();
+    wanted.sort();
+    if every != wanted {
+        problems.push(format!(
+            "buttons {shown:?} and More… {moved:?} are not the set {actions:?}"
+        ));
+    }
+    let moved_set: std::collections::BTreeSet<&str> = moved.iter().map(String::as_str).collect();
+    let first: std::collections::BTreeSet<&str> = drops.iter().take(moved.len()).copied().collect();
+    if moved_set != first {
+        problems.push(format!(
+            "More… holds {moved:?}, not the first {} of {drops:?}",
+            moved.len()
+        ));
+    }
+    if moved.is_empty() != footer.more.is_none() {
+        problems.push(format!(
+            "More… shown {} with {moved:?} in it",
+            footer.more.is_some()
+        ));
+    }
+    let mut row: Vec<&tools::Action> = footer.buttons.iter().collect();
+    row.extend(footer.more.as_ref());
+    row.push(&footer.dismiss);
+    row.sort_by(|a, b| a.rect.0.total_cmp(&b.rect.0));
+    for action in &row {
+        let (x, y, w, h) = action.rect;
+        if x < -0.5 || y < -0.5 || x + w > width as f32 + 0.5 || y + h > height as f32 + 0.5 {
+            problems.push(format!(
+                "{:?} at {:?} is not whole in the window",
+                action.label, action.rect
+            ));
+        }
+    }
+    for pair in row.windows(2) {
+        let gap = pair[1].rect.0 - (pair[0].rect.0 + pair[0].rect.2);
+        if (gap - 8.0).abs() > 0.75 {
+            problems.push(format!(
+                "{:?} and {:?} are {gap:.1} px apart, not 8",
+                pair[0].label, pair[1].label
+            ));
+        }
+    }
+    let _ = app::render(window);
+    let labels: Vec<&str> = row.iter().map(|action| action.label.as_str()).collect();
+    for finding in inspect::check_layout(w, width as f32, height as f32) {
+        // Findings quote the controls they name.
+        if labels
+            .iter()
+            .any(|label| finding.detail.contains(&format!("{label:?}")))
+        {
+            problems.push(format!("{}: {}", finding.kind, finding.detail));
+        }
+    }
+    if problems.is_empty() {
+        Ok(footer)
+    } else {
+        Err(format!(
+            "{name} ({width}×{height}): {}",
+            problems.join("; ")
+        ))
+    }
+}
+
+/// The footer fits its actions: every one a button at 1000 px, some in More… at 560 px,
+/// only Find and More… at 320×200, whole and 8 px apart; More… opens from the keyboard
+/// (Tab to it, Space) and Enter runs its first action (Go to file), Escape closes it, a
+/// click on an entry runs it (Copy details); the details page keeps Back.
+fn footer_more(
+    app: &mut App,
+    context: &mut Context,
+    window: &Tool,
+    root: &Path,
+) -> Result<(), String> {
+    let w = window.window();
+    app::layout_tool(window, find::SIZE.0, find::SIZE.1);
+    app.settle();
+    // The compact check left a content search in the form: back to every name.
+    find::fill(app, window, BASE)?;
+    let text = find::run(app, window)?;
+    if !text.starts_with("Completed") {
+        return Err(format!("*.* ended {text:?}"));
+    }
+    // The first file result: Go to file from More… must bring the panel to it.
+    let rows = find::all_rows(app, window)?;
+    let chosen = rows
+        .iter()
+        .find(|row| row.name.ends_with(".txt") && row.size != "<DIR>")
+        .cloned()
+        .ok_or_else(|| format!("no file among the results {:?}", find::ordered(&rows, root)))?;
+    let name = chosen.name.as_str();
+    find::select_result(app, window, name, Some(Path::new(&chosen.folder)))?;
+    let mut problems = Vec::new();
+    let query = (&QUERY_ACTIONS[..], &QUERY_DROPS[..]);
+    match footer_fit(app, context, window, (1000, 620), query, "footer-1000") {
+        Ok(footer) if footer.more.is_some() => problems.push(format!(
+            "at 1000 px More… holds {:?}; every action should be a button",
+            footer.menu_labels()
+        )),
+        Ok(_) => {}
+        Err(error) => problems.push(error),
+    }
+    match footer_fit(app, context, window, (560, 420), query, "footer-560") {
+        // A click on an entry of More… runs it: Copy details copies the search's status.
+        Ok(footer) => match &footer.more {
+            Some(more) if footer.menu_labels().contains(&"Copy details".to_owned()) => {
+                // Copy details copies the search's progress: the status line without its
+                // selection part (" · 1 selected · 7 B").
+                let status = find::status(window);
+                let line = status
+                    .find(" selected")
+                    .and_then(|end| status[..end].rfind(" · "))
+                    .map_or(status.clone(), |start| status[..start].to_owned());
+                let before = tools::clipboard_writes(app);
+                let (x, y, width, height) = more.rect;
+                input::click_at(w, LogicalPosition::new(x + width / 2.0, y + height / 2.0));
+                app.settle();
+                match tools::choose(app, w, "Copy details")
+                    .and_then(|()| tools::wait_copied(app, before, "More…'s Copy details"))
+                {
+                    Ok(text) if text.starts_with(&line) => {}
+                    Ok(text) => problems.push(format!(
+                        "More…'s Copy details copied {text:?}, not the status {line:?} first"
+                    )),
+                    Err(error) => problems.push(error),
+                }
+            }
+            _ => problems.push(format!(
+                "at 560×420 More… does not hold Copy details: buttons {:?}, More… {:?}",
+                footer.labels(),
+                footer.menu_labels()
+            )),
+        },
+        Err(error) => problems.push(error),
+    }
+    let small = footer_fit(app, context, window, (320, 200), query, "footer-320x200");
+    match &small {
+        Ok(footer) if footer.labels() != ["Find"] || footer.more.is_none() => {
+            problems.push(format!(
+                "at 320×200 the footer shows {:?} and More… {:?}, not Find and More…",
+                footer.labels(),
+                footer.menu_labels()
+            ))
+        }
+        Ok(_) => {}
+        Err(error) => problems.push(error.clone()),
+    }
+    // The keyboard: Tab to More…, Space opens it, Enter runs its first action, which with
+    // a result under the cursor is Go to file.
+    if let Ok(footer) = &small
+        && let Some(more) = &footer.more
+    {
+        let mut reached = false;
+        for _ in 0..40 {
+            if tools::focus_in(w, more.rect) {
+                reached = true;
+                break;
+            }
+            input::key(w, Key::Tab);
+            app.settle();
+        }
+        if !reached {
+            problems.push("Tab never reached More… at 320×200".into());
+        } else {
+            input::key(w, " ");
+            app.settle();
+            if !tools::popup_open(w) {
+                problems.push("Space on More… opened no menu".into());
+            } else {
+                input::key(w, Key::Return);
+                app.settle();
+                let wanted = std::path::PathBuf::from(&chosen.folder);
+                let target = name.to_owned();
+                let moved = (|| {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                    loop {
+                        app.settle();
+                        let names = app.names(midnight_core::PaneId::Left);
+                        let at = usize::try_from(app.cursor(midnight_core::PaneId::Left))
+                            .ok()
+                            .and_then(|row| names.get(row).cloned());
+                        if app.location(midnight_core::PaneId::Left).as_deref()
+                            == Some(wanted.as_path())
+                            && at.as_deref() == Some(target.as_str())
+                        {
+                            return true;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return false;
+                        }
+                        app.idle(Duration::from_millis(20));
+                    }
+                })();
+                if !moved || tools::popup_open(w) {
+                    problems.push(format!(
+                        "Enter in More… did not run Go to file: the panel shows {:?}, the menu open {}",
+                        app.location(midnight_core::PaneId::Left),
+                        tools::popup_open(w)
+                    ));
+                }
+            }
+        }
+        // Escape closes the menu and leaves the window.
+        input::click_at(
+            w,
+            LogicalPosition::new(
+                more.rect.0 + more.rect.2 / 2.0,
+                more.rect.1 + more.rect.3 / 2.0,
+            ),
+        );
+        app.settle();
+        input::key(w, Key::Escape);
+        app.settle();
+        if tools::popup_open(w) || !w.is_visible() {
+            problems.push(format!(
+                "Escape in More…: the menu open {}, the window shown {}",
+                tools::popup_open(w),
+                w.is_visible()
+            ));
+        }
+    }
+    // The details page keeps Back; Find and Copy move into More….
+    app::layout_tool(window, find::SIZE.0, find::SIZE.1);
+    app.settle();
+    let line = find::status(window);
+    match tools::control(w, AccessibleRole::Button, &line) {
+        Ok(item) => {
+            input::click_at(w, inspect::center(&item));
+            app.settle();
+            let details = (&DETAILS_ACTIONS[..], &DETAILS_DROPS[..]);
+            match footer_fit(app, context, window, (320, 200), details, "details-320x200") {
+                Ok(footer) if !footer.labels().contains(&"Back".to_owned()) => problems.push(
+                    format!("the details page at 320×200 shows {:?}", footer.labels()),
+                ),
+                Ok(_) => {}
+                Err(error) => problems.push(error),
+            }
+            app::layout_tool(window, find::SIZE.0, find::SIZE.1);
+            app.settle();
+            input::click_button(w, "Back")?;
+            app.settle();
+        }
+        Err(error) => problems.push(format!("the status line: {error}")),
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// 32 px text at 320×200: the query page shows Find and More…, the details page Back and
+/// More…, each whole and 8 px apart (on Linux Back used to be cut there).
+fn footer_large_text(app: &mut App, context: &mut Context, window: &Tool) -> Result<(), String> {
+    let w = window.window();
+    let text = find::run(app, window)?;
+    if !text.starts_with("Completed") {
+        return Err(format!("*.* ended {text:?}"));
+    }
+    let mut problems = Vec::new();
+    match footer_fit(
+        app,
+        context,
+        window,
+        (320, 200),
+        (&QUERY_ACTIONS[..], &QUERY_DROPS[..]),
+        "large-text-320x200",
+    ) {
+        Ok(footer) if footer.labels() != ["Find"] => problems.push(format!(
+            "with 32 px text at 320×200 the footer shows {:?}",
+            footer.labels()
+        )),
+        Ok(_) => {}
+        Err(error) => problems.push(error),
+    }
+    app::layout_tool(window, find::SIZE.0, find::SIZE.1);
+    app.settle();
+    let line = find::status(window);
+    let item = tools::control(w, AccessibleRole::Button, &line)?;
+    input::click_at(w, inspect::center(&item));
+    app.settle();
+    match footer_fit(
+        app,
+        context,
+        window,
+        (320, 200),
+        (&DETAILS_ACTIONS[..], &DETAILS_DROPS[..]),
+        "large-text-details-320x200",
+    ) {
+        Ok(footer) if footer.labels() != ["Back"] => problems.push(format!(
+            "with 32 px text the details page at 320×200 shows {:?}",
+            footer.labels()
+        )),
+        Ok(_) => {}
+        Err(error) => problems.push(error),
+    }
+    app::layout_tool(window, find::SIZE.0, find::SIZE.1);
+    app.settle();
+    input::click_button(w, "Back")?;
+    app.settle();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
 }
 
 /// Below 620 px: Remove under Add, Browse… and OK under the typed path; the result

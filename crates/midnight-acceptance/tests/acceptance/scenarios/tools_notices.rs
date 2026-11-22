@@ -103,32 +103,14 @@ fn button_shown(app: &App, label: &str) -> bool {
         .is_some()
 }
 
-/// The events and commands traced since `before` was taken (the trace keeps the last
-/// 32 lines).
-fn since(before: &[String], app: &App) -> Vec<String> {
-    let after = app.recent_events();
-    let start = before
-        .last()
-        .and_then(|last| after.iter().rposition(|line| line == last))
-        .map_or(0, |index| index + 1);
-    after[start..].to_vec()
-}
-
-/// Copy details sends the text to the clipboard and the status line reports it; the
-/// in-process clipboard then holds every one of `wanted`.
-fn copied(app: &mut App, before: &[String], wanted: &[&str]) -> Result<(), String> {
-    let snapshot = before.to_vec();
-    wait(app, "Copy details to reach the clipboard", move |app| {
-        since(&snapshot, app)
-            .iter()
-            .any(|line| line.starts_with("→ CopyText") || line.starts_with("→ CopyGeneratedText"))
-            && app.window.get_desktop_status().as_str() == "Copied to clipboard"
+/// Copy details puts the text on the clipboard (a copy since `before`, a count of the
+/// in-process clipboard's copies) and the status line reports it; the text holds every
+/// one of `wanted`.
+fn copied(app: &mut App, before: u64, wanted: &[&str]) -> Result<(), String> {
+    let text = tools::wait_copied(app, before, "Copy details")?;
+    wait(app, "the status line to report the copy", |app| {
+        app.window.get_desktop_status().as_str() == "Copied to clipboard"
     })?;
-    let text = app
-        .clipboard
-        .as_ref()
-        .and_then(|clipboard| clipboard.text())
-        .unwrap_or_default();
     let missing: Vec<&&str> = wanted
         .iter()
         .filter(|part| !text.contains(**part))
@@ -265,9 +247,9 @@ fn notices(
     }
 
     // Copy details: the clipboard receives the message.
-    let before = app.recent_events();
+    let before = tools::clipboard_writes(app);
     input::click_button(app.slint(), "Copy details")?;
-    if let Err(error) = copied(app, &before, &["Cannot open folder", path.as_str(), DENIED]) {
+    if let Err(error) = copied(app, before, &["Cannot open folder", path.as_str(), DENIED]) {
         failures.push(format!("the notice's {error}"));
     } else if let Err(error) = tools::notice_copy_starts_as_shown(app) {
         failures.push(error);
@@ -628,9 +610,9 @@ fn jobs(
         .find(|(_, _, checked)| *checked)
         .map(|(title, _, _)| title)
         .unwrap_or_default();
-    let before = app.recent_events();
+    let before = tools::clipboard_writes(app);
     tools::click_last(window.window(), "Copy details")?;
-    if let Err(error) = copied(app, &before, &[selected_title.as_str()]) {
+    if let Err(error) = copied(app, before, &[selected_title.as_str()]) {
         failures.push(format!("Jobs › {error}"));
     }
 

@@ -1,10 +1,13 @@
 //! Checksums (Ctrl+F8): calculate, save a manifest, verify it, replace it, and verify
 //! the fixture's SHA-256, MD5 and SFV manifests including a mismatch and a missing file.
+//! Copy is disabled while nothing is selected; with every row selected it copies exactly
+//! the saved manifest.
 use crate::{
     Context,
     app::{self, App, Config},
     encode, input, inspect, panel,
     scenarios::transfers::copy_tree,
+    tools_support as tools,
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
@@ -118,10 +121,23 @@ fn verify_manifest(
     Ok(())
 }
 
+/// The footer's Copy action, whose caption names the shown algorithm.
+fn copy_action(app: &mut App, window: &MinimalSoftwareWindow) -> Result<tools::Action, String> {
+    let footer = tools::footer_actions(app, window.window(), "Close")?;
+    footer
+        .all()
+        .find(|action| action.label.starts_with("Copy") && action.label != "Copy details")
+        .cloned()
+        .ok_or_else(|| format!("the footer has no Copy: {:?}", footer.labels()))
+}
+
 pub fn calculate_save_verify(context: &mut Context) -> Result<(), String> {
     let folder = context.work.join("checksums");
     copy_tree(&context.fixture.path("checksums"), &folder)?;
-    let mut app = App::start(Config::new(&folder, &context.work));
+    let mut config = Config::new(&folder, &context.work);
+    // Copy reaches the in-process clipboard.
+    config.clipboard = true;
+    let mut app = App::start(config);
     let pane = PaneId::Left;
 
     // Mark the four data files with Insert, then Ctrl+F8.
@@ -171,6 +187,17 @@ pub fn calculate_save_verify(context: &mut Context) -> Result<(), String> {
         "checksums-calculated",
         "Four SHA-256 checksums calculated",
     );
+    // Nothing is selected yet: Copy is there, disabled, and says why.
+    let copy = copy_action(&mut app, &window)?;
+    if copy.label != "Copy SHA-256"
+        || copy.enabled
+        || !copy.description.starts_with("Nothing to copy: ")
+    {
+        return Err(format!(
+            "before any selection the footer offers {:?} (enabled {}, hint {:?})",
+            copy.label, copy.enabled, copy.description
+        ));
+    }
 
     // Save manifest…: the scripted chooser accepts the suggested checksums.sha256.
     let saves = app.manifests.len();
@@ -199,6 +226,42 @@ pub fn calculate_save_verify(context: &mut Context) -> Result<(), String> {
     if lines != expected_manifest {
         return Err(format!(
             "checksums.sha256 is {saved:?}, expected {expected_manifest:?}"
+        ));
+    }
+
+    // Copy copies the selected rows as the checksum file Save manifest… writes: with
+    // every row selected (Ctrl+A in the results), exactly the saved file.
+    let row = tools::list_rows(&window, "Checksum results")
+        .into_iter()
+        .next()
+        .ok_or("no result row to click")?;
+    let (x, y, w, h) = row.rect;
+    input::click_at(
+        window.window(),
+        slint::LogicalPosition::new(x + w.min(240.0) / 2.0, y + h / 2.0),
+    );
+    app.settle();
+    input::chord(window.window(), &[Key::Control], "a");
+    app.settle();
+    let copy = copy_action(&mut app, &window)?;
+    if copy.label != "Copy 4 SHA-256" || !copy.enabled {
+        return Err(format!(
+            "with every row selected the footer offers {:?} (enabled {})",
+            copy.label, copy.enabled
+        ));
+    }
+    let before = tools::clipboard_writes(&app);
+    input::click_at(
+        window.window(),
+        slint::LogicalPosition::new(
+            copy.rect.0 + copy.rect.2 / 2.0,
+            copy.rect.1 + copy.rect.3 / 2.0,
+        ),
+    );
+    let copied = tools::wait_copied(&mut app, before, "Copy 4 SHA-256")?;
+    if copied != saved {
+        return Err(format!(
+            "Copy 4 SHA-256 copied {copied:?}, not the saved checksums.sha256 {saved:?}"
         ));
     }
 

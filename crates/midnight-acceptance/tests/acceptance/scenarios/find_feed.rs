@@ -9,6 +9,9 @@
 //! with the result inside it; Alt+Enter summarizes the marks; every action the list
 //! refuses (keys, keypad, toolbar, function bar and main menu) explains itself and
 //! leaves the folder underneath untouched; a Find from the right panel feeds that one.
+//! The Find window's selection arrives as the list's marks (Ctrl+C and Ctrl+X put them on
+//! the clipboard, F5's dialog reads "Copy 3 files (11 B) to:"), and the list's cursor starts on
+//! the Find's cursor result, on its first row when the Find window had none.
 use crate::{
     Context,
     app::{App, Config},
@@ -266,10 +269,17 @@ pub fn feed_panel(context: &mut Context) -> Result<(), String> {
     config.settings = Some(store);
     config.editor = true;
     config.user_commands = true;
+    // Ctrl+C and Ctrl+X in the list reach the in-process clipboard.
+    config.clipboard = true;
     let mut app = App::start(config);
     let launched = record_launches(&app);
     let mut findings = Findings::default();
     findings.check("the list", list(&mut app, context, &setup));
+    findings.check("putting the panel back", between(&mut app, &setup.root));
+    findings.check(
+        "the Find selection carried to the list",
+        selection_carried(&mut app, context, &setup),
+    );
     findings.check("putting the panel back", between(&mut app, &setup.root));
     findings.check("marks", marks(&mut app));
     findings.check("putting the panel back", between(&mut app, &setup.root));
@@ -341,6 +351,15 @@ fn list(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), Strin
         "fed",
         "Six results fed to the left panel, Name descending",
     );
+    // No result was chosen in the Find window, so the list's cursor starts on its first
+    // row (the Find's cursor result when there is one: `selection_carried`).
+    if feed_cursor(app, LEFT).as_deref() != Some(ORDER[0]) {
+        return Err(format!(
+            "with no result chosen in the Find window, the list's cursor starts on {:?}, not its first row {}",
+            feed_cursor(app, LEFT),
+            ORDER[0]
+        ));
+    }
     for (keys, wanted) in [
         (Key::DownArrow, "g.txt"),
         (Key::End, "a.txt"),
@@ -985,6 +1004,164 @@ fn operations(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(),
     }
     key(app, &[], Key::Backspace);
     panel::wait_location(app, LEFT, &setup.root);
+    Ok(())
+}
+
+/// Leave the left panel's fed list with Backspace, when one is open, and wait until the
+/// folder is back. The list takes the keys only while it has the keyboard (after a dialog
+/// closed it may not): a click on its first row gives it back first.
+fn leave_list(app: &mut App) -> Result<(), String> {
+    if !feed_view(app, LEFT).open {
+        return Ok(());
+    }
+    if app.window.get_feed_focused_pane() != LEFT.index() as i32
+        && let Some(name) = feed_names(app, LEFT).first().cloned()
+        && let Some((x, y, w, h)) = find::feed_row_rect(app, &name)
+    {
+        input::click_at(
+            app.slint(),
+            LogicalPosition::new(x + w.min(120.0) / 2.0, y + h / 2.0),
+        );
+        app.settle();
+    }
+    key(app, &[], Key::Backspace);
+    app.until("the fed list to close", |app| !feed_view(app, LEFT).open);
+    Ok(())
+}
+
+/// The Find window's selection arrives as the list's marks: three results selected
+/// with Ctrl+click, the cursor on the last; Feed to panel lists all six with exactly
+/// those marked and the list's cursor on the Find's cursor result; Ctrl+C and Ctrl+X put
+/// the marked files on the clipboard to copy and to move; F5 names "3 selected search
+/// results" (cancelled). A selection that only follows the cursor marks nothing, and the
+/// list's cursor is still on that result.
+fn selection_carried(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), String> {
+    // The list a check before left open (Find opens from the panel's own file list).
+    leave_list(app)?;
+    let window = find::open_on(app, LEFT)?;
+    let (text, _) = search(
+        app,
+        &window,
+        Query {
+            masks: "*.txt;sub",
+            ..BASE
+        },
+    )?;
+    if !text.starts_with("Completed") {
+        return Err(format!("*.txt;sub ended {text:?}"));
+    }
+    find::wait_names(app, &window, &ASCENDING, "Name ascending")?;
+    let w = window.window();
+    find::select_result(app, &window, "b.txt", None)?;
+    for name in ["d.txt", "f.txt"] {
+        let (_, (x, y, width, height)) = find::reveal_row(app, &window, |row| row.name == name)?;
+        input::click_with(
+            w,
+            &[Key::Control],
+            LogicalPosition::new(x + width.min(160.0) / 2.0, y + height / 2.0),
+        );
+        app.settle();
+    }
+    let selected = tools::selected_names(&window, "Find results");
+    let status = find::status(&window);
+    // b.txt, d.txt and f.txt hold 2 + 4 + 5 bytes.
+    if selected != ["b.txt", "d.txt", "f.txt"] || !status.ends_with(" · 3 selected · 11 B") {
+        return Err(format!(
+            "Ctrl+click selected {selected:?} with the status {status:?}"
+        ));
+    }
+    tools::click_last(w, "Feed to panel")?;
+    app.until("the results list to open", |app| feed_view(app, LEFT).open);
+    panel::wait_input(app);
+    let marked = feed_marked(app, LEFT);
+    let cursor = feed_cursor(app, LEFT);
+    let view = feed_view(app, LEFT);
+    if feed_names(app, LEFT) != ASCENDING
+        || marked != find::set(&["b.txt", "d.txt", "f.txt"])
+        || cursor.as_deref() != Some("f.txt")
+        || !view.status.starts_with("3 of 6 selected · ")
+    {
+        return Err(format!(
+            "fed with three results selected: rows {:?}, marks {marked:?}, cursor {cursor:?}, status {:?}",
+            feed_names(app, LEFT),
+            view.status
+        ));
+    }
+    app.screenshot(
+        context,
+        "fed-selection",
+        "The Find selection arrives marked",
+    );
+    let wanted: BTreeSet<PathBuf> = [
+        setup.root.join("docs/b.txt"),
+        setup.root.join("src/d.txt"),
+        setup.root.join("f.txt"),
+    ]
+    .into_iter()
+    .collect();
+    for (letter, intent, how) in [
+        ("c", midnight_core::FileClipboardIntent::Copy, "Ctrl+C"),
+        ("x", midnight_core::FileClipboardIntent::Move, "Ctrl+X"),
+    ] {
+        let before = tools::clipboard_writes(app);
+        key(app, &[Key::Control], letter);
+        let files = tools::wait_copied_files(app, before, &format!("{how} in the fed list"))?;
+        let paths: BTreeSet<PathBuf> = files.paths.iter().cloned().collect();
+        if paths != wanted || files.intent != intent {
+            return Err(format!(
+                "{how} in the fed list put {:?} ({:?}) on the clipboard, expected {wanted:?} ({intent:?})",
+                files.paths, files.intent
+            ));
+        }
+    }
+    key(app, &[], Key::F5);
+    app.until("the Copy dialog", |app| {
+        !app.window.get_copy_draft_token().is_empty()
+    });
+    let texts = crate::inspect::visible_texts(app.slint());
+    let source = app.window.get_copy_draft_source().to_string();
+    key(app, &[], Key::Escape);
+    app.until("the Copy dialog to close", |app| {
+        app.window.get_copy_draft_token().is_empty()
+    });
+    // The dialog's first line counts the marked results and their bytes (b, d and f:
+    // 2 + 4 + 5); where they come from is its tooltip.
+    if !texts.iter().any(|text| text == "Copy 3 files (11 B) to:") || source != "Search results" {
+        return Err(format!(
+            "F5 on three marked results: the Copy dialog shows {texts:?} with the source {source:?}; expected \"Copy 3 files (11 B) to:\" from \"Search results\""
+        ));
+    }
+    if !files::main_idle(app) {
+        return Err("Escape in the Copy dialog left something open".into());
+    }
+    leave_list(app)?;
+    // A selection that only follows the cursor (a plain click) marks nothing; the list's
+    // cursor is on that result.
+    let window = find::open_on(app, LEFT)?;
+    let (text, _) = search(
+        app,
+        &window,
+        Query {
+            masks: "*.txt;sub",
+            ..BASE
+        },
+    )?;
+    if !text.starts_with("Completed") {
+        return Err(format!("*.txt;sub ended {text:?} the second time"));
+    }
+    find::wait_names(app, &window, &ASCENDING, "Name ascending")?;
+    find::select_result(app, &window, "g.txt", None)?;
+    tools::click_last(window.window(), "Feed to panel")?;
+    app.until("the results list to open", |app| feed_view(app, LEFT).open);
+    panel::wait_input(app);
+    let marked = feed_marked(app, LEFT);
+    let cursor = feed_cursor(app, LEFT);
+    leave_list(app)?;
+    if !marked.is_empty() || cursor.as_deref() != Some("g.txt") {
+        return Err(format!(
+            "fed after a plain click on g.txt: marks {marked:?}, cursor {cursor:?} (expected none marked, the cursor on g.txt)"
+        ));
+    }
     Ok(())
 }
 

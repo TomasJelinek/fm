@@ -17,24 +17,24 @@ Run them with `bash scripts/acceptance.sh --only find`. `find_archives` and
 `find_viewers` stage the installed plugin packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see
 ACCEPTANCE.md); without them they fail at staging, not skip.
 
-Last run: the Linux run `20261121-144246` of commit 3f6fff8a (WSL 2, Ubuntu 24.04 on ext4, smoke scale, debug test build, every plugin package built from that commit, no archive entry limits; every scenario of the suite ran; report in `_build/acceptance-linux/20261121-144246/`). Statuses are from that run unless another is named. Earlier: 2026-11-20 on Linux, smoke scale, with the plugin packages built from the tree of that day.
+Last runs: the Linux run `20261122-182452` and the Windows runs `20261122-165028` and `20261122-191856` (smoke scale, debug test builds of origin/main 66a02637 with the Find and tools changes of this record; Linux: WSL 2, Ubuntu 24.04 on ext4, the plugin packages built from b1b89343, the shared Cargo target cleaned of every path package before the build; Windows: Windows 11, the release plugin packages built from d7ff8860). Every Find scenario passed in both; on Windows `find_feed_panel` first failed on a stale expectation (F-F19: the Copy dialog's summary line changed in 142aa74b) and passed with the updated check in `20261122-191856`. Statuses are from these runs unless another is named, and the Seconds column is the Linux run's. The new checks were each made to expect a wrong value once and failed with their own message (Linux red runs `20261122-093311`, `20261122-094218`, `20261122-095108` and, for the updated F-F19, `20261122-181712`). Earlier: the runs `20261122-100257` (Linux) and `20261122-112449` (Windows) of 26c18895 with these checks, all PASS; the Linux run `20261121-144246` of commit 3f6fff8a (every scenario of the suite) and 2026-11-20 on Linux, smoke scale, with the plugin packages built from the tree of that day.
 
 ## Scenarios
 
 | Scenario | Covers | Status | Seconds |
 | --- | --- | --- | --- |
-| `find_by_mask` | Alt+F7, a mask search, Go to file | PASS | 1.9 |
-| `tools_find_criteria` | masks, Regex, Expression, content, Identical files, column widths | PASS | 34 |
-| `tools_find_folders_help` | search folders, syntax help, status details | PASS | 6.9 |
-| `tools_find_results` | 10,000 results, Stop, Feed to panel operations, no archive provider | PASS | 28 |
+| `find_by_mask` | Alt+F7, a mask search, Go to file | PASS | 6.5 |
+| `tools_find_criteria` | masks, Regex, Expression, content, Identical files, column widths | PASS | 75 |
+| `tools_find_folders_help` | search folders, syntax help, status details | PASS | 23 |
+| `tools_find_results` | 10,000 results, Stop, Feed to panel operations, no archive provider | PASS | 99 |
 | `find_query_syntax` | masks, Regex and Expression in depth; content encodings; Modified within; Identical files | PASS | 72 |
-| `find_roots_windows` | several search folders; ways to open Find; four windows; two searches at once; Escape and Close | PASS | 41 |
-| `find_result_actions` | sorting, collation, Go to file, View/Edit/Open, stale results, Stop, scrolling | PASS (the corrected Stop check held: "Cancelled · 20 found" 147 ms after Stop) | 71 |
-| `find_feed_panel` | Feed to panel: list, marks, keys, refusals, viewers, file operations, right panel | PASS | 55 |
-| `find_budgets` | folder depth, content per file, result count with a group, duplicate candidates | PASS | 11 |
-| `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails | FAIL: FIND-COMPACT-STATUS-OVERLAP (Touch compact, 700×340). Every size checked before it held (Blue and Dark preferred and narrow, Touch preferred, Blue compact), the sideways column step too; the scenario stopped at Touch compact's layout check, so F-L04's after-search check did not run there | 14 |
-| `find_archives` | Search inside archives through the installed plugin, many and large archives, Stop, visited entries | PASS (also at full scale, run `20261121-171419`, 75 s) | 48 |
-| `find_viewers` | viewer windows from the results and from a fed list | PASS | 7.9 |
+| `find_roots_windows` | several search folders; ways to open Find; four windows; two searches at once; Escape and Close | PASS | 52 |
+| `find_result_actions` | several results selected, Ctrl+C, the context menu, Copy details, sorting, collation, Go to file, View/Edit/Open, stale results, Stop, scrolling, a rebound View key | PASS | 142 |
+| `find_feed_panel` | Feed to panel: list, the Find selection carried as marks, clipboard, marks, keys, refusals, viewers, file operations, right panel | PASS | 137 |
+| `find_budgets` | folder depth, content per file, result count with a group, duplicate candidates | PASS | 26 |
+| `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails; the fitted footer and More… (also with 32 px text) | PASS (FIND-COMPACT-STATUS-OVERLAP fixed) | 34 |
+| `find_archives` | Search inside archives through the installed plugin, many and large archives, Stop, visited entries | PASS (also at full scale, run `20261121-171419`, 75 s) | 87 |
+| `find_viewers` | viewer windows from the results and from a fed list; a viewer keeping what it captured | PASS | 13 |
 
 ## Findings
 
@@ -47,7 +47,7 @@ that verified it.
 | FIND-FEED-INVERT | In a fed list, Ctrl+I (invert files only) also unmarks a marked folder; in a panel it keeps folder marks | `find_feed_panel` › marks | Fixed: the check passed in the last run |
 | FIND-LAYOUT-NARROW-LABEL | A narrow Find window drew the "Search folders" label with no height | `find_layout` › a narrow window | Fixed: the narrow layout checks and the sideways step pass (Linux run `20261121-144246`) |
 | FIND-RESULTS-PATH-TAIL | A shortened Path cell in the results cuts the end of the path, hiding the last folder; the fed list keeps it | `find_layout` › shortened result paths | Fixed: the check passed in the last run |
-| FIND-COMPACT-STATUS-OVERLAP | Found on Linux in run `20261121-144246`, in the fix of FIND-COMPACT-STATUS-HIDDEN (F-L04, WIN-7). In a Find window under 360 px high with text over 20 px (Touch, 700×340) the idle status line, pinned to the query area's last line, overlaps the bottom of the scrolled query form by 11 px: "Fewer options" and "Feed to panel" by 216×11 and 212×11 px, and the button's border runs through the status text ("Ready · 0 found · 0 examined"). An empty band of about the same height stays above the form at the query area's top. Suspected cause: `query-scroll` (`find-window.slint`, about line 181) sets `height: parent.height - root.query-status-height` but no `y`, so Slint centres it in the query area and moves it down by half the status line's height; the status line is placed at `y: parent.height - self.height`. The `midnight-ui` test `find_compact_status` checks that the status line is in view, not that the form ends above it. | `find_layout` › Touch compact: layout clean | Open: `_build/acceptance-linux/20261121-144246/shots/find_layout/touch-700x340.png` |
+| FIND-COMPACT-STATUS-OVERLAP | Found on Linux in run `20261121-144246`, in the fix of FIND-COMPACT-STATUS-HIDDEN (F-L04, WIN-7). In a Find window under 360 px high with text over 20 px (Touch, 700×340) the idle status line, pinned to the query area's last line, overlaps the bottom of the scrolled query form by 11 px: "Fewer options" and "Feed to panel" by 216×11 and 212×11 px, and the button's border runs through the status text ("Ready · 0 found · 0 examined"). An empty band of about the same height stays above the form at the query area's top. Suspected cause: `query-scroll` (`find-window.slint`, about line 181) sets `height: parent.height - root.query-status-height` but no `y`, so Slint centres it in the query area and moves it down by half the status line's height; the status line is placed at `y: parent.height - self.height`. The `midnight-ui` test `find_compact_status` checks that the status line is in view, not that the form ends above it. | `find_layout` › Touch compact: layout clean | Fixed: the Touch and Blue 700×340 checks (a clean layout, nothing overlapping; after a search the idle status in the query area with 24 px text, under the results otherwise, and in view; while a search runs, the query area hidden and the status under the results) pass on Linux (runs `20261122-100257`, `20261122-182452`) and Windows (runs `20261122-112449`, `20261122-165028`) |
 
 ## Opening Find and its windows
 
@@ -140,9 +140,9 @@ that verified it.
 | F-S05 | Large result lists; the 10,000 results | `tools_find_results` | every entry of `many/`; 10,000 rows | PASS |
 | F-S06 | Every column resized by dragging; a drag never sorts; the width is kept for the next search | `tools_find_criteria`, `find_layout` | widths; order; arrow | PASS |
 | F-S07 | Keys in the results; Left and Right scroll sideways | `find_result_actions`, `find_layout` | selected row; header position | PASS (the sideways part with the check adjusted on 21 November; also held on Windows in run 20261121-042048, [windows.md](windows.md)) |
-| F-S08 | Go to file by Enter, double click and button, for files and folders; the window stays open | `find_result_actions`, `find_by_mask` | panel folder and cursor | PASS |
+| F-S08 | Go to file by Enter, double click and button, for the cursor's result, files and folders; the window stays open | `find_result_actions`, `find_by_mask` | panel folder and cursor | PASS |
 | F-S09 | Open on a folder goes to it | `find_result_actions` | panel folder and cursor | PASS |
-| F-S10 | View, F3 and Alt+F3 open the selected file in a viewer (Markdown rendered, or its source) | `find_viewers`, `find_result_actions` | the viewer's text and mode; the request's file and plain-text choice | PASS |
+| F-S10 | View, F3 and Alt+F3 open the cursor's result in a viewer (Markdown rendered, or its source) | `find_viewers`, `find_result_actions` | the viewer's text and mode; the request's file and plain-text choice | PASS |
 | F-S11 | The viewer of a Find result shows only that file: Space walks no further | `find_viewers` | caption and text after Space | PASS |
 | F-S12 | Edit and F4 run the configured editor on the result | `find_result_actions` | the editor's copy has the file's bytes; "External editor started" | PASS |
 | F-S13 | Open reaches the native launcher | `find_result_actions` | "Desktop action failed" naming it unavailable (no launcher in the harness) | PASS |
@@ -151,7 +151,15 @@ that verified it.
 | F-S16 | The View and Edit tooltips name their keys | `find_result_actions` | tooltip texts | PASS |
 | F-S17 | A new, shorter result list after scrolling a long one shows its rows | `find_result_actions` | rows shown after the new search | PASS |
 | F-S18 | The result columns agree with the disk (extension, size or <DIR>, modified) | `find_result_actions` | every row of a search | PASS |
-| F-S19 | Copy details and the details page's Copy put the diagnostics on the clipboard | – | – | SKIP: the harness installs no clipboard service |
+| F-S19 | Copy details in the footer and Copy on the details page put the search's status, errors and counts on the clipboard, the same text both times | `find_result_actions` › Copy details | the copied text starts with the status line and holds the details' counts line; both copies equal | PASS (SKIP before: the clipboard was not installed) |
+| F-S20 | Several results selected: a click selects one, Ctrl+click toggles, Shift+click selects the range from the anchor (replacing), Ctrl+Shift+click adds the range; Up with Shift extends the range, Ctrl+Up moves the cursor alone; Space toggles the cursor's row, Insert toggles and moves down; Ctrl+A every result, Ctrl+D none (the cursor stays) | `find_result_actions` › several results selected | the selected rows (their accessible state) and the cursor's row (its drawn edge) after each step | PASS |
+| F-S21 | The status line counts the selection and sums its files: " · 1 selected · 10 B", " · 2 selected · 310 B", " · 2 selected · 1 B" with a folder; no " · … selected" without a selection | `find_result_actions` › several results selected | the status line's selection part | PASS |
+| F-S22 | Ctrl+C copies the selection's full paths, one per line in the order shown, when the cursor's row is in it, else the cursor's row alone (only that copy) | `find_result_actions` › several results selected | the in-process clipboard's text and its count of copies | PASS |
+| F-S23 | F3 with five results selected views the cursor's file only | `find_result_actions` › several results selected | the viewer request's file | PASS |
+| F-S24 | A re-sort keeps the selection (by Size and back to Name); a new search clears it | `find_result_actions` › several results selected | the selected names; the status line | PASS |
+| F-S25 | The context menu: Go to file, View, Edit, Open, Copy names, Copy full paths, Copy row details, Select all and Deselect all, the copies naming the count (" (2)") and the keys shown (Enter, F3, F4, Ctrl+C, Ctrl+A, Ctrl+D); it opens with Shift+F10, the Menu key and a right click; Escape closes only the menu; a right click on a selected row keeps the selection, on an unselected one selects it alone; on a folder View and Edit are disabled | `find_result_actions` › the results' context menu | the menu's entries, states and texts; the selection | PASS |
+| F-S26 | The menu's actions: Copy names, Copy full paths and Copy row details (name, extension, folder, size and modified, tab-separated) of the selection or of the row; View and Edit on its row; Select all, Deselect all; Go to file on a folder | `find_result_actions` › the results' context menu | the clipboard's text (one copy each), the viewer request, the editor's copy, the selection, the panel | PASS |
+| F-S27 | View rebound in Options (O-X04, here Ctrl+Alt+V in the settings): in the results the new key views the cursor's file and F3 does nothing; the View tooltip and the context menu name the new key | `find_result_actions` › a rebound View key | tooltip; the menu's key text; the viewer requests after F3 on one result and the new key on another | PASS (O-X04) |
 
 ## Stop
 
@@ -215,9 +223,12 @@ that verified it.
 | F-F13 | Refused keys and keypad keys explain themselves and change nothing | `find_feed_panel` | notice title and text per key; folder unchanged | PASS |
 | F-F14 | The toolbar, the function bar and the main menu refuse the same way | `find_feed_panel` | same | PASS |
 | F-F15 | A custom command from the toolbar is refused and does not run | `find_feed_panel` | notice; no marker file | PASS |
-| F-F16 | Copy and Cut to the clipboard | – | – | SKIP: the harness installs no clipboard service |
+| F-F16 | Ctrl+C and Ctrl+X put the marked results on the clipboard, to copy and to move | `find_feed_panel` › the Find selection carried to the list | the clipboard's files and intent | PASS (SKIP before: the clipboard was not installed) |
 | F-F17 | A Find from the right panel feeds the right panel | `find_feed_panel` | rows and title in the right panel | PASS |
 | F-F18 | In a viewer opened from the list, Space and Backspace walk the list's results; Alt+F3 shows the source | `find_viewers` | the viewer's text after each key | PASS |
+| F-F19 | The Find selection arrives as the list's marks: three results Ctrl+clicked (" · 3 selected · 11 B"), all six listed, exactly those marked ("3 of 6 selected · …"), the list's cursor on the Find's cursor result; F5's Copy dialog reads "Copy 3 files (11 B) to:", its source "Search results" (cancelled; before 142aa74b it named "3 selected search results"); after a plain click only, nothing is marked and the cursor is on that result | `find_feed_panel` › the Find selection carried to the list | marks, cursor, status, the dialog's text | PASS |
+| F-F20 | With no result chosen in the Find window, the list's cursor starts on its first row | `find_feed_panel` › the list | the list's cursor | PASS |
+| F-F21 | A viewer opened from the results keeps the content it captured when the file changes afterwards; a new View of the changed result is refused and opens nothing | `find_viewers` › from the results | the open viewer's text; the error line; the viewer count | PASS |
 
 ## Size, density and theme
 
@@ -226,8 +237,11 @@ that verified it.
 | F-L01 | No clipped or overlapping controls in Blue, Dark and Touch (24 px text) at the preferred, a narrow and a compact size | `find_layout` | the UI review's layout checks | PASS |
 | F-L02 | Narrow: Remove under Add; Browse… and OK under the typed path | `find_layout` | control positions | PASS |
 | F-L03 | Compact: the field is "Query"; a running search hides the query area; the idle status shows under the results | `find_layout` | label; field hidden; status under the results and in view | PASS (Blue compact) |
-| F-L04 | Compact with text over 20 px: the idle status moves into the query area and shows there | `find_layout` | status position; a status line in view after the search | FAIL: FIND-COMPACT-STATUS-OVERLAP (Linux run `20261121-144246`, Touch 700×340): the fix pinned the status to the query area's last line, where it is shown before the search, but it overlaps the scrolled form's last row by 11 px, and the layout check stopped the scenario before the after-search check. Before the fix (FIND-COMPACT-STATUS-HIDDEN, analysed on Windows on 21 November) the line was at the end of the scrolled form, out of view; the earlier "under the results" reading was a check defect (window coordinates instead of the clipping area). Windows run 20261121-042048, `find_layout/touch-700x340-idle.png` ([windows.md](windows.md)) |
+| F-L04 | Compact with text over 20 px: the idle status moves into the query area and shows there | `find_layout` | status position; a status line in view after the search | PASS (Linux `20261122-100257`, `20261122-182452`; Windows `20261122-112449`, `20261122-165028`). Before: FAIL with FIND-COMPACT-STATUS-OVERLAP (Linux run `20261121-144246`, Touch 700×340), and earlier FIND-COMPACT-STATUS-HIDDEN (Windows run 20261121-042048, [windows.md](windows.md)) |
 | F-L05 | A shortened Path cell keeps the last folder, as the fed list's Folder cells and other shortened paths do | `find_layout` | every shortened Path cell at 560 px shows its `/folder` tail | PASS |
+| F-L06 | The fitted footer: the buttons and the More… entries are the page's whole set once each (Find, Go to file, View, Edit, Open, Copy details; on the details page Find, Copy, Back); the actions in More… are the first ones of the order Copy details, Open, Edit, View, Go to file (details: Copy, Find); every button, More… and Close included, is whole in the window and 8 px from the next. At 1000×620 every action is a button; at 560×420 some move; at 320×200 the query page shows Find and More…, the details page Back and More… | `find_layout` › the footer and More… | the footer's buttons, the menu's entries (also those its short list scrolls out of view), rectangles; layout findings naming them | PASS |
+| F-L07 | More… from the keyboard: Tab reaches it, Space opens it, Enter runs its first action (Go to file, with a result under the cursor), Escape closes only the menu | `find_layout` › the footer and More… | focus; the panel at the result; the menu and window state | PASS |
+| F-L08 | The largest text (32 px) at 320×200: the query page shows Find and More…, the details page Back and More…, each whole and 8 px apart (on Linux Back used to be cut there; fitted footers since be086db9) | `find_layout` › the footer with 32 px text at 320×200 | as F-L06 | PASS (with be086db9) |
 
 ## Not offered by Find
 
@@ -246,5 +260,15 @@ that verified it.
   plugin set used for the record has no entry limits, so F-A14 searches an archive of
   120,000 members completely and requires its last member. Archives over 65,535 members
   are written with ZIP64 end records (`find_archives.rs`), as the format requires.
-- **Clipboard.** The harness installs no clipboard service, so the Copy actions are
-  skipped (F-S19, F-F16).
+- **Clipboard.** `find_result_actions` and `find_feed_panel` install the in-process
+  clipboard (`app::MemoryClipboard`, `Config::clipboard`) where the application installs
+  the desktop one. A copy is told apart from the one before it by the clipboard's count
+  of copies (`tools_support::clipboard_writes`, `wait_copied`), not by its text, so the
+  same text copied again still counts; "only this copy" checks a known copy made after
+  the action (the Engine takes the presenter's copies in order) instead of waiting a
+  fixed time.
+- **The cursor's row.** The results expose each row's selected state to accessibility,
+  not the cursor. `tools_support::cursor_row` reads it from the drawn list: the cursor's
+  row alone has the full-height stroke at its left edge (a selected row's square sits
+  in the middle of the edge only). Each check that reads it first confirms it on a row
+  just clicked.

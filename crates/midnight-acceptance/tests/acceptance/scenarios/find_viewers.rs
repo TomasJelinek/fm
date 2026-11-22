@@ -1,6 +1,8 @@
 //! Viewers opened from Find through the installed viewers (a staged process, see
 //! `viewers_stage`): View, F3 and Alt+F3 in the results open the selected file (Markdown
 //! rendered, or its plain text), and only that file: Space does not walk to another one;
+//! a viewer keeps the content it captured when the file changes afterwards (a new View
+//! of the changed result is refused);
 //! F3 and Alt+F3 in a fed list open the focused result, and Space and Backspace walk the
 //! list's results in its order.
 use crate::{
@@ -14,6 +16,7 @@ use crate::{
     tools_support as tools, viewers_stage,
     viewers_support::{self as support, Viewing},
 };
+use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
 use slint::platform::{Key, WindowAdapter};
 use std::{
@@ -57,7 +60,7 @@ fn run(context: &mut Context) -> Result<(), String> {
     config.plugins = Some(context.work.join("plugins"));
     let mut app = App::start(config);
     let mut findings = Findings::default();
-    findings.check("from the results", from_results(&mut app, context));
+    findings.check("from the results", from_results(&mut app, context, &root));
     find::reset(&mut app);
     findings.check("from a fed list", from_feed(&mut app, context, &root));
     find::reset(&mut app);
@@ -92,7 +95,7 @@ fn opened(
     Ok(viewing)
 }
 
-fn from_results(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn from_results(app: &mut App, context: &mut Context, root: &Path) -> Result<(), String> {
     let window = find::open_find(app)?;
     let w = window.window();
     let (text, rows) = search(
@@ -121,6 +124,36 @@ fn from_results(app: &mut App, context: &mut Context) -> Result<(), String> {
         "view-result",
         &format!("View on a Find result: {caption}"),
     );
+    // The viewer keeps what it captured: the file changes on disk, a new View of the
+    // result is refused (the file is no longer the one found), and the open viewer still
+    // shows the captured text, not the new one.
+    let plain = root.join("plain.txt");
+    tools::write_at(&plain, b"changed viewer text, longer\n", SystemTime::now())?;
+    let viewers_before = support::viewers_opened(app);
+    tools::click_last(w, "View")?;
+    find::wait_error(app, &window, "View of the changed result", |text| {
+        text.contains("plain.txt") || text.contains("changed")
+    })?;
+    let kept = viewing.text();
+    let reopened = support::viewers_opened(app) != viewers_before;
+    tools::write_at(&plain, b"plain viewer text\n", SystemTime::now())?;
+    if !kept.contains("plain viewer text") || kept.contains("changed viewer text") || reopened {
+        viewing.close(app)?;
+        return Err(format!(
+            "after plain.txt changed, the open viewer shows {kept:?} and a new View opened a viewer: {reopened}"
+        ));
+    }
+    // The viewer's tooltips are text-mode Tooltips (styled text): the harness reads them.
+    input::chord(viewing.slint(), &[Key::Control], "f");
+    app.settle();
+    let next = tools::control(viewing.slint(), AccessibleRole::Button, "Next match")?;
+    let tips = tools::hover_tooltip(app, viewing.slint(), &next);
+    if !tips.iter().any(|tip| tip == "Next match (F3)") {
+        viewing.close(app)?;
+        return Err(format!(
+            "hovering the viewer's Next match shows the tooltip texts {tips:?}, not \"Next match (F3)\""
+        ));
+    }
     viewing.click_content(app);
     input::key(viewing.slint(), Key::Space);
     app.idle(Duration::from_millis(500));

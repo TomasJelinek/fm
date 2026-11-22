@@ -5,7 +5,8 @@
 //! and a per-item command run from the menu on a multi-selection and on a folder shown
 //! only inside an expanded tree branch (verified on disk), the disabled command running
 //! nothing, and without commands the empty state whose Set up opens Options › Custom
-//! Commands.
+//! Commands. In a window narrower than 640 px the toolbar's commands are one "Custom
+//! commands" button whose bar runs a command and closes with Escape or a click outside.
 //!
 //! The commands are harmless programs writing into the scenario's `out` folder
 //! (`/bin/sh` with a literal script and `touch`), seeded into the settings before start.
@@ -305,6 +306,70 @@ fn expand(app: &mut App, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether the compact Custom commands popup (a bar of the commands over the window) is
+/// open: the main window has a popup holding the commands' buttons.
+fn commands_popup_open(app: &App) -> bool {
+    inspect::roots(app.slint()).len() > 1
+        && tools::popup_actions(app.slint())
+            .iter()
+            .any(|action| action.label == STAMP)
+}
+
+/// A window narrower than 640 px shows the Custom Commands toolbar as one "Custom
+/// commands" button: it opens the commands as a bar over the window; a command there
+/// runs (and closes the bar); Escape and a click outside the bar close it.
+fn compact_popup(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), String> {
+    let (width, height) = (app.width, app.height);
+    app.resize(600, 700);
+    app.settle();
+    let result = (|| -> Result<(), String> {
+        panel::select_row(app, LEFT, "alpha.txt")?;
+        let stamp = setup.out.join("alpha.txt.stamp");
+        let _ = fs::remove_file(&stamp);
+        if tools::has(app.slint(), AccessibleRole::Button, STAMP) {
+            return Err(format!(
+                "at 600 px the toolbar still shows {STAMP:?} itself"
+            ));
+        }
+        input::click_button(app.slint(), "Custom commands")?;
+        wait(
+            app,
+            "the Custom commands popup to open",
+            commands_popup_open,
+        )?;
+        app.screenshot(context, "compact-commands", "Custom commands at 600 px");
+        input::click_button(app.slint(), STAMP)?;
+        let missing = wait_files(app, std::slice::from_ref(&stamp));
+        if !missing.is_empty() {
+            return Err(format!(
+                "{STAMP:?} from the popup created no {}",
+                stamp.display()
+            ));
+        }
+        wait(app, "the popup to close after running a command", |app| {
+            !commands_popup_open(app)
+        })?;
+        // Escape closes it.
+        input::click_button(app.slint(), "Custom commands")?;
+        wait(app, "the popup to open again", commands_popup_open)?;
+        input::key(app.slint(), Key::Escape);
+        wait(app, "Escape to close the popup", |app| {
+            !commands_popup_open(app)
+        })?;
+        // A click outside the bar closes it.
+        input::click_button(app.slint(), "Custom commands")?;
+        wait(app, "the popup to open once more", commands_popup_open)?;
+        let below = app.height as f32 - 40.0;
+        input::click_at(app.slint(), LogicalPosition::new(300.0, below));
+        wait(app, "a click outside the bar to close the popup", |app| {
+            !commands_popup_open(app)
+        })
+    })();
+    app.resize(width, height);
+    app.settle();
+    result
+}
+
 pub fn user_menu(context: &mut Context) -> Result<(), String> {
     let root = context.work.join("user-menu");
     let setup = Setup {
@@ -535,6 +600,9 @@ pub fn user_menu(context: &mut Context) -> Result<(), String> {
         "user-menu-tree",
         "Custom Commands run on a tree row",
     );
+    if let Err(error) = compact_popup(&mut app, context, &setup) {
+        failures.push(format!("the compact Custom commands popup: {error}"));
+    }
     app.shutdown()?;
     drop(app);
 

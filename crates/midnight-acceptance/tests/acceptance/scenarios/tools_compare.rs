@@ -3,9 +3,11 @@
 //! included. Compare closes the dialog at once, the differences become each panel's
 //! selection and no result message appears; invalid options are reported in the
 //! dialog, which stays open. A long content comparison (two 24 GiB sparse files) shows
-//! its progress on the status line, refuses Create folder with the reason while it
-//! runs, shows its progress and Cancel in the reopened dialog, and Cancel ends it
-//! without selecting anything; the next comparison runs normally.
+//! its progress on the status line, refuses Create folder, Rename, New file, Delete,
+//! Copy, Paste and Show hidden files with the reason while it runs, shows its progress
+//! and Cancel in the reopened dialog, and Cancel ends it without selecting anything; the
+//! next comparison runs normally; the toolbar's button opens the dialog, and Escape in it
+//! cancels a running comparison, selecting nothing.
 use crate::{
     Context,
     app::{App, Config},
@@ -732,7 +734,8 @@ fn running(context: &mut Context, root: &Path) -> Result<(), String> {
         "running-progress",
         &format!("A running content comparison: {progress}"),
     );
-    // Create folder is refused with the reason while it runs.
+    // Create folder is refused with the reason while it runs, and so is every other
+    // action that changes the compared folders or what they show.
     panel::focus_list(&mut app, PaneId::Left)?;
     input::key(app.slint(), Key::F7);
     app.settle();
@@ -749,6 +752,50 @@ fn running(context: &mut Context, root: &Path) -> Result<(), String> {
                 "F7 during the comparison: notice {other:?}, expected the refusal"
             ));
         }
+    }
+    panel::select_row(&mut app, PaneId::Left, "big.bin")?;
+    let mut refused = Vec::new();
+    for (modifiers, key, how) in [
+        (&[][..], slint::SharedString::from(Key::F2), "F2"),
+        (&[Key::Shift][..], Key::F4.into(), "Shift+F4"),
+        (&[][..], Key::Delete.into(), "Delete"),
+        (&[][..], Key::F5.into(), "F5"),
+        (&[Key::Control][..], "v".into(), "Ctrl+V"),
+        (&[Key::Control][..], "h".into(), "Ctrl+H"),
+    ] {
+        input::chord(app.slint(), modifiers, key);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let notice = loop {
+            app.settle();
+            if let Some(notice) = tools::shown_notice(&app) {
+                break Some(notice);
+            }
+            // A dialog instead of the refusal: report it, then close it.
+            if !app.window.get_copy_draft_token().is_empty()
+                || !app.window.get_operation_token().is_empty()
+                || std::time::Instant::now() >= deadline
+            {
+                break None;
+            }
+            app.idle(Duration::from_millis(20));
+        };
+        match notice {
+            Some((title, _)) if title == "Directory comparison running" => refused.push(how),
+            other => {
+                let dialog = !app.window.get_copy_draft_token().is_empty()
+                    || !app.window.get_operation_token().is_empty();
+                input::key(app.slint(), Key::Escape);
+                app.settle();
+                return Err(format!(
+                    "{how} during the comparison: notice {other:?}, a dialog open {dialog}; expected the refusal \"Directory comparison running\""
+                ));
+            }
+        }
+        input::key(app.slint(), Key::Escape);
+        app.until("the refusal to close", |app| {
+            tools::shown_notice(app).is_none()
+        });
+        panel::focus_list(&mut app, PaneId::Left)?;
     }
     // The reopened dialog shows the progress and Cancel; Cancel ends the comparison.
     panel::focus_list(&mut app, PaneId::Left)?;
@@ -780,8 +827,45 @@ fn running(context: &mut Context, root: &Path) -> Result<(), String> {
     // The next comparison runs normally: equal size and time, nothing differs.
     let both = compare(&mut app, DEFAULTS)?;
     expect("after a cancelled comparison", &both, &[], &[])?;
+    // The toolbar's Compare directories opens the dialog too; Escape in the dialog of a
+    // running comparison cancels it, and nothing is selected.
+    panel::focus_list(&mut app, PaneId::Left)?;
+    let main = app.main.clone();
+    input::click_button(main.window(), "Compare directories")?;
+    app.until(
+        "the toolbar's Compare directories to open the dialog",
+        |app| app.window.get_comparison_view().open,
+    );
+    set_options(
+        &mut app,
+        Options {
+            contents: true,
+            ..DEFAULTS
+        },
+    )?;
+    click_compare(&app)?;
+    app.until("the second long comparison to run", |app| {
+        app.window
+            .get_desktop_status()
+            .starts_with("Comparing contents:")
+    });
+    panel::focus_list(&mut app, PaneId::Left)?;
+    input::chord(app.slint(), &[Key::Control], Key::F10);
+    app.until("the dialog of the running comparison", |app| {
+        app.window.get_comparison_view().open && app.window.get_comparison_view().busy
+    });
+    input::key(main.window(), Key::Escape);
+    app.until("Escape to cancel the comparison", |app| {
+        !app.window.get_comparison_view().busy && !app.window.get_comparison_view().open
+    });
+    let both = [selected(&app, PaneId::Left), selected(&app, PaneId::Right)];
+    if !both[0].is_empty() || !both[1].is_empty() {
+        return Err(format!(
+            "a comparison cancelled with Escape selected {both:?}"
+        ));
+    }
     context.note(format!(
-        "Long comparison: {progress:?}; refused F7: {refusal:?}"
+        "Long comparison: {progress:?}; refused F7: {refusal:?}, and {refused:?}; the toolbar button opened the dialog; Escape cancelled a running comparison, nothing selected"
     ));
     app.shutdown()
 }

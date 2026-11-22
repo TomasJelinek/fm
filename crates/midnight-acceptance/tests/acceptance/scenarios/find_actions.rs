@@ -1,12 +1,16 @@
 //! Find's results and what they act on: every column sorted in both directions against
 //! known orders (folders first and missing extensions last under Extension, equal keys
 //! by path), the Name order of mixed-case and accented names equal to the panel's;
-//! keyboard selection in the results; Go to file by Enter, double click and button, for
-//! files and folders, and Open on a folder; View, F3 and Alt+F3 capture the selected
-//! file for the viewer (folders cannot be viewed or edited); Edit and F4 run the
-//! configured editor on the result; Open reaches the native launcher; a result deleted
-//! or changed after the search is refused with its reason, the panel unmoved; Stop keeps
-//! the results found so far, sorted, and a new search replaces them.
+//! several results selected (clicks with Ctrl and Shift, the arrows with Shift and Ctrl,
+//! Space, Insert, Ctrl+A, Ctrl+D), the status's count and size, Ctrl+C and the context
+//! menu's copies on the selection or the row (read from the in-process clipboard), a
+//! re-sort keeping the selection and a new search clearing it; keyboard selection in the
+//! results; Go to file by Enter, double click and button, for files and folders, and
+//! Open on a folder; View, F3 and Alt+F3 capture the cursor's file for the viewer
+//! (folders cannot be viewed or edited); Edit and F4 run the configured editor on the
+//! result; Open reaches the native launcher; Copy details; a result deleted or changed
+//! after the search is refused with its reason, the panel unmoved; Stop keeps the results
+//! found so far, sorted, and a new search replaces them; View rebound to another key.
 use crate::{
     Context,
     app::{App, Config},
@@ -27,6 +31,7 @@ use slint::{
 };
 use std::{
     cell::RefCell,
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -108,9 +113,23 @@ pub fn result_actions(context: &mut Context) -> Result<(), String> {
     let mut config = Config::new(&setup.act, &setup.collate);
     config.settings = Some(store);
     config.editor = true;
+    // Ctrl+C, the menu's copies and Copy details reach the in-process clipboard.
+    config.clipboard = true;
     let mut app = App::start(config);
     let launched = record_launches(&app);
     let mut findings = Findings::default();
+    findings.check(
+        "several results selected",
+        multi_selection(&mut app, context, &setup, &launched),
+    );
+    find::reset(&mut app);
+    findings.check(
+        "the results' context menu",
+        context_menu(&mut app, context, &setup, &launched),
+    );
+    find::reset(&mut app);
+    findings.check("Copy details", copy_details(&mut app));
+    find::reset(&mut app);
     findings.check("sorting", sorting(&mut app, context, &setup));
     find::reset(&mut app);
     findings.check("collation", collation(&mut app, &setup));
@@ -135,8 +154,624 @@ pub fn result_actions(context: &mut Context) -> Result<(), String> {
     findings.check("Stop", stop(&mut app, context, &setup));
     find::reset(&mut app);
     app.shutdown()?;
-    context.note("Every column sorted both ways (folders first, missing extensions last, ties by path); Name order equals the panel's; Home/End/Up/Down/Page Down in the results; Go to file by Enter, double click and button, for files and folders, Open on a folder; View/F3/Alt+F3 captures and Edit/F4 runs the editor on the result; Open reaches the launcher; deleted and changed results refused; Stop keeps 20 results, sorted");
+    findings.check("a rebound View key", rebound_view(context, &setup));
+    context.note("Every column sorted both ways (folders first, missing extensions last, ties by path); Name order equals the panel's; Home/End/Up/Down/Page Down in the results; several results selected by click, Ctrl/Shift/Ctrl+Shift+click, Shift/Ctrl with the arrows, Space, Insert, Ctrl+A and Ctrl+D, with the status's count and size, kept by a re-sort and cleared by a new search; Ctrl+C and the context menu's copies (names, full paths, row details) on the selection or the row; Go to file by Enter, double click and button, for files and folders, Open on a folder; View/F3/Alt+F3 captures and Edit/F4 runs the editor on the cursor's result; Open reaches the launcher; Copy details; deleted and changed results refused; Stop keeps 20 results, sorted; View rebound in Options works in the results and its hints follow");
     findings.into_result()
+}
+
+const LIST: &str = "Find results";
+/// The `act` results in Name order.
+const NAMES: [&str; 8] = [
+    "alpha.txt",
+    "beta.log",
+    "delta",
+    "epsilon.txt",
+    "gamma.md",
+    "sub",
+    "zeta.rs",
+    "zfolder.d",
+];
+
+/// The full path of an `act` result by its name.
+fn act_path(setup: &Setup, name: &str) -> PathBuf {
+    match name {
+        "epsilon.txt" | "zeta.rs" => setup.act.join("sub").join(name),
+        other => setup.act.join(other),
+    }
+}
+
+/// A search of `*.*` over `act`, waited until its rows are in Name order.
+fn search_act(app: &mut App) -> Result<Tool, String> {
+    let window = find::open_find(app)?;
+    let (text, _) = search(app, &window, BASE)?;
+    if !text.starts_with("Completed") {
+        return Err(format!("*.* ended {text:?}"));
+    }
+    find::wait_names(app, &window, &NAMES, "Name ascending")?;
+    Ok(window)
+}
+
+/// Click the result `name`, with `modifiers` held (Ctrl, Shift or both).
+fn click_result(app: &mut App, window: &Tool, modifiers: &[Key], name: &str) -> Result<(), String> {
+    let (_, (x, y, width, height)) = find::reveal_row(app, window, |row| row.name == name)
+        .map_err(|error| format!("result {name}: {error}"))?;
+    input::click_with(
+        window.window(),
+        modifiers,
+        LogicalPosition::new(x + width.min(160.0) / 2.0, y + height / 2.0),
+    );
+    app.settle();
+    Ok(())
+}
+
+/// The selection as the results show it: the selected names, the cursor's row and the
+/// status line's selection part (" · 2 selected · 310 B", empty without one).
+fn selection_state(window: &Tool) -> (Vec<String>, Option<String>, String) {
+    let status = status(window);
+    // The progress never says "selected": the part starts at the " · " before it.
+    let part = status
+        .find(" selected")
+        .and_then(|end| status[..end].rfind(" · "))
+        .map(|start| status[start..].to_owned())
+        .unwrap_or_default();
+    (
+        tools::selected_names(window, LIST),
+        tools::cursor_row(window, LIST).map(|row| row.name().to_owned()),
+        part,
+    )
+}
+
+/// Check the selection after `what`: these names selected, the cursor on `cursor`, the
+/// status's selection part starting with `status` (" · N selected", or empty).
+fn expect_selection(
+    window: &Tool,
+    what: &str,
+    selected: &[&str],
+    cursor: &str,
+    status: &str,
+) -> Result<(), String> {
+    let (names, at, part) = selection_state(window);
+    let status_ok = if status.is_empty() {
+        part.is_empty()
+    } else {
+        part.starts_with(status)
+    };
+    if names != selected || at.as_deref() != Some(cursor) || !status_ok {
+        return Err(format!(
+            "{what}: selected {names:?}, cursor {at:?}, status part {part:?}; expected {selected:?}, the cursor on {cursor}, status {status:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Several results selected at once, as in a panel: a click selects one, Ctrl+click
+/// toggles, Shift+click selects the range from the anchor and Ctrl+Shift+click adds it;
+/// the arrows select the row they reach, with Shift the range, with Ctrl the cursor alone;
+/// Space toggles, Insert toggles and moves down; Ctrl+A and Ctrl+D. The status counts
+/// the selection and sums its files. Ctrl+C copies the selection's full paths when the
+/// cursor's row is in it, else that row's; F3 views the cursor's file only. A re-sort
+/// keeps the selection and a new search clears it.
+fn multi_selection(
+    app: &mut App,
+    context: &mut Context,
+    setup: &Setup,
+    launched: &Rc<RefCell<Vec<Launched>>>,
+) -> Result<(), String> {
+    let window = search_act(app)?;
+    let w = window.window();
+    click_result(app, &window, &[], "alpha.txt")?;
+    // The cursor is read from the drawn list (its row's edge stroke); after a plain click
+    // it must be on the clicked row, or the reading cannot be trusted.
+    expect_selection(
+        &window,
+        "a click on alpha.txt",
+        &["alpha.txt"],
+        "alpha.txt",
+        " · 1 selected · 10 B",
+    )?;
+    click_result(app, &window, &[Key::Control], "beta.log")?;
+    expect_selection(
+        &window,
+        "Ctrl+click beta.log",
+        &["alpha.txt", "beta.log"],
+        "beta.log",
+        " · 2 selected · 310 B",
+    )?;
+    app.screenshot_window(context, &window, "two-selected", "Two results selected");
+    click_result(app, &window, &[Key::Shift], "epsilon.txt")?;
+    expect_selection(
+        &window,
+        "Shift+click epsilon.txt (the range from beta.log)",
+        &["beta.log", "delta", "epsilon.txt"],
+        "epsilon.txt",
+        " · 3 selected",
+    )?;
+    click_result(app, &window, &[Key::Control], "zeta.rs")?;
+    click_result(app, &window, &[Key::Control, Key::Shift], "sub")?;
+    expect_selection(
+        &window,
+        "Ctrl+click zeta.rs, then Ctrl+Shift+click sub (a range added)",
+        &["beta.log", "delta", "epsilon.txt", "sub", "zeta.rs"],
+        "sub",
+        " · 5 selected",
+    )?;
+    click_result(app, &window, &[Key::Shift], "zfolder.d")?;
+    expect_selection(
+        &window,
+        "Shift+click zfolder.d (the range from zeta.rs, replacing the selection)",
+        &["zeta.rs", "zfolder.d"],
+        "zfolder.d",
+        " · 2 selected · 1 B",
+    )?;
+    // The arrows.
+    for (modifiers, key, selected, cursor, what) in [
+        (&[][..], Key::UpArrow, &["zeta.rs"][..], "zeta.rs", "Up"),
+        (
+            &[Key::Shift][..],
+            Key::UpArrow,
+            &["sub", "zeta.rs"][..],
+            "sub",
+            "Shift+Up",
+        ),
+        (
+            &[Key::Shift][..],
+            Key::UpArrow,
+            &["gamma.md", "sub", "zeta.rs"][..],
+            "gamma.md",
+            "Shift+Up again",
+        ),
+        (
+            &[Key::Control][..],
+            Key::UpArrow,
+            &["gamma.md", "sub", "zeta.rs"][..],
+            "epsilon.txt",
+            "Ctrl+Up (the cursor alone)",
+        ),
+    ] {
+        input::chord(w, modifiers, key);
+        app.settle();
+        expect_selection(
+            &window,
+            what,
+            selected,
+            cursor,
+            &format!(" · {} selected", selected.len()),
+        )?;
+    }
+    input::key(w, " ");
+    app.settle();
+    expect_selection(
+        &window,
+        "Space (toggles the cursor's row)",
+        &["epsilon.txt", "gamma.md", "sub", "zeta.rs"],
+        "epsilon.txt",
+        " · 4 selected",
+    )?;
+    input::chord(w, &[Key::Control], Key::UpArrow);
+    input::key(w, Key::Insert);
+    app.settle();
+    let five = ["delta", "epsilon.txt", "gamma.md", "sub", "zeta.rs"];
+    expect_selection(
+        &window,
+        "Ctrl+Up, Insert (toggles and moves down)",
+        &five,
+        "epsilon.txt",
+        " · 5 selected",
+    )?;
+    // Ctrl+C on a selected cursor row: the selection's full paths, in the order shown.
+    let before = tools::clipboard_writes(app);
+    input::chord(w, &[Key::Control], "c");
+    let text = tools::wait_copied(app, before, "Ctrl+C on the selection")?;
+    let wanted = five
+        .iter()
+        .map(|name| act_path(setup, name).display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text != wanted {
+        return Err(format!(
+            "Ctrl+C on five selected results copied {text:?}, expected {wanted:?}"
+        ));
+    }
+    // On a cursor row outside the selection: that row's path alone.
+    input::chord(w, &[Key::Control], Key::Home);
+    app.settle();
+    expect_selection(&window, "Ctrl+Home", &five, "alpha.txt", " · 5 selected")?;
+    let before = tools::clipboard_writes(app);
+    input::chord(w, &[Key::Control], "c");
+    tools::only_copy(
+        app,
+        before,
+        &act_path(setup, "alpha.txt").display().to_string(),
+        "Ctrl+C on an unselected cursor row",
+    )?;
+    // F3 with five selected views the cursor's file, and only it.
+    for _ in 0..2 {
+        input::chord(w, &[Key::Control], Key::DownArrow);
+    }
+    app.settle();
+    expect_selection(&window, "Ctrl+Down twice", &five, "delta", " · 5 selected")?;
+    let before = launched.borrow().len();
+    input::key(w, Key::F3);
+    let launch = find::wait_launch(app, launched, before, "F3 with five results selected")?;
+    if launch.path != act_path(setup, "delta") || !launch.captured {
+        return Err(format!(
+            "F3 with five results selected and the cursor on delta asked for {launch:?}"
+        ));
+    }
+    // Ctrl+A and Ctrl+D; the cursor stays.
+    input::chord(w, &[Key::Control], "a");
+    app.settle();
+    expect_selection(&window, "Ctrl+A", &NAMES, "delta", " · 8 selected · ")?;
+    input::chord(w, &[Key::Control], "d");
+    app.settle();
+    expect_selection(&window, "Ctrl+D", &[], "delta", "")?;
+    // A re-sort keeps the selection; the rows move.
+    click_result(app, &window, &[], "alpha.txt")?;
+    click_result(app, &window, &[Key::Control], "gamma.md")?;
+    // Sorted by Size (the order itself is `sorting`'s check): the rows move.
+    input::click_button(w, "Sort by Size")?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let names: Vec<String> = all_rows(app, &window)?
+            .into_iter()
+            .map(|row| row.name)
+            .collect();
+        if names != NAMES
+            && inspect::visible_texts(w)
+                .iter()
+                .any(|text| text == "Size ↑")
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("Sort by Size left the rows {names:?}"));
+        }
+        app.idle(Duration::from_millis(50));
+    }
+    let after: BTreeSet<String> = tools::selected_names(&window, LIST).into_iter().collect();
+    input::click_button(w, "Sort by Name")?;
+    find::wait_names(app, &window, &NAMES, "Name ascending again")?;
+    let back = tools::selected_names(&window, LIST);
+    if after != find::set(&["alpha.txt", "gamma.md"]) || back != ["alpha.txt", "gamma.md"] {
+        return Err(format!(
+            "a re-sort changed the selection: by Size {after:?}, by Name again {back:?}"
+        ));
+    }
+    // A new search clears it.
+    let text = find::run(app, &window)?;
+    find::wait_names(app, &window, &NAMES, "the new search")?;
+    let (names, _, part) = selection_state(&window);
+    if !names.is_empty() || !part.is_empty() {
+        return Err(format!(
+            "after a new search ({text:?}) selected {names:?}, status part {part:?}"
+        ));
+    }
+    find::close(app, &window);
+    Ok(())
+}
+
+/// The results' context menu: Go to file, View, Edit, Open, Copy names, Copy full paths,
+/// Copy row details, Select all and Deselect all, its copies counting the selection; it
+/// opens with Shift+F10, the Menu key and a right click, which first selects an
+/// unselected row alone; Escape closes only the menu; on a folder View and Edit are
+/// disabled; each entry does what it says.
+fn context_menu(
+    app: &mut App,
+    context: &mut Context,
+    setup: &Setup,
+    launched: &Rc<RefCell<Vec<Launched>>>,
+) -> Result<(), String> {
+    let window = search_act(app)?;
+    let w = window.window();
+    let rows: Vec<Row> = all_rows(app, &window)?;
+    click_result(app, &window, &[], "beta.log")?;
+    click_result(app, &window, &[Key::Control], "gamma.md")?;
+    let entries = |count: &str| -> Vec<String> {
+        vec![
+            "Go to file".to_owned(),
+            "View".to_owned(),
+            "Edit".to_owned(),
+            "Open".to_owned(),
+            format!("Copy names{count}"),
+            format!("Copy full paths{count}"),
+            format!("Copy row details{count}"),
+            "Select all".to_owned(),
+            "Deselect all".to_owned(),
+        ]
+    };
+    let opened = tools::context_menu(app, w, tools::MenuBy::ShiftF10)?;
+    let labels: Vec<String> = opened.iter().map(|action| action.label.clone()).collect();
+    app.screenshot_window(
+        context,
+        &window,
+        "context-menu",
+        "The results' context menu on two selected results",
+    );
+    if labels != entries(" (2)") || opened.iter().any(|action| !action.enabled) {
+        input::key(w, Key::Escape);
+        app.settle();
+        return Err(format!(
+            "Shift+F10 on two selected files offers {:?}",
+            opened
+                .iter()
+                .map(|action| (&action.label, action.enabled))
+                .collect::<Vec<_>>()
+        ));
+    }
+    // The shortcuts beside the entries.
+    let texts = inspect::visible_texts(w);
+    for key in ["Enter", "F3", "F4", "Ctrl+C", "Ctrl+A", "Ctrl+D"] {
+        if !texts.iter().any(|text| text == key) {
+            input::key(w, Key::Escape);
+            app.settle();
+            return Err(format!(
+                "the context menu does not show the key {key:?}: {texts:?}"
+            ));
+        }
+    }
+    let before = tools::clipboard_writes(app);
+    tools::choose(app, w, "Copy names (2)")?;
+    tools::only_copy(app, before, "beta.log\ngamma.md", "Copy names (2)")?;
+    if tools::popup_open(w) {
+        return Err("the context menu stays open after Copy names".into());
+    }
+    let paths = |names: &[&str]| -> String {
+        names
+            .iter()
+            .map(|name| act_path(setup, name).display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    tools::context_menu(app, w, tools::MenuBy::MenuKey)?;
+    let before = tools::clipboard_writes(app);
+    tools::choose(app, w, "Copy full paths (2)")?;
+    tools::only_copy(
+        app,
+        before,
+        &paths(&["beta.log", "gamma.md"]),
+        "Copy full paths (2)",
+    )?;
+    // A right click on a selected row keeps the selection: the row details of both, the
+    // columns separated by tabs as the rows show them.
+    let (_, (x, y, width, height)) = find::reveal_row(app, &window, |row| row.name == "gamma.md")?;
+    let gamma = LogicalPosition::new(x + width.min(160.0) / 2.0, y + height / 2.0);
+    tools::context_menu(app, w, tools::MenuBy::Pointer(gamma))?;
+    let before = tools::clipboard_writes(app);
+    tools::choose(app, w, "Copy row details (2)")?;
+    let text = tools::wait_copied(app, before, "Copy row details (2)")?;
+    let wanted: Vec<String> = ["beta.log", "gamma.md"]
+        .iter()
+        .map(|name| {
+            let row = rows.iter().find(|row| row.name == *name);
+            let path = act_path(setup, name);
+            format!(
+                "{name}\t{}\t{}\t{}\t{}",
+                path.extension()
+                    .map(|value| value.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path.parent()
+                    .map(|parent| parent.display().to_string())
+                    .unwrap_or_default(),
+                row.map(|row| row.size.clone()).unwrap_or_default(),
+                row.map(|row| row.modified.clone()).unwrap_or_default(),
+            )
+        })
+        .collect();
+    if text != wanted.join("\n") {
+        return Err(format!(
+            "Copy row details (2) copied {text:?}, expected {:?}",
+            wanted.join("\n")
+        ));
+    }
+    // Escape closes the menu only.
+    tools::context_menu(app, w, tools::MenuBy::ShiftF10)?;
+    input::key(w, Key::Escape);
+    app.settle();
+    if tools::popup_open(w) || !w.is_visible() {
+        return Err(format!(
+            "Escape in the context menu: menu open {}, Find window shown {}",
+            tools::popup_open(w),
+            w.is_visible()
+        ));
+    }
+    // A right click on an unselected row selects it alone; its copies name no count.
+    let (_, (x, y, width, height)) = find::reveal_row(app, &window, |row| row.name == "alpha.txt")?;
+    let labels: Vec<String> = tools::context_menu(
+        app,
+        w,
+        tools::MenuBy::Pointer(LogicalPosition::new(
+            x + width.min(160.0) / 2.0,
+            y + height / 2.0,
+        )),
+    )?
+    .into_iter()
+    .map(|action| action.label)
+    .collect();
+    let selected = tools::selected_names(&window, LIST);
+    if labels != entries("") || selected != ["alpha.txt"] {
+        input::key(w, Key::Escape);
+        app.settle();
+        return Err(format!(
+            "a right click on the unselected alpha.txt: selected {selected:?}, menu {labels:?}"
+        ));
+    }
+    let before = tools::clipboard_writes(app);
+    tools::choose(app, w, "Copy names")?;
+    tools::only_copy(app, before, "alpha.txt", "Copy names on alpha.txt")?;
+    // View and Edit from the menu act on its row.
+    let before = launched.borrow().len();
+    tools::context_menu(app, w, tools::MenuBy::ShiftF10)?;
+    tools::choose(app, w, "View")?;
+    let launch = find::wait_launch(app, launched, before, "the menu's View")?;
+    if launch.path != act_path(setup, "alpha.txt") || !launch.captured || launch.basic {
+        return Err(format!("the menu's View on alpha.txt asked for {launch:?}"));
+    }
+    let copy = setup.edited.join("alpha.txt");
+    let _ = fs::remove_file(&copy);
+    tools::context_menu(app, w, tools::MenuBy::ShiftF10)?;
+    tools::choose(app, w, "Edit")?;
+    crate::options_support::wait_file(app, &copy, "the menu's Edit on alpha.txt")?;
+    // Select all and Deselect all.
+    tools::context_menu(app, w, tools::MenuBy::ShiftF10)?;
+    tools::choose(app, w, "Select all")?;
+    if tools::selected_names(&window, LIST) != NAMES {
+        return Err(format!(
+            "the menu's Select all selected {:?}",
+            tools::selected_names(&window, LIST)
+        ));
+    }
+    tools::context_menu(app, w, tools::MenuBy::ShiftF10)?;
+    tools::choose(app, w, "Deselect all")?;
+    if !tools::selected_names(&window, LIST).is_empty() {
+        return Err(format!(
+            "the menu's Deselect all left {:?} selected",
+            tools::selected_names(&window, LIST)
+        ));
+    }
+    // On a folder: View and Edit disabled; Go to file goes there.
+    let (_, (x, y, width, height)) = find::reveal_row(app, &window, |row| row.name == "zfolder.d")?;
+    let opened = tools::context_menu(
+        app,
+        w,
+        tools::MenuBy::Pointer(LogicalPosition::new(
+            x + width.min(160.0) / 2.0,
+            y + height / 2.0,
+        )),
+    )?;
+    let states: Vec<(String, bool)> = opened
+        .iter()
+        .map(|action| (action.label.clone(), action.enabled))
+        .collect();
+    let disabled: Vec<&str> = states
+        .iter()
+        .filter(|(_, enabled)| !enabled)
+        .map(|(label, _)| label.as_str())
+        .collect();
+    if disabled != ["View", "Edit"] {
+        input::key(w, Key::Escape);
+        app.settle();
+        return Err(format!(
+            "on the folder zfolder.d the menu's states are {states:?}"
+        ));
+    }
+    tools::choose(app, w, "Go to file")?;
+    find::wait_cursor(app, PaneId::Left, &setup.act, "zfolder.d");
+    find::close(app, &window);
+    Ok(())
+}
+
+/// Copy details in the footer, and Copy on the details page, put the search's progress,
+/// errors and counts on the clipboard.
+fn copy_details(app: &mut App) -> Result<(), String> {
+    let window = search_act(app)?;
+    let w = window.window();
+    let line = status(&window);
+    let before = tools::clipboard_writes(app);
+    let footer = tools::footer_actions(app, w, "Close")?;
+    let button = footer
+        .buttons
+        .iter()
+        .find(|action| action.label == "Copy details")
+        .ok_or_else(|| format!("the footer shows no Copy details: {:?}", footer.labels()))?;
+    let (x, y, width, height) = button.rect;
+    input::click_at(w, LogicalPosition::new(x + width / 2.0, y + height / 2.0));
+    let footer_text = tools::wait_copied(app, before, "the footer's Copy details")?;
+    let details = find::details(app, &window)?;
+    // The counts line: the page may wrap paths in its later lines for display.
+    let counts = details
+        .iter()
+        .flat_map(|text| text.lines())
+        .find(|line| line.contains(" files · ") && line.contains(" content bytes"))
+        .map(str::to_owned)
+        .ok_or_else(|| format!("the details page shows no counts: {details:?}"))?;
+    if !footer_text.starts_with(&line) || !footer_text.contains(&counts) {
+        return Err(format!(
+            "the footer's Copy details copied {footer_text:?}, not the status {line:?} and the counts {counts:?}"
+        ));
+    }
+    // The details page's Copy.
+    let item = tools::control(w, AccessibleRole::Button, &line)?;
+    input::click_at(w, inspect::center(&item));
+    app.settle();
+    let before = tools::clipboard_writes(app);
+    tools::click_last(w, "Copy")?;
+    let page_text = tools::wait_copied(app, before, "the details page's Copy")?;
+    input::click_button(w, "Back")?;
+    app.settle();
+    if page_text != footer_text {
+        return Err(format!(
+            "the details page's Copy copied {page_text:?}, the footer's Copy details {footer_text:?}"
+        ));
+    }
+    find::close(app, &window);
+    Ok(())
+}
+
+/// View rebound in Options (here seeded in the settings, `files.view` = Ctrl+Alt+V): in
+/// the results the new key views the cursor's file and F3 does nothing; the View button's
+/// tooltip and the context menu name the new key.
+fn rebound_view(context: &mut Context, setup: &Setup) -> Result<(), String> {
+    let store = SettingsStore::seeded(|preferences| {
+        preferences.shortcuts = vec![midnight_core::ShortcutBinding {
+            action: "files.view".into(),
+            keys: vec!["Ctrl+Alt+V".into()],
+        }];
+    });
+    let mut config = Config::new(&setup.act, &setup.collate);
+    config.settings = Some(store);
+    let mut app = App::start(config);
+    let launched = record_launches(&app);
+    let result = (|| -> Result<(), String> {
+        let window = find::open_find(&mut app)?;
+        let w = window.window();
+        let (text, _) = search(&mut app, &window, BASE)?;
+        if !text.starts_with("Completed") {
+            return Err(format!("*.* ended {text:?}"));
+        }
+        select_result(&mut app, &window, "alpha.txt", None)?;
+        let item = tools::control(w, AccessibleRole::Button, "View")?;
+        let tips = tools::hover_tooltip(&mut app, w, &item);
+        if !tips
+            .iter()
+            .any(|tip| tip.contains("Ctrl+Alt+V") && !tip.contains("(F3)"))
+        {
+            return Err(format!(
+                "with View on Ctrl+Alt+V its tooltip reads {tips:?}"
+            ));
+        }
+        tools::context_menu(&mut app, w, tools::MenuBy::ShiftF10)?;
+        let texts = inspect::visible_texts(w);
+        input::key(w, Key::Escape);
+        app.settle();
+        if !texts.iter().any(|text| text == "Ctrl+Alt+V") || texts.iter().any(|text| text == "F3") {
+            return Err(format!("the context menu shows {texts:?} beside View"));
+        }
+        // F3 on alpha.txt views nothing; the new key on gamma.md views it, and it is the
+        // only viewer asked for (a viewer of alpha.txt would come first).
+        let before = launched.borrow().len();
+        input::key(w, Key::F3);
+        app.settle();
+        select_result(&mut app, &window, "gamma.md", None)?;
+        input::chord(w, &[Key::Control, Key::Alt], "v");
+        let launch = find::wait_launch(&mut app, &launched, before, "Ctrl+Alt+V in the results")?;
+        if launch.path != act_path(setup, "gamma.md") || launched.borrow().len() != before + 1 {
+            return Err(format!(
+                "after F3 on alpha.txt and Ctrl+Alt+V on gamma.md the viewers asked for were {:?}",
+                launched.borrow()[before..].to_vec()
+            ));
+        }
+        app.screenshot_window(
+            context,
+            &window,
+            "rebound-view",
+            "View rebound to Ctrl+Alt+V",
+        );
+        find::close(&mut app, &window);
+        Ok(())
+    })();
+    find::reset(&mut app);
+    app.shutdown()?;
+    result
 }
 
 /// Each row's Extension, Size and Modified columns agree with the disk: the name's

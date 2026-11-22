@@ -1,6 +1,9 @@
 //! Folder sizes (Ctrl+Shift+S) on marked folders: links/ (links inside not followed),
-//! readonly/ and many/; directory links listed in links/ themselves; a folder with an
-//! unreadable subfolder (a partial size and a warning); and cancelling a running scan.
+//! readonly/ and many/, also with a filename search typed meanwhile; with nothing marked,
+//! during a filename search, every folder (as without one); directory links listed in links/
+//! themselves; a folder with an unreadable subfolder (a partial size "≈ N" whose warning
+//! says it is a partial total); and cancelling a running scan (an estimate or "—", said
+//! to be unfinished).
 use crate::{
     Context,
     app::{App, Config},
@@ -62,6 +65,13 @@ fn unmarked_focus(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+/// The name under the left panel's cursor.
+fn focused_name(app: &App) -> Option<String> {
+    usize::try_from(app.cursor(PaneId::Left))
+        .ok()
+        .and_then(|row| app.names(PaneId::Left).get(row).cloned())
+}
+
 fn measuring(app: &App) -> bool {
     app.window.get_left_status().contains("Measuring folders")
 }
@@ -81,12 +91,18 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
     let mut app = App::start(config);
     let pane = PaneId::Left;
 
-    // Marked folders only: links (its links are not followed), readonly and many.
+    // Marked folders only: links (its links are not followed), readonly and many. A
+    // filename search typed meanwhile ("tex", on text/) does not change what is measured:
+    // Ctrl+Shift+S ends the search and measures the marks.
     let marked = ["links", "readonly", "many"];
     for name in marked {
         panel::select_row(&mut app, pane, name)?;
         input::key(app.slint(), Key::Insert);
     }
+    input::type_text(app.slint(), "tex");
+    app.until("the filename search to find text", |app| {
+        app.window.get_left_search_active() && focused_name(app).as_deref() == Some("text")
+    });
     measure(&mut app, "the marked folder sizes", |app| {
         marked
             .iter()
@@ -110,6 +126,9 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
             problems.push(format!("unmarked {name} was measured: {:?}", shown.size));
         }
     }
+    if app.window.get_left_search_active() {
+        problems.push("the filename search stays open after Ctrl+Shift+S".into());
+    }
     app.screenshot(
         context,
         "marked-folders",
@@ -118,7 +137,32 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
     if !problems.is_empty() {
         return Err(format!("marked folder sizes: {problems:#?}"));
     }
-
+    // With nothing marked, Ctrl+Shift+S during a filename search ("dee", on deep/) ends
+    // the search and measures as it does without one: every folder ("Measure selected
+    // folders, or all folders when none are selected"), not only the focused match.
+    unmarked_focus(&mut app)?;
+    input::type_text(app.slint(), "dee");
+    app.until("the filename search to find deep", |app| {
+        app.window.get_left_search_active() && focused_name(app).as_deref() == Some("deep")
+    });
+    let all = ["deep", "text", "sizes"];
+    measure(&mut app, "every folder's size", |app| {
+        all.iter()
+            .all(|name| row(app, name).ok().as_ref().and_then(exact).is_some())
+    });
+    for name in all {
+        let shown = row(&app, name)?;
+        if exact(&shown) != Some(disk_size(&root.join(name))) {
+            return Err(format!(
+                "Ctrl+Shift+S during a search with nothing marked: {name}/ shows {:?}, the disk {}",
+                shown.size,
+                disk_size(&root.join(name))
+            ));
+        }
+    }
+    if app.window.get_left_search_active() {
+        return Err("the filename search stays open after Ctrl+Shift+S".into());
+    }
     // Inside links/: a marked folder link is measured as its target; the link to its
     // own folder measures that folder without following the links in it. Windows has
     // no symbolic links in the fixture (they need a privilege): there the same folder
@@ -223,6 +267,16 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
     ) {
         return Err("no Folder size warning button for the partial size".into());
     }
+    // The warning says what the number is: a finished scan with warnings, a partial total.
+    if !mixed
+        .size_hint
+        .starts_with("Completed with warnings; this is a partial total.")
+    {
+        return Err(format!(
+            "the partial size's warning reads {:?}",
+            mixed.size_hint
+        ));
+    }
     app.shutdown()?;
 
     // Cancel: one folder of 100,000 empty files keeps the scan busy long enough to
@@ -262,15 +316,20 @@ pub fn folder_sizes_tools(context: &mut Context) -> Result<(), String> {
         "cancelled",
         "Ctrl+Shift+S again cancelled the scan",
     );
+    // A cancelled folder shows what was counted as an estimate ("≈ N"), or "—" when
+    // nothing was, and says it is unfinished.
     if !status.contains("cancelled")
         || bulk.size_state != 2
         || exact(&bulk).is_some()
+        || !(bulk.size.starts_with("≈ ") || bulk.size == "—")
+        || !bulk.size_hint.starts_with("Unfinished or cancelled")
         || running != 0
     {
         return Err(format!(
-            "after cancelling: status {status:?}, bulk shows {:?} in state {}, {partial_rows} partial and {running} running of {} folders",
+            "after cancelling: status {status:?}, bulk shows {:?} in state {} (hint {:?}), {partial_rows} partial and {running} running of {} folders",
             bulk.size,
             bulk.size_state,
+            bulk.size_hint,
             rows.len()
         ));
     }
