@@ -450,7 +450,7 @@ fn embedded_filter_history_recall_and_clear_edit_only_while_show_all_removes_the
     let h = Harness::new();
     h.main.invoke_open_panel_filter(0);
     let main = h.form();
-    forms::click_control(&main, "Filter history", AccessibleRole::Combobox);
+    // The edit line has the keyboard: Down lists the recent filters, Return chooses one.
     key(&main, Key::DownArrow);
     key(&main, Key::Return);
     assert_eq!(value(&main), r"\.TXT$");
@@ -467,7 +467,7 @@ fn embedded_filter_history_recall_and_clear_edit_only_while_show_all_removes_the
     h.main.invoke_open_panel_filter(0);
     h.form();
     h.commands.borrow_mut().clear();
-    modeless::click(&main, "Clear filter expression");
+    forms::click_inline_clear(&main);
     assert_eq!(value(&main), "");
     assert!(h.main.get_panel_filter_view().enabled);
     assert!(h.commands.borrow().is_empty());

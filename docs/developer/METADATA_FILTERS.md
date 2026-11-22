@@ -6,6 +6,18 @@ visible. Expressions evaluate captured listing entries, including folders. They
 combine with quick search and persist independently for each panel. The parent
 navigation row remains available.
 
+The expression is the edit line the other dialogs use (Find's file name masks,
+for example): `HistoryLineEdit` in `hinted-inputs.slint`, which is the shared
+`HintedLineEdit` with a list of recent entries. While it has the keyboard and text
+it shows its clear × at its right end, and its focus underline. Down or Alt+Down
+in it lists the recently applied filters, newest first. Up and Down move through
+the list, and Enter or a click puts the chosen filter in the line and sets its mode
+and case. Nothing is applied until OK, or Enter in the line. Escape closes the list
+first, and a second Escape closes the dialog. The list shows the saved filter
+history: up to 100 different applied filters (mode, text and case), newest first.
+Applying a filter again moves it to the top. The history is kept in the settings
+(`panel_filter_history`, since settings version 30).
+
 Examples:
 
 ```text

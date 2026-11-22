@@ -187,9 +187,10 @@ Decisions and limits:
 - Fields keep the active pair while their window is inactive. Slint keeps a field's
   selection only across window deactivation, and fields are small; dimming them
   would change every themed input and its tests, which is left for later.
-- Standard Slint inputs that are not themed (`HintedLineEdit` and the plain
-  `LineEdit`, `TextEdit` and `SpinBox` in Options pages, Find masks and content,
-  About, keyboard, plugin, archive and custom command forms) keep Slint Fluent's own
+- Standard Slint inputs that are not themed (`HintedLineEdit`, also inside
+  `HistoryLineEdit`, and the plain `LineEdit`, `TextEdit` and `SpinBox` in Options
+  pages, Find masks and content, the panel filter's expression, About, keyboard,
+  plugin, archive and custom command forms) keep Slint Fluent's own
   selection: the system accent fill with Fluent's text color, about 4.5:1. Slint
   1.18 exposes no selection colors for them; reaching the theme's pair, and 12:1 in
   High Contrast, requires replacing them with `ThemedLineEdit`.

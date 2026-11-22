@@ -67,6 +67,53 @@ pub(super) fn click_control(
             button: PointerEventButton::Left,
         });
 }
+/// Give the filter's edit line the keyboard, then click its inline clear ×, which the
+/// shared edit line shows only while it has the keyboard and text.
+pub(super) fn click_inline_clear(
+    native: &slint::platform::software_renderer::MinimalSoftwareWindow,
+) {
+    use i_slint_core::{
+        item_tree::ItemRc,
+        items::{ClippedImage, ImageItem},
+        window::WindowInner,
+    };
+    fn icon(item: ItemRc) -> Option<ItemRc> {
+        if item.is_visible()
+            && (item.downcast::<ImageItem>().is_some() || item.downcast::<ClippedImage>().is_some())
+        {
+            return Some(item);
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = icon(item) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let label = "File filter expression";
+    click_control(native, label, AccessibleRole::TextInput);
+    WindowInner::from_pub(native.window()).ensure_tree_instantiated();
+    let line = modeless::accessible_popup_item(native, AccessibleRole::TextInput, label).unwrap();
+    let clear = icon(line).expect("the edit line shows its clear");
+    let bounds = clear.geometry();
+    let origin = clear.map_to_native_window(bounds.origin);
+    let position = slint::LogicalPosition::new(
+        origin.x + bounds.width() / 2.,
+        origin.y + bounds.height() / 2.,
+    );
+    native.window().dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    native
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+}
 fn action_visible(form: &Form, name: &str) {
     embedded_form::assert_inside(&form.host.item(AccessibleRole::Button, name), name);
 }
@@ -225,10 +272,7 @@ fn embedded_filter_history_restores_mode_case_and_text_without_applying_and_clea
             open: true,
             expression: "*.old".into(),
             history: slint::ModelRc::new(slint::VecModel::from(vec![item.clone()])),
-            history_labels: slint::ModelRc::new(slint::VecModel::from(vec![
-                "Choose a recent filter…".into(),
-                item.label,
-            ])),
+            history_labels: slint::ModelRc::new(slint::VecModel::from(vec![item.label])),
             ..Default::default()
         },
         564,
@@ -247,7 +291,7 @@ fn embedded_filter_history_restores_mode_case_and_text_without_applying_and_clea
     let out = clears.clone();
     form.presentation()
         .on_clear(move |_| *out.borrow_mut() += 1);
-    click_control(native, "Filter history", AccessibleRole::Combobox);
+    // The edit line has the keyboard: Down lists the recent filters, Return chooses one.
     key(native, slint::platform::Key::DownArrow);
     key(native, slint::platform::Key::Return);
     assert_eq!(value(native), r"\.TXT$");
@@ -271,7 +315,7 @@ fn embedded_filter_history_restores_mode_case_and_text_without_applying_and_clea
         calls.borrow().as_slice(),
         [(true, 1, r"\.TXT$".into(), true)]
     );
-    modeless::click(native, "Clear filter expression");
+    click_inline_clear(native);
     assert_eq!(value(native), "");
     assert_eq!(
         *clears.borrow(),

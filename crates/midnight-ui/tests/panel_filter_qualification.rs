@@ -8,7 +8,7 @@ use crate::support::modeless;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, ComplexText, Flickable, ImageItem, SimpleText},
+    items::{AccessibleRole, ClippedImage, ComplexText, Flickable, ImageItem, SimpleText},
     window::WindowInner,
 };
 use midnight_ui::{
@@ -49,14 +49,19 @@ fn model() -> PanelFilterView {
         ]))
         .into(),
         history_labels: Rc::new(slint::VecModel::from(vec![
-            "Choose a recent filter…".into(),
-            "Masks: *.txt".into(),
-            "Expression (case sensitive): name like \"文档*\"".into(),
+            HISTORY[0].into(),
+            HISTORY[1].into(),
         ]))
         .into(),
         ..Default::default()
     }
 }
+
+/// The history list's rows, newest first.
+const HISTORY: [&str; 2] = [
+    "Masks: *.txt",
+    "Expression (case sensitive): name like \"文档*\"",
+];
 
 /// The embedded Filter of a bare main window, closed by Cancel/Escape as the adapter
 /// closes it.
@@ -105,9 +110,11 @@ fn form_property(
         .to_string()
 }
 
-/// The visible images inside `item`.
+/// The visible images inside `item` (an aligned or tinted `Image` is a `ClippedImage`).
 fn visible_images(item: ItemRc, found: &mut Vec<ItemRc>) {
-    if item.is_visible() && item.downcast::<ImageItem>().is_some() {
+    if item.is_visible()
+        && (item.downcast::<ImageItem>().is_some() || item.downcast::<ClippedImage>().is_some())
+    {
         found.push(item.clone());
     }
     let mut child = item.first_child();
@@ -133,26 +140,90 @@ fn lies_within(inner: &ItemRc, outer: &ItemRc) -> bool {
         && at.y + size.height <= bounds.y + limit.height + 0.5
 }
 
-/// The draft's clear lies inside the expression field at its right edge, like the
-/// filename search box's, and is the field's only icon.
-fn assert_inline_clear(expression: &ItemRc, clear: &ItemRc) {
+/// Window-space left, top, right and bottom of `item`.
+fn bounds(item: &ItemRc) -> (f32, f32, f32, f32) {
+    let at = item.map_to_native_window(item.geometry().origin);
+    let size = item.geometry().size;
+    (at.x, at.y, at.x + size.width, at.y + size.height)
+}
+
+/// Every item below `item`, in tree order.
+fn descendants(item: ItemRc, found: &mut Vec<ItemRc>) {
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        found.push(item.clone());
+        descendants(item, found);
+    }
+}
+
+/// The expression is the dialogs' shared edit line (`HintedLineEdit`, Slint's Fluent
+/// `LineEdit`, as Find's file name masks use it), not a framed box with controls
+/// beside it: there is no separate Clear button or history picker, the line's 2 px
+/// focus underline spans its bottom edge, and while it has the keyboard and text its
+/// clear × is its only icon, at its right end. Without the keyboard it shows none.
+fn assert_shared_edit_line(host: &form::Host, focused: bool) -> ItemRc {
     assert!(
-        lies_within(clear, expression),
-        "the draft clear lies inside the expression field"
+        host.try_item(AccessibleRole::Button, "Clear filter expression")
+            .is_none(),
+        "the clear is the edit line's own, not a separate button"
     );
-    let right = |item: &ItemRc| {
-        item.map_to_native_window(item.geometry().origin).x + item.geometry().width()
-    };
     assert!(
-        right(expression) - right(clear) <= 4.0,
-        "the draft clear sits at the field's right edge"
+        host.try_item(AccessibleRole::Combobox, "Filter history")
+            .is_none(),
+        "recent filters open from the edit line, not from a picker beside it"
+    );
+    let line = form_inside(host, AccessibleRole::TextInput, "File filter expression");
+    let (left, _, right, bottom) = bounds(&line);
+    let mut items = Vec::new();
+    descendants(line.clone(), &mut items);
+    assert!(
+        items.iter().any(|item| {
+            let (l, t, r, b) = bounds(item);
+            (b - t - 2.0).abs() < 0.01
+                && (b - bottom).abs() < 0.5
+                && l >= left - 0.5
+                && r <= right + 0.5
+                && r - l >= right - left - 10.0
+        }),
+        "the edit line's focus underline spans its bottom edge"
     );
     let mut images = Vec::new();
-    visible_images(expression.clone(), &mut images);
-    assert!(
-        !images.is_empty() && images.iter().all(|image| lies_within(image, clear)),
-        "the inline clear is the expression field's only icon"
-    );
+    visible_images(line.clone(), &mut images);
+    if focused {
+        assert_eq!(images.len(), 1, "the inline clear is the line's only icon");
+        assert!(
+            lies_within(&images[0], &line) && right - bounds(&images[0]).2 <= 14.0,
+            "the inline clear sits inside the line at its right end"
+        );
+    } else {
+        assert!(
+            images.is_empty(),
+            "the line shows its clear only with the keyboard"
+        );
+    }
+    line
+}
+
+/// Give the edit line the keyboard, as a click into it does.
+fn focus_line(host: &form::Host, width: u32, height: u32) {
+    let line = form_inside(host, AccessibleRole::TextInput, "File filter expression");
+    input::click(&host.native, &line);
+    host.layout(width, height);
+}
+
+/// Click the edit line's inline clear ×.
+fn click_inline_clear(host: &form::Host) {
+    let line = host.item(AccessibleRole::TextInput, "File filter expression");
+    let mut images = Vec::new();
+    visible_images(line, &mut images);
+    let clear = images.pop().expect("the inline clear is shown");
+    input::click(&host.native, &clear);
+}
+
+/// The history list's row with this label, while the list is open.
+fn history_row(host: &form::Host, label: &str) -> Option<ItemRc> {
+    host.try_item(AccessibleRole::Button, label)
 }
 
 /// A control of a native window is visible inside it and every scroll viewport.
@@ -223,28 +294,10 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                     let (_, body) = form::body(&host.item(AccessibleRole::Button, "Cancel"));
                     assert_eq!((body.width, body.height), (320.0, 480.0));
                 }
-                for label in ["Filter history", "Filter mode"] {
-                    form_inside(&host, AccessibleRole::Combobox, label);
-                }
-                let expression =
-                    form_inside(&host, AccessibleRole::TextInput, "File filter expression");
-                // The draft "*.old" has text: its clear is shown inside the field.
-                let clear = form_inside(&host, AccessibleRole::Button, "Clear filter expression");
-                let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
-                let edit_at = expression.map_to_native_window(expression.geometry().origin);
-                let history_at = history.map_to_native_window(history.geometry().origin);
-                assert!(
-                    (history_at.x - edit_at.x - expression.geometry().width()).abs() <= 1.0,
-                    "expression and history must form one contiguous row"
-                );
-                assert!(
-                    (history_at.y - edit_at.y).abs() <= 1.0
-                        && (history.geometry().height() - expression.geometry().height()).abs()
-                            <= 1.0,
-                    "expression and history must have equal height and top"
-                );
-                assert_inline_clear(&expression, &clear);
-                assert!(history.geometry().width() <= history.geometry().height() + 1.0);
+                form_inside(&host, AccessibleRole::Combobox, "Filter mode");
+                // The draft "*.old" has text: with the keyboard the line shows its clear.
+                focus_line(&host, width, height);
+                assert_shared_edit_line(&host, true);
                 form_inside(&host, AccessibleRole::Checkbox, "Case sensitive");
                 for label in ["Help", "Show all", "OK", "Cancel"] {
                     form_inside(&host, AccessibleRole::Button, label);
@@ -253,10 +306,6 @@ fn filter_controls_and_footer_remain_reachable_at_desktop_12px_and_touch_in_both
                     item.map_to_native_window(item.geometry().origin).y
                         + item.geometry().height() / 2.0
                 };
-                assert!(
-                    (center(&expression) - center(&clear)).abs() <= 1.0,
-                    "draft and Clear centers differ"
-                );
                 if width == 564 {
                     let ok = form_inside(&host, AccessibleRole::Button, "OK");
                     let cancel = form_inside(&host, AccessibleRole::Button, "Cancel");
@@ -294,7 +343,8 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
             let clears = Rc::new(RefCell::new(0));
             let out = clears.clone();
             presentation.on_clear(move |_| *out.borrow_mut() += 1);
-            modeless::click(&native, "Clear filter expression");
+            host.layout(564, 384);
+            click_inline_clear(&host);
             assert_eq!(
                 form_property(
                     &host,
@@ -305,35 +355,23 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
                 ""
             );
             host.layout(564, 384);
-            assert!(
-                host.try_item(AccessibleRole::Button, "Clear filter expression")
-                    .is_none(),
-                "an empty draft shows no clear"
+            let mut images = Vec::new();
+            visible_images(
+                host.item(AccessibleRole::TextInput, "File filter expression"),
+                &mut images,
             );
+            assert!(images.is_empty(), "an empty draft shows no clear");
             assert!(presentation.get_model().enabled);
             assert_eq!(
                 *clears.borrow(),
                 0,
                 "draft Clear must not remove an applied filter"
             );
-            // Clear left the keyboard in the field: the typed draft lands there.
+            // Clear left the keyboard in the line: the typed draft lands there.
             input::key(&native, "*.文档");
             host.layout(564, 384);
-            assert_eq!(
-                form_property(
-                    &host,
-                    AccessibleRole::Button,
-                    "Clear filter expression",
-                    AccessibleStringProperty::Enabled
-                ),
-                "true"
-            );
-            assert_inline_clear(
-                &host.item(AccessibleRole::TextInput, "File filter expression"),
-                &host.item(AccessibleRole::Button, "Clear filter expression"),
-            );
-            let history = form_inside(&host, AccessibleRole::Combobox, "Filter history");
-            input::click(&native, &history);
+            assert_shared_edit_line(&host, true);
+            // Down lists the recent filters; Down browses, Return chooses.
             input::key(&native, Key::DownArrow);
             input::key(&native, Key::DownArrow);
             input::key(&native, Key::Return);
@@ -355,11 +393,9 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
             presentation.set_model(status);
             host.draw(564, 384, &format!("filter-validating-{scheme}-{density}"));
             for (role, label) in [
-                (AccessibleRole::Combobox, "Filter history"),
                 (AccessibleRole::Combobox, "Filter mode"),
                 (AccessibleRole::TextInput, "File filter expression"),
                 (AccessibleRole::Checkbox, "Case sensitive"),
-                (AccessibleRole::Button, "Clear filter expression"),
                 (AccessibleRole::Button, "OK"),
             ] {
                 assert_eq!(
@@ -388,6 +424,163 @@ fn history_recall_and_draft_clear_preserve_applied_filter_and_busy_cancellation(
             input::key(&native, Key::Escape);
             assert!(!host.is_open());
         }
+    }
+}
+
+/// The value of the open form's control.
+fn value_of(host: &form::Host, role: AccessibleRole, label: &str) -> String {
+    form_property(host, role, label, AccessibleStringProperty::Value)
+}
+
+/// The owner's request: the expression is the edit line the other dialogs use (Find's
+/// file name masks), with its own inline clear and focus underline, not a framed box
+/// with a clear and a history arrow beside it.
+#[test]
+fn the_expression_is_the_dialogs_shared_edit_line() {
+    let host = filter_host();
+    open(&host, 0, 0);
+    host.draw(564, 384, "filter-shared-line");
+    assert_shared_edit_line(&host, true);
+    // Tab gives the keyboard to the case box: the line hides its clear, as Find's does.
+    input::key(&host.native, Key::Tab);
+    host.layout(564, 384);
+    assert_shared_edit_line(&host, false);
+}
+
+/// Down or Alt+Down in the line lists the recent filters, newest first. Choosing one by
+/// Return or a click fills the line, its mode and its case, and applies nothing; OK
+/// applies the chosen draft.
+#[test]
+fn down_lists_recent_filters_and_choosing_fills_the_draft_without_applying() {
+    let host = filter_host();
+    let presentation = host.main.global::<PanelFilterPresentation>();
+    open(&host, 0, 0);
+    let native = host.native.clone();
+    let applies = Rc::new(RefCell::new(Vec::new()));
+    let out = applies.clone();
+    presentation.on_apply(move |_, enabled, mode, expression, case| {
+        out.borrow_mut()
+            .push((enabled, mode, expression.to_string(), case));
+    });
+    let line = || value_of(&host, AccessibleRole::TextInput, "File filter expression");
+    let mode = || value_of(&host, AccessibleRole::Combobox, "Filter mode");
+    let case = || {
+        form_property(
+            &host,
+            AccessibleRole::Checkbox,
+            "Case sensitive",
+            AccessibleStringProperty::Checked,
+        )
+    };
+    input::key(&native, Key::DownArrow);
+    host.draw(564, 384, "filter-history-open");
+    let rows: Vec<ItemRc> = HISTORY
+        .iter()
+        .map(|label| history_row(&host, label).unwrap_or_else(|| panic!("{label} is listed")))
+        .collect();
+    assert!(
+        bounds(&rows[0]).1 < bounds(&rows[1]).1,
+        "the newest filter is listed first"
+    );
+    let (_, line_top, _, line_bottom) =
+        bounds(&host.item(AccessibleRole::TextInput, "File filter expression"));
+    assert!(
+        bounds(&rows[0]).1 >= line_bottom - 0.5 || bounds(&rows[1]).3 <= line_top + 0.5,
+        "the list opens beside the line, not over it"
+    );
+    input::key(&native, Key::DownArrow);
+    input::key(&native, Key::Return);
+    assert!(
+        history_row(&host, HISTORY[0]).is_none(),
+        "choosing closes the list"
+    );
+    assert_eq!(line(), "name like \"文档*\"");
+    assert_eq!(mode(), "Expression");
+    assert_eq!(case(), "true");
+    assert!(applies.borrow().is_empty(), "choosing applies nothing");
+    // The keyboard is back in the line: Alt+Down lists the filters too, and a click
+    // chooses one.
+    input::chord(&native, &[Key::Alt], Key::DownArrow);
+    host.layout(564, 384);
+    let row = history_row(&host, HISTORY[0]).expect("Alt+Down lists the recent filters");
+    input::click(&native, &row);
+    assert_eq!(line(), "*.txt");
+    assert_eq!(mode(), "Masks");
+    assert_eq!(case(), "false");
+    assert!(applies.borrow().is_empty(), "choosing applies nothing");
+    modeless::click(&native, "OK");
+    assert_eq!(
+        applies.borrow().as_slice(),
+        [(true, 0, "*.txt".to_owned(), false)]
+    );
+}
+
+/// Escape closes the list and keeps the dialog and its draft; the next Escape closes
+/// the dialog.
+#[test]
+fn escape_closes_the_history_list_before_the_dialog() {
+    let host = filter_host();
+    open(&host, 0, 0);
+    input::key(&host.native, Key::DownArrow);
+    host.layout(564, 384);
+    assert!(
+        history_row(&host, HISTORY[0]).is_some(),
+        "Down lists the filters"
+    );
+    input::key(&host.native, Key::Escape);
+    host.layout(564, 384);
+    assert!(
+        history_row(&host, HISTORY[0]).is_none(),
+        "Escape closes the list"
+    );
+    assert!(host.is_open(), "the first Escape keeps the dialog");
+    assert_eq!(
+        value_of(&host, AccessibleRole::TextInput, "File filter expression"),
+        "*.old"
+    );
+    input::key(&host.native, Key::Escape);
+    assert!(!host.is_open(), "the second Escape closes the dialog");
+}
+
+/// With 32 px fonts the form fits: at its default size the mode, the edit line and the
+/// footer are unclipped and the history list lies inside the window; at the minimum
+/// size the dismissal stays reachable and Escape closes the form.
+#[test]
+fn the_form_and_its_history_list_fit_with_32_px_fonts() {
+    let host = filter_host();
+    let presentation = host.main.global::<PanelFilterPresentation>();
+    for density in [0, 1] {
+        host.apply_preferences(0, density, "Segoe UI", 32, 32);
+        presentation.set_model(model());
+        presentation.set_token(format!("filter-32px-{density}").into());
+        host.draw(564, 384, &format!("filter-32px-{density}"));
+        assert!(host.is_open());
+        form_inside(&host, AccessibleRole::Combobox, "Filter mode");
+        focus_line(&host, 564, 384);
+        assert_shared_edit_line(&host, true);
+        // The touch footer wraps at this size, and the case box below the line can
+        // then need the body's scrolling, as before; the footer stays whole.
+        for label in ["Help", "Show all", "OK", "Cancel"] {
+            form_inside(&host, AccessibleRole::Button, label);
+        }
+        input::key(&host.native, Key::DownArrow);
+        host.draw(564, 384, &format!("filter-32px-history-{density}"));
+        for label in HISTORY {
+            let row = history_row(&host, label).unwrap_or_else(|| panic!("{label} is listed"));
+            let (left, top, right, bottom) = bounds(&row);
+            assert!(
+                left >= -0.5 && top >= -0.5 && right <= 564.5 && bottom <= 384.5,
+                "{label} lies inside the window: {left}, {top}, {right}, {bottom}"
+            );
+        }
+        input::key(&host.native, Key::Escape);
+        host.draw(328, 208, &format!("filter-32px-minimum-{density}"));
+        form_inside(&host, AccessibleRole::Button, "Cancel");
+        input::key(&host.native, Key::Escape);
+        assert!(
+            !host.is_open(),
+            "the minimum form accepts Escape at 32 px fonts"
+        );
     }
 }
 

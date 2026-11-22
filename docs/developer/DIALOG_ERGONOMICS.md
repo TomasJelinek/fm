@@ -348,7 +348,12 @@ The November 8 polish keeps an explicit primary action and a separate dismissal.
 Panel Filter has OK (validate and apply), Cancel (discard draft) and Show all
 (disable the applied filter, preserving its expression). It has no separate
 enable checkbox; panel indicators provide a direct × dismissal. Pending filter
-validation cannot re-enable a cleared filter. Compare and Jobs share the bounded
+validation cannot re-enable a cleared filter. Since 22 November 2026 its expression
+is the shared edit line, as in Find, with that line's inline clear and focus
+underline, instead of a framed box with a Clear button and a history arrow beside
+it. Recent filters open from the line itself (`HistoryLineEdit`, Down or Alt+Down;
+Escape closes the list before the dialog), and any other edit line can use the same
+list. Compare and Jobs share the bounded
 scrolling footer; Jobs says Cancel job to distinguish it from Close.
 
 Archives retains built-in association checkboxes, but user-added extensions are
