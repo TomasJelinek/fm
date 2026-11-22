@@ -656,7 +656,7 @@ jobs:
       - name: Installed native filesystem browse, read, volumes and absence checks
         run: python -B scripts/ci-workspace-tests.py run midnight-native-filesystem-host test:native --ignored --test-threads=1
       - name: Installed native provider names the folder of a typed file path
-        run: python -B scripts/ci-workspace-tests.py run midnight-engine test:integration navigation_not_a_folder:: --ignored
+        run: python -B scripts/ci-workspace-tests.py run midnight-engine test:integration navigation_not_a_folder::a_path_that_names_a_file --ignored
       - name: Installed network metadata boundary without LAN discovery
         shell: pwsh
         run: |

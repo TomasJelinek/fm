@@ -576,7 +576,7 @@ add_step native-fs-ignored check 'Installed native filesystem browse and reads' 
     'variables=selection_words=midnight-native-filesystem-host test:native --ignored --test-threads=1'
 add_step engine-native-ignored check 'Installed native provider and typed file paths' \
     'needs=test-install filesystem-native' body=ignored_step \
-    'variables=selection_words=midnight-engine test:integration navigation_not_a_folder:: --ignored'
+    'variables=selection_words=midnight-engine test:integration navigation_not_a_folder::a_path_that_names_a_file --ignored'
 add_step network-metadata-ignored check 'Installed network metadata boundary' 'needs=test-install filesystem-network'
 add_step app-native-viewers check 'Application viewers use the native provider' \
     "needs=test-install filesystem-native $all_viewers"

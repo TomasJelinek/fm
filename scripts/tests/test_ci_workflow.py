@@ -43,6 +43,36 @@ def step(job, name):
     return steps[0]
 
 
+def plain_scalar_faults(text):
+    """Unquoted one-line values that YAML would not read as plain text.
+
+    The standard library has no YAML parser, and GitHub rejects the whole workflow,
+    running no job at all, when one value is not valid YAML. A plain (unquoted) value
+    must not contain ": " or end in ":" (both start a mapping). Block scalars
+    ("run: |") and quoted, flow and anchored values are not plain and are skipped.
+    """
+    faults = []
+    block_indent = None
+    for number, line in enumerate(text.splitlines(), 1):
+        indent = len(line) - len(line.lstrip(" "))
+        if block_indent is not None:
+            if not line.strip() or indent > block_indent:
+                continue
+            block_indent = None
+        match = re.match(r"^\s*(?:- )?[A-Za-z0-9_-]+:(?: (.*))?$", line)
+        if not match or match.group(1) is None:
+            continue
+        value = match.group(1).split(" #", 1)[0].rstrip()
+        if value[:1] in ("|", ">"):
+            block_indent = indent
+            continue
+        if not value or value[0] in "'\"[{&*!%@`":
+            continue
+        if ": " in value or value.endswith(":"):
+            faults.append(f"line {number}: {line.strip()}")
+    return faults
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text(encoding="utf-8")
@@ -334,6 +364,17 @@ class WorkflowTests(unittest.TestCase):
                     self.assertEqual(len({"uses", "run"} & set(entry)), 1, entry)
                     if "run" in entry:
                         self.assertIn("shell", entry, "Composite run steps need an explicit shell")
+
+
+    def test_one_line_values_are_valid_plain_yaml(self):
+        # A plain value with ": " made GitHub reject the workflow (no job ran) while the
+        # PyYAML parse below was skipped locally; this check needs no YAML parser.
+        self.assertEqual(plain_scalar_faults("run: cargo test x:: --ignored\n"),
+                         ["line 1: run: cargo test x:: --ignored"])
+        self.assertEqual(plain_scalar_faults("run: |\n  echo a: b\nname: 'q: x'\n"), [])
+        for path in [WORKFLOW, *sorted((ROOT / ".github/actions").glob("*/action.yml"))]:
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertEqual(plain_scalar_faults(path.read_text(encoding="utf-8")), [])
 
 
 if __name__ == "__main__":
