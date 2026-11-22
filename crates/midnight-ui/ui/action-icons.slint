@@ -171,6 +171,8 @@ component ActionButtonContent inherits HorizontalLayout {
     in property <image> native-icon;
     in property <image> fallback-icon;
     in property <bool> compact;
+    // The glyph without the caption; the caption still chooses the glyph (see `ActionButton`).
+    in property <bool> glyph-only;
     in property <length> font-size;
     in property <length> vertical-padding;
     in property <bool> removal-icon;
@@ -202,7 +204,7 @@ component ActionButtonContent inherits HorizontalLayout {
             : ActionGlyph.tint(root.enabled);
         accessible-role: none;
     }
-    if root.text != "": Text {
+    if root.text != "" && !root.glyph-only: Text {
         text: root.text; color: root.foreground;
         font-family: Theme.effective-font-family; font-size: root.font-size;
         horizontal-alignment: center; vertical-alignment: center;
@@ -218,6 +220,9 @@ export component ActionButton inherits Rectangle {
     in property <image> fallback-icon;
     in property <bool> primary;
     in property <bool> compact;
+    // Only the glyph shows; the caption stays the accessible label and still chooses the
+    // glyph (a fitted footer that does not fit otherwise, see `FooterActions`).
+    in property <bool> glyph-only;
     in property <length> font-size: Theme.font-size;
     in property <length> control-height: Theme.control-height;
     in property <length> minimum-control-height: 32px;
@@ -256,7 +261,8 @@ export component ActionButton inherits Rectangle {
         : root.has-focus || root.primary ? Theme.active-frame : Theme.frame;
     content := ActionButtonContent {
         text: root.text; native-icon: root.native-icon; fallback-icon: root.fallback-icon;
-        compact: root.compact; font-size: root.font-size; vertical-padding: root.vertical-padding;
+        compact: root.compact; glyph-only: root.glyph-only;
+        font-size: root.font-size; vertical-padding: root.vertical-padding;
         removal-icon: root.removal-icon; destructive: root.destructive; enabled: root.enabled;
         emphasized: root.primary && (root.hovered || root.pressed);
     }

@@ -24,5 +24,6 @@ export component HintedLineEdit inherits LineEdit {
 // Only formerly tipped call sites use this wrapper; plain buttons stay unchanged.
 export component HintedActionButton inherits ActionButton {
     in property <string> hint;
-    Tip { text: root.hint; }
+    // A button that shows its glyph alone names its action on the tooltip's first line.
+    Tip { text: !root.glyph-only ? root.hint : root.hint == "" ? root.text : root.text + "\n" + root.hint; }
 }

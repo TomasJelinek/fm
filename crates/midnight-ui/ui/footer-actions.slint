@@ -24,19 +24,38 @@ export struct FooterAction {
 // 8 px apart, and the others in a More… menu at the end of the row, which opens upward.
 // The fit is computed from each caption's measured width, as `ActionButton` lays it out
 // (12 px padding, the glyph and 4 px before the caption, 12 px padding), so a button is
-// never cut and never scrolled. Where even the rank 0 actions and a captioned More… do not
-// fit, More… shows its glyph alone (its accessible name stays "More…"). At most eight
-// actions; a dialog keeps its rank 0 actions few enough to fit beside More….
+// never cut and never scrolled. Each step below is taken only when the row does not fit
+// after the one before it (`level`), on every platform and with any font:
+//   0  the actions of rank 1 and up move into More…: rank 1 first, then 2, and so on;
+//   1  More… shows its glyph alone;
+//   2  every action of rank 1 and up is in More…, and the rank 0 actions show their glyphs
+//      alone;
+//   3  the dismiss button shows its glyph alone too (`compact-dismiss`: `DialogFooter`
+//      passes the room beside its glyph as `compact-room`);
+//   4  the rank 0 actions move into More… as well, so that only More… and the dismiss
+//      button are left, as glyphs: no action ever leaves a footer that is wide enough for
+//      those two (about 100 px).
+// A button that shows its glyph alone keeps its caption as its accessible name and on the
+// first line of its tooltip; an action without a glyph keeps its caption. At most eight
+// actions.
 export component FooterActions inherits Rectangle {
     in property <[FooterAction]> actions;
-    // The width the row may take; its last button ends at the right edge.
+    // The width the row may take beside the dismiss button with its caption, and beside it
+    // showing its glyph alone; the row's last button ends at the right edge.
     in property <length> room;
+    in property <length> compact-room;
     in property <bool> compact-controls;
     // An action was chosen, by its index in `actions`.
     callback activated(int);
     // How many actions show as buttons, and how many are in the More… menu.
     out property <int> shown: root.count-kept(root.moved);
     out property <int> overflow: root.count-kept(-1) - root.shown;
+    // The step the row had to take to fit (see above), and whether the dismiss button shows
+    // its glyph alone for it.
+    out property <int> level: !root.compact-more ? 0 : root.fits(8) ? 1
+        : root.glyph-row <= root.room + 8px + 0.01px ? 2
+        : root.glyph-row <= root.compact-room + 8px + 0.01px ? 3 : 4;
+    out property <bool> compact-dismiss: root.level >= 3;
     // Each action's button and the gap before it; the gap before the first is outside
     // the buttons, at the left end.
     preferred-width: row.preferred-width;
@@ -84,11 +103,11 @@ export component FooterActions inherits Rectangle {
     private property <length> more-glyph: root.button-width("", FallbackIcons.menu, 0px);
     out property <bool> compact-more: root.row-width-with(8, root.more-captioned) > root.room + 8px + 0.01px;
     private property <length> more-width: root.compact-more ? root.more-glyph : root.more-captioned;
-    // Whether action `index` is a button when the actions ranked 1 to `moved` are in More…;
-    // with `moved` -1, whether it is offered at all.
+    // Whether action `index` is a button when the actions ranked 1 to `moved` are in More…
+    // (with `moved` 9, every action is); with `moved` -1, whether it is offered at all.
     pure function kept(index: int, moved: int) -> bool {
         return index >= 0 && index < root.actions.length && index < 8 && !root.actions[index].hidden
-            && (moved < 0 || root.actions[index].drop <= 0 || root.actions[index].drop > moved);
+            && (moved < 0 || (moved < 9 && (root.actions[index].drop <= 0 || root.actions[index].drop > moved)));
     }
     pure function count-kept(moved: int) -> int {
         return (root.kept(0, moved) ? 1 : 0) + (root.kept(1, moved) ? 1 : 0) + (root.kept(2, moved) ? 1 : 0)
@@ -110,9 +129,24 @@ export component FooterActions inherits Rectangle {
         return root.row-width-with(moved, root.more-width) <= root.room + 8px + 0.01px;
     }
     // The fewest ranks that move into More… for the row to fit; when even the rank 0
-    // actions do not fit, all ranks move.
-    private property <int> moved: root.fits(0) ? 0 : root.fits(1) ? 1 : root.fits(2) ? 2 : root.fits(3) ? 3
-        : root.fits(4) ? 4 : root.fits(5) ? 5 : root.fits(6) ? 6 : root.fits(7) ? 7 : 8;
+    // actions do not fit, all ranks move (levels 2 and 3), and at level 4 every action.
+    private property <int> moved: root.level >= 4 ? 9 : root.fits(0) ? 0 : root.fits(1) ? 1 : root.fits(2) ? 2
+        : root.fits(3) ? 3 : root.fits(4) ? 4 : root.fits(5) ? 5 : root.fits(6) ? 6 : root.fits(7) ? 7 : 8;
+    // Levels 2 and 3: the row of the rank 0 actions, each as its glyph when it has one, and
+    // a More… glyph when any action is in More….
+    pure function glyph-action(index: int) -> bool {
+        return index < root.actions.length
+            && root.has-glyph(root.actions[index].text, root.actions[index].fallback-icon);
+    }
+    // A button showing its glyph alone, as `ActionButton` lays it out.
+    private property <length> glyph-button: max(32px, 24px + Theme.icon-size);
+    pure function glyph-slot(index: int) -> length {
+        return !root.kept(index, 8) ? 0px
+            : (root.glyph-action(index) ? root.glyph-button : root.measured(index)) + 8px;
+    }
+    private property <length> glyph-row: root.glyph-slot(0) + root.glyph-slot(1) + root.glyph-slot(2)
+        + root.glyph-slot(3) + root.glyph-slot(4) + root.glyph-slot(5) + root.glyph-slot(6) + root.glyph-slot(7)
+        + (root.count-kept(8) < root.count-kept(-1) ? root.more-glyph + 8px : 0px);
     pure function in-menu(index: int) -> bool {
         return root.kept(index, -1) && !root.kept(index, root.moved);
     }
@@ -131,6 +165,8 @@ export component FooterActions inherits Rectangle {
                 vertical-padding: root.compact-controls && !Theme.touch ? 4px : 5px;
                 height: root.height;
                 text: root.actions[index].text; fallback-icon: root.actions[index].fallback-icon;
+                // From level 2 the row holds rank 0 actions only, each as its glyph.
+                glyph-only: root.level >= 2 && root.glyph-action(index);
                 hint: root.actions[index].hint;
                 // Screen readers get the hint too, as for the actions in More… (it also says
                 // why an action is disabled).

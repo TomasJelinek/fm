@@ -234,9 +234,12 @@ The footer shows its actions through `DialogFooter`'s fitted actions (see the
 [dialog ergonomics](DIALOG_ERGONOMICS.md)): every action that fits whole beside Close is a
 button, 8 px from the next, and the others are in a More… menu at the end of the row,
 with their captions, glyphs, shortcuts and enabled states. On the query page Copy
-details moves first, then Open, Edit, View and Go to file; Find or Stop always stays. On
-the details page Copy moves first, then Find or Stop; Back always stays. At 320×200 the
-query page shows Find and More…; at 1000 px every action is a button.
+details moves first, then Open, Edit, View and Go to file; Find or Stop stays. On
+the details page Copy moves first, then Find or Stop; Back stays. At 320×200 the
+query page shows Find and More…; at 1000 px every action is a button. Where even Find
+(or Back) and the More… glyph do not fit beside Close, as at 320×200 with a 32 px font on
+Linux, Find (or Back) shows its glyph alone, then Close does too, and in a footer too
+narrow even for that every action is in More… (the dialog ergonomics list the steps).
 
 The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry
 RED/GREEN coverage. Windows and Linux software-window pointer/key/geometry checks

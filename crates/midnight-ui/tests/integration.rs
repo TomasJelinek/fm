@@ -82,6 +82,7 @@ mod find_polish;
 mod find_result_paths;
 mod find_window_controls;
 mod find_windows;
+mod fitted_footers;
 mod focus;
 mod font_catalog;
 mod fonts;

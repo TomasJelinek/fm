@@ -101,14 +101,26 @@ separately; this document is not a claim that every item is already released.
   `FooterAction`: caption, glyph, hint, shortcut, enabled, primary, a `drop` rank and
   `hidden`) instead of buttons. The footer measures each caption as `ActionButton` lays
   it out and shows, in their order and 8 px apart, as many actions as fit whole beside
-  the dismiss button; the others move, lowest `drop` rank first (rank 0 never), into a
-  More… button at the end of the row, whose menu (opening upward, Up/Down, Enter or
-  Space, Escape) lists them with the same captions, glyphs, shortcuts and enabled
-  states. Where even the actions of rank 0 and a captioned More… do not fit (Find at
-  320×200 with a 32 px font), More… shows its glyph alone and keeps its accessible
-  name. Such a footer never scrolls and never cuts a button; it exposes
-  `shown-actions` and `overflow-actions`. Up to eight actions. Find uses it for its query
-  and details footers; footers that pass buttons as children are unchanged. In the
+  the dismiss button; the others move, lowest `drop` rank first (rank 0 only in the last
+  step below), into a More… button at the end of the row, whose menu (opening upward,
+  Up/Down, Enter or Space, Escape) lists them with the same captions, glyphs, shortcuts
+  and enabled states. Where that is not enough, the footer takes these steps in this
+  order, each only while the row still does not fit, decided from the measured captions
+  alone: More… shows its glyph alone (Find at 320×200 with a 32 px font); then every
+  action of rank 1 and up is in More… and the rank 0 actions show their glyphs alone
+  (Find, or Back, at 320×200 with a 32 px font where text is wider, as on Linux); then
+  the dismiss button shows its glyph alone too; and last the rank 0 actions move into
+  More… as well, leaving only More… and the dismiss button, as glyphs, which fit a
+  footer about 100 px wide. A button that shows its glyph alone keeps its caption as its
+  accessible name and on its tooltip's first line, as the job windows' glyph-only
+  actions do; an action without a glyph keeps its caption. A footer whose actions fit
+  before these steps looks as it did. Such a footer never scrolls, never cuts a button
+  and never puts one outside the window; it exposes `shown-actions` and
+  `overflow-actions`. `tests/fitted_footers.rs` checks each step, and that it was needed,
+  from the buttons' real widths in Find's and Checksums' footers at widths from 2400
+  down to 120 px, fonts from 12 to 48 px and both densities. Up to eight actions. Find
+  and Checksums use it for their footers; footers that pass buttons as children are
+  unchanged. In the
   `footer-actions` literal, read no glyph (or string property) twice where one read is a
   branch of `?:`: Slint 1.18.1's generator then fails with E0382 in the generated Rust.
   Bind each glyph to its own property and read it once; `dialog-footer.slint` shows the

@@ -14,7 +14,10 @@ export { FooterAction }
 // A dialog may instead pass its actions as data (`footer-actions`): the footer then shows
 // as many as fit whole beside the dismiss button, 8 px apart, and puts the others, in
 // their `drop` order, into a More… menu with the same captions, glyphs, shortcuts and
-// enabled states. Such a footer never scrolls and never cuts a button.
+// enabled states. Such a footer never scrolls and never cuts a button. Where that is not
+// enough, More…, then the rank 0 actions, then the dismiss button show their glyphs alone,
+// and last the rank 0 actions move into More… too (`FooterActions` lists the steps), so no
+// action ever leaves the window.
 //
 // Slint 1.18.1 generator pitfall (E0382 "borrow of moved value `tmp_…`" in the generated
 // main.rs): when one binding reads the same non-Copy value (an image such as a
@@ -81,15 +84,33 @@ export component DialogFooter inherits Rectangle {
             @children
         }
     }
+    // For fitted actions only: the dismiss button's caption measured as the button draws it,
+    // so that whether the button shows its glyph alone (their level 3) is decided from its
+    // width with the caption, not from the button itself, whose width that choice changes.
+    dismiss-measure := Text {
+        visible: false; accessible-role: none;
+        text: root.footer-actions.length > 0 ? dismiss-button.text : "";
+        font-family: Theme.effective-font-family; font-size: Theme.font-size;
+    }
+    // Whether the dismiss button draws a glyph (as `ActionButtonContent` chooses it), and
+    // its width with its caption (at least 80 px, as placed below) and with its glyph alone.
+    private property <bool> dismiss-glyph: dismiss-button.text == "Close" || dismiss-button.fallback-icon.width > 0
+        || FallbackIcons.for-label(dismiss-button.text).width > 0 || dismiss-button.native-icon.width > 0;
+    private property <length> dismiss-captioned: max(80px, 24px + dismiss-measure.preferred-width
+        + (root.dismiss-glyph ? Theme.icon-size + (dismiss-button.text != "" ? 4px : 0px) : 0px));
+    private property <length> fitted-room: max(0px, root.width - root.dismiss-captioned - 8px);
+    private property <length> fitted-compact-room: !root.dismiss-glyph ? root.fitted-room
+        : max(0px, root.width - max(32px, 24px + Theme.icon-size) - 8px);
     // Outside the scrolled row: it fits by construction, its last button 8 px before the
     // dismiss button. Without fitted actions it is empty and takes no room.
     fitted := FooterActions {
         actions: root.footer-actions;
-        room: root.inline-room;
+        room: root.fitted-room;
+        compact-room: root.fitted-compact-room;
         compact-controls: root.compact-controls;
         // The gap before its first button may lie left of the footer (it fits up to
         // 8 px wider than the room), so its last button ends exactly 8 px before dismiss.
-        x: root.inline-room - self.width;
+        x: dismiss-button.x - 8px - self.width;
         y: 0px;
         width: self.preferred-width;
         height: root.control-height;
@@ -99,7 +120,9 @@ export component DialogFooter inherits Rectangle {
         minimum-control-height: root.compact-controls ? 0px : 32px;
         vertical-padding: root.compact-controls && !Theme.touch ? 4px : 5px;
         x: root.width - self.width; y: root.stacked ? root.action-height + 8px : 0px;
-        width: min(root.width, max(80px, self.preferred-width));
+        // Only where fitted actions need it (their level 3); without them, never.
+        glyph-only: fitted.compact-dismiss && root.dismiss-glyph;
+        width: self.glyph-only ? self.preferred-width : min(root.width, max(80px, self.preferred-width));
         height: root.control-height;
         text: "Cancel"; hint: "Close this dialog (Escape).";
         fallback-icon: FallbackIcons.close;

@@ -349,8 +349,10 @@ relative to that folder, built in one pass into a text sized for them. With seve
 calculated rows selected its caption counts them ("Copy 3 SHA-256"); below 460 px it is
 "Copy". The footer fits its actions from their measured captions (`FooterActions` in
 `dialog-footer.slint`): one that does not fit whole beside Close moves into More…,
-Copy details and Save… first, then Copy; Back, Calculate or Stop and Verify always stay
-buttons. A counted caption therefore moves Copy into More… rather than being cut. It is
+Copy details and Save… first, then Copy; Back, Calculate or Stop and Verify stay
+buttons (showing their glyphs alone, and last in More… too, only where even that does
+not fit: see the [dialog ergonomics](DIALOG_ERGONOMICS.md)). A counted caption therefore
+moves Copy into More… rather than being cut. It is
 enabled when a
 selected row has a calculated checksum, also while a calculation runs; otherwise its
 tooltip (and accessible description) says why and that Ctrl+A selects all. Save
