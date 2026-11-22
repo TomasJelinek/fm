@@ -4,14 +4,23 @@
 //! without wrapping; Insert and Space stop at the last row; `..` is never marked; the
 //! rubber band marks the rows it touches (plain replaces, Shift adds, Ctrl toggles);
 //! the details strip counts the marked files and folders and their bytes after every
-//! change, compared with the disk.
+//! change, compared with the disk; the last mask and Include folders survive a restart.
+//! In every theme marked rows keep their selected-text
+//! contrast in the rendered frame, in the active and the inactive panel.
 use crate::{
     Context,
     app::{App, Config},
     files_support::{self as support},
-    input, panel,
-    scenarios::panels_support::{self as ps, LEFT},
+    input, inspect,
+    options_support::Frame,
+    panel,
+    scenarios::{
+        panels_support::{self as ps, LEFT},
+        ui_gate,
+    },
 };
+use i_slint_core::items::AccessibleRole;
+use midnight_core::PreferenceTheme;
 use midnight_ui::PanelChoices;
 use slint::{ComponentHandle, LogicalPosition, platform::Key};
 use std::{path::Path, time::Duration};
@@ -172,7 +181,10 @@ pub fn selection_more(context: &mut Context) -> Result<(), String> {
     for name in FOLDERS {
         ps::folder(&folder.join(name))?;
     }
-    let mut app = App::start(Config::new(&folder, &context.work));
+    let store = crate::options_support::SettingsStore::new();
+    let mut config = Config::new(&folder, &context.work);
+    config.settings = Some(store.clone());
+    let mut app = App::start(config);
     let mut failures = Vec::new();
 
     // Ctrl+= starts from *, Include folders off; a*|*.dat... marks the matches.
@@ -356,7 +368,43 @@ pub fn selection_more(context: &mut Context) -> Result<(), String> {
     // The rubber band from the gutter beside the rows: plain replaces, Shift adds,
     // Ctrl toggles.
     rubber(&mut app, context, &folder, &mut failures)?;
+    // The last mask and its Include folders are saved: after a restart Ctrl+= offers
+    // them again.
+    input::chord(app.slint(), &[Key::Control], "d");
+    app.settle();
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], "=");
+    if !ps::wait(&mut app, Duration::from_secs(5), mask_open) {
+        failures.push("Ctrl+= opened no mask dialog before the restart".into());
+    } else {
+        input::fill(app.slint(), "Selection mask", "b*")?;
+        if ps::checked(&app, "Include folders") != Some(true) {
+            input::click(
+                app.slint(),
+                i_slint_core::items::AccessibleRole::Checkbox,
+                "Include folders",
+            )?;
+            app.settle();
+        }
+        input::click_button(app.slint(), "OK")?;
+        ps::wait(&mut app, Duration::from_secs(5), |app| !mask_open(app));
+    }
     app.shutdown()?;
+    drop(app);
+    let mut config = Config::new(&folder, &context.work);
+    config.settings = Some(store);
+    let mut app = App::start(config);
+    mask(&mut app, "=", true, "b*", true, "b*", true, &mut failures)?;
+    expect(
+        &mut app,
+        &folder,
+        "Ctrl+= b* with folders after a restart",
+        &["b1.log", "b2.log"],
+        &mut failures,
+    );
+    app.shutdown()?;
+    drop(app);
+    selection_colours(context, &mut failures)?;
     support::report(&failures)
 }
 
@@ -490,5 +538,185 @@ fn invalid_mask(
         Some(reason) => context.note(format!("invalid mask {text:?}: {reason:?} (dialog open {open})")),
     }
     support::dismiss_all(app);
+    Ok(())
+}
+
+/// Selected text's least contrast against the selection fill in a theme (aac18026):
+/// 12:1 in the High Contrast themes, 7:1 in the Contrast palettes, otherwise 4.5:1.
+fn selected_minimum(theme: PreferenceTheme) -> f64 {
+    match theme {
+        PreferenceTheme::HighContrastDark | PreferenceTheme::HighContrastLight => 12.0,
+        PreferenceTheme::PaperContrast
+        | PreferenceTheme::SandstoneContrast
+        | PreferenceTheme::GraphiteContrast => 7.0,
+        _ => 4.5,
+    }
+}
+
+/// What a row's name looks like in a rendered frame: the fill most of its name area
+/// shows and the colour of its glyph cores (of the colours covering at least three
+/// pixels, the one of most contrast against the fill), with that contrast.
+#[derive(Debug)]
+struct Ink {
+    fill: [u8; 3],
+    text: [u8; 3],
+    ratio: f64,
+}
+
+/// The name text item of the left panel's row `name`, as laid out now.
+fn name_text(app: &App, name: &str) -> Option<inspect::Rect> {
+    let list = panel::geometry(app, LEFT);
+    let row = inspect::controls(app.slint(), AccessibleRole::ListItem)
+        .into_iter()
+        .filter(|(label, _)| panel::is_row_label(label, name))
+        .map(|(_, item)| item)
+        .find(|item| {
+            let center = inspect::center(item);
+            center.x >= list.left && center.x < list.left + list.width
+        })?;
+    let mut found = None;
+    inspect::walk(&row, &mut |item| {
+        if found.is_none()
+            && crate::tools_support::text_of(item).is_some()
+            && inspect::label(item).as_deref() == Some(name)
+        {
+            found = inspect::visible_rect(item);
+        }
+    });
+    found
+}
+
+/// Measure the row `name`'s name area in `frame` ([`Ink`]).
+fn ink(app: &App, frame: &Frame, name: &str) -> Result<Ink, String> {
+    let (x, y, w, h) =
+        name_text(app, name).ok_or_else(|| format!("no shown name text of {name}"))?;
+    let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    let (left, top) = (x.max(0.0) as usize, y.max(0.0) as usize);
+    let right = ((x + w) as usize).min(frame.width);
+    let bottom = ((y + h) as usize).min(frame.height);
+    for row in top..bottom {
+        if right <= left {
+            break;
+        }
+        for pixel in &frame.pixels[row * frame.width + left..row * frame.width + right] {
+            *counts.entry([pixel.r, pixel.g, pixel.b]).or_default() += 1;
+        }
+    }
+    let fill = counts
+        .iter()
+        .max_by_key(|(_, count)| **count)
+        .map(|(colour, _)| *colour)
+        .ok_or_else(|| format!("{name}'s name area is empty"))?;
+    let (text, ratio) = counts
+        .iter()
+        .filter(|(_, count)| **count >= 3)
+        .map(|(colour, _)| (*colour, ui_gate::contrast(*colour, fill)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .ok_or_else(|| format!("{name}'s name shows no glyphs"))?;
+    Ok(Ink { fill, text, ratio })
+}
+
+fn hex([r, g, b]: [u8; 3]) -> String {
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
+/// Selection colours in panel rows in every theme (aac18026), measured in the rendered
+/// frame: a marked file's name keeps the theme's selected-text contrast against the
+/// selection fill (12:1 High Contrast, 7:1 Contrast palettes, otherwise 4.5:1), a marked
+/// file in a filename colour rule keeps 4.5:1 (the shared contrast policy), and the
+/// cursor row 4.5:1. After Tab the panel is inactive: its cursor row takes the inactive
+/// cursor fill, still at 4.5:1, while the marked rows keep their selection.
+fn selection_colours(context: &mut Context, failures: &mut Vec<String>) -> Result<(), String> {
+    let folder = support::scratch(context, "selection-colours")?;
+    // `.zzz` is in no filename colour rule; `.txt` is (#06A4C7, Plain text).
+    for name in ["alpha.zzz", "beta.zzz", "gamma.zzz", "notes.txt"] {
+        ps::write(&folder.join(name), name)?;
+    }
+    let mut measured = Vec::new();
+    for theme in PreferenceTheme::ALL {
+        let mut config = Config::new(&folder, &context.work);
+        config.theme = theme;
+        let mut app = App::start(config);
+        for name in ["alpha.zzz", "notes.txt"] {
+            panel::select_row(&mut app, LEFT, name)?;
+            input::key(app.slint(), Key::Insert);
+        }
+        panel::select_row(&mut app, LEFT, "gamma.zzz")?;
+        if ps::marked(&app, LEFT) != ["alpha.zzz", "notes.txt"] {
+            failures.push(format!(
+                "{theme:?}: Insert marked {:?}",
+                ps::marked(&app, LEFT)
+            ));
+        }
+        let minimum = selected_minimum(theme);
+        let mut cursor_fills = Vec::new();
+        for (state, tab) in [("active", false), ("inactive", true)] {
+            if tab {
+                input::key(app.slint(), Key::Tab);
+                app.settle();
+                if app.window.get_focused_pane() != 1 {
+                    failures.push(format!("{theme:?}: Tab did not activate the right panel"));
+                }
+            }
+            let frame = Frame::of(&mut app);
+            for (name, needed, what) in [
+                ("alpha.zzz", minimum, "a marked file"),
+                ("notes.txt", 4.5, "a marked file with a colour rule"),
+                ("gamma.zzz", 4.5, "the cursor row"),
+            ] {
+                match ink(&app, &frame, name) {
+                    Err(error) => failures.push(format!("{theme:?}, {state} panel: {error}")),
+                    Ok(ink) => {
+                        if name == "gamma.zzz" {
+                            cursor_fills.push(ink.fill);
+                        }
+                        measured.push(format!(
+                            "{theme:?} {state} {name}: {} on {} {:.2}:1",
+                            hex(ink.text),
+                            hex(ink.fill),
+                            ink.ratio
+                        ));
+                        if ink.ratio + 0.005 < needed {
+                            failures.push(format!(
+                                "{theme:?}, {state} panel, {what} ({name}): {} on {} is \
+                                 {:.2}:1, needs {needed}:1",
+                                hex(ink.text),
+                                hex(ink.fill),
+                                ink.ratio
+                            ));
+                        }
+                    }
+                }
+            }
+            // A picture of a few representative themes (each frame was measured).
+            let pictured = matches!(
+                theme,
+                PreferenceTheme::Blue
+                    | PreferenceTheme::Light
+                    | PreferenceTheme::HighContrastDark
+                    | PreferenceTheme::PaperContrast
+            );
+            if !tab && pictured {
+                app.screenshot(
+                    context,
+                    &format!("selection-{theme:?}").to_lowercase(),
+                    &format!("{theme:?}: two marked rows and the cursor row"),
+                );
+            }
+        }
+        if let [active, inactive] = cursor_fills[..]
+            && active == inactive
+        {
+            failures.push(format!(
+                "{theme:?}: the cursor row keeps its fill {} in the inactive panel",
+                hex(active)
+            ));
+        }
+        app.shutdown()?;
+    }
+    context.note(format!(
+        "selection colours measured in the rendered rows: {}",
+        measured.join("; ")
+    ));
     Ok(())
 }

@@ -4,7 +4,9 @@
 //! turn (the other panel stays); after a filename search ended with Escape; after the
 //! panel was focused by a mouse click; in a second tab (the first tab stays); and
 //! inside an archive, from a folder nested in it, where the root is the archive's own
-//! root, not the filesystem's.
+//! root, not the filesystem's. Typed file paths open the file's folder with the cursor
+//! on it (a plain file; an archive focused, not opened); F3 during a filename search
+//! views the match.
 use crate::{
     Context,
     app::{App, Config},
@@ -142,6 +144,9 @@ fn body(context: &mut Context) -> Result<(), String> {
     panel::focus_list(&mut app, LEFT)?;
     input::type_text(app.slint(), "l");
     app.settle();
+    ps::wait(&mut app, Duration::from_secs(5), |app| {
+        !app.window.get_left_search_pending()
+    });
     if !app.window.get_left_search_active() {
         failures.push("typing l did not start a filename search".into());
     }
@@ -156,22 +161,31 @@ fn body(context: &mut Context) -> Result<(), String> {
         "left panel after a search ended with Escape",
         &mut failures,
     );
-    // During an active search (recorded: the catalog gives Shift+Backspace to the root
-    // in filename search too).
+    // During an active search: Shift+Backspace is a command, so it closes the search
+    // and goes to the root (the catalog gives it the root in filename search too).
     go(&mut app, LEFT, &deep)?;
     panel::focus_list(&mut app, LEFT)?;
     input::type_text(app.slint(), "l");
     app.settle();
+    if !app.window.get_left_search_active() {
+        failures.push("typing l did not start a filename search before Shift+Backspace".into());
+    }
     shift_backspace(&mut app);
-    ps::wait(&mut app, Duration::from_secs(3), |app| {
-        app.location(LEFT).as_deref() == Some(support::filesystem_root(&deep).as_path())
-    });
-    context.note(format!(
-        "Shift+Backspace during the search \"l\": left panel at {:?}, search {:?} active {}",
-        app.location(LEFT),
-        app.window.get_left_search_query(),
-        app.window.get_left_search_active()
-    ));
+    let root_of_deep = support::filesystem_root(&deep);
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        app.location(LEFT).as_deref() == Some(root_of_deep.as_path())
+            && !app.loading(LEFT)
+            && !app.window.get_left_search_active()
+            && app.window.get_left_search_query().is_empty()
+    }) {
+        failures.push(format!(
+            "Shift+Backspace during the search \"l\": left panel at {:?}, search {:?} active \
+             {}; expected the root with the search closed",
+            app.location(LEFT),
+            app.window.get_left_search_query(),
+            app.window.get_left_search_active()
+        ));
+    }
     if app.window.get_left_search_active() {
         input::key(app.slint(), Key::Escape);
         app.settle();
@@ -208,10 +222,104 @@ fn body(context: &mut Context) -> Result<(), String> {
     // Inside an archive: from bundle.zip/bundle/nested/deeper to the archive's root.
     archive(&mut app, context, &root, LEFT, &mut failures)?;
     archive(&mut app, context, &root, RIGHT, &mut failures)?;
-    // This staged process has the viewers: Make File List's Internal viewer output.
+    // Typed file paths through the installed native filesystem package, as the
+    // application browses: a plain file, and an archive focused but not opened.
+    typed_files(&mut app, &root, &deep, &mut failures)?;
+    // This staged process has the viewers: Make File List's Internal viewer output, and
+    // F3 during a filename search.
     file_list_viewer(&mut app, context, &root, &mut failures)?;
+    view_during_search(&mut app, &root, &mut failures)?;
     app.shutdown()?;
     support::report(&failures)
+}
+
+/// F3 never waits for the filename search (aac18026): with the cursor on long-line.txt,
+/// "pl" focuses plain.txt; F3 closes the search and views plain.txt (its first line
+/// "0000 …"), not the row focused before.
+fn view_during_search(
+    app: &mut App,
+    root: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    use crate::viewers_support;
+    go(app, LEFT, &root.join("text"))?;
+    panel::select_row(app, LEFT, "long-line.txt")?;
+    input::type_text(app.slint(), "pl");
+    app.settle();
+    ps::wait(app, Duration::from_secs(5), |app| {
+        !app.window.get_left_search_pending()
+    });
+    if ps::cursor(app, LEFT).as_deref() != Some("plain.txt") {
+        failures.push(format!(
+            "typing pl put the cursor on {:?}, not plain.txt",
+            ps::cursor(app, LEFT)
+        ));
+    }
+    let before = viewers_support::viewers_opened(app);
+    input::key(app.slint(), Key::F3);
+    match viewers_support::next_viewer(app, before, Duration::from_secs(30)) {
+        Err(error) => failures.push(format!("F3 while searching pl: {error}")),
+        Ok(viewing) => {
+            let text = viewing.text();
+            if !text.contains("0000 ") {
+                failures.push(format!(
+                    "F3 while searching pl views {:?}, not plain.txt",
+                    text.chars().take(80).collect::<String>()
+                ));
+            }
+            viewing.close(app)?;
+        }
+    }
+    if !ps::wait(app, Duration::from_secs(5), |app| {
+        !app.window.get_left_search_active() && app.window.get_left_search_query().is_empty()
+    }) {
+        failures.push("F3 left the filename search open".into());
+    }
+    Ok(())
+}
+
+/// From another folder, typed file paths in this staged process, which browses through
+/// the installed native filesystem package as the application does (the in-process
+/// scenarios browse through the engine's own local filesystem): each file's folder opens
+/// with the cursor on the file, an archive stays closed; no notice.
+fn typed_files(
+    app: &mut App,
+    root: &Path,
+    from: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    for (folder, name, what) in [
+        ("text", "plain.txt", "a plain file"),
+        (
+            "archives",
+            "bundle.zip",
+            "an archive, focused and not opened",
+        ),
+    ] {
+        go(app, LEFT, from)?;
+        let folder = root.join(folder);
+        panel::type_path(app, LEFT, &folder.join(name).to_string_lossy())?;
+        let shows = |app: &App| {
+            app.location(LEFT).as_deref() == Some(folder.as_path())
+                && !app.loading(LEFT)
+                && ps::cursor(app, LEFT).as_deref() == Some(name)
+        };
+        if !ps::wait(app, LIST_LIMIT, |app| {
+            shows(app) || support::shown_notice(app).is_some()
+        }) || !shows(app)
+            || support::shown_notice(app).is_some()
+        {
+            failures.push(format!(
+                "P-8: the typed path of {name} ({what}): the left panel shows {:?} with the cursor \
+                 on {:?} (notice {:?}); expected its folder with the cursor on {name}",
+                app.location(LEFT),
+                ps::cursor(app, LEFT),
+                support::shown_notice(app)
+            ));
+            support::dismiss_all(app);
+        }
+    }
+    Ok(())
 }
 
 fn shown(app: &App, pane: PaneId) -> BTreeSet<String> {

@@ -126,63 +126,64 @@ pub fn tabs_more(context: &mut Context) -> Result<(), String> {
     overflow(&mut app, context, &mut failures)?;
     // The tabs, their folders and the active one come back after a restart that
     // restores the saved session (no explicit folders, as a plain start).
-    let saved = tabs(&app, LEFT);
-    let session = store.current().tabs[0].clone();
+    let saved = [tabs(&app, LEFT), tabs(&app, RIGHT)];
+    let session = store.current().tabs.clone();
     context.note(format!(
-        "saved left tab session {:?} (active {})",
-        session.paths, session.active
+        "saved tab sessions: left {:?} (active {}), right {:?} (active {})",
+        session[0].paths, session[0].active, session[1].paths, session[1].active
     ));
+    // Only a session of several tabs whose active one is not the first shows that the
+    // restart restored the session rather than opening the configured folder.
+    if saved[0].len() < 2 || saved[0].first().is_some_and(|(_, active)| *active) {
+        failures.push(format!(
+            "the left panel was to keep two tabs or more with a later one active for the \
+             restart; it has {:?}",
+            saved[0]
+        ));
+    }
     app.shutdown()?;
     drop(app);
-    let mut pending = support::Pending::default();
-    let restored = if RESTORE_TABS_READY {
-        restored_tabs(context, &store, &first, &right, &saved)
-    } else {
-        Err("not run until the harness's Config::restore_tabs start is confirmed".into())
-    };
-    pending.check(
-        "tabs and the active tab restored after a restart",
-        "harness: a Config::restore_tabs start is not verified yet",
-        restored,
-    );
-    support::report_with(context, &failures, &pending)
+    // `Config::restore_tabs` starts as the application does without folders on its
+    // command line (`startup_paths` proves that start against the real settings store).
+    if let Err(problem) = restored_tabs(context, &store, &first, &right, &saved) {
+        failures.push(format!(
+            "tabs and the active tab restored after a restart: {problem}"
+        ));
+    }
+    support::report(&failures)
 }
 
-/// Whether the harness's `Config::restore_tabs` start (a start without explicit
-/// folders, as the application restores its session) is known to complete.
-const RESTORE_TABS_READY: bool = false;
-
-/// A restart on the saved settings shows the saved tabs, the active one active.
+/// A restart on the saved settings shows each panel's saved tabs in their order, the
+/// saved active tab active and its folder listed.
 fn restored_tabs(
     context: &mut Context,
     store: &std::sync::Arc<SettingsStore>,
     first: &Path,
     right: &Path,
-    saved: &[(String, bool)],
+    saved: &[Vec<(String, bool)>; 2],
 ) -> Result<(), String> {
     let mut config = Config::new(first, right);
     config.settings = Some(store.clone());
     config.restore_tabs = true;
     let mut app = App::start(config);
-    let target = saved.to_vec();
     let mut problems = Vec::new();
-    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
-        tabs(app, LEFT) == target
-    }) {
-        problems.push(format!(
-            "after a restart the left tabs are {:?}, expected {saved:?}",
-            tabs(&app, LEFT)
-        ));
-    }
-    let active_path = saved
-        .iter()
-        .find(|(_, active)| *active)
-        .map(|(path, _)| PathBuf::from(path));
-    if app.location(LEFT) != active_path {
-        problems.push(format!(
-            "after a restart the left panel shows {:?}, expected its active tab {active_path:?}",
-            app.location(LEFT)
-        ));
+    for (pane, saved) in [LEFT, RIGHT].into_iter().zip(saved) {
+        let target = saved.clone();
+        let active_path = saved
+            .iter()
+            .find(|(_, active)| *active)
+            .map(|(path, _)| PathBuf::from(path));
+        let wanted = active_path.clone();
+        if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+            tabs(app, pane) == target && app.location(pane) == wanted && !app.loading(pane)
+        }) {
+            problems.push(format!(
+                "after a restart the {pane:?} tabs are {:?} showing {:?}, expected {saved:?} \
+                 showing its active tab {active_path:?}",
+                tabs(&app, pane),
+                app.location(pane)
+            ));
+        }
     }
     app.screenshot(context, "restored-tabs", "Tabs restored after a restart");
     app.shutdown()?;

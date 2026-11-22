@@ -7,7 +7,8 @@
 //! Brief and Thumbnails from the View menu and Alt+3/2/5 keep cursor and marks, and the
 //! arrow keys move by column in Brief and by cell and grid row in Thumbnails. The
 //! splitter is dragged (clamped at its minimum, names still shown whole), centered by
-//! a double click, moved and centered with its keys and restored after a restart;
+//! a double click, moved and centered with its keys and restored after a restart, as
+//! are both panels' view modes;
 //! Ctrl+F11 enlarges the active panel, Tab moves the enlargement, Ctrl+F11 restores; a
 //! small window shows one panel and a rail. Header sorting and the splitter work the
 //! same at touch density.
@@ -127,22 +128,11 @@ fn column_name(column: i32) -> &'static str {
     }
 }
 
-/// The cursor row lies inside the rows the list shows: wholly inside the viewport in
-/// Detailed, among the rows the virtualized grid shows in Brief and Thumbnails.
+/// The cursor row lies wholly inside the list's viewport, in every view (Brief places
+/// rows in columns, Thumbnails in a grid: `panel::ListGeometry`).
 fn cursor_in_view(app: &App) -> bool {
-    let cursor = app.cursor(LEFT);
-    if cursor < 0 {
-        return false;
-    }
-    if app.window.get_left_view_mode() != 0 {
-        return cursor >= app.window.get_left_visible_row_start()
-            && cursor < app.window.get_left_visible_row_end();
-    }
-    let top = app.window.get_left_list_top();
-    let height = app.window.get_left_list_height();
-    let row = app.window.get_left_view_row_height();
-    let y = top + app.window.get_left_list_content_y() + cursor as f32 * row;
-    y >= top - 0.5 && y + row <= top + height + 0.5
+    usize::try_from(app.cursor(LEFT))
+        .is_ok_and(|cursor| panel::geometry(app, LEFT).whole_rows().contains(&cursor))
 }
 
 /// What a sort request on `column` should give: the current column reverses, another
@@ -298,6 +288,19 @@ pub fn view_sort(context: &mut Context) -> Result<(), String> {
     sorting(&mut app, context, &specs, &mut failures)?;
     views(&mut app, context, &specs, &mut failures)?;
     let split = splitter(&mut app, context, &mut failures)?;
+    // Each panel's view mode is saved too: Brief on the left, Thumbnails on the right.
+    for (pane, digit, mode) in [(LEFT, "Digit2", 1), (RIGHT, "Digit5", 2)] {
+        panel::focus_list(&mut app, pane)?;
+        ps::physical(&mut app, digit, false, true, false);
+        if !ps::wait(&mut app, Duration::from_secs(5), |app| {
+            pane_view_mode(app, pane) == mode
+        }) {
+            failures.push(format!(
+                "Alt+{digit} in the {pane:?} panel: view mode {}",
+                pane_view_mode(&app, pane)
+            ));
+        }
+    }
     app.shutdown()?;
     drop(app);
     restored_split(&store, &folder, &other, split, &mut failures)?;
@@ -452,6 +455,7 @@ fn views(
             failures.push(format!("View menu {item}: view mode {}", view_mode(app)));
         }
         check_state(app, specs, &format!("View menu {item}"), false, failures);
+        scrolled_away(app, context, item, failures)?;
         match mode {
             1 => {
                 if app.window.get_left_view_columns() < 2 {
@@ -491,6 +495,104 @@ fn views(
         }
         check_state(app, specs, &format!("Alt+{digit}"), false, failures);
     }
+    Ok(())
+}
+
+/// In the current view, with the list wheel-scrolled until the cursor row is out of
+/// view: a click gives the list back the keyboard after Tab without moving the cursor
+/// or a mark (the harness's `panel::focus_list`), and a click at `panel::row_position`
+/// of a row in view puts the cursor on that row (every view places rows its own way:
+/// Brief fills columns, Thumbnails a grid). Then the cursor goes back to its file.
+fn scrolled_away(
+    app: &mut App,
+    context: &mut Context,
+    view: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    panel::select_row(app, LEFT, CURSOR)?;
+    panel::wait_rested(app, LEFT)?;
+    let cursor = usize::try_from(app.cursor(LEFT)).map_err(|_| "no cursor row")?;
+    // Away from the cursor: towards the end when it is in the first half, else the start.
+    let list = panel::geometry(app, LEFT);
+    let direction = if list.cell(cursor).0 * 2 < list.bands() {
+        -1.0
+    } else {
+        1.0
+    };
+    let delta = direction * list.height;
+    let mut rested = list;
+    for _ in 0..8 {
+        if rested.visible_row(cursor).is_none() {
+            break;
+        }
+        panel::wheel_at(app, rested.center(), delta);
+        rested = panel::wait_rested(app, LEFT)?;
+    }
+    if rested.visible_row(cursor).is_some() {
+        // Everything fits: only the row positions can be checked here.
+        context.note(format!(
+            "{view}: the list shows every row, so the cursor cannot leave the view"
+        ));
+    } else {
+        input::key(app.slint(), Key::Tab);
+        app.settle();
+        if app.window.get_focused_pane() != 1 {
+            failures.push(format!(
+                "{view}: Tab did not move the keyboard to the right panel (focused pane {})",
+                app.window.get_focused_pane()
+            ));
+        }
+        match panel::focus_list(app, LEFT) {
+            Err(error) => failures.push(format!("{view}, cursor scrolled out of view: {error}")),
+            Ok(()) => {
+                if ps::cursor(app, LEFT).as_deref() != Some(CURSOR) {
+                    failures.push(format!(
+                        "{view}: focusing the scrolled list moved the cursor to {:?}",
+                        ps::cursor(app, LEFT)
+                    ));
+                }
+                let marks = ps::marked(app, LEFT);
+                if marks != ps::sorted(&MARKED) {
+                    failures.push(format!(
+                        "{view}: focusing the scrolled list left the marks {marks:?}"
+                    ));
+                }
+            }
+        }
+    }
+    // A row the viewport shows whole, away from the cursor and `..`.
+    let list = panel::wait_rested(app, LEFT)?;
+    let whole: Vec<usize> = list
+        .whole_rows()
+        .into_iter()
+        .filter(|index| *index != cursor && *index != 0)
+        .collect();
+    match whole.get(whole.len() / 2) {
+        None => failures.push(format!(
+            "{view}: no row is shown whole to click (geometry {list:?})"
+        )),
+        Some(&index) => {
+            let name = app.names(LEFT).get(index).cloned().unwrap_or_default();
+            let position = panel::row_position(app, LEFT, index);
+            panel::click(app, position);
+            app.settle();
+            if app.cursor(LEFT) != index as i32 {
+                failures.push(format!(
+                    "{view}: a click at row {index} ({name}) at {position:?} put the cursor on \
+                     row {} ({:?})",
+                    app.cursor(LEFT),
+                    ps::cursor(app, LEFT)
+                ));
+            }
+            let marks = ps::marked(app, LEFT);
+            if marks != ps::sorted(&MARKED) {
+                failures.push(format!(
+                    "{view}: clicking row {index} changed the marks to {marks:?}"
+                ));
+            }
+        }
+    }
+    panel::select_row(app, LEFT, CURSOR)?;
     Ok(())
 }
 
@@ -746,7 +848,21 @@ fn restored_split(
             widths(&app).0
         ));
     }
+    let modes = [pane_view_mode(&app, LEFT), pane_view_mode(&app, RIGHT)];
+    if modes != [1, 2] {
+        failures.push(format!(
+            "after a restart the view modes are {modes:?}, expected Brief (1) on the left and \
+             Thumbnails (2) on the right"
+        ));
+    }
     app.shutdown()
+}
+
+fn pane_view_mode(app: &App, pane: PaneId) -> i32 {
+    match pane {
+        PaneId::Left => app.window.get_left_view_mode(),
+        PaneId::Right => app.window.get_right_view_mode(),
+    }
 }
 
 /// Ctrl+F11 enlarges the active panel; Tab moves the enlargement; Ctrl+F11 restores.

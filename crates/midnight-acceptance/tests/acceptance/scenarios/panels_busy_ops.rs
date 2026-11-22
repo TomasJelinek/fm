@@ -24,6 +24,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Stops the writer when dropped, so an early return never leaves it writing.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Creates `w-NNNNN.tmp` every 25 ms, appends to the one two steps back and deletes
 /// the one six steps back, until `stop` or 90 s.
 fn writer(folder: PathBuf, stop: Arc<AtomicBool>) -> thread::JoinHandle<()> {
@@ -106,6 +115,7 @@ pub fn busy_ops(context: &mut Context) -> Result<(), String> {
 
     let stop = Arc::new(AtomicBool::new(false));
     let handle = writer(folder.clone(), stop.clone());
+    let _stop_writer = StopOnDrop(stop.clone());
     app.idle(Duration::from_millis(500));
 
     // F7 while busy.

@@ -7,7 +7,11 @@
 //! a long path collapses its middle into one marker that opens the whole path for
 //! editing, the blank space after the path opens the editor and Escape cancels it; the
 //! drive menu (Alt+F1, Alt+F2, `.` As Other Panel, the filesystem root by pointer); an
-//! empty folder and a search without matches say so.
+//! empty folder and a search without matches say so. A typed path that names a file
+//! opens the file's folder with the cursor on it (quoted, with a final separator, with
+//! spaces around it, with `/` on Windows, relative), or says why the panel does not
+//! show it (hidden, filtered out, not listed in that letter case); a missing file's path
+//! is reported and an archive's path focuses the archive without opening it.
 use crate::{
     Context,
     app::{App, Config},
@@ -72,10 +76,12 @@ pub fn paths(context: &mut Context) -> Result<(), String> {
     path_bar(&mut app, context, &root, &mut failures)?;
     drives(&mut app, context, &root, &mut failures)?;
     details_copy(&mut app, &root, &mut failures)?;
+    details_values(&mut app, context, &mut failures)?;
     empty_states(&mut app, context, &mut failures)?;
     app.shutdown()?;
     drop(app);
     quick_filter_empty(context, &mut failures)?;
+    typed_files(context, &mut failures)?;
     support::report(&failures)
 }
 
@@ -925,5 +931,580 @@ fn details_copy(app: &mut App, root: &Path, failures: &mut Vec<String>) -> Resul
             ));
         }
     }
+    Ok(())
+}
+
+/// The left panel shows `folder` with its listing complete and the cursor on `name`.
+fn shows_file(app: &App, folder: &Path, name: &str) -> bool {
+    app.location(LEFT).as_deref() == Some(folder)
+        && !app.loading(LEFT)
+        && ps::cursor(app, LEFT).as_deref() == Some(name)
+}
+
+/// The "Not shown" note that leads the left details strip, if any.
+fn not_shown(app: &App) -> Option<panel::Detail> {
+    panel::details_of(app, LEFT)
+        .into_iter()
+        .find(|detail| detail.label == "Not shown")
+}
+
+/// Go to `folder` by its typed path and wait for its listing.
+fn typed_folder(app: &mut App, folder: &Path) -> Result<(), String> {
+    panel::type_path(app, LEFT, &folder.to_string_lossy())?;
+    if !reached(app, folder) {
+        return Err(format!(
+            "the typed folder path {} did not open (panel at {:?}, notice {:?})",
+            folder.display(),
+            at(app, LEFT),
+            support::shown_notice(app)
+        ));
+    }
+    Ok(())
+}
+
+/// Type `text`, a path naming the file `name` in `folder`: the panel must show that
+/// folder with the cursor on the file, nothing marked, no notice and no note, and the
+/// keyboard back in the list.
+fn typed_file(
+    app: &mut App,
+    what: &str,
+    text: &str,
+    folder: &Path,
+    name: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    panel::type_path(app, LEFT, text)?;
+    let ended = ps::wait(app, Duration::from_secs(10), |app| {
+        shows_file(app, folder, name) || support::shown_notice(app).is_some()
+    });
+    let mut problems = Vec::new();
+    if !ended || !shows_file(app, folder, name) {
+        problems.push(format!(
+            "the panel shows {:?} (loading {}) with the cursor on {:?}",
+            at(app, LEFT),
+            app.loading(LEFT),
+            ps::cursor(app, LEFT)
+        ));
+    }
+    if let Some(notice) = support::take_notice(app) {
+        problems.push(format!("a notice {notice:?}"));
+    }
+    let marks = ps::marked(app, LEFT);
+    if !marks.is_empty() {
+        problems.push(format!("marks {marks:?}"));
+    }
+    if let Some(note) = not_shown(app) {
+        problems.push(format!("the note {:?}: {:?}", note.value, note.explanation));
+    }
+    if app.window.get_focused_pane() != 0 {
+        problems.push(format!(
+            "the keyboard is not back in the list (focused pane {})",
+            app.window.get_focused_pane()
+        ));
+    }
+    if !problems.is_empty() {
+        failures.push(format!(
+            "the typed file path {what} ({text:?}): {}",
+            problems.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+/// Wait until the left panel shows `folder` with a "Not shown" note, or a notice opens.
+fn wait_note(app: &mut App, folder: &Path) -> bool {
+    let wanted = folder.to_path_buf();
+    ps::wait(app, Duration::from_secs(10), |app| {
+        (app.location(LEFT).as_ref() == Some(&wanted)
+            && !app.loading(LEFT)
+            && not_shown(app).is_some())
+            || support::shown_notice(app).is_some()
+    })
+}
+
+/// Type a path naming `name` in `folder`, which the panel does not show: the folder
+/// opens, a "Not shown" note leads the details strip with `value`, and its explanation
+/// holds `explanation`; no notice appears and the cursor is not on the file.
+fn typed_unshown(
+    app: &mut App,
+    what: &str,
+    folder: &Path,
+    name: &str,
+    value: &str,
+    explanation: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    panel::type_path(app, LEFT, &folder.join(name).to_string_lossy())?;
+    let noted = wait_note(app, folder);
+    let note = not_shown(app);
+    if !noted
+        || note
+            .as_ref()
+            .is_none_or(|note| note.value != value || !note.explanation.contains(explanation))
+    {
+        failures.push(format!(
+            "{what}: the panel shows {:?} with the note {note:?} and the notice {:?}; expected \
+             {} noting {value:?} with {explanation:?}",
+            at(app, LEFT),
+            support::shown_notice(app),
+            folder.display()
+        ));
+    }
+    if ps::cursor(app, LEFT).as_deref() == Some(name) {
+        failures.push(format!(
+            "{what}: the cursor is on the file the panel does not show"
+        ));
+    }
+    support::dismiss_all(app);
+    Ok(())
+}
+
+/// Paths typed in the path editor that name a file (2b901122;
+/// docs/developer/PATH_PASTE.md): the file's folder opens with the cursor on the file, as
+/// typed, pasted ("Copy as path" quotes, the separator Paste adds) or relative; a file
+/// the panel does not show is noted with the reason; a missing file is reported; an
+/// archive is focused, not opened; on Windows a name in other letter case finds the
+/// listed one unless the folder keeps letter case apart.
+fn typed_files(context: &mut Context, failures: &mut Vec<String>) -> Result<(), String> {
+    let typed = support::scratch(context, "typed")?;
+    let elsewhere = support::scratch(context, "elsewhere")?;
+    for (name, text) in [
+        ("plain file.txt", "plain"),
+        (".dot.txt", "dot"),
+        ("filter-me.log", "log"),
+        ("ReadMe.TXT", "read me"),
+    ] {
+        ps::write(&typed.join(name), text)?;
+    }
+    crate::fixtures::hide(&typed.join(".dot.txt"))?;
+    let bundle = context.fixture.root.join("archives").join("bundle.zip");
+    std::fs::copy(&bundle, typed.join("bundle.zip"))
+        .map_err(|error| support::io_error(&bundle, error))?;
+    let mut app = App::start(Config::new(&elsewhere, &context.work));
+
+    // One file's path, typed and as pasted, always from another folder.
+    let text = typed.join("plain file.txt").to_string_lossy().into_owned();
+    let separator = std::path::MAIN_SEPARATOR;
+    let mut variants = vec![
+        ("as typed", text.clone()),
+        ("in double quotes", format!("\"{text}\"")),
+        (
+            "quoted, with the separator Paste adds",
+            format!("\"{text}\"{separator}"),
+        ),
+        ("with a final separator", format!("{text}{separator}")),
+        ("with spaces around it", format!("  {text}  ")),
+    ];
+    if cfg!(windows) {
+        variants.push(("with / separators", text.replace('\\', "/")));
+    }
+    for (what, text) in &variants {
+        typed_folder(&mut app, &elsewhere)?;
+        typed_file(&mut app, what, text, &typed, "plain file.txt", failures)?;
+    }
+    app.screenshot(
+        context,
+        "typed-file-path",
+        "A typed file path: its folder with the cursor on the file",
+    );
+
+    // A name relative to the shown folder moves the cursor without listing it again.
+    let listings = app.listings[0];
+    typed_file(
+        &mut app,
+        "relative to the shown folder",
+        "ReadMe.TXT",
+        &typed,
+        "ReadMe.TXT",
+        failures,
+    )?;
+    if app.listings[0] != listings {
+        failures.push(format!(
+            "the relative file name listed the folder again ({} listings, {listings} before)",
+            app.listings[0]
+        ));
+    }
+
+    // An archive's path focuses the archive; the panel does not open it.
+    typed_folder(&mut app, &elsewhere)?;
+    typed_file(
+        &mut app,
+        "of an archive",
+        &typed.join("bundle.zip").to_string_lossy(),
+        &typed,
+        "bundle.zip",
+        failures,
+    )?;
+
+    // A missing file is reported with its path; the panel keeps its folder.
+    let gone = typed.join("gone.txt");
+    panel::type_path(&mut app, LEFT, &gone.to_string_lossy())?;
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        support::shown_notice(app).is_some()
+    }) {
+        failures.push(format!(
+            "the missing file's path {} reported nothing (panel at {:?}, error {:?})",
+            gone.display(),
+            at(&app, LEFT),
+            app.error(LEFT)
+        ));
+    } else {
+        let (title, body) = support::shown_notice(&app).unwrap_or_default();
+        // The notice names the path in its folder box, beside the title and the reason.
+        let folder = {
+            use slint::ComponentHandle;
+            app.window
+                .global::<midnight_ui::NoticePresentation>()
+                .get_folder_path()
+                .to_string()
+        };
+        let named = format!("{title}\n{body}\n{folder}").contains(gone.to_string_lossy().as_ref());
+        if title != "Cannot open folder" || !named {
+            failures.push(format!(
+                "the missing file's path gave the notice {title:?} / {body:?} / folder \
+                 {folder:?}; expected \"Cannot open folder\" naming {}",
+                gone.display()
+            ));
+        }
+        input::key(app.slint(), Key::Escape);
+        app.settle();
+    }
+    if !ps::wait(&mut app, Duration::from_secs(5), |app| {
+        support::shown_notice(app).is_none()
+            && app.location(LEFT).as_deref() == Some(typed.as_path())
+    }) {
+        failures.push(format!(
+            "after Escape from the missing file's notice: panel at {:?}, notice {:?}",
+            at(&app, LEFT),
+            support::shown_notice(&app)
+        ));
+    }
+    support::dismiss_all(&mut app);
+
+    // Hidden files hidden (Ctrl+H): the note says why and which key shows them.
+    typed_folder(&mut app, &typed)?;
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], "h");
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        !app.names(LEFT).iter().any(|name| name == ".dot.txt") && !app.loading(LEFT)
+    }) {
+        failures.push(format!(
+            "Ctrl+H did not hide .dot.txt: {:?}",
+            app.names(LEFT)
+        ));
+    }
+    typed_folder(&mut app, &elsewhere)?;
+    typed_unshown(
+        &mut app,
+        "a hidden file's path",
+        &typed,
+        ".dot.txt",
+        ".dot.txt is hidden",
+        "Ctrl+H shows them",
+        failures,
+    )?;
+    app.screenshot(
+        context,
+        "typed-hidden-file",
+        "A typed path of a hidden file: the note says why",
+    );
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], "h");
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        app.names(LEFT).iter().any(|name| name == ".dot.txt") && !app.loading(LEFT)
+    }) {
+        failures.push("a second Ctrl+H did not show .dot.txt again".into());
+    }
+
+    // The panel filter leaves the file out: the note says so and which key edits it.
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], Key::F12);
+    if !ps::wait(&mut app, Duration::from_secs(5), |app| {
+        app.window.get_panel_filter_view().open
+    }) {
+        return Err("Ctrl+F12 opened no Panel filter".into());
+    }
+    support::choose(&mut app, "Filter mode", "Masks", 3)?;
+    input::fill(app.slint(), "File filter expression", "*.txt")?;
+    input::click_button(app.slint(), "OK")?;
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        !app.window.get_panel_filter_view().open
+            && !app.names(LEFT).iter().any(|name| name == "filter-me.log")
+    }) {
+        failures.push(format!(
+            "the Masks filter *.txt did not leave filter-me.log out: {:?}",
+            app.names(LEFT)
+        ));
+    }
+    typed_unshown(
+        &mut app,
+        "a filtered-out file's path",
+        &typed,
+        "filter-me.log",
+        "filter-me.log is filtered out",
+        "Ctrl+F12 edits the filter",
+        failures,
+    )?;
+    match inspect::find(app.slint(), AccessibleRole::Button, "Clear panel filter") {
+        Some(item) => {
+            input::click_at(app.slint(), inspect::center(&item));
+            app.settle();
+        }
+        None => failures.push("the filter indicator has no × (Clear panel filter)".into()),
+    }
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        app.names(LEFT).iter().any(|name| name == "filter-me.log")
+    }) {
+        failures.push("clearing the filter did not list filter-me.log again".into());
+    }
+
+    // Windows folders ignore letter case: a name in other case finds the listed one.
+    #[cfg(windows)]
+    letter_case(&mut app, context, &typed, failures)?;
+    app.shutdown()
+}
+
+/// Windows: `readme.txt` puts the cursor on `ReadMe.TXT` with no note; in a folder that
+/// keeps letter case apart (`fsutil file setCaseSensitiveInfo`) with `ab.txt` and
+/// `AB.txt`, `Ab.txt` is "not listed here" and the cursor stays.
+#[cfg(windows)]
+fn letter_case(
+    app: &mut App,
+    context: &mut Context,
+    typed: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    typed_folder(app, typed)?;
+    panel::select_row(app, LEFT, "plain file.txt")?;
+    typed_file(
+        app,
+        "in other letter case",
+        "readme.txt",
+        typed,
+        "ReadMe.TXT",
+        failures,
+    )?;
+    let sensitive = typed.join("case-sensitive");
+    ps::folder(&sensitive)?;
+    let enabled = std::process::Command::new("fsutil")
+        .args(["file", "setCaseSensitiveInfo"])
+        .arg(&sensitive)
+        .arg("enable")
+        .stdin(std::process::Stdio::null())
+        .output();
+    // fsutil reports a refusal (such as access denied) with a zero status: ask it back.
+    let query = std::process::Command::new("fsutil")
+        .args(["file", "queryCaseSensitiveInfo"])
+        .arg(&sensitive)
+        .stdin(std::process::Stdio::null())
+        .output();
+    let refused = match (enabled, query) {
+        (Ok(_), Ok(query)) if String::from_utf8_lossy(&query.stdout).contains("is enabled") => None,
+        (Ok(output), _) => Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
+        (Err(error), _) => Some(error.to_string()),
+    };
+    if let Some(reason) = refused {
+        context.note(format!(
+            "SKIP: a folder that keeps letter case apart: fsutil setCaseSensitiveInfo was \
+             refused: {reason}"
+        ));
+        return Ok(());
+    }
+    for name in ["ab.txt", "AB.txt", "zz.txt"] {
+        ps::write(&sensitive.join(name), name)?;
+    }
+    let names = support::names_on_disk(&sensitive);
+    if names.len() != 3 {
+        context.note(format!(
+            "SKIP: a folder that keeps letter case apart: it holds {names:?}"
+        ));
+        return Ok(());
+    }
+    typed_folder(app, &sensitive)?;
+    panel::select_row(app, LEFT, "zz.txt")?;
+    panel::type_path(app, LEFT, "Ab.txt")?;
+    let noted = wait_note(app, &sensitive);
+    let note = not_shown(app);
+    if !noted
+        || note
+            .as_ref()
+            .is_none_or(|note| note.value != "Ab.txt is not listed here")
+    {
+        failures.push(format!(
+            "Ab.txt among ab.txt and AB.txt: the panel shows {:?} with the note {note:?} and \
+             the notice {:?}; expected \"Ab.txt is not listed here\"",
+            at(app, LEFT),
+            support::shown_notice(app)
+        ));
+    }
+    if ps::cursor(app, LEFT).as_deref() != Some("zz.txt") {
+        failures.push(format!(
+            "Ab.txt among ab.txt and AB.txt moved the cursor to {:?}",
+            ps::cursor(app, LEFT)
+        ));
+    }
+    support::dismiss_all(app);
+    Ok(())
+}
+
+/// The digit groups of a shown value, in order ("14. 11. 2023" → [14, 11, 2023]).
+fn digit_groups(text: &str) -> Vec<u64> {
+    text.split(|character: char| !character.is_ascii_digit())
+        .filter(|group| !group.is_empty())
+        .filter_map(|group| group.parse().ok())
+        .collect()
+}
+
+/// The left details strip's copy button for `label` (its accessible label is
+/// "<label>: <value>. Copy to clipboard"), with the value it shows.
+fn detail_button(app: &App, label: &str) -> Option<(String, ItemRc)> {
+    let top = app.window.get_left_details_top();
+    let edge = app.window.get_left_pane_left() + app.window.get_left_pane_width();
+    inspect::controls(app.slint(), AccessibleRole::Button)
+        .into_iter()
+        .find_map(|(text, item)| {
+            let value = text
+                .strip_prefix(&format!("{label}: "))?
+                .strip_suffix(". Copy to clipboard")?
+                .to_owned();
+            (inspect::rect(&item).1 >= top - 1.0 && inspect::center(&item).x < edge)
+                .then_some((value, item))
+        })
+}
+
+/// What the in-process clipboard holds, and how many copies it took so far.
+fn clipboard(app: &App) -> (Option<String>, u64) {
+    app.clipboard.as_ref().map_or((None, 0), |clipboard| {
+        (clipboard.text(), clipboard.writes())
+    })
+}
+
+/// Wait for one more copy to the clipboard than `before`, holding `wanted`.
+fn copied_once_more(app: &mut App, before: u64, wanted: &str) -> bool {
+    ps::wait(app, Duration::from_secs(3), |app| {
+        let (text, writes) = clipboard(app);
+        writes > before && text.as_deref() == Some(wanted)
+    })
+}
+
+/// The details strip's values against the disk and the keyboard and pointer copies
+/// that `details_copy` leaves out: a file modified at 12:34:56 UTC on 14 November 2023
+/// (that day in every time zone from UTC−11 to UTC+11) shows its exact byte count, a
+/// date of that year, month and day in the locale's order and a time of those minutes
+/// and seconds, the same date and time as its row; Space and Enter on a focused field
+/// copy it again; the free space at the strip's right copies the value it shows.
+fn details_values(
+    app: &mut App,
+    context: &mut Context,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let folder = support::scratch(context, "details")?;
+    let file = folder.join("dated.txt");
+    let modified = ps::instant((2023, 11, 14), (12, 34, 56), 0, 0);
+    crate::tools_support::write_at(&file, &[b'd'; 1234], modified)?;
+    go(app, &folder)?;
+    panel::select_row(app, LEFT, "dated.txt")?;
+    let wanted =
+        |label: &str| -> Option<String> { detail_button(app, label).map(|(value, _)| value) };
+    let (bytes, date, time) = (wanted("Bytes"), wanted("Date"), wanted("Time"));
+    if bytes.as_deref().is_none_or(|bytes| {
+        digit_groups(bytes)
+            .iter()
+            .fold(0, |sum, group| sum * 1000 + group)
+            != 1234
+    }) {
+        failures.push(format!(
+            "the details strip's Bytes of a 1234-byte file reads {bytes:?}"
+        ));
+    }
+    let mut day = date.as_deref().map(digit_groups).unwrap_or_default();
+    day.sort_unstable();
+    if day != [11, 14, 2023] && day != [11, 14, 23] {
+        failures.push(format!(
+            "the details strip's Date of a file modified on 2023-11-14 reads {date:?}"
+        ));
+    }
+    let clock = time.as_deref().map(digit_groups).unwrap_or_default();
+    // Hours depend on the time zone; minutes too in a zone of a half or quarter hour.
+    if clock.len() < 2
+        || ![34, 4, 19, 49].contains(&clock[1])
+        || clock.get(2).is_some_and(|seconds| *seconds != 56)
+    {
+        failures.push(format!(
+            "the details strip's Time of a file modified at 12:34:56 UTC reads {time:?}"
+        ));
+    }
+    let row = app
+        .rows(LEFT)
+        .into_iter()
+        .find(|row| row.name == "dated.txt")
+        .map(|row| (row.modified_date.to_string(), row.modified_time.to_string()));
+    if row.as_ref().map(|(date, time)| (Some(date), Some(time)))
+        != Some((date.as_ref(), time.as_ref()))
+    {
+        failures.push(format!(
+            "the details strip says {date:?} {time:?}, the row {row:?}"
+        ));
+    }
+    // A clicked field has the keyboard: Space and Enter copy it again.
+    match detail_button(app, "Bytes") {
+        None => failures.push("the details strip shows no Bytes field".into()),
+        Some((value, item)) => {
+            app.idle(Duration::from_millis(650));
+            let (_, before) = clipboard(app);
+            input::click_at(app.slint(), inspect::center(&item));
+            app.settle();
+            if !copied_once_more(app, before, &value) {
+                failures.push(format!(
+                    "clicking the Bytes field did not copy {value:?}: {:?}",
+                    clipboard(app)
+                ));
+            }
+            for key in [Key::Space, Key::Return] {
+                let (_, before) = clipboard(app);
+                input::key(app.slint(), key);
+                app.settle();
+                if !copied_once_more(app, before, &value) {
+                    failures.push(format!(
+                        "{key:?} on the focused Bytes field did not copy it again: {:?}",
+                        clipboard(app)
+                    ));
+                }
+            }
+        }
+    }
+    // The free space at the strip's right copies what it shows, once the volume's space
+    // is known ("Free space —" until then).
+    ps::wait(app, Duration::from_secs(10), |app| {
+        panel::free_space(app, LEFT).ends_with(" free")
+    });
+    let free = panel::free_space(app, LEFT);
+    let button = inspect::find(
+        app.slint(),
+        AccessibleRole::Button,
+        &format!("{free}. Copy to clipboard"),
+    );
+    match button.filter(|_| !free.is_empty()) {
+        None => failures.push(format!(
+            "the details strip shows no free-space button (free space {free:?})"
+        )),
+        Some(item) => {
+            if !free.ends_with(" free") || digit_groups(&free).is_empty() {
+                failures.push(format!("the free space reads {free:?}"));
+            }
+            app.idle(Duration::from_millis(650));
+            let (_, before) = clipboard(app);
+            let (x, y, w, h) = inspect::visible_rect(&item).unwrap_or_else(|| inspect::rect(&item));
+            input::click_at(app.slint(), LogicalPosition::new(x + w / 2.0, y + h / 2.0));
+            app.settle();
+            if !copied_once_more(app, before, &free) {
+                failures.push(format!(
+                    "clicking the free space {free:?} copied {:?}",
+                    clipboard(app)
+                ));
+            }
+        }
+    }
+    panel::focus_list(app, LEFT)?;
     Ok(())
 }

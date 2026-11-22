@@ -5,7 +5,10 @@
 //! Up/Down by ten, Escape) and its ▲/▼ buttons; Now. Every picked value is applied and
 //! read back from disk to the second. Escape in a picker closes only the picker, the next
 //! one closes the editor without applying anything. Ctrl+F7 opens the same editor on
-//! its Case page and renames a file to lower case.
+//! its Case page and renames a file to lower case. The finer points: Tab alone leaves a
+//! row unticked, Escape in a picker restores the time and the tick, the picker's
+//! Home/End/Tab/digits/Space, the wheel, the calendar's year and month-end keys, an
+//! outside click, and an unticked row that keeps its value and is not applied.
 use crate::{
     Context,
     app::{App, Config},
@@ -14,7 +17,7 @@ use crate::{
     scenarios::panels_support::{self as ps, LEFT},
 };
 use i_slint_core::items::AccessibleRole;
-use slint::platform::Key;
+use slint::{LogicalPosition, platform::Key};
 use std::{
     fs,
     time::{Duration, SystemTime},
@@ -75,7 +78,7 @@ fn modified(path: &std::path::Path) -> Option<SystemTime> {
 
 pub fn times(context: &mut Context) -> Result<(), String> {
     let folder = support::scratch(context, "times")?;
-    for name in ["one.txt", "two.txt", "three.txt"] {
+    for name in ["one.txt", "two.txt", "three.txt", "details.txt"] {
         ps::write(&folder.join(name), name)?;
     }
     ps::write(&folder.join("MiXeD Name.TXT"), "case")?;
@@ -89,6 +92,7 @@ pub fn times(context: &mut Context) -> Result<(), String> {
     escape(&mut app, &folder, &mut failures)?;
     case(&mut app, context, &folder, &mut failures)?;
     recursive(&mut app, &folder, &mut failures)?;
+    picker_details(&mut app, context, &folder, &mut failures)?;
     app.shutdown()?;
     support::report(&failures)
 }
@@ -612,5 +616,352 @@ fn recursive(
             }
         }
     }
+    Ok(())
+}
+
+/// The accessible label of the control that has the keyboard, if any.
+fn focused(app: &App) -> Option<String> {
+    let item = i_slint_core::window::WindowInner::from_pub(app.slint())
+        .focus_item
+        .borrow()
+        .upgrade()?;
+    inspect::label(&item)
+}
+
+/// Press Tab until the control labelled `label` has the keyboard (at most `limit`
+/// presses); whether it got it.
+fn tab_to(app: &mut App, label: &str, limit: usize) -> bool {
+    for _ in 0..limit {
+        if focused(app).as_deref() == Some(label) {
+            return true;
+        }
+        press(app, Key::Tab, false);
+    }
+    focused(app).as_deref() == Some(label)
+}
+
+/// Turn the wheel by `delta` logical pixels over the middle of `item`.
+fn wheel_over(app: &mut App, item: &i_slint_core::item_tree::ItemRc, delta: f32) {
+    let position = inspect::center(item);
+    input::move_to(app.slint(), position);
+    app.slint()
+        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position,
+            delta_x: 0.0,
+            delta_y: delta,
+        });
+    app.settle();
+}
+
+/// The Times page's finer points (1e8a987f): Tab alone leaves a row unticked and Up in
+/// its field ticks it; Escape in the time picker restores the time and the tick; the
+/// picker's Home/End, Tab and Shift+Tab (round the columns), typed digits that move on,
+/// Space keeping the time; the wheel (one step per 60 px notch, fine deltas added up;
+/// over the calendar it turns months); the calendar's Ctrl+Page Up/Down (a year),
+/// Home/End (first and last day) and Space; an outside click keeping the change; an
+/// unticked row keeping its value and leaving the disk alone, ticked again applying it.
+/// Holding ▲ (a 500 ms delay, then every 50 ms) needs the controllable clock: SKIP.
+fn picker_details(
+    app: &mut App,
+    context: &mut Context,
+    folder: &std::path::Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let path = folder.join("details.txt");
+    let before = modified(&path);
+    panel::select_row(app, LEFT, "details.txt")?;
+    ps::open_metadata(app, false)?;
+    input::click_button(app.slint(), "Times")?;
+    app.settle();
+    let editor = popups(app);
+    let ticked = |app: &App| ps::checked(app, "Change Modified");
+
+    // Tab alone only moves the keyboard; Up in the date field ticks the row.
+    if !tab_to(app, DATE, 24) {
+        failures.push(format!(
+            "Tab never reached the Modified date field (the keyboard is on {:?})",
+            focused(app)
+        ));
+    } else {
+        if ticked(app) != Some(false) {
+            failures.push(format!(
+                "Tab into the Modified date ticked the row: {:?}",
+                ticked(app)
+            ));
+        }
+        let date = field(app, DATE);
+        press(app, Key::UpArrow, false);
+        if ticked(app) != Some(true) || field(app, DATE) == date {
+            failures.push(format!(
+                "Up in the Modified date: {date:?} → {:?}, row ticked {:?}",
+                field(app, DATE),
+                ticked(app)
+            ));
+        }
+    }
+
+    // A known time to start from; untick the row again by its box.
+    input::fill(app.slint(), TIME, "10:20:00")?;
+    app.settle();
+    input::click(app.slint(), AccessibleRole::Checkbox, "Change Modified")?;
+    app.settle();
+    if ticked(app) != Some(false) {
+        failures.push("clicking the ticked Change Modified box did not untick it".into());
+    }
+    // Escape in the picker restores the time and the tick it opened with.
+    if !tab_to(app, TIME, 24) {
+        failures.push(format!(
+            "Tab never reached the Modified time field (the keyboard is on {:?})",
+            focused(app)
+        ));
+    }
+    press(app, Key::DownArrow, true);
+    if popups(app) != editor + 1 || spin(app, "Modified hour").is_none() {
+        failures.push("Alt+Down in the time field opened no picker".into());
+    } else {
+        press(app, Key::UpArrow, false);
+        if field(app, TIME) != "11:20:00" || ticked(app) != Some(true) {
+            failures.push(format!(
+                "Up in the picker: the time is {:?} and the row ticked {:?}, expected 11:20:00 \
+                 ticked",
+                field(app, TIME),
+                ticked(app)
+            ));
+        }
+        press(app, Key::Escape, false);
+        if field(app, TIME) != "10:20:00" || ticked(app) != Some(false) {
+            failures.push(format!(
+                "Escape in the picker left {:?} with the row ticked {:?}, expected 10:20:00 \
+                 unticked as it opened",
+                field(app, TIME),
+                ticked(app)
+            ));
+        }
+    }
+
+    // The picker's keys: Home/End, Tab and Shift+Tab round the columns, digits, Space.
+    press(app, Key::DownArrow, true);
+    if popups(app) != editor + 1 {
+        failures.push("Alt+Down opened no time picker for its keys".into());
+    } else {
+        for (key, shift, column, wanted) in [
+            (Key::Home, false, "Modified hour", "00"),
+            (Key::End, false, "Modified hour", "23"),
+            (Key::Tab, false, "Modified minute", "20"),
+            (Key::Tab, true, "Modified hour", "23"),
+            (Key::Tab, true, "Modified second", "00"),
+            (Key::Tab, false, "Modified hour", "23"),
+        ] {
+            if shift {
+                input::chord(app.slint(), &[Key::Shift], key);
+                app.settle();
+            } else {
+                press(app, key, false);
+            }
+            expect(
+                failures,
+                &format!("time picker {}{key:?}", if shift { "Shift+" } else { "" }),
+                spin(app, column),
+                wanted,
+            );
+        }
+        // Digits set the hour as typed and move on; one digit sets a minute of 07.
+        input::type_text(app.slint(), "15");
+        app.settle();
+        // A complete hour moves the picker on: its minute column is chosen now.
+        if !field(app, TIME).starts_with("15:") {
+            failures.push(format!(
+                "typing 1 5 in the hour gave the time {:?}",
+                field(app, TIME)
+            ));
+        }
+        if spin(app, "Modified minute").is_none() {
+            failures.push("after a complete hour the picker did not move to the minute".into());
+        }
+        input::type_text(app.slint(), "7");
+        app.settle();
+        expect(
+            failures,
+            "typing 7 in the minute",
+            Some(field(app, TIME)),
+            "15:07:00",
+        );
+        press(app, Key::Space, false);
+        if popups(app) != editor {
+            failures.push("Space did not close the time picker".into());
+        }
+        expect(
+            failures,
+            "the time Space kept",
+            Some(field(app, TIME)),
+            "15:07:00",
+        );
+    }
+
+    // The wheel over a column: one step per 60 px notch, fine deltas added up.
+    if input::click_button(app.slint(), "Modified: choose time").is_err() {
+        failures.push("no Modified: choose time button".into());
+    } else {
+        app.settle();
+        match inspect::find(app.slint(), AccessibleRole::Button, "Increase Hour") {
+            None => failures.push("the time picker shows no Increase Hour arrow".into()),
+            Some(arrow) => {
+                // The middle of the hour column: below its ▲.
+                let (x, y, w, h) = inspect::rect(&arrow);
+                let column = LogicalPosition::new(x + w / 2.0, y + h * 1.5);
+                input::move_to(app.slint(), column);
+                for delta in [60.0, 30.0, 30.0, -60.0, 20.0] {
+                    app.slint()
+                        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                            position: column,
+                            delta_x: 0.0,
+                            delta_y: delta,
+                        });
+                    app.settle();
+                }
+                expect(
+                    failures,
+                    "the wheel over the hour (+60, +30, +30, −60, +20 px)",
+                    spin(app, "Modified hour"),
+                    "16",
+                );
+            }
+        }
+        // A click outside it (on the date field of the editor below) closes the picker
+        // and keeps the change.
+        match inspect::find_all(app.slint(), AccessibleRole::TextInput, DATE).first() {
+            None => failures.push("no Modified date field to click outside the picker".into()),
+            Some(date) => {
+                input::click_at(app.slint(), inspect::center(date));
+                app.settle();
+            }
+        }
+        if popups(app) != editor {
+            failures.push("a click outside did not close the time picker".into());
+        }
+        expect(
+            failures,
+            "the time an outside click kept",
+            Some(field(app, TIME)),
+            "16:07:00",
+        );
+    }
+
+    // The calendar: Ctrl+Page Up/Down a year, Home/End the month's ends, Space chooses;
+    // the wheel turns months.
+    input::fill(app.slint(), DATE, "2001-02-03")?;
+    app.settle();
+    press(app, Key::DownArrow, true);
+    if popups(app) != editor + 1 || spin(app, CALENDAR).is_none() {
+        failures.push("Alt+Down in the date field opened no calendar".into());
+    } else {
+        for (control, key, wanted) in [
+            (true, Key::PageDown, "2002-02-03"),
+            (true, Key::PageUp, "2001-02-03"),
+            (false, Key::End, "2001-02-28"),
+            (false, Key::Home, "2001-02-01"),
+        ] {
+            if control {
+                input::chord(app.slint(), &[Key::Control], key);
+                app.settle();
+            } else {
+                press(app, key, false);
+            }
+            expect(
+                failures,
+                &format!("calendar {}{key:?}", if control { "Ctrl+" } else { "" }),
+                spin(app, CALENDAR),
+                wanted,
+            );
+        }
+        if let Some(calendar) = inspect::find(app.slint(), AccessibleRole::Spinbox, CALENDAR) {
+            // Up goes back a month per 60 px notch.
+            wheel_over(app, &calendar, 60.0);
+            expect(
+                failures,
+                "the wheel up over the calendar",
+                spin(app, CALENDAR),
+                "2001-01-01",
+            );
+            wheel_over(app, &calendar, -30.0);
+            wheel_over(app, &calendar, -30.0);
+            expect(
+                failures,
+                "two half notches down over the calendar",
+                spin(app, CALENDAR),
+                "2001-02-01",
+            );
+        }
+        press(app, Key::Space, false);
+        if popups(app) != editor {
+            failures.push("Space did not choose the calendar's day".into());
+        }
+        expect(
+            failures,
+            "the day Space chose",
+            Some(field(app, DATE)),
+            "2001-02-01",
+        );
+    }
+
+    // An unticked row keeps what it shows and is not applied; ticked again, it is.
+    input::fill(app.slint(), DATE, "2001-02-03")?;
+    input::fill(app.slint(), TIME, "04:05:06")?;
+    input::fill(app.slint(), OFFSET, "Z")?;
+    app.settle();
+    if ticked(app) == Some(true) {
+        input::click(app.slint(), AccessibleRole::Checkbox, "Change Modified")?;
+        app.settle();
+    }
+    if ticked(app) != Some(false) || field(app, DATE) != "2001-02-03" {
+        failures.push(format!(
+            "unticking the row: ticked {:?}, date {:?}, expected the shown 2001-02-03 kept",
+            ticked(app),
+            field(app, DATE)
+        ));
+    }
+    // Apply with nothing ticked changes nothing; ticking Accessed gives it a job.
+    input::click(app.slint(), AccessibleRole::Checkbox, "Change Accessed")?;
+    app.settle();
+    match ps::apply_metadata(app) {
+        Err(error) => failures.push(format!("Apply with Modified unticked: {error}")),
+        Ok(_) => {
+            if modified(&path) != before {
+                failures.push(format!(
+                    "Apply with the Modified row unticked changed details.txt: {before:?} → {:?}",
+                    modified(&path)
+                ));
+            }
+        }
+    }
+    panel::select_row(app, LEFT, "details.txt")?;
+    ps::open_metadata(app, false)?;
+    input::click_button(app.slint(), "Times")?;
+    app.settle();
+    input::fill(app.slint(), DATE, "2001-02-03")?;
+    input::fill(app.slint(), TIME, "04:05:06")?;
+    input::fill(app.slint(), OFFSET, "Z")?;
+    app.settle();
+    if ticked(app) != Some(true) {
+        input::click(app.slint(), AccessibleRole::Checkbox, "Change Modified")?;
+        app.settle();
+    }
+    match ps::apply_metadata(app) {
+        Err(error) => failures.push(format!("Apply with Modified ticked again: {error}")),
+        Ok(_) => {
+            let wanted = ps::instant((2001, 2, 3), (4, 5, 6), 0, 0);
+            if modified(&path) != Some(wanted) {
+                failures.push(format!(
+                    "Apply with the row ticked again: details.txt modified {:?}, expected \
+                     2001-02-03 04:05:06 UTC",
+                    modified(&path)
+                ));
+            }
+        }
+    }
+    context.note(
+        "SKIP: holding the time picker's ▲ (+10 in 1,000 ms after the 500 ms delay, +1 in \
+         300 ms, paused off the arrow): needs the scenario's own clock (harness H1)",
+    );
     Ok(())
 }

@@ -48,8 +48,12 @@ fn check_notice(
         failures.push(format!("{what}: no notice within 10 s"));
         return false;
     }
-    // The body and folder box are filled in the same update; give layout a frame.
-    app.idle(Duration::from_millis(100));
+    // The body and folder box are filled in the same update: wait until the notice's
+    // title is laid out.
+    ps::wait(app, Duration::from_secs(5), |app| {
+        let title = support::shown_notice(app).unwrap_or_default().0;
+        ps::dialog_texts(app).iter().any(|text| text.text == title)
+    });
     let (title, body) = support::shown_notice(app).unwrap_or_default();
     if title != wanted_title {
         failures.push(format!(
@@ -554,8 +558,10 @@ fn blind_control(app: &mut App, locked: &Path, failures: &mut Vec<String>) {
         failures.push("control: Enter in a 480×260 window opened no notice".into());
         return;
     }
-    app.idle(Duration::from_millis(100));
     let wanted = locked.to_string_lossy().into_owned();
+    ps::wait(app, Duration::from_secs(5), |app| {
+        ps::dialog_texts(app).iter().any(|text| text.text == wanted)
+    });
     match ps::dialog_texts(app)
         .into_iter()
         .find(|text| text.text == wanted)

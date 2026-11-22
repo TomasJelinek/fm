@@ -1,5 +1,6 @@
-//! Shift+F4 new empty file (including the existing-name prompt), F7 new folder and F2
-//! rename, typed into the real dialogs and verified on disk and in the panel.
+//! Shift+F4 new empty file (including the existing-name prompt) with the cursor on it,
+//! F7 new folder (an empty name refused with the reason) and F2 rename, typed into the
+//! real dialogs and verified on disk and in the panel.
 use crate::{
     Context,
     app::{App, Config},
@@ -55,6 +56,7 @@ pub fn create_rename(context: &mut Context) -> Result<(), String> {
     fs::write(folder.join("keep.txt"), "keep\n").map_err(|error| error.to_string())?;
     let mut app = App::start(Config::new(&folder, &context.work));
     let pane = PaneId::Left;
+    let mut failures = Vec::new();
     panel::focus_list(&mut app, pane)?;
 
     // Shift+F4: a new empty file with a Unicode name.
@@ -80,8 +82,12 @@ pub fn create_rename(context: &mut Context) -> Result<(), String> {
         return Err(format!("the new file is not an empty file: {metadata:?}"));
     }
     panel::wait_input(&mut app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while cursor_name(&app, pane).as_deref() != Some(name) && std::time::Instant::now() < deadline {
+        app.idle(std::time::Duration::from_millis(20));
+    }
     if cursor_name(&app, pane).as_deref() != Some(name) {
-        context.note(format!(
+        failures.push(format!(
             "after Shift+F4 the cursor is on {:?}, not the new file",
             cursor_name(&app, pane)
         ));
@@ -183,6 +189,35 @@ pub fn create_rename(context: &mut Context) -> Result<(), String> {
     input::key(app.slint(), Key::F7);
     wait_dialog(&mut app, "the Create directory dialog");
     app.screenshot(context, "create-folder-dialog", "F7 Create directory");
+    // Enter with an empty name says what is missing and keeps the dialog open.
+    input::replace_text(app.slint(), "");
+    input::key(app.slint(), Key::Return);
+    app.settle();
+    let reason = "Type the folder name or path first.";
+    let ran = app.operations[start..]
+        .iter()
+        .any(|progress| progress.state.is_terminal());
+    if app.window.get_operation_token().is_empty()
+        || !inspect::visible_texts(app.slint())
+            .iter()
+            .any(|text| text == reason)
+        || ran
+    {
+        failures.push(format!(
+            "F7 with an empty name: dialog open {}, texts {:?}; expected {reason:?} and the \
+             dialog kept",
+            !app.window.get_operation_token().is_empty(),
+            inspect::visible_texts(app.slint())
+                .into_iter()
+                .filter(|text| text.contains("first"))
+                .collect::<Vec<_>>()
+        ));
+    }
+    app.screenshot(
+        context,
+        "create-folder-empty-name",
+        "F7: Enter with an empty name",
+    );
     input::replace_text(app.slint(), "Nová složka");
     input::key(app.slint(), Key::Return);
     let created = folder.join("Nová složka");
@@ -231,6 +266,7 @@ pub fn create_rename(context: &mut Context) -> Result<(), String> {
         return Err("the rename is not on disk".into());
     }
     app.screenshot(context, "after-operations", "After Shift+F4, F7 and F2");
-    context.note("Shift+F4 created an empty Unicode-named file, asked before replacing keep.txt and emptied it on confirmation; F7 created a folder; F2 renamed with the stem preselected");
-    app.shutdown()
+    context.note("Shift+F4 created an empty Unicode-named file, asked before replacing keep.txt and emptied it on confirmation; F7 refused an empty name and created a folder; F2 renamed with the stem preselected");
+    app.shutdown()?;
+    crate::files_support::report(&failures)
 }

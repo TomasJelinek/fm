@@ -335,6 +335,10 @@ pub fn rename_cases(context: &mut Context) -> Result<(), String> {
     app.screenshot(context, "after-renames", "After every F2 case");
     held_keys(&mut app, &mut failures)?;
     context.note(timings.summary());
+    context.note(
+        "SKIP: the status \"Renaming “a” to “b”…\" while a rename holds the panel, and \
+         Escape releasing that hold: no seam holds a rename long enough to see it (decision A5)",
+    );
     app.shutdown()?;
     support::report(&failures)
 }

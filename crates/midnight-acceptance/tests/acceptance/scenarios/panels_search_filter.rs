@@ -8,6 +8,10 @@
 //! expression), the history menu, Cancel keeping the applied filter, an invalid regular
 //! expression refused with the listing kept; Ctrl+A, Ctrl+Shift+A, sorting and search
 //! inside a filtered list; hidden files with a filter and Ctrl+A; each panel's own filter.
+//! Commands never wait for the search (aac18026): F5, F8, Ctrl+F8 and F4 close it and act
+//! on the marks or the focused shown row, also when pressed before its matches arrive;
+//! Enter on a name that matches nothing opens nothing and says so. The applied filter
+//! and the filter history come back after a restart.
 use crate::{
     Context,
     app::{App, Config},
@@ -17,7 +21,10 @@ use crate::{
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
-use slint::{ComponentHandle, platform::Key};
+use slint::{
+    ComponentHandle,
+    platform::{Key, WindowAdapter},
+};
 use std::{path::Path, time::Duration};
 
 const UNICODE: &str = "ŽLUŤOUČKÝ kůň.txt";
@@ -111,20 +118,85 @@ pub fn search_filter(context: &mut Context) -> Result<(), String> {
     }
     // Windows hides by the hidden attribute, not by name.
     crate::fixtures::hide(&folder.join(".hidden-a.txt"))?;
-    let mut app = App::start(Config::new(&folder, &folder));
+    let store = crate::options_support::SettingsStore::new();
+    let mut config = Config::new(&folder, &folder);
+    config.settings = Some(store.clone());
+    let mut app = App::start(config);
     let mut failures = Vec::new();
     searching(&mut app, &folder, &mut failures)?;
     filtering(&mut app, context, &mut failures)?;
     combinations(&mut app, &mut failures)?;
+    // The applied filter and the filter history are saved: a restart shows both.
+    open_filter(&mut app, LEFT)?;
+    crate::options_support::choose(&mut app, "Filter mode", "Regex")?;
+    input::fill(app.slint(), "File filter expression", "^al")?;
+    if ps::checked(&app, "Case sensitive") == Some(true) {
+        input::click(app.slint(), AccessibleRole::Checkbox, "Case sensitive")?;
+        app.settle();
+    }
+    ok(&mut app)?;
+    if !lists(&mut app, LEFT, &["alpine", "alpha.txt", "Alpha2.log"]) {
+        failures.push(format!(
+            "Regex ^al before the restart lists {:?}",
+            ps::top_level(&app, LEFT)
+        ));
+    }
     app.shutdown()?;
+    drop(app);
+    restarted_filter(&store, &folder, &mut failures)?;
+    commands(context, &mut failures)?;
     support::report(&failures)
+}
+
+/// After a restart on the saved settings the left panel applies its Regex ^al filter
+/// again (indicator and listing) and the filter history still lists the filters applied
+/// before, case-sensitive one included.
+fn restarted_filter(
+    store: &std::sync::Arc<crate::options_support::SettingsStore>,
+    folder: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let mut config = Config::new(folder, folder);
+    config.settings = Some(store.clone());
+    let mut app = App::start(config);
+    if filter_label(&app, LEFT) != "Filter: regex ^al"
+        || !lists(&mut app, LEFT, &["alpine", "alpha.txt", "Alpha2.log"])
+    {
+        failures.push(format!(
+            "after a restart the left filter is {:?} listing {:?}, expected Regex ^al",
+            filter_label(&app, LEFT),
+            ps::top_level(&app, LEFT)
+        ));
+    }
+    if !filter_label(&app, RIGHT).is_empty() {
+        failures.push(format!(
+            "after a restart the right panel shows the filter {:?}",
+            filter_label(&app, RIGHT)
+        ));
+    }
+    open_filter(&mut app, LEFT)?;
+    input::click(app.slint(), AccessibleRole::Combobox, "Filter history")?;
+    app.settle();
+    let labels: Vec<String> = ps::popup_buttons(&app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .filter(|label| label.contains(": "))
+        .collect();
+    for wanted in ["Regex: ^al", "Regex (case sensitive): ^al"] {
+        if !labels.iter().any(|label| label == wanted) {
+            failures.push(format!(
+                "after a restart the filter history lacks {wanted:?}: {labels:?}"
+            ));
+        }
+    }
+    support::dismiss_all(&mut app);
+    app.shutdown()
 }
 
 fn searching(app: &mut App, folder: &Path, failures: &mut Vec<String>) -> Result<(), String> {
     panel::focus_list(app, LEFT)?;
     press(app, Key::Home);
-    input::type_text(app.slint(), "al");
-    app.settle();
+    type_search(app, "al");
     let found = matches(app, "al");
     if found.len() != 3 || search(app) != (true, "al".into()) {
         failures.push(format!(
@@ -178,8 +250,7 @@ fn searching(app: &mut App, folder: &Path, failures: &mut Vec<String>) -> Result
         ));
     }
     // Space extends the query; Insert ends the search and marks the match.
-    input::type_text(app.slint(), "be");
-    app.settle();
+    type_search(app, "be");
     expect_cursor(app, "typing be", Some("beta.txt"), failures);
     press(app, Key::Space);
     if search(app) != (true, "be ".into()) {
@@ -198,16 +269,14 @@ fn searching(app: &mut App, folder: &Path, failures: &mut Vec<String>) -> Result
     input::chord(app.slint(), &[Key::Control], "d");
     app.settle();
     // Unicode names match without case.
-    input::type_text(app.slint(), "žl");
-    app.settle();
+    type_search(app, "žl");
     expect_cursor(app, "typing žl", Some(UNICODE), failures);
     press(app, Key::Escape);
     if search(app).0 {
         failures.push("Escape did not end the search".into());
     }
     // A query survives sorting and Ctrl+R.
-    input::type_text(app.slint(), "al");
-    app.settle();
+    type_search(app, "al");
     input::chord(app.slint(), &[Key::Control], Key::F6);
     app.settle();
     if search(app) != (true, "al".into())
@@ -221,9 +290,11 @@ fn searching(app: &mut App, folder: &Path, failures: &mut Vec<String>) -> Result
     }
     let listings = app.listings[0];
     input::chord(app.slint(), &[Key::Control], "r");
-    ps::wait(app, Duration::from_secs(5), |app| {
-        app.listings[0] > listings
-    });
+    if !ps::wait(app, Duration::from_secs(5), |app| {
+        app.listings[0] > listings && !app.loading(LEFT)
+    }) {
+        failures.push("Ctrl+R while searching did not list the folder again".into());
+    }
     if search(app) != (true, "al".into()) {
         failures.push(format!("Ctrl+R ended the search: {:?}", search(app)));
     }
@@ -512,8 +583,7 @@ fn combinations(app: &mut App, failures: &mut Vec<String>) -> Result<(), String>
             ps::top_level(app, LEFT)
         ));
     }
-    input::type_text(app.slint(), "alpha2");
-    app.settle();
+    type_search(app, "alpha2");
     expect_cursor(
         app,
         "searching alpha2 in the filtered list",
@@ -579,4 +649,367 @@ fn combinations(app: &mut App, failures: &mut Vec<String>) -> Result<(), String>
     input::click_button(app.slint(), "Show all")?;
     ps::wait(app, Duration::from_secs(5), |app| !filter_open(app));
     Ok(())
+}
+
+/// Type `text` into the focused list and wait until its quick search has its matches
+/// (the search is computed in the background; a check right after one settle races it).
+fn type_search(app: &mut App, text: &str) {
+    input::type_text(app.slint(), text);
+    app.settle();
+    ps::wait(app, Duration::from_secs(5), |app| {
+        !app.window.get_left_search_pending()
+    });
+}
+
+/// The left quick search is closed: not active and its text empty.
+fn search_closed(app: &App) -> bool {
+    !app.window.get_left_search_active() && app.window.get_left_search_query().is_empty()
+}
+
+/// After `what`: the quick search must be closed.
+fn expect_closed(app: &mut App, what: &str, failures: &mut Vec<String>) {
+    if !ps::wait(app, Duration::from_secs(5), search_closed) {
+        failures.push(format!(
+            "{what} left the quick search open: {:?}",
+            search(app)
+        ));
+    }
+}
+
+/// Wait for the Copy dialog (its token) and return its summary.
+fn copy_dialog(app: &mut App) -> Option<String> {
+    ps::wait(app, Duration::from_secs(10), |app| {
+        !app.window.get_copy_draft_token().is_empty()
+    })
+    .then(|| app.window.get_copy_draft_body().to_string())
+}
+
+/// Close the Copy dialog with Escape and wait until it is gone.
+fn escape_copy(app: &mut App) {
+    input::key(app.slint(), Key::Escape);
+    ps::wait(app, Duration::from_secs(5), |app| {
+        app.window.get_copy_draft_token().is_empty()
+    });
+}
+
+/// A quick search never blocks a command (aac18026): F5, F6, F8, Ctrl+F8 and F4 close it
+/// and act on the selection or the focused row the panel shows; Enter on a name that
+/// matches nothing opens nothing and says "No name matches “…”"; a command pressed
+/// while the search still computes acts on the row focused before; the panel filter
+/// alone is never reported as the quick search.
+fn commands(context: &mut Context, failures: &mut Vec<String>) -> Result<(), String> {
+    let folder = support::scratch(context, "search-commands")?;
+    let target = support::scratch(context, "search-commands-target")?;
+    let edited = support::scratch(context, "search-commands-edited")?;
+    for (name, size) in [
+        ("alpha.txt", 10),
+        ("beta.txt", 20),
+        ("gamma.txt", 30),
+        ("zeta.dat", 40),
+    ] {
+        ps::write(&folder.join(name), vec![b'c'; size])?;
+    }
+    let cp = crate::tool::program(context, "cp")?;
+    let copies = edited.display().to_string();
+    let store = crate::options_support::SettingsStore::seeded(move |preferences| {
+        preferences.editor = midnight_core::EditorPreferences {
+            executable: Some(cp),
+            arguments: vec!["{file}".into(), copies],
+            rules: Vec::new(),
+        };
+    });
+    let mut config = Config::new(&folder, &target);
+    config.settings = Some(store);
+    config.editor = true;
+    let mut app = App::start(config);
+
+    // F5 on a match: the dialog copies the match; Escape copies nothing.
+    panel::select_row(&mut app, LEFT, "gamma.txt")?;
+    type_search(&mut app, "be");
+    expect_cursor(&app, "typing be", Some("beta.txt"), failures);
+    input::key(app.slint(), Key::F5);
+    match copy_dialog(&mut app) {
+        None => failures.push("F5 while searching be opened no Copy dialog".into()),
+        Some(body) => {
+            if !body.contains("beta.txt") {
+                failures.push(format!(
+                    "F5 while searching be: the Copy dialog says {body:?}, not beta.txt"
+                ));
+            }
+            expect_closed(&mut app, "F5", failures);
+            escape_copy(&mut app);
+        }
+    }
+    if !support::names_on_disk(&target).is_empty() {
+        failures.push(format!(
+            "Escape in the Copy dialog still copied {:?}",
+            support::names_on_disk(&target)
+        ));
+    }
+
+    // F6 on a match: the Move dialog moves the match; Escape moves nothing.
+    panel::select_row(&mut app, LEFT, "beta.txt")?;
+    type_search(&mut app, "ga");
+    expect_cursor(&app, "typing ga", Some("gamma.txt"), failures);
+    input::key(app.slint(), Key::F6);
+    match copy_dialog(&mut app) {
+        None => failures.push("F6 while searching ga opened no Move dialog".into()),
+        Some(body) => {
+            if !app.window.get_copy_draft_move() || !body.contains("gamma.txt") {
+                failures.push(format!(
+                    "F6 while searching ga: the dialog (move {}) says {body:?}, not a move of \
+                     gamma.txt",
+                    app.window.get_copy_draft_move()
+                ));
+            }
+            expect_closed(&mut app, "F6", failures);
+            escape_copy(&mut app);
+        }
+    }
+    if !folder.join("gamma.txt").exists() || !support::names_on_disk(&target).is_empty() {
+        failures.push(format!(
+            "Escape in the Move dialog still moved: the target holds {:?}",
+            support::names_on_disk(&target)
+        ));
+    }
+
+    // F8 with no match: the confirmation names the focused shown row; Escape keeps it.
+    panel::select_row(&mut app, LEFT, "gamma.txt")?;
+    type_search(&mut app, "zz");
+    expect_cursor(&app, "typing zz (no match)", Some("gamma.txt"), failures);
+    input::key(app.slint(), Key::F8);
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        !app.window.get_operation_token().is_empty()
+    }) {
+        failures.push("F8 while searching zz opened no confirmation".into());
+    } else {
+        let body = format!(
+            "{} / {}",
+            app.window.get_operation_title(),
+            app.window.get_operation_body()
+        );
+        if !body.contains("gamma.txt") {
+            failures.push(format!(
+                "F8 while searching zz asks {body:?}, not about the focused gamma.txt"
+            ));
+        }
+        expect_closed(&mut app, "F8", failures);
+        input::key(app.slint(), Key::Escape);
+        // A confirmation left open could take a later Enter: stop here instead.
+        if !ps::wait(&mut app, Duration::from_secs(5), |app| {
+            app.window.get_operation_token().is_empty()
+        }) {
+            return Err("Escape did not close the F8 confirmation".into());
+        }
+    }
+    if !folder.join("gamma.txt").exists() {
+        failures.push("Escape in the F8 confirmation still deleted gamma.txt".into());
+    }
+
+    // Ctrl+F8 on a match: Checksums of the match alone.
+    type_search(&mut app, "zet");
+    expect_cursor(&app, "typing zet", Some("zeta.dat"), failures);
+    let before = app.tool_windows().len();
+    input::chord(app.slint(), &[Key::Control], Key::F8);
+    if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+        app.tool_windows().len() > before
+    }) {
+        failures.push("Ctrl+F8 while searching zet opened no Checksums window".into());
+    } else {
+        expect_closed(&mut app, "Ctrl+F8", failures);
+        let window = app.tool_windows().pop().expect("the Checksums window");
+        crate::app::layout_tool(&window, 1000, 720);
+        app.settle();
+        let calculate = inspect::find_all(window.window(), AccessibleRole::Button, "Calculate")
+            .pop()
+            .ok_or("the Checksums window has no Calculate button")?;
+        input::click_at(window.window(), inspect::center(&calculate));
+        let texts = |window: &slint::Window| inspect::labels(window, AccessibleRole::Text);
+        let shown = window.clone();
+        if !ps::wait(&mut app, Duration::from_secs(20), |_| {
+            texts(shown.window())
+                .iter()
+                .any(|text| text.starts_with("Completed · "))
+        }) {
+            failures.push(format!(
+                "Checksums of the zet match never completed: {:?}",
+                texts(window.window())
+            ));
+        }
+        let rows = inspect::labels(window.window(), AccessibleRole::ListItem);
+        let completed = texts(window.window())
+            .into_iter()
+            .find(|text| text.starts_with("Completed · "));
+        if rows.len() != 1
+            || !rows[0].starts_with("zeta.dat · ")
+            || completed
+                .as_deref()
+                .is_none_or(|text| !text.starts_with("Completed · 1 calculated"))
+        {
+            failures.push(format!(
+                "Checksums of the zet match: rows {rows:?}, status {completed:?}; expected \
+                 zeta.dat alone"
+            ));
+        }
+        input::key(window.window(), Key::Escape);
+        if !ps::wait(&mut app, Duration::from_secs(10), |app| {
+            app.tool_windows().len() == before
+        }) {
+            failures.push("Escape did not close the Checksums window".into());
+        }
+    }
+
+    // Enter on a name that matches nothing: nothing opens; the status row says why.
+    panel::select_row(&mut app, LEFT, "gamma.txt")?;
+    type_search(&mut app, "zz");
+    let listings = app.listings[0];
+    let windows = app.tool_windows().len();
+    input::key(app.slint(), Key::Return);
+    app.settle();
+    let note = "No name matches “zz”";
+    if !ps::wait(&mut app, Duration::from_secs(5), |app| {
+        app.window.get_left_watch_status() == note
+    }) {
+        failures.push(format!(
+            "Enter on zz: the status row says {:?}, expected {note:?}",
+            app.window.get_left_watch_status()
+        ));
+    }
+    expect_closed(&mut app, "Enter without a match", failures);
+    expect_cursor(&app, "Enter without a match", Some("gamma.txt"), failures);
+    if app.listings[0] != listings
+        || app.tool_windows().len() != windows
+        || support::shown_notice(&app).is_some()
+        || app.location(LEFT).as_deref() != Some(folder.as_path())
+    {
+        failures.push(format!(
+            "Enter on zz opened something: panel at {:?}, {} windows, notice {:?}",
+            app.location(LEFT),
+            app.tool_windows().len(),
+            support::shown_notice(&app)
+        ));
+    }
+    app.screenshot(
+        context,
+        "no-name-matches",
+        "Enter on a name that matches nothing: the status row says so",
+    );
+    // Any key that moves the cursor ends the note.
+    press(&mut app, Key::Home);
+    if !app.window.get_left_watch_status().is_empty() {
+        failures.push(format!(
+            "the note stays after the cursor moved: {:?}",
+            app.window.get_left_watch_status()
+        ));
+    }
+
+    // F4 on a match: the editor runs on the match.
+    type_search(&mut app, "al");
+    expect_cursor(&app, "typing al", Some("alpha.txt"), failures);
+    input::key(app.slint(), Key::F4);
+    expect_closed(&mut app, "F4", failures);
+    if !ps::wait(&mut app, Duration::from_secs(20), |_| {
+        edited.join("alpha.txt").exists()
+    }) {
+        failures.push(format!(
+            "F4 while searching al did not edit alpha.txt: the editor wrote {:?}",
+            support::names_on_disk(&edited)
+        ));
+    }
+    if support::names_on_disk(&edited) != ["alpha.txt"] {
+        failures.push(format!(
+            "F4 while searching al edited {:?}",
+            support::names_on_disk(&edited)
+        ));
+    }
+
+    // Marks win over the focused match: F5 copies the two marked files.
+    for name in ["alpha.txt", "gamma.txt"] {
+        panel::select_row(&mut app, LEFT, name)?;
+        input::key(app.slint(), Key::Insert);
+    }
+    app.settle();
+    type_search(&mut app, "be");
+    let run = support::transfer(&mut app, context, support::TransferSpec::copy())?;
+    if let Err(error) = support::completed(&run, "F5 of two marks while searching be") {
+        failures.push(error);
+    }
+    expect_closed(&mut app, "F5 of two marks", failures);
+    if support::names_on_disk(&target) != ["alpha.txt", "gamma.txt"] {
+        failures.push(format!(
+            "F5 of the marks alpha.txt and gamma.txt while searching be copied {:?}",
+            support::names_on_disk(&target)
+        ));
+    }
+    input::chord(app.slint(), &[Key::Control], "d");
+    app.settle();
+
+    // A command pressed before the search has its matches acts on the row focused
+    // before: the search is computed in the background (its request leaves with the
+    // next frame), F5 cancels it, and its late result cannot move the cursor (aac18026).
+    panel::select_row(&mut app, LEFT, "gamma.txt")?;
+    input::type_text(app.slint(), "zet");
+    input::key(app.slint(), Key::F5);
+    match copy_dialog(&mut app) {
+        None => failures.push("F5 right after typing zet opened no Copy dialog".into()),
+        Some(body) => {
+            if !body.contains("gamma.txt") {
+                failures.push(format!(
+                    "F5 pressed before the search for zet had its matches: the Copy dialog \
+                     says {body:?}, expected the row focused before, gamma.txt"
+                ));
+            }
+            escape_copy(&mut app);
+            app.idle(Duration::from_millis(200));
+            if ps::cursor(&app, LEFT).as_deref() != Some("gamma.txt") || !search_closed(&app) {
+                failures.push(format!(
+                    "after F5 cancelled the search for zet the cursor is on {:?} and the \
+                     search {:?}; its late result must not move the cursor",
+                    ps::cursor(&app, LEFT),
+                    search(&app)
+                ));
+            }
+        }
+    }
+
+    // The panel filter alone is not the quick search: the status row stays empty.
+    panel::focus_list(&mut app, LEFT)?;
+    input::chord(app.slint(), &[Key::Control], Key::F12);
+    if !ps::wait(&mut app, Duration::from_secs(5), filter_open) {
+        return Err("Ctrl+F12 opened no Panel filter".into());
+    }
+    crate::options_support::choose(&mut app, "Filter mode", "Masks")?;
+    input::fill(app.slint(), "File filter expression", "*.txt")?;
+    ok(&mut app)?;
+    if !lists(&mut app, LEFT, &["alpha.txt", "beta.txt", "gamma.txt"]) {
+        failures.push(format!(
+            "the *.txt filter lists {:?}",
+            ps::top_level(&app, LEFT)
+        ));
+    }
+    // A command with the filter on acts on the focused shown row; nothing is noted.
+    panel::select_row(&mut app, LEFT, "beta.txt")?;
+    input::key(app.slint(), Key::F5);
+    match copy_dialog(&mut app) {
+        None => failures.push("F5 with only the panel filter opened no Copy dialog".into()),
+        Some(body) => {
+            if !body.contains("beta.txt") {
+                failures.push(format!(
+                    "F5 with only the panel filter: the Copy dialog says {body:?}"
+                ));
+            }
+            escape_copy(&mut app);
+        }
+    }
+    let status = app.window.get_left_watch_status().to_string();
+    if !status.is_empty() || app.window.get_left_search_active() {
+        failures.push(format!(
+            "with only the panel filter applied the status row says {status:?} (search {:?})",
+            search(&app)
+        ));
+    }
+    open_filter(&mut app, LEFT)?;
+    input::click_button(app.slint(), "Show all")?;
+    ps::wait(&mut app, Duration::from_secs(5), |app| !filter_open(app));
+    app.shutdown()
 }

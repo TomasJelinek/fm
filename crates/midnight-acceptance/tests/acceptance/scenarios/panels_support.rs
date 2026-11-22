@@ -222,7 +222,10 @@ pub fn click_popup_button(app: &mut App, label: &str) -> Result<(), String> {
             )
         })?;
     let (x, y, w, h) = inspect::visible_rect(&item).unwrap_or_else(|| inspect::rect(&item));
-    input::click_at(app.slint(), LogicalPosition::new(x + w / 2.0, y + h / 2.0));
+    let position = LogicalPosition::new(x + w / 2.0, y + h / 2.0);
+    input::click_at(app.slint(), position);
+    // A later click on the same spot within the double-click interval waits it out.
+    app.last_click = Some((Instant::now(), position));
     app.settle();
     Ok(())
 }
@@ -243,7 +246,9 @@ pub fn click_starting(app: &mut App, prefix: &str) -> Result<String, String> {
         )
     })?;
     let (x, y, w, h) = inspect::visible_rect(&item).unwrap_or_else(|| inspect::rect(&item));
-    input::click_at(app.slint(), LogicalPosition::new(x + w / 2.0, y + h / 2.0));
+    let position = LogicalPosition::new(x + w / 2.0, y + h / 2.0);
+    input::click_at(app.slint(), position);
+    app.last_click = Some((Instant::now(), position));
     app.settle();
     Ok(label)
 }

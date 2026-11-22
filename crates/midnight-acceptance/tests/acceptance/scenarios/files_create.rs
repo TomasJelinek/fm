@@ -73,7 +73,18 @@ pub fn create_cases(context: &mut Context) -> Result<(), String> {
 
     // F7 on an existing folder name is refused and changes nothing.
     let start = support::named_operation(&mut app, &[], Key::F7, "existing-folder")?;
-    app.idle(Duration::from_millis(500));
+    // The refusal shows in the open dialog, as a failed job or as a notice.
+    let answered = |app: &App| {
+        !app.window.get_operation_warning().is_empty()
+            || app.operations[start..]
+                .iter()
+                .any(|progress| progress.state.is_terminal())
+            || support::shown_notice(app).is_some()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !answered(&app) && Instant::now() < deadline {
+        app.idle(Duration::from_millis(20));
+    }
     let report = app.operations[start..]
         .iter()
         .find(|p| p.state.is_terminal())
@@ -129,30 +140,47 @@ pub fn create_cases(context: &mut Context) -> Result<(), String> {
         failures.push("F7 ../created-outside created nothing above the panel folder".into());
     }
 
-    // Shift+F4 with nested segments.
+    // Shift+F4 with nested segments: a new file takes a name, not a path. Nothing is
+    // created, and the dialog or the failed job says why.
     let start = support::named_operation(&mut app, &[Key::Shift], Key::F4, "sub/dir/new.txt")?;
-    app.idle(Duration::from_millis(300));
-    let nested = if app.window.get_operation_token().is_empty() {
-        let progress = support::wait_operation(&mut app, start);
-        format!(
-            "{:?} {:?}; sub/dir/new.txt is a file: {}",
+    let refused_or_ended = |app: &App| {
+        !app.window.get_operation_warning().is_empty()
+            || app.operations[start..]
+                .iter()
+                .any(|progress| progress.state.is_terminal())
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !refused_or_ended(&app) && Instant::now() < deadline {
+        app.idle(Duration::from_millis(20));
+    }
+    let job = app.operations[start..]
+        .iter()
+        .find(|progress| progress.state.is_terminal())
+        .cloned();
+    let warning = app.window.get_operation_warning().to_string();
+    let nested = match &job {
+        Some(progress) => format!(
+            "the job ended {:?} with {:?}",
             progress.state,
-            progress.errors.first().map(ToString::to_string),
-            folder.join("sub/dir/new.txt").is_file()
-        )
-    } else {
-        format!(
-            "dialog stayed open: {:?}",
-            app.window.get_operation_warning().to_string()
-        )
+            progress.errors.first().map(ToString::to_string)
+        ),
+        None => format!("the dialog stayed open with {warning:?}"),
     };
     context.note(format!("Shift+F4 sub/dir/new.txt: {nested}"));
-    support::dismiss_all(&mut app);
-    if folder.join("sub/dir/new.txt").exists()
-        && fs::metadata(folder.join("sub/dir/new.txt")).map_or(true, |metadata| metadata.len() != 0)
-    {
-        failures.push("Shift+F4 sub/dir/new.txt created a non-empty file".into());
+    let explained = match &job {
+        Some(progress) => {
+            progress.state != OperationState::Completed && !progress.errors.is_empty()
+        }
+        None => !warning.is_empty() && !app.window.get_operation_token().is_empty(),
+    };
+    if !explained || folder.join("sub").exists() {
+        failures.push(format!(
+            "Shift+F4 sub/dir/new.txt: {nested}; sub/ exists: {}; expected nothing created and \
+             the reason shown",
+            folder.join("sub").exists()
+        ));
     }
+    support::dismiss_all(&mut app);
 
     // Shift+F4 on an existing file asks; Cancel keeps it.
     let start = support::named_operation(&mut app, &[Key::Shift], Key::F4, "existing.txt")?;
@@ -203,7 +231,9 @@ pub fn create_cases(context: &mut Context) -> Result<(), String> {
         failures.push("Replace file did not empty replace-me.txt".into());
     }
     match support::take_notice(&mut app) {
-        None => context.note("Shift+F4 Replace file: replaced, no notice"),
+        None => failures.push(
+            "Shift+F4 Replace file: no notice names the recovery copy of the original".into(),
+        ),
         Some((title, body)) => {
             // The notice names the recovery copy on a line of its own.
             let recovery = body
@@ -245,8 +275,8 @@ pub fn create_cases(context: &mut Context) -> Result<(), String> {
             ));
         }
     } else {
-        context.note(format!(
-            "Shift+F4 {spaced:?} created {:?} (spaces not kept exactly)",
+        failures.push(format!(
+            "Shift+F4 {spaced:?} created {:?}, not the name exactly as typed",
             on_disk
                 .iter()
                 .filter(|name| name.contains("spaced"))

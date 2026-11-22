@@ -5,7 +5,9 @@
 //! (name both ways, modified time); collapsing a branch with the cursor inside moves it
 //! to the branch; Enter on a nested folder opens it and Backspace returns with the
 //! cursor on it; an Expression filter keeps a matching folder's ancestor as context
-//! that cannot be marked.
+//! that cannot be marked. A quick search on a nested row never blocks a command
+//! (aac18026): F7 and Shift+F8 close it, the nested match keeps its depth and the cursor,
+//! and Shift+F8 deletes that nested folder.
 use crate::{
     Context,
     app::{App, Config},
@@ -14,7 +16,10 @@ use crate::{
     scenarios::panels_support::{self as ps, LEFT},
 };
 use slint::platform::Key;
-use std::time::{Duration, SystemTime};
+use std::{
+    path::Path,
+    time::{Duration, SystemTime},
+};
 
 fn depth(app: &App, name: &str) -> Option<i32> {
     app.rows(LEFT)
@@ -287,6 +292,124 @@ pub fn tree_keys(context: &mut Context) -> Result<(), String> {
     app.until("the filter to close", |app| {
         !app.window.get_panel_filter_view().open
     });
+    tree_commands(&mut app, &root, &mut failures)?;
     app.shutdown()?;
     support::report(&failures)
+}
+
+/// The quick search of the left panel is closed: not active and its text empty.
+fn search_closed(app: &App) -> bool {
+    !app.window.get_left_search_active() && app.window.get_left_search_query().is_empty()
+}
+
+/// Search for `text` in the expanded tree and wait until the cursor is on the nested
+/// match `name`.
+fn search_nested(
+    app: &mut App,
+    text: &str,
+    name: &str,
+    failures: &mut Vec<String>,
+) -> Result<bool, String> {
+    panel::select_row(app, LEFT, "top1.txt")?;
+    input::type_text(app.slint(), text);
+    if !ps::wait(app, Duration::from_secs(10), |app| {
+        ps::cursor(app, LEFT).as_deref() == Some(name) && !app.window.get_left_search_pending()
+    }) {
+        failures.push(format!(
+            "searching {text:?} in the tree put the cursor on {:?}, not the nested {name}",
+            ps::cursor(app, LEFT)
+        ));
+        input::key(app.slint(), Key::Escape);
+        app.settle();
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// A command on a nested match (aac18026): F7 and Shift+F8 close the search; the match
+/// keeps its depth and the cursor; F7 creates in the panel's folder, Shift+F8 deletes
+/// the nested folder itself.
+fn tree_commands(app: &mut App, root: &Path, failures: &mut Vec<String>) -> Result<(), String> {
+    panel::focus_list(app, LEFT)?;
+    if depth(app, "b-one") != Some(1) {
+        support::toggle_tree(app, "branch")?;
+        support::wait_tree_depth(app, "b-one", Some(1));
+    }
+    // F7 on the nested match b-one.
+    if search_nested(app, "b-o", "b-one", failures)? {
+        input::key(app.slint(), Key::F7);
+        if !ps::wait(app, Duration::from_secs(10), |app| {
+            !app.window.get_operation_token().is_empty()
+        }) {
+            failures.push("F7 on the nested match b-one opened no dialog".into());
+        } else {
+            if !ps::wait(app, Duration::from_secs(5), search_closed) {
+                failures.push("F7 on a nested match left the quick search open".into());
+            }
+            if depth(app, "b-one") != Some(1) || ps::cursor(app, LEFT).as_deref() != Some("b-one") {
+                failures.push(format!(
+                    "F7 closed the search with b-one at depth {:?} and the cursor on {:?}",
+                    depth(app, "b-one"),
+                    ps::cursor(app, LEFT)
+                ));
+            }
+            let start = app.operations.len();
+            input::type_text(app.slint(), "made-in-tree");
+            input::key(app.slint(), Key::Return);
+            let progress = support::wait_operation(app, start);
+            if let Err(error) = support::operation_ok(&progress, "F7 on a nested match") {
+                failures.push(error);
+            }
+            if !root.join("made-in-tree").is_dir() {
+                failures.push(format!(
+                    "F7 on the nested match created no made-in-tree in the panel's folder: {:?}",
+                    support::names_on_disk(root)
+                ));
+            }
+            if depth(app, "a-two") != Some(1) {
+                failures.push("creating a folder collapsed the expanded branch".into());
+            }
+        }
+    }
+    // Shift+F8 on the nested match c-three deletes it.
+    if search_nested(app, "c-t", "c-three", failures)? {
+        let start = app.operations.len();
+        input::chord(app.slint(), &[Key::Shift], Key::F8);
+        if !ps::wait(app, Duration::from_secs(10), |app| {
+            !app.window.get_operation_token().is_empty()
+        }) {
+            failures.push("Shift+F8 on the nested match c-three asked nothing".into());
+        } else {
+            let body = app.window.get_operation_body().to_string();
+            if !body.contains("c-three") {
+                failures.push(format!(
+                    "Shift+F8 on the nested match c-three asks {body:?}"
+                ));
+            }
+            if !ps::wait(app, Duration::from_secs(5), search_closed) {
+                failures.push("Shift+F8 on a nested match left the quick search open".into());
+            }
+            input::key(app.slint(), Key::Return);
+            let progress = support::wait_operation(app, start);
+            if let Err(error) = support::operation_ok(&progress, "Shift+F8 on a nested match") {
+                failures.push(error);
+            }
+            let gone = root.join("branch").join("c-three");
+            if gone.exists() || !root.join("branch").join("b-one").is_dir() {
+                failures.push(format!(
+                    "Shift+F8 on the nested c-three left branch/ with {:?}",
+                    support::names_on_disk(&root.join("branch"))
+                ));
+            }
+            if !ps::wait(app, Duration::from_secs(10), |app| {
+                depth(app, "c-three").is_none() && depth(app, "a-two") == Some(1)
+            }) {
+                failures.push(format!(
+                    "after deleting the nested c-three the tree shows {:?}",
+                    ps::shown(app, LEFT)
+                ));
+            }
+        }
+    }
+    Ok(())
 }

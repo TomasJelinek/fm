@@ -2,6 +2,8 @@
 //! files in the folder the panel shows, the unchanged rows keep their identity and
 //! content, the cursor and the selection stay on the same entries and the panel never
 //! shows its loading state; a Rename and a Copy finished meanwhile are listed at once.
+//! When the focused file vanishes on disk, the cursor moves to a neighbouring row within
+//! 1.5 s and the marks stay.
 use crate::{
     Context,
     app::{App, Config},
@@ -25,6 +27,15 @@ use std::{
 
 const LEFT: PaneId = PaneId::Left;
 const STABLE: usize = 120;
+
+/// Stops the writer when dropped, so an early return never leaves it writing.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 /// Creates `w-NNNNN.tmp` every 25 ms, appends to the one created two steps earlier
 /// and deletes the one six steps earlier; stops on `stop` or after 90 s.
@@ -95,6 +106,7 @@ pub fn busy_folder(context: &mut Context) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let steps = Arc::new(AtomicU64::new(0));
     let handle = writer(folder.clone(), stop.clone(), steps.clone());
+    let _stop_writer = StopOnDrop(stop.clone());
     let watched = Instant::now();
     let mut frames = 0;
     let mut loading_frames = 0;
@@ -248,6 +260,78 @@ pub fn busy_folder(context: &mut Context) -> Result<(), String> {
         disk.len()
     ));
     context.note(timings.summary());
+    neighbour_cursor(&mut app, context, &folder, &mut failures)?;
+    context.note(
+        "SKIP: the watch fallback line \"Live updates are unavailable for this folder; it is \
+         checked for changes regularly instead.\": no seam makes a watch registration fail \
+         (decision A5)",
+    );
     app.shutdown()?;
     support::report(&failures)
+}
+
+/// The focused file is deleted behind the panel's back: within 1.5 s its row is gone,
+/// the cursor is on the row before or after it, and the marks are kept.
+fn neighbour_cursor(
+    app: &mut App,
+    context: &mut Context,
+    folder: &std::path::Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    const FOCUSED: &str = "stable-050.txt";
+    panel::select_row(app, LEFT, FOCUSED)?;
+    let names = app.names(LEFT);
+    let index = names
+        .iter()
+        .position(|name| name == FOCUSED)
+        .ok_or("the focused row is not listed")?;
+    let neighbours = [
+        names.get(index + 1).cloned(),
+        index
+            .checked_sub(1)
+            .and_then(|before| names.get(before))
+            .cloned(),
+    ];
+    let marks = support::selected_names(app, LEFT);
+    let path = folder.join(FOCUSED);
+    let deleted = Instant::now();
+    fs::remove_file(&path).map_err(|error| io_error(&path, error))?;
+    let gone = |app: &App| !app.names(LEFT).iter().any(|name| name == FOCUSED);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !gone(app) && Instant::now() < deadline {
+        app.idle(Duration::from_millis(10));
+    }
+    let after = deleted.elapsed();
+    let cursor = support::cursor_name(app, LEFT);
+    context.note(format!(
+        "the focused {FOCUSED} deleted on disk: its row gone after {} ms, the cursor on {cursor:?}",
+        after.as_millis()
+    ));
+    if !gone(app) || after > Duration::from_millis(1500) {
+        failures.push(format!(
+            "the deleted focused file's row was {} after {} ms",
+            if gone(app) {
+                "gone only"
+            } else {
+                "still listed"
+            },
+            after.as_millis()
+        ));
+    }
+    if !neighbours
+        .iter()
+        .flatten()
+        .any(|name| Some(name) == cursor.as_ref())
+    {
+        failures.push(format!(
+            "after its row vanished the cursor is on {cursor:?}, not a neighbour {neighbours:?}"
+        ));
+    }
+    if support::selected_names(app, LEFT) != marks {
+        failures.push(format!(
+            "the marks changed from {marks:?} to {:?} when the focused row vanished",
+            support::selected_names(app, LEFT)
+        ));
+    }
+    Ok(())
 }

@@ -439,6 +439,11 @@ pub fn filter_and_search(context: &mut Context) -> Result<(), String> {
     input::key(app.slint(), Key::Home);
     input::type_text(app.slint(), "lo");
     app.settle();
+    // The search is computed in the background: wait for its matches.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.window.get_left_search_pending() && Instant::now() < deadline {
+        app.idle(Duration::from_millis(10));
+    }
     let matches: Vec<String> = app
         .names(LEFT)
         .into_iter()

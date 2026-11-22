@@ -1,8 +1,8 @@
 //! Panel features driven by keys and clicks: every sort order in both directions,
 //! history, parent and root, breadcrumbs and a typed path, swapping panels, refresh,
 //! Properties, tabs (including the hover-only close button), Hot Paths and Make File
-//! List with its preview. The panel filter, filename search and Show hidden files
-//! are in `files_filter_search`.
+//! List with its preview; the command line's shell controls and history picker. The
+//! panel filter, filename search and Show hidden files are in `files_filter_search`.
 use crate::{
     Context,
     app::{App, Config},
@@ -115,8 +115,15 @@ pub fn sorting(context: &mut Context) -> Result<(), String> {
         };
         let mut directions = Vec::new();
         for _ in 0..2 {
+            // The sort state changes with every press (a new column, or the direction).
+            let before = (app.window.get_left_sort(), app.window.get_left_descending());
             input::chord(app.slint(), &[Key::Control], function);
-            app.idle(Duration::from_millis(100));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while (app.window.get_left_sort(), app.window.get_left_descending()) == before
+                && Instant::now() < deadline
+            {
+                app.idle(Duration::from_millis(10));
+            }
             let descending = app.window.get_left_descending();
             let mut expected = ascending.clone();
             if descending {
@@ -253,6 +260,7 @@ pub fn navigation(context: &mut Context) -> Result<(), String> {
 
     // Filesystem root and back.
     panel::wait_input(&mut app);
+    let before_root = location(&app);
     input::chord(app.slint(), &[Key::Control], Key::Backspace);
     let filesystem_root = crate::files_support::filesystem_root(&context.fixture.root);
     panel::wait_location(&mut app, LEFT, &filesystem_root);
@@ -261,8 +269,19 @@ pub fn navigation(context: &mut Context) -> Result<(), String> {
         "filesystem-root",
         "Ctrl+Backspace: filesystem root",
     );
+    // Alt+Left goes back to the folder shown before the root.
     input::chord(app.slint(), &[Key::Alt], Key::LeftArrow);
-    app.idle(Duration::from_millis(200));
+    let back = before_root.clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while (location(&app) != back || app.loading(LEFT)) && Instant::now() < deadline {
+        app.idle(Duration::from_millis(20));
+    }
+    if location(&app) != before_root {
+        failures.push(format!(
+            "Alt+Left from the filesystem root went to {:?}, expected {before_root:?}",
+            location(&app)
+        ));
+    }
     panel::wait_input(&mut app);
 
     // A typed path (Ctrl+G).
@@ -330,7 +349,10 @@ pub fn navigation(context: &mut Context) -> Result<(), String> {
     );
     panel::focus_list(&mut app, LEFT)?;
     input::chord(app.slint(), &[Key::Control], "u");
-    app.idle(Duration::from_millis(200));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !app.window.get_panels_swapped() && Instant::now() < deadline {
+        app.idle(Duration::from_millis(10));
+    }
     let swapped = app.window.get_panels_swapped();
     let after = (
         app.window.get_left_pane_left(),
@@ -349,7 +371,10 @@ pub fn navigation(context: &mut Context) -> Result<(), String> {
     app.screenshot(context, "swapped", "Ctrl+U: panels swapped");
     panel::focus_list(&mut app, LEFT)?;
     input::chord(app.slint(), &[Key::Control], "u");
-    app.idle(Duration::from_millis(200));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.window.get_panels_swapped() && Instant::now() < deadline {
+        app.idle(Duration::from_millis(10));
+    }
     if app.window.get_panels_swapped() {
         failures.push("a second Ctrl+U did not swap the panels back".into());
     }
@@ -439,6 +464,8 @@ pub fn navigation(context: &mut Context) -> Result<(), String> {
         ));
     }
     app.shutdown()?;
+    drop(app);
+    command_line(context, &mut failures)?;
     support::report(&failures)
 }
 
@@ -747,4 +774,140 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     ));
     app.shutdown()?;
     support::report(&failures)
+}
+
+/// The command line's shell controls as this harness can show them: without a desktop
+/// service (it would launch terminals) the application knows no shell, so the "Command
+/// shell" chooser and "Open Terminal" are disabled and Run says the terminal is
+/// unavailable; the history picker lists the saved commands newest first, and choosing
+/// one runs nothing and leaves the command line as it was; Enter in the command line
+/// reports "Terminal unavailable". The platform's shells, "Run with <shell>", the
+/// PowerShell/cmd switch with a draft and recall into the draft need the desktop
+/// context (SKIP, noted).
+fn command_line(context: &mut Context, failures: &mut Vec<String>) -> Result<(), String> {
+    use midnight_core::{CommandHistoryEntry, ShellFlavor};
+    let folder = support::scratch(context, "command-line")?;
+    let shell = if cfg!(windows) {
+        ShellFlavor::PowerShell
+    } else {
+        ShellFlavor::Posix
+    };
+    let store = crate::options_support::SettingsStore::seeded(move |preferences| {
+        preferences.remember_command_history = true;
+        preferences.command_history = ["echo newest", "echo older"]
+            .iter()
+            .map(|command| CommandHistoryEntry {
+                command: (*command).to_owned(),
+                shell,
+            })
+            .collect();
+    });
+    let mut config = Config::new(&folder, &context.work);
+    config.settings = Some(store);
+    let mut app = App::start(config);
+    let enabled = |app: &App, role: AccessibleRole, label: &str| {
+        inspect::find(app.slint(), role, label).map(|item| crate::tools_support::enabled(&item))
+    };
+    let chooser = enabled(&app, AccessibleRole::Combobox, "Command shell");
+    let open = inspect::controls(app.slint(), AccessibleRole::Button)
+        .into_iter()
+        .find(|(label, _)| label.starts_with("Open Terminal"))
+        .map(|(_, item)| crate::tools_support::enabled(&item));
+    if chooser != Some(false) || open != Some(false) || app.window.get_terminal_available() {
+        failures.push(format!(
+            "without a desktop service: Command shell enabled {chooser:?}, Open Terminal \
+             enabled {open:?}, terminal available {}",
+            app.window.get_terminal_available()
+        ));
+    }
+    context.note(
+        "SKIP: the Command shell chooser's platform shells, \"Run with <shell>\", the \
+         PowerShell/cmd switch refused with a draft and a recalled command filling the \
+         draft: the shell comes from the desktop service's DesktopContext, which this \
+         harness does not install (the same service launches terminals)",
+    );
+    // The history picker: the saved commands, newest first; choosing one runs nothing.
+    match inspect::find(
+        app.slint(),
+        AccessibleRole::Combobox,
+        "Executed command history",
+    ) {
+        None => failures.push("no Executed command history picker".into()),
+        Some(item) => {
+            if !crate::tools_support::enabled(&item) {
+                failures.push("the history picker is disabled with two saved commands".into());
+            } else {
+                input::click_at(app.slint(), inspect::center(&item));
+                app.settle();
+                // Each row names the shell the command was run with.
+                let prefix = if cfg!(windows) {
+                    "PowerShell"
+                } else {
+                    "Terminal"
+                };
+                let wanted = [
+                    format!("{prefix} · echo newest"),
+                    format!("{prefix} · echo older"),
+                ];
+                let rows: Vec<String> = inspect::controls(app.slint(), AccessibleRole::Button)
+                    .into_iter()
+                    .map(|(label, _)| label)
+                    .filter(|label| label.ends_with("echo newest") || label.ends_with("echo older"))
+                    .collect();
+                if rows != wanted {
+                    failures.push(format!(
+                        "the history picker lists {rows:?}, expected the saved commands newest first"
+                    ));
+                }
+                let before = app.window.get_command_text().to_string();
+                match inspect::find(app.slint(), AccessibleRole::Button, &wanted[1]) {
+                    None => failures.push("the history picker shows no echo older".into()),
+                    Some(row) => {
+                        input::click_at(app.slint(), inspect::center(&row));
+                        app.settle();
+                        let notice = support::shown_notice(&app);
+                        if app.window.get_command_text() != before.as_str()
+                            || notice
+                                .as_ref()
+                                .is_none_or(|(title, _)| title != "Command shell unavailable")
+                        {
+                            failures.push(format!(
+                                "choosing echo older without a known shell: the command line \
+                                 holds {:?} and the notice is {notice:?}",
+                                app.window.get_command_text()
+                            ));
+                        }
+                    }
+                }
+                support::dismiss_all(&mut app);
+            }
+        }
+    }
+    // Enter in the command line: the terminal is unavailable, and says so.
+    input::click(app.slint(), AccessibleRole::TextInput, "Command line")?;
+    input::type_text(app.slint(), "echo typed");
+    input::key(app.slint(), Key::Return);
+    if !ps_wait_notice(&mut app, "Terminal unavailable") {
+        failures.push(format!(
+            "Enter in the command line without a terminal: notice {:?}",
+            support::shown_notice(&app)
+        ));
+    }
+    support::dismiss_all(&mut app);
+    app.shutdown()
+}
+
+/// Wait up to 5 s for a notice titled `title`.
+fn ps_wait_notice(app: &mut App, title: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        app.settle();
+        if support::shown_notice(app).is_some_and(|(shown, _)| shown == title) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        app.idle(Duration::from_millis(20));
+    }
 }

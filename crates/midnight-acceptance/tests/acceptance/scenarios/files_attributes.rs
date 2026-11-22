@@ -204,6 +204,18 @@ pub fn attributes_and_times(context: &mut Context) -> Result<(), String> {
         input::key(app.slint(), Key::Insert);
     }
     app.settle();
+    // Only Modified is ticked: the unticked Accessed row must leave each time alone.
+    // Metadata only: reading a file's content could move its access time itself.
+    let accessed_of = |name: &str| {
+        let path = folder.join(name);
+        std::fs::metadata(&path)
+            .and_then(|metadata| metadata.accessed())
+            .map_err(|error| support::io_error(&path, error))
+    };
+    let mut accessed_before = Vec::new();
+    for name in ["one.txt", "two.txt", "three.txt"] {
+        accessed_before.push(accessed_of(name)?);
+    }
     open_editor(&mut app)?;
     input::click_button(app.slint(), "Times")?;
     app.settle();
@@ -212,7 +224,16 @@ pub fn attributes_and_times(context: &mut Context) -> Result<(), String> {
     match review_and_apply(&mut app, context, None) {
         Err(error) => failures.push(format!("times of three files: {error}")),
         Ok(_) => {
-            for name in ["one.txt", "two.txt", "three.txt"] {
+            for (name, accessed) in ["one.txt", "two.txt", "three.txt"]
+                .into_iter()
+                .zip(&accessed_before)
+            {
+                let now = accessed_of(name)?;
+                if now != *accessed {
+                    failures.push(format!(
+                        "{name} accessed {now:?} after Apply with Accessed unticked, was {accessed:?}"
+                    ));
+                }
                 let found = support::facts(&folder.join(name))?;
                 if found.modified != modified {
                     failures.push(format!(

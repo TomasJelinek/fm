@@ -5,7 +5,8 @@
 //! and nothing changed on disk; each dialog shows one close control in its header and
 //! one Cancel/Close button. After all the cancelled rounds every dialog still does its
 //! job (a dialog that only works the first time, or a Cancel that leaves a notice
-//! behind, fails here).
+//! behind, fails here). Properties of a 2,000-file folder counts its contents as on disk
+//! and names what it left out (a locked subfolder, a link).
 use crate::{
     Context,
     app::{App, Config},
@@ -232,9 +233,14 @@ fn round(
         support::dismiss_all(app);
         return;
     }
-    // A drive information or Properties notice fills in after a moment.
-    app.idle(Duration::from_millis(150));
+    // A drive information or Properties notice fills in after a moment: wait for its
+    // close controls.
     let (header, footer) = dialog.close_labels();
+    ps::wait(app, Duration::from_secs(5), |app| {
+        let buttons = ps::popup_buttons(app);
+        buttons.iter().any(|(label, _)| label == header)
+            && buttons.iter().any(|(label, _)| label == footer)
+    });
     let buttons: Vec<String> = ps::popup_buttons(app)
         .into_iter()
         .map(|(label, _)| label)
@@ -340,6 +346,8 @@ pub fn dialogs(context: &mut Context) -> Result<(), String> {
     ));
     confirm_each(&mut app, context, &folder, &output, &mut failures)?;
     app.shutdown()?;
+    drop(app);
+    properties_contents(context, &mut failures)?;
     support::report(&failures)
 }
 
@@ -582,4 +590,113 @@ fn confirm_each(
     input::chord(app.slint(), &[Key::Control], "d");
     app.settle();
     Ok(())
+}
+
+/// The number and the word of each ", "-separated part of a Properties line, digits
+/// only (a locale's group separators dropped): "2,000 files, 1 folder" → [(2000,
+/// "files"), (1, "folder")].
+fn counted_parts(line: &str) -> Vec<(u64, String)> {
+    line.split(", ")
+        .filter_map(|part| {
+            let split = part.find(|character: char| character.is_alphabetic())?;
+            let digits: String = part[..split].chars().filter(char::is_ascii_digit).collect();
+            Some((digits.parse().ok()?, part[split..].trim().to_owned()))
+        })
+        .collect()
+}
+
+/// Properties of a large folder counts its contents as the disk holds them and says
+/// what it left out (desktop_properties.rs): 2,000 files and their bytes, a locked
+/// subfolder counted as a folder whose contents are "1 unreadable item", and on Unix a
+/// link "(not followed)". "Contents: Calculating…" shows until the count arrives.
+fn properties_contents(context: &mut Context, failures: &mut Vec<String>) -> Result<(), String> {
+    let folder = support::scratch(context, "properties")?;
+    let big = folder.join("big");
+    ps::folder(&big)?;
+    let mut bytes = 0;
+    for index in 0..2000_u64 {
+        let size = index % 7 + 1;
+        ps::write(
+            &big.join(format!("f{index:04}.dat")),
+            vec![b'p'; size as usize],
+        )?;
+        bytes += size;
+    }
+    let locked = big.join("locked");
+    ps::folder(&locked)?;
+    ps::write(&locked.join("inside.txt"), "not counted")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(big.join("f0000.dat"), big.join("link"))
+        .map_err(|error| support::io_error(&big, error))?;
+    let _guard = ps::lock(&locked)?;
+    let mut app = App::start(Config::new(&folder, &context.work));
+    panel::select_row(&mut app, LEFT, "big")?;
+    input::chord(app.slint(), &[Key::Alt], Key::Return);
+    let body = |app: &App| support::shown_notice(app).map(|(_, body)| body);
+    if !ps::wait(&mut app, Duration::from_secs(20), |app| body(app).is_some()) {
+        failures.push("Alt+Enter on the 2,000-file folder showed no Properties".into());
+        return app.shutdown();
+    }
+    let first = body(&app).unwrap_or_default();
+    let counted = |text: &str| {
+        text.lines()
+            .any(|line| line.starts_with("Contents: ") && !line.contains("Calculating"))
+    };
+    if !ps::wait(&mut app, Duration::from_secs(60), |app| {
+        body(app).is_some_and(|text| counted(&text))
+    }) {
+        failures.push(format!(
+            "Properties of the 2,000-file folder never counted its contents: {:?}",
+            body(&app)
+        ));
+    }
+    let text = body(&app).unwrap_or_default();
+    if first.contains("Contents: Calculating…") {
+        context.note("Properties showed \"Contents: Calculating…\" before the count arrived");
+    } else if counted(&first) {
+        context.note(
+            "SKIP: \"Contents: Calculating…\": the count of 2,000 files arrived before the \
+             first frame showed Properties",
+        );
+    } else {
+        failures.push(format!(
+            "Properties before its count says {first:?}, without \"Contents: Calculating…\""
+        ));
+    }
+    let contents = text
+        .lines()
+        .find(|line| line.starts_with("Contents: "))
+        .unwrap_or_default();
+    let wanted = vec![
+        (2000, "files".to_owned()),
+        (1, "folder".to_owned()),
+        (bytes, "bytes".to_owned()),
+    ];
+    if counted_parts(contents.trim_start_matches("Contents: ")) != wanted {
+        failures.push(format!(
+            "Properties counts {contents:?}; the disk holds 2000 files, 1 folder and {bytes} \
+             bytes outside the locked folder"
+        ));
+    }
+    let not_counted = text
+        .lines()
+        .find(|line| line.starts_with("Not counted: "))
+        .unwrap_or_default();
+    let expected = if cfg!(unix) {
+        "Not counted: 1 link (not followed), 1 unreadable item"
+    } else {
+        "Not counted: 1 unreadable item"
+    };
+    if not_counted != expected {
+        failures.push(format!(
+            "Properties says {not_counted:?}, expected {expected:?} (in {text:?})"
+        ));
+    }
+    app.screenshot(
+        context,
+        "properties-contents",
+        "Properties of a 2,000-file folder with a locked subfolder",
+    );
+    support::dismiss_all(&mut app);
+    app.shutdown()
 }

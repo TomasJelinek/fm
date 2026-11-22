@@ -3,8 +3,8 @@
 //! `<DIR>` for a folder; the file destination's Browse… (the scripted chooser); an
 //! existing file asks first and Cancel, Replace and Append each do exactly that; the
 //! focused entry when nothing is marked; a panel filter limits and orders the list;
-//! the template history brings back a used template. Each output is compared byte for
-//! byte.
+//! the template history brings back a used template, also after a restart. Each output
+//! is compared byte for byte.
 use crate::{
     Context,
     app::{App, Config},
@@ -87,8 +87,10 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     }
     ps::folder(&folder.join("sub"))?;
     let output = context.work.join("list-output.txt");
+    let store = crate::options_support::SettingsStore::new();
     let mut config = Config::new(&folder, &context.work);
     config.clipboard = true;
+    config.settings = Some(store.clone());
     let mut app = App::start(config);
     let mut failures = Vec::new();
     let clipboard = |app: &App| {
@@ -294,6 +296,34 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     app.until("the filter to close", |app| {
         !app.window.get_panel_filter_view().open
     });
+    app.shutdown()?;
+    drop(app);
+    // The template history is saved: after a restart it still offers the templates used.
+    let mut config = Config::new(&folder, &context.work);
+    config.settings = Some(store);
+    let mut app = App::start(config);
+    open(&mut app)?;
+    input::click(
+        app.slint(),
+        AccessibleRole::Combobox,
+        "File list template history",
+    )?;
+    app.settle();
+    let offered: Vec<String> = ps::popup_buttons(&app)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    for used in [
+        "$(FileName)$(LF)",
+        "$(FileNamePart)|$(FileExtension)|$(FileSize)$$$(LF)",
+    ] {
+        if !offered.iter().any(|label| label == used) {
+            failures.push(format!(
+                "after a restart the template history does not offer {used:?}: {offered:?}"
+            ));
+        }
+    }
+    support::dismiss_all(&mut app);
     app.shutdown()?;
     support::report(&failures)
 }
