@@ -59,13 +59,30 @@ the formatting authority; strict Clippy checks run in CI.
   distribution without mandatory fees; prefer maintained open source. Follow the
   [dependency policy](docs/DEPENDENCY_POLICY.md) and update the
   [license inventory](docs/THIRD_PARTY.md) when dependencies/features change.
+- **Documentation:** describe implemented behavior in the document that owns the
+  topic, in plain, concise English. Label plans and known limits and keep them in the
+  [implementation backlog](docs/IMPLEMENTATION_BACKLOG.md). Record only verified test
+  evidence, in dated records under `docs/verification/`, and point to them instead of
+  repeating run narratives. Every relative link and anchor must resolve; no local
+  paths, user names or email addresses.
 
-Checks: `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-In a deeply nested Windows checkout `cargo fmt --all` can exceed the command-line
-length limit ("The filename or extension is too long"); run
-`cargo fmt -p <package> -- --check` per workspace package there instead.
-Source size: `pwsh scripts/check-source-size.ps1` (Windows PowerShell 5.1 also
-works: `powershell -NoProfile -File scripts/check-source-size.ps1`) on Windows or
-`bash scripts/check-source-size.sh` on Linux, including the root build helpers;
-no extra interpreter is required.
+Checks, as CI ([ci.yml](.github/workflows/ci.yml)) runs them for the main workspace:
+
+- Format: `cargo fmt --all -- --check`. In a deeply nested Windows checkout this can
+  exceed the command-line length limit ("The filename or extension is too long"); run
+  `cargo fmt -p <package> -- --check` per workspace package there instead.
+- Clippy:
+  `cargo clippy --workspace --all-targets --locked --features midnight-acceptance/acceptance -- -D warnings`.
+  The feature makes Clippy check the opt-in acceptance suite too.
+- Tests: CI runs every workspace test target with
+  `python -B scripts/ci-workspace-tests.py --retire-successful-test-artifacts`, in
+  several Cargo invocations. Locally, run the same targets with
+  `python -B scripts/ci-workspace-tests.py --keep-test-artifacts` (the retiring
+  option works only with `CI=true`), or all in one invocation with
+  `cargo test --workspace --locked`.
+- Source size: `pwsh scripts/check-source-size.ps1` on Windows (Windows PowerShell 5.1
+  also works: `powershell -NoProfile -File scripts/check-source-size.ps1`) or
+  `bash scripts/check-source-size.sh` on Linux. It checks the `.rs`, `.slint`, `.ps1`,
+  `.sh`, `.bat`, `.py`, `.c` and `.h` files in the repository root (the build
+  helpers included) and below `crates/`, `scripts/`, `plugins/` and the API/SDK
+  workspaces; no extra interpreter is required.

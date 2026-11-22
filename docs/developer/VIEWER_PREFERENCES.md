@@ -6,7 +6,7 @@ host captures `Arc<ViewerPreferences>` in `ViewerLaunch` before opening a source
 
 ## Plugin catalogs in Options
 
-Options → Plugins has Viewers, Filesystems and Thumbnailers tabs. The latter two are read-only catalogs.
+Options → Plugins has Viewers, Filesystems, Archives and Thumbnailers tabs. The Filesystems and Archives tabs are read-only catalogs (Archives also opens Archive associations); the Thumbnailers tab edits each thumbnailer's extensions.
 Viewer enablement, extension overrides and priority keep stable plugin IDs and
 their restart and application-settings semantics. Short names and functional
 descriptions are presentation metadata; they do not redirect routing or migrate

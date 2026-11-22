@@ -7,7 +7,12 @@ Explorer's own settings file. In a narrow Options dialog, or with a large font,
 the buttons show only their icons; their tooltips keep the full names. Where the
 footer has no room even for their icons, in a very small window or with a very
 large font, they move to the end of the **General** page, under **Settings
-file**, so that **OK** and **Cancel** always stay in view.
+file** (as **Export…** and **Import…** in a narrow dialog), so that **OK** and
+**Cancel** always stay in view.
+
+**Reset to defaults** resets the Options settings and keeps the tabs, hot paths,
+window placement, command history, custom commands and the settings kept from
+another operating system. OK saves the reset; Cancel restores the previous settings.
 
 File choice, reading, writing and validation run in backend services. The Options
 dialog only shows the result.
@@ -23,8 +28,9 @@ A settings file is a complete snapshot of everything Midnight Explorer saves:
   and custom archive extensions;
 - the state saved outside Options: tabs of both panels, hot paths, window placement
   and the panel split, panel view modes, panel filters and filter history, the last
-  Select or Deselect by mask pattern, viewer window settings, the terminal choice,
-  checksum algorithm choices, and Make File List templates and output path;
+  Select or Deselect by mask pattern and its **Include folders** choice, viewer
+  window settings, the terminal choice, checksum algorithm choices, and Make File
+  List templates and output path;
 - the command history. It is written only when **Remember command history after
   restart** is on. Commands run while it was off are never written.
 
@@ -49,10 +55,15 @@ If the chosen file already exists, Options asks whether to replace it:
 - **Keep** leaves the existing file unchanged and exports nothing.
 
 Replacing follows the same safety rules as the other exports that replace a file,
-such as checksum files and Make File List output. A file that is read-only,
-compressed or encrypted, or is a folder or link, is not replaced and stays
-unchanged; choose another name instead. This also applies inside an
-NTFS-compressed folder, because new files there are compressed too.
+such as checksum files and Make File List output. These files are not replaced and
+stay unchanged; choose another name instead:
+
+- a folder, a link or a special file;
+- on Windows, a file that is read-only, compressed or encrypted, or has alternate
+  data streams or extended attributes. This includes every file in an
+  NTFS-compressed folder, because files there are compressed too;
+- on Linux, a file that another user owns, that has setuid, setgid or sticky bits,
+  or whose security attributes, permissions or filesystem flags could not be kept.
 
 The file is staged exclusively, synced and read back for verification before it is
 published, like the other exports. Like them, it waits until running Copy, Move
@@ -86,11 +97,12 @@ An accepted file is previewed like other Options edits:
   fonts and keyboard remaps. Unfinished page edits are discarded.
 - **OK** saves the whole file. Only after that save succeeds are the settings
   outside Options applied: the panels open the imported tabs, as at startup; the
-  hot paths, panel split, view modes, filters, viewer settings and terminal choice
-  take effect; and the window moves to the imported placement, adjusted to the
-  current displays. A panel without saved tabs keeps its current tabs, and a file
-  without a saved window placement leaves the window where it is. Viewer windows
-  that are already open keep their current view settings until reopened.
+  hot paths, panel split, view modes, filters, viewer settings, terminal choice,
+  checksum algorithm choices, Make File List templates and output path and the last
+  mask choice take effect; and the window moves to the imported placement, adjusted
+  to the current displays. A panel without saved tabs keeps its current tabs, and a
+  file without a saved window placement leaves the window where it is. Viewer
+  windows that are already open keep their current view settings until reopened.
 - **Cancel**, Escape or the X button discard the import: the previewed settings
   return to what they were, and nothing outside Options changes. **Reset to
   defaults** after an import also discards its settings outside Options.
@@ -152,15 +164,27 @@ commands: 1 key binding."
 A settings file is the same JSON document that Midnight Explorer stores as its own
 settings file: `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` (by default
-`~/.config/midnight-explorer/preferences.json`) on Linux.
+`~/.config/midnight-explorer/preferences.json`) on Linux. While that file does not
+exist, Midnight Explorer reads the settings of releases from before its rename,
+`%LOCALAPPDATA%\FM\preferences.json` or `$XDG_CONFIG_HOME/fm/preferences.json`, and
+saves to the current location; it never changes the old file.
 
-- The document is one JSON object in UTF-8. Exports are indented and end with a
-  newline. The whole file is at most 4 MiB.
+- The document is one JSON object in UTF-8. Exports are indented (compact only
+  when indentation would pass the limit) and end with a newline. The whole file is
+  at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 36. When exporting, it writes the lowest version that can hold the
-  settings, at most 36. Schema 36 adds `viewer.document_layout` (`"continuous"`, the
-  PDF layout chosen last), written only when it is not the default Paged; a schema 36
-  file without it, or an earlier schema with it, is refused.
+  versions 1 to 36. When saving or exporting, it writes the lowest version that can
+  hold the settings, at most 36. The latest schemas added:
+  - 33: `file_comparators`, the external comparison rules;
+  - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
+  - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
+    pattern and its Include folders choice);
+  - 36: `viewer.document_layout` (`"continuous"`, the PDF layout chosen last),
+    written only when it is not the default Paged.
+
+  A version is written only for a setting that needs it, so a schema 34, 35 or 36
+  file without any of that version's new fields is refused, and so is a field in a
+  schema older than the one that added it.
 - The other top-level fields belong to that schema version. A field that the
   version does not define is an error, not ignored.
 - Native paths are stored losslessly. A path that is valid Unicode is a JSON string.

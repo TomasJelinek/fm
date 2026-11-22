@@ -473,7 +473,7 @@ Unicode, long names, links, CRC/trailer errors, malformed/truncated input and
 resource bounds. Host integration additionally exercises discovery, source
 brokering, changed-source failure and absent/duplicate providers. Current
 platform qualification and exact commands are recorded in the
-[implementation checkpoint](../archive-filesystem-development.md).
+[archive worker development guide](../archive-filesystem-development.md).
 
 ## Protocol 3 cooperative member staging cancellation (MEDIA-01)
 

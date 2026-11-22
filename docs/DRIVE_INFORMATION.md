@@ -1,74 +1,83 @@
-# Detailed volume information
+# Drive information
 
-On Linux, the drive dropdown and drive bar show `/`, the Home shortcut and useful
-mounted storage: local volumes, removable media, network shares and user FUSE
-mounts. Discovery reads `/proc/self/mountinfo` on backend workers, with the same
-filter in the independent native provider and startup desktop locations. Snap
-images, namespaces, portals, tracing/kernel filesystems, container layers and
-mounts under system/boot/temporary directories are omitted. Runtime exceptions
-retain `/run/media` and `/run/user/<numeric UID>/gvfs` mounts.
+**Ctrl+F1** or **Ctrl+L** opens **Drive information** for the volume that holds the
+active panel's folder. Inside an archive the dialog names the **Archive container**,
+the native archive file, and describes the volume that holds it; it never describes
+the archive as a disk. In a Network Neighborhood location it asks you to open a
+shared folder first.
 
-Block-device subdirectory views are omitted as duplicate navigation locations;
-Btrfs and bcachefs subvolumes remain available. This also hides intentional local
-directory bind mounts. Whole-filesystem bind aliases may remain because mountinfo
-does not distinguish them. Filtering affects navigation choices only: an omitted
-path can still be entered directly, browsed and queried for volume information.
+## What the dialog shows
 
-Ctrl+F1 and Ctrl+L query the filesystem containing the displayed native folder.
-Inside an archive, the dialog explicitly identifies the native **archive container**
-and reports its hosting filesystem. It does not describe the archive as a disk.
+- The folder (or archive container), the volume or mount that holds it, the volume
+  label when there is one, the filesystem name and a native source or identifier: the
+  volume serial number on Windows, the mount source on Linux.
+- **Total**, **Used**, **Free on filesystem** and **Available to you**, each in exact
+  bytes in your number format and in readable units. Used is total minus the
+  filesystem's free space, never total minus what your quota leaves you.
+- **Storage**: Local solid-state storage, Rotational storage, Local storage (media
+  type unknown), Network filesystem, or Unavailable. Storage is never assumed to be an
+  SSD: a disk attached to the machine whose media type cannot be proven (a virtual
+  machine's disk, a USB disk) shows "Local storage (media type unknown)", and storage
+  that cannot be shown to be local shows "Unavailable".
+- **Read-only filesystem**, when the system reports it. It describes the filesystem or
+  mount and does not mean that you can write every folder on it.
+- **Reported filesystem properties**, only those the system reports: on Windows, for
+  example, case handling, Unicode names, access-control lists, compression, sparse
+  files, named streams, hard links, reparse points, encryption and quotas; on Linux,
+  the mount restrictions (no execution, no set-user-ID, no device files), never
+  properties guessed from a filesystem name.
+- A field that cannot be read shows "Unavailable", and the reasons are listed at the
+  end; a zero reading stays zero. One failed field does not hide the others.
 
-The dialog shows the actual volume/mount, native label when available, filesystem
-name, native source/identifier, total/used/free capacity, bytes available to the
-current user, and reliably reported storage classification and filesystem properties.
-Capacity has exact locale-formatted bytes and readable units. Used bytes are total
-minus filesystem-free bytes, never total minus the user's quota-limited availability.
-An unavailable field stays unavailable; a zero reading remains zero. Optional-field
-failures preserve the other measured fields. Read-only state describes the filesystem
-or mount and does not claim that the caller can write every directory.
+The values are live readings, not a snapshot that later operations rely on. **Copy
+details** copies the report; the dialog can be scrolled and resized.
 
-Windows queries the resolved Unicode volume root with dynamic buffers, suppresses
-native removable-media error dialogs, and reads filesystem name, label, serial and
-supported property flags. Actual total capacity comes from
-[GetDiskSpaceInformationW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskspaceinformationw),
-whose actual allocation units exclude caller quota limitations.
-[GetDiskFreeSpaceExW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw)
-supplies filesystem-free bytes and caller-available bytes separately; its quota-limited
-"total" is deliberately not displayed as actual volume capacity. If actual total
-cannot be queried, total/used remain unavailable. The API fits the existing Windows
-10 22H2 target. Existing conservative native device classification is reused.
+## How the query works
 
-Linux holds an `O_PATH` descriptor without opening content, obtains capacity and mount
-restrictions from `fstatvfs`, and matches the held object's `statx` mount ID and device
-against bounded `/proc/self/mountinfo`. This distinguishes bind mounts and identical
-mount-path spellings without guessing a mount from path text. Native escaped bytes
-remain raw until presentation. An optional label comes from the matching device's
-bounded udev database record; absent udev metadata is ordinary unavailability.
-Classification uses the existing conservative backend and is discarded if its final
-path query no longer matches the held mount. Unknown or virtual storage is never
-assumed to be an SSD: a disk attached to the machine whose media type cannot be proven
-(a virtual machine's disk, a USB disk) shows "Local storage (media type unknown)",
-storage that cannot be shown to be local "Unavailable". Linux capability rows list actual mount restrictions; they do
-not infer NTFS-like capabilities from filesystem names.
+The native filesystem package answers on a backend worker, one query at a time. A
+newer request replaces a waiting one and cancels the running one cooperatively; a
+system call that is already blocked cannot be interrupted. A reply is shown only
+while it still belongs to the same panel, folder, archive and dialog: a late reply
+never replaces newer information or reopens a dialog you closed. Paths keep their
+exact native form and are never rebuilt from display text.
 
-All native work runs on a dedicated backend actor with one active call and one
-coalesced latest request. A newer request cancels prior work cooperatively; an already
-blocked OS call cannot be forcibly interrupted. The UI captures a request identity,
-pane navigation, raw native path, archive address and notice occurrence. Stale results
-cannot replace a newer notice or another location's information. Replies update the
-existing notice body without changing its occurrence, so closing the loading dialog
-never allows a late reply to reopen it. Closing the application cancels delivery.
-The dialog supports scrolling, resizing and Copy details through the existing backend
-clipboard action.
+- **Windows** queries the volume's root with dynamic buffers and without the
+  system's removable-media error dialogs. It reads the filesystem name, label, serial
+  number and property flags. The total comes from
+  [GetDiskSpaceInformationW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskspaceinformationw),
+  which is not limited by your quota;
+  [GetDiskFreeSpaceExW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw)
+  supplies the filesystem's free bytes and the bytes available to you. Its
+  quota-limited "total" is never shown as the volume's capacity: when the real total
+  cannot be read, Total and Used stay unavailable.
+- **Linux** holds an `O_PATH` descriptor (it opens no file content), reads capacity
+  and mount restrictions with `fstatvfs`, and finds the mount by matching the held
+  object's `statx` mount ID and device against `/proc/self/mountinfo` (read up to
+  1 MiB), so bind mounts and different spellings of a mount path are told apart. The
+  label comes from the device's udev record, when there is one. The storage class is
+  discarded if the path no longer names the held mount by the time it is known.
 
-Queries are read-only live observations, not filesystem snapshots or authority for
-copy/delete decisions. No operation path is truncated or reconstructed from display
-text; no `MAX_PATH` buffer, shell command, new dependency or public plugin API is added.
-The Salamander `CDriveInfo` implementation in `src/dialogs3.cpp` was inspected for its
-information categories only; no source or assets were copied.
+## The drive list on Linux
 
-Windows and Linux native tests, actor cancellation tests, strict backend checks and
-the actual Windows dialog workflow pass. The [verification record](verification/2026-11-08-drive-information.md)
-lists commands/scopes, raw/long-path fixtures, layout evidence and remaining limits.
-This document makes no macOS, physical-media or untested Windows-version
-qualification claim.
+The drive dropdown and the drive bar show `/`, Home and useful mounted storage: local
+volumes, removable media, network shares and FUSE mounts of the user. The list comes
+from `/proc/self/mountinfo` on a backend worker; the native filesystem package and the
+application apply the same filter:
+
+- Left out: snap images, namespaces, portals, kernel and tracing filesystems,
+  container layers, and mounts under `/dev`, `/proc`, `/sys`, `/boot`, `/efi`,
+  `/snap`, `/var/lib/snapd`, `/var/lib/docker`, `/var/lib/containers`, `/tmp`,
+  `/var/tmp` and `/run`.
+- Kept below `/run`: `/run/media` and `/run/user/<numeric user ID>/gvfs`.
+- A mount of a subfolder of a block device is a second view of a drive already
+  listed and is left out, which also hides deliberate bind mounts of local folders;
+  Btrfs and bcachefs subvolumes stay listed. A bind mount of a whole filesystem may
+  appear twice, because the mount table does not distinguish it.
+
+The filter changes only the choices offered: a folder left out can still be typed in
+the path bar, browsed and described with Ctrl+F1.
+
+Salamander's drive information dialog (`CDriveInfo` in `src/dialogs3.cpp`) was a
+reference for the kinds of information only; no source or assets were copied. The
+dated [verification record](verification/2026-11-08-drive-information.md) lists the
+tests and fixtures.

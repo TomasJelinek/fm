@@ -1465,10 +1465,12 @@ cargo run -p midnight-explorer --locked -- --ui-smoke-test --software
 
 These are the main workspace's checks, with CI's formatting and Clippy commands (the
 `acceptance` feature makes Clippy check the acceptance suite too). CI runs the
-workspace tests through `python -B scripts/ci-workspace-tests.py`, which runs the same
-test targets in several Cargo invocations. Both smoke tests need the native filesystem
-package beside the executable (a helper build installs it), and the UI smoke test
-needs a display. [Full validation](#full-validation) runs every test of CI for the
+workspace tests through `scripts/ci-workspace-tests.py`, which runs the same test
+targets in several Cargo invocations; locally, run it as
+`python -B scripts/ci-workspace-tests.py --keep-test-artifacts` (its CI option, which
+deletes passing test executables, works only with `CI=true`). Both smoke tests need
+the native filesystem package beside the executable (a helper build installs it), and
+the UI smoke test needs a display. [Full validation](#full-validation) runs every test of CI for the
 platform with one command, but not the formatting, Clippy and source size checks.
 During implementation, build the affected test targets once and use the
 [targeted parallel runner](docs/developer/TEST_EXECUTION.md) for independent

@@ -1,37 +1,81 @@
 # Viewer file types
 
-Open **Options > Plugins** to select a viewer and edit which extensions it handles.
-Enter literal suffixes separated by spaces, commas or semicolons, for example
-`rs; py; custom.txt`. Leading `.` or `*.` is accepted and normalized. Matching
-ignores case. An entry also matches a file whose whole name it is: the Source
-viewer's default `makefile` entry opens `Makefile`, and adding `dockerfile` to a
-viewer's list routes `Dockerfile` to it. **Reset** removes that viewer's override.
+**Options → Plugins** has four tabs: **Viewers**, **Filesystems**, **Archives** and
+**Thumbnailers**. The Viewers tab decides which viewer F3 opens for a file; the
+Thumbnailers tab decides which thumbnailer draws a file's preview. The viewer and
+thumbnailer packages' own manifests supply the defaults and are never modified.
 
-The Source viewer's defaults include `csv` and `tsv`, which colour each column;
-removing them from its list returns those files to the Basic viewer. A list saved for
-it before they were added does not gain them; **Reset** restores the defaults.
+## Viewers
 
-The list includes text, source, Markdown, image, PDF and HTML viewers when installed.
-Move a viewer higher in the priority list to prefer it when more than one viewer
-matches the same suffix. A longer compound suffix takes precedence over a shorter
-suffix. Editing associations changes routing, not what a decoder can actually read.
+The **Viewer priority** list shows the installed viewers: the Text and binary viewer
+(the Basic viewer below), the Source, Markdown, Image, PDF and HTML viewers, and Video,
+each when its package is installed. It also lists packages that could not be loaded,
+with the reason, and viewers that are
+no longer installed but still have saved settings ("Not installed · settings
+retained"); those settings stay for a later reinstallation. A check box enables or
+disables each viewer; a disabled or unavailable viewer opens no files.
 
-An empty extension list removes that viewer's explicit matches. The installed
-Basic viewer remains the fallback for unmatched files; **Alt+F3** always uses Basic,
-independent of extension overrides. Disabled or unavailable plugins cannot handle
-files. Preferences for missing plugin IDs remain stored for later reinstallation.
+Select a viewer and edit **Associated extensions**:
 
-**OK** saves these choices; **Cancel** discards them. As with plugin enablement,
-restart the application to apply them. Plugin manifests are never modified.
+- Enter literal suffixes separated by spaces, commas or semicolons, for example
+  `rs; py; custom.txt`. A leading `.` or `*.` is accepted and removed. Matching ignores
+  case.
+- An entry also matches a file whose whole name it is: the Source viewer's default
+  `makefile` opens `Makefile`, and adding `dockerfile` to a viewer's list routes
+  `Dockerfile` to it.
+- A saved list replaces the viewer's defaults. It therefore does not gain extensions
+  that a newer version adds to the defaults; **Reset** removes the saved list and
+  restores the current defaults. For example, the Source viewer's defaults include
+  `csv` and `tsv`, which it colours column by column; removing them from its list
+  returns those files to the Basic viewer.
+- An empty list removes all of that viewer's matches.
+- Limits: at most 512 extensions for one viewer, each at most 64 bytes, without paths,
+  wildcards or empty parts (`/ \ * ? : < > | " , ;` and `tar..gz` are refused); the
+  typed text at most 32,768 bytes, and all saved lists together at most 65,536 bytes.
+  Invalid text shows its reason under the field and keeps that viewer selected; **OK**
+  refuses until it is corrected or reset.
 
-The [routing design](superpowers/specs/2026-11-09-viewer-associations.md) describes
-validation, precedence and the separation between preferences and plugin capabilities.
+When more than one viewer matches a file:
 
-The Plugins page also lists installed filesystem and thumbnailer packages in
-separate tabs. Rescan all plugins refreshes all three catalogs from one action. Once
-every catalog has answered, a line beside the button says what the rescan found, even
-when nothing changed: for example `Rescanned: no plugins found.`, `Rescanned: found 1
-viewer plugin.` or `Rescanned: found 7 viewer, 2 filesystem, 3 archive and 2
-thumbnailer plugins; 3 packages are unavailable.`, or `Rescanned; some plugin lists
-could not be read.` when a catalog failed. Opening Options lists the plugins without
-such a line.
+1. the longest matching suffix wins, so `tar.gz` beats `gz`;
+2. between equally long matches, a viewer moved up the list with **Move viewer up**
+   (or **Move viewer down** for the others) wins over the viewers below it.
+
+Editing associations changes routing, not what a viewer can read. The Basic viewer
+remains the fallback for files that no viewer matches, and **Alt+F3** always opens
+Basic, whatever the lists say.
+
+DOCX, XLSX, PPTX, ODT, ODS and ODP files open in the Office preview, which shows
+their contents through the HTML viewer. It has no row of its own: with the HTML
+viewer missing or disabled, such a file reports that the preview needs it, unless a
+viewer's list names its extension.
+
+**OK** saves these choices and **Cancel** discards them. Like enabling or disabling
+a viewer, they apply after the application is restarted; the page says so. The dated
+[routing design](superpowers/specs/2026-11-09-viewer-associations.md) describes the
+validation and precedence rules.
+
+## Thumbnailers
+
+Select a thumbnailer on the Thumbnailers tab to edit its **Associated extensions** in
+the same way, with these differences:
+
+- only final extensions, such as `jpg` or `png`: at most 16 letters, digits, `-` or
+  `_`, without dots, so no compound suffixes;
+- at most 32 extensions for one thumbnailer, and at most 4,096 bytes of typed text;
+- an empty list turns off that thumbnailer's previews, and **Reset** restores its
+  installed list;
+- a successful **OK** applies the change without a restart.
+
+## Archives and rescanning
+
+The Archives tab's **Archive associations…** chooses which file types open as
+archive folders; see [archive formats](ARCHIVE_FORMATS.md#associations).
+
+**Rescan all plugins** reads the viewer, filesystem (including archive) and
+thumbnailer catalogs again. Once every catalog has answered, a line beside the button
+says what it found, even when nothing changed: for example
+`Rescanned: no plugins found.`, `Rescanned: found 1 viewer plugin.` or
+`Rescanned: found 7 viewer, 2 filesystem, 3 archive and 2 thumbnailer plugins; 3
+packages are unavailable.`, or `Rescanned; some plugin lists could not be read.` when a
+catalog failed. Opening Options lists the plugins without such a line.

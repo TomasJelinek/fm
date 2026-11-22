@@ -1,6 +1,10 @@
 # Build, test and install a viewer plugin
 
-Use Rust 1.99.0 or newer with the native target toolchain: MSVC Build Tools on
+This guide covers independent viewer plugins. To build, validate and run the
+application itself, see [Build and run](../../README.md#build-and-run) in the README.
+
+Use Rust 1.99 or newer (the plugins' `rust-version`; the repository pins 1.99.1 in
+`rust-toolchain.toml`) with the native target toolchain: MSVC Build Tools on
 Windows x64, or a native C toolchain on Linux x64. A plugin consumes an exported
 SDK bundle and its own dependencies; the application checkout is not a build
 requirement. All local intermediate files should remain under `_build/`.
@@ -20,10 +24,13 @@ cargo fetch --manifest-path api/Cargo.toml --locked
 bash api/scripts/package.sh
 ```
 
-Use the printed `_build/plugin-sdk-<timestamp>` directory; do not hardcode a
-timestamp from another checkout. The bundle contains versioned API/SDK `.crate`
-archives, a local registry, third-party vendor sources, `.cargo/config.toml`, the
-public C header and `artifacts.json` with SHA-256 checksums/provenance. Packaging
+The packager runs offline, hence the `cargo fetch` first. Use the printed
+`_build/plugin-sdk-<timestamp>` directory; do not hardcode a timestamp from another
+checkout. The bundle contains versioned API/SDK `.crate` archives, a local registry,
+third-party vendor sources, `.cargo/config.toml`, the public C header and
+`artifacts.json` with SHA-256 checksums/provenance. Its registry holds the released
+0.1.0 packages and the current 0.2.0 ones; 0.2.0 adds the optional
+[source coordinates](../../api/SOURCE_POSITION.md) and keeps ABI 1.0. Packaging
 does not publish to a remote registry. The `.invalid` registry URL is an offline
 source identity, not a service to contact. Keep the entire bundle together when
 relocating it between machines/operating systems.
@@ -67,29 +74,31 @@ that lockfile in the plugin project.
 
 Export/copy `plugins/midnight-viewer-basic/` to a directory outside the application
 checkout and provide the SDK bundle separately. The commands below run from that
-exported plugin directory. Replace the paths with your own private destinations;
+exported plugin directory, with the bundle in `../plugin-sdk` and an application
+installation in `../app`. Replace these paths with your own private destinations;
 installation must satisfy the [native trust rules](README.md#discovery-and-trust).
 
-Windows PowerShell:
+Windows (PowerShell):
 
 ```powershell
-./scripts/ci.ps1 -SdkConfig C:/sdk/.cargo/config.toml -BuildRoot C:/qa/basic/_build
-./scripts/build.ps1 -SdkConfig C:/sdk/.cargo/config.toml -BuildRoot C:/qa/basic/_build -OutputDirectory C:/app/viewers/midnight-viewer-basic
+./scripts/ci.ps1 -SdkConfig ../plugin-sdk/.cargo/config.toml -BuildRoot _build
+./scripts/build.ps1 -SdkConfig ../plugin-sdk/.cargo/config.toml -BuildRoot _build -OutputDirectory ../app/viewers/midnight-viewer-basic
 ```
 
 Linux:
 
 ```sh
-bash scripts/ci.sh /sdk/.cargo/config.toml /qa/basic/_build
-bash scripts/build.sh /sdk/.cargo/config.toml /qa/basic/_build /app/viewers/midnight-viewer-basic
+bash scripts/ci.sh ../plugin-sdk/.cargo/config.toml _build
+bash scripts/build.sh ../plugin-sdk/.cargo/config.toml _build ../app/viewers/midnight-viewer-basic
 ```
 
-CI runs formatting, independent plugin tests, strict all-target Clippy and a
-Debug native package build; tests, lints and the package share one native-target
-dependency build. Pass `release` as the build script's profile argument for an
-optimized package. Build scripts write the actual native target and DLL/SO
-filename into the installed manifest, and replace the package's copy of the
-plugin's notices. They replace only a `notices` directory that they generated
+The CI script runs formatting, independent plugin tests, strict all-target Clippy
+and a debug native package build into `<BuildRoot>/package/midnight-viewer-basic`;
+tests, lints and the package share one native-target dependency build. For an
+optimized package pass `-Profile release` (PowerShell) or `release` as the fourth
+argument (Linux) to the build script. Build scripts write the actual native target
+and DLL/SO filename into the installed manifest, and replace the package's copy of
+the plugin's notices. They replace only a `notices` directory that they generated
 (marked by `notices/.midnight-generated`) or that lies below a `_build` directory,
 and refuse any other existing one. They install only that package. They do not edit
 application code or another plugin.
@@ -108,17 +117,20 @@ source, Markdown, image, PDF and HTML) from the shared repository, the existing
 orchestration helpers are:
 
 ```powershell
-./scripts/build-viewers.ps1 -Profile release -SdkConfig C:/sdk/.cargo/config.toml -AppDirectory C:/app -Test -Offline
+./scripts/build-viewers.ps1 -Profile release -SdkConfig <sdk>/.cargo/config.toml -AppDirectory <app> -Test -Offline
 ```
 
 ```sh
-MIDNIGHT_TEST_VIEWERS=1 MIDNIGHT_VIEWERS_OFFLINE=1 bash scripts/build-viewers.sh release /sdk/.cargo/config.toml /app
+MIDNIGHT_TEST_VIEWERS=1 MIDNIGHT_VIEWERS_OFFLINE=1 bash scripts/build-viewers.sh release <sdk>/.cargo/config.toml <app>
 ```
 
 Those helpers orchestrate independent builds; they do not make plugins members
 of the application workspace. Omit the SDK argument to let the helper package
-the local public API. `MIDNIGHT_VIEWER_SDK_CONFIG` can supply it via environment.
-Prefer an existing released bundle for independent development.
+the local public API, and the application folder to install into the build output
+(`_build/debug` or `_build/release`). `MIDNIGHT_VIEWER_SDK_CONFIG` can supply the SDK
+through the environment, and `-WorkerSdkConfig` or `MIDNIGHT_IMAGE_VIEWER_SDK_CONFIG`
+an existing worker SDK for the image and PDF viewers. Prefer an existing released
+bundle for independent development.
 
 ## Manifest and installation
 
@@ -218,17 +230,17 @@ cancellation and logical close, handles output rejection, and owns no host point
 or private thread. The source illustrates the actual API rather than placeholder
 symbols or pseudocode.
 
-From the copied example directory, with the SDK bundle at `C:/sdk`:
+From the copied example directory, with the SDK bundle in `../plugin-sdk` (the same
+commands work on Windows and Linux):
 
-```powershell
-cargo generate-lockfile --offline --config C:/sdk/.cargo/config.toml
-cargo check --locked --offline --config C:/sdk/.cargo/config.toml --target-dir _build/target
-cargo clippy --locked --offline --all-targets --config C:/sdk/.cargo/config.toml --target-dir _build/target -- -D warnings
-cargo build --release --locked --offline --config C:/sdk/.cargo/config.toml --target-dir _build/target
+```sh
+cargo generate-lockfile --offline --config ../plugin-sdk/.cargo/config.toml
+cargo check --locked --offline --config ../plugin-sdk/.cargo/config.toml --target-dir _build/target
+cargo clippy --locked --offline --all-targets --config ../plugin-sdk/.cargo/config.toml --target-dir _build/target -- -D warnings
+cargo build --release --locked --offline --config ../plugin-sdk/.cargo/config.toml --target-dir _build/target
 ```
 
-On Linux use the same Cargo arguments with `/sdk/.cargo/config.toml`. Install the
-resulting `midnight_viewer_tiny_example.dll` or `libmidnight_viewer_tiny_example.so`
+Install the resulting `midnight_viewer_tiny_example.dll` or `libmidnight_viewer_tiny_example.so`
 and the example manifest into a dedicated private `viewers/tiny-example/`
 directory. Update manifest target/library fields for Linux. After restarting the
 application, open a UTF-8 file ending in `.tinytext` to exercise extension routing.
@@ -239,9 +251,8 @@ at a time and respects the requested line limit. It does not provide BOM/UTF-16
 decoding, normalized line endings, visible invalid-byte escapes, complete bidi
 control handling, syntax styles or a seek index. These limitations are explicit
 failures, not production capabilities. The independently tested Basic plugin is
-the reference for robust general-purpose text handling. The example was compiled,
-Clippy-checked and built as a native Windows DLL against the released SDK; that
-is API/build validation, not a claim of a full example integration test suite.
+the reference for robust general-purpose text handling. No CI job or validation
+step builds or tests this example.
 
 ## Test the independent contract
 

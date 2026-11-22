@@ -1,14 +1,19 @@
 # Archive formats and panel associations
 
-Enter or a left double-click opens an enabled archive association as a folder only
-when a trusted, compatible filesystem worker advertises its decoder. A small zipper
-badge marks these files in Detailed, Brief and Thumbnails views, alongside the host icon.
-The badge is a handler hint, not a claim that the contents have already been validated.
-No file-content probing or archive indexing happens in the UI or during badge rendering.
-Browsable archives use a small, muted corner zipper without an opaque background:
-8 × 12 logical pixels in Detailed/Brief views and 10 × 17 in Thumbnails. The
-associated file icon and selection remain visible, and row sizes do not change.
-The fallback archive icon already includes a zipper and receives no duplicate overlay.
+Enter or a left double-click on a file whose extension has an enabled archive
+association opens the file as a folder, read by the installed archive worker. When no
+installed worker supports its format, the panel says "Compatible archive filesystem
+plugin is unavailable", with the plugin discovery diagnostics, and does not hand the
+file to another application. Files without an enabled association open as usual.
+
+A small zipper badge marks the files that open this way in the Detailed, Brief and
+Thumbnails views. It is a muted corner zipper without an opaque background, 8 × 12
+logical pixels in Detailed and Brief and 10 × 17 in Thumbnails, drawn over the system
+icon; the icon and the selection stay visible and row sizes do not change. A file gets
+the badge only when its association is enabled and an installed worker supports its
+format. The badge is a hint from the file name, not a check of the contents: neither
+the UI nor the badge reads file contents or indexes archives. When the system has no
+icon for the file, the built-in archive icon is shown instead, without a badge.
 
 ## Opening and reading archives
 
@@ -53,63 +58,91 @@ wide. Clicking `...` edits the whole path. Clicking a native folder's part leave
 archive for that folder, with the cursor on the folder or archive on the way back; a
 part inside the archive lists that archive folder.
 
+## Members and dates
+
+- Members keep the names the archive records, raw and lossless. Members of a TAR or
+  7z archive that share a name stay separate entries. ZIP records that the ZIP reader
+  indexes under one name are listed once and cannot be read.
+- A GZIP, XZ, Bzip2 or Zstandard file that holds no TAR shows one member named
+  `content`: the decompressed stream. The file name stored in a GZIP header is not
+  used.
+- Links, special entries and unsafe names (absolute paths, `..` components,
+  backslashes, colons) are listed but cannot be read or copied out; the status line
+  of such a member says **Unreadable** and why.
+- Dates: a ZIP member shows its NTFS or extended timestamp when the archive records
+  one, and otherwise the recorded local time as it is, without a time zone
+  conversion. TAR dates (including PAX times) and 7z dates are UTC and are shown in
+  local time.
+
 ## Associations
 
-Options → Archives has a format chooser for ZIP, 7-Zip, TAR, GZIP, XZ, Bzip2,
-Zstandard and each supported compressed TAR family. Each format shows its built-in
-association checkboxes and a separate custom-extension list with Add and Remove.
-A saved override
-changes panel activation and the badge immediately; it does not register an operating
-system association. Missing settings retain the defaults below. Unchecked documents,
-media, applications and installers open through the existing native Open action.
-A checked association still needs its provider installed. Disabling automatic opening
-does not invalidate a previously saved typed archive tab or change decoder support.
+**Options → Archives** sets which file names open as folders. It has a format chooser
+(ZIP, 7-Zip, TAR, GZIP stream, TAR.GZ, XZ stream, TAR.XZ, Bzip2 stream, TAR.BZ2,
+Zstandard stream and TAR.ZST), a line that says whether an installed worker supports
+the chosen format, a **Filter file types** field, a checkbox for each built-in
+extension of the format and the format's custom extensions.
 
-Overrides use the existing backend preferences store. Schema 13 stores a bounded
-map of canonical lowercase extensions to booleans; unknown, repeated or malformed
-entries reject the settings document rather than silently changing an association.
-When no overrides exist, the writer retains the oldest schema needed by the other
-saved settings. Changes made before startup settings finish loading take precedence
-for the edited extension while preserving unrelated saved choices.
+- Changes apply at once to panel activation and badges. **OK** saves them with the
+  other options and **Cancel** restores the previous choices. They never change the
+  operating system's file associations.
+- An unchecked extension opens in its usual application, as other files do. A checked
+  one still needs an installed worker for its format: without one, the page says
+  "Decoder unavailable" and keeps the choices.
+- Turning an association off does not invalidate a saved archive tab or Hot Path, and
+  does not change what the worker can decode.
+- Extensions without a saved choice use the defaults listed below.
 
-Custom extensions are shown as removable chips. Their removal cross is red,
-using a darker shade in light themes and a lighter shade in dark themes.
-Disabled actions retain the normal muted appearance.
+### Custom extensions
 
-Custom extensions accept one literal suffix at a time, with an optional leading
-dot. Unicode case folding makes `.BACKUP`, `.backup` and equivalent Unicode case
-spellings match; composed and decomposed Unicode remain distinct. Compound suffixes
-such as `backup.tar` match before shorter suffixes. A disabled built-in compound
-suffix blocks a shorter enabled match. Raw native filenames and paths are never
-rewritten; valid Unicode suffixes also work after undecodable native basenames.
-No UI callback opens files or probes content. Backend enumeration prepares the
-folded suffix hint, and the worker still validates the actual archive bytes.
+The **+** button opens a field: type a suffix, with or without its leading dot, and
+press Enter to assign it to the chosen format; Escape cancels the edit. Each custom
+extension shows as a chip whose red **×** removes it. Adding and removing wait until
+the saved settings have loaded.
 
-Assignments are globally unique, and every built-in suffix remains reserved even
-when its checkbox is off. A conflict with a built-in offers **Show built-in checkbox**;
-other conflicts name the assigned decoder. Invalid input retains the draft. Drafts
-also survive switching formats and closing/reopening Options. Add is available
-after initial settings loading; accepted additions/removals save immediately.
-Suffixes permit Unicode, letters, digits, dots, `-`, `_` and `+`; empty components,
-spaces, path separators, wildcards and command syntax are rejected. The collection
-is bounded to 256 extensions, each at most 256 UTF-8 bytes after case folding.
-These are settings limits and do not impose a native path-length limit.
+- A suffix is literal: letters (any Unicode letters), digits, dots, `-`, `_` and `+`.
+  Empty parts, spaces, path separators, wildcards and command syntax are refused. At
+  most 256 custom extensions are kept, each at most 256 UTF-8 bytes after case
+  folding; these are settings limits, not path-length limits.
+- Matching ignores letter case by Unicode case folding, so `.BACKUP` matches `.backup`;
+  composed and decomposed Unicode stay different. Native file names are never
+  rewritten, and a valid Unicode suffix also matches after a part of the native name
+  that is not valid Unicode.
+- The longest suffix decides: `backup.tar` matches before `tar`, and a built-in
+  compound suffix that is turned off (such as `.tar.gz`) keeps a shorter one (`.gz`)
+  from opening the file.
+- Each suffix belongs to one format. A built-in extension cannot be added as a custom
+  one, even while its checkbox is off; the page offers **Show built-in checkbox**,
+  which selects that format and filters the list to the extension. A suffix that is
+  already assigned names the format that has it; remove it there first.
+- A refused suffix stays in the field, with the reason below it. Typed text also
+  stays when you switch formats or close and reopen Options.
+- Adding an extension does not install, trust or enable a missing worker. The worker
+  still checks the actual file contents when it opens the archive.
 
-Schema 20 stores custom suffixes with stable decoder identifiers. Strict decoding
-rejects unknown decoders, duplicate/noncanonical suffixes and built-in collisions.
-Earlier settings migrate with an empty custom list. New saved archive addresses
-use address version 2 and retain the exact decoder, so removing a custom suffix
-does not invalidate an existing archive tab or Hot Path. Legacy address version 1
-continues using built-in suffix inference. Adding an extension cannot install,
-trust or enable a missing decoder, and does not change OS associations.
+### Saved choices
+
+The choices are stored with the other preferences. Built-in choices (settings schema
+13 and later) store only the extensions whose state differs from the default, as
+lowercase extension and on or off. Custom extensions (schema 20 and later) store each
+suffix with the identifier of its decoder. An unknown or repeated extension, an
+unknown decoder, or a custom suffix that is not canonical or collides with a built-in
+one makes the settings file invalid rather than changing an association silently. A
+settings file without such choices keeps the oldest schema that its other settings
+need. A checkbox changed before the saved settings have loaded keeps that change, and
+the other saved choices load as stored.
+
+Saved archive tabs and Hot Paths record the exact decoder (archive address version
+2), so removing a custom suffix does not break them. Addresses saved before
+(version 1) infer the decoder from the built-in suffix.
 
 ## ZIP containers
 
-These 51 suffixes share the ZIP decoder. Case is ignored for the ASCII suffix;
-native Unicode and non-Unicode filenames remain lossless. Only regular files receive
-a badge: a directory named `example.egg` stays an ordinary directory, and links never
-do. Readable members of an archive whose names have an enabled association carry the
-badge too, since Enter opens them as [archives inside the archive](#archives-inside-archives).
+These 51 suffixes share the ZIP decoder. Their letter case is ignored; native
+Unicode and non-Unicode file names stay lossless. Only regular files get the badge
+and open as folders: a folder named `example.egg` stays a folder, and a link to an
+archive opens like any other link. Readable members of an archive whose names have
+an enabled association get the badge too, since Enter opens them as
+[archives inside the archive](#archives-inside-archives).
 
 | Purpose | Extensions | Default | Format reference |
 | --- | --- | --- | --- |
@@ -131,16 +164,18 @@ badge too, since Enter opens them as [archives inside the archive](#archives-ins
 | PowerPoint presentation / template / add-in | `.pptx`, `.pptm`, `.potx`, `.potm`, `.ppsx`, `.ppsm`, `.ppam`, `.sldx`, `.sldm` | Disabled | [Office formats](https://learn.microsoft.com/en-us/office/compatibility/office-file-format-reference) |
 | OpenDocument document / template | `.odt`, `.ott`, `.odm`, `.otm`, `.ods`, `.ots`, `.odg`, `.otg`, `.odp`, `.otp`, `.odf`, `.odb` | Disabled | [LibreOffice XML formats](https://help.libreoffice.org/latest/en-US/text/shared/00/00000021.html) |
 
-Office/OpenDocument documents and templates are deliberately **disabled by default**:
-their normal activation should launch Word, Excel, PowerPoint, LibreOffice or the
-user's chosen application. The same policy applies to books/comics, maps, image
-projects, executable JAR/zipapps and installers/extensions. A user can explicitly
-enable any of these containers for archive browsing. A suffix is never enough to
-run package scripts, install code, decrypt content or guarantee that a container
-variant uses a supported codec. In particular, some `.pyz` files are non-ZIP
-application payloads; the ZIP worker rejects those instead of executing them.
+Office and OpenDocument documents and templates are deliberately **disabled by
+default**: Enter should open them in the user's office application. The same applies
+to e-books and comics, maps, image projects, executable JAR and Python applications,
+and installers and extensions. Any of them can be enabled for archive browsing. A
+suffix never runs package scripts, installs code or decrypts content, and does not
+guarantee that the container uses a supported compression method. Some `.pyz` files
+are not ZIP files at all; the worker reports "This file is not a valid ZIP archive."
+and nothing is run.
 
-## Other enabled archive formats
+## Other archive formats
+
+These formats are enabled by default:
 
 | Decoder | Default extensions |
 | --- | --- |
@@ -155,8 +190,24 @@ application payloads; the ZIP worker rejects those instead of executing them.
 | Zstandard single stream | `.zst` |
 | Zstandard-compressed TAR | `.tar.zst`, `.tzst` |
 
-Compound `.tar.gz` is recognized before `.gz`. Provider discovery reports actual
-supported families; installing only a TAR provider does not enable ZIP badges.
+Compound `.tar.gz` is recognized before `.gz`. The installed worker's manifest lists
+the formats it supports, and only those get badges and open as folders.
+
+The worker decodes these compression methods:
+
+- ZIP: Stored and Deflate, also when encrypted (see
+  [password-protected archives](#password-protected-archives)).
+- 7z: Copy, LZMA and LZMA2, the BCJ filters (x86, BCJ2, ARM, ARM64, ARM Thumb,
+  PowerPC, IA-64, SPARC and RISC-V) and Delta, in solid and non-solid archives, also
+  with AES-256 encryption.
+- GZIP (including several concatenated members), XZ, Bzip2 and Zstandard, as single
+  streams and around a TAR. Zstandard skippable frames are skipped, and frame
+  checksums are verified when present.
+
+A member stored with another method, for example ZIP Deflate64, BZIP2 or Implode, or
+7z PPMd, is listed with its size but cannot be read, and its status line names the
+method; the rest of the archive stays readable. Members of split (multi-volume)
+archives cannot be read either. RAR is not supported.
 
 ## Current operation limits
 
@@ -291,7 +342,7 @@ whose archive stays open (a protocol-2 worker cannot be refused without ending, 
 any staging failure). F3 and F5 on such a member are refused the same way. The inner
 archive gets a restricted worker of its own, which reads that lease through the
 ordinary bounded source broker. The
-lease no longer depends on the enclosing mount's member cache or worker, and every read
+lease does not depend on the enclosing mount's member cache or worker, and every read
 of the inner archive revalidates the enclosing chain down to the native file: a changed
 outer file makes the inner archive fail instead of serving old bytes. While a large
 member is staged, the status bar shows its progress (`Opening inner.zip: 12 of 340
@@ -330,13 +381,14 @@ enclosing provider grants stable member IDs. Inline folder branches do not expan
 archives: Enter opens an archive inside an archive from the panel's own folder, while
 archive members shown in expanded branches below it do not open.
 
-The canonical host table is
-[`archive_format.rs`](../crates/midnight-core/src/archive_format.rs).
-Extension policy remains host-owned: the independent worker receives a decoder
-family and captured source bytes, not UI settings or native paths.
+The canonical extension table is
+[`archive_format.rs`](../crates/midnight-core/src/archive_format.rs). The host owns
+the extension policy: the independent worker receives a decoder family and the
+captured source bytes, never UI settings or native paths. The worker's build, tests
+and protocol are described in the
+[archive worker development guide](archive-filesystem-development.md).
 
-Salamander reference reviewed: `src/dialogsp.cpp` (`CCfgPageArchivesAssoc`) keeps
-panel archive associations separate from external file-opening associations;
-`src/pack3.cpp` persists the panel extension list. Midnight Explorer uses the
-requested per-extension checkboxes, format selection and custom Add/Remove controls
-with native-path-safe Rust representation. No reference code or assets were copied.
+Behavioral reference: Salamander keeps panel archive associations
+(`src/dialogsp.cpp`, `CCfgPageArchivesAssoc`) separate from the associations that open
+files in other applications, and saves the panel extension list (`src/pack3.cpp`). No
+reference code or assets were copied.
