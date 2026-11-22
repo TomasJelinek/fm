@@ -10,8 +10,8 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 const NAMES: [&str; 2] = [
-    "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb",
-    "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb-journal",
+    "qa-h56-static-rows.project.staging.framedata.projectdb",
+    "qa-h56-static-rows.project.staging.framedata.projectdb-journal",
 ];
 
 fn inspect(

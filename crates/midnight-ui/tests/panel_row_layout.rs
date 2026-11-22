@@ -249,7 +249,7 @@ fn mandatory_breaks_in_native_filenames_cannot_shift_glyphs_into_adjacent_rows()
     test.window.invoke_apply_fonts("".into(), 13, 15);
     test.window
         .set_right_size_column_sample("3,603,169,280".into());
-    let base = "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb";
+    let base = "qa-h56-static-rows.project.staging.framedata.projectdb";
     let names = [
         base.to_string(),
         format!("{base}-journal\n"),
@@ -311,8 +311,8 @@ fn long_database_names_keep_one_line_and_align_with_metadata_during_updates() {
     test.window
         .set_right_size_column_sample("3,603,169,280".into());
     let names = [
-        "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb",
-        "mb-h56-static-dups.ovclash.ovstage.clashdata.ovclashdb-journal",
+        "qa-h56-static-rows.project.staging.framedata.projectdb",
+        "qa-h56-static-rows.project.staging.framedata.projectdb-journal",
     ];
     let rows = Rc::new(VecModel::from(vec![
         FileRow {

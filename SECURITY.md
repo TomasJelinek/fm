@@ -1357,8 +1357,8 @@ fields and conservative physical-device classifications.
   folders are owned by root and writable by nobody else, or both families are refused.
   GStreamer plugins come only from a fixed list, from the folder beside libgstreamer,
   checked the same way before loading; device and hardware-decoder (VA-API, V4L2,
-  NVIDIA), network, display and capture plugins and the user's plugin folders are never
-  loaded. GStreamer runs without its plugin registry (`GST_REGISTRY_DISABLE`, no
+  vendor GPU codec), network, display and capture plugins and the user's plugin folders
+  are never loaded. GStreamer runs without its plugin registry (`GST_REGISTRY_DISABLE`, no
   `gst-plugin-scanner` process, nothing written into the user's home). A process maps
   one FFmpeg series: gst-libav is loaded only when no distribution FFmpeg was, and the
   bundled FFmpeg never shares a process with either family. FFmpeg reads only through a

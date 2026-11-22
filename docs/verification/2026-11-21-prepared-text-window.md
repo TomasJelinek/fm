@@ -169,8 +169,8 @@ cursor does not move. For every redraw that shows a new position, the probe reco
 when the redraw finished on the UI thread (present included, not scan-out) and how
 many images the window had created. Fixtures: `plain.txt` (1.7 million rows of 60
 bytes, 102 MB) in the Text view and `source.rs` (15,000 generated Rust functions,
-11.8 MB) in the Source view. The panel is 3840 × 2400 at 60 Hz on a laptop with Intel
-Iris Xe and NVIDIA RTX 3500 Ada graphics; the adapter wgpu chose was not recorded.
+11.8 MB) in the Source view. The panel is 3840 × 2400 at 60 Hz on a laptop with
+integrated and discrete graphics; the adapter wgpu chose was not recorded.
 
 The plugin host accepts a runtime only when its executable and every folder above it
 can be written by the current user, SYSTEM, Administrators or TrustedInstaller alone

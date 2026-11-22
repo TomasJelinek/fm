@@ -7,8 +7,9 @@
 //!   nothing is written into the user's home.
 //! - A fixed list of plugins is loaded explicitly from the plugin folder beside libgstreamer,
 //!   each checked like any library (root-owned, writable by nobody else). Plugins that open
-//!   devices (VA-API, V4L2, NVIDIA), reach the network, or draw are never loaded. gst-libav is
-//!   loaded only when no distribution FFmpeg was loaded, so one process maps one FFmpeg.
+//!   devices (VA-API, V4L2, vendor GPU codecs), reach the network, or draw are never loaded.
+//!   gst-libav is loaded only when no distribution FFmpeg was loaded, so one process maps one
+//!   FFmpeg.
 //!
 //! After lockdown the graph runs on the helper's one thread (see `pipeline`).
 mod api;

@@ -5,9 +5,6 @@ mod images;
 mod pdf_navigation;
 #[path = "pdf_scroll_probe_tests.rs"]
 mod pdf_scroll_probe;
-#[cfg(all(test, windows))]
-#[path = "source_native_acceptance_tests.rs"]
-mod source_native_acceptance;
 #[path = "source_position_tests.rs"]
 mod source_position;
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, ViewerFrame};

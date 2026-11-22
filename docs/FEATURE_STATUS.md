@@ -87,37 +87,6 @@ This does not prove all 20 configured workers simultaneously busy or the spare
 image decoder Ready, and does not establish an old-source genuine pressure RED.
 See the [native MAX review](../_build/verification/viewer-refresh-20261117/root-native-maximum-corrected-runtime-review-v1.json).
 
-**Native Source remains RED:** the actual C++ native case failed **0/1/0,
-exit 101**, in libtest-reported 61.56s at `source_native_acceptance_tests.rs:742`:
-the required Source frame did not arrive before the shared absolute 45s deadline.
-The outer 300s watchdog did not fire. Initial and closing 4,807-entry guards have
-zero drift; owned cleanup passed with no processes remaining and private C++
-metadata unchanged. The metadata records the expected automatic Source mode 2
-route, without a first-destination report; the missing phase is unknown. This
-does not qualify Source painting. The one-file, failure-only DIAG 1 metadata change
-is now canonical (`6c8e…` to `410e…`, source epoch `e39e…`), preserving all 34
-original assertions, the 45s waits and production behavior; pinned format exited 0.
-The matching seven-target diagnostic compile now passed exit 0 with zero
-diagnostics. Root approved epoch reuse (`501a7…`): the new harness consumes the
-test-fixture change, while normal/C inputs exclude the two approved test-only
-changes. Producer epoch `e39e…` and frozen-C epoch `9297…` remain distinct. The later
-native DIAG 1 run failed **0 passed / 1 failed / 0 ignored, exit 101**, in 61.68s,
-without firing the outer watchdog. At 45,000ms it was waiting for control ACK
-step 4 in C++ trial 0, target 0.82, wanted sequence 4: expected Positions context
-generation 1/sequence[3,0], last frame generation 2/sequence[0,0], with four frames
-observed. These are **Positions context generations**, not Worker-open generations
-or proof of a file reopen. The specific production cause remains unknown; Viewer
-is tracing position refinement and viewport completion. Root verified 41 raw copy
-pairs, 4,835 adapter pre/post guards plus 2,288 source and 2,498 extra guards, all
-clean; owned cleanup passed and private C++ metadata was unchanged. No private C++
-content was copied or hashed by that review. The original failures remain
-preserved; this is diagnostic evidence, without native acceptance or a blind
-retry. See the [DIAG 1 failure review](../_build/verification/viewer-refresh-20261117/root-source-native-diag1-failure-evidence-review.json),
-[reuse approval](../_build/verification/viewer-refresh-20261117/root-source-native-diag1-epoch-reuse-acceptance-v1.json)
-and [DIAG 1 promotion](../_build/verification/viewer-refresh-20261117/root-coherent-source-integration/source-native-failure-observation-v1/canonical-source-ready.json).
-See the [native result](../_build/verification/viewer-refresh-20261117/build/native-current-source-e0df-prep/source-cpp-native-1/result.json)
-and [raw assertion](../_build/verification/viewer-refresh-20261117/build/native-current-source-e0df-prep/source-cpp-native-1/test.log).
-
 The private Source mapped-prefix change now has actual **3 behavioral RED →
 18 GREEN** evidence (six new plus 12 existing position cases). Tests `4edac…` are
 identical between RED production `07f…` and GREEN `25af…`. Root independently

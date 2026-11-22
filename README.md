@@ -698,7 +698,12 @@ the default file manager.
 ### Rendering diagnostics
 
 GPU acceleration is optional. Normal rendering uses Slint FemtoVG-WGPU with
-system-font fallback; Windows prefers Direct3D. When default GPU selection or
+system-font fallback. On Windows it allows Vulkan and Direct3D 12 and uses Vulkan
+when a Vulkan driver is present. The application sets no power preference, so wgpu
+takes the first suitable adapter the drivers list (on a laptop with two GPUs usually
+the integrated one); `WGPU_POWER_PREF=high` prefers a discrete GPU for a run, as
+does the per-application graphics preference in Windows Settings. When default GPU
+selection or
 initial window/device setup fails before the first window is shown, the app
 retries once with Slint's CPU renderer. The first process waits for that software
 child and exits with the child's own status (codes that do not fit an exit byte

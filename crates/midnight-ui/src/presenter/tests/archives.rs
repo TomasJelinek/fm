@@ -515,7 +515,7 @@ fn configured_archive_activation_never_falls_back_to_desktop_before_or_after_dis
         for (name, expected) in [
             ("sample.zip", ArchiveFormat::Zip),
             ("sample.7z", ArchiveFormat::SevenZip),
-            ("ovclash-0.2.2-linux-x86_64.tar.gz", ArchiveFormat::TarGzip),
+            ("toolkit-0.2.2-linux-x86_64.tar.gz", ArchiveFormat::TarGzip),
         ] {
             let (mut p, source) = native_archive_fixture(name, EntryKind::File);
             if discovered {
@@ -927,7 +927,7 @@ fn retained_tree_root_archive_activation_uses_original_authority_without_provide
     let directory = test_root().join("archive tree activation");
     let mut p = Presenter::new(directory.clone(), directory.clone());
     let navigation = begin(&mut p, PaneId::Left, directory.to_str().unwrap());
-    let source = directory.join("ovclash-0.2.2-linux-x86_64.tar.gz");
+    let source = directory.join("toolkit-0.2.2-linux-x86_64.tar.gz");
     finish(
         &mut p,
         PaneId::Left,

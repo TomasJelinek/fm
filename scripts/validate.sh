@@ -567,10 +567,10 @@ add_step bad-descriptor check 'Native viewer ABI rejection fixture'
 add_step host-plugin-ignored check 'Native viewer open, viewport, search and close' \
     'needs=test-install bad-descriptor viewer-basic' body=ignored_step \
     'variables=selection_words=midnight-plugin-host lib --ignored'
-# As in CI: the native CEF Office/HTML and qualified-product Source acceptance tests are manual.
+# As in CI: the native CEF Office/HTML tests are manual.
 add_step viewer-engine-ignored check 'Native viewer engine integration' \
     "needs=test-install filesystem-native $all_viewers" body=ignored_step \
-    'variables=selection_words=midnight-viewer-engine lib --ignored --nocapture --skip office_preview::native_tests --skip tests::source_native_acceptance'
+    'variables=selection_words=midnight-viewer-engine lib --ignored --nocapture --skip office_preview::native_tests'
 add_step native-fs-ignored check 'Installed native filesystem browse and reads' \
     'needs=test-install filesystem-native' body=ignored_step \
     'variables=selection_words=midnight-native-filesystem-host test:native --ignored --test-threads=1'

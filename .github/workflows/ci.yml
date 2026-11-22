@@ -649,10 +649,10 @@ jobs:
       # The non-ignored tests of every target below already ran in the workspace gates.
       - name: Native viewer open, viewport, search and quiescent close
         run: python -B scripts/ci-workspace-tests.py run midnight-plugin-host lib --ignored
-      # The native CEF Office/HTML and qualified-product Source acceptance tests are manual
-      # qualifications (trusted CEF installation, qualified product build; FEATURE_STATUS.md).
+      # The native CEF Office/HTML tests are manual qualifications (trusted CEF installation;
+      # FEATURE_STATUS.md).
       - name: Native viewer engine rendering, search, copy, mode and file-cycle integration
-        run: python -B scripts/ci-workspace-tests.py run midnight-viewer-engine lib --ignored --nocapture --skip office_preview::native_tests --skip tests::source_native_acceptance
+        run: python -B scripts/ci-workspace-tests.py run midnight-viewer-engine lib --ignored --nocapture --skip office_preview::native_tests
       - name: Installed native filesystem browse, read, volumes and absence checks
         run: python -B scripts/ci-workspace-tests.py run midnight-native-filesystem-host test:native --ignored --test-threads=1
       - name: Installed network metadata boundary without LAN discovery
