@@ -60,6 +60,20 @@ impl ClipboardSession for Session {
         crate::clipboard_text::read(self.files()?)
     }
     fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        // The native copy keeps its own copy of the bytes: a text that memory cannot hold
+        // fails here with an error, not in an allocation that would end the process.
+        Vec::<u8>::new()
+            .try_reserve_exact(text.len())
+            .map_err(|_| short_of_memory())?;
+        // A text longer than the smallest X11 request (256 KiB) may not fit the server's
+        // largest one: the session's own X11 owner serves it in incremental chunks.
+        if text.len() > 256 * 1024
+            && let Ok(files) = self.files()
+            && files.copy_long_text(text)?
+        {
+            self.text_owned = false;
+            return Ok(());
+        }
         if self.text.is_none() {
             self.text = Some(arboard::Clipboard::new().map_err(failure)?);
         }
@@ -190,4 +204,12 @@ fn failure(error: arboard::Error) -> FsError {
 
 fn os_failure(error: io::Error) -> FsError {
     FsError::from_io("Linux clipboard", Path::new(""), error)
+}
+
+/// A copy that memory cannot hold.
+fn short_of_memory() -> FsError {
+    os_failure(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "There is not enough memory to copy this text.",
+    ))
 }

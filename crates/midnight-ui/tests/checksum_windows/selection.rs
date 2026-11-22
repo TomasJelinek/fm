@@ -232,16 +232,39 @@ impl Finished {
         input::chord(&self.native, modifiers, key);
         self.frame();
     }
-    /// The newest clipboard text a copy asked for.
+    /// Do what the clipboard worker does with the copies asked for since the last call
+    /// (build each, then report it back to the window), and return the newest text
+    /// written.
     fn copied(&self) -> Option<String> {
-        self.commands
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|command| match command {
-                Command::CopyText { text, .. } => Some(text.clone()),
-                _ => None,
-            })
+        let sent = std::mem::take(&mut *self.commands.borrow_mut());
+        let mut newest = None;
+        for command in sent {
+            let Command::CopyGeneratedText {
+                request,
+                content,
+                cancel,
+            } = command
+            else {
+                continue;
+            };
+            let result = match content.prepare(&cancel) {
+                Ok(()) => {
+                    newest = content.take_text();
+                    Ok(DesktopActionResult::ClipboardCopied)
+                }
+                Err(error) => Err(FsError::from_io(
+                    "clipboard",
+                    std::path::Path::new(""),
+                    error,
+                )),
+            };
+            self.state
+                .borrow_mut()
+                .apply(Event::DesktopActionFinished { request, result });
+        }
+        midnight_ui::refresh(&self.main, &self.state.borrow());
+        self.frame();
+        newest
     }
     fn close(self) {
         self.main.invoke_close_checksum_windows();

@@ -35,7 +35,8 @@ exposes immutable length and bounded random reads; it does not reveal a native p
 
 Clipboard output carries its own cancellation lease. The native clipboard worker
 checks it before reads and again before mutation, including after native session
-initialization. The existing 4 MiB clipboard budget remains separate from file and
+initialization. Clipboard text has no size budget: the worker reserves its memory
+fallibly and a text that does not fit fails with an error, separately from file and
 viewer output. Cancelling a dialog cancels its lease even if the command queue is full.
 
 The generated viewer adapter constructs a `CapturedFile` from an immutable

@@ -32,6 +32,7 @@ impl Presenter {
                 self.retired.push(Box::new(s.finish_selection()));
                 self.retired.push(Box::new(s.take_streamed()));
                 self.retired.push(Box::new(s.run.replace(run)));
+                s.mark_copyable();
             }
         }
     }

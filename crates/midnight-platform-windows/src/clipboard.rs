@@ -45,6 +45,12 @@ impl ClipboardSession for Session {
         self.files()?.read_text()
     }
     fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        // The native copy holds the text as UTF-16, at most one unit per UTF-8 byte: a text
+        // that memory cannot hold fails here with an error, not in an allocation that
+        // would end the process.
+        Vec::<u16>::new()
+            .try_reserve_exact(text.len().saturating_add(1))
+            .map_err(|_| short_of_memory())?;
         self.text.set_text(text).map_err(failure)
     }
     fn copy_files(&mut self, files: &FileClipboard) -> Result<(), FsError> {
@@ -107,4 +113,12 @@ fn failure(error: arboard::Error) -> FsError {
 
 fn os_failure(error: io::Error) -> FsError {
     FsError::from_io("Windows clipboard", Path::new(""), error)
+}
+
+/// A copy that memory cannot hold.
+fn short_of_memory() -> FsError {
+    os_failure(io::Error::new(
+        io::ErrorKind::OutOfMemory,
+        "There is not enough memory to copy this text.",
+    ))
 }

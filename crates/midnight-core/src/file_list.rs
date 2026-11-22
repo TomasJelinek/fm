@@ -4,6 +4,17 @@ use std::{collections::HashSet, fmt, io, path::PathBuf, sync::Arc};
 
 /// Readable immutable generated text. Implementations and all reads live on backend workers.
 pub trait GeneratedTextSource: fmt::Debug + Send + Sync {
+    /// Make the text before anything reads it, on the backend worker that copies it; an
+    /// error (too little memory, cancellation, nothing to copy) ends the copy. Most
+    /// sources are ready when created.
+    fn prepare(&self, _cancel: &Cancellation) -> io::Result<()> {
+        Ok(())
+    }
+    /// The whole prepared text, handed over instead of being read in pieces, by a source
+    /// that holds it as one `String` anyway.
+    fn take_text(&self) -> Option<String> {
+        None
+    }
     fn length(&self) -> u64;
     fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<usize>;
 }

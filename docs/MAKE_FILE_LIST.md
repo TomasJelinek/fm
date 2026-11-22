@@ -37,8 +37,9 @@ environment value. Missing metadata is `-`, not an invented value.
 
 ## Destinations
 
-- **Clipboard:** copy UTF-8 text through the native clipboard service. The existing
-  clipboard memory budget is 4 MiB; larger lists can use File or Internal Viewer.
+- **Clipboard:** copy UTF-8 text through the native clipboard service, of any size; a
+  list too large for the memory left fails with "There is not enough memory to copy
+  this text." (File or Internal Viewer then still work).
 - **Internal Viewer:** open an immutable generated text source through the basic
   viewer plugin. It supports the normal viewer search/scrolling controls and Escape.
 - **File:** choose an output with the system Save dialog or enter its path. Output

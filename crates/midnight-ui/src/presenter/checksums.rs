@@ -76,6 +76,10 @@ pub(crate) struct ChecksumSession {
     /// The previous run's selected files, while a run of the same files lists and reads
     /// them again (see `selection`).
     carried: Option<selection::Carried>,
+    /// The copy the clipboard worker builds and writes now (see output).
+    pub(crate) copy: Option<output::PendingCopy>,
+    /// Which rows a copy can take, by slot (see selection).
+    copyable: selection::Copyable,
 }
 
 /// How far ahead of the next waiting file a row's file is looked for among the listed
@@ -188,15 +192,6 @@ pub(crate) struct CopyNote {
     pub left_out: Vec<(&'static str, u64)>,
     /// Full rows were copied, not checksums.
     pub rows: bool,
-}
-
-impl CopyNote {
-    fn left_out(&mut self, reason: &'static str) {
-        match self.left_out.iter_mut().find(|(known, _)| *known == reason) {
-            Some((_, count)) => *count += 1,
-            None => self.left_out.push((reason, 1)),
-        }
-    }
 }
 
 /// Asked in the window instead of failing: partial results, or an existing file to replace.
@@ -545,6 +540,8 @@ impl Presenter {
                 planned: Planned::default(),
                 selection: Default::default(),
                 carried: None,
+                copy: None,
+                copyable: selection::Copyable::default(),
             },
         );
         // Nothing is calculated until the user presses Calculate.
@@ -650,6 +647,10 @@ impl Presenter {
         {
             s.error = "Request queue is busy. Try closing again.".into();
             return false;
+        }
+        // A copy the clipboard worker has not written yet is not written.
+        if let Some(copy) = s.copy.take() {
+            copy.cancel.cancel();
         }
         self.retired
             .push(Box::new(self.checksums.sessions.remove(&id)));

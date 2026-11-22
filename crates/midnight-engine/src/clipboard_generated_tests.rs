@@ -47,7 +47,7 @@ fn generated_clipboard_reads_unicode_short_chunks_exactly() {
 }
 
 #[test]
-fn generated_clipboard_rejects_truncation_invalid_utf8_nul_and_oversize() {
+fn generated_clipboard_rejects_truncation_invalid_utf8_and_nul() {
     for input in [
         source(b"abc", 5),
         source(&[255], 1),
@@ -62,15 +62,43 @@ fn generated_clipboard_rejects_truncation_invalid_utf8_nul_and_oversize() {
             .is_err()
         );
     }
-    let large = source(b"", 4 * 1024 * 1024 + 1);
-    assert!(
-        prepare(
-            &Action::Generated(large.clone(), Cancellation::default()),
-            &Cancellation::default()
-        )
-        .is_err()
-    );
-    assert_eq!(large.reads.load(Ordering::Relaxed), 0);
+}
+
+/// Text of any size is copied: more than the former 4 MiB budget, generated or literal.
+#[test]
+fn text_larger_than_four_mebibytes_is_copied() {
+    let large = "x".repeat(5 * 1024 * 1024);
+    let input = source(large.as_bytes(), large.len() as u64);
+    for action in [
+        Action::Generated(input, Cancellation::default()),
+        Action::Text(large.clone()),
+    ] {
+        let Prepared::Text(text) = prepare(&action, &Cancellation::default()).unwrap() else {
+            panic!("expected text")
+        };
+        assert_eq!(text.len(), large.len());
+    }
+}
+
+/// A copy that finds too little memory fails with a plain error, never a panic or an
+/// abort of the process.
+#[test]
+fn a_copy_short_of_memory_fails_with_an_error() {
+    super::tests_allocation::REFUSED.with(|refused| refused.set(true));
+    for action in [
+        Action::Generated(source(b"text", 4), Cancellation::default()),
+        Action::Text("text".into()),
+    ] {
+        let Err(error) = prepare(&action, &Cancellation::default()) else {
+            panic!("expected an error")
+        };
+        assert_eq!(error.kind, io::ErrorKind::OutOfMemory);
+        assert_eq!(
+            error.message,
+            "There is not enough memory to copy this text."
+        );
+    }
+    super::tests_allocation::REFUSED.with(|refused| refused.set(false));
 }
 
 #[test]

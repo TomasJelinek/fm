@@ -62,14 +62,11 @@ fn calculated(id: u64, name: &str, digest: u8) -> ChecksumRow {
     )
 }
 
-fn copies(sent: &std::cell::RefCell<Vec<Command>>) -> Vec<String> {
-    sent.borrow()
-        .iter()
-        .filter_map(|command| match command {
-            Command::CopyText { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect()
+/// Run the copies `sent` asked for since the last call, as the clipboard worker does;
+/// the texts written.
+fn copies(p: &mut Presenter, sent: &std::cell::RefCell<Vec<Command>>) -> Vec<String> {
+    let commands = std::mem::take(&mut *sent.borrow_mut());
+    p.run_checksum_copies(&commands)
 }
 
 /// Marks belong to files: a listed file's mark follows it to its row whenever the row
@@ -168,12 +165,16 @@ fn copies_take_the_selected_rows_in_the_order_shown() {
         true
     };
     let hash = |byte: u8| format!("{byte:02x}").repeat(32);
+    let mut written = Vec::new();
     p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
+    written.extend(copies(&mut p, &sent));
     p.copy_checksums(id, ChecksumAlgorithm::Sha256, false, &send);
+    written.extend(copies(&mut p, &sent));
     p.copy_checksums(id, ChecksumAlgorithm::Sha256, true, &send);
+    written.extend(copies(&mut p, &sent));
     let path = |name: &str| root.join(name).display().to_string();
     assert_eq!(
-        copies(&sent),
+        written,
         [
             format!("{} *f2.bin\n{} *f4.bin\n", hash(2), hash(4)),
             format!("{}\n{}", hash(2), hash(4)),
@@ -226,7 +227,10 @@ fn copy_needs_a_selected_calculated_row_and_ctrl_d_empties_the_selection() {
         sent.borrow_mut().push(command);
         true
     });
-    assert!(copies(&sent).is_empty(), "nothing selected, nothing copied");
+    assert!(
+        copies(&mut p, &sent).is_empty(),
+        "nothing selected, nothing copied"
+    );
 }
 
 /// Selected rows that add nothing are named in the copy's note, by reason.
@@ -256,7 +260,10 @@ fn the_note_names_the_selected_rows_a_copy_left_out() {
         sent.borrow_mut().push(command);
         true
     });
-    assert_eq!(copies(&sent), [format!("{} *a.bin\n", "07".repeat(32))]);
+    assert_eq!(
+        copies(&mut p, &sent),
+        [format!("{} *a.bin\n", "07".repeat(32))]
+    );
     let s = &p.checksums.sessions[&id];
     assert_eq!(
         s.save_status(&NumberLocale::default()),
@@ -300,6 +307,7 @@ fn a_row_menu_copies_the_selection_it_belongs_to_or_its_row() {
         true,
         &send,
     );
+    let mut written = copies(&mut p, &sent);
     p.copy_checksum(
         id,
         &format!("{generation}:3"),
@@ -308,13 +316,11 @@ fn a_row_menu_copies_the_selection_it_belongs_to_or_its_row() {
         true,
         &send,
     );
-    assert_eq!(
-        copies(&sent),
-        [format!("{}\n{}", hash(1), hash(2)), hash(3)]
-    );
+    written.extend(copies(&mut p, &sent));
+    assert_eq!(written, [format!("{}\n{}", hash(1), hash(2)), hash(3)]);
     // A token of another run copies nothing.
     p.copy_checksum(id, "999:1", ChecksumAlgorithm::Sha256, false, true, &send);
-    assert_eq!(copies(&sent).len(), 2);
+    assert!(sent.borrow().is_empty());
 }
 
 /// A new calculation of the same files selects the same files again as it lists them;
@@ -413,4 +419,59 @@ fn select_all_and_ranges_report_the_rows_to_notify() {
     assert_eq!(s.click_row(1, false, false).unwrap(), vec![0..5, 1..2]);
     assert_eq!(s.click_row(3, false, true).unwrap(), vec![1..2, 1..4]);
     assert_eq!(marked(&p, id), ["b", "c", "d"]);
+}
+
+/// A copy waits for the clipboard worker: a newer copy of the window supersedes it, and
+/// closing the window cancels it; neither writes.
+#[test]
+fn a_newer_copy_supersedes_a_pending_one_and_closing_cancels_it() {
+    let (mut p, id, root) = running();
+    let rows = (1..=3)
+        .map(|index| calculated(index, &format!("s{index}"), index as u8))
+        .collect();
+    finished_run(
+        &mut p,
+        id,
+        ChecksumAlgorithms::default(),
+        vec![chunk(&root, rows)],
+        ChecksumSummary {
+            completion: ChecksumCompletion::Completed,
+            progress: ChecksumProgress::default(),
+            diagnostics: vec![],
+        },
+    );
+    session(&mut p, id).select_all_rows();
+    let sent = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let cancelled = |command: &Command| match command {
+        Command::CopyGeneratedText { cancel, .. } => cancel.is_cancelled(),
+        _ => panic!("expected a copy"),
+    };
+    p.copy_checksums(id, ChecksumAlgorithm::Sha256, false, &send);
+    p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
+    let both = std::mem::take(&mut *sent.borrow_mut());
+    assert_eq!(both.len(), 2);
+    assert!(cancelled(&both[0]), "the newer copy supersedes the first");
+    assert!(!cancelled(&both[1]));
+    let hash = |byte: u8| format!("{byte:02x}").repeat(32);
+    assert_eq!(
+        p.run_checksum_copies(&both),
+        [format!(
+            "{} *s1\n{} *s2\n{} *s3\n",
+            hash(1),
+            hash(2),
+            hash(3)
+        )]
+    );
+    p.copy_checksums(id, ChecksumAlgorithm::Sha256, true, &send);
+    let pending = std::mem::take(&mut *sent.borrow_mut());
+    assert!(p.close_checksums(id, &send));
+    assert!(
+        cancelled(&pending[0]),
+        "closing the window cancels its copy"
+    );
+    assert!(p.run_checksum_copies(&pending).is_empty());
 }

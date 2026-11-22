@@ -10,6 +10,10 @@ use std::{
     time::SystemTime,
 };
 
+#[path = "checksum_copy.rs"]
+mod copy;
+pub use copy::*;
+
 pub const MAX_CHECKSUM_JOBS: usize = 32;
 /// Rows a worker sends together (sooner when they finish slowly); a batching size, not a
 /// limit.

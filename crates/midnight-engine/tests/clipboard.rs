@@ -120,8 +120,10 @@ async fn missing_clipboard_service_reports_failure_without_claiming_a_copy() {
     engine.await.unwrap();
 }
 
+/// Text with NUL never reaches the native clipboard; text has no size budget, so a copy
+/// beyond the former 4 MiB cap arrives whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn invalid_clipboard_text_never_reaches_the_native_service() {
+async fn nul_text_never_reaches_the_native_service_and_large_text_arrives_whole() {
     let clipboard = Arc::new(Clipboard::default());
 
     let (sender, mut events) = mpsc::channel(4);
@@ -136,19 +138,40 @@ async fn invalid_clipboard_text_never_reaches_the_native_service() {
         .unwrap()
         .install(clipboard.clone());
     let engine = tokio::spawn(engine.run(receiver));
-    for text in ["before\0after".into(), "x".repeat(4 * 1024 * 1024 + 1)] {
-        commands
-            .send(Command::CopyText {
-                request: DesktopRequestId(1),
-                text,
-            })
-            .await
-            .unwrap();
-        let (request, result) = completion(&mut events).await;
-        assert_eq!(request, DesktopRequestId(1));
-        assert!(matches!(result, Err(error) if error.kind == std::io::ErrorKind::InvalidInput));
-    }
+    commands
+        .send(Command::CopyText {
+            request: DesktopRequestId(1),
+            text: "before\0after".into(),
+        })
+        .await
+        .unwrap();
+    let (request, result) = completion(&mut events).await;
+    assert_eq!(request, DesktopRequestId(1));
+    assert!(matches!(result, Err(error) if error.kind == std::io::ErrorKind::InvalidInput));
     assert!(clipboard.calls.lock().unwrap().is_empty());
+
+    let large = "x".repeat(4 * 1024 * 1024 + 1);
+    commands
+        .send(Command::CopyText {
+            request: DesktopRequestId(2),
+            text: large.clone(),
+        })
+        .await
+        .unwrap();
+    let (request, result) = completion(&mut events).await;
+    assert_eq!(request, DesktopRequestId(2));
+    assert!(matches!(result, Ok(DesktopActionResult::ClipboardCopied)));
+    {
+        let calls = clipboard.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        // Compared without assert_eq!, which would print megabytes on failure.
+        assert!(
+            calls[0].1 == large,
+            "copied {} bytes, expected {}",
+            calls[0].1.len(),
+            large.len()
+        );
+    }
     commands.send(Command::Shutdown).await.unwrap();
     engine.await.unwrap();
 }

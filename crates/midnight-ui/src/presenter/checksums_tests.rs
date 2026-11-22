@@ -368,12 +368,7 @@ fn checksum_recalculate_keeps_capture_and_old_row_tokens_cannot_copy_new_results
     let captured = p.checksums.sessions[&id].files.fallback.clone();
     finish(&mut p, id, ChecksumCompletion::Completed);
     p.copy_checksum(id, "1:1", ChecksumAlgorithm::Sha256, false, false, &send);
-    assert!(
-        commands
-            .borrow()
-            .iter()
-            .any(|c| matches!(c, Command::CopyText { text, .. } if text == &"42".repeat(32)))
-    );
+    assert_eq!(written(&mut p, &commands), ["42".repeat(32)]);
     commands.borrow_mut().clear();
     p.panes[0].path.push("different-folder");
     assert!(p.start_checksums(id, ChecksumAlgorithms::default(), true, &send));
@@ -397,19 +392,20 @@ fn checksum_recalculate_keeps_capture_and_old_row_tokens_cannot_copy_new_results
 
 #[test]
 fn checksum_full_row_copy_ignores_uncalculated_output_selector() {
-    let (mut p, id) = setup(&|_| true);
-    finish(&mut p, id, ChecksumCompletion::Completed);
-    let texts = std::cell::RefCell::new(Vec::new());
-    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Md5, true, false, &|command| {
-        if let Command::CopyText { text, .. } = command {
-            texts.borrow_mut().push(text);
-        }
+    let commands = std::cell::RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
         true
-    });
-    assert_eq!(texts.borrow().len(), 1);
-    assert!(texts.borrow()[0].contains("SHA-256: "));
-    assert!(texts.borrow()[0].contains(&"42".repeat(32)));
-    assert!(!texts.borrow()[0].contains("MD5:"));
+    };
+    let (mut p, id) = setup(&send);
+    finish(&mut p, id, ChecksumCompletion::Completed);
+    commands.borrow_mut().clear();
+    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Md5, true, false, &send);
+    let texts = written(&mut p, &commands);
+    assert_eq!(texts.len(), 1);
+    assert!(texts[0].contains("SHA-256: "));
+    assert!(texts[0].contains(&"42".repeat(32)));
+    assert!(!texts[0].contains("MD5:"));
 }
 
 #[test]
@@ -909,16 +905,10 @@ fn copy_writes_the_lines_a_saved_checksum_file_has() {
     // Copy takes the selected rows.
     p.checksums.sessions.get_mut(&id).unwrap().select_all_rows();
     p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
-    let copied = |commands: &[Command]| {
-        commands.iter().find_map(|command| match command {
-            Command::CopyText { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-    };
     // As Save writes it to the suggested folder: "<hash> *<name relative to it>".
     assert_eq!(
-        copied(&commands.borrow()),
-        Some(format!("{} *Žluťoučký 日本語.txt\n", "42".repeat(32)))
+        written(&mut p, &commands),
+        [format!("{} *Žluťoučký 日本語.txt\n", "42".repeat(32))]
     );
     assert!(p.checksums.sessions[&id].copy_note.is_none());
     // A file that is not below the checksum file's folder is left out, and a note
@@ -930,7 +920,7 @@ fn copy_writes_the_lines_a_saved_checksum_file_has() {
     let unrelated = "File chooser queue is busy. Try Browse again.";
     s.error = unrelated.into();
     p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
-    assert_eq!(copied(&commands.borrow()), None);
+    assert!(written(&mut p, &commands).is_empty());
     let locale = NumberLocale::default();
     let s = &p.checksums.sessions[&id];
     assert_eq!(s.error, unrelated);
@@ -941,14 +931,14 @@ fn copy_writes_the_lines_a_saved_checksum_file_has() {
     // A copy that leaves nothing out drops the note, and still not the error.
     p.checksums.sessions.get_mut(&id).unwrap().suggested = suggested;
     p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
-    assert!(copied(&commands.borrow()).is_some());
+    assert_eq!(written(&mut p, &commands).len(), 1);
     let s = &p.checksums.sessions[&id];
     assert!(s.copy_note.is_none());
     assert_eq!(s.error, unrelated);
     // An algorithm that was not calculated copies nothing.
     commands.borrow_mut().clear();
     p.copy_checksum_file(id, ChecksumAlgorithm::Md5, &send);
-    assert_eq!(copied(&commands.borrow()), None);
+    assert!(written(&mut p, &commands).is_empty());
 }
 
 #[test]
@@ -1004,14 +994,7 @@ fn copy_says_how_many_files_it_left_out_for_each_reason() {
     commands.borrow_mut().clear();
     p.checksums.sessions.get_mut(&id).unwrap().select_all_rows();
     p.copy_checksum_file(id, ChecksumAlgorithm::Crc32, &send);
-    let copied: Vec<_> = commands
-        .borrow()
-        .iter()
-        .filter_map(|command| match command {
-            Command::CopyText { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
+    let copied = written(&mut p, &commands);
     assert_eq!(copied, ["ok.txt  42424242\n"]);
     let locale = NumberLocale::default();
     let s = &p.checksums.sessions[&id];
@@ -1193,4 +1176,11 @@ fn verifying_again_checks_the_same_checksum_file_by_its_exact_path() {
     );
     // Not while it runs.
     assert!(!p.repeat_checksum_verification(id, &send));
+}
+
+/// Run the copies sent since the last call, as the clipboard worker does; the texts
+/// written.
+fn written(p: &mut Presenter, commands: &std::cell::RefCell<Vec<Command>>) -> Vec<String> {
+    let sent = std::mem::take(&mut *commands.borrow_mut());
+    p.run_checksum_copies(&sent)
 }

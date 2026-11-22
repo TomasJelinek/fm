@@ -1137,6 +1137,42 @@ mod tests {
         copy("Ctrl+C checksums, every row selected", &|p| {
             p.copy_checksums(id, ChecksumAlgorithm::Sha256, false, &|_| true)
         });
+        // What the clipboard worker then does, off the UI thread.
+        {
+            use midnight_core::{
+                ChecksumCopyKind, ChecksumCopyRows, ChecksumCopyText, GeneratedTextSource,
+            };
+            let rows = state.borrow().checksums.sessions[&id].rows().clone();
+            let bits: std::sync::Arc<[u64]> = state.borrow().checksums.sessions[&id]
+                .selection
+                .words()
+                .into();
+            for (what, kind) in [
+                (
+                    "checksum-file lines",
+                    ChecksumCopyKind::Lines(ChecksumAlgorithm::Sha256),
+                ),
+                (
+                    "checksums",
+                    ChecksumCopyKind::Hashes(ChecksumAlgorithm::Sha256),
+                ),
+            ] {
+                time(
+                    &format!("clipboard worker builds the {what}, every row selected"),
+                    &|| {
+                        let copy = ChecksumCopyText::new(
+                            rows.clone(),
+                            ChecksumCopyRows::Selected(bits.clone()),
+                            kind,
+                            std::env::temp_dir(),
+                        );
+                        copy.prepare(&midnight_core::Cancellation::default())
+                            .unwrap();
+                        drop(copy.take_text());
+                    },
+                );
+            }
+        }
         time(
             "Ctrl+A then a key move (cursor and marks published)",
             &|| {

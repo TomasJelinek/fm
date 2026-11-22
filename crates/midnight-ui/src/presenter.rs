@@ -1140,6 +1140,12 @@ impl Presenter {
             self.file_list_clipboard_finished(*request, result.clone());
             return;
         }
+        if let Event::DesktopActionFinished { request, result } = &event
+            && self.owns_checksum_copy(*request)
+        {
+            self.checksum_copy_finished(*request, result.clone());
+            return;
+        }
         if let Event::ChecksumRejected(event) = event {
             self.reject_checksum(*event);
             return;

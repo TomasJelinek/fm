@@ -4,16 +4,14 @@ use super::*;
 use crate::error_presentation::{append_path, describe};
 use crate::job_presentation::counted;
 
-/// Why a selected row adds nothing to a copy: it is a listed file not read yet, its file
-/// could not be read (or changed, or is missing), it was skipped or cancelled, it has no
-/// checksum of the chosen algorithm, or it is a verification's result (a checksum file
-/// takes calculated rows only).
-pub(super) const WAITING: &str = "not calculated yet";
-pub(super) const FAILED: &str = "failed";
-pub(super) const SKIPPED: &str = "skipped";
-pub(super) const CANCELLED: &str = "cancelled";
-pub(super) const NO_DIGEST: &str = "without the chosen checksum";
-pub(super) const VERIFICATION: &str = "verification result";
+/// Why a selected row adds nothing to a copy (`midnight_core::checksum_copy_left_out`,
+/// which the clipboard worker applies while it builds the copy).
+pub(super) const WAITING: &str = CHECKSUM_COPY_WAITING;
+pub(super) const FAILED: &str = CHECKSUM_COPY_FAILED;
+pub(super) const SKIPPED: &str = CHECKSUM_COPY_SKIPPED;
+pub(super) const CANCELLED: &str = CHECKSUM_COPY_CANCELLED;
+pub(super) const NO_DIGEST: &str = CHECKSUM_COPY_NO_DIGEST;
+pub(super) const VERIFICATION: &str = CHECKSUM_COPY_VERIFICATION;
 
 /// Each reason a selected row is left out of a copy (above), and each reason
 /// `checksum_file_line` gives for a name it cannot write, as the words that follow a count

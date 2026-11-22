@@ -469,8 +469,13 @@ inspected as possibly holding the item; neither is described as unneeded.
   grammar and standard privileges, never executes and never restores elevation.
   History is not written to diagnostic logs.
 - Status-field clicks copy only the current value of the clicked field, with raw
-  names (see below), via a bounded backend clipboard service. A dedicated lazy
-  worker retains native clipboard ownership; the UI never opens the OS clipboard.
+  names (see below), via a backend clipboard service. A dedicated lazy worker retains
+  native clipboard ownership; the UI never opens the OS clipboard. Copied text has no
+  size budget: the worker reserves its memory fallibly (also before the native copy),
+  so a text too large for the memory left fails with an error instead of ending the
+  process; NUL is still refused. On X11 a text longer than one request is served in
+  incremental (INCR) chunks by the session's own owner window. Pasting text (a path)
+  still reads at most 4 MiB.
   Clipboard managers may retain copied data. Breadcrumb/history/detail tokens
   reject stale clicks after navigation or updates;
   displayed paths are never parsed to construct a clicked filesystem identity.

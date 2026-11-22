@@ -85,6 +85,18 @@ impl ListSelection {
     pub(crate) fn cursor_index(&self, order: &impl ListOrder) -> Option<usize> {
         self.cursor.and_then(|slot| order.index_of(slot))
     }
+    /// The bits of the selection, one per slot from slot 0 (a snapshot for a copy).
+    pub(crate) fn words(&self) -> &[u64] {
+        &self.bits
+    }
+    /// How many selected slots `mask` (bits by slot) also has: word operations only.
+    pub(crate) fn count_in(&self, mask: &[u64]) -> usize {
+        self.bits
+            .iter()
+            .zip(mask)
+            .map(|(bits, mask)| (bits & mask).count_ones() as usize)
+            .sum()
+    }
     /// The selected slots, in ascending order.
     pub(crate) fn slots(&self) -> impl Iterator<Item = usize> + '_ {
         self.bits.iter().enumerate().flat_map(|(word, bits)| {

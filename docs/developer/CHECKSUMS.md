@@ -136,7 +136,14 @@ selection by row identity in a bitset (a finished row by its ID, a listed file b
 place in the listing, its mark following it to its row), so a lookup is O(1), Select
 all is one pass and the marks survive rows that arrive or move. A selection change
 notifies only the rows whose marks changed (every shown row once when more than 4,096
-marks go). A new calculation of the same files (the same captured files with the same
+marks go). What Copy can take is counted the same way: each row is marked once, when it
+arrives, as having a checksum-file line (calculated) and a checksum (calculated or
+verified), so the counts behind Copy's caption and enabled state are word operations
+over the selection's bits (`ListSelection::count_in`), however many rows are selected.
+Measured in a release build at 1,000,000 rows (`checksum_selection_benchmark`): Ctrl+A
+takes 11 ms of the UI thread, a click or Ctrl+D after it 6 to 9 ms, a refresh during a run
+0.14 ms and asking for a copy of every row 0.4 ms; the clipboard worker then builds the
+1,000,000 checksum-file lines in about 0.9 s (100,000 rows: 87 ms). A new calculation of the same files (the same captured files with the same
 Include subfolders) selects the same files again, by name, as it lists and reads them;
 another run (Include subfolders changed, a verification, another checksum file) starts
 with none. Selected rows use the selection fill and text colour with a square mark;
@@ -345,7 +352,13 @@ width with horizontal scrolling when needed. The footer's Copy button copies the
 selected rows' checksums of the shown algorithm as a checksum file, in the order shown:
 exactly the lines Save manifest… writes to the suggested folder
 (`midnight_core::push_checksum_file_line`, shared with the manifest writer), named
-relative to that folder, built in one pass into a text sized for them. With several
+relative to that folder. The window does not build the text: it snapshots the selection's
+bits, shares the run's row chunks and sends a `ChecksumCopyText` to the clipboard worker
+(`Command::CopyGeneratedText`), which builds the text there in one pass, into room it
+reserves fallibly, and writes it; the result brings the note back. A newer copy of the
+window supersedes a pending one and closing the window cancels it. A copy has no size
+limit; one that does not fit in memory fails with "There is not enough memory to copy N
+rows." and the clipboard keeps what it held, as it does for a copy that adds nothing. With several
 calculated rows selected its caption counts them ("Copy 3 SHA-256"); below 460 px it is
 "Copy". The footer fits its actions from their measured captions (`FooterActions` in
 `dialog-footer.slint`): one that does not fit whole beside Close moves into More…,

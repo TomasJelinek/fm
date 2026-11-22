@@ -214,6 +214,20 @@ impl Files {
         }
     }
 
+    /// Serve `text` from this session's X11 owner window when one X11 request cannot carry
+    /// it: arboard sends a selection in a single request, which the server refuses for a
+    /// long text, while this owner sends it in incremental (INCR) chunks. False when the
+    /// text fits one request or there is no X11 owner (arboard copies it then).
+    pub(super) fn copy_long_text(&mut self, text: &str) -> Result<bool, FsError> {
+        match self {
+            Self::X11(clipboard) if text.len() > clipboard.request_bytes() => {
+                clipboard.copy_text(text)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub(super) fn copy(&mut self, files: &FileClipboard) -> Result<(), FsError> {
         match self {
             Self::X11(clipboard) => clipboard.copy(files),

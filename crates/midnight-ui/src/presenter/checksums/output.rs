@@ -12,40 +12,12 @@ struct PlannedSave {
     overwrite: bool,
 }
 
-/// What a copy of rows writes for each of them.
-#[derive(Clone, Copy)]
-enum Copied {
-    /// The checksum of the algorithm, one per line.
-    Hashes(ChecksumAlgorithm),
-    /// The path and every checksum, with a blank line between rows.
-    Rows,
-    /// The checksum-file line, exactly as Save manifest… writes it.
-    Lines(ChecksumAlgorithm),
-}
-
-/// Why a row adds nothing to a copy of this kind; none when it does add something.
-fn left_out(row: &ChecksumRow, copied: Copied) -> Option<&'static str> {
-    use report::{CANCELLED, FAILED, NO_DIGEST, SKIPPED, VERIFICATION};
-    let digest = |algorithm| row.digest(algorithm).is_some();
-    match row.state {
-        ChecksumRowState::ReadError
-        | ChecksumRowState::SourceChanged
-        | ChecksumRowState::Missing => Some(FAILED),
-        ChecksumRowState::Skipped => Some(SKIPPED),
-        ChecksumRowState::Cancelled => Some(CANCELLED),
-        ChecksumRowState::Verified | ChecksumRowState::Mismatch
-            if matches!(copied, Copied::Lines(_)) =>
-        {
-            Some(VERIFICATION)
-        }
-        _ => match copied {
-            Copied::Hashes(algorithm) | Copied::Lines(algorithm) if !digest(algorithm) => {
-                Some(NO_DIGEST)
-            }
-            Copied::Rows if row.digests.is_empty() => Some(NO_DIGEST),
-            _ => None,
-        },
-    }
+/// A copy that the clipboard worker builds from the rows and writes: a newer copy of the
+/// same window, or closing it, cancels it.
+pub(crate) struct PendingCopy {
+    pub(crate) request: DesktopRequestId,
+    pub(crate) content: Arc<ChecksumCopyText>,
+    pub(crate) cancel: Cancellation,
 }
 
 impl Presenter {
@@ -58,12 +30,12 @@ impl Presenter {
         whole_row: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
-        let copied = if whole_row {
-            Copied::Rows
+        let kind = if whole_row {
+            ChecksumCopyKind::Rows
         } else {
-            Copied::Hashes(algorithm)
+            ChecksumCopyKind::Hashes(algorithm)
         };
-        self.copy_rows(id, None, copied, send);
+        self.copy_rows(id, None, kind, send);
     }
 
     /// A row's context menu: the whole selection when `selection` is set and the row is
@@ -85,12 +57,12 @@ impl Presenter {
             return;
         };
         let only = (!(selection && s.selection.is_selected(slot))).then_some(slot);
-        let copied = if whole_row {
-            Copied::Rows
+        let kind = if whole_row {
+            ChecksumCopyKind::Rows
         } else {
-            Copied::Hashes(algorithm)
+            ChecksumCopyKind::Hashes(algorithm)
         };
-        self.copy_rows(id, only, copied, send);
+        self.copy_rows(id, only, kind, send);
     }
 
     /// Copy the selected rows as a checksum file, in the order shown: the lines Save
@@ -103,111 +75,128 @@ impl Presenter {
         algorithm: ChecksumAlgorithm,
         send: &dyn Fn(Command) -> bool,
     ) {
-        self.copy_rows(id, None, Copied::Lines(algorithm), send);
+        self.copy_rows(id, None, ChecksumCopyKind::Lines(algorithm), send);
     }
 
-    /// Copy the selected rows, or only the row in `only` (a slot), in one pass into a text
-    /// sized for them.
+    /// Copy the selected rows, or only the row in `only` (a slot). The UI thread only
+    /// snapshots the selection's bits and shares the row chunks; the clipboard worker
+    /// builds the text in one pass and writes it, and its result brings the note back
+    /// (`checksum_copy_finished`).
     fn copy_rows(
         &mut self,
         id: ChecksumJobId,
         only: Option<usize>,
-        copied: Copied,
+        kind: ChecksumCopyKind,
         send: &dyn Fn(Command) -> bool,
     ) {
-        let Some(s) = self.checksums.sessions.get(&id) else {
-            return;
-        };
-        let (rows, waiting) = match only {
-            None => s.selected_rows(),
-            Some(slot) if slot % 2 == 1 => (Vec::new(), 1),
-            Some(slot) => (
-                s.rows()
-                    .by_id(slot as u64 / 2 + 1)
-                    .into_iter()
-                    .collect::<Vec<_>>(),
-                0,
-            ),
-        };
-        let folder = s.suggested.parent().unwrap_or(&s.directory);
-        let mut note = CopyNote {
-            rows: matches!(copied, Copied::Rows),
-            ..CopyNote::default()
-        };
-        let capacity = rows.iter().fold(0usize, |total, row| {
-            total.saturating_add(match copied {
-                Copied::Hashes(algorithm) => algorithm.bytes() * 2 + 1,
-                Copied::Lines(algorithm) => algorithm.bytes() * 2 + 4 + row.name.as_os_str().len(),
-                Copied::Rows => {
-                    row.base.as_os_str().len()
-                        + row.name.as_os_str().len()
-                        + row
-                            .digests
-                            .iter()
-                            .map(|d| d.bytes.len() * 2 + 10)
-                            .sum::<usize>()
-                        + 3
-                }
-            })
-        });
-        let mut text = String::with_capacity(capacity);
-        for row in &rows {
-            if let Some(reason) = left_out(row, copied) {
-                note.left_out(reason);
-                continue;
-            }
-            match copied {
-                Copied::Hashes(algorithm) => {
-                    let Some(digest) = row.digest(algorithm) else {
-                        continue;
-                    };
-                    if note.copied > 0 {
-                        text.push('\n');
-                    }
-                    digest.push_hex(&mut text);
-                }
-                Copied::Rows => {
-                    if note.copied > 0 {
-                        text.push_str("\n\n");
-                    }
-                    text.push_str(&row.path().display().to_string());
-                    for digest in row.digests.iter() {
-                        text.push('\n');
-                        text.push_str(digest.algorithm.label());
-                        text.push_str(": ");
-                        digest.push_hex(&mut text);
-                    }
-                }
-                Copied::Lines(algorithm) => {
-                    let Some(digest) = row.digest(algorithm) else {
-                        continue;
-                    };
-                    let Some(name) = checksum_file_name(row.base, &row.name, folder) else {
-                        note.left_out(CHECKSUM_NAME_NOT_BELOW);
-                        continue;
-                    };
-                    if let Err((_, reason)) = push_checksum_file_line(&mut text, digest, &name) {
-                        note.left_out(reason);
-                        continue;
-                    }
-                }
-            }
-            note.copied += 1;
-        }
-        // Selected files still waiting for their rows come after the rows shown.
-        for _ in 0..waiting {
-            note.left_out(report::WAITING);
-        }
         let Some(s) = self.checksums.sessions.get_mut(&id) else {
             return;
         };
-        // The copy succeeded: an earlier error stays, and the note replaces only the
-        // previous copy's note.
-        s.copy_note = (!note.left_out.is_empty()).then_some(note);
-        s.revision = s.revision.wrapping_add(1);
-        if !text.is_empty() {
-            self.copy_viewer_text(text, send);
+        // Nothing selected, a listed file alone or a row that adds nothing: decided here,
+        // and the clipboard keeps what it holds.
+        let nothing = match only {
+            None if s.selection.is_empty() => Some(None),
+            Some(slot) if slot % 2 == 1 => Some(Some(report::WAITING)),
+            Some(slot) => s
+                .rows()
+                .by_id(slot as u64 / 2 + 1)
+                .and_then(|row| checksum_copy_left_out(&row, kind))
+                .map(Some),
+            None => None,
+        };
+        if let Some(reason) = nothing {
+            s.copy_note = reason.map(|reason| CopyNote {
+                copied: 0,
+                left_out: vec![(reason, 1)],
+                rows: kind == ChecksumCopyKind::Rows,
+            });
+            s.revision = s.revision.wrapping_add(1);
+            return;
         }
+        let selection = match only {
+            None => ChecksumCopyRows::Selected(s.selection.words().into()),
+            Some(slot) => ChecksumCopyRows::Row(slot as u64 / 2 + 1),
+        };
+        let folder = s.suggested.parent().unwrap_or(&s.directory).to_path_buf();
+        let content = Arc::new(ChecksumCopyText::new(
+            s.rows().clone(),
+            selection,
+            kind,
+            folder,
+        ));
+        if let Some(superseded) = s.copy.take() {
+            superseded.cancel.cancel();
+        }
+        let request = self.desktop.request();
+        let cancel = Cancellation::default();
+        if send(Command::CopyGeneratedText {
+            request,
+            content: content.clone(),
+            cancel: cancel.clone(),
+        }) {
+            s.copy = Some(PendingCopy {
+                request,
+                content,
+                cancel,
+            });
+        } else {
+            self.desktop
+                .report("Clipboard queue busy", "Try copying again.".into());
+        }
+    }
+
+    /// Whether `request` is the copy a checksum window waits for.
+    pub(in crate::presenter) fn owns_checksum_copy(&self, request: DesktopRequestId) -> bool {
+        self.checksums
+            .sessions
+            .values()
+            .any(|s| s.copy.as_ref().is_some_and(|copy| copy.request == request))
+    }
+
+    /// The clipboard worker wrote a copy, or could not: the note says what it took and
+    /// left out. A copy that took nothing leaves the clipboard alone and says why; a
+    /// cancelled one (superseded or closed) says nothing.
+    pub(in crate::presenter) fn checksum_copy_finished(
+        &mut self,
+        request: DesktopRequestId,
+        result: Result<DesktopActionResult, FsError>,
+    ) {
+        let Some(s) = self
+            .checksums
+            .sessions
+            .values_mut()
+            .find(|s| s.copy.as_ref().is_some_and(|copy| copy.request == request))
+        else {
+            return;
+        };
+        let Some(copy) = s.copy.take() else {
+            return;
+        };
+        let note = copy.content.report().map(|report| CopyNote {
+            rows: copy.content.kind() == ChecksumCopyKind::Rows,
+            copied: report.copied,
+            left_out: report.left_out,
+        });
+        let note = note.filter(|note| !note.left_out.is_empty());
+        match result {
+            Ok(_) => {
+                // The copy succeeded: an earlier error stays, and the note replaces only
+                // the previous copy's note.
+                s.copy_note = note;
+                s.revision = s.revision.wrapping_add(1);
+                self.desktop.status = "Copied to clipboard".into();
+            }
+            Err(error) if error.message == CHECKSUM_COPY_NOTHING => {
+                s.copy_note = note;
+                s.revision = s.revision.wrapping_add(1);
+            }
+            Err(error) if error.kind == std::io::ErrorKind::Interrupted => {}
+            Err(error) => self.desktop.report(
+                "Desktop action failed",
+                crate::error_presentation::describe(&error),
+            ),
+        }
+        self.retired.push(Box::new(copy.content));
     }
 
     /// Send one save of the session's current run. The raw destination path is kept
@@ -410,5 +399,39 @@ impl Presenter {
         } else {
             s.error = "Cancellation queue is busy. Try Stop save again.".into();
         }
+    }
+}
+
+#[cfg(test)]
+impl Presenter {
+    /// What the clipboard worker does with the checksum copies in `sent` that a window
+    /// still waits for: build each, then report the result back. Returns the texts written.
+    pub(crate) fn run_checksum_copies(&mut self, sent: &[Command]) -> Vec<String> {
+        let mut texts = Vec::new();
+        for command in sent {
+            let Command::CopyGeneratedText {
+                request,
+                content,
+                cancel,
+            } = command
+            else {
+                continue;
+            };
+            if !self.owns_checksum_copy(*request) {
+                continue;
+            }
+            let result = match content.prepare(cancel) {
+                Ok(()) => {
+                    texts.push(content.take_text().unwrap_or_default());
+                    Ok(DesktopActionResult::ClipboardCopied)
+                }
+                Err(error) => Err(FsError::from_io("clipboard", Path::new(""), error)),
+            };
+            self.apply(Event::DesktopActionFinished {
+                request: *request,
+                result,
+            });
+        }
+        texts
     }
 }

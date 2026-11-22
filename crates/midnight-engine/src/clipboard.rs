@@ -526,18 +526,57 @@ enum Prepared {
         Cancellation,
     ),
 }
+/// Room for `additional` more items, or `Err` when memory is short: a copy of any size is
+/// tried, and one that does not fit fails with an error instead of ending the process.
+fn reserve<T>(buffer: &mut Vec<T>, additional: usize) -> Result<(), FsError> {
+    #[cfg(test)]
+    if tests_allocation::REFUSED.with(std::cell::Cell::get) {
+        return Err(short_of_memory());
+    }
+    buffer
+        .try_reserve_exact(additional)
+        .map_err(|_| short_of_memory())
+}
+fn short_of_memory() -> FsError {
+    error(
+        io::ErrorKind::OutOfMemory,
+        "There is not enough memory to copy this text.",
+    )
+}
+/// Text for the clipboard: any length, but no NUL.
+fn clipboard_text(text: String) -> Result<Prepared, FsError> {
+    if text.contains('\0') {
+        return Err(error(
+            io::ErrorKind::InvalidInput,
+            "Clipboard text cannot contain NUL.",
+        ));
+    }
+    Ok(Prepared::Text(text))
+}
+/// Tests refuse this worker thread's allocations of clipboard text.
+#[cfg(test)]
+pub(crate) mod tests_allocation {
+    thread_local! {
+        pub(crate) static REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
 fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> {
     check_cancellation(action, cancel)?;
     match action {
-        Action::Generated(source, _) => {
-            let length = source.length();
-            if length > 4 * 1024 * 1024 {
-                return Err(error(
-                    io::ErrorKind::InvalidInput,
-                    "The generated text exceeds the clipboard's 4 MiB budget. Use a file or the internal viewer.",
-                ));
+        Action::Generated(source, request) => {
+            // A source that makes its text (a checksum copy) makes it here, on this worker.
+            source
+                .prepare(request)
+                .map_err(|e| error(e.kind(), &e.to_string()))?;
+            check_cancellation(action, cancel)?;
+            if let Some(text) = source.take_text() {
+                return clipboard_text(text);
             }
-            let mut bytes = vec![0; length as usize];
+            let length = source.length();
+            let size = usize::try_from(length).map_err(|_| short_of_memory())?;
+            let mut bytes = Vec::new();
+            reserve(&mut bytes, size)?;
+            bytes.resize(size, 0);
             let mut offset = 0;
             while offset < bytes.len() {
                 check_cancellation(action, cancel)?;
@@ -562,23 +601,16 @@ fn prepare(action: &Action, cancel: &Cancellation) -> Result<Prepared, FsError> 
             }
             let text = String::from_utf8(bytes)
                 .map_err(|_| error(io::ErrorKind::InvalidData, "Generated text is not UTF-8."))?;
-            if text.contains('\0') {
-                return Err(error(
-                    io::ErrorKind::InvalidInput,
-                    "Clipboard text cannot contain NUL.",
-                ));
-            }
-            Ok(Prepared::Text(text))
+            clipboard_text(text)
         }
         Action::ReadText => Ok(Prepared::ReadText),
         Action::Text(text) => {
-            if text.len() > 4 * 1024 * 1024 || text.contains('\0') {
-                return Err(error(
-                    io::ErrorKind::InvalidInput,
-                    "Clipboard text exceeds its 4 MiB resource budget or contains NUL.",
-                ));
-            }
-            Ok(Prepared::Text(text.clone()))
+            let mut bytes = Vec::new();
+            reserve(&mut bytes, text.len())?;
+            bytes.extend_from_slice(text.as_bytes());
+            let text = String::from_utf8(bytes)
+                .map_err(|_| error(io::ErrorKind::InvalidData, "Clipboard text is not UTF-8."))?;
+            clipboard_text(text)
         }
         Action::Captured(source, request) => Ok(Prepared::Captured(
             source.clone(),

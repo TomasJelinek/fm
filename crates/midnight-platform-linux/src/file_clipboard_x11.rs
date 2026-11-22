@@ -46,7 +46,14 @@ pub(crate) struct Clipboard {
     formats: HashMap<&'static str, Atom>,
     data: HashMap<Atom, Arc<[u8]>>,
     owned: Option<FileClipboard>,
+    /// The text this window serves as UTF-8, while it holds the clipboard for a text.
+    text: Option<Arc<[u8]>>,
+    /// The targets it offers that text as.
+    text_formats: [Atom; 3],
     transfers: Vec<Transfer>,
+    /// Transfers this owner began in chunks (INCR); tests check that a long text used them.
+    #[cfg(test)]
+    incremental: usize,
     chunk: usize,
 }
 
@@ -54,6 +61,11 @@ impl Clipboard {
     pub(crate) fn read_text(&mut self) -> Result<String, FsError> {
         self.service_pending()?;
         let owner = self.owner()?;
+        if owner == self.window
+            && let Some(text) = &self.text
+        {
+            return crate::clipboard_text::decode(text.to_vec());
+        }
         if owner == NONE || owner == self.window {
             return Err(crate::clipboard_text::error(
                 "The clipboard contains no text.",
@@ -123,6 +135,11 @@ impl Clipboard {
         let atom_pair = atom("ATOM_PAIR")?;
         let incr = atom("INCR")?;
         let read_property = atom("MIDNIGHT_FILE_CLIPBOARD_READ")?;
+        let text_formats = [
+            atom("UTF8_STRING")?,
+            atom("text/plain;charset=utf-8")?,
+            atom("text/plain")?,
+        ];
         let mut formats = HashMap::new();
         for name in [URI, GNOME, KDE] {
             formats.insert(name, atom(name)?);
@@ -144,7 +161,11 @@ impl Clipboard {
             formats,
             data: HashMap::new(),
             owned: None,
+            text: None,
+            text_formats,
             transfers: Vec::new(),
+            #[cfg(test)]
+            incremental: 0,
             chunk,
         })
     }
@@ -164,7 +185,35 @@ impl Clipboard {
         }
         self.data = data;
         self.owned = Some(files.clone());
+        self.text = None;
         self.connection.flush().map_err(error)
+    }
+
+    /// Hold the clipboard for `text`, offered as UTF-8 text of any length: a text longer
+    /// than a chunk goes in incremental (INCR) transfers, as a file list does.
+    pub(super) fn copy_text(&mut self, text: &str) -> Result<(), FsError> {
+        let bytes: Arc<[u8]> = Arc::from(text.as_bytes());
+        self.connection
+            .set_selection_owner(self.window, self.clipboard, CURRENT_TIME)
+            .map_err(error)?
+            .check()
+            .map_err(error)?;
+        if self.owner()? != self.window {
+            return Err(error("The X11 clipboard ownership request was refused."));
+        }
+        self.data = self
+            .text_formats
+            .iter()
+            .map(|format| (*format, bytes.clone()))
+            .collect();
+        self.owned = None;
+        self.text = Some(bytes);
+        self.connection.flush().map_err(error)
+    }
+
+    /// The longest selection one request to this server carries, less its header.
+    pub(super) fn request_bytes(&self) -> usize {
+        self.connection.maximum_request_bytes().saturating_sub(64)
     }
 
     fn owner(&self) -> Result<u32, FsError> {
@@ -278,7 +327,7 @@ impl Clipboard {
     /// selection it takes) until a `SelectionClear` from a newer owner, and it finishes the
     /// incremental transfers that started before that until they complete or expire.
     pub(super) fn owns_clipboard(&self) -> bool {
-        self.owned.is_some() || !self.transfers.is_empty()
+        self.owned.is_some() || self.text.is_some() || !self.transfers.is_empty()
     }
 
     /// Block until the X11 connection becomes readable, `wake` is signaled or `timeout`
@@ -310,6 +359,7 @@ impl Clipboard {
                 // ownership. Do not discard the replacement payload in that case.
                 if self.owner()? != self.window {
                     self.owned = None;
+                    self.text = None;
                     self.data.clear();
                 }
             }
@@ -508,6 +558,10 @@ impl Clipboard {
         {
             self.release_requestor(request.requestor)?;
             return Ok(false);
+        }
+        #[cfg(test)]
+        {
+            self.incremental += 1;
         }
         self.transfers.push(Transfer {
             requestor: request.requestor,
@@ -731,6 +785,51 @@ mod tests {
             waker();
         };
         (stop, owner)
+    }
+
+    /// A text longer than a chunk (arboard would send it in one request) is served to
+    /// another client in incremental transfers, and its owner reads it back.
+    #[test]
+    #[ignore = "requires an isolated Xvfb DISPLAY and MIDNIGHT_CLIPBOARD_TEST_ISOLATED=1"]
+    fn x11_long_text_is_served_incrementally() {
+        isolated_display();
+        let text: String = (0..20_000)
+            .map(|line| format!("{line:05} {}\n", "x".repeat(40)))
+            .collect();
+        let (ready, holding) = mpsc::sync_channel(1);
+        let (stop, stopped) = mpsc::sync_channel::<()>(1);
+        let wake = Wake::new().unwrap();
+        let waker = wake.waker();
+        let served = text.clone();
+        let owner = thread::spawn(move || -> Clipboard {
+            let mut clipboard = Clipboard::new().unwrap();
+            clipboard.copy_text(&served).unwrap();
+            assert!(clipboard.owns_clipboard());
+            assert_eq!(
+                clipboard.read_text().unwrap(),
+                served,
+                "its own text reads back"
+            );
+            ready.send(()).unwrap();
+            let began = Instant::now();
+            while stopped.try_recv() == Err(mpsc::TryRecvError::Empty) {
+                assert!(prompt(began), "the reader did not finish");
+                clipboard.wait(Some(&wake), FAILURE_WAIT / 2).unwrap();
+            }
+            clipboard
+        });
+        holding.recv_timeout(FAILURE_WAIT).unwrap();
+        let mut reader = Clipboard::new().unwrap();
+        assert!(
+            text.len() > reader.chunk,
+            "the text needs incremental transfers"
+        );
+        assert_eq!(reader.read_text().unwrap(), text);
+        let _ = stop.send(());
+        waker();
+        let owner = owner.join().unwrap();
+        assert!(owner.incremental > 0, "the owner sent the text in chunks");
+        assert!(owner.transfers.is_empty(), "and finished that transfer");
     }
 
     #[test]

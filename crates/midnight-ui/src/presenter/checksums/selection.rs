@@ -14,6 +14,43 @@ pub(crate) fn listed_slot(index: usize) -> Option<usize> {
     index.checked_mul(2)?.checked_add(1)
 }
 
+/// Rows a copy can take, by slot: those with a checksum-file line (calculated) and those
+/// with a checksum (calculated or verified). A row never changes once it arrives, so it is
+/// marked once; how many selected rows a copy takes is then a count of the bits both the
+/// selection and these have (`ListSelection::count_in`), not a pass over the rows.
+#[derive(Default)]
+pub(crate) struct Copyable {
+    lines: Vec<u64>,
+    hashes: Vec<u64>,
+    /// Rows marked so far.
+    rows: usize,
+}
+impl Copyable {
+    fn mark(&mut self, row: &ChecksumRow) {
+        self.rows += 1;
+        let Some(slot) = row_slot(row.id.0) else {
+            return;
+        };
+        let digests = !row.digests.is_empty();
+        let line = digests && row.state == ChecksumRowState::Calculated;
+        let hash = line
+            || digests
+                && matches!(
+                    row.state,
+                    ChecksumRowState::Verified | ChecksumRowState::Mismatch
+                );
+        for (words, marked) in [(&mut self.lines, line), (&mut self.hashes, hash)] {
+            if marked {
+                let word = slot / 64;
+                if words.len() <= word {
+                    words.resize(word + 1, 0);
+                }
+                words[word] |= 1 << (slot % 64);
+            }
+        }
+    }
+}
+
 /// The previous run's selected files, cursor and anchor, by name below its base folder,
 /// while a run of the same files lists and reads them again.
 pub(crate) struct Carried {
@@ -163,52 +200,32 @@ impl ChecksumSession {
         self.rows().by_id(id)?;
         row_slot(id)
     }
-    /// The selected rows in the order shown, then how many selected files still wait.
-    pub(crate) fn selected_rows(&self) -> (Vec<ChecksumRowRef<'_>>, u64) {
-        let rows = self.rows();
-        let mut found = Vec::with_capacity(self.selection.len());
-        let mut waiting = 0u64;
-        for slot in self.selection.slots() {
-            if slot.is_multiple_of(2) {
-                if let Some(row) = rows.by_id(slot as u64 / 2 + 1) {
-                    found.push(row);
-                }
-            } else if self.planned.waiting_position(slot / 2).is_some() {
-                waiting += 1;
-            }
-        }
-        (found, waiting)
-    }
     /// How many selected rows a checksum file takes (calculated ones), and how many have
-    /// a checksum to copy (calculated or verified ones).
+    /// a checksum to copy (calculated or verified ones): a few word operations over the
+    /// selection and the copyable rows' bits, however many rows are selected.
     pub(crate) fn selection_counts(&self) -> (u64, u64) {
-        let rows = self.rows();
-        let (mut lines, mut hashes) = (0, 0);
-        for slot in self.selection.slots().filter(|slot| slot.is_multiple_of(2)) {
-            let Some(row) = rows.by_id(slot as u64 / 2 + 1) else {
-                continue;
-            };
-            match row.state {
-                ChecksumRowState::Calculated if !row.digests.is_empty() => {
-                    lines += 1;
-                    hashes += 1;
-                }
-                ChecksumRowState::Verified | ChecksumRowState::Mismatch
-                    if !row.digests.is_empty() =>
-                {
-                    hashes += 1;
-                }
-                _ => {}
-            }
-        }
-        (lines, hashes)
+        (
+            self.selection.count_in(&self.copyable.lines) as u64,
+            self.selection.count_in(&self.copyable.hashes) as u64,
+        )
     }
-
+    /// The run's rows replaced the streamed ones: mark them unless they are the same.
+    pub(super) fn mark_copyable(&mut self) {
+        if self.copyable.rows == self.rows().len() {
+            return;
+        }
+        let mut copyable = Copyable::default();
+        for row in self.rows().iter() {
+            copyable.mark(&row);
+        }
+        self.copyable = copyable;
+    }
     /// A new run starts. Of the same files it selects the same files again, by name, as
     /// it lists and reads them; otherwise the selection, cursor and anchor go.
     pub(super) fn restart_selection(&mut self, same_files: bool) {
         self.carried = same_files.then(|| self.carry()).flatten();
         self.selection.reset();
+        self.copyable = Copyable::default();
     }
     fn carry(&self) -> Option<Carried> {
         let rows = self.rows();
@@ -261,6 +278,7 @@ impl ChecksumSession {
     /// A row arrived: a listed file's mark, cursor and anchor follow it to its row; a
     /// row for an entry the listing left out is selected again if it was before.
     pub(super) fn row_arrived(&mut self, base: &Path, row: &ChecksumRow, listed: Option<usize>) {
+        self.copyable.mark(row);
         let Some(slot) = row_slot(row.id.0) else {
             return;
         };
