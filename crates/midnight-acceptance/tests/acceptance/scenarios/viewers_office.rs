@@ -3,7 +3,8 @@
 //! viewer (Chromium) shows. The packages are written here by `encode::ooxml`, with the
 //! ZIP extra fields Office itself writes: Microsoft's growth-hint padding (0xA220) on the
 //! first parts and extended timestamps, which the preview opens since 500224d6. Each
-//! must render, and Find in it must report "Match 1 of 1". A package whose parts are
+//! must render, and after Find the status must read "Office preview · Offline ·
+//! JavaScript off · Match 1 of 1". A package whose parts are
 //! encrypted is refused with "This presentation is password-protected, so the preview
 //! cannot open it.", an OLE compound file (an encrypted or legacy Office file) with the
 //! older-format sentence, and with the HTML viewer disabled in the settings F3 says
@@ -31,7 +32,7 @@ pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "viewers_office",
         area: "viewers",
-        summary: "Office documents through the Office preview and the HTML viewer: a Word document, a PowerPoint presentation and an Excel workbook with Office's ZIP padding (0xA220) and timestamps render and Find reports Match 1 of 1; a package with encrypted parts says it is password-protected, an OLE compound file names the older format, and with the HTML viewer disabled F3 says the preview requires it.",
+        summary: "Office documents through the Office preview and the HTML viewer: a Word document, a PowerPoint presentation and an Excel workbook with Office's ZIP padding (0xA220) and timestamps render and after Find the status reads Office preview · Offline · JavaScript off · Match 1 of 1; a package with encrypted parts says it is password-protected, an OLE compound file names the older format, and with the HTML viewer disabled F3 says the preview requires it.",
         run: office,
         timeout: TIMEOUT,
     }]
@@ -238,7 +239,13 @@ fn rendered(app: &mut App, context: &mut Context, name: &str) -> Result<(), Stri
     checked.and(closed)
 }
 
-/// Ctrl+F, the needle, Enter: Chromium's search reports "Match 1 of 1".
+/// The status after Find: the preview and its policy, then Chromium's count. The reply
+/// composes it at once for every format (cee7ecd8; before, a Word document's reply after
+/// the page's last frame showed the bare count).
+const FOUND: &str = "Office preview · Offline · JavaScript off · Match 1 of 1";
+
+/// Ctrl+F, the needle, Enter: Chromium's search finds the one match and the status line
+/// reads exactly [`FOUND`].
 fn find(app: &mut App, viewing: &Viewing) -> Result<(), String> {
     input::chord(viewing.slint(), &[Key::Control], "f");
     viewing.wait(app, "the find bar", STEP, |window| {
@@ -252,10 +259,12 @@ fn find(app: &mut App, viewing: &Viewing) -> Result<(), String> {
     });
     let status = viewing.status();
     found?;
-    if status.contains("Match 1 of 1") {
+    if status.trim() == FOUND {
         Ok(())
     } else {
-        Err(format!("Find for {NEEDLE:?} reports {status:?}"))
+        Err(format!(
+            "Find for {NEEDLE:?} shows the status {status:?}, not {FOUND:?}"
+        ))
     }
 }
 

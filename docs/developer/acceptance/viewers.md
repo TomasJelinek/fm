@@ -126,7 +126,7 @@ Checked in source on 21 November, without a new acceptance run:
 | C5 | Clear find text empties the query and removes the highlight | `viewers_presentation` › Find bar | PASS |
 | C6 | Escape closes the viewer while the search field has the focus | `viewers_presentation` › Find bar | PASS |
 | C7 | Find in the hex view matches source bytes; Whole words is not offered there | `viewers_presentation` › Find in the hex view | PASS |
-| C8 | Find in the HTML viewer (Chromium's search, "Match 1 of 1", "No matches"); no Whole words | `viewers_presentation` › HTML zoom, policy and Find | FAIL (minor, 20 November): "1 matches" and never "Match 1 of 1" (worker_web.rs FindResult), assigned; check accepts it and flags the text. Not run in the Linux run `20261121-144246` (no HTML viewer on that machine) |
+| C8 | Find in the HTML viewer (Chromium's search, "Match 1 of 1", "No matches"); no Whole words | `viewers_presentation` › HTML zoom, policy and Find | FAIL (minor, 20 November): "1 matches" and never "Match 1 of 1" (worker_web.rs FindResult); the check accepts it and flags the text. Since then Office previews, which Find through the same viewer, show "Match 1 of 1" (`viewers_office`, run `20261122-040925`). Since 22 November (cee7ecd8) the reply composes the whole status at once: "Offline · JavaScript off · Match 1 of 1" in source, "Office preview · Offline · JavaScript off · Match 1 of 1" in an Office preview (OF1). `viewers_presentation` has not been rerun since. Not run in the Linux run `20261121-144246` (no HTML viewer on that machine) |
 | C9 | Wrap: Ctrl+W and the Wrap box; the horizontal scrollbar goes | `viewers_controls` › wrap | PASS |
 | C10 | Font and presentation (Aa) row | `viewers_controls` › presentation row | PASS |
 | C11 | Font size + button (taller rows) and font family picker (other glyphs) | `viewers_presentation` › font size and family | PASS |
@@ -204,16 +204,16 @@ Checked in source on 21 November, without a new acceptance run:
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| T1 | Alt+5: every visible tile shows its own image, no flicker while still | `viewers_thumbnails` | PASS on Windows (run `20261122-040925`, smoke): 9 of 9 tiles after 6.5 s. Linux FAIL: THUMB-UNKNOWN-STORAGE (below), fixed in source on 22 November, rerun pending |
-| T2 | End and the wheel scroll to tiles that load; Home shows cached tiles at once | `viewers_thumbnails` | PASS on Windows (run `20261122-040925`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T3 | PNG, JPEG, GIF, WebP and SVG thumbnails | `viewers_thumbnails` › image formats | PASS on Windows (run `20261122-040925`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T4 | BMP, ICO and TIFF thumbnails | `viewers_thumbnails` › BMP, ICO and TIFF thumbnails | PASS on Windows (run `20261122-040925`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T5 | A PDF thumbnail shows its first page | `viewers_thumbnails` › PDF first page | PASS on Windows (run `20261122-040925`, smoke): a white page of 96 x 64 px with 67 dark text pixels. Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T6 | AVIF: libavif's `draw_points_idat.avif` (the image decoder's licensed fixture) looks like its PNG twin | `viewers_thumbnails` › the AVIF thumbnail matches its PNG twin | PASS on Windows (run `20261122-040925`, smoke) |
-| T7 | The JPEG, GIF, WebP and SVG tiles show their images' own colours (grey blocks, palette, checkerboard, the SVG's fills), not a placeholder | `viewers_thumbnails` › the … tile's pixels | PASS on Windows (run `20261122-040925`, smoke) |
-| T8 | A password-protected PDF (RC4, `encode::pdf_encrypted`) keeps its placeholder | `viewers_thumbnails` › a password-protected PDF keeps its placeholder | PASS on Windows (run `20261122-040925`, smoke) |
-| T9 | Two-frame GIF and WebP tiles show the first frame | `viewers_thumbnails` › … shows its first frame | PASS on Windows (run `20261122-040925`, smoke) |
-| T10 | A program's tile shows its own icon (Windows: a copy of `explorer.exe` against a file named `.exe` without icon resources; the harness installs only the desktop service's icon reader, decision A3) | `viewers_thumbnails` › a program's own icon | PASS on Windows (run `20261122-040925`, smoke); Linux tiles show type icons by design (reported SKIP) |
+| T1 | Alt+5: every visible tile shows its own image, no flicker while still | `viewers_thumbnails` | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke): 9 of 9 tiles after 6.5 s and 7.6 s. Linux FAIL: THUMB-UNKNOWN-STORAGE (below), fixed in source on 22 November, rerun pending |
+| T2 | End and the wheel scroll to tiles that load; Home shows cached tiles at once | `viewers_thumbnails` | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T3 | PNG, JPEG, GIF, WebP and SVG thumbnails | `viewers_thumbnails` › image formats | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T4 | BMP, ICO and TIFF thumbnails | `viewers_thumbnails` › BMP, ICO and TIFF thumbnails | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T5 | A PDF thumbnail shows its first page | `viewers_thumbnails` › PDF first page | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke): a white page of 96 x 64 px with 67 dark text pixels. Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T6 | AVIF: libavif's `draw_points_idat.avif` (the image decoder's licensed fixture) looks like its PNG twin | `viewers_thumbnails` › the AVIF thumbnail matches its PNG twin | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| T7 | The JPEG, GIF, WebP and SVG tiles show their images' own colours (grey blocks, palette, checkerboard, the SVG's fills), not a placeholder | `viewers_thumbnails` › the … tile's pixels | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| T8 | A password-protected PDF (RC4, `encode::pdf_encrypted`) keeps its placeholder | `viewers_thumbnails` › a password-protected PDF keeps its placeholder | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| T9 | Two-frame GIF and WebP tiles show the first frame | `viewers_thumbnails` › … shows its first frame | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| T10 | A program's tile shows its own icon (Windows: a copy of `explorer.exe` against a file named `.exe` without icon resources; the harness installs only the desktop service's icon reader, decision A3) | `viewers_thumbnails` › a program's own icon | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke); Linux tiles show type icons by design (reported SKIP) |
 
 THUMB-UNKNOWN-STORAGE (Linux run `20261121-144246`, again in `20261121-164146`): in the
 Thumbnails view no tile ever showed a thumbnail (`viewers_thumbnails`: 7 of 11 checks
@@ -231,9 +231,9 @@ and nothing says why. With network previews turned on in the harness's seeded
 preferences (a temporary experiment, run `20261121-170455`) every check passed in 20.5 s
 on the same machine. Decided on 22 November (A2): a local block device of unknown kind
 counts as local storage (exclusive I/O, previews allowed), and a withheld preview's
-reason shows in the panel's status row instead of a modal notice; that fix is not on
-main at 05710878. Since 22 November `viewers_thumbnails` names THUMB-UNKNOWN-STORAGE in its
-failure when no thumbnail appears on storage the platform reports as `Unknown`.
+reason shows in the panel's status row instead of a modal notice (the fix below). Since
+22 November `viewers_thumbnails` names THUMB-UNKNOWN-STORAGE in its failure when no
+thumbnail appears on storage the platform reports as `Unknown`.
 
 Fixed in source on 22 November, both ways (the owner's decision: a local block device
 whose kind cannot be proven counts as local for previews; network storage and pending
@@ -267,10 +267,10 @@ and the window test `storage_reasons_and_preview_failures_are_status_rows_that_l
 | A8 | Damaged: a text file named `.zip`, a truncated ZIP, garbage after a 7-Zip signature, a corrupted tar.gz, a truncated 7-Zip give a clear error | `viewers_archives` › damaged cases | PASS |
 | A9 | A member with a wrong CRC: the listing works, F3 and F5 fail clearly and leave no file | `viewers_archives` › crc.zip | PASS |
 | A10 | 100,100 entries; 8.9 MB of names | `viewers_archives` › many.tar, long-names.tar | PASS |
-| A11 | One folder of 100,001 files: its listing and Ctrl+Shift+S inside it | `viewers_archives` › flat.tar | PASS for its listing (647 ms) and Ctrl+Shift+S (5,151 bytes in 995 ms) in the Linux run `20261121-144246` |
-| A12 | F5 copies a folder of 10,001 files out of a tar, then a Ctrl+A selection of all of them (more than the 4,096 entries a selection once stopped at), byte for byte within 360 s each | `viewers_archives` › F5 of the folder / of a selection of 10,001 … out of copy.tar | NOT RUN YET (written 22 November) |
+| A11 | One folder of 100,001 files: its listing and Ctrl+Shift+S inside it | `viewers_archives` › flat.tar | PASS on Windows (runs `20261122-053621` and `20261122-114734`, smoke): listed in 805 and 674 ms, Ctrl+Shift+S 5,151 bytes in 1,056 and 1,168 ms; PASS in the Linux run `20261121-144246` (647 ms, 995 ms) |
+| A12 | F5 copies a folder of 10,001 files out of a tar, then a Ctrl+A selection of all of them (more than the 4,096 entries a selection once stopped at), byte for byte within 360 s each | `viewers_archives` › F5 of the folder / of a selection of 10,001 … out of copy.tar | PASS on Windows (runs `20261122-053621` and `20261122-114734`, smoke): the folder in 108 and 117 s, the selection in 132 and 131 s |
 | A13 | The same with the 100,001 files of `flat.tar`, within 40 minutes each, with the runner's opt-in stress sizes (`--stress`, `MIDNIGHT_ACCEPTANCE_STRESS=1`) | `viewers_archives` (stress sizes) | NOT RUN YET. Earlier runs at 600 s ran out of time: 59,456 files on Windows (21 November, WIN-8), about 48,470 in the Linux run `20261121-144246` (about 81 files/s) |
-| A14 | A quick search, then F3: the search closes and the focused match opens, in a native folder and inside an archive | `viewers_archives` › quick search, then F3 | NOT RUN YET (written 22 November) |
+| A14 | A quick search, then F3: the search closes and the focused match opens, in a native folder and inside an archive | `viewers_archives` › quick search, then F3 | PASS on Windows (runs `20261122-053621` and `20261122-114734`, smoke) |
 
 ## Archive passwords
 
@@ -279,14 +279,14 @@ against independent readers, see ACCEPTANCE.md); the password is non-ASCII.
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| P1 | Encrypted rows end " · Encrypted" (and only they); the details name the method ("ZipCrypto", "AES-256", …) with its explanation | `viewers_passwords` › … listing and details | PASS on Windows (run `20261122-040925`, smoke) |
-| P2 | F3 on an encrypted member asks "<archive> is password-protected. Enter its password to view <member>."; an empty field gives "Type the password first.", a wrong password "Wrong password — try again."; Escape opens nothing and the notice says why | `viewers_passwords` › zipcrypto.zip: F3 asks; empty, wrong, Escape | PASS on Windows (run `20261122-040925`, smoke) |
-| P3 | The right password (OK by pointer, Enter by keyboard) opens the viewer; the other members and Alt+F3 then open without asking; leaving and entering the archive asks again; Cancel opens nothing | `viewers_passwords` › the password is asked once per archive | PASS on Windows (run `20261122-040925`, smoke) |
-| P4 | AES-256 (stored and deflated), AES-128 and AES-192 members; a plain member beside encrypted ones opens without asking | `viewers_passwords` › aes.zip, aes128.zip, aes192.zip | PASS on Windows (run `20261122-040925`, smoke) |
-| P5 | An AES archive inside a ZipCrypto archive: Enter asks for the outer password, F3 inside for the inner archive's own (the outer one is refused there); Escape at the outer password keeps the panel | `viewers_passwords` › nested.zip | PASS on Windows (run `20261122-040925`, smoke) |
-| P6 | Members no reader opens say why in their details and ask for nothing: Implode, an unsafe name (`../x`), a link, PKWARE strong encryption | `viewers_passwords` › odd.zip | PASS on Windows (run `20261122-040925`, smoke) |
-| P7 | A 7-Zip archive with encrypted names asks before it lists | `viewers_passwords` › names.7z | SKIP on Windows (run `20261122-040925`): no `7z` on that machine |
-| P8 | The password reaches neither the saved settings, the clipboard, the harness's event trace nor the staged child's console | `viewers_passwords` › no leaks | PASS on Windows (run `20261122-040925`, smoke) |
+| P1 | Encrypted rows end " · Encrypted" (and only they); the details name the method ("ZipCrypto", "AES-256", …) with its explanation | `viewers_passwords` › … listing and details | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| P2 | F3 on an encrypted member asks "<archive> is password-protected. Enter its password to view <member>."; an empty field gives "Type the password first.", a wrong password "Wrong password — try again."; Escape opens nothing and the notice says why | `viewers_passwords` › zipcrypto.zip: F3 asks; empty, wrong, Escape | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| P3 | The right password (OK by pointer, Enter by keyboard) opens the viewer; the other members and Alt+F3 then open without asking; leaving and entering the archive asks again; Cancel opens nothing | `viewers_passwords` › the password is asked once per archive | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| P4 | AES-256 (stored and deflated), AES-128 and AES-192 members; a plain member beside encrypted ones opens without asking | `viewers_passwords` › aes.zip, aes128.zip, aes192.zip | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| P5 | An AES archive inside a ZipCrypto archive: Enter asks for the outer password, F3 inside for the inner archive's own (the outer one is refused there); Escape at the outer password keeps the panel | `viewers_passwords` › nested.zip | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| P6 | Members no reader opens say why in their details and ask for nothing: Implode, an unsafe name (`../x`), a link, PKWARE strong encryption | `viewers_passwords` › odd.zip | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| P7 | A 7-Zip archive with encrypted names asks before it lists | `viewers_passwords` › names.7z | SKIP on Windows (runs `20261122-040925` and `20261122-114734`): no `7z` on that machine |
+| P8 | The password reaches neither the saved settings, the clipboard, the harness's event trace nor the staged child's console | `viewers_passwords` › no leaks | PASS on Windows (run `20261122-114734`, smoke): the trace kept as the passwords were answered holds `→ UnlockArchive { …, password: ArchivePassword(<redacted>) }` and no password. Run `20261122-040925` passed it too, but its event-trace part proved nothing then (red runs below) |
 
 ## Office documents
 
@@ -295,20 +295,34 @@ hints 0xA220, extended timestamps).
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| OF1 | Padded DOCX, PPTX and XLSX render; Find reports "Match 1 of 1" | `viewers_office` › padded.… | PASS on Windows (run `20261122-040925`, smoke): "Match 1 of 1" for each |
-| OF2 | A package whose parts are encrypted: "This presentation is password-protected, so the preview cannot open it." | `viewers_office` › locked.pptx | PASS on Windows (run `20261122-040925`, smoke) |
-| OF3 | An OLE compound file: "This document is password-protected or saved in the older binary Office format (.doc, .xls or .ppt), which the preview cannot open." | `viewers_office` › protected.docx | PASS on Windows (run `20261122-040925`, smoke) |
-| OF4 | With the HTML viewer disabled in the settings: "Office preview requires an installed and enabled Chromium HTML viewer." | `viewers_office` › without the HTML viewer | PASS on Windows (run `20261122-040925`, smoke) |
+| OF1 | Padded DOCX, PPTX and XLSX render; after Find the status reads exactly "Office preview · Offline · JavaScript off · Match 1 of 1" (before cee7ecd8 a Word document's reply could leave the bare count) | `viewers_office` › padded.… | PASS on Windows (run `20261122-114734`, smoke): exactly that status for each. In run `20261122-040925`, before cee7ecd8, the Word document's status was the bare "Match 1 of 1" |
+| OF2 | A package whose parts are encrypted: "This presentation is password-protected, so the preview cannot open it." | `viewers_office` › locked.pptx | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| OF3 | An OLE compound file: "This document is password-protected or saved in the older binary Office format (.doc, .xls or .ppt), which the preview cannot open." | `viewers_office` › protected.docx | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| OF4 | With the HTML viewer disabled in the settings: "Office preview requires an installed and enabled Chromium HTML viewer." | `viewers_office` › without the HTML viewer | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
 | OF5 | Linux without the browser's system libraries: the viewer names them and the command that installs them (b8537464) | `viewers_office` › the HTML viewer names its missing libraries | NOT RUN YET (Linux only, where libraries are missing) |
 
 ## Video
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| VD1 | Each video's own tile shows its colour, not the fallback icon | `viewers_video` › thumbnails | PASS on Windows (run `20261122-040925`, smoke): 6,902–6,912 pixels of the first colour per tile |
-| VD2 | F3 opens the first frame; a click at 75 % of the position slider shows the later frames, Home on the slider the first again; the Play button plays to the end | `viewers_video` › F3 on … | PASS on Windows (run `20261122-040925`, smoke) |
-| VD3 | An H.264 + AAC movie through the system's decoders: Windows' encoders and Media Foundation; on Linux the host's `ffmpeg -c:v libx264` and the distribution's FFmpeg (GStreamer is the fallback when FFmpeg is missing, not exercised) | `viewers_video` › F3 on h264.mp4 | PASS on Windows (run `20261122-040925`, smoke) |
-| VD4 | NTFS-compressed copies (Windows) | `viewers_video` › F3 on packed.mp4, h264-packed.mp4 | PASS on Windows (run `20261122-040925`, smoke); SKIP on Linux |
+| VD1 | Each video's own tile shows its colour, not the fallback icon | `viewers_video` › thumbnails | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke): 6,902–6,912 pixels of the first colour per tile in both |
+| VD2 | F3 opens the first frame; a click at 75 % of the position slider shows the later frames, Home on the slider the first again; the Play button plays to the end | `viewers_video` › F3 on … | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| VD3 | An H.264 + AAC movie through the system's decoders: Windows' encoders and Media Foundation; on Linux the host's `ffmpeg -c:v libx264` and the distribution's FFmpeg (GStreamer is the fallback when FFmpeg is missing, not exercised) | `viewers_video` › F3 on h264.mp4 | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke) |
+| VD4 | NTFS-compressed copies (Windows) | `viewers_video` › F3 on packed.mp4, h264-packed.mp4 | PASS on Windows (runs `20261122-040925` and `20261122-114734`, smoke); SKIP on Linux |
+
+Red runs of the checks written on 22 November (T6–T10, A12, A14, P1–P6, P8, OF1–OF4,
+VD1–VD4; P7 and OF5 cannot run on that machine), on Windows at smoke scale. Each was built
+with deliberately wrong expected values: 27 breaks, at least one per check. Run
+`20261122-054316` (increment-1 code at 05710878) failed every broken check, each with its
+measured value, except the event-trace part of P8. That part could not fail: the harness
+keeps only the last 32 lines of its trace, and by the time the scenario looked, they no
+longer held the unlock commands. Since then `submit_password` keeps the trace lines as
+each password is answered, and P8 requires an unlock command among them. Run
+`20261122-084359` (at 26c18895, `viewers_passwords` only) then failed all ten broken
+password checks, P8's event trace among them. A lease fault let that run share the desktop
+with another agent's run for its whole length. Each failure still shows its deliberately
+wrong value, which contention cannot produce. OF1's exact status, expected since 5ccd0eb7,
+has not been run red; a status that is not exactly that string fails it.
 
 ## Combinations
 

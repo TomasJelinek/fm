@@ -198,7 +198,7 @@ fn run(context: &mut Context) -> Result<(), String> {
         nested(&mut app, context, &home),
     );
     recover(&mut app, &home)?;
-    failures.check("odd.zip: unreadable members", odd(&mut app, &home));
+    failures.check("odd.zip: unreadable members", odd(&mut app, context, &home));
     recover(&mut app, &home)?;
     match seven {
         Ok(()) => failures.check(
@@ -209,7 +209,7 @@ fn run(context: &mut Context) -> Result<(), String> {
     }
     recover(&mut app, &home)?;
     files::dismiss_all(&mut app);
-    failures.check("no leaks", no_leaks(&app, &store));
+    failures.check("no leaks", no_leaks(&app, context, &store));
     app.shutdown()?;
     // The console takes what the application and its workers printed until now.
     failures.check("no leaks: the console", console_clean());
@@ -369,6 +369,16 @@ fn refusals(app: &mut App, context: &mut Context, home: &Path) -> Result<(), Str
             "Escape left the notice {notice:?}, not {expected:?}"
         ));
     }
+    context.note(format!(
+        "F3 on an encrypted member: {:?}; empty field: {:?}; wrong password: {:?} (attempt \
+         {}); Escape: {}: {}",
+        dialog.sentence(),
+        empty.error,
+        wrong.error,
+        wrong.attempt,
+        notice.0,
+        notice.1
+    ));
     back_to(app, home, 1, "zipcrypto.zip")
 }
 
@@ -582,7 +592,7 @@ fn nested(app: &mut App, context: &mut Context, home: &Path) -> Result<(), Strin
 }
 
 /// Members no reader opens show why in their details, and no password is asked.
-fn odd(app: &mut App, home: &Path) -> Result<(), String> {
+fn odd(app: &mut App, context: &mut Context, home: &Path) -> Result<(), String> {
     open_row(app, "odd.zip")?;
     wait_listing(
         app,
@@ -621,6 +631,7 @@ fn odd(app: &mut App, home: &Path) -> Result<(), String> {
         if unreadable.as_deref() != Some(reason) {
             problems.push(format!("{name}: Unreadable {unreadable:?}"));
         }
+        context.note(format!("odd.zip/{name}: Unreadable {unreadable:?}"));
     }
     // The strong encryption is named as an unknown method, and asks for nothing.
     panel::select_row(app, PaneId::Left, "strong.txt")?;
@@ -689,7 +700,11 @@ fn encrypted_names(app: &mut App, home: &Path) -> Result<(), String> {
 
 /// The password reached neither the saved settings, the clipboard, nor the trace of
 /// recent events and commands (where the unlock command prints it redacted).
-fn no_leaks(app: &App, store: &options_support::SettingsStore) -> Result<(), String> {
+fn no_leaks(
+    app: &App,
+    context: &mut Context,
+    store: &options_support::SettingsStore,
+) -> Result<(), String> {
     let mut problems = Vec::new();
     let secrets = [PASSWORD, INNER_PASSWORD];
     let settings = format!("{:?}", store.current());
@@ -698,7 +713,19 @@ fn no_leaks(app: &App, store: &options_support::SettingsStore) -> Result<(), Str
         .as_ref()
         .map(|clipboard| format!("{:?} {:?}", clipboard.text(), clipboard.files()))
         .unwrap_or_default();
-    let trace = app.recent_events().join("\n");
+    // The trace keeps its last lines only: those kept as each password was answered hold
+    // the unlock commands, without which the trace could show no leak at all.
+    let mut trace = support::submission_traces();
+    match trace.iter().find(|line| line.contains("UnlockArchive")) {
+        Some(line) => context.note(format!("The event trace's unlock command: {line}")),
+        None => problems.push(
+            "the event trace held no unlock command (UnlockArchive) when the passwords were \
+             answered, so it could show no leak"
+                .to_string(),
+        ),
+    }
+    trace.extend(app.recent_events());
+    let trace = trace.join("\n");
     for (place, text) in [
         ("the saved settings", &settings),
         ("the clipboard", &clipboard),

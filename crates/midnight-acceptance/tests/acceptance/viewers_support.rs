@@ -78,6 +78,15 @@ pub struct Native {
 thread_local! {
     /// Whether the next application this thread starts gets the desktop icon reader.
     static FILE_ICONS: Cell<bool> = const { Cell::new(false) };
+    /// The application's recent events and commands as each password submission was
+    /// answered ([`submit_password`]). The trace keeps only its last lines, so a leak
+    /// check at the end of a scenario would no longer hold the unlock commands.
+    static SUBMISSION_TRACES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The trace lines [`submit_password`] kept since the last call, oldest first.
+pub fn submission_traces() -> Vec<String> {
+    SUBMISSION_TRACES.with(RefCell::take)
 }
 
 /// Give the next [`App::start`] of this thread the desktop service's icon reader, so
@@ -331,6 +340,9 @@ impl Plugins {
         );
         let spare = viewer_service.image_spare_retirement();
         let viewers = Rc::new(ViewerWindows::new(viewer_service.clone()));
+        // As in production: viewer windows move at once when the system asks for less
+        // motion (the acceptance seam's `override_settings` can replace the answer).
+        viewers.set_motion_preference(Rc::new(midnight_ui::system_reduces_motion));
         // A typed zoom percentage uses the user's decimal separator: the presenter's
         // number format, which [`use_number_locale`] can replace.
         let locale = presenter.clone();
@@ -1321,11 +1333,14 @@ pub fn submit_password(
     let deadline = Instant::now() + limit;
     loop {
         app.settle();
-        let Some(now) = password_dialog(app) else {
-            return Ok(None);
-        };
-        if !now.busy && (now.attempt != before.attempt || now.error != before.error) {
-            return Ok(Some(now));
+        let now = password_dialog(app);
+        let answered = now.as_ref().is_none_or(|now| {
+            !now.busy && (now.attempt != before.attempt || now.error != before.error)
+        });
+        if answered {
+            let trace = app.recent_events();
+            SUBMISSION_TRACES.with(|traces| traces.borrow_mut().extend(trace));
+            return Ok(now);
         }
         if Instant::now() >= deadline {
             return Err(format!(
