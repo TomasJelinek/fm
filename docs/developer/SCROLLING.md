@@ -662,6 +662,55 @@ its 120 KiB, the rest placing the reused groups and painting the strips at its o
 and the co-simulation answers a plugin read, 8 KiB or about three such rows, only
 between worker turns. Wrapped rows, 60-byte rows and Source stall no frame, as before.
 
+### Source highlighting
+
+The Source viewer colours a page it reads when it holds the lexer state at a line end at most
+32 KiB before the page: 128 such checkpoints spread over what it has lexed (2 KiB apart at
+first, the spacing doubling when they are full) and the 126 lines it lexed last, besides the
+file's start. A page it cannot colour comes plain. Preparation walks the document from the
+nearest checkpoint to a target, at most 256 KiB per request, and keeps checkpoints on the way
+(`plugins/midnight-viewer-source/src/preparation.rs`). The engine asks for it only at rest and
+only for what the shown page needs (`worker_syntax.rs`):
+
+- **A document of at most 256 KiB** is prepared whole, once per revision, unless the page
+  already holds all of it in colour: every page read from it then comes coloured. The page of
+  a small file holds the whole file, coloured as read, so such a file is never prepared.
+- **In a larger document** only rows that the page holds plain are prepared: stretches of 2 KiB
+  without a colour span, or a whole shorter page, nearest the view first. Rows that reach the
+  view are read from their start when that lies at most 64 KiB before the view's end, else from
+  a screen above the view; rows above the view are read back from their end. Their refresh
+  reads them coloured (up to 4,096 rows, joined up to 120 KiB) and colours them in place: the
+  page keeps its rows, anchors, selection and prepared screens, and row groups whose colours
+  stay keep their shaping. Rows a refresh leaves plain hold no token and are not prepared again
+  while the page holds them; what a refresh leaves of rows found plain is prepared next,
+  however few rows it is.
+- **Scrolling within the page prepares nothing.** A refill past its edge comes coloured once
+  the page's last rows are, since every coloured read keeps the lexer state of its last lines;
+  backwards, the walk's spread checkpoints are near enough as long as it walked at most about
+  2 MiB (they then lie at most about 24 KiB apart). Rows outside that reach show plain until
+  the next rest prepares them.
+- **The notice** "Preparing source highlighting…" appears only when the visible rows have
+  stayed plain at rest for 300 ms (`NOTICE_DELAY`), and goes when they are coloured, the camera
+  moves or a page is asked for. A refresh that completes while the camera moves waits for it to
+  rest.
+- **Memory.** Preparation keeps no second page: a refresh's page (at most 120 KiB of text) is
+  merged into the shown page and dropped. The rows found plain and settled are a few merged
+  source ranges within the page. The Source viewer's checkpoints and preparation state stay
+  within their fixed 256 records and 64 KiB per file.
+
+Measured on 22 November 2026 in the worker's co-simulations with a model of the Source
+viewer's checkpoints, release builds, three runs each on the loaded development machine
+([record](../verification/2026-11-22-source-highlighting.md)). Over 150 rows of synthetic C++
+(6 KB), twelve wheel notches prepared the file 25 times and showed the notice 23 times before,
+a touchpad flick prepared it 102 times, and the worker spent up to a second on gestures; after
+the change no gesture prepares, refreshes or notices anything, and the page holds the whole
+file instead of the refresh's rows (1 KiB after eight PageDowns before). Over 2.2 MB the
+gestures after a jump to 30 % prepared 3 to 61 times each before and none after; the jump's
+rows are prepared once, in three requests of 256 KiB, and show plain for 8 frames. No gesture
+stalled a frame over either file, before or after. In 16 MB a jump to 80 %, a walk of
+12.8 MB, showed its rows plain for about 100 frames and the notice once; the first gesture
+after it stalled a frame or two on a refill, with no highlighting work (not measured before).
+
 ## Scrollbar coverage and small source blocks
 
 A scrollbar position describes the scrollable visual range, excluding the visible

@@ -466,6 +466,18 @@ preparation gate has 98 selected passing checks. Source0.2 bounded recovery has
 the post-review64 receipt below, with no unresolved owner failure in that scope;
 this is not an arbitrary-token guarantee or full native cold-target qualification.
 
+Since 22 November the engine asks for preparation only at rest and only for what the shown
+page needs (`worker_syntax.rs`). A file of at most 256 KiB, one preparation's walk, is
+prepared whole once per revision unless its page already holds all of it in colour: every
+page read from it then comes coloured, and a small file, whose page holds it whole and
+coloured as read, is never prepared. In a larger file only the rows the page holds plain are
+prepared, nearest the view first, and coloured in place: the page keeps its rows, selection
+and prepared screens. Scrolling within the page prepares nothing, and
+"Preparing source highlighting…" appears only when the visible rows stay plain at rest for
+300 ms; rows show plain until their colours arrive. See [Source
+highlighting](SCROLLING.md#source-highlighting) and its
+[record](../verification/2026-11-22-source-highlighting.md).
+
 The post-review Source snapshot passed **64 unique checks / 0 failures** across
 seven groups, strict `--lib --tests` Clippy/format0. Prior 99 is pre-fix evidence,
 not a rerun or an additive total. Two real P2 RED→GREEN cases reduce the target

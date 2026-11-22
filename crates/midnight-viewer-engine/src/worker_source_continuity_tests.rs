@@ -603,6 +603,9 @@ fn leading_fragment_refresh(
     worker.event(id + 1, EventKind::Completed, output);
 }
 
+/// A refresh that starts inside the visible row colours the rows it holds where they are, at
+/// the exact camera; the complete refresh then shows what a refresh of the whole row does.
+/// Before, the page kept its rows plain until a refresh held the visible row's start.
 #[test]
 fn source_prepared_partial_leading_row_keeps_exact_camera_until_complete_style_refresh() {
     use super::position::{mapped_prefix_page, rendered};
@@ -622,8 +625,8 @@ fn source_prepared_partial_leading_row_keeps_exact_camera_until_complete_style_r
     worker.dirty = true;
     let pending = rendered(&mut worker, &output);
     assert!(
-        pending.pixels == previous.pixels,
-        "a style suffix excluding visible source context must retain the coherent CPU viewport"
+        pending.pixels != previous.pixels,
+        "a style suffix colours the rows it holds where they are"
     );
 
     let mut full = mapped_prefix_page(&source, 16_000);

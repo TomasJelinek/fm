@@ -1,4 +1,13 @@
-//! Optional syntax preparation, keyed to one exact foreground view epoch.
+//! Optional syntax preparation of the shown Source page.
+//!
+//! The Source viewer colours a page it reads when it holds the lexer state at a line end
+//! near before the page; preparation walks the document to a target and keeps such states on
+//! the way (`plugins/midnight-viewer-source/src/preparation.rs`). A document that fits one
+//! walk (`MAX_SCAN_BYTES`) is prepared whole, once per revision: every page read from it then
+//! comes coloured. In a larger one only rows the shown page holds plain are prepared, at rest
+//! and nearest the view first, and coloured in place; pages read after coloured ones come
+//! coloured too. Scrolling within the page prepares nothing. The notice appears only when
+//! the visible rows stay plain at rest for `NOTICE_DELAY`.
 use super::*;
 use midnight_plugin_host::AdmissionError;
 use midnight_plugin_host::api::abi;
@@ -7,9 +16,72 @@ use std::ops::Range;
 use std::time::Instant;
 
 const MAX_BACKOFF_SHIFT: u8 = 5;
-// A Source packet can carry MAX_SPANS colors and the same number of optional
-// typography records. Retained overlap replacement obeys those same fixed caps.
-const MAX_SOURCE_STYLE_RECORDS: usize = 2 * viewer::MAX_SPANS;
+/// The most bytes one preparation scans (the plugin's `PrepareSource::max_scan_bytes`
+/// limit). A document no longer than this is prepared whole, once per revision.
+pub(super) const MAX_SCAN_BYTES: u32 = 256 * 1024;
+/// How long the visible rows stay plain at rest before the status line says that their
+/// highlighting is being prepared: rows that are coloured sooner never show the notice.
+pub(super) const NOTICE_DELAY: Duration = Duration::from_millis(300);
+/// The notice of rows whose highlighting is being prepared.
+pub(super) const PREPARING_HIGHLIGHTING: &str = "Preparing source highlighting…";
+/// Rows are plain when this many bytes of them carry no colour span: the Source viewer
+/// colours keywords, numbers, strings and comments far more densely wherever it held the
+/// lexer state, and sends a page it could not colour without spans.
+const PLAIN_GAP: usize = 2048;
+/// The most rows one refresh asks for: a viewport's largest line budget
+/// (`messages::Viewport`). Its reads are joined up to their byte budget
+/// (`worker_chain::Budget`).
+const MAX_REFRESH_LINES: u32 = 4096;
+/// How far before the view's end plain rows may start for one refresh to colour them from
+/// their start through the view: half of what one refresh joins (120 KiB,
+/// `worker_chain::JOIN_BYTES`), the rest for the rows past the view.
+const REFRESH_REACH: usize = 64 * 1024;
+
+#[cfg(test)]
+std::thread_local! {
+    /// The co-simulations' highlighting clock, which moves a frame of their window at a time.
+    static CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set this thread's highlighting clock; `None` follows the system's.
+#[cfg(test)]
+pub(super) fn set_clock(now: Option<Instant>) {
+    CLOCK.with(|clock| clock.set(now));
+}
+
+/// Move this thread's highlighting clock on by `by`, when it is set.
+#[cfg(test)]
+pub(super) fn advance_clock(by: Duration) {
+    CLOCK.with(|clock| clock.set(clock.get().map(|now| now + by)));
+}
+
+/// The time of the notice delay and the retry pacing: the system's, except in the
+/// co-simulations (`set_clock`).
+fn clock_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = CLOCK.with(std::cell::Cell::get) {
+        return now;
+    }
+    Instant::now()
+}
+
+/// What a preparation covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Scope {
+    /// The whole document, which fits one scan (`MAX_SCAN_BYTES`).
+    Whole,
+    /// Plain rows of the shown page, from `Key::viewport`'s anchor and as many rows.
+    Rows,
+}
+
+/// What the shown page needs prepared (`Worker::wanted_source_target`): the viewport of
+/// `rows` rows from `anchor`, or before it when `backwards`.
+struct Target {
+    scope: Scope,
+    anchor: u64,
+    backwards: bool,
+    rows: u32,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Key {
@@ -17,7 +89,15 @@ pub(super) struct Key {
     revision: u64,
     mode: u16,
     epoch: u64,
+    pub scope: Scope,
     pub viewport: messages::Viewport,
+}
+
+/// A request that source highlighting asks the plugin session to admit
+/// (`Worker::source_admission`).
+pub(super) enum SourceAdmission {
+    Prepare(messages::PrepareSource),
+    Refresh(messages::Viewport),
 }
 
 struct Active {
@@ -30,6 +110,8 @@ pub(super) struct Refresh {
     pub key: Key,
     id: Option<u64>,
     page: Option<viewer::TextPage>,
+    /// The refresh completed while the view was not at rest: its page waits for the rest.
+    complete: bool,
 }
 
 #[derive(Default)]
@@ -45,11 +127,86 @@ pub(super) struct SourceSyntax {
     retries: u8,
     retry_at: Option<Instant>,
     notice: Option<(u64, String)>,
-    corrective_target: bool,
+    /// The generation and revision of the shown Source file (`Worker::source_requested`).
+    context: Option<(u64, u64)>,
+    /// The generation and revision prepared whole: every page read from it comes coloured.
+    whole: Option<(u64, u64)>,
+    /// Rows found plain (`Worker::plain_rows`): what a refresh leaves of them stays plain
+    /// however few rows it is.
+    found: Rows,
+    /// Rows refreshed after their preparation: rows without a token stay plain there, and
+    /// they are not prepared again.
+    settled: Rows,
+    /// Since when the visible rows have been plain at rest (`NOTICE_DELAY`).
+    plain_since: Option<Instant>,
+}
+
+/// Source ranges of the shown page's rows, of one revision, merged.
+#[derive(Default)]
+struct Rows {
+    revision: u64,
+    ranges: Vec<Range<u64>>,
+}
+
+impl Rows {
+    fn add(&mut self, revision: u64, range: Range<u64>) {
+        if self.revision != revision {
+            *self = Self {
+                revision,
+                ranges: Vec::new(),
+            };
+        }
+        if range.is_empty() {
+            return;
+        }
+        self.ranges.push(range);
+        self.ranges.sort_by_key(|range| range.start);
+        let mut merged: Vec<Range<u64>> = Vec::with_capacity(self.ranges.len());
+        for range in self.ranges.drain(..) {
+            match merged.last_mut() {
+                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                _ => merged.push(range),
+            }
+        }
+        self.ranges = merged;
+    }
+
+    /// Keep only the ranges the source range `start..end` of `revision` reaches.
+    fn retain(&mut self, revision: u64, start: u64, end: u64) {
+        if self.revision != revision {
+            self.ranges.clear();
+        }
+        self.ranges
+            .retain(|range| range.start < end && start < range.end);
+    }
+
+    /// The ranges, as text ranges of `page`.
+    fn in_text(&self, page: &Page) -> Vec<Range<usize>> {
+        if self.revision != page.revision {
+            return Vec::new();
+        }
+        self.ranges
+            .iter()
+            .map(|range| text_of(page, range.start)..text_of(page, range.end))
+            .filter(|range| !range.is_empty())
+            .collect()
+    }
 }
 
 impl SourceSyntax {
+    /// Prepare the rows of `viewport`, as `Worker::source_target` would: tests start there.
+    #[cfg(test)]
     pub fn demand(&mut self, generation: u64, revision: u64, viewport: messages::Viewport) {
+        self.demand_scope(generation, revision, Scope::Rows, viewport);
+    }
+
+    fn demand_scope(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        scope: Scope,
+        viewport: messages::Viewport,
+    ) {
         if self.epoch == u64::MAX {
             self.latest = None;
             self.eligible = false;
@@ -57,11 +214,13 @@ impl SourceSyntax {
         }
         self.invalidate();
         self.foreground = None;
+        self.context = Some((generation, revision));
         self.latest = Some(Key {
             generation,
             revision,
             mode: viewer::MODE_SOURCE,
             epoch: self.epoch,
+            scope,
             viewport,
         });
         self.eligible = true;
@@ -80,7 +239,6 @@ impl SourceSyntax {
         self.finished = None;
         self.retries = 0;
         self.retry_at = None;
-        self.corrective_target = false;
         self.eligible = self.foreground.is_none();
     }
 
@@ -96,6 +254,7 @@ impl SourceSyntax {
         if let Some(refresh) = &mut self.refresh {
             refresh.id = Some(id);
             refresh.page = None;
+            refresh.complete = false;
         }
     }
 
@@ -121,15 +280,16 @@ impl SourceSyntax {
     fn retry(&mut self) {
         self.retries = self.retries.saturating_add(1).min(MAX_BACKOFF_SHIFT);
         let millis = 20u64 << self.retries;
-        self.retry_at = Some(Instant::now() + Duration::from_millis(millis));
+        self.retry_at = Some(clock_now() + Duration::from_millis(millis));
     }
 }
 
 impl Worker {
-    /// In-page movement replaces the epoch but leaves useful admitted prefix
-    /// work running. Only its exact current target can later authorize refresh.
+    /// A page is asked for, or the view navigates: the epoch is replaced, the refresh under
+    /// way is cancelled and the notice goes. An admitted preparation keeps running; only its
+    /// exact current target can later authorize a refresh.
     pub(super) fn invalidate_source_target(&mut self) {
-        self.clear_source_notice();
+        self.source_moved();
         if let Some(refresh) = self.text.syntax.refresh.take()
             && let Some(id) = refresh.id
             && let Some(session) = &self.session
@@ -155,7 +315,9 @@ impl Worker {
         self.text.syntax.active = None;
     }
 
-    pub(super) fn source_requested(&mut self, id: u64, viewport: messages::Viewport) {
+    /// A foreground page is requested: the shown file's revision, and no preparation until
+    /// the page is shown (`source_target` then chooses what the page needs).
+    pub(super) fn source_requested(&mut self, id: u64) {
         if self.mode != viewer::MODE_SOURCE {
             return;
         }
@@ -168,9 +330,23 @@ impl Worker {
         else {
             return;
         };
-        self.text.syntax.demand(self.generation, revision, viewport);
+        self.text.syntax.context = Some((self.generation, revision));
         self.text.syntax.foreground = Some((id, false));
         self.text.syntax.eligible = false;
+    }
+
+    /// The shown file's revision, as `source_requested` takes it from the captured file.
+    #[cfg(test)]
+    pub(super) fn source_shown(&mut self, revision: u64) {
+        self.text.syntax.context = Some((self.generation, revision));
+    }
+
+    /// The camera moved, or a page is asked for (`invalidate_source_target`): the notice goes
+    /// and its delay counts again from the next rest. A preparation or refresh under way goes
+    /// on; a refresh that completes away from rest waits for it.
+    pub(super) fn source_moved(&mut self) {
+        self.text.syntax.plain_since = None;
+        self.clear_source_notice();
     }
 
     pub(super) fn source_page_loaded(&mut self, id: u64) {
@@ -190,46 +366,233 @@ impl Worker {
         }
     }
 
+    /// New request parameters (geometry, font): the next rest chooses the target again.
     pub(super) fn source_viewport_parameters_changed(&mut self) {
-        let Some(previous) = self
-            .text
-            .syntax
-            .latest
-            .as_ref()
-            .map(|key| key.viewport.clone())
-        else {
-            return;
-        };
-        let viewport = self.page_viewport(previous.source_anchor, previous.backwards);
-        if viewport != previous {
+        if self.text.syntax.latest.is_some() {
             self.invalidate_source_target();
-            if let Some(key) = &mut self.text.syntax.latest {
-                key.viewport = viewport;
-            }
+            self.text.syntax.latest = None;
         }
     }
 
-    /// A page can stay loaded while its camera moves far beyond its original
-    /// request anchor. Prepare the actual displayed source point, not that old
-    /// fragment's beginning. Admitted prefix work remains useful and keeps running.
-    pub(super) fn source_stationary_target(&mut self) {
-        if !self.source_preparation_admissible() {
+    /// Choose, at rest, what the shown page needs prepared (`wanted_source_target`). A target
+    /// that did not change keeps its admitted work; nothing is prepared while every row of
+    /// the page is coloured or settled.
+    pub(super) fn source_target(&mut self) {
+        if !self.source_preparation_admissible() || self.text.syntax.unavailable {
             return;
         }
-        let Some(view) = self.source_view() else {
+        let Some((generation, revision)) = self.text.syntax.context else {
             return;
         };
-        let Some(previous) = self.text.syntax.latest.clone() else {
+        // The shown page has arrived: what it needs may be prepared.
+        if self.text.syntax.foreground.is_none() {
+            self.text.syntax.eligible = true;
+        }
+        let Some(page) = &self.page else {
             return;
         };
-        if previous.viewport.source_anchor == view.source && !previous.viewport.backwards {
+        // Rows of earlier pages are read again when shown again: found and settled anew.
+        let (start, end) = (page.start, page.end);
+        let syntax = &mut self.text.syntax;
+        syntax.found.retain(page.revision, start, end);
+        syntax.settled.retain(page.revision, start, end);
+        let plain = self.plain_rows(page);
+        for rows in &plain {
+            if let Some((start, end)) = source_of(page, rows.start).zip(source_of(page, rows.end)) {
+                self.text.syntax.found.add(page.revision, start..end);
+            }
+        }
+        let wanted = self.wanted_source_target(generation, revision, plain);
+        let syntax = &self.text.syntax;
+        let current = syntax
+            .latest
+            .as_ref()
+            .filter(|key| key.generation == generation && key.revision == revision)
+            .map(|key| {
+                (
+                    key.scope,
+                    key.viewport.source_anchor,
+                    key.viewport.backwards,
+                )
+            });
+        let Some(target) = wanted else {
+            if syntax.active.is_none() && syntax.refresh.is_none() {
+                self.text.syntax.latest = None;
+            }
+            return;
+        };
+        if current == Some((target.scope, target.anchor, target.backwards)) {
             return;
         }
-        let viewport = self.page_viewport(view.source, false);
+        let mut viewport = self.page_viewport(target.anchor, target.backwards);
+        if target.scope == Scope::Rows {
+            // All the plain rows, as far as one refresh reads (`worker_chain::Budget`).
+            viewport.max_lines = target.rows.clamp(1, MAX_REFRESH_LINES);
+        }
         self.invalidate_source_target();
         self.text
             .syntax
-            .demand(previous.generation, previous.revision, viewport);
+            .demand_scope(generation, revision, target.scope, viewport);
+    }
+
+    /// What the shown page needs prepared: the whole document once per revision when it
+    /// fits one walk, unless the page holds all of it coloured already; else the `plain` rows
+    /// nearest the visible ones (below them on a tie): from their start when one refresh
+    /// reads them through the view, else from a screen above the view, or back from the view
+    /// when they all lie above it.
+    fn wanted_source_target(
+        &self,
+        generation: u64,
+        revision: u64,
+        plain: Vec<Range<usize>>,
+    ) -> Option<Target> {
+        let page = self.page.as_ref()?;
+        let holds_all = !page.before && !page.after;
+        if self.length > 0
+            && self.length <= u64::from(MAX_SCAN_BYTES)
+            && self.text.syntax.whole != Some((generation, revision))
+            && (!plain.is_empty() || !holds_all)
+        {
+            return Some(Target {
+                scope: Scope::Whole,
+                anchor: self.length,
+                backwards: true,
+                rows: 0,
+            });
+        }
+        let visible = self.visible_text_range(page)?;
+        let nearest = plain.into_iter().min_by_key(|rows| {
+            if rows.end <= visible.start {
+                (visible.start - rows.end, true)
+            } else {
+                (rows.start.saturating_sub(visible.end), false)
+            }
+        })?;
+        let text = &page.text;
+        let above = nearest.end <= visible.start;
+        let from = if above || visible.end.saturating_sub(nearest.start) <= REFRESH_REACH {
+            // One refresh reads the plain rows from their start through the view.
+            nearest.start
+        } else {
+            // The screen above the view comes with it: the page holds it to scroll back to.
+            let screen = self.shaped.as_ref().and_then(|shaped| {
+                let top = (self.origin[1] - self.geometry.height as f32).max(0.0);
+                shaped.line_at_y(top).ok().map(|(line, _)| line.start)
+            });
+            nearest
+                .start
+                .max(screen.unwrap_or(visible.start).min(visible.start))
+        };
+        // Line breaks are single bytes, which no other character's bytes repeat.
+        let bytes = text.as_bytes();
+        let newline = |byte: &u8| *byte == b'\n';
+        let first = bytes[..from]
+            .iter()
+            .rposition(newline)
+            .map_or(0, |at| at + 1);
+        // The end of the row the plain rows end in.
+        let last = nearest.end.saturating_sub(1).max(first);
+        let end = bytes[last..]
+            .iter()
+            .position(newline)
+            .map_or(text.len(), |at| last + at + 1);
+        let rows = bytes[first..end]
+            .iter()
+            .filter(|byte| newline(byte))
+            .count()
+            + 1;
+        Some(Target {
+            scope: Scope::Rows,
+            anchor: source_of(page, if above { end } else { first })?,
+            backwards: above,
+            rows: u32::try_from(rows).unwrap_or(u32::MAX),
+        })
+    }
+
+    /// Text ranges of `page` that came without highlighting, less the rows refreshed after
+    /// their preparation (`SourceSyntax::settled`): stretches without a colour span of
+    /// `PLAIN_GAP` bytes, or all of a shorter page, and any such stretch that holds what a
+    /// refresh left of rows found plain before (`SourceSyntax::found`). Rows found plain that
+    /// were read again with colours hold colour spans: they no longer count.
+    pub(super) fn plain_rows(&self, page: &Page) -> Vec<Range<usize>> {
+        let length = page.text.len();
+        let minimum = PLAIN_GAP.min(length).max(1);
+        let settled = self.text.syntax.settled.in_text(page);
+        let mut left = Vec::new();
+        for found in self.text.syntax.found.in_text(page) {
+            let mut start = found.start;
+            for range in &settled {
+                if range.end <= start || range.start >= found.end {
+                    continue;
+                }
+                if range.start > start {
+                    left.push(start..range.start);
+                }
+                start = start.max(range.end);
+            }
+            if found.end > start {
+                left.push(start..found.end);
+            }
+        }
+        let mut rows = Vec::new();
+        let mut keep = |piece: Range<usize>| {
+            if piece.len() >= minimum
+                || left
+                    .iter()
+                    .any(|range| piece.start <= range.start && range.end <= piece.end)
+            {
+                rows.push(piece);
+            }
+        };
+        let found = &left;
+        let mut at = 0;
+        let roles = page.roles.iter().map(|role| role.range.clone());
+        for role in roles.chain(std::iter::once(length..length)) {
+            if role.start > at && (role.start - at >= minimum || !found.is_empty()) {
+                let mut start = at;
+                for range in &settled {
+                    if range.end <= start || range.start >= role.start {
+                        continue;
+                    }
+                    if range.start > start {
+                        keep(start..range.start);
+                    }
+                    start = start.max(range.end);
+                }
+                if role.start > start {
+                    keep(start..role.start);
+                }
+            }
+            at = at.max(role.end);
+        }
+        rows
+    }
+
+    /// The text range of `page` that the window shows.
+    fn visible_text_range(&self, page: &Page) -> Option<Range<usize>> {
+        let shaped = self.shaped.as_ref()?;
+        let top = shaped.line_at_y(self.origin[1]).ok()?.0.start;
+        let bottom = shaped
+            .line_at_y(self.origin[1] + self.geometry.height as f32)
+            .ok()?
+            .0
+            .end;
+        let length = page.text.len();
+        Some(top.min(length)..bottom.min(length).max(top.min(length)))
+    }
+
+    /// Whether the window shows rows that came without highlighting.
+    pub(super) fn visible_rows_plain(&self) -> bool {
+        let Some(page) = &self.page else {
+            return false;
+        };
+        let Some(visible) = self.visible_text_range(page) else {
+            return false;
+        };
+        let end = visible.end.max(visible.start + 1);
+        self.plain_rows(page)
+            .iter()
+            .any(|rows| rows.start < end && visible.start < rows.end)
     }
 
     fn current_source_key(&self, key: &Key) -> bool {
@@ -266,46 +629,132 @@ impl Worker {
     }
 
     pub(super) fn prepare_source(&mut self, output: &Mailbox) {
-        if !self.source_preparation_admissible() {
+        let Some((key, admission)) = self.source_admission(output) else {
             return;
+        };
+        let Some(session) = &self.session else {
+            return;
+        };
+        // The intent already exists before admission. QUEUE_FULL retries reuse it; they do
+        // not create a new preparation/refresh cycle.
+        let result = match &admission {
+            SourceAdmission::Prepare(request) => session.try_prepare_source(request.clone()),
+            SourceAdmission::Refresh(viewport) => session.try_viewport(viewport.clone()),
+        };
+        self.source_admitted(&key, &admission, result, output);
+    }
+
+    /// The preparation or refresh that source highlighting asks the session to admit now,
+    /// with its key (`source_admitted` takes the session's answer).
+    pub(super) fn source_admission(&mut self, output: &Mailbox) -> Option<(Key, SourceAdmission)> {
+        self.source_notice_turn(output);
+        if !self.source_preparation_admissible() {
+            return None;
         }
-        self.source_stationary_target();
+        if self
+            .text
+            .syntax
+            .refresh
+            .as_ref()
+            .is_some_and(|refresh| refresh.complete)
+        {
+            let refresh = self.text.syntax.refresh.take()?;
+            self.finish_source_refresh(refresh, output);
+            return None;
+        }
+        self.source_target();
+        let now = clock_now();
         if let Some(refresh) = &self.text.syntax.refresh {
             let key = refresh.key.clone();
             if !self.current_source_key(&key) {
                 self.invalidate_source_target();
-                return;
+                return None;
             }
-            if !self.text.syntax.refresh_due(Instant::now()) {
-                return;
-            }
-            let Some(session) = &self.session else {
-                return;
-            };
-            // The intent already exists before admission. QUEUE_FULL retries
-            // reuse it; they do not create a new preparation/refresh cycle.
-            let admission = session.try_viewport(key.viewport.clone());
-            self.source_refresh_admission(&key, admission, output);
-            return;
+            return self.text.syntax.refresh_due(now).then(|| {
+                let viewport = key.viewport.clone();
+                (key, SourceAdmission::Refresh(viewport))
+            });
         }
-        if !self.text.syntax.needs_preparation(Instant::now()) {
-            return;
-        }
-        let Some(key) = self.text.syntax.latest.clone() else {
-            return;
-        };
+        let key = self.text.syntax.latest.clone()?;
         if !self.current_source_key(&key) {
-            return;
+            return None;
         }
-        let Some(session) = &self.session else {
-            return;
-        };
-        let admission = session.try_prepare_source(messages::PrepareSource {
+        let syntax = &mut self.text.syntax;
+        // Every page of a document prepared whole comes coloured when read: its plain rows
+        // only need reading again.
+        if key.scope == Scope::Rows
+            && syntax.whole == Some((key.generation, key.revision))
+            && syntax.active.is_none()
+            && syntax.finished.as_ref() != Some(&key)
+        {
+            syntax.refresh = Some(Refresh {
+                key: key.clone(),
+                id: None,
+                page: None,
+                complete: false,
+            });
+            return syntax.refresh_due(now).then(|| {
+                let viewport = key.viewport.clone();
+                (key, SourceAdmission::Refresh(viewport))
+            });
+        }
+        if !syntax.needs_preparation(now) {
+            return None;
+        }
+        let request = messages::PrepareSource {
             revision: key.revision,
             viewport: key.viewport.clone(),
-            max_scan_bytes: 256 * 1024,
-        });
-        self.source_prepare_admission(&key, admission, output);
+            max_scan_bytes: MAX_SCAN_BYTES,
+        };
+        Some((key, SourceAdmission::Prepare(request)))
+    }
+
+    /// The session's answer to `admission` (`source_admission`).
+    pub(super) fn source_admitted(
+        &mut self,
+        key: &Key,
+        admission: &SourceAdmission,
+        result: Result<u64, AdmissionError>,
+        output: &Mailbox,
+    ) {
+        match admission {
+            SourceAdmission::Prepare(_) => self.source_prepare_admission(key, result, output),
+            SourceAdmission::Refresh(_) => self.source_refresh_admission(key, result, output),
+        }
+    }
+
+    /// The notice of plain visible rows: shown once they have stayed plain at rest for
+    /// `NOTICE_DELAY`, cleared once they are coloured, the camera moves or a page is asked
+    /// for (`invalidate_source_target`).
+    fn source_notice_turn(&mut self, output: &Mailbox) {
+        let plain = self.source_preparation_admissible()
+            && !self.text.syntax.unavailable
+            && self.text.syntax.context.is_some()
+            && self.visible_rows_plain();
+        if !plain {
+            self.text.syntax.plain_since = None;
+            self.clear_source_notice();
+            return;
+        }
+        let now = clock_now();
+        let since = *self.text.syntax.plain_since.get_or_insert(now);
+        if self.text.syntax.notice.is_none()
+            && self.status.is_empty()
+            && now.saturating_duration_since(since) >= NOTICE_DELAY
+        {
+            self.text.syntax.notice = Some((self.text.syntax.epoch, PREPARING_HIGHLIGHTING.into()));
+            self.status(PREPARING_HIGHLIGHTING.into(), output);
+            self.dirty = true;
+        }
+    }
+
+    /// When the notice of plain visible rows falls due (`Worker::retry_delay`).
+    pub(super) fn source_notice_deadline(&self) -> Option<Instant> {
+        let syntax = &self.text.syntax;
+        if syntax.notice.is_some() || !self.status.is_empty() {
+            return None;
+        }
+        syntax.plain_since.map(|since| since + NOTICE_DELAY)
     }
 
     pub(super) fn source_prepare_admission(
@@ -315,10 +764,7 @@ impl Worker {
         output: &Mailbox,
     ) {
         match admission {
-            Ok(id) => {
-                self.text.syntax.started(id, key.clone());
-                self.source_notice(key, "Preparing source highlighting…".into(), output);
-            }
+            Ok(id) => self.text.syntax.started(id, key.clone()),
             Err(AdmissionError::Capacity) => self.text.syntax.retry(),
             Err(AdmissionError::Closing) => self.finish_source_key(key, None, output),
             Err(AdmissionError::Invalid(error)) => {
@@ -401,11 +847,19 @@ impl Worker {
                         Some(result) if result.revision == active.key.revision && result.ready => {
                             self.text.syntax.retries = 0;
                             self.text.syntax.retry_at = None;
-                            self.text.syntax.refresh = Some(Refresh {
-                                key: active.key,
-                                id: None,
-                                page: None,
-                            });
+                            if active.key.scope == Scope::Whole {
+                                // Every page of the revision now comes coloured when read.
+                                self.text.syntax.whole =
+                                    Some((active.key.generation, active.key.revision));
+                                self.finish_source_key(&active.key, None, output);
+                            } else {
+                                self.text.syntax.refresh = Some(Refresh {
+                                    key: active.key,
+                                    id: None,
+                                    page: None,
+                                    complete: false,
+                                });
+                            }
                         }
                         Some(result) if result.revision == active.key.revision => {
                             // Equal frontiers can be decoder-tail progress. The
@@ -460,52 +914,43 @@ impl Worker {
             return;
         }
         let error = match event {
-            EventKind::Completed if self.source_preparation_admissible() => match refresh.page {
-                Some(page) if page.revision == refresh.key.revision => {
-                    match self.restyle_source_page(Page::text(page, &self.appearance)) {
-                        Ok(()) => None,
-                        Err(RestyleError::OutsideView) => {
-                            self.correct_source_target(&refresh.key, output);
-                            return;
-                        }
-                        Err(RestyleError::Invalid(message)) => Some(message),
-                    }
-                }
-                Some(_) => Some("Prepared source refresh has the wrong revision.".into()),
-                None => Some("Prepared source refresh returned no page.".into()),
-            },
+            EventKind::Completed if self.source_preparation_admissible() => {
+                self.finish_source_refresh(refresh, output);
+                return;
+            }
+            EventKind::Completed => {
+                // The camera moves: the page waits for it to rest (`source_admission`).
+                refresh.complete = true;
+                self.text.syntax.refresh = Some(refresh);
+                return;
+            }
             EventKind::Failed(failure) => Some(failure.message.clone()),
             _ => None,
         };
         self.finish_source_key(&refresh.key, error, output);
     }
 
-    fn correct_source_target(&mut self, key: &Key, output: &Mailbox) {
-        let Some(view) = self.source_view() else {
-            self.finish_source_key(
-                key,
-                Some("Cannot correlate the visible source anchor.".into()),
-                output,
-            );
-            return;
-        };
-        if self.text.syntax.corrective_target {
-            self.finish_source_key(
-                key,
-                Some("Prepared source fragment still excludes the visible source anchor.".into()),
-                output,
-            );
+    /// Colour the rows of a completed refresh's page in the shown page, and settle them.
+    fn finish_source_refresh(&mut self, refresh: Refresh, output: &Mailbox) {
+        if !self.current_source_key(&refresh.key) {
             return;
         }
-        let viewport = self.page_viewport(view.source, false);
-        self.invalidate_source_target();
-        self.text
-            .syntax
-            .demand(key.generation, key.revision, viewport);
-        self.text.syntax.corrective_target = true;
-        // One corrective target, with bounded retry frequency. Temporary
-        // capacity denials never consume another corrective allowance.
-        self.text.syntax.retry();
+        let error = match refresh.page {
+            Some(page) if page.revision == refresh.key.revision => {
+                let page = Page::text(page, &self.appearance);
+                let rows = page.start..page.end;
+                match self.restyle_source_page(page) {
+                    Ok(()) => {
+                        self.text.syntax.settled.add(refresh.key.revision, rows);
+                        None
+                    }
+                    Err(RestyleError::Invalid(message)) => Some(message),
+                }
+            }
+            Some(_) => Some("Prepared source refresh has the wrong revision.".into()),
+            None => Some("Prepared source refresh returned no page.".into()),
+        };
+        self.finish_source_key(&refresh.key, error, output);
     }
 
     fn finish_source_key(&mut self, key: &Key, error: Option<String>, output: &Mailbox) {
@@ -519,22 +964,6 @@ impl Worker {
             self.status(error, output);
         }
         self.dirty = true;
-    }
-
-    fn source_notice(&mut self, key: &Key, message: String, output: &Mailbox) {
-        if self.current_source_key(key)
-            && (self.status.is_empty()
-                || self
-                    .text
-                    .syntax
-                    .notice
-                    .as_ref()
-                    .is_some_and(|(_, old)| *old == self.status))
-        {
-            self.text.syntax.notice = Some((key.epoch, message.clone()));
-            self.status(message, output);
-            self.dirty = true;
-        }
     }
 
     fn clear_source_notice(&mut self) {
@@ -565,9 +994,9 @@ impl Worker {
         page: &Page,
         view: &SourceView,
     ) -> Result<(TextPage, [f32; 2]), RestyleError> {
-        let index = text_at(page, view.source).ok_or(RestyleError::OutsideView)?;
+        let index = text_at(page, view.source).ok_or_else(RestyleError::uncorrelated)?;
         let shaped = self
-            .layout_page(page)
+            .restyled_layout(page)
             .map_err(|_| RestyleError::uncorrelated())?;
         let caret = shaped
             .caret_geometry(index)
@@ -589,37 +1018,43 @@ impl Worker {
         ))
     }
 
+    /// The layout of the shown page's text restyled as `page`. Row groups whose colours and
+    /// styles stay keep their shaping (`Page::layout_rows`): the text is the shown page's.
+    fn restyled_layout(
+        &mut self,
+        page: &Page,
+    ) -> Result<TextPage, midnight_viewer_render::LayoutError> {
+        if !self.row_pages() || !page.tables.is_empty() || !page.document_blocks.is_empty() {
+            return self.layout_page(page);
+        }
+        let family = self.text_family().to_owned();
+        let options = self.text_options(&family);
+        let styles = page.scaled_styles(&options);
+        let previous = self.shaped.as_ref().map(|shaped| (shaped, 0));
+        let (shaped, rows) =
+            self.renderer
+                .layout_rows(&page.text, &options, &page.spans, &styles, previous)?;
+        prepare_counters::layout(rows.shaped_bytes);
+        Ok(shaped)
+    }
+
+    /// Colour the rows `page` holds in the shown page. Exactly the verified style interval is
+    /// replaced: the shown page keeps its text, anchors, line context, selection and the
+    /// prepared window it holds, which a refresh of some of its rows never shrinks.
     fn restyle_source_page(&mut self, page: Page) -> Result<(), RestyleError> {
         let view = self.source_view().ok_or_else(RestyleError::uncorrelated)?;
-        if text_at(&page, view.source).is_none() {
-            return Err(RestyleError::OutsideView);
-        }
         let previous = self.page.as_ref().ok_or_else(RestyleError::uncorrelated)?;
         let overlap = Overlap::verified(previous, &page)?;
-        let selected = self
-            .selection
-            .and_then(|(start, end)| source_at(previous, start).zip(source_at(previous, end)));
-        let selection =
-            selected.and_then(|(start, end)| text_at(&page, start).zip(text_at(&page, end)));
-        if (self.selection.is_none() || selection.is_some())
-            && let Ok((shaped, origin)) = self.source_restyle_layout(&page, &view)
-            && crate::viewport::source_minimum_origin(&page, &shaped)
-                .is_some_and(|minimum| origin[1] >= minimum)
-        {
-            self.cancel_locate();
-            self.text.page(self.page.as_ref(), &page);
-            self.commit_source_restyle(page, shaped, origin, selection);
-            return Ok(());
-        }
-
-        // The selection can span most of the old bounded page while the style
-        // packet covers only its view or lacks its leading logical context.
-        // Replace exactly the verified style interval, retaining the previous
-        // text/anchors, line context and original selection indices.
-        let previous = self.page.as_ref().ok_or_else(RestyleError::uncorrelated)?;
-        let roles = replace_overlap(&previous.roles, &page.roles, &overlap)?;
-        let styles = replace_overlap(&previous.styles, &page.styles, &overlap)?;
-        if roles.len() + styles.len() > MAX_SOURCE_STYLE_RECORDS {
+        // A Source packet carries at most MAX_SPANS colours and as many typography records;
+        // a page of row groups holds more (`worker_chain::Budget`).
+        let cap = if self.row_pages() {
+            midnight_viewer_render::MAX_ROWS_SPANS
+        } else {
+            viewer::MAX_SPANS
+        };
+        let roles = replace_overlap(&previous.roles, &page.roles, &overlap, cap)?;
+        let styles = replace_overlap(&previous.styles, &page.styles, &overlap, cap)?;
+        if roles.len() + styles.len() > 2 * cap {
             return Err(RestyleError::budget());
         }
         let mut retained = self.page.take().ok_or_else(RestyleError::uncorrelated)?;
@@ -675,7 +1110,6 @@ struct SourceView {
 }
 
 enum RestyleError {
-    OutsideView,
     Invalid(String),
 }
 impl RestyleError {
@@ -798,12 +1232,13 @@ fn replace_overlap<T: SourceStyle>(
     previous: &[T],
     incoming: &[T],
     overlap: &Overlap,
+    cap: usize,
 ) -> Result<Vec<T>, RestyleError> {
     let capacity = previous
         .len()
         .saturating_mul(2)
         .saturating_add(incoming.len())
-        .min(viewer::MAX_SPANS);
+        .min(cap);
     let mut result: Vec<T> = Vec::with_capacity(capacity);
     let mut push = |style: &T, range: Range<usize>| -> Result<(), RestyleError> {
         if range.is_empty() {
@@ -816,7 +1251,7 @@ fn replace_overlap<T: SourceStyle>(
             last.range_mut().end = range.end;
             return Ok(());
         }
-        if result.len() == viewer::MAX_SPANS {
+        if result.len() == cap {
             return Err(RestyleError::budget());
         }
         let mut style = style.clone();
@@ -851,10 +1286,33 @@ fn replace_overlap<T: SourceStyle>(
 }
 
 fn source_at(page: &Page, index: usize) -> Option<u64> {
+    let at = page
+        .anchors
+        .partition_point(|anchor| (anchor.text_offset as usize) < index);
     page.anchors
-        .iter()
-        .find(|anchor| anchor.text_offset as usize == index)
+        .get(at)
+        .filter(|anchor| anchor.text_offset as usize == index)
         .map(|anchor| anchor.source_offset)
+}
+
+/// The source offset of `page`'s text offset `index`: of the last anchor at or before it.
+fn source_of(page: &Page, index: usize) -> Option<u64> {
+    let after = page
+        .anchors
+        .partition_point(|anchor| anchor.text_offset as usize <= index);
+    page.anchors
+        .get(after.checked_sub(1)?)
+        .map(|anchor| anchor.source_offset)
+}
+
+/// The text offset of `page`'s first anchor at or after `source`, or the page's end.
+fn text_of(page: &Page, source: u64) -> usize {
+    let at = page
+        .anchors
+        .partition_point(|anchor| anchor.source_offset < source);
+    page.anchors
+        .get(at)
+        .map_or(page.text.len(), |anchor| anchor.text_offset as usize)
 }
 
 fn text_at(page: &Page, source: u64) -> Option<usize> {

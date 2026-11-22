@@ -173,31 +173,28 @@ fn visible_overlap_restyles_and_copies_the_full_selection_with_both_endpoints_mi
     }
 }
 
+/// Scrolling within the shown page keeps the preparation's target and the work admitted for
+/// it: the rows it prepares are still the page's, so its refresh colours them. Before, every
+/// scroll aimed preparation at the newly visible row and dropped the work under way.
 #[test]
-fn in_page_scroll_retargets_latest_visible_anchor_and_keeps_admitted_prefix_work() {
+fn in_page_scroll_keeps_the_target_and_its_admitted_work() {
     let (mut worker, output) = source_worker();
+    // The page holds the whole file: scrolling within it reads no page.
+    let mut whole = decoded(false);
+    (whole.has_before, whole.has_after) = (false, false);
+    assert!(worker.set_page(Page::text(whole, &worker.appearance), &output));
+    worker.origin = [0.0, 24.0];
     let previous = worker.text.syntax.latest.clone().unwrap();
     worker.text.syntax.started(61, previous.clone());
     worker.input(ViewerInput::Scroll { x: 0.0, y: 19.0 }, &output);
-    let visible = visual_source(&worker).0;
-    assert_ne!(visible, previous.viewport.source_anchor);
-    assert_eq!(
-        worker
-            .text
-            .syntax
-            .latest
-            .as_ref()
-            .unwrap()
-            .viewport
-            .source_anchor,
-        visible
-    );
+    assert_ne!(visual_source(&worker).0, previous.viewport.source_anchor);
+    assert_eq!(worker.text.syntax.latest.as_ref(), Some(&previous));
     assert!(
         !worker
             .text
             .syntax
             .needs_preparation(std::time::Instant::now()),
-        "the one useful prefix request is still admitted"
+        "the admitted request is still under way"
     );
     worker.event(
         61,
@@ -209,114 +206,247 @@ fn in_page_scroll_retargets_latest_visible_anchor_and_keeps_admitted_prefix_work
         &output,
     );
     worker.event(61, EventKind::Completed, &output);
-    assert!(
-        worker.text.syntax.refresh.is_none(),
-        "the old target cannot repaint the newer stationary view"
-    );
-    assert!(
+    assert_eq!(
         worker
             .text
             .syntax
-            .needs_preparation(std::time::Instant::now())
+            .refresh
+            .as_ref()
+            .map(|refresh| &refresh.key),
+        Some(&previous),
+        "its refresh colours the rows it prepared"
     );
     assert_eq!(worker.positions.acknowledged, [0; 2]);
 }
 
+/// A page of `count` rows of plain C-like source, larger than one walk, at rest at its start.
+fn plain_rows_worker(count: usize) -> (Worker, Mailbox, viewer::TextPage, usize) {
+    let (mut worker, output) = source_worker();
+    // Larger than one walk: rows are prepared, not the whole document.
+    worker.length = 1 << 20;
+    let row = "int selected_value = 42; // generated\n";
+    let source = source_text(row.repeat(count));
+    assert!(worker.set_page(Page::text(source.clone(), &worker.appearance), &output));
+    worker.origin = [0.0, 0.0];
+    worker.selection = None;
+    // The page is new: nothing is prepared for it yet.
+    worker.text.syntax.latest = None;
+    (worker, output, source, row.len())
+}
+
+/// The source offset of the row at page y `y`.
+fn row_at(worker: &Worker, y: f32) -> u64 {
+    let start = worker
+        .shaped
+        .as_ref()
+        .unwrap()
+        .line_at_y(y.max(0.0))
+        .unwrap()
+        .0
+        .start;
+    let page = worker.page.as_ref().unwrap();
+    page.start + start as u64
+}
+
+/// A refresh that colours rows away from where the view has moved colours them where they
+/// are, and the visible rows, still plain, are what the next rest prepares: all the plain rows
+/// from their start, which one refresh reads through the view. Before, a refresh that missed
+/// the visible row was dropped for one corrective target.
 #[test]
-fn excluded_visible_caret_gets_one_paced_corrective_target_then_eventual_styles() {
-    use midnight_plugin_host::AdmissionError;
-    let (mut worker, output, source, row) = long_selection_worker(false);
-    let visible = visual_source(&worker);
+fn a_refresh_away_from_the_view_colours_its_rows_and_the_visible_rows_come_next() {
+    let (mut worker, output, source, row) = plain_rows_worker(96);
+    worker.source_target();
+    let first = worker.text.syntax.latest.clone().unwrap();
+    assert_eq!(first.viewport.source_anchor, source.source.offset);
+    assert!(!first.viewport.backwards);
+    assert_eq!(first.viewport.max_lines, 97, "all the plain rows");
+    // The refresh read ten rows; meanwhile the view moved down to row 60.
     ready(&mut worker, &output, 61);
     worker.text.syntax.refresh_admitted(62);
+    let y = worker
+        .shaped
+        .as_ref()
+        .unwrap()
+        .caret_geometry(row * 60)
+        .unwrap()
+        .y0 as f32;
+    worker.origin = [0.0, y];
+    let visible = visual_source(&worker);
     worker.event(
         62,
-        EventKind::TextPage(fragment(&source, 0..row * 3)),
+        EventKind::TextPage(fragment(&source, 0..row * 10)),
         &output,
     );
     worker.event(62, EventKind::Completed, &output);
-    let corrected = worker.text.syntax.latest.clone().unwrap();
-    assert_eq!(corrected.viewport.source_anchor, visible.0);
-    assert!(!corrected.viewport.backwards);
-    assert!(worker.page.as_ref().unwrap().spans.is_empty());
-    assert!(
-        !worker
-            .text
-            .syntax
-            .needs_preparation(std::time::Instant::now())
-    );
-    for _ in 0..20 {
-        worker.source_prepare_admission(&corrected, Err(AdmissionError::Capacity), &output);
-        assert_eq!(worker.text.syntax.latest.as_ref(), Some(&corrected));
-        let now = std::time::Instant::now();
-        assert!(!worker.text.syntax.needs_preparation(now));
-        assert!(
-            worker
-                .text
-                .syntax
-                .needs_preparation(now + Duration::from_secs(1))
-        );
-    }
-    ready(&mut worker, &output, 63);
-    worker.text.syntax.refresh_admitted(64);
-    worker.event(
-        64,
-        EventKind::TextPage(fragment(&source, row * 5..row * 20)),
-        &output,
-    );
-    worker.event(64, EventKind::Completed, &output);
-    assert!(!worker.page.as_ref().unwrap().spans.is_empty());
+    let spans = &worker.page.as_ref().unwrap().spans;
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].range, 0..row * 10);
     assert_eq!(visual_source(&worker), visible);
+    assert!(worker.visible_rows_plain());
+    worker.source_target();
+    let next = worker.text.syntax.latest.clone().unwrap();
+    assert!(!next.viewport.backwards);
+    assert_eq!(
+        next.viewport.source_anchor,
+        source.source.offset + (row * 10) as u64,
+        "from the first plain row"
+    );
+    assert_eq!(
+        next.viewport.max_lines, 87,
+        "through the view to the last plain row"
+    );
+    assert_eq!(worker.positions.acknowledged, [0; 2]);
+}
+
+/// Plain rows that start further before the view than one refresh reads through it are
+/// prepared from a screen above the view.
+#[test]
+fn plain_rows_far_above_the_view_are_prepared_from_a_screen_above_it() {
+    let (mut worker, _output, source, row) = plain_rows_worker(3000);
+    let y = worker
+        .shaped
+        .as_ref()
+        .unwrap()
+        .caret_geometry(row * 2500)
+        .unwrap()
+        .y0 as f32;
+    worker.origin = [0.0, y];
+    worker.source_target();
+    let target = worker.text.syntax.latest.clone().unwrap();
+    assert!(source.text.len() > 64 * 1024);
+    assert!(!target.viewport.backwards);
+    assert_eq!(
+        target.viewport.source_anchor,
+        row_at(&worker, y - worker.geometry.height as f32),
+        "a screen above the view"
+    );
+}
+
+/// Rows a refresh leaves plain hold no token: they are settled, and nothing prepares them
+/// again or shows the notice for them while the page stays. Before, a refresh that missed
+/// the view could start one corrective walk.
+#[test]
+fn rows_a_refresh_leaves_plain_are_settled_and_never_prepared_again() {
+    let (mut worker, output, source, _) = long_selection_worker(false);
+    worker.length = 1 << 20;
+    worker.source_target();
+    assert!(worker.visible_rows_plain());
+    let target = worker.text.syntax.latest.clone().unwrap();
+    ready(&mut worker, &output, 61);
+    worker.text.syntax.refresh_admitted(62);
+    let mut plain = fragment(&source, 0..source.text.len());
+    plain.spans.clear();
+    worker.event(62, EventKind::TextPage(plain), &output);
+    worker.event(62, EventKind::Completed, &output);
+    assert!(worker.status.is_empty(), "{}", worker.status);
+    assert!(!worker.visible_rows_plain());
+    worker.source_target();
+    assert!(
+        worker.text.syntax.latest.is_none(),
+        "the target {target:?} is not prepared again"
+    );
     assert!(
         !worker
             .text
             .syntax
             .needs_preparation(std::time::Instant::now() + Duration::from_secs(30))
     );
-    assert!(worker.text.syntax.refresh.is_none());
-    assert_eq!(worker.positions.acknowledged, [0; 2]);
 }
 
+/// What a refresh leaves of rows found plain is prepared next, however few rows it is: a
+/// refresh read only part of a run of plain rows.
 #[test]
-fn a_second_offscreen_corrective_reply_settles_until_the_visible_anchor_changes() {
-    let (mut worker, output, source, row) = long_selection_worker(false);
-    for (prepare, refresh) in [(61, 62), (63, 64)] {
-        ready(&mut worker, &output, prepare);
-        worker.text.syntax.refresh_admitted(refresh);
-        worker.event(
-            refresh,
-            EventKind::TextPage(fragment(&source, 0..row * 3)),
-            &output,
-        );
-        worker.event(refresh, EventKind::Completed, &output);
-    }
-    assert!(
-        !worker
-            .text
-            .syntax
-            .needs_preparation(std::time::Instant::now() + Duration::from_secs(30)),
-        "one corrective walk cannot become an automatic loop"
-    );
-    let old = worker.text.syntax.latest.clone().unwrap();
-    worker.input(ViewerInput::Scroll { x: 0.0, y: 19.0 }, &output);
-    assert_ne!(worker.text.syntax.latest.as_ref(), Some(&old));
+fn what_a_refresh_leaves_of_plain_rows_is_prepared_next_however_few() {
+    let (mut worker, output, source, row) = plain_rows_worker(64);
+    worker.source_target();
+    let first = worker.text.syntax.latest.clone().unwrap();
+    assert_eq!(first.viewport.source_anchor, source.source.offset);
+    ready(&mut worker, &output, 61);
+    worker.text.syntax.refresh_admitted(62);
+    // The refresh's reads ended five rows before the plain run did.
+    let read = row * 59;
+    worker.event(62, EventKind::TextPage(fragment(&source, 0..read)), &output);
+    worker.event(62, EventKind::Completed, &output);
+    assert!(source.text.len() - read < 2048);
+    worker.source_target();
+    let next = worker.text.syntax.latest.clone().unwrap();
     assert_eq!(
-        worker
-            .text
-            .syntax
-            .latest
-            .as_ref()
-            .unwrap()
-            .viewport
-            .source_anchor,
-        visual_source(&worker).0
+        next.viewport.source_anchor,
+        source.source.offset + read as u64
     );
-    assert!(
-        worker
-            .text
-            .syntax
-            .needs_preparation(std::time::Instant::now() + Duration::from_secs(1))
+    assert!(!next.viewport.backwards);
+    ready(&mut worker, &output, 63);
+    worker.text.syntax.refresh_admitted(64);
+    worker.event(
+        64,
+        EventKind::TextPage(fragment(&source, read..source.text.len())),
+        &output,
     );
+    worker.event(64, EventKind::Completed, &output);
+    worker.source_target();
+    assert!(worker.text.syntax.latest.is_none());
+    assert_eq!(
+        worker.page.as_ref().unwrap().spans.len(),
+        1,
+        "the two refreshes' spans join"
+    );
+}
+
+/// Rows read again with colours are no longer plain, however much of them was found plain
+/// before: only the short stretches between their tokens are uncoloured.
+#[test]
+fn rows_found_plain_and_read_again_with_colours_are_not_prepared() {
+    let (mut worker, output, mut source, row) = plain_rows_worker(64);
+    worker.source_target();
+    assert!(worker.text.syntax.latest.is_some());
+    // The same rows read again, coloured as the Source viewer colours them.
+    source.spans = (0..64)
+        .map(|index| viewer::Span {
+            start: (index * row) as u32,
+            end: (index * row + 3) as u32,
+            role: viewer::STYLE_KEYWORD,
+            flags: 0,
+        })
+        .collect();
+    worker.invalidate_source_target();
+    assert!(worker.set_page(Page::text(source, &worker.appearance), &output));
+    worker.origin = [0.0, 0.0];
+    assert!(!worker.visible_rows_plain());
+    worker.source_target();
+    assert!(worker.text.syntax.latest.is_none());
+}
+
+/// A page of unwrapped rows takes more colours than a Source packet (row groups,
+/// `midnight_viewer_render::MAX_ROWS_SPANS`): colouring its last plain rows keeps every
+/// colour it had. Before, the restyle was refused at a packet's 4,096 colours.
+#[test]
+fn a_restyle_colours_plain_rows_of_a_page_holding_more_than_a_packet_of_colours() {
+    let (mut worker, output) = source_worker();
+    worker.length = 1 << 20;
+    let row = "1 2 3 4 5 6 7 8 9 0\n";
+    let mut source = source_text(row.repeat(450));
+    let digits = |rows: std::ops::Range<usize>| {
+        rows.flat_map(|index| (0..10).map(move |digit| index * row.len() + digit * 2))
+            .map(|at| viewer::Span {
+                start: at as u32,
+                end: at as u32 + 1,
+                role: viewer::STYLE_NUMBER,
+                flags: 0,
+            })
+            .collect::<Vec<_>>()
+    };
+    source.spans = digits(0..400);
+    assert!(worker.set_page(Page::text(source.clone(), &worker.appearance), &output));
+    worker.origin = [0.0, 0.0];
+    worker.selection = None;
+    ready(&mut worker, &output, 61);
+    worker.text.syntax.refresh_admitted(62);
+    let mut rows = fragment(&source, row.len() * 400..source.text.len());
+    rows.spans = digits(0..50);
+    worker.event(62, EventKind::TextPage(rows), &output);
+    worker.event(62, EventKind::Completed, &output);
+    assert!(worker.status.is_empty(), "{}", worker.status);
+    assert_eq!(worker.page.as_ref().unwrap().spans.len(), 4500);
 }
 
 #[test]
@@ -423,9 +553,12 @@ fn overlap_replacement_splits_and_preserves_styles_on_both_outside_edges() {
     assert_eq!(worker.selection, selection);
 }
 
+/// A wrapped page is one layout, which takes a Source packet's colours: a restyle past them
+/// keeps the page and its selection and says why.
 #[test]
 fn actual_aggregate_style_budget_exhaustion_keeps_the_loaded_selection_and_page() {
     let (mut worker, output) = source_worker();
+    worker.wrap = true;
     let mut source = source_text("x ".repeat(6000));
     source.spans = (0..4096)
         .map(|at| viewer::Span {
@@ -446,7 +579,8 @@ fn actual_aggregate_style_budget_exhaustion_keeps_the_loaded_selection_and_page(
         .unwrap()
         .caret_geometry(5000)
         .unwrap();
-    worker.origin = [caret.x0 as f32, 0.0];
+    // The wrapped row's visual line that holds offset 5000, inside the refreshed range.
+    worker.origin = [0.0, caret.y0 as f32];
     worker.selection = Some((1, source.text.len() - 1));
     let first = painted(&mut worker, &output);
     let original = copied(&mut worker, &output, first.revision);

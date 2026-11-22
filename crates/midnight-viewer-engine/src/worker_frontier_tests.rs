@@ -6,7 +6,9 @@
 //! requests as the plugins select them (`plugins/midnight-viewer-source/src/paging.rs`,
 //! `plugins/midnight-viewer-basic/src/window.rs`): at most about 8 KiB and the request's
 //! line budget from the anchor, or the same before it, some frames later. It also prepares
-//! highlighting and answers the refresh that restyles the shown page (`worker_syntax.rs`).
+//! highlighting and answers the refresh that restyles the shown page (`worker_syntax.rs`),
+//! and with a `Lexer` it colours only the pages that the Source viewer's lexical state
+//! reaches (`worker_highlight_tests.rs`).
 //! The viewer window's side is a hand-written model of `midnight-viewer-ui`, which this
 //! crate cannot depend on. Each of its steps names the code it mirrors, and the window's
 //! own tests pin those decisions on the real code: `Window::tick` moves the camera within
@@ -20,6 +22,7 @@
 //! `ui_period` worker turns, while the worker's mailbox keeps only the newest frame.
 //! Every gesture is measured as the document distance the shown content moved: the top of
 //! the first whole row of the worker's page, as the rows before it lay out one by one.
+use super::highlight::Lexer;
 use super::text_position::edge_page;
 use super::*;
 use midnight_plugin_host::HostEvent;
@@ -108,8 +111,8 @@ pub(super) fn source_reply(source: &str, viewport: &messages::Viewport) -> viewe
 enum Request {
     /// A viewport, or a highlighted page that refreshes the shown one.
     Page(messages::Viewport),
-    /// Syntax preparation for the source the view shows.
-    Prepare,
+    /// Syntax preparation for the source the view shows, and what it answers.
+    Prepare(messages::SourcePrepared),
 }
 
 /// The basic viewer's page budget (`READ_BYTES - 16`).
@@ -189,6 +192,15 @@ pub(super) struct Engine {
     pub cost: std::time::Duration,
     /// Colours the simulated plugin adds to its pages, as a Source viewer highlights.
     pub highlight_replies: Option<fn(&mut viewer::TextPage)>,
+    /// The Source viewer's lexical state: pages it does not reach come plain, and
+    /// preparation walks towards its target at `walk_per_frame` bytes a frame.
+    pub lexer: Option<Lexer>,
+    pub walk_per_frame: u64,
+    /// Preparations the worker asked for, and the times the status line began to show
+    /// the notice of rows whose highlighting is being prepared.
+    pub preparations: usize,
+    pub notices: usize,
+    notice_shown: bool,
 }
 
 const FIRST_REQUEST: u64 = 1 << 20;
@@ -226,7 +238,14 @@ impl Engine {
             prepare_delay: None,
             cost: std::time::Duration::ZERO,
             highlight_replies: None,
+            lexer: None,
+            walk_per_frame: u64::MAX,
+            preparations: 0,
+            notices: 0,
+            notice_shown: false,
         };
+        // A frame of the window is 16.7 ms on the worker's highlighting clock (`frame`).
+        super::super::syntax::set_clock(Some(std::time::Instant::now()));
         engine.worker.request_page(0, false, &engine.output);
         engine.collect();
         engine
@@ -239,16 +258,26 @@ impl Engine {
         self
     }
 
-    /// Highlighting starts with the opened view, as the first request's demand does
+    /// Highlighting starts with the opened view, as the first request does
     /// (`source_requested`, which needs the captured file's revision).
     pub fn highlighted(mut self) -> Self {
         self.highlight = true;
-        let viewport = self.worker.page_viewport(0, false);
-        self.worker
-            .text
-            .syntax
-            .demand(self.worker.generation, 1, viewport);
+        self.worker.source_shown(1);
         self
+    }
+
+    /// The worker's highlighting clock moves on by a frame of the window.
+    pub(super) fn advance_clock(&self) {
+        super::super::syntax::advance_clock(std::time::Duration::from_nanos(16_666_667));
+    }
+
+    /// Count the notice when the status line begins to show it.
+    pub(super) fn observe(&mut self) {
+        let shown = self.worker.status == super::super::syntax::PREPARING_HIGHLIGHTING;
+        if shown && !self.notice_shown {
+            self.notices += 1;
+        }
+        self.notice_shown = shown;
     }
 
     /// Queue the requests the worker sent, under the IDs it admitted them with.
@@ -269,36 +298,40 @@ impl Engine {
     }
 
     fn prepare_source_timed(&mut self) {
-        let worker = &mut self.worker;
-        if !self.highlight || !worker.source_preparation_admissible() {
+        use super::super::syntax::SourceAdmission;
+        if !self.highlight {
             return;
         }
-        worker.source_stationary_target();
-        let now = std::time::Instant::now();
-        let due = self.tick + self.prepare_delay.unwrap_or(self.delay);
-        if let Some(refresh) = &worker.text.syntax.refresh {
-            let key = refresh.key.clone();
-            if worker.text.syntax.latest.as_ref() != Some(&key) {
-                worker.invalidate_source_target();
-                return;
-            }
-            if !worker.text.syntax.refresh_due(now) {
-                return;
-            }
-            let id = unsent::next_id().unwrap();
-            worker.source_refresh_admission(&key, Ok(id), &self.output);
-            self.queue.push((id, Request::Page(key.viewport), due));
-            return;
-        }
-        if !worker.text.syntax.needs_preparation(now) {
-            return;
-        }
-        let Some(key) = worker.text.syntax.latest.clone() else {
+        let Some((key, admission)) = self.worker.source_admission(&self.output) else {
             return;
         };
         let id = unsent::next_id().unwrap();
-        worker.source_prepare_admission(&key, Ok(id), &self.output);
-        self.queue.push((id, Request::Prepare, due));
+        let due = self.tick + self.prepare_delay.unwrap_or(self.delay);
+        let (request, due) = match &admission {
+            SourceAdmission::Prepare(request) => {
+                self.preparations += 1;
+                let (prepared, walked) = match &mut self.lexer {
+                    Some(lexer) => lexer.prepare(&self.source, request),
+                    None => (
+                        messages::SourcePrepared {
+                            revision: request.revision,
+                            frontier: self.source.len() as u64,
+                            ready: true,
+                        },
+                        0,
+                    ),
+                };
+                let frames = walked.div_ceil(self.walk_per_frame.max(1));
+                (
+                    Request::Prepare(prepared),
+                    due + u32::try_from(frames).unwrap_or(u32::MAX),
+                )
+            }
+            SourceAdmission::Refresh(viewport) => (Request::Page(viewport.clone()), due),
+        };
+        self.worker
+            .source_admitted(&key, &admission, Ok(id), &self.output);
+        self.queue.push((id, request, due));
     }
 
     /// Queue an input for the worker's next turn.
@@ -316,7 +349,7 @@ impl Engine {
     }
 
     fn live(&self, id: u64, request: &Request) -> bool {
-        if matches!(request, Request::Prepare) {
+        if matches!(request, Request::Prepare(_)) {
             return true;
         }
         [
@@ -350,17 +383,19 @@ impl Engine {
                     } else {
                         basic_reply(&self.source, viewport)
                     };
-                    if let Some(highlight) = self.highlight_replies {
+                    let reached = self
+                        .lexer
+                        .as_mut()
+                        .is_none_or(|lexer| lexer.read(&self.source, viewport, &page));
+                    if let Some(highlight) = self.highlight_replies
+                        && reached
+                    {
                         highlight(&mut page);
                     }
                     self.bytes += page.text.len();
                     vec![EventKind::TextPage(page)]
                 }
-                Request::Prepare => vec![EventKind::SourcePrepared(messages::SourcePrepared {
-                    revision: 1,
-                    frontier: self.source.len() as u64,
-                    ready: true,
-                })],
+                Request::Prepare(prepared) => vec![EventKind::SourcePrepared(prepared.clone())],
             };
             let generation = self.worker.generation;
             let started = std::time::Instant::now();
@@ -825,6 +860,7 @@ impl Window {
 /// One frame: the window presents, the worker applies its input, the plugin answers
 /// what is due, and the worker paints.
 pub(super) fn frame(engine: &mut Engine, window: &mut Window) {
+    engine.advance_clock();
     let presents = engine.tick.is_multiple_of(engine.ui_period);
     if presents {
         window.tick(engine);
@@ -834,6 +870,7 @@ pub(super) fn frame(engine: &mut Engine, window: &mut Window) {
         engine.answer();
         let outputs = engine.paint();
         engine.prepare_source();
+        engine.observe();
         for (output, offset) in outputs {
             // The mailbox keeps the newest frame and the newest raster control output.
             let raster = |output: &ViewerOutput| {

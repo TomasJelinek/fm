@@ -16,6 +16,7 @@
 //! (`prepare_counters.rs`) show the work a gesture caused.
 use super::super::prepare_counters;
 use super::frontier::{Engine, Window, rows, rust, settle};
+use super::highlight::{Lexer, cpp, highlight_cpp, shows_plain_rows};
 use super::*;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -165,6 +166,12 @@ struct Report {
     frame_counts: Vec<prepare_counters::Counts>,
     /// `repainted` after each frame.
     repainted_by_frame: Vec<usize>,
+    /// Source highlighting: preparations and refreshes, the times the notice began to show,
+    /// and frames that showed a row with a token uncoloured (`worker_highlight_tests.rs`).
+    preparations: usize,
+    refreshes: usize,
+    notices: usize,
+    plain_frames: usize,
 }
 
 fn percentile(values: &[f64], percent: usize) -> f64 {
@@ -182,7 +189,8 @@ impl Report {
             "{name:<30} frames {:>4}, stalls {:>3}, lag p50/p95/max {:>6.1}/{:>6.1}/{:>6.1} px, \
              turns {:>3} p50/p95/max {:>5.2}/{:>6.2}/{:>6.2} ms, total {:>7.1} ms, \
              layouts {:>3} ({:>4} KiB), rasters {:>3} ({:>6.2} Mpx), uploaded {:>6.1} MiB, \
-             reads {:>3}, moved {:.0} of {:.0} px, strips peak {:.1} MiB",
+             reads {:>3}, moved {:.0} of {:.0} px, strips peak {:.1} MiB, \
+             preparations {}, refreshes {}, notices {}, plain frames {}",
             self.frames,
             self.stalls,
             percentile(&self.lag, 50),
@@ -202,6 +210,10 @@ impl Report {
             self.moved,
             self.travel,
             self.peak_bytes as f64 / (1024.0 * 1024.0),
+            self.preparations,
+            self.refreshes,
+            self.notices,
+            self.plain_frames,
         )
     }
 }
@@ -258,6 +270,7 @@ impl Timeline {
 /// is not busy takes a turn, every `period` frames, whose cost decides when its outputs
 /// arrive.
 fn timed_frame(engine: &mut Engine, window: &mut Window, line: &mut Timeline, report: &mut Report) {
+    engine.advance_clock();
     let tick = engine.tick;
     let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut line.held)
         .into_iter()
@@ -276,6 +289,7 @@ fn timed_frame(engine: &mut Engine, window: &mut Window, line: &mut Timeline, re
         engine.answer();
         let outputs = engine.paint();
         engine.prepare_source();
+        engine.observe();
         let cost = engine.cost - before;
         let frames = (cost.as_secs_f64() / FRAME.as_secs_f64()).ceil().max(1.0) as u32;
         if !cost.is_zero() {
@@ -317,6 +331,7 @@ fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
         window.dropped,
     );
     let mut report = Report::default();
+    let highlighting = (engine.preparations, engine.refreshes, engine.notices);
     // Strips painted before the gesture reached the window while it came to rest.
     let mut line = Timeline {
         painted_before: engine.worker.raster.last_strip_id(),
@@ -357,6 +372,7 @@ fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
         }
         window.gliding = glide.active;
         timed_frame(engine, window, &mut line, &mut report);
+        report.plain_frames += usize::from(engine.lexer.is_some() && shows_plain_rows(engine));
         report.frame_counts.push(prepare_counters::take());
         report.repainted_by_frame.push(line.repainted);
         report.peak_bytes = report.peak_bytes.max(
@@ -394,6 +410,9 @@ fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
     }
     report.moved = window.shown() - start;
     report.reads = engine.reads - reads;
+    report.preparations = engine.preparations - highlighting.0;
+    report.refreshes = engine.refreshes - highlighting.1;
+    report.notices = engine.notices - highlighting.2;
     report
 }
 
@@ -979,4 +998,107 @@ fn a_fast_wheel_spin_never_waits_for_the_next_page() {
         percentile(&report.lag, 95),
         percentile(&report.lag, 100)
     );
+}
+
+/// Bytes the Source viewer's preparation walks per 16.7 ms frame in the co-simulation. The
+/// rate is assumed, not measured: 16 MiB/s, a slow lexer on a slow disk. A walk of 256 KiB, one
+/// request, then takes a frame.
+const WALK_PER_FRAME: u64 = 16 * 1024 * 1024 / 60;
+
+/// A Source view of `rows` rows of synthetic C++ through the lexical model, at rest at its
+/// start, and the gestures a measurement runs on it.
+fn cpp_view(rows: usize, size: ViewerGeometry, walk: u64) -> (Engine, Window) {
+    let mut engine = Engine::open(cpp(rows), viewer::MODE_SOURCE, size, 1).highlighted();
+    engine.lexer = Some(Lexer::new());
+    engine.highlight_replies = Some(highlight_cpp);
+    engine.walk_per_frame = walk;
+    let mut window = Window::default();
+    assert!(settle(&mut engine, &mut window));
+    (engine, window)
+}
+
+/// Measurement: Source highlighting under the measured gestures, timed: stalls, lag, the
+/// worker's turns, preparations, refreshes, notices and frames that showed a row uncoloured,
+/// over the small C++ file, 2 MiB and 16 MB of it, at 1x and 2x. The larger ones are measured
+/// after a jump (to 30 % and 80 %), which reads pages far from the lexer's checkpoints.
+/// Preparation walks `PREPARED_WALK` bytes a frame (default `WALK_PER_FRAME`).
+#[test]
+#[ignore = "measurement; prints Source highlighting work and smoothness of scripted gestures"]
+fn measure_source_highlighting() {
+    let variable = |name: &str| std::env::var(name).ok();
+    let notch: f64 = variable("PREPARED_NOTCH")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(100.0);
+    let walk: u64 = variable("PREPARED_WALK")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(WALK_PER_FRAME);
+    let mut report = String::new();
+    for (scale, size) in [
+        (1.0, geometry(1312, 720, 1.0)),
+        (2.0, geometry(2624, 1440, 2.0)),
+    ] {
+        for (name, rows, jump) in [
+            ("C++, 150 rows", 150, None),
+            ("C++, 56,000 rows", 56_000, Some(0.3)),
+            ("C++, 400,000 rows", 400_000, Some(0.8)),
+        ] {
+            let (mut engine, mut window) = cpp_view(rows, size, walk);
+            let _ = writeln!(
+                report,
+                "-- {name} ({} bytes) at {scale}x, notch {notch} px, walk {walk} bytes a frame: \
+                 opened with {} preparations, {} refreshes, {} notices",
+                engine.source.len(),
+                engine.preparations,
+                engine.refreshes,
+                engine.notices
+            );
+            let mut gestures = scripts(notch * scale, f64::from(size.height));
+            if let Some(position) = jump {
+                gestures.insert(
+                    0,
+                    Script {
+                        name: if position < 0.5 {
+                            "jump to 30 %"
+                        } else {
+                            "jump to 80 %"
+                        },
+                        frames: vec![vec![Input::Position(position)]],
+                    },
+                );
+            }
+            for script in gestures {
+                let measured = run(&mut engine, &mut window, &script);
+                let _ = writeln!(report, "{}", measured.line(script.name));
+            }
+        }
+    }
+    println!("{report}");
+}
+
+/// The owner's small C++ file scrolls without a stalled frame under every measured gesture,
+/// and highlighting prepares, refreshes and notices nothing: the page holds the whole file in
+/// colour. Before, every gesture's rest prepared the file again and showed the notice.
+#[test]
+fn a_small_source_file_stalls_no_frame_and_prepares_nothing() {
+    let size = geometry(1312, 720, 1.0);
+    let (mut engine, mut window) = cpp_view(150, size, WALK_PER_FRAME);
+    assert_eq!(
+        (engine.preparations, engine.refreshes, engine.notices),
+        (0, 0, 0)
+    );
+    for script in scripts(100.0, f64::from(size.height)) {
+        let report = run(&mut engine, &mut window, &script);
+        assert_eq!(
+            (
+                report.stalls,
+                report.preparations,
+                report.refreshes,
+                report.notices,
+                report.plain_frames
+            ),
+            (0, 0, 0, 0, 0),
+            "{}",
+            report.line(script.name)
+        );
+    }
 }

@@ -1418,6 +1418,18 @@ feature `acceptance-seams`). Not verified: the application window, a physical wh
 touchpad, Windows' animation-effects setting itself, Linux and macOS
 ([record](verification/2026-11-22-text-scrolling-follow-up.md)).
 
+The 22 November Source highlighting change prepares only what the shown page needs, at
+rest: a file of at most 256 KiB once per revision unless its page already holds all of it in
+colour, and in a larger file only the rows the page holds plain, which are then coloured in
+place without replacing the page. Scrolling within the page prepares nothing, and
+"Preparing source highlighting…" appears only when the visible rows stay plain at rest for
+300 ms. In the worker's co-simulation with a model of the Source viewer's checkpoints,
+twelve wheel notches over a 6 KB C++ file prepared it 25 times and showed the notice 23 times
+before, and nothing after; over 2.2 MB no gesture after a jump prepares anything (3 to 61
+preparations each before), and no gesture stalled a frame, before or after. Not verified: the
+application window, the Source viewer's real walk rate (assumed 16 MiB/s), Linux and macOS
+([record](verification/2026-11-22-source-highlighting.md)).
+
 The 12 November follow-up adds XML-family syntax highlighting, previous-file
 navigation (Backspace/Alt+Left), selected-item panel navigation (Alt+Up/Down),
 and Salamander view shortcuts (Alt+2/3/5). Saved bindings remain authoritative.

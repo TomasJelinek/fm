@@ -367,6 +367,9 @@ fn locate_only_caches_unsupported_and_paces_temporary_capacity_failure() {
     }
 }
 
+/// A refresh that holds fewer rows than the page restyles the rows it holds: the page keeps
+/// its rows, its selection, the visible source and the retained camera. Before, the page was
+/// replaced by the refresh's rows.
 #[test]
 fn cropped_dense_restyle_keeps_exact_source_selection_visual_anchor_and_retained_camera() {
     let (mut worker, output) = source_worker();
@@ -445,15 +448,18 @@ fn cropped_dense_restyle_keeps_exact_source_selection_visual_anchor_and_retained
     worker.text.syntax.refresh_admitted(42);
     worker.event(42, EventKind::TextPage(cropped), &output);
     worker.event(42, EventKind::Completed, &output);
-    assert_eq!(worker.page.as_ref().unwrap().start, 8192 + removed as u64);
+    let page = worker.page.as_ref().unwrap();
+    assert_eq!(page.start, 8192);
+    assert!(!page.spans.is_empty());
+    assert!(page.spans.iter().all(|span| span.range.start >= removed));
     assert_eq!(source_caret(&worker), visible);
-    assert_eq!(worker.selection, Some((row * 5 + 4, row * 5 + 18)));
+    assert_eq!(worker.selection, Some((row * 8 + 4, row * 8 + 18)));
     assert_eq!(
         worker
             .shaped
             .as_ref()
             .unwrap()
-            .selected_text(row * 5 + 4..row * 5 + 18)
+            .selected_text(row * 8 + 4..row * 8 + 18)
             .unwrap(),
         copied
     );
@@ -544,4 +550,123 @@ fn local_noncapacity_refresh_rejections_settle_the_epoch_without_blanking_the_pa
             decoded(false).text.as_str()
         );
     }
+}
+
+/// The notice of rows whose highlighting is being prepared waits until the visible rows have
+/// stayed plain at rest for `NOTICE_DELAY`, and goes once they are coloured.
+#[test]
+fn the_notice_waits_for_plain_visible_rows_at_rest_and_goes_when_they_are_coloured() {
+    use super::super::syntax::{self, NOTICE_DELAY, PREPARING_HIGHLIGHTING};
+    let (mut worker, output) = source_worker();
+    worker.length = 1 << 20;
+    worker.selection = None;
+    syntax::set_clock(Some(std::time::Instant::now()));
+    // The first rest chooses the target; the delay counts from the rest after it.
+    worker.prepare_source(&output);
+    worker.prepare_source(&output);
+    assert!(worker.visible_rows_plain());
+    syntax::advance_clock(NOTICE_DELAY - Duration::from_millis(1));
+    worker.prepare_source(&output);
+    assert!(worker.status.is_empty(), "{}", worker.status);
+    syntax::advance_clock(Duration::from_millis(1));
+    worker.prepare_source(&output);
+    assert_eq!(worker.status, PREPARING_HIGHLIGHTING);
+    ready(&mut worker, &output, 41);
+    worker.text.syntax.refresh_admitted(42);
+    worker.event(42, EventKind::TextPage(decoded(true)), &output);
+    worker.event(42, EventKind::Completed, &output);
+    assert!(worker.status.is_empty(), "{}", worker.status);
+    syntax::advance_clock(NOTICE_DELAY * 2);
+    worker.prepare_source(&output);
+    assert!(worker.status.is_empty(), "{}", worker.status);
+}
+
+/// While the camera moves the notice stays away, however long the rows it shows stay plain.
+#[test]
+fn the_notice_never_shows_while_the_camera_moves() {
+    use super::super::syntax;
+    let (mut worker, output) = source_worker();
+    worker.length = 1 << 20;
+    worker.selection = None;
+    let mut whole = decoded(false);
+    (whole.has_before, whole.has_after) = (false, false);
+    assert!(worker.set_page(Page::text(whole, &worker.appearance), &output));
+    syntax::set_clock(Some(std::time::Instant::now()));
+    for step in 0..60 {
+        let y = if step % 2 == 0 { 3.0 } else { -3.0 };
+        worker.input(ViewerInput::Scroll { x: 0.0, y }, &output);
+        worker.prepare_source(&output);
+        assert!(worker.visible_rows_plain());
+        assert!(worker.status.is_empty(), "frame {step}: {}", worker.status);
+        syntax::advance_clock(Duration::from_nanos(16_666_667));
+    }
+}
+
+/// A document within one walk is prepared whole once, from its end back: every page read from
+/// it then comes coloured, and the rows that came plain before are only read again.
+#[test]
+fn a_document_within_one_walk_is_prepared_whole_once_then_only_refreshed() {
+    use super::super::syntax::{MAX_SCAN_BYTES, SourceAdmission};
+    let (mut worker, output) = source_worker();
+    worker.selection = None;
+    assert!(worker.length <= u64::from(MAX_SCAN_BYTES));
+    let (key, admission) = worker.source_admission(&output).unwrap();
+    let SourceAdmission::Prepare(request) = &admission else {
+        panic!("a preparation first");
+    };
+    assert_eq!(
+        (
+            request.viewport.source_anchor,
+            request.viewport.backwards,
+            request.max_scan_bytes
+        ),
+        (worker.length, true, MAX_SCAN_BYTES)
+    );
+    worker.source_admitted(&key, &admission, Ok(41), &output);
+    worker.event(
+        41,
+        EventKind::SourcePrepared(messages::SourcePrepared {
+            revision: 9,
+            frontier: worker.length,
+            ready: true,
+        }),
+        &output,
+    );
+    worker.event(41, EventKind::Completed, &output);
+    assert!(worker.text.syntax.refresh.is_none(), "nothing to read yet");
+    let (key, admission) = worker.source_admission(&output).unwrap();
+    assert!(
+        matches!(admission, SourceAdmission::Refresh(_)),
+        "the plain rows are read again, not prepared"
+    );
+    worker.source_admitted(&key, &admission, Ok(42), &output);
+    worker.event(42, EventKind::TextPage(decoded(true)), &output);
+    worker.event(42, EventKind::Completed, &output);
+    assert!(!worker.page.as_ref().unwrap().spans.is_empty());
+    assert!(worker.source_admission(&output).is_none());
+}
+
+/// A refresh that completes while the view is not at rest (here a page request is under way)
+/// keeps its page until the view rests, and then colours the rows where they are.
+#[test]
+fn a_refresh_completed_away_from_rest_colours_its_rows_at_the_next_rest() {
+    let (mut worker, output) = source_worker();
+    worker.length = 1 << 20;
+    worker.selection = None;
+    let origin = worker.origin;
+    ready(&mut worker, &output, 41);
+    worker.text.syntax.refresh_admitted(42);
+    worker.viewport_request = Some(99);
+    worker.event(42, EventKind::TextPage(decoded(true)), &output);
+    worker.event(42, EventKind::Completed, &output);
+    assert!(
+        worker.page.as_ref().unwrap().spans.is_empty(),
+        "not at rest"
+    );
+    assert!(worker.text.syntax.refresh.is_some(), "the page waits");
+    worker.viewport_request = None;
+    assert!(worker.source_admission(&output).is_none());
+    assert!(!worker.page.as_ref().unwrap().spans.is_empty());
+    assert!(worker.text.syntax.refresh.is_none());
+    assert_eq!(worker.origin, origin);
 }

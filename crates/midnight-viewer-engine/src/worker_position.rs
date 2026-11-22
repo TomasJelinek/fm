@@ -332,7 +332,6 @@ impl Worker {
         self.source_foreground_finished(id, false);
         self.invalidate_source_target();
         self.seek_position(sequence, position, output);
-        self.source_stationary_target();
         true
     }
 
@@ -346,7 +345,6 @@ impl Worker {
         self.motion.retire_viewport();
         self.continuation = None;
         self.invalidate_source_target();
-        self.source_stationary_target();
         self.status = message.unwrap_or_else(|| "The requested viewport was not completed.".into());
         self.dirty = true;
         output.put(ViewerOutput::VerticalPositionUnavailable {

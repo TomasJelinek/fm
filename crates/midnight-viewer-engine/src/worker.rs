@@ -942,7 +942,7 @@ impl Worker {
             self.anchor = viewport.source_anchor;
         }
         self.chain_requested_with(id, &viewport, held);
-        self.source_requested(id, viewport);
+        self.source_requested(id);
     }
 
     fn page_viewport(&mut self, anchor: u64, backwards: bool) -> messages::Viewport {
@@ -1063,7 +1063,7 @@ impl Worker {
         match input {
             ViewerInput::Raster { surface, input } => {
                 if matches!(&input, ViewerRasterInput::PanTo { .. }) {
-                    self.invalidate_source_target();
+                    self.source_moved();
                 }
                 self.raster_input(surface, input, output);
             }
@@ -1219,12 +1219,11 @@ impl Worker {
             }
             _ => {}
         }
-        self.source_stationary_target();
     }
 
     fn scroll(&mut self, mut step: ScrollStep, output: &Mailbox) {
         self.interrupt_find();
-        self.invalidate_source_target();
+        self.source_moved();
         if let Some(transition) = self.pending_raster_rebase() {
             self.motion.defer(MotionOwner::Rebase(transition), step);
             return;
@@ -1325,7 +1324,6 @@ impl Worker {
         for step in steps {
             self.scroll(step, output);
         }
-        self.source_stationary_target();
     }
 
     fn event(&mut self, id: u64, event: EventKind, output: &Mailbox) {

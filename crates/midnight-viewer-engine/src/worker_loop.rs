@@ -14,6 +14,7 @@ impl Worker {
             .source_retry_deadline()
             .into_iter()
             .chain(self.locate_retry_deadline())
+            .chain(self.source_notice_deadline())
             .min();
         self.dirty
             .then_some(RETRY)
