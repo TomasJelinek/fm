@@ -5,6 +5,11 @@ use std::{
     sync::{Condvar, Mutex},
 };
 
+/// How long a test waits for an expected event before it fails as hung. Only a hang
+/// detector: these checks assert order, counts and values, never timing, so a loaded
+/// machine (parallel builds and test binaries) must not fail them.
+const GUARD: Duration = Duration::from_secs(60);
+
 #[derive(Default)]
 struct Counter {
     active: AtomicUsize,
@@ -43,7 +48,7 @@ impl Blocker {
         }
     }
     fn wait(&self, count: usize) {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + GUARD;
         let mut state = self.state.lock().unwrap();
         while state.0 < count {
             assert!(
@@ -261,7 +266,7 @@ fn start(
 }
 
 fn queued(budget: &IoBudget, count: usize) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + GUARD;
     while budget.io.snapshot().queued < count {
         assert!(
             Instant::now() < deadline,
@@ -302,10 +307,7 @@ fn a_small_ssd_root_finishes_while_another_root_is_blocked_in_io() {
         );
     });
     block.wait(1);
-    assert_eq!(
-        results.recv_timeout(Duration::from_secs(3)).unwrap(),
-        EntryId(2)
-    );
+    assert_eq!(results.recv_timeout(GUARD).unwrap(), EntryId(2));
     block.release();
     worker.join().unwrap();
     assert_eq!(results.recv().unwrap(), EntryId(1));
@@ -393,8 +395,8 @@ fn fifo_tickets_prevent_a_new_small_request_from_bypassing_a_waiting_exclusive_r
     });
     queued(&budget, 2);
     drop(held);
-    assert_eq!(order.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
-    assert_eq!(order.recv_timeout(Duration::from_secs(3)).unwrap(), 2);
+    assert_eq!(order.recv_timeout(GUARD).unwrap(), 1);
+    assert_eq!(order.recv_timeout(GUARD).unwrap(), 2);
     first.join().unwrap();
     second.join().unwrap();
 }
@@ -457,9 +459,7 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_io_f
                     // These are separate operations with independent result
                     // receivers. Their callbacks can run in either order after
                     // releasing I/O. Deliberately deliver the small result last.
-                    wait_for_big_report
-                        .recv_timeout(Duration::from_secs(3))
-                        .unwrap();
+                    wait_for_big_report.recv_timeout(GUARD).unwrap();
                     completed.send((id, size)).unwrap();
                 }
                 true
@@ -470,8 +470,8 @@ fn a_network_scan_yields_its_open_iterator_so_a_small_waiting_root_finishes_io_f
     });
     queued(&budget, 1);
     block.release();
-    let (big_id, big_size) = order.recv_timeout(Duration::from_secs(3)).unwrap();
-    let (small_id, small_size) = order.recv_timeout(Duration::from_secs(3)).unwrap();
+    let (big_id, big_size) = order.recv_timeout(GUARD).unwrap();
+    let (small_id, small_size) = order.recv_timeout(GUARD).unwrap();
     big.join().unwrap();
     small.join().unwrap();
     assert_eq!(
@@ -727,7 +727,7 @@ fn external_cancellation_removes_waiting_root_workers_without_releasing_someone_
     });
     queued(&budget, 1);
     cancel.cancel();
-    completed.recv_timeout(Duration::from_secs(3)).unwrap();
+    completed.recv_timeout(GUARD).unwrap();
     worker.join().unwrap();
     assert_eq!(files.io.maximum.load(Ordering::SeqCst), 0);
     assert_eq!(budget.io.snapshot().available, 0);
