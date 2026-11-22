@@ -617,6 +617,17 @@ pub(super) fn observe_native(
                 }
                 return false;
             }
+            // The mouse's Back and Forward buttons go through the documents opened from
+            // links, as in the other viewers (`links.rs`); the page does not get them.
+            if inside && matches!(button, MouseButton::Back | MouseButton::Forward) {
+                let back = *button == MouseButton::Back;
+                let pressed = *state == ElementState::Pressed;
+                drop(native);
+                if pressed {
+                    crate::links::history(open, back);
+                }
+                return true;
+            }
             let pressed = *state == ElementState::Pressed;
             native.dragging = pressed;
             if pressed {

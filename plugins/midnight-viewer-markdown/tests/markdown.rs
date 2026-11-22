@@ -59,16 +59,97 @@ fn semantic_blocks_styles_and_exact_unicode_source_anchors() {
     );
 }
 
+fn targets(page: &DocumentPage) -> Vec<&str> {
+    page.blocks
+        .iter()
+        .flat_map(|block| block.links.iter())
+        .map(|link| link.target.as_str())
+        .collect()
+}
+
+/// The host's link policy decides what a target does; the plugin keeps scripts, HTML and
+/// images inert and passes every link target the protocol can carry.
 #[test]
-fn hostile_html_scripts_images_and_unsafe_urls_are_inert() {
+fn hostile_html_scripts_and_images_are_inert_and_every_link_target_reaches_the_host() {
     let page = page(
         "<script>alert(1)</script>\n\n![cat](https://remote/image.png) [bad](javascript:alert) [data](data:text/html,x) [ok](https://example.org) [file](file:///secret)\n",
     );
     assert!(page.blocks.iter().any(|b| b.text.text.contains("<script>")));
-    let links: Vec<_> = page.blocks.iter().flat_map(|b| b.links.iter()).collect();
-    assert_eq!(links.len(), 1);
-    assert_eq!(links[0].target, "https://example.org");
+    assert_eq!(
+        targets(&page),
+        [
+            "javascript:alert",
+            "data:text/html,x",
+            "https://example.org",
+            "file:///secret"
+        ],
+        "the image is not a link"
+    );
     assert!(page.blocks.iter().any(|b| b.text.text.contains("cat")));
+}
+
+#[test]
+fn relative_file_and_other_link_targets_reach_the_host_unchanged() {
+    let page = page(
+        "[next](other.md) [up](../README.md#install) [file](file:///C:/x.md) [spaced](<my notes.md>) [mail](mailto:a@example.org) [ftp](ftp://example.org/x)\n",
+    );
+    assert_eq!(
+        targets(&page),
+        [
+            "other.md",
+            "../README.md#install",
+            "file:///C:/x.md",
+            "my notes.md",
+            "mailto:a@example.org",
+            "ftp://example.org/x"
+        ]
+    );
+}
+
+#[test]
+fn a_target_the_protocol_cannot_carry_drops_only_that_link() {
+    let input = format!(
+        "[ok](a.md) [long]({}) [control](a&#1;b) **kept**\n",
+        "a".repeat(8193)
+    );
+    let decoded = decode(
+        input.as_bytes(),
+        100,
+        Encoding::Utf8,
+        true,
+        65536,
+        100,
+        || false,
+    )
+    .unwrap();
+    let page = render(&decoded, 3, true, || false).unwrap();
+    page.validate().unwrap();
+    assert_eq!(targets(&page), ["a.md"]);
+    assert!(
+        page.blocks[0]
+            .text
+            .spans
+            .iter()
+            .any(|span| span.flags & 1 != 0),
+        "the other links and styles stay"
+    );
+}
+
+#[test]
+fn a_link_that_starts_an_ordered_item_covers_its_text_not_the_number() {
+    let page = page("1. [first](a.md) item\n2. [second](b.md)\n\n3) [third](c.md)\n");
+    let covered: Vec<_> = page
+        .blocks
+        .iter()
+        .flat_map(|block| {
+            block
+                .links
+                .iter()
+                .map(|link| &block.text.text[link.start as usize..link.end as usize])
+        })
+        .collect();
+    assert_eq!(covered, ["first", "second", "third"]);
+    assert!(page.blocks[0].text.text.starts_with("1. first"));
 }
 
 #[test]
@@ -278,7 +359,9 @@ fn character_references_and_bidi_overrides_cannot_inject_controls() {
     }
     assert!(text.contains("exe.dab"), "logical order stays visible");
     assert!(text.contains('\u{200f}'), "implicit direction marks remain");
-    assert!(page.blocks.iter().all(|b| b.links.is_empty()));
+    // The link keeps its target. The host's link policy shows it with the bidirectional
+    // control escaped and hands the address over percent-encoded.
+    assert_eq!(targets(&page), ["https://a.example/\u{202e}"]);
 }
 
 #[test]

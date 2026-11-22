@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 
 #[path = "desktop_properties.rs"]
 mod properties;
+#[path = "desktop_urls.rs"]
+mod urls;
 
 /// The backend loads each icon once and does not resend one among its
 /// `DESKTOP_ICON_CAPACITY` most recent ones, so this cache holds that many, each
@@ -89,6 +91,8 @@ pub(crate) struct DesktopState {
     pub(super) directory_link_hover: Option<super::directory_link_tooltip::LinkHover>,
     pub(super) system_location_requests: HashMap<DesktopRequestId, SystemLocation>,
     open_requests: HashMap<DesktopRequestId, (PaneId, NavigationId, PathBuf)>,
+    /// Links viewers handed to the default handler, answered through their own callback.
+    urls: HashMap<DesktopRequestId, urls::PendingUrl>,
     open_directories: [Option<(NavigationId, PathBuf)>; 2],
     generation: u64,
     /// The Properties request whose summary may still be completed in place.
@@ -360,6 +364,11 @@ impl Presenter {
                 self.retired.push(Box::new(pixels));
             }
             Event::DesktopActionFinished { request, result } => {
+                // A viewer's link: its callback says how it went, never the main window.
+                if let Some(link) = self.desktop.urls.remove(&request) {
+                    link.finish(result);
+                    return None;
+                }
                 let captured_open = self.tree_open_request(request);
                 self.tree_clipboard_finished(request);
                 self.tree_editor_finished(request);
@@ -379,6 +388,8 @@ impl Presenter {
                             self.desktop.status = "System Recycle Bin/Trash opened".into();
                         }
                     }
+                    // Links are answered through their own callback above.
+                    Ok(DesktopActionResult::UrlOpened { .. }) => {}
                     Ok(DesktopActionResult::TerminalStarted { history, .. }) => {
                         let status = if elevated_terminal && history.shell != ShellFlavor::Posix {
                             // Windows started it after the user's consent.

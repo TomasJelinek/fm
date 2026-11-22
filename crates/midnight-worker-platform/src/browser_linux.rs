@@ -79,7 +79,7 @@ pub(super) fn profile_parent() -> io::Result<std::path::PathBuf> {
 pub(super) fn spawn(
     executable: &Path,
     profile: super::profile::Profile,
-    host_shortcuts: bool,
+    extensions: super::Extensions,
 ) -> io::Result<Browser> {
     let namespaces = sandbox::namespaces(executable);
     let cgroup = cgroup::Session::new()?;
@@ -94,8 +94,8 @@ pub(super) fn spawn(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if host_shortcuts {
-        command.env(super::HOST_SHORTCUTS_ENV, super::HOST_SHORTCUTS_PHYSICAL_V1);
+    for (key, value) in extensions.environment() {
+        command.env(key, value);
     }
     for key in [
         "DISPLAY",

@@ -1,4 +1,4 @@
-use midnight_core::{Command, PaneId, ViewerAssociations, ViewerLaunch};
+use midnight_core::{Command, PaneId, ViewerAssociations, ViewerLaunch, ViewerLinkRequest};
 use midnight_ui::{MainWindow, Presenter, Theme};
 use midnight_viewer_ui::{ViewerWindows, WindowPlacement};
 use slint::ComponentHandle;
@@ -167,6 +167,7 @@ pub(crate) fn install(
             .borrow_mut()
             .save_viewer_preferences(change, settings_commands.as_ref());
     }));
+    install_link_listener(window, &presenter, &commands, &viewers);
     {
         // Refresh is called with an immutable Presenter borrow. Schedule the
         // handoff after it returns rather than re-entering that borrow.
@@ -648,6 +649,46 @@ fn service(
 #[cfg(test)]
 #[path = "viewer_filesystem_tests.rs"]
 mod tests;
+
+/// Links followed in a viewer that only the main window or the system can follow: a web
+/// or mail address goes to the system's default handler through the desktop service, a
+/// folder opens and any other file is shown in the active panel. The viewer's status
+/// line hears how it went.
+fn install_link_listener(
+    window: &MainWindow,
+    presenter: &Rc<RefCell<Presenter>>,
+    commands: &Rc<dyn Fn(Command) -> bool>,
+    viewers: &ViewerWindows,
+) {
+    let state = presenter.clone();
+    let sender = commands.clone();
+    let weak = window.as_weak();
+    viewers.set_link_listener(Rc::new(move |request, reply| {
+        let Some(main) = weak.upgrade() else {
+            return;
+        };
+        // The viewer's worker looked at a local target; nothing here touches the disk.
+        let (path, folder) = match request {
+            ViewerLinkRequest::OpenExternal(url) => {
+                state.borrow_mut().open_external_url(
+                    url,
+                    sender.as_ref(),
+                    Box::new(move |outcome: Result<String, String>| {
+                        reply(outcome.unwrap_or_else(|reason| reason));
+                    }),
+                );
+                return;
+            }
+            ViewerLinkRequest::OpenFolder(path) => (path, true),
+            ViewerLinkRequest::Reveal(path) => (path, false),
+        };
+        let shown = state
+            .borrow_mut()
+            .show_link_target(&path, folder, sender.as_ref());
+        midnight_ui::refresh(&main, &state.borrow());
+        reply(shown);
+    }));
+}
 
 fn install_warning_reports(
     window: &MainWindow,

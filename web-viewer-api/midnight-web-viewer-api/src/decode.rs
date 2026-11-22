@@ -161,6 +161,8 @@ pub(crate) fn event(b: &mut Decoder<'_>, tag: u8) -> io::Result<EventKind> {
             message: b.text()?,
         },
         11 => EventKind::Closed,
+        12 => EventKind::LinkHover { target: b.text()? },
+        13 => EventKind::LinkActivated { target: b.text()? },
         _ => return Err(invalid()),
     })
 }

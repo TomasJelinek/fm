@@ -53,6 +53,8 @@ mod find;
 mod image;
 #[path = "worker_layout.rs"]
 mod layout;
+#[path = "worker_links.rs"]
+mod links;
 #[path = "worker_palette.rs"]
 mod palette;
 #[path = "worker_position.rs"]
@@ -306,6 +308,8 @@ struct Worker {
     status: String,
     dirty: bool,
     frames: crate::interaction::Frames,
+    /// Hover, click, focus and history of links (`worker_links.rs`).
+    links: links::Links,
 }
 
 pub(crate) struct Services {
@@ -348,7 +352,14 @@ pub(crate) fn run(
         video,
     } = services;
     output.put(ViewerOutput::Status(PREPARING.into()));
+    let link_capture = capture.clone();
     let order = crate::capture::prepare_with(&launch, closed, capture)?;
+    let links = links::Links::new(
+        link_capture,
+        order.capture.clone(),
+        order.focused.as_ref().ok().cloned(),
+        launch.archive.is_none() && launch.generated.is_none(),
+    );
     let backend = wakes.clone();
     let wake: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || backend.wake());
     let prefetch = order
@@ -470,6 +481,7 @@ pub(crate) fn run(
         status: String::new(),
         dirty: false,
         frames: Default::default(),
+        links,
     };
     drop(launch);
     worker.open(output);
@@ -518,6 +530,7 @@ pub(crate) fn run(
         worker.poll_image(output);
         worker.poll_web(output);
         worker.poll_sandbox(output);
+        worker.poll_links(output);
         worker.poll_video(output);
         if worker.dirty {
             worker.dirty = false;
@@ -669,6 +682,7 @@ impl Worker {
 
     fn open(&mut self, output: &Mailbox) {
         self.clear_sandbox_notice(output);
+        self.links_reset(output);
         if self.video.is_some() || self.mode == VIEWER_MODE_VIDEO {
             output.discard_pending_video();
         }
@@ -1037,6 +1051,19 @@ impl Worker {
             self.install_sandbox_permission(output);
             return;
         }
+        // Links work the same whatever shows the document (`worker_links.rs`).
+        self.end_link_work_on(&input);
+        match input {
+            ViewerInput::Link(input) => {
+                self.link_input(input, output);
+                return;
+            }
+            ViewerInput::LinkOutcome(message) => {
+                self.link_notice(message, output);
+                return;
+            }
+            _ => {}
+        }
         // A window-level choice also applies to text files shown after HTML or images.
         if let ViewerInput::RetainedRaster(enabled) = input {
             self.invalidate_source_target();
@@ -1403,6 +1430,12 @@ impl Worker {
             }
             EventKind::BinaryPage { page, bytes } if self.viewport_request == Some(id) => {
                 self.received_page(id, Page::binary(page, &bytes), output);
+            }
+            EventKind::DocumentPage(page) if self.links.scanning(id) => {
+                self.scanned_page(page, output);
+            }
+            EventKind::Failed(failure) if self.links.scanning(id) => {
+                self.scan_failed(failure.message, output);
             }
             EventKind::DocumentPage(page) if self.viewport_request == Some(id) => {
                 self.received_page(id, Page::document(page, &self.appearance), output);
@@ -1993,6 +2026,7 @@ impl Worker {
         {
             self.status.clear();
         }
+        self.link_page_shown(output);
     }
 
     /// Replace the selection on the shown page. A different one cannot be copied by
@@ -2083,6 +2117,12 @@ impl Worker {
                     rgba,
                 )
                 .map_err(|e| format!("Cannot render page: {e:?}"))?;
+            self.paint_link_focus(
+                rgba,
+                width,
+                height,
+                [self.origin[0] - margin, self.origin[1]],
+            );
             if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers {
                 let mut surface = midnight_viewer_render::RasterMut::new(width, height, rgba)
                     .map_err(|e| format!("Cannot render page: {e:?}"))?;

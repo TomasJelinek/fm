@@ -60,7 +60,7 @@ def html_package(viewers, target):
     windows = target.endswith('windows-msvc')
     package = viewers / 'midnight-viewer-html'
     executable = 'midnight-viewer-html.exe' if windows else 'midnight-viewer-html'
-    required = ['LICENSE.txt', 'CREDITS.html', 'THIRD_PARTY.md', 'dependency-metadata.json',
+    required = ['LICENSE', 'LICENSE.txt', 'CREDITS.html', 'THIRD_PARTY.md', 'dependency-metadata.json',
                 'README.md', 'resources.pak', 'chrome_100_percent.pak', 'chrome_200_percent.pak',
                 'icudtl.dat', 'v8_context_snapshot.bin', 'vk_swiftshader_icd.json',
                 'locales/en-US.pak', 'notices/cef/LICENSE-MIT', executable]
@@ -300,7 +300,7 @@ class RuntimePackages(unittest.TestCase):
         source = self.root / 'runtime'
         complete_runtime(source, self.target)
         html = source / 'viewers/midnight-viewer-html'
-        for relative in ('LICENSE.txt', 'CREDITS.html', 'chrome-sandbox',
+        for relative in ('LICENSE', 'LICENSE.txt', 'CREDITS.html', 'chrome-sandbox',
                          'locales/en-US.pak', 'notices/cef/LICENSE-MIT'):
             with self.subTest(missing=relative):
                 path = html / relative
@@ -313,6 +313,24 @@ class RuntimePackages(unittest.TestCase):
                 finally:
                     path.write_bytes(data)
                     runtime_inventory(html)
+
+    def test_html_package_carries_its_own_licence_beside_the_cef_licence(self):
+        # The provider is MIT (its own LICENSE); CEF's LICENSE.txt covers only CEF.
+        viewers = self.root / 'viewers'
+        package = html_package(viewers, self.target)
+        stage = self.root / 'release'
+        stage.mkdir()
+        inventory = packaging.copy_viewer_packages(stage, viewers, self.target)
+        copied = {entry['path'] for entry in inventory[0]['files']}
+        self.assertIn('viewers/midnight-viewer-html/LICENSE', copied)
+        self.assertIn('viewers/midnight-viewer-html/LICENSE.txt', copied)
+        (package / 'LICENSE').unlink()
+        runtime_inventory(package)
+        refused = self.root / 'refused'
+        refused.mkdir()
+        with self.assertRaisesRegex(ValueError, 'missing required file LICENSE:'):
+            packaging.copy_viewer_packages(refused, viewers, self.target)
+        self.assertEqual(list(refused.iterdir()), [])
 
     def test_html_inventory_rejects_traversal_boolean_sizes_and_duplicate_fields(self):
         validate = self.validator()

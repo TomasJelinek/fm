@@ -908,6 +908,7 @@ enum RejectedWork {
     Terminal,
     Open,
     SystemOpen,
+    Link,
     LoadPreferences,
     SavePreferences,
     FolderScan,
@@ -938,6 +939,10 @@ impl RejectedWork {
             Self::SystemOpen => Command::OpenSystemLocation {
                 request,
                 location: SystemLocation::RecycleBin,
+            },
+            Self::Link => Command::OpenUrl {
+                request,
+                url: ExternalUrl::parse("https://example.com/").unwrap(),
             },
             Self::LoadPreferences => Command::LoadPreferences,
             Self::SavePreferences => Command::SavePreferences {
@@ -977,6 +982,7 @@ fn rejected_work_cannot_accumulate_unbounded_responses_behind_a_stopped_consumer
         RejectedWork::Terminal,
         RejectedWork::Open,
         RejectedWork::SystemOpen,
+        RejectedWork::Link,
         RejectedWork::LoadPreferences,
         RejectedWork::SavePreferences,
         RejectedWork::FolderScan,
@@ -1054,6 +1060,7 @@ async fn closing_full_output_releases_rejected_dispatch_and_allows_shutdown() {
         RejectedWork::Terminal,
         RejectedWork::Open,
         RejectedWork::SystemOpen,
+        RejectedWork::Link,
         RejectedWork::LoadPreferences,
         RejectedWork::SavePreferences,
         RejectedWork::FolderScan,

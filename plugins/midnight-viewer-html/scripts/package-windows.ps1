@@ -62,6 +62,8 @@ if ($bootstrap.Status -ne 'NotSigned' -or $client.Status -ne 'NotSigned') {
     }
 }
 Copy-Item -LiteralPath (Join-Path $project 'web-viewer.json') -Destination $package -Force
+# The provider's own MIT licence; CEF's LICENSE.txt below covers only CEF.
+Copy-Item -LiteralPath (Join-Path $project 'LICENSE') -Destination $package -Force
 Copy-Item -LiteralPath (Join-Path $project 'THIRD_PARTY.md') -Destination $package -Force
 Copy-Item -LiteralPath (Join-Path $project 'README.md') -Destination $package -Force
 foreach ($file in @('LICENSE.txt','CREDITS.html')) {

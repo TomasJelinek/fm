@@ -221,5 +221,13 @@ pub(crate) fn event(b: &mut Encoder, kind: &EventKind) -> io::Result<u8> {
             10
         }
         EventKind::Closed => 11,
+        EventKind::LinkHover { target } => {
+            b.text(target)?;
+            12
+        }
+        EventKind::LinkActivated { target } => {
+            b.text(target)?;
+            13
+        }
     })
 }

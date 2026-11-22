@@ -212,7 +212,7 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         for name in ("build-html-viewer.ps1", "utf8-native-output.ps1"):
             shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
         plugin = self.root / "plugins/midnight-viewer-html"
-        for relative in ("scripts/build-windows.ps1", "scripts/package-windows.ps1", "web-viewer.json",
+        for relative in ("scripts/build-windows.ps1", "scripts/package-windows.ps1", "web-viewer.json", "LICENSE",
                          "THIRD_PARTY.md", "README.md", "Cargo.toml", "Cargo.lock", ".cargo/config.toml"):
             (plugin / relative).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / "plugins/midnight-viewer-html" / relative, plugin / relative)
@@ -302,8 +302,14 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertEqual((self.package / "midnight-viewer-html.exe").read_bytes(), self.bootstrap)
         self.assertEqual((self.package / "midnight-viewer-html.dll").read_bytes(), library)
         self.assertEqual((self.package / "libcef.dll").read_bytes(), b"CEF fixture libcef.dll\n")
+        # The provider's own MIT licence travels beside CEF's LICENSE.txt.
+        licence = (self.root / "plugins/midnight-viewer-html/LICENSE").read_bytes()
+        self.assertEqual((self.package / "LICENSE").read_bytes(), licence)
+        self.assertEqual((self.package / "LICENSE.txt").read_bytes(), b"CEF fixture LICENSE.txt\n")
         inventory = json.loads((self.package / "runtime-files.json").read_text(encoding="utf-8-sig"))
-        self.assertIn("locales/en-US.pak", {entry["path"] for entry in inventory["files"]})
+        entries = {entry["path"]: entry for entry in inventory["files"]}
+        self.assertIn("locales/en-US.pak", entries)
+        self.assertEqual(entries["LICENSE"]["sha256"], hashlib.sha256(licence).hexdigest())
 
     def test_short_target_builds_from_the_verified_sdk_and_unchanged_inputs_keep_the_package(self):
         import _winapi  # A junction needs no symlink privilege.
@@ -321,6 +327,13 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("HTML viewer package is current", output)
         self.assertFalse(any("metadata" in call["arguments"] for call in calls))
+        # The provider's licence is a package input: a changed one is packaged again.
+        licence = self.root / "plugins/midnight-viewer-html/LICENSE"
+        licence.write_bytes(licence.read_bytes().replace(b"MIT License", b"MIT License (changed)"))
+        code, output, calls = self.build()
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("HTML viewer package is current", output)
+        self.assert_package(self.library.read_bytes())
         # A short target through a junction into the checkout's _build, as documented.
         (self.root / "_build/mh").mkdir()
         outside = tempfile.TemporaryDirectory(prefix="mh ", dir=ROOT / "_build/tmp")

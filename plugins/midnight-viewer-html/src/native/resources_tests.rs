@@ -23,6 +23,7 @@ fn document() -> (Arc<Document>, crate::output::Receiver) {
         viewport,
         output,
         false,
+        false,
     )
     .unwrap();
     (Arc::new(doc), events)
@@ -183,7 +184,7 @@ fn navigation_shares_the_in_flight_bound_and_its_reply_admits_waiting_assets() {
                     document: 1,
                     browser: 1,
                     frame: "main".into(),
-                    url: "https://mewv-1.invalid/mewv-document/page.html".into(),
+                    url: format!("{}page.html", doc.policy.main_url()),
                 },
                 root: false,
             },
@@ -226,20 +227,22 @@ fn captured_paths_stay_below_the_document_root_and_inside_the_url_budget() {
     let policy = crate::policy::DocumentPolicy::new(3, false, false).unwrap();
     let main = policy.main_url();
     assert_eq!(
-        captured_path(&policy, &format!("{main}assets/site.css?v=1")).as_deref(),
+        policy
+            .captured_path(&format!("{main}assets/site.css?v=1"))
+            .as_deref(),
         Some("assets/site.css?v=1")
     );
-    let longest = "a".repeat(MAX_RESOURCE_URL_BYTES);
+    let longest = "a".repeat(crate::policy::MAX_RESOURCE_URL_BYTES);
     assert_eq!(
-        captured_path(&policy, &format!("{main}{longest}")),
+        policy.captured_path(&format!("{main}{longest}")),
         Some(longest.clone())
     );
     // A 70,000-character relative URL used to terminate the whole provider.
-    assert_eq!(captured_path(&policy, &format!("{main}{longest}a")), None);
-    assert_eq!(captured_path(&policy, &main), None);
+    assert_eq!(policy.captured_path(&format!("{main}{longest}a")), None);
+    assert_eq!(policy.captured_path(&main), None);
     // "../css/site.css" from the document resolves above its root: never substituted.
     assert_eq!(
-        captured_path(&policy, &format!("{}/css/site.css", policy.origin())),
+        policy.captured_path(&format!("{}/css/site.css", policy.origin())),
         None
     );
 }

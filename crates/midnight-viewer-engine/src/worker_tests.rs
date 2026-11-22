@@ -231,6 +231,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         status: String::new(),
         dirty: false,
         frames: Default::default(),
+        links: super::links::Links::new(crate::capture::native(), None, None, true),
     };
     (worker, Mailbox::default())
 }
@@ -510,6 +511,7 @@ fn text_page(text: String) -> Page {
         styles: vec![],
         tables: vec![],
         document_blocks: Vec::new(),
+        links: Default::default(),
         style_size: 14.0,
         before: true,
         after: true,

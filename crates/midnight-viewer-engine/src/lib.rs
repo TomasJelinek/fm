@@ -29,6 +29,7 @@ mod image_worker;
 mod input_queue;
 mod interaction;
 mod layout_handshake;
+mod link_slug;
 mod mailbox;
 mod navigation;
 mod office_preview;

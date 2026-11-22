@@ -399,7 +399,38 @@ pub enum ViewerInput {
     /// Install the permission that the shown `ViewerSandboxNotice` offers, with
     /// administrator authorization, then open the document again.
     InstallSandboxPermission,
+    /// Keyboard focus over the shown page's links, following one, and link history.
+    Link(ViewerLinkInput),
+    /// How a request this window made outside the viewer ended
+    /// ([`ViewerLinkRequest::OpenExternal`]), for its status line.
+    LinkOutcome(String),
     Close,
+}
+
+/// Links in a viewed document, from the keyboard or the mouse's Back and Forward buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewerLinkInput {
+    /// Move the keyboard focus to the next link (Tab) or the previous one (Shift+Tab);
+    /// before the first link it leaves the links.
+    Next,
+    Previous,
+    /// Follow the focused link (Enter).
+    Follow,
+    /// The document a link was followed from, and back again.
+    Back,
+    Forward,
+}
+
+/// What following a link asks outside the viewer window. The viewer itself shows files,
+/// scrolls to fragments and refuses what the link policy refuses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ViewerLinkRequest {
+    /// Open this folder in the active panel.
+    OpenFolder(PathBuf),
+    /// Show this file in the active panel, with the cursor on it.
+    Reveal(PathBuf),
+    /// Hand this address to the system's default handler, through the desktop service.
+    OpenExternal(crate::ExternalUrl),
 }
 
 /// Shown instead of the page. For an HTML page whose browser the system refused Chromium's
@@ -511,6 +542,17 @@ pub enum ViewerOutput {
     /// Show this notice instead of the page; `None` removes it when another document
     /// opens. The latest one replaces any earlier one that is still queued.
     SandboxNotice(Option<ViewerSandboxNotice>),
+    /// While the pointer is on a link: where it leads, for the status line and the
+    /// pointer cursor; None once it left the link. Each hover input gets one reply.
+    LinkHover(Option<String>),
+    /// The shown page's links and which one has the keyboard focus, so Tab, Shift+Tab
+    /// and Enter stay with the links only while there is one to move to or follow.
+    LinkFocus {
+        count: u32,
+        focused: Option<u32>,
+    },
+    /// Something only the main window or the system can do for a followed link.
+    LinkRequest(ViewerLinkRequest),
     Status(String),
     CopyText(String),
     Closed,

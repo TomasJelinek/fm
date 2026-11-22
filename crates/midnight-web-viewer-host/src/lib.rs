@@ -9,4 +9,4 @@ mod resources;
 mod session;
 pub use providers::{Discovery, Provider, discover_with_diagnostics};
 pub use resources::{ResourceCancellation, ResourcePathPolicy, Resources};
-pub use session::{PolicyCeiling, Session};
+pub use session::{LinkRouting, PolicyCeiling, Session};

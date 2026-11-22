@@ -40,6 +40,9 @@ pub(super) struct Document {
     mouse_buttons: AtomicU64,
     wheel_gesture: Mutex<input::WheelGesture>,
     host_shortcuts: bool,
+    /// Host link routing (`MIDNIGHT_WEB_VIEWER_LINKS=host-v1`), or None: links load in
+    /// the browser as without the opt-in.
+    links: Option<Mutex<crate::links::Links>>,
     navigation: Mutex<admission::Navigation>,
     bootstrap: AtomicBool,
 }
@@ -52,6 +55,7 @@ impl Document {
         viewport: api::Viewport,
         output: Arc<Output>,
         host_shortcuts: bool,
+        links: bool,
     ) -> Result<Self, &'static str> {
         let navigation =
             admission::Navigation::new(header.session, header.document, source.clone());
@@ -76,6 +80,7 @@ impl Document {
             mouse_buttons: AtomicU64::new(0),
             wheel_gesture: Mutex::default(),
             host_shortcuts,
+            links: links.then(Mutex::default),
             navigation: Mutex::new(navigation),
             bootstrap: AtomicBool::new(true),
         })
@@ -161,6 +166,7 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         viewport,
         output,
         crate::host_keys::enabled(std::env::var(api::HOST_SHORTCUTS_ENV).ok().as_deref()),
+        crate::links::enabled(std::env::var(api::LINKS_ENV).ok().as_deref()),
     )?);
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(

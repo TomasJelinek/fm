@@ -270,6 +270,32 @@ impl Worker {
         input: ViewerRasterInput,
         output: &Mailbox,
     ) {
+        // Links answer the pointer from the displayed camera without moving the view
+        // (`worker_links.rs`); every hover gets a reply, even during a handoff.
+        if let ViewerRasterInput::Hover { .. } | ViewerRasterInput::Release { .. } = input {
+            let point = match input {
+                ViewerRasterInput::Hover {
+                    pixel_id,
+                    origin,
+                    x,
+                    y,
+                }
+                | ViewerRasterInput::Release {
+                    pixel_id,
+                    origin,
+                    x,
+                    y,
+                } => (self.raster.handoff.is_none()
+                    && self.retained_active()
+                    && surface.0 == self.raster.surface)
+                    .then(|| self.displayed_point(pixel_id, origin, x, y))
+                    .flatten(),
+                _ => None,
+            };
+            let release = matches!(input, ViewerRasterInput::Release { .. });
+            self.link_pointer(point, release, output);
+            return;
+        }
         if self.raster_rebase_blocks(surface, &input) {
             return;
         }
@@ -363,7 +389,45 @@ impl Worker {
                     output.put(ViewerOutput::CopyText(text.clone()));
                 }
             }
+            // Answered above, before a handoff could hold them back.
+            ViewerRasterInput::Hover { .. } | ViewerRasterInput::Release { .. } => {}
         }
+    }
+
+    /// Whether `origin` is a camera over the displayed pixels `pixel_id` of this layout.
+    fn displayed_camera(&self, pixel_id: u64, origin: [f64; 2]) -> bool {
+        self.raster.cache.as_ref().is_some_and(|cache| {
+            cache.layout == self.raster.layout
+                && pixel_id >= self.raster.first_pixel
+                && pixel_id <= self.raster.pixel
+        }) && self
+            .page
+            .as_ref()
+            .zip(self.shaped.as_ref())
+            .is_some_and(|(page, shaped)| {
+                let maximum = [
+                    self.raster.base[0] + f64::from((shaped.width() - self.text_width()).max(0.0)),
+                    self.raster.base[1] + f64::from(self.camera_span(page, shaped).span),
+                ];
+                inside(origin, self.raster.base, maximum)
+            })
+    }
+
+    /// A point of the displayed camera in page layout coordinates, without adopting that
+    /// camera: what the pointer is over, for links.
+    pub(super) fn displayed_point(
+        &self,
+        pixel_id: u64,
+        origin: [f64; 2],
+        x: f32,
+        y: f32,
+    ) -> Option<[f32; 2]> {
+        (x.is_finite() && y.is_finite() && self.displayed_camera(pixel_id, origin)).then(|| {
+            [
+                (x - self.text_margin()).max(0.0) + (origin[0] - self.raster.base[0]) as f32,
+                y + (origin[1] - self.raster.base[1]) as f32,
+            ]
+        })
     }
 
     fn raster_selection_camera(
@@ -372,19 +436,7 @@ impl Worker {
         origin: [f64; 2],
         output: &Mailbox,
     ) -> bool {
-        let valid = self.raster.cache.as_ref().is_some_and(|cache| {
-            cache.layout == self.raster.layout
-                && pixel_id >= self.raster.first_pixel
-                && pixel_id <= self.raster.pixel
-        }) && self.page.as_ref().zip(self.shaped.as_ref()).is_some_and(
-            |(page, shaped)| {
-                let maximum = [
-                    self.raster.base[0] + f64::from((shaped.width() - self.text_width()).max(0.0)),
-                    self.raster.base[1] + f64::from(self.camera_span(page, shaped).span),
-                ];
-                inside(origin, self.raster.base, maximum)
-            },
-        );
+        let valid = self.displayed_camera(pixel_id, origin);
         if !valid {
             // A rejected new selection must not make a subsequent Copy return the old one.
             self.raster.selection_valid = false;

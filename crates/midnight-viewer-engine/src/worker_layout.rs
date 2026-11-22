@@ -36,46 +36,57 @@ impl Worker {
         }
     }
 
-    pub(super) fn prepare_opening(
-        &mut self,
-        path: &std::path::Path,
-        file: midnight_plugin_host::CapturedFile,
-    ) -> Result<PreparedOpening, String> {
-        let office_renderer = self
-            .web_providers
+    /// The HTML provider's index among process candidates, which also renders Office.
+    fn office_renderer(&self) -> Option<usize> {
+        self.web_providers
             .iter()
             .position(|provider| {
                 provider.id == crate::routing::HTML_ID
                     && !self.disabled_plugins.contains(&provider.id)
             })
-            .map(|index| index + self.images.len());
-        let route =
-            crate::routing::choose(
-                self.runtime.catalog(),
-                self.images
-                    .iter()
-                    .map(|provider| crate::routing::ProcessCandidate {
-                        id: &provider.id,
-                        extensions: &provider.extensions,
-                    })
-                    .chain(self.web_providers.iter().map(|provider| {
-                        crate::routing::ProcessCandidate {
+            .map(|index| index + self.images.len())
+    }
+
+    /// The viewer that would show `path`, by its name.
+    pub(super) fn route(&self, path: &std::path::Path) -> Option<crate::routing::Route> {
+        crate::routing::choose(
+            self.runtime.catalog(),
+            self.images
+                .iter()
+                .map(|provider| crate::routing::ProcessCandidate {
+                    id: &provider.id,
+                    extensions: &provider.extensions,
+                })
+                .chain(
+                    self.web_providers
+                        .iter()
+                        .map(|provider| crate::routing::ProcessCandidate {
                             id: &provider.id,
                             extensions: &provider.extensions,
-                        }
-                    }))
-                    .chain(self.video_installation.iter().map(|installation| {
-                        crate::routing::ProcessCandidate {
-                            id: VIDEO_PROVIDER_ID,
-                            extensions: installation.extensions(),
-                        }
-                    })),
-                path,
-                self.basic,
-                &self.disabled_plugins,
-                &self.associations,
-                office_renderer,
-            );
+                        }),
+                )
+                .chain(self.video_installation.iter().map(|installation| {
+                    crate::routing::ProcessCandidate {
+                        id: VIDEO_PROVIDER_ID,
+                        extensions: installation.extensions(),
+                    }
+                })),
+            path,
+            self.basic,
+            &self.disabled_plugins,
+            &self.associations,
+            self.office_renderer(),
+        )
+    }
+
+    pub(super) fn prepare_opening(
+        &mut self,
+        path: &std::path::Path,
+        file: midnight_plugin_host::CapturedFile,
+    ) -> Result<PreparedOpening, String> {
+        self.link_document(&file);
+        let office_renderer = self.office_renderer();
+        let route = self.route(path);
         if office_renderer.is_none()
             && crate::routing::office_requested(
                 path,

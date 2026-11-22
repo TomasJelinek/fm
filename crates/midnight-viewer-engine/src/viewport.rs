@@ -477,6 +477,7 @@ mod tests {
             styles: vec![],
             tables: vec![],
             document_blocks: Vec::new(),
+            links: Default::default(),
             style_size: 14.0,
             start: start as u64,
             end: end as u64,

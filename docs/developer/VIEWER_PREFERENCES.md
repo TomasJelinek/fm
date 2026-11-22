@@ -107,6 +107,51 @@ space above it scrolls, and the insets shrink first, so the button stays whole a
 viewer's minimum size and with the largest UI font. Another document removes the
 notice.
 
+## Links
+
+Markdown and HTML documents follow their links; one host policy decides what every
+link does (`midnight_core::classify_link`, `viewer_links.rs`), and nothing navigates
+by itself.
+
+- **Activation is explicit.** A press and release on the same link without a drag
+  follows it; a drag still selects text. While the pointer is on a link the cursor is
+  a pointer and the status line says where it really leads ("Link to
+  D:\docs\guide.md", "Link to https://example.com/", or why it is not followed).
+  In Markdown, Tab and Shift+Tab move a focus ring through the shown page's links
+  (from the first one in view), Enter follows the focused one, and from the last link
+  Tab moves on to the window's controls. HTML pages keep Tab and Enter: Chromium moves
+  its own focus, and a followed link is handed to the same policy.
+- **`#fragment`** scrolls to the heading with that GitHub slug (lowercase, punctuation
+  removed, spaces as hyphens, repeats numbered `-1`, `-2` in document order); `#` is the
+  top. A heading beyond the loaded page is found by reading the document's pages from
+  the start, at most 256 pages, cancelled by any other action, with its progress on the
+  status line after about 300 ms. In HTML, fragments stay inside Chromium.
+- **A relative path or a `file:` URL without a host** resolves against the document's
+  folder and is percent-decoded. A file a viewer shows (by its plugin or provider, or
+  as text when no viewer claims its name and its first 4 KiB hold no NUL) opens in the
+  same window. A folder opens, and any other file (a program, for example) is shown
+  with the cursor on it, in the active panel; nothing is ever opened by its program.
+  The worker looks at the target on a thread of its own.
+- **`http`, `https` and `mailto`** open with the system's default handler through the
+  desktop service, and the status line says "Opened in your browser: …" or why not.
+  The address is handed over as plain ASCII, percent-encoded, and a mail link's
+  `attach…` fields are removed. The viewer stays offline.
+- **Anything else is refused**, naming the scheme ("Links to javascript: addresses
+  are not followed."), and so are file URLs with a host, network shares, device names
+  and file streams.
+- **Back and Forward** (Alt+Shift+Left and Alt+Shift+Right, or the mouse's Back and
+  Forward buttons) go through the documents opened from links in this window, up to 64
+  each way, at the place each was left; with nothing in that direction they do nothing.
+  An HTML document opened this way starts at its top: neither its place nor a link's
+  `#fragment` is applied to it yet. Alt+Left and Alt+Right (and Space and Backspace)
+  keep cycling files; a document opened from a link is the only file they cycle until
+  Back returns to the previous order.
+- **Inside an archive**, fragments and external links work, and a file a viewer shows
+  in the document's folder or below opens in the same window. Links above the
+  document's folder, to folders, or to files no viewer shows only say so on the status
+  line; following them needs the archive's address in the viewer launch (VIEW-07 in the
+  [backlog](../IMPLEMENTATION_BACKLOG.md)).
+
 ## PDF layouts
 
 Use **Paged** to view one PDF page at a time, with the previous/next page buttons

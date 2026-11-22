@@ -23,6 +23,22 @@ pub enum ViewerRasterInput {
         pixel_id: u64,
         origin: [f64; 2],
     },
+    /// The pointer moved over the displayed camera's text, for a link under it; NaN
+    /// coordinates when it left the text. The worker answers each with `LinkHover`.
+    Hover {
+        pixel_id: u64,
+        origin: [f64; 2],
+        x: f32,
+        y: f32,
+    },
+    /// The left button was released here: a press and release on the same link without
+    /// a drag follows it.
+    Release {
+        pixel_id: u64,
+        origin: [f64; 2],
+        x: f32,
+        y: f32,
+    },
     Copy,
 }
 

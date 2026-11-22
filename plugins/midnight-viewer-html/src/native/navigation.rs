@@ -129,6 +129,7 @@ pub(super) fn before_browse(
     browser: Option<&mut Browser>,
     frame: Option<&mut Frame>,
     request: Option<&mut Request>,
+    user_gesture: i32,
     is_redirect: i32,
 ) -> i32 {
     if !doc.active.load(Ordering::Acquire) || doc.output.failed.load(Ordering::Acquire) {
@@ -139,11 +140,14 @@ pub(super) fn before_browse(
     };
     let url = CefString::from(&request.url()).to_string();
     let access = doc.policy.access(&url);
-    if access == Access::Deny {
-        return 1;
-    }
     let main = frame.as_deref().is_some_and(|frame| frame.is_main() != 0);
     let request_marker = marker(request);
+    // Under host link routing, every unmarked navigation of the main frame is classified,
+    // wherever it leads: a link the browser may not load still goes to the host.
+    let routed = doc.links.is_some() && main && request_marker == Marker::Absent;
+    if access == Access::Deny && !routed {
+        return 1;
+    }
     match request_marker {
         Marker::Invalid => return 1,
         Marker::Value(value) => {
@@ -186,6 +190,8 @@ pub(super) fn before_browse(
         direct_load: request.transition_type().get_raw()
             & TransitionType::DIRECT_LOAD_FLAG.get_raw()
             != 0,
+        user_gesture: user_gesture != 0,
+        links: doc.links.is_some(),
     };
     match classify(&doc.policy, &facts) {
         BrowseRoute::Refuse => return 1,
@@ -196,6 +202,14 @@ pub(super) fn before_browse(
                 &doc.policy.main_url(),
                 &url,
             ));
+        }
+        BrowseRoute::Activate => {
+            route_link(doc, |links, now| links.activate(&doc.policy, &url, now));
+            return 1;
+        }
+        BrowseRoute::Deny(message) => {
+            route_link(doc, |links, now| links.refuse(message, now));
+            return 1;
         }
         BrowseRoute::Prepare => {}
     }
@@ -225,6 +239,49 @@ fn allow_original(doc: &Document, main_frame: bool) -> i32 {
         navigation.cancel_preparation();
     }
     0
+}
+
+/// Host link routing: emit what `decide` makes of a link (a `LinkActivated`, `LinkHover`
+/// or bounded `Denied` notice), outside the link state's lock. Nothing without routing.
+fn route_link<E: IntoIterator<Item = api::EventKind>>(
+    doc: &Document,
+    decide: impl FnOnce(&mut crate::links::Links, Instant) -> E,
+) {
+    if !doc.active.load(Ordering::Acquire) || doc.output.failed.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(links) = doc.links.as_ref() else {
+        return;
+    };
+    let events: Vec<_> = match links.lock() {
+        Ok(mut links) => decide(&mut links, Instant::now()).into_iter().collect(),
+        Err(_) => return,
+    };
+    for event in events {
+        doc.emit(event);
+    }
+}
+
+/// OnBeforePopup and OnOpenURLFromTab (`target=_blank`, `window.open`, a middle or
+/// modified click): no other window or tab ever opens. Under host link routing a link the
+/// user followed goes to the host and anything else is refused with a notice.
+pub(super) fn open_elsewhere(doc: &Document, target: Option<&CefString>, user_gesture: i32) -> i32 {
+    if doc.links.is_some() {
+        let url = target.map(ToString::to_string).unwrap_or_default();
+        route_link(doc, |links, now| {
+            links.open_elsewhere(&doc.policy, &url, user_gesture != 0, now)
+        });
+    }
+    1
+}
+
+/// OnStatusMessage under host link routing: Chromium's URL of the link under the pointer,
+/// empty once the pointer leaves it, reported to the host as `LinkHover` when it changes.
+pub(super) fn status(doc: &Document, value: Option<&CefString>) {
+    if doc.links.is_some() {
+        let status = value.map(ToString::to_string).unwrap_or_default();
+        route_link(doc, |links, now| links.hover(&doc.policy, &status, now));
+    }
 }
 
 fn reload_key(key: &api::Key) -> bool {

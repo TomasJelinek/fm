@@ -256,6 +256,7 @@ impl Worker {
         self.renderer
             .rasterize_into(shaped, viewport, selection, unique(&mut pixels)?)
             .map_err(|e| format!("Cannot render retained page: {e:?}"))?;
+        self.paint_link_focus(unique(&mut pixels)?, column.width, BAND, viewport.origin);
         let gutter = if column.gutter != 0 {
             let mut gutter_pixels = shared_pixels(column.gutter, BAND)?;
             let mut raster = midnight_viewer_render::RasterMut::new(
@@ -412,6 +413,12 @@ impl Worker {
             && let Some(range) = clip(&(a.min(b)..a.max(b)))
         {
             range.hash(&mut hasher);
+        }
+        // The keyboard focus ring of a link (`worker_links.rs`).
+        if let Some(range) = self.focused_link_range()
+            && let Some(range) = clip(&range)
+        {
+            ("link focus", range).hash(&mut hasher);
         }
         if column.gutter != 0 {
             for line in self.text.gutter.iter().flatten() {

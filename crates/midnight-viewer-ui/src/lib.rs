@@ -22,6 +22,9 @@ mod image_zoom;
 mod kinetic_tests;
 #[cfg(test)]
 mod layout_handshake_tests;
+mod links;
+#[cfg(test)]
+mod links_tests;
 mod media_controls;
 #[cfg(test)]
 mod opening_retirement_tests;
@@ -90,6 +93,7 @@ pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
 /// close button). The callback may re-enter `ViewerWindows`; no manager state is
 /// borrowed while it runs.
 pub type OpenReady = Box<dyn FnOnce(Result<(), String>)>;
+pub use links::LinkListener;
 type PreferencesListener = Rc<dyn Fn(ViewerPreferenceChange)>;
 type PreferencesRelay = Rc<RefCell<PreferencesListener>>;
 /// Whether the system asks for less motion, as the host reads it (`set_motion_preference`).
@@ -129,6 +133,7 @@ pub struct ViewerWindows {
     preferences_listener: PreferencesRelay,
     appearance: RefCell<Option<appearance::AppAppearance>>,
     motion_preference: MotionPreference,
+    link_listener: links::Relay,
 }
 
 struct OpenWindow {
@@ -172,6 +177,7 @@ struct OpenWindow {
     image_native: RefCell<image_motion::Native>,
     text_position: RefCell<text_position::TextPosition>,
     web_native: RefCell<web_input::Native>,
+    links: RefCell<links::LinkState>,
     key_resolver: RefCell<KeyResolver>,
     /// The native observer and frames of the acceptance seams (`acceptance_seams`).
     #[cfg(feature = "acceptance-seams")]
@@ -297,7 +303,15 @@ impl ViewerWindows {
             preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
             appearance: RefCell::new(None),
             motion_preference: Rc::new(RefCell::new(Rc::new(|| false))),
+            link_listener: links::relay(),
         }
+    }
+
+    /// What the main window does for a link followed in a viewer: open a folder or
+    /// reveal a file in the active panel, or open an address with the system's handler.
+    /// It answers with the viewer's status line.
+    pub fn set_link_listener(&self, listener: LinkListener) {
+        *self.link_listener.borrow_mut() = listener;
     }
 
     pub fn set_preferences_listener(&self, listener: Rc<dyn Fn(ViewerPreferenceChange)>) {
@@ -531,6 +545,7 @@ impl ViewerWindows {
             image_native: RefCell::new(Default::default()),
             text_position: RefCell::new(Default::default()),
             web_native: RefCell::new(Default::default()),
+            links: RefCell::new(links::LinkState::new(self.link_listener.clone())),
             key_resolver: RefCell::new(keys.clone()),
             #[cfg(feature = "acceptance-seams")]
             seam: Default::default(),
@@ -1357,6 +1372,9 @@ fn present_controlled_outputs(
                 window.set_status(midnight_core::visible_name(message).as_ref().into())
             }
             ViewerOutput::SandboxNotice(notice) => sandbox_notice::present(open, notice.as_ref()),
+            ViewerOutput::LinkHover(status) => links::answered(open, status.as_deref()),
+            ViewerOutput::LinkFocus { count, focused } => links::focus(open, *count, *focused),
+            ViewerOutput::LinkRequest(request) => links::request(open, request.clone()),
             ViewerOutput::ImageUnavailable {
                 generation,
                 surface,
@@ -1508,6 +1526,7 @@ fn bind(open: &Rc<OpenWindow>) {
     bind_image(open);
     web_input::bind(open);
     sandbox_notice::bind(open);
+    links::bind(open);
     preferences::bind(open);
     let weak = Rc::downgrade(open);
     open.window.on_change_wrap(move |wrap| {
@@ -1696,6 +1715,9 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
     if open.window.get_web_mode()
         && let Some(result) = web_input::navigate(open, action)
     {
+        return result;
+    }
+    if let Some(result) = links::shortcut(open, action) {
         return result;
     }
     let input = match action {

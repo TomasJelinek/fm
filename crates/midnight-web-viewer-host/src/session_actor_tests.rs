@@ -419,13 +419,32 @@ fn open_with(
     resources: Option<Arc<dyn Resources>>,
     limits: Limits,
 ) -> Harness {
+    open_routing(
+        transport,
+        browser,
+        source,
+        resources,
+        limits,
+        LinkRouting::Browser,
+    )
+}
+
+fn open_routing(
+    transport: Transport,
+    browser: Browser,
+    source: CapturedFile,
+    resources: Option<Arc<dyn Resources>>,
+    limits: Limits,
+    links: LinkRouting,
+) -> Harness {
     let consumer = Arc::new(Consumer::default());
     let wake = {
         let consumer = consumer.clone();
         Arc::new(move || consumer.wake())
     };
     let session =
-        Session::with_transport(transport, source, resources, VIEWPORT, limits, wake).unwrap();
+        Session::with_transport(transport, source, resources, VIEWPORT, limits, links, wake)
+            .unwrap();
     consumer.exited.set(session.exited.clone()).unwrap();
     Harness {
         session,
@@ -937,4 +956,120 @@ fn a_denied_sandbox_is_reported_with_its_own_fix_and_other_launch_failures_keep_
             None
         )
     );
+}
+
+/// A shown session whose links the host follows.
+fn open_routing_links() -> Harness {
+    let (transport, browser) = browser(Script::Ready);
+    let harness = open_routing(
+        transport,
+        browser,
+        document(),
+        None,
+        Limits::default(),
+        LinkRouting::Host,
+    );
+    harness.shown();
+    harness
+}
+
+fn link_events() -> Vec<api::EventKind> {
+    let hover = |target: &str| api::EventKind::LinkHover {
+        target: target.into(),
+    };
+    let activated = |target: &str| api::EventKind::LinkActivated {
+        target: target.into(),
+    };
+    vec![
+        hover("sub/other.html#part"),
+        hover(""),
+        activated("../README.md"),
+        hover("https://example.org/a?b#c"),
+        activated(&"x".repeat(api::MAX_LINK_TARGET_BYTES)),
+    ]
+}
+
+#[test]
+fn a_session_that_routes_links_to_the_host_passes_link_events_on_unchanged() {
+    let harness = open_routing_links();
+    let events = link_events();
+    for event in &events {
+        harness.browser.emit(event.clone());
+    }
+    let expected = [shown(), events].concat();
+    harness.consumer.until("every link event", |woken| {
+        woken.count >= expected.len() as u64
+    });
+    assert_eq!(harness.kinds(), expected);
+    assert!(harness.session.send(api::CommandKind::Copy), "still open");
+}
+
+#[test]
+fn a_link_event_the_browser_was_not_launched_for_ends_the_session() {
+    for event in link_events() {
+        let harness = open(Script::Ready, None, Limits::default());
+        harness.shown();
+        harness.browser.emit(event);
+        harness.finished();
+        assert_eq!(
+            runtime_error(&harness.kinds()),
+            "Browser sent a link event without the link-routing launch opt-in"
+        );
+    }
+}
+
+/// Write a link event without the encoder's validation, as a faulty browser could.
+fn emit_unchecked(browser: &Browser, tag: u8, target: &[u8]) {
+    let mut events = locked(&browser.events);
+    events.sequence += 1;
+    let mut control = Vec::new();
+    for value in [1, events.document, events.sequence] {
+        control.extend(u64::to_le_bytes(value));
+    }
+    control.extend((target.len() as u32).to_le_bytes());
+    control.extend(target);
+    let mut bytes = b"MWV1".to_vec();
+    bytes.extend(api::PROTOCOL_VERSION.to_le_bytes());
+    bytes.extend([1, tag]);
+    bytes.extend((control.len() as u32).to_le_bytes());
+    bytes.extend(0u32.to_le_bytes());
+    bytes.extend(control);
+    let pipe = events.pipe.as_mut().expect("the browser's output");
+    pipe.write_all(&bytes).unwrap();
+}
+
+#[test]
+fn link_targets_beyond_the_protocol_bounds_stop_the_session_before_the_consumer_sees_them() {
+    // The same framing with a valid target reaches the consumer.
+    let harness = open_routing_links();
+    let longest = "x".repeat(api::MAX_LINK_TARGET_BYTES);
+    emit_unchecked(&harness.browser, 13, longest.as_bytes());
+    harness
+        .consumer
+        .until("the link event", |woken| woken.count >= 3);
+    assert_eq!(
+        harness.kinds(),
+        [
+            shown(),
+            vec![api::EventKind::LinkActivated { target: longest }]
+        ]
+        .concat()
+    );
+    for (tag, target) in [
+        (12, "x".repeat(api::MAX_LINK_TARGET_BYTES + 1).into_bytes()),
+        (13, "x".repeat(api::MAX_LINK_TARGET_BYTES + 1).into_bytes()),
+        (12, b"a\nb.html".to_vec()),
+        (13, b"tab\there".to_vec()),
+        (13, Vec::new()),
+    ] {
+        let harness = open_routing_links();
+        emit_unchecked(&harness.browser, tag, &target);
+        harness.finished();
+        let kinds = harness.kinds();
+        let message = runtime_error(&kinds);
+        assert_eq!(
+            message, "Chromium transport stopped: invalid web-viewer protocol message",
+            "tag {tag}"
+        );
+    }
 }

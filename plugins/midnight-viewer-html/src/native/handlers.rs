@@ -231,10 +231,12 @@ wrap_render_handler! {
 wrap_request_handler! {
     struct Requests { doc: Arc<Document> }
     impl RequestHandler {
-        fn on_before_browse(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>, _user_gesture: i32, is_redirect: i32) -> i32 {
-            navigation::before_browse(&self.doc, browser, frame, request, is_redirect)
+        fn on_before_browse(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>, user_gesture: i32, is_redirect: i32) -> i32 {
+            navigation::before_browse(&self.doc, browser, frame, request, user_gesture, is_redirect)
         }
-        fn on_open_urlfrom_tab(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _target_url: Option<&CefString>, _target_disposition: WindowOpenDisposition, _user_gesture: i32) -> i32 { 1 }
+        fn on_open_urlfrom_tab(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, target_url: Option<&CefString>, _target_disposition: WindowOpenDisposition, user_gesture: i32) -> i32 {
+            navigation::open_elsewhere(&self.doc, target_url, user_gesture)
+        }
         fn resource_request_handler(&self, browser: Option<&mut Browser>, frame: Option<&mut Frame>, request: Option<&mut Request>, is_navigation: i32, is_download: i32, _request_initiator: Option<&CefString>, disable_default_handling: Option<&mut i32>) -> Option<ResourceRequestHandler> {
             let admission = navigation::for_request(&self.doc, browser.as_deref(), frame.as_deref(), request.as_deref(), is_navigation, is_download);
             if let Some(disable) = disable_default_handling {
@@ -251,7 +253,9 @@ wrap_request_handler! {
 wrap_life_span_handler! {
     struct Life { doc: Arc<Document> }
     impl LifeSpanHandler {
-        fn on_before_popup(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _popup_id: i32, _target_url: Option<&CefString>, _target_frame_name: Option<&CefString>, _target_disposition: WindowOpenDisposition, _user_gesture: i32, _popup_features: Option<&PopupFeatures>, _window_info: Option<&mut WindowInfo>, _client: Option<&mut Option<Client>>, _settings: Option<&mut BrowserSettings>, _extra_info: Option<&mut Option<DictionaryValue>>, _no_javascript_access: Option<&mut i32>) -> i32 { 1 }
+        fn on_before_popup(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _popup_id: i32, target_url: Option<&CefString>, _target_frame_name: Option<&CefString>, _target_disposition: WindowOpenDisposition, user_gesture: i32, _popup_features: Option<&PopupFeatures>, _window_info: Option<&mut WindowInfo>, _client: Option<&mut Option<Client>>, _settings: Option<&mut BrowserSettings>, _extra_info: Option<&mut Option<DictionaryValue>>, _no_javascript_access: Option<&mut i32>) -> i32 {
+            navigation::open_elsewhere(&self.doc, target_url, user_gesture)
+        }
         fn on_before_close(&self, _browser: Option<&mut Browser>) { self.doc.closed.store(true, Ordering::Release); }
     }
 }
@@ -280,7 +284,7 @@ wrap_load_handler! {
         fn on_loading_state_change(&self, browser: Option<&mut Browser>, is_loading: i32, _can_go_back: i32, _can_go_forward: i32) {
             if let Ok(mut finding) = self.doc.finding.lock() { finding.loaded(is_loading == 0); }
             let zoom = browser.as_ref().and_then(|b| b.host()).map(|h| input::reported_zoom(h.zoom_level())).unwrap_or(1.0);
-            self.doc.emit(api::EventKind::State(api::State { title: String::new(), url: self.doc.policy.main_url(), loading: is_loading != 0, editable: false, zoom }));
+            self.doc.emit(api::EventKind::State(api::State { title: String::new(), url: self.doc.policy.display_url(), loading: is_loading != 0, editable: false, zoom }));
             if is_loading == 0 && let Some(host) = browser.and_then(|b| b.host()) { input::dispatch_find(&self.doc, &host); }
         }
     }
@@ -290,11 +294,15 @@ wrap_display_handler! {
     struct Display { doc: Arc<Document> }
     impl DisplayHandler {
         fn on_title_change(&self, browser: Option<&mut Browser>, title: Option<&CefString>) {
-            self.doc.emit(api::EventKind::State(api::State { title: bounded_text(title, 4096), url: self.doc.policy.main_url(),
+            self.doc.emit(api::EventKind::State(api::State { title: bounded_text(title, 4096), url: self.doc.policy.display_url(),
                 loading: browser.as_ref().is_some_and(|b| b.is_loading() != 0), editable: false,
                 zoom: browser.and_then(|b| b.host()).map(|h| input::reported_zoom(h.zoom_level())).unwrap_or(1.0) }));
         }
         fn on_console_message(&self, _browser: Option<&mut Browser>, _level: LogSeverity, _message: Option<&CefString>, _source: Option<&CefString>, _line: i32) -> i32 { 1 }
+        // Chromium's target URL of the link under the pointer, empty once it leaves a link.
+        fn on_status_message(&self, _browser: Option<&mut Browser>, value: Option<&CefString>) {
+            navigation::status(&self.doc, value);
+        }
     }
 }
 

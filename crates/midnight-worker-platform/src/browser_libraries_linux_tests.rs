@@ -645,7 +645,12 @@ fn a_browser_that_its_loader_stops_reports_the_missing_library() {
     );
     let profile =
         super::super::super::profile::Profile::new(&root.path().join("profiles")).unwrap();
-    let mut browser = super::super::spawn(&browser_path, profile, false).unwrap();
+    let mut browser = super::super::spawn(
+        &browser_path,
+        profile,
+        crate::browser::Extensions::default(),
+    )
+    .unwrap();
     // The browser's output ends before any message, as the host's transport sees it.
     let mut byte = [0; 1];
     assert_eq!(browser.output.read(&mut byte).unwrap(), 0);

@@ -1,8 +1,10 @@
 # Chromium provider dependencies and distribution notices
 
 This independent workspace consumes only the published `midnight-web-viewer-api`
-0.2.0 contract. The public API retains the repository's terms; this plugin does
-not assign or change them. No private host/application crate is linked.
+0.3.0 contract. The public API retains the repository's terms; this plugin does
+not assign or change them. No private host/application crate is linked. The
+provider's own code is MIT-licensed: its package carries `LICENSE` beside CEF's
+`LICENSE.txt`.
 
 The exact Rust lock pins `cef` and `cef-dll-sys` to
 `156.4.0+156.0.26`. Both select the MIT branch of MIT OR Apache-2.0. CEF's sole

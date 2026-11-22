@@ -9,9 +9,6 @@ pub(super) const MAX_IN_FLIGHT: usize = 32;
 /// Browser requests waiting for an in-flight slot. Beyond this (bounded memory)
 /// further assets are cancelled.
 pub(super) const MAX_WAITING: usize = 4096;
-/// Longest captured relative URL (path and query) sent for host resolution; longer
-/// URLs are denied locally instead of exceeding the protocol's control budget.
-pub(super) const MAX_RESOURCE_URL_BYTES: usize = 8 * 1024;
 
 pub(super) enum HostRequest {
     Resolve {
@@ -133,14 +130,6 @@ impl Document {
     }
 }
 
-/// Relative URL (path and query) of a captured asset below the document root, or
-/// None when it must be denied locally: another directory level than the document
-/// root, the main document itself, or a URL beyond the resolution budget.
-pub(super) fn captured_path(policy: &crate::policy::DocumentPolicy, url: &str) -> Option<String> {
-    let path = url.strip_prefix(&policy.main_url())?;
-    (!path.is_empty() && path.len() <= MAX_RESOURCE_URL_BYTES).then(|| path.to_owned())
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -188,6 +177,7 @@ pub(super) mod tests {
             mouse_buttons: AtomicU64::new(0),
             wheel_gesture: Mutex::default(),
             host_shortcuts: false,
+            links: None,
             navigation: Mutex::new(admission::Navigation::new(
                 1,
                 1,
@@ -211,11 +201,7 @@ pub(super) mod tests {
             .unwrap()
             .active
             .insert(7, stream.clone());
-        let handler = CapturedResource::new(
-            doc.clone(),
-            stream,
-            "https://mewv-1.invalid/mewv-document/a.css".into(),
-        );
+        let handler = CapturedResource::new(doc.clone(), stream, format!("{}a.css", main_url()));
         handler.cancel();
         assert!(doc.requests.lock().unwrap().active.is_empty());
         reply(
@@ -259,6 +245,11 @@ pub(super) mod tests {
         assert!(written(&doc, &mut events).is_none());
     }
 
+    /// The test documents' URL: generation 1's captured document folder.
+    pub(in crate::native) fn main_url() -> String {
+        crate::policy::DocumentPolicy::main_url_of(1)
+    }
+
     pub(in crate::native) fn admitted(doc: &Arc<Document>) -> navigation::ResponseLease {
         let now = Instant::now();
         let bound = admission::Binding {
@@ -266,7 +257,7 @@ pub(super) mod tests {
             document: 1,
             browser: 1,
             frame: "main".into(),
-            url: "https://mewv-1.invalid/mewv-document/a".into(),
+            url: format!("{}a", main_url()),
         };
         let response = {
             let mut nav = doc.navigation.lock().unwrap();
@@ -327,11 +318,8 @@ pub(super) mod tests {
     fn admitted_response_cursor_releases_once_at_eof_without_postallow_host_read() {
         let (doc, mut events) = document();
         let stream = Arc::new(Mutex::new(Stream::new(&doc, Some(admitted(&doc)))));
-        let handler = CapturedResource::new(
-            doc.clone(),
-            stream.clone(),
-            "https://mewv-1.invalid/mewv-document/a".into(),
-        );
+        let handler =
+            CapturedResource::new(doc.clone(), stream.clone(), format!("{}a", main_url()));
         let mut bytes = [0_u8; 2];
         let mut count = 0;
         assert_eq!(
@@ -374,7 +362,7 @@ pub(super) mod tests {
             document: 1,
             browser: 1,
             frame: "main".into(),
-            url: "https://mewv-1.invalid/mewv-document/b".into(),
+            url: format!("{}b", main_url()),
         };
         {
             let mut nav = doc.navigation.lock().unwrap();
@@ -555,7 +543,7 @@ wrap_resource_handler! {
                 callback.cont();
             } else {
                 // Keep main's URL/protocol guard before admitting a captured asset.
-                let Some(path) = captured_path(&self.doc.policy, &self.url) else { return 0; };
+                let Some(path) = self.doc.policy.captured_path(&self.url) else { return 0; };
                 stream.callback = Some(saved_callback);
                 drop(stream);
                 if !self.doc.request(self.stream.clone(), HostRequest::Resolve { url: path }) {

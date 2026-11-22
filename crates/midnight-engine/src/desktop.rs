@@ -91,6 +91,10 @@ pub(crate) struct TrackedChild {
 pub(crate) enum OpenCompletionTarget {
     File(PathBuf),
     System(SystemLocation),
+    /// A followed web (`mail` false) or mail link.
+    Url {
+        mail: bool,
+    },
 }
 
 struct OpenAdmission {
@@ -469,11 +473,57 @@ impl Desktop {
         location: SystemLocation,
         tasks: &mut JoinSet<()>,
     ) {
+        let dispatch = move |services: &dyn DesktopServices| {
+            if !services.supports_system_location(location) {
+                return Err(unsupported_system_location());
+            }
+            services.open_system_location(location)
+        };
+        let target = OpenCompletionTarget::System(location);
+        self.open_typed(
+            request,
+            target,
+            unsupported_system_location,
+            dispatch,
+            tasks,
+        )
+        .await;
+    }
+
+    /// Hand a followed web or mail link to the system's default handler.
+    pub(crate) async fn open_url(
+        &self,
+        request: DesktopRequestId,
+        url: ExternalUrl,
+        tasks: &mut JoinSet<()>,
+    ) {
+        let target = OpenCompletionTarget::Url {
+            mail: url.is_mail(),
+        };
+        let dispatch = move |services: &dyn DesktopServices| services.open_url(&url);
+        self.open_typed(request, target, unsupported_url, dispatch, tasks)
+            .await;
+    }
+
+    /// Explicit typed activation without a filesystem path, such as a system location or
+    /// a link. `dispatch` runs on a blocking backend worker within the shared native open
+    /// budget and helper quota; a helper it returns is owned and reaped before `target`'s
+    /// success is published. Without desktop services the answer is `unavailable()`.
+    async fn open_typed(
+        &self,
+        request: DesktopRequestId,
+        target: OpenCompletionTarget,
+        unavailable: fn() -> FsError,
+        dispatch: impl FnOnce(&dyn DesktopServices) -> Result<Option<Box<dyn TerminalProcess>>, FsError>
+        + Send
+        + 'static,
+        tasks: &mut JoinSet<()>,
+    ) {
         let Some(services) = self.services.clone() else {
             self.outbox
                 .send(Event::DesktopActionFinished {
                     request,
-                    result: Err(unsupported_system_location()),
+                    result: Err(unavailable()),
                 })
                 .await;
             return;
@@ -496,12 +546,9 @@ impl Desktop {
             let _permit = permit;
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
                 let _permit = worker_permit;
-                if !services.supports_system_location(location) {
-                    return Err(unsupported_system_location());
-                }
                 // The ticket and helper quota exist before dispatch. A returned
                 // child becomes owned before it can cross cancellation boundaries.
-                services.open_system_location(location).map(|child| {
+                dispatch(services.as_ref()).map(|child| {
                     child.map(|child| -> Box<dyn TerminalProcess> {
                         Box::new(ticket.own(child, slot, process_scope))
                     })
@@ -514,14 +561,14 @@ impl Desktop {
                         .send(TrackedChild {
                             child,
                             _slot: tracking_slot,
-                            completion: Some((request, OpenCompletionTarget::System(location))),
+                            completion: Some((request, target)),
                         })
                         .await;
                     return;
                 }
-                Ok(Ok(None)) => Ok(DesktopActionResult::SystemLocationOpened { location }),
+                Ok(Ok(None)) => Ok(target.success()),
                 Ok(Err(error)) => Err(error),
-                Err(error) => Err(worker_error("open system location", Path::new(""), error)),
+                Err(error) => Err(target.error(false, io::Error::other(error.to_string()))),
             };
             outbox
                 .send(Event::DesktopActionFinished { request, result })
@@ -722,11 +769,23 @@ fn unsupported_system_location() -> FsError {
     )
 }
 
+fn unsupported_url() -> FsError {
+    FsError::from_io(
+        "open link",
+        Path::new(""),
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Opening web and mail links is unavailable.",
+        ),
+    )
+}
+
 impl OpenCompletionTarget {
     fn success(self) -> DesktopActionResult {
         match self {
             Self::File(_) => DesktopActionResult::FileOpened,
             Self::System(location) => DesktopActionResult::SystemLocationOpened { location },
+            Self::Url { mail } => DesktopActionResult::UrlOpened { mail },
         }
     }
     fn error(&self, waiting: bool, error: io::Error) -> FsError {
@@ -744,6 +803,14 @@ impl OpenCompletionTarget {
                     "wait for system location opener"
                 } else {
                     "open system location"
+                },
+                Path::new(""),
+            ),
+            Self::Url { .. } => (
+                if waiting {
+                    "wait for link opener"
+                } else {
+                    "open link"
                 },
                 Path::new(""),
             ),

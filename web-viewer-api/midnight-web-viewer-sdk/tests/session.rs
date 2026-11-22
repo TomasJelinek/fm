@@ -153,3 +153,37 @@ fn generic_transport_handles_back_to_back_packets_and_preserves_io_ownership() {
         command(2, CommandKind::Close)
     );
 }
+
+#[test]
+fn link_events_belong_to_an_opened_document_and_end_with_it() {
+    let hover = |sequence, target: &str| {
+        event(
+            sequence,
+            EventKind::LinkHover {
+                target: target.into(),
+            },
+        )
+    };
+    let activated = |sequence| {
+        event(
+            sequence,
+            EventKind::LinkActivated {
+                target: "../README.md".into(),
+            },
+        )
+    };
+    let mut session = Session::new(8, 3).unwrap();
+    assert!(session.accept(&hover(1, "a.html")).is_err());
+    session.accept(&open()).unwrap();
+    session.accept(&event(1, EventKind::Ready)).unwrap();
+    session.accept(&hover(2, "a.html")).unwrap();
+    session.accept(&hover(3, "")).unwrap();
+    session.accept(&activated(4)).unwrap();
+    assert!(session.accept(&activated(4)).is_err(), "sequence reuse");
+    let mut transport = Transport::new(std::io::empty(), Vec::new());
+    transport.send(&activated(5)).unwrap();
+    let (_, output) = transport.into_inner();
+    assert_eq!(read_message(&mut output.as_slice()).unwrap(), activated(5));
+    session.accept(&event(5, EventKind::Closed)).unwrap();
+    assert!(session.accept(&hover(6, "")).is_err());
+}

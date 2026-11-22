@@ -419,27 +419,11 @@ pub fn crop_backward(
     page
 }
 
-pub fn safe_link(target: &str) -> bool {
-    if target.is_empty()
-        || target.len() > 2048
-        || target
-            .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || decode::visible(c) != c)
-        || target.contains('\\')
-    {
-        return false;
-    }
-    if target.starts_with('#') {
-        return true;
-    }
-    let Some((scheme, rest)) = target.split_once(':') else {
-        return false;
-    };
-    if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http") {
-        rest.starts_with("//") && rest.len() > 2 && !rest[2..].starts_with('/')
-    } else {
-        scheme.eq_ignore_ascii_case("mailto") && !rest.is_empty()
-    }
+/// Whether the protocol can carry a link to `target`: 1 to 8192 bytes without control
+/// characters. What a target does is the host's link policy, which decides on an
+/// explicit user action and names what it refuses, so every other target is passed on.
+pub fn link_target(target: &str) -> bool {
+    (1..=8192).contains(&target.len()) && !target.chars().any(char::is_control)
 }
 
 pub fn plain(decoded: &Decoded, revision: u64, eof: bool) -> DocumentPage {

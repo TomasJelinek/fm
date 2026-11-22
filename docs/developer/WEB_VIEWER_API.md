@@ -85,13 +85,17 @@ assets are unavailable. Enabling JavaScript requires online mode and the UI warn
 that scripts can read/transmit the main document. Each transition revokes resource
 IDs, clears pending presentation, and recreates the Chromium browser/context and
 origin. Permissions reset on a different file. The provider serves the captured
-document at `https://mewv-<generation>.invalid/mewv-document/`; offline relative
-assets and relative navigation to other captured files in scope resolve below it,
-while references that climb above it (`../`) or are root-relative are denied rather
-than substituted. `State.url` always reports that main document URL and
-`State.editable` is always false. Cookies are disabled entirely. File URLs,
-external protocols, downloads, popups, file pickers, device permissions and
-extension loading are denied. There is no renderer-facing application RPC or remote debugging port.
+document at its folder's URL, 16 synthetic folder levels below
+`https://mewv-<generation>.invalid/mewv-document/` (see
+[link routing](#link-routing-apisdk-03) for why); offline relative assets and, without
+host link routing, relative navigation to other captured files in scope resolve below
+it, while references that climb above it (`../`) or are root-relative are denied rather
+than substituted. `State.url` reports `https://mewv-<generation>.invalid/mewv-document/`,
+as before the synthetic levels existed, and `State.editable` is always false. Cookies
+are disabled entirely. File URLs, external protocols, downloads, popups, file pickers,
+device permissions and extension loading are denied; with host link routing a popup
+the user opened becomes a `LinkActivated` event instead, and no window opens either
+way. There is no renderer-facing application RPC or remote debugging port.
 Browser request policy is not represented as an OS-level network firewall.
 
 Windows runs the matching official CEF bootstrap with the same-basename client
@@ -222,3 +226,96 @@ The provider permits up to 60 painted frames per second while the host still kee
 only the newest pending frame. This does not require a GPU or guarantee 60 fps.
 Measured Windows native and software latency and remaining limitations are in the
 [frame-pacing report](../verification/2026-11-12-html-frame-pacing.md).
+
+## Versions and compatibility
+
+The wire stays MWV1 version 1 (`PROTOCOL_VERSION` 1) and the manifest stays schema 1 /
+protocol 1. Each API/SDK release adds Rust enum variants, so its Rust version changes,
+and each new tag is sent only after an exact launch opt-in that the host adds to the
+browser's cleared environment.
+
+| API/SDK | Adds | Launch opt-in |
+| --- | --- | --- |
+| 0.1 | Commands 1–15, events 1–11, host shortcuts 0–9 | — |
+| 0.2 | `HostShortcut` Backspace = 10, AltLeft = 11, AltRight = 12 | `MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS=physical-v1` |
+| 0.3 | Events `LinkHover` = 12 and `LinkActivated` = 13 | `MIDNIGHT_WEB_VIEWER_LINKS=host-v1` |
+
+| Host | 0.2 provider | 0.3 provider |
+| --- | --- | --- |
+| 0.2 host | Links load in the browser | No link opt-in: links load in the browser, no new tags |
+| 0.3 host, `LinkRouting::Browser` | Links load in the browser | No link opt-in: as with a 0.2 provider |
+| 0.3 host, `LinkRouting::Host` | The unknown variable is ignored: links load in the browser, no link events | Link events; the browser never leaves the document by itself |
+
+The application host always adds the physical-v1 opt-in. Every host built against
+0.3 decodes tags 12 and 13; a host built against 0.2 would refuse them, which is why
+the provider sends them only for the exact link opt-in.
+
+## Link routing (API/SDK 0.3)
+
+`midnight_web_viewer_host::LinkRouting` selects who follows a document's links when
+a session opens: `Session::open_with_links(provider, source, resources, viewport,
+wake, ceiling, links)`. `Session::open_with_policy_ceiling` is
+`open_with_links(…, LinkRouting::Browser)`. With `LinkRouting::Browser` the host
+launches the provider as before and links inside the captured document's folder load
+in the browser through the provider's small-body navigation preparation, which the
+Office preview's generated `office/v1/…` paging links rely on. A provider that sends a
+link event anyway ends the session ("Browser sent a link event without the
+link-routing launch opt-in").
+
+With `LinkRouting::Host` the host adds `MIDNIGHT_WEB_VIEWER_LINKS=host-v1` to the
+browser's cleared environment (both platforms' launch allowlists carry it) and passes
+`LinkHover` and `LinkActivated` events to the consumer unchanged, in the browser's
+order, like the other events of the current document. Their targets were already
+validated when the host read them: at most 8,192 bytes of UTF-8, no control characters,
+and nonempty for `LinkActivated`; anything else is a protocol error that ends the
+session. The host's output queue holds 64 events and a full queue ends the session, so
+the provider sends a hover only when its target changes.
+
+Under the opt-in the provider cancels every navigation of the main frame to another
+document and decides in CEF's callbacks:
+
+- `OnStatusMessage` gives Chromium's status URL: the link under the pointer (without
+  one, the keyboard-focused link), empty when there is none; a changed target becomes
+  `LinkHover`. A link whose target cannot be expressed clears the hover target and sends
+  a `Denied` notice.
+- With Chromium's user-gesture flag, `OnBeforeBrowse` (a click or Enter on a focused
+  link), `OnOpenURLFromTab` (a middle, Ctrl or Shift click) and `OnBeforePopup`
+  (`target=_blank`, `window.open`) become `LinkActivated`. One activation is sent per
+  500 ms, so a double click or a script repeating one gesture's navigation reaches the
+  host once.
+- The browser's first load of the document, reloads (F5, Ctrl+R) and fragment
+  navigations within the current document stay inside the browser.
+- Navigations without a user gesture (redirects, meta refresh, scripts), form
+  submissions, popups without a gesture and links whose target cannot be expressed are
+  refused with an `Error { code: Denied }` notice, at most one per second.
+
+A target outside the private origin is the absolute URL exactly as Chromium resolved
+it (it starts with a scheme, whatever the scheme). A target on the private origin is a
+reference relative to the document's folder without a scheme, keeping `?query#fragment`:
+`sub/other.html#part`, `../README.md`, `x.html?q=1`. The document is served at its
+folder's URL, so a link to the document itself or to its folder is `./`; a first
+segment with a colon or an empty first segment is also written after `./`, so a
+relative target never reads as a scheme or a root path. Another generation's private
+origin is no folder of this document; its URLs are passed on like any other URL.
+
+Chromium resolves `../` itself and stops at the origin's root. Below one
+`mewv-document` folder, `../../a.html` and `../../../a.html` would both become the
+origin root's `a.html`, and the host could not tell which file a link names. The
+provider therefore serves the document 16 synthetic folder levels deeper
+(`mewv-level-1/` … `mewv-level-16/`, `plugins/midnight-viewer-html/src/policy.rs`): up
+to 16 `../` segments stay apart and are reported as `../` segments. A link with 17 or
+more cannot be told apart from one with more and is refused with a notice that it
+leads above the 16 folder levels the viewer can tell apart; so is a root-relative link.
+The level names are distinctive, not reserved: a real folder of the document's parent
+named exactly like the innermost level would alias the document's own folder. Assets
+are unchanged: `ResourceResolve` carries the same folder-relative URLs as before, and
+assets above the document's folder are still denied.
+
+The application's viewer engine (`crates/midnight-viewer-engine/src/worker_web.rs`)
+opens ordinary HTML documents with `LinkRouting::Host` and the Office preview with
+`LinkRouting::Browser`. A `LinkHover` target is described on the status line, with the
+pointer cursor, and a `LinkActivated` target is followed by the same host link policy
+as a Markdown link ([links](VIEWER_PREFERENCES.md#links)): a relative target resolves
+against the document's folder, and another generation's private origin (a `.invalid`
+host) is refused. A refusal or result stays on the status line as the browser's notice
+until the next user action.

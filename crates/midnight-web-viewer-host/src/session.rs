@@ -24,6 +24,21 @@ pub enum PolicyCeiling {
     OfflineOnly,
 }
 
+/// Who follows the links of a session's documents. Fixed when the session opens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkRouting {
+    /// The browser follows links inside the captured document's folder itself, as before
+    /// link routing existed (Office previews page this way). The provider sends no link
+    /// events; a provider that sends one anyway ends the session.
+    #[default]
+    Browser,
+    /// The provider is launched with `MIDNIGHT_WEB_VIEWER_LINKS=host-v1`: it reports the
+    /// hovered link (`LinkHover`) and hands every link the user follows to the host
+    /// (`LinkActivated`) instead of navigating. The session passes both events on
+    /// unchanged; the browser's protocol validation has bounded their targets.
+    Host,
+}
+
 #[derive(Default)]
 struct Output {
     events: VecDeque<api::Event>,
@@ -229,6 +244,7 @@ struct Shared {
     wake: Arc<dyn Fn() -> bool + Send + Sync>,
     generation: Arc<Generation>,
     ceiling: PolicyCeiling,
+    links: LinkRouting,
     cleanup: CleanupStatus,
     terminal: Arc<Mutex<Option<Result<(), String>>>>,
 }
@@ -283,6 +299,8 @@ impl Session {
         )
     }
 
+    /// [`Self::open_with_links`] whose browser follows its own links
+    /// ([`LinkRouting::Browser`]).
     pub fn open_with_policy_ceiling(
         provider: Provider,
         source: CapturedFile,
@@ -291,6 +309,29 @@ impl Session {
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
         ceiling: PolicyCeiling,
     ) -> Result<Self, String> {
+        Self::open_with_links(
+            provider,
+            source,
+            resources,
+            viewport,
+            wake,
+            ceiling,
+            LinkRouting::Browser,
+        )
+    }
+
+    /// Open `source` in `provider`'s browser. `links` selects who follows the document's
+    /// links; with [`LinkRouting::Host`] the browser is launched with the link-routing
+    /// opt-in and the consumer receives `LinkHover` and `LinkActivated` events.
+    pub fn open_with_links(
+        provider: Provider,
+        source: CapturedFile,
+        resources: Option<Arc<dyn Resources>>,
+        viewport: api::Viewport,
+        wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        ceiling: PolicyCeiling,
+        links: LinkRouting,
+    ) -> Result<Self, String> {
         let resources = resources.or_else(|| {
             source
                 .resources()
@@ -298,7 +339,7 @@ impl Session {
         });
         let cleanup = Arc::new(Mutex::new(None));
         let owner = SourceOwner::new(source, resources, cleanup.clone());
-        Self::start(wake, ceiling, cleanup, move |shared| {
+        Self::start(wake, ceiling, links, cleanup, move |shared| {
             actor::run(provider, owner, viewport, shared)
         })
     }
@@ -311,13 +352,18 @@ impl Session {
         resources: Option<Arc<dyn Resources>>,
         viewport: api::Viewport,
         limits: actor::Limits,
+        links: LinkRouting,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
         let cleanup = Arc::new(Mutex::new(None));
         let owner = SourceOwner::new(source, resources, cleanup.clone());
-        Self::start(wake, PolicyCeiling::UserChoice, cleanup, move |shared| {
-            actor::run_with(transport, owner, viewport, shared, limits)
-        })
+        Self::start(
+            wake,
+            PolicyCeiling::UserChoice,
+            links,
+            cleanup,
+            move |shared| actor::run_with(transport, owner, viewport, shared, limits),
+        )
     }
 
     /// Run `actor` on the session's thread, supervised (see `supervise`). The thread
@@ -325,6 +371,7 @@ impl Session {
     fn start(
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
         ceiling: PolicyCeiling,
+        links: LinkRouting,
         cleanup: CleanupStatus,
         actor: impl FnOnce(&Shared) -> Result<actor::End, String> + Send + 'static,
     ) -> Result<Self, String> {
@@ -342,6 +389,7 @@ impl Session {
                 resource_signal.resources_ready();
             }))),
             ceiling,
+            links,
             cleanup,
             terminal: Arc::new(Mutex::new(None)),
         };
@@ -957,6 +1005,7 @@ mod tests {
                     true
                 }),
                 PolicyCeiling::UserChoice,
+                LinkRouting::Browser,
                 Arc::new(Mutex::new(None)),
                 move |shared| Err(actor::launch_failed(shared, &error)),
             )

@@ -1185,3 +1185,109 @@ fn an_office_failure_without_details_shows_no_notice() {
     assert!(worker.prepare_office(file, &output).is_err());
     assert!(notices(&output).is_empty());
 }
+
+/// Queue `kind` from the browser, let the worker drain it, and return what it published.
+fn browser_says(
+    browser: &Recording,
+    worker: &mut Worker,
+    output: &Mailbox,
+    kind: api::EventKind,
+) -> Vec<ViewerOutput> {
+    browser.0.lock().unwrap().1.push(event(kind));
+    worker.poll_web(output);
+    output.take()
+}
+
+/// The page's links take the host's link policy: hovering names the real target, a web
+/// link goes to the system's handler, and a refused one stays as the browser's notice
+/// through later frames.
+#[test]
+fn html_links_take_the_host_link_policy_and_refusals_stay_through_frames() {
+    let browser = Recording::default();
+    let (mut worker, output) = web_worker(Box::new(browser.clone()));
+    output.finish_open(Ok(()));
+    let folder = tempfile::tempdir().unwrap();
+    worker.files = Arc::from([folder.path().join("page.html")]);
+    let hover = |outputs: Vec<ViewerOutput>| {
+        outputs.into_iter().find_map(|output| match output {
+            ViewerOutput::LinkHover(status) => Some(status),
+            _ => None,
+        })
+    };
+    let other = folder.path().join("sub").join("other.html");
+    assert_eq!(
+        hover(browser_says(
+            &browser,
+            &mut worker,
+            &output,
+            api::EventKind::LinkHover {
+                target: "sub/other.html#part".into()
+            }
+        )),
+        Some(Some(format!("Link to {}", other.display())))
+    );
+    assert_eq!(
+        hover(browser_says(
+            &browser,
+            &mut worker,
+            &output,
+            api::EventKind::LinkHover {
+                target: String::new()
+            }
+        )),
+        Some(None)
+    );
+    let outputs = browser_says(
+        &browser,
+        &mut worker,
+        &output,
+        api::EventKind::LinkActivated {
+            target: "https://example.com/x".into(),
+        },
+    );
+    let requests: Vec<_> = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ViewerOutput::LinkRequest(ViewerLinkRequest::OpenExternal(url)) => {
+                Some(url.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requests, ["https://example.com/x"]);
+    assert_eq!(worker.status, "Opening in your browser…");
+    let outputs = browser_says(
+        &browser,
+        &mut worker,
+        &output,
+        api::EventKind::LinkActivated {
+            target: "javascript:alert(1)".into(),
+        },
+    );
+    assert!(
+        !outputs
+            .iter()
+            .any(|output| matches!(output, ViewerOutput::LinkRequest(_)))
+    );
+    const REFUSED: &str = "Links to javascript: addresses are not followed.";
+    assert_eq!(worker.status, REFUSED);
+    let (width, height) = (worker.geometry.width, worker.geometry.height);
+    let frame = api::EventKind::Frame(api::Frame {
+        viewport_revision: 1,
+        acknowledged_input: 0,
+        width,
+        height,
+        rgba: vec![0; width as usize * height as usize * 4],
+    });
+    let shown = browser_says(&browser, &mut worker, &output, frame)
+        .into_iter()
+        .find_map(|output| match output {
+            ViewerOutput::Frame(frame) => Some(frame.status),
+            _ => None,
+        });
+    assert_eq!(
+        shown.as_deref(),
+        Some(REFUSED),
+        "the notice outlives a repaint"
+    );
+}

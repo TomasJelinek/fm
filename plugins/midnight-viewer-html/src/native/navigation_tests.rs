@@ -123,7 +123,7 @@ fn exact_per_request_completion_releases_a_claim_before_body_handler_only_once()
             document: 1,
             browser: 1,
             frame: "main".into(),
-            url: "https://mewv-1.invalid/mewv-document/a".into(),
+            url: format!("{}a", resources::tests::main_url()),
         },
         marker: "private-attempt".into(),
         native_request: 77,
@@ -151,12 +151,13 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
     document.policy = crate::policy::DocumentPolicy::new(1, true, false).unwrap();
     let doc = Arc::new(document);
     let now = Instant::now();
+    let main = resources::tests::main_url();
     let bound = admission::Binding {
         session: 1,
         document: 1,
         browser: 1,
         frame: "main".into(),
-        url: "https://mewv-1.invalid/mewv-document/".into(),
+        url: main.clone(),
     };
     let issued = {
         let mut nav = doc.navigation.lock().unwrap();
@@ -199,7 +200,7 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
     };
     let facts = crate::navigation_route::BrowseFacts {
         unmarked: true,
-        target: "https://mewv-1.invalid/mewv-document/",
+        target: &main,
         main_frame: true,
         current_main_url: Some("http://127.0.0.1:32123/roundtrip"),
         get_no_post: true,
@@ -207,6 +208,8 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
         same_document_fragment: false,
         redirect: true,
         direct_load: true,
+        user_gesture: false,
+        links: false,
     };
     assert_eq!(
         crate::navigation_route::classify(&doc.policy, &facts),

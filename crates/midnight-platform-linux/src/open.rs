@@ -1,7 +1,9 @@
 //! Native desktop file integration on bounded backend workers.
 
 use crate::LinuxFileSystem;
-use midnight_core::{FsError, OpenEntryResult, OpenService, SystemLocation, TerminalProcess};
+use midnight_core::{
+    ExternalUrl, FsError, OpenEntryResult, OpenService, SystemLocation, TerminalProcess,
+};
 use std::{
     fs,
     io::{self, Read},
@@ -16,6 +18,10 @@ use std::{
 #[cfg(test)]
 #[path = "executable_open_tests.rs"]
 mod executable_tests;
+
+#[cfg(test)]
+#[path = "open_urls_tests.rs"]
+mod url_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FileActivation {
@@ -115,11 +121,13 @@ impl OpenService for LinuxFileSystem {
         &self,
         location: SystemLocation,
     ) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
-        open_system_with(location, DesktopOpener::find_system(), |mut command| {
-            command
-                .spawn()
-                .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
-        })
+        open_system_with(location, DesktopOpener::find_system(), spawn_helper)
+    }
+
+    /// xdg-open, else `gio open --`, from the system's own folder, with the address as one
+    /// argument. The Engine reaps the returned helper.
+    fn open_url(&self, url: &ExternalUrl) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+        open_url_with(url, DesktopOpener::find(), spawn_helper)
     }
 
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
@@ -169,12 +177,17 @@ impl DesktopOpener {
         })
     }
 
+    /// The opener for documents and links: xdg-open, which follows the desktop's own
+    /// choice of program, else GIO.
     fn find() -> io::Result<Self> {
+        Self::find_with(executable_file)
+    }
+
+    /// The first of xdg-open and GIO whose fixed system path `available` accepts. No
+    /// `PATH` lookup takes part.
+    fn find_with(mut available: impl FnMut(&Path) -> bool) -> io::Result<Self> {
         for candidate in [Self::Xdg, Self::Gio] {
-            if let Ok(metadata) = fs::metadata(candidate.executable())
-                && metadata.is_file()
-                && metadata.permissions().mode() & 0o111 != 0
-            {
+            if available(candidate.executable()) {
                 return Ok(candidate);
             }
         }
@@ -185,11 +198,7 @@ impl DesktopOpener {
     }
 
     fn find_system() -> io::Result<Self> {
-        Self::find_system_with(|path| {
-            fs::metadata(path).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
-        })
+        Self::find_system_with(executable_file)
     }
 
     fn find_system_with(mut available: impl FnMut(&Path) -> bool) -> io::Result<Self> {
@@ -206,15 +215,21 @@ impl DesktopOpener {
     }
 
     fn system_command(self, location: SystemLocation) -> Command {
-        let uri = match location {
+        // Fixed typed target only: no panel CWD, caller URI, shell source or Trash filesystem path.
+        self.uri_command(match location {
             SystemLocation::RecycleBin => "trash:///",
-        };
+        })
+    }
+
+    /// `uri` as the opener's only operand: xdg-open's single argument, or after
+    /// `gio open --`, so that it is never read as an option. The program is started
+    /// directly, without a shell, working folder or standard streams.
+    fn uri_command(self, uri: &str) -> Command {
         let mut command = Command::new(self.executable());
         crate::open_files::with_original_open_file_limit(&mut command);
         if matches!(self, Self::Gio) {
             command.args(["open", "--"]);
         }
-        // Fixed typed target only: no panel CWD, caller URI, shell source or Trash filesystem path.
         command
             .arg(uri)
             .stdin(Stdio::null())
@@ -263,6 +278,34 @@ fn open_system_with(
         .and_then(|opener| launch(opener.system_command(location)))
         .map(Some)
         .map_err(|error| FsError::from_io("open system location", Path::new(""), error))
+}
+
+/// Hands `url` to `opener` as one literal argument. As for system locations, the Engine
+/// reserves its opener slot before this call, owns the returned child and publishes
+/// success only after the helper exits successfully.
+fn open_url_with(
+    url: &ExternalUrl,
+    opener: io::Result<DesktopOpener>,
+    launch: impl FnOnce(Command) -> io::Result<Box<dyn TerminalProcess>>,
+) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+    opener
+        .and_then(|opener| launch(opener.uri_command(url.as_str())))
+        .map(Some)
+        .map_err(|error| FsError::from_io("open link", Path::new(""), error))
+}
+
+/// Whether `path` can be a desktop opener: a regular file with an execute bit, after
+/// following links.
+fn executable_file(path: &Path) -> bool {
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// Starts a desktop helper whose exit the Engine observes.
+fn spawn_helper(mut command: Command) -> io::Result<Box<dyn TerminalProcess>> {
+    command
+        .spawn()
+        .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
 }
 
 fn open_with(

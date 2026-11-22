@@ -114,21 +114,25 @@ impl std::error::Error for LibrariesMissing {}
 /// Only a host-validated, private installed CEF bootstrap may be launched here.
 /// The plugin must use Chromium's sandbox; this profile does not grant renderer authority.
 pub fn spawn(executable: &Path) -> io::Result<Browser> {
-    spawn_configured(executable, false)
+    spawn_with_extensions(executable, Extensions::default())
 }
 
 /// Launch a host that accepts the negotiated physical-v1 web shortcut event extension.
 /// The fixed capability is added explicitly; ambient process values are never forwarded.
 pub fn spawn_with_host_shortcuts(executable: &Path) -> io::Result<Browser> {
-    spawn_configured(executable, true)
+    spawn_with_extensions(
+        executable,
+        Extensions {
+            host_shortcuts: true,
+            ..Extensions::default()
+        },
+    )
 }
 
-/// Public web-viewer API launch contract; kept independent of the protocol crate.
-pub const HOST_SHORTCUTS_ENV: &str = "MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS";
-/// Exact capability value accepted by web-viewer API 0.2 providers.
-pub const HOST_SHORTCUTS_PHYSICAL_V1: &str = "physical-v1";
-
-fn spawn_configured(executable: &Path, host_shortcuts: bool) -> io::Result<Browser> {
+/// Launch a browser for a host that accepts the given negotiated web-viewer API
+/// extensions. Each adds its one fixed value to the cleared environment; ambient
+/// process values are never forwarded.
+pub fn spawn_with_extensions(executable: &Path, extensions: Extensions) -> io::Result<Browser> {
     if !executable.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -136,5 +140,94 @@ fn spawn_configured(executable: &Path, host_shortcuts: bool) -> io::Result<Brows
         ));
     }
     let profile = profile::Profile::new(&native::profile_parent()?)?;
-    native::spawn(executable, profile, host_shortcuts)
+    native::spawn(executable, profile, extensions)
+}
+
+/// Public web-viewer API launch contract; kept independent of the protocol crate.
+pub const HOST_SHORTCUTS_ENV: &str = "MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS";
+/// Exact capability value accepted by web-viewer API 0.2 providers.
+pub const HOST_SHORTCUTS_PHYSICAL_V1: &str = "physical-v1";
+/// Public web-viewer API launch contract of host link routing (API 0.3).
+pub const LINKS_ENV: &str = "MIDNIGHT_WEB_VIEWER_LINKS";
+/// Exact capability value accepted by web-viewer API 0.3 providers.
+pub const LINKS_HOST_V1: &str = "host-v1";
+
+/// The web-viewer API extensions a launching host accepts. A provider uses an extension
+/// only when its exact value is in the environment the host launches it with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Extensions {
+    /// Physical Backspace/Alt+Left/Alt+Right shortcuts (API 0.2): [`HOST_SHORTCUTS_ENV`].
+    pub host_shortcuts: bool,
+    /// Link hover and activation events instead of in-browser navigation (API 0.3):
+    /// [`LINKS_ENV`].
+    pub links: bool,
+}
+
+impl Extensions {
+    /// The fixed value of each accepted extension, keyed by the environment variable that
+    /// carries it.
+    pub fn environment(self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        [
+            (
+                self.host_shortcuts,
+                HOST_SHORTCUTS_ENV,
+                HOST_SHORTCUTS_PHYSICAL_V1,
+            ),
+            (self.links, LINKS_ENV, LINKS_HOST_V1),
+        ]
+        .into_iter()
+        .filter_map(|(accepted, key, value)| accepted.then_some((key, value)))
+    }
+    /// The fixed value of `key`, when it names an accepted extension.
+    #[cfg(any(windows, test))]
+    fn value(self, key: &str) -> Option<&'static str> {
+        self.environment()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_accepted_extension_adds_exactly_its_fixed_launch_value() {
+        let none = Extensions::default();
+        assert_eq!(none.environment().count(), 0);
+        let shortcuts = Extensions {
+            host_shortcuts: true,
+            links: false,
+        };
+        assert_eq!(
+            shortcuts.environment().collect::<Vec<_>>(),
+            [(HOST_SHORTCUTS_ENV, HOST_SHORTCUTS_PHYSICAL_V1)]
+        );
+        let links = Extensions {
+            host_shortcuts: false,
+            links: true,
+        };
+        assert_eq!(
+            links.environment().collect::<Vec<_>>(),
+            [(LINKS_ENV, LINKS_HOST_V1)]
+        );
+        let both = Extensions {
+            host_shortcuts: true,
+            links: true,
+        };
+        assert_eq!(
+            both.environment().collect::<Vec<_>>(),
+            [
+                (HOST_SHORTCUTS_ENV, HOST_SHORTCUTS_PHYSICAL_V1),
+                (LINKS_ENV, LINKS_HOST_V1)
+            ]
+        );
+        assert_eq!(both.value(LINKS_ENV), Some("host-v1"));
+        assert_eq!(shortcuts.value(LINKS_ENV), None);
+        assert_eq!(both.value("MIDNIGHT_WEB_VIEWER_PROFILE"), None);
+        assert_eq!(
+            (LINKS_ENV, LINKS_HOST_V1),
+            ("MIDNIGHT_WEB_VIEWER_LINKS", "host-v1")
+        );
+    }
 }

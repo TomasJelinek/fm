@@ -282,6 +282,13 @@ pub enum Command {
         request: DesktopRequestId,
         location: crate::SystemLocation,
     },
+    /// Hand a followed web or mail link to the system's default handler on a backend
+    /// worker (`OpenService::open_url`). Answered by `Event::DesktopActionFinished`:
+    /// `DesktopActionResult::UrlOpened` once the handler took it, or the reason it did not.
+    OpenUrl {
+        request: DesktopRequestId,
+        url: crate::ExternalUrl,
+    },
     LoadPreferences,
     /// Already armed backend ownership; all sender/permit paths must use guarded admission.
     LaunchExternalComparison(crate::ExternalCompareRequest),

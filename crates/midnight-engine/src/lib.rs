@@ -1122,6 +1122,7 @@ impl EngineServices {
                         Some(Command::Selection(request)) => selection.submit(request),
                         Some(Command::ListDesktopContext) => desktop.context(),
                         Some(Command::OpenSystemLocation { request, location }) => desktop.open_system_location(request, location, &mut tasks).await,
+                        Some(Command::OpenUrl { request, url }) => desktop.open_url(request, url, &mut tasks).await,
                         Some(Command::SetCommandIconView { generation, targets }) => desktop.command_icons(generation, targets),
                         Some(Command::SetFileIconView { generation, targets }) => desktop.file_icons(generation, targets),
                         Some(Command::SetIconEdges(edges)) => desktop.icon_edges(edges),

@@ -15,6 +15,7 @@ mod checksum_manifest_verification;
 mod checksums_backend;
 mod clipboard;
 mod desktop;
+mod desktop_urls;
 mod editor;
 mod elevation;
 mod engine_configuration;

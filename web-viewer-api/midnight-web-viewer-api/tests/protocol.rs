@@ -348,3 +348,140 @@ fn host_shortcut_extension_preserves_every_v1_tag_and_round_trips_new_keys() {
         assert_eq!(read_message(&mut bytes.as_slice()).unwrap(), message);
     }
 }
+
+#[test]
+fn link_routing_keeps_every_earlier_event_tag_and_the_mwv1_version() {
+    let earlier = [
+        (EventKind::Ready, 1),
+        (EventKind::ResourceRelease { resource: 44 }, 8),
+        (EventKind::HostShortcut(HostShortcut::Close), 9),
+        (
+            EventKind::Error {
+                code: ErrorCode::Denied,
+                message: String::new(),
+            },
+            10,
+        ),
+        (EventKind::Closed, 11),
+    ];
+    for (kind, tag) in earlier {
+        let bytes = encode(&event(kind));
+        assert_eq!(&bytes[..8], &[b'M', b'W', b'V', b'1', 1, 0, 1, tag]);
+    }
+    assert_eq!(PROTOCOL_VERSION, 1);
+    assert_eq!(LINKS_ENV, "MIDNIGHT_WEB_VIEWER_LINKS");
+    assert_eq!(LINKS_HOST_V1, "host-v1");
+    assert_eq!(MAX_LINK_TARGET_BYTES, 8192);
+}
+
+fn link_kinds(target: &str) -> [EventKind; 2] {
+    [
+        EventKind::LinkHover {
+            target: target.into(),
+        },
+        EventKind::LinkActivated {
+            target: target.into(),
+        },
+    ]
+}
+
+#[test]
+fn link_events_round_trip_as_tags_12_and_13_up_to_8192_bytes() {
+    let longest = format!("{}{}", "../".repeat(16), "x".repeat(8192 - 48));
+    assert_eq!(longest.len(), MAX_LINK_TARGET_BYTES);
+    for target in [
+        "sub/other.html#part",
+        "../README.md",
+        "x.html?q=1",
+        "./",
+        "žluťoučký kůň.html",
+        "https://example.org/a b?c#d",
+        "mailto:someone@example.org",
+        longest.as_str(),
+    ] {
+        for (kind, tag) in link_kinds(target).into_iter().zip([12, 13]) {
+            let message = event(kind);
+            let bytes = encode(&message);
+            assert_eq!(&bytes[..8], &[b'M', b'W', b'V', b'1', 1, 0, 1, tag]);
+            assert_eq!(&bytes[40..44], &(target.len() as u32).to_le_bytes());
+            assert_eq!(&bytes[44..], target.as_bytes());
+            assert_eq!(read_message(&mut bytes.as_slice()).unwrap(), message);
+        }
+    }
+    // The pointer left every link.
+    let left = event(EventKind::LinkHover {
+        target: String::new(),
+    });
+    assert_eq!(read_message(&mut encode(&left).as_slice()).unwrap(), left);
+}
+
+#[test]
+fn link_targets_beyond_8192_bytes_or_with_control_characters_are_never_written() {
+    let mut refused = vec![EventKind::LinkActivated {
+        target: String::new(),
+    }];
+    for target in [
+        "x".repeat(8193),
+        // A multibyte character crossing the limit counts in UTF-8 bytes.
+        format!("{}ž", "x".repeat(8191)),
+        "a\nb.html".into(),
+        "tab\there".into(),
+        "nul\0".into(),
+        "delete\u{7f}".into(),
+        "next-line\u{85}".into(),
+    ] {
+        refused.extend(link_kinds(&target));
+    }
+    for kind in refused {
+        let message = event(kind);
+        assert!(message.validate().is_err(), "{message:?}");
+        let mut output = Vec::new();
+        assert!(write_message(&mut output, &message).is_err());
+        assert!(output.is_empty());
+    }
+}
+
+/// An event's bytes written without the encoder's validation, as a faulty peer could.
+fn unchecked_event(tag: u8, text: &[u8]) -> Vec<u8> {
+    let mut control = Vec::new();
+    for value in [11u64, 3, 5] {
+        control.extend(value.to_le_bytes());
+    }
+    control.extend((text.len() as u32).to_le_bytes());
+    control.extend(text);
+    let mut bytes = prefix(1, tag, control.len() as u32, 0);
+    bytes.extend(control);
+    bytes
+}
+
+#[test]
+fn received_link_events_are_checked_before_they_reach_a_host() {
+    for tag in [12, 13] {
+        let valid = unchecked_event(tag, b"../README.md");
+        assert!(read_message(&mut valid.as_slice()).is_ok());
+        for text in [
+            "x".repeat(8193).into_bytes(),
+            b"a\x1bb".to_vec(),
+            "c1\u{9b}".as_bytes().to_vec(),
+            vec![0xff, b'a'],
+        ] {
+            let bytes = unchecked_event(tag, &text);
+            assert_eq!(
+                read_message(&mut bytes.as_slice()).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+    }
+    let activated_nothing = unchecked_event(13, b"");
+    assert!(read_message(&mut activated_nothing.as_slice()).is_err());
+    let hover_cleared = unchecked_event(12, b"");
+    assert!(read_message(&mut hover_cleared.as_slice()).is_ok());
+    // Tag 14 is not an event, and link events carry no raw section.
+    for bytes in [
+        prefix(1, 14, 24, 0),
+        prefix(1, 12, 28, 1),
+        prefix(1, 13, 28, 1),
+    ] {
+        assert!(read_message(&mut bytes.as_slice()).is_err());
+    }
+}

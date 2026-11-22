@@ -1,7 +1,7 @@
-# Interactive web viewer API and SDK 0.2.0
+# Interactive web viewer API and SDK 0.3.0
 
 This independent Rust 2024 / Rust 1.99 workspace has no third-party dependencies.
-The SDK depends only on `midnight-web-viewer-api =0.2.0`. Providers consume released
+The SDK depends only on `midnight-web-viewer-api =0.3.0`. Providers consume released
 registry packages; this workspace never depends on the application, Slint, Tokio,
 CEF or a private host crate. Existing semantic and raster protocols are unchanged.
 
@@ -61,6 +61,7 @@ enum EventKind {
     ResourceRead { request: u64, resource: u64, offset: u64, length: u32 },
     ResourceRelease { resource: u64 }, HostShortcut(HostShortcut),
     Error { code: ErrorCode, message: String }, Closed,
+    LinkHover { target: String }, LinkActivated { target: String },
 }
 fn read_message(reader: &mut impl std::io::Read) -> std::io::Result<Message>;
 fn write_message(writer: &mut impl std::io::Write, message: &Message) -> std::io::Result<()>;
@@ -86,7 +87,8 @@ offsets count UTF-8 bytes, must be ordered, and must be character boundaries.
 Empty Find clears matches. Zoom is absolute, finite and in 0.1..=10.0. Active find
 matches are one-based; zero denotes no active match. Escape/Find/file-cycle
 requests are explicit `HostShortcut` values; editable-focus arbitration belongs
-inside the browser. `State.editable` is informational.
+inside the browser. `State.editable` is informational: the bundled Chromium provider
+always reports false, so hosts must not rely on it.
 
 Frames own tightly packed premultiplied sRGB RGBA8 bytes, no borrowed paint buffer.
 Frame dimensions must match the current viewport and `viewport_revision`; their
@@ -135,6 +137,59 @@ into the browser arbitration loop. Plain/Shift+Space retain their existing tags
 and unbound page-scroll behavior. Repeated new navigation keys are consumed
 without repeating file changes; editable fields retain normal browser key repeat.
 
+## Optional host link routing (API/SDK 0.3)
+
+The Rust package version is 0.3 because the two new event variants change exhaustive
+source matches. The wire remains MWV1 version 1, every earlier tag and encoding is
+unchanged, and manifest schema 1 / protocol 1 needs no new field. The new event tags
+are `LinkHover` = 12 and `LinkActivated` = 13; each carries one string, `target`, and
+no raw section.
+
+A host that decodes these tags launches the provider with
+`MIDNIGHT_WEB_VIEWER_LINKS=host-v1` in its cleared process environment (`LINKS_ENV`,
+`LINKS_HOST_V1`); the value is never copied from an ambient environment. Only for this
+exact value does the provider route links to the host. Without it, links behave as in
+0.2: relative links to files in the document's folder load inside the browser, and no
+new tag is sent. Old hosts never set the value, and old providers ignore it, so every
+combination of host and provider keeps working.
+
+With the opt-in, the main frame never navigates to another document by itself:
+
+- `LinkHover { target }` reports the link under the pointer (the browser's status
+  link, which is the keyboard-focused link while the pointer is over none), empty once
+  there is none. It is sent only when it changes.
+- `LinkActivated { target }` reports a link the user followed: a left, middle,
+  Ctrl or Shift click, Enter on a focused link, `target=_blank`, `window.open` or any
+  other new window or tab. The provider cancels the navigation; only the host decides
+  what happens. One activation is reported per half second, so a double click or a
+  script repeating one gesture's navigation reaches the host once.
+- A fragment navigation within the current document stays inside the browser.
+- Navigations without a user gesture (redirects, meta refresh, scripts), form
+  submissions and links whose target cannot be expressed are refused with
+  `Error { code: Denied, message }`, at most one such notice per second. A
+  new window or tab never opens.
+
+Targets use one format for both events. Outside the provider's private document
+origin a target is the absolute URL exactly as the browser resolved it; it always
+starts with a scheme (`https://example.org/a?b#c`, `mailto:…`). On the private origin
+it is a reference relative to the document's folder, without a scheme and keeping
+`?query#fragment`: `sub/other.html#part`, `../README.md`, `x.html?q=1`. The provider
+serves the document at its folder's URL, so the document itself and its folder are
+both `./`; a first segment with a colon or an empty first segment is also written after
+`./`, so no relative target can read as a scheme or a root path. Targets are at most
+`MAX_LINK_TARGET_BYTES` (8192) bytes of UTF-8 and contain no control characters;
+`LinkActivated` targets are also nonempty. Encoding, decoding and therefore every
+receiving host refuse other values; a provider sends a `Denied` notice instead.
+
+Browsers resolve `../` themselves and stop at the origin's root, which would make
+`../../a.html` and `../../../a.html` the same URL. The bundled provider therefore
+serves the document 16 synthetic folder levels below its private origin's
+`mewv-document` folder: up to 16 `../` segments stay apart and are reported as such.
+A link with 17 or more cannot be told apart from one with more; it is refused with a
+notice saying that it leads above the folder levels the viewer can tell apart. Asset
+requests are unchanged: their relative URLs in `ResourceResolve` are still relative to
+the document's folder, and assets above it are still denied.
+
 ## MWV1 version 1 wire
 
 All integers and IEEE-754 f64 values use little endian. The 16-byte fixed prefix is
@@ -145,7 +200,7 @@ bytes. Booleans are exactly 0 or 1. Modifiers are one u8: Shift bit0, Control bi
 Alt bit2, Meta bit3; other bits are invalid. Nested enums use one u8 discriminant
 in declaration order starting at zero. All enums reject unknown tags.
 
-Command tags 1..=15 and event tags 1..=11 follow their declaration order above.
+Command tags 1..=15 and event tags 1..=13 follow their declaration order above.
 ResourceReply Data's `bytes` and Frame's `rgba` are the raw section; no vector
 length is duplicated in control. All other variants require zero raw length.
 Control (including Header) is 24..=65,536 bytes. Data raw length is at most
@@ -199,7 +254,7 @@ build is required. `pwsh web-viewer-api/scripts/package.ps1` on Windows or
 `python web-viewer-api/scripts/package.py` on Linux creates a fresh
 immutable `_build/html-viewer/sdk/release-*/` registry bundle. It prints its Cargo
 config path; pass that path as `cargo --config PATH` when building an independent
-provider that declares `version = "=0.2.0", registry = "midnight"`. The bundle
+provider that declares `version = "=0.3.0", registry = "midnight"`. The bundle
 contains normalized Cargo packages, SHA-256 index entries and artifacts.json.
 Source path dependencies never enter the released manifests. This only packages
 the public API/SDK and is not evidence of native Chromium execution.

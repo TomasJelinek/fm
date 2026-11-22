@@ -194,10 +194,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'HTML provider build failed' }
     # Packaging copies and hashes about 370 MB. An installed package made from the same
     # inputs (provider library, verified CEF SDK receipt, SDK configuration, packaging
-    # scripts, manifest and notices) is kept while its runtime inventory is unchanged.
+    # scripts, manifest, licence and notices) is kept while its runtime inventory is unchanged.
     $receipt = $native.cef_path + '.verified.json'
     $inputs = @((Join-Path $target "$Profile/midnight_viewer_html.dll"), $receipt, $SdkConfig) +
-        @('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'web-viewer.json', 'THIRD_PARTY.md', 'README.md' |
+        @('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'web-viewer.json', 'LICENSE', 'THIRD_PARTY.md', 'README.md' |
             ForEach-Object { Join-Path $pluginRoot $_ }) +
         @(Get-ChildItem -LiteralPath (Join-Path $pluginRoot 'scripts'), (Join-Path $pluginRoot 'notices') -Recurse -File |
             Sort-Object FullName | ForEach-Object FullName)

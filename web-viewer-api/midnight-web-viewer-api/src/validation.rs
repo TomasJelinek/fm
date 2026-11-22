@@ -99,6 +99,11 @@ fn finite(values: &[f64]) -> io::Result<()> {
     check(values.iter().all(|value| value.is_finite()))
 }
 
+/// A link target is bounded UTF-8 without control characters; an empty one clears a hover.
+fn link_target(target: &str) -> io::Result<()> {
+    check(target.len() <= MAX_LINK_TARGET_BYTES && !target.chars().any(char::is_control))
+}
+
 /// Validate an individual source range. The resource owner also checks its captured length.
 pub fn validate_read(offset: u64, length: u32) -> io::Result<()> {
     check(
@@ -197,6 +202,11 @@ pub(crate) fn validate_raw(message: &Message, raw_len: usize) -> io::Result<()> 
                 validate_read(*offset, *length)?;
             }
             EventKind::ResourceRelease { resource } => check(*resource != 0)?,
+            EventKind::LinkHover { target } => link_target(target)?,
+            EventKind::LinkActivated { target } => {
+                check(!target.is_empty())?;
+                link_target(target)?;
+            }
             _ => {}
         },
     }

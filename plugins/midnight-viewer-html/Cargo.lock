@@ -646,9 +646,9 @@ dependencies = [
 
 [[package]]
 name = "midnight-web-viewer-api"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://midnight-explorer.invalid/api-index"
-checksum = "5c3e958b2663c303c841dd20a7ce6c67518f1c9b894b3637df8f54905cc27768"
+checksum = "6849eb55d8b6a5346597a9e3ac71e3c80c6902b84b4dfcedea07322ff29ee7f6"
 
 [[package]]
 name = "miniz_oxide"

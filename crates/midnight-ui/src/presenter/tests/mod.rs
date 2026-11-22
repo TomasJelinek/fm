@@ -13,6 +13,7 @@ pub(super) mod copy_dialog;
 mod directory_link_tooltip;
 mod drag_drop;
 mod elevation;
+mod external_urls;
 mod file_actions;
 mod filename_colors;
 mod folder_presence;

@@ -1,6 +1,6 @@
 //! Platform-neutral contracts for optional native desktop integration.
 
-use crate::{Entry, EntryKind, FsError, NavigationId, PaneId};
+use crate::{Entry, EntryKind, ExternalUrl, FsError, NavigationId, PaneId};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -422,6 +422,12 @@ pub enum DesktopActionResult {
     SystemLocationOpened {
         location: SystemLocation,
     },
+    /// The system's default handler accepted a web (`mail` false) or mail link
+    /// ([`OpenService::open_url`]), or the helper it returned exited successfully. This
+    /// does not assert that a browser or mail window is visible or ready.
+    UrlOpened {
+        mail: bool,
+    },
     OpenDirectory {
         pane: PaneId,
         navigation: NavigationId,
@@ -494,6 +500,23 @@ pub trait OpenService: Send + Sync + 'static {
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "This desktop system location is unavailable.",
+            ),
+        ))
+    }
+
+    /// Hand a link the user followed to the system's default handler, on a backend
+    /// worker. Only an [`ExternalUrl`] is accepted: an `http`, `https` or `mailto` address
+    /// in plain ASCII, never a file path, and it never passes through a shell. None means
+    /// native dispatch was accepted. A returned helper remains owned and reaped by the
+    /// caller; success is published only after its successful exit. Acceptance does not
+    /// mean that a browser or mail window is showing.
+    fn open_url(&self, _url: &ExternalUrl) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+        Err(FsError::from_io(
+            "open link",
+            Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Opening web and mail links is unavailable.",
             ),
         ))
     }
@@ -886,6 +909,25 @@ mod tests {
         assert_ne!(key, IconKey::folder());
         assert_eq!(key.drive_root, None);
         assert_eq!(key.extension, None);
+    }
+
+    /// A desktop written before viewers followed links.
+    struct PathsOnly;
+    impl OpenService for PathsOnly {
+        fn open_entry(&self, _: &Path) -> Result<OpenEntryResult, FsError> {
+            panic!("a link must never fall back to path activation")
+        }
+    }
+
+    #[test]
+    fn links_need_explicit_service_support_and_never_become_paths() {
+        for link in ["https://example.com/", "mailto:someone@example.com"] {
+            let url = ExternalUrl::parse(link).unwrap();
+            let error = PathsOnly.open_url(&url).err().unwrap();
+            assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
+            assert_eq!(error.operation, "open link");
+            assert!(error.path.as_os_str().is_empty());
+        }
     }
 
     /// A session written before the event-driven wait existed.

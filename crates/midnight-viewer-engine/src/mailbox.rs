@@ -190,6 +190,11 @@ impl Mailbox {
                 ViewerOutput::SandboxNotice(_) => {
                     matches!(pending[index], ViewerOutput::SandboxNotice(_))
                 }
+                ViewerOutput::LinkHover(_) => matches!(pending[index], ViewerOutput::LinkHover(_)),
+                ViewerOutput::LinkFocus { .. } => {
+                    matches!(pending[index], ViewerOutput::LinkFocus { .. })
+                }
+                ViewerOutput::LinkRequest(_) => false,
                 ViewerOutput::CopyText(_) => matches!(pending[index], ViewerOutput::CopyText(_)),
                 ViewerOutput::WebState { .. } => {
                     matches!(pending[index], ViewerOutput::WebState { .. })
@@ -227,7 +232,16 @@ impl Mailbox {
         let palette = matches!(output, ViewerOutput::PaletteApplied { .. });
         let failure = matches!(output, ViewerOutput::VerticalPositionUnavailable { .. });
         let media_retired = matches!(output, ViewerOutput::MediaRetired { .. });
-        let notice = matches!(output, ViewerOutput::SandboxNotice(_));
+        // The latest link hover and focus, and every followed link's request, are
+        // admitted like the notice: the window waits for the hover's answer, and a
+        // request is what the user asked for.
+        let notice = matches!(
+            output,
+            ViewerOutput::SandboxNotice(_)
+                | ViewerOutput::LinkHover(_)
+                | ViewerOutput::LinkFocus { .. }
+                | ViewerOutput::LinkRequest(_)
+        );
         let reserved = usize::from(
             !frame
                 && !pending

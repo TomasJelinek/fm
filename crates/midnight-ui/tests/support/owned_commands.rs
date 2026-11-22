@@ -239,6 +239,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::ListVolumes
             | Command::ListDesktopContext
             | Command::OpenSystemLocation { .. }
+            | Command::OpenUrl { .. }
             | Command::LoadPreferences
             | Command::ImportPreferences { .. }
             | Command::ListFontFamilies

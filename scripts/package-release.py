@@ -281,7 +281,8 @@ def image_viewer_manifest(package, files, target, *, web=False):
                    for value in extensions) or len(set(extensions)) != len(extensions)):
         raise ValueError("Incompatible image viewer manifest")
     executable = worker_executable(manifest.get("executable"), target)
-    for required in (filename, executable, *(('LICENSE.txt', 'THIRD_PARTY.md') if web else
+    # The HTML provider's own licence is LICENSE; its LICENSE.txt is CEF's.
+    for required in (filename, executable, *(('LICENSE', 'LICENSE.txt', 'THIRD_PARTY.md') if web else
                                            ('LICENSE', 'THIRD-PARTY.md'))):
         if package / required not in files:
             raise ValueError(f"Image viewer package missing required file {required}: {package}")

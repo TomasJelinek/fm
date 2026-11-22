@@ -1,7 +1,7 @@
 //! Native desktop file integration on bounded backend workers.
 
 use crate::WindowsFileSystem;
-use midnight_core::{FsError, OpenEntryResult, OpenService, SystemLocation};
+use midnight_core::{ExternalUrl, FsError, OpenEntryResult, OpenService, SystemLocation};
 use std::{
     fs::{self, OpenOptions},
     io,
@@ -37,6 +37,17 @@ impl OpenService for WindowsFileSystem {
         launch_system_location(location)
             .map(|()| None)
             .map_err(|error| FsError::from_io("open system location", Path::new(""), error))
+    }
+
+    /// `ShellExecuteExW` with the open verb and the address as its only text: the
+    /// handler registered for the scheme starts, never cmd.exe and never a file path.
+    fn open_url(
+        &self,
+        url: &ExternalUrl,
+    ) -> Result<Option<Box<dyn midnight_core::TerminalProcess>>, FsError> {
+        launch_url(url)
+            .map(|()| None)
+            .map_err(|error| FsError::from_io("open link", Path::new(""), error))
     }
 
     fn open_entry(&self, path: &Path) -> Result<OpenEntryResult, FsError> {
@@ -109,6 +120,59 @@ impl ShellOpen {
             nShow: SW_SHOWNORMAL,
             ..Default::default()
         }
+    }
+}
+
+/// A web or mail link for the handler the Shell has registered for its scheme: the
+/// plain ASCII address is the request's only text.
+struct UrlOpen {
+    file: Vec<u16>,
+}
+
+impl UrlOpen {
+    fn new(url: &ExternalUrl) -> Self {
+        Self {
+            file: url.as_str().encode_utf16().chain(Some(0)).collect(),
+        }
+    }
+
+    /// The open verb and the address only: no parameters, working folder, class or
+    /// window, so the scheme's handler receives nothing but the address.
+    fn info(&self) -> SHELLEXECUTEINFOW {
+        SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC,
+            lpVerb: windows_sys::w!("open"),
+            lpFile: self.file.as_ptr(),
+            nShow: SW_SHOWNORMAL,
+            ..Default::default()
+        }
+    }
+}
+
+fn launch_url(url: &ExternalUrl) -> io::Result<()> {
+    let request = UrlOpen::new(url);
+    // A scheme's handler can be a Shell extension that requires STA, as for file
+    // associations; NOASYNC keeps its initialization within this scope.
+    let _com = crate::desktop::ComGuard::initialize(COINIT_APARTMENTTHREADED as u32)
+        .ok_or_else(|| io::Error::other("cannot initialize desktop link COM apartment"))?;
+    let mut info = request.info();
+    // SAFETY: the static verb and the terminated address owned by `request` outlive this
+    // synchronous call; every other pointer is null. No parameters reach a command line.
+    let succeeded = unsafe { ShellExecuteExW(&mut info) } != 0;
+    // Capture thread-local last error before handle/COM cleanup can overwrite it.
+    let error = (!succeeded).then(io::Error::last_os_error);
+    if !info.hProcess.is_null() {
+        // SAFETY: any returned hProcess is an owned process handle. NOCLOSEPROCESS is
+        // absent, so this is normally null.
+        unsafe { CloseHandle(info.hProcess) };
+    }
+    match error {
+        None => Ok(()),
+        Some(error) if error.raw_os_error() == Some(0) => {
+            Err(io::Error::other("The system did not accept the link."))
+        }
+        Some(error) => Err(error),
     }
 }
 
@@ -533,3 +597,7 @@ mod tests {
 #[cfg(test)]
 #[path = "open_junction_tests.rs"]
 mod junction_tests;
+
+#[cfg(test)]
+#[path = "open_urls_tests.rs"]
+mod url_tests;

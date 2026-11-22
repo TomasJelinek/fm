@@ -1,7 +1,7 @@
 # Independent Chromium HTML viewer
 
 This required runtime plugin is its own Rust workspace and lockfile. It consumes only
-the released `midnight-web-viewer-api` 0.2.0 registry package. Removing its
+the released `midnight-web-viewer-api` 0.3.0 registry package. Removing its
 installed viewer directory removes HTML capability without changing the host, but
 normal builds and distribution validation require the complete package.
 Use `bash scripts/build-html-viewer.sh debug` or
@@ -54,8 +54,10 @@ checks the same way. The helper builds the Rust DLL and creates
 `_build/html-viewer/provider-target/package`.
 Copy the whole resulting package beneath the application-private
 `viewers/midnight-viewer-html/` directory. Do not register it from an opened folder.
-Retain `CREDITS.html`, `LICENSE.txt`, `THIRD_PARTY.md`, `notices/` and
-`runtime-files.json`; the latter lists every package file's SHA-256.
+Retain `LICENSE` (this provider's MIT licence), CEF's `LICENSE.txt`, `CREDITS.html`,
+`THIRD_PARTY.md`, `notices/` and `runtime-files.json`; the latter lists every package
+file's SHA-256. Release packaging (`scripts/package-release.py`) refuses an HTML viewer
+package without its own `LICENSE`.
 
 ## Verification
 
@@ -98,19 +100,35 @@ Policy changes require a new Open document generation and fresh source/resource
 IDs. The old browser must complete OnBeforeClose before a new context is created;
 a five-second close timeout exits the provider instead of weakening isolation.
 Offline permits only the current synthetic origin, main document and bounded
-host resource capabilities. The captured document is served at
-`https://mewv-<generation>.invalid/mewv-document/`; relative assets, and offline
-relative navigation to other captured files in scope, resolve below that directory
-through host capabilities. A reference that climbs above it (`../x`) or is
-root-relative (`/x`) is denied, never mapped onto a same-named file of the document
-directory. `State.url` always reports that main document URL (not the page shown
-after an in-scope navigation), and `State.editable` is always false. Online exposes
+host resource capabilities. The captured document is served at its folder's URL, 16
+synthetic folder levels (`mewv-level-1/` … `mewv-level-16/`, see `src/policy.rs`) below
+`https://mewv-<generation>.invalid/mewv-document/`, so that links with up to 16 `../`
+segments stay apart after Chromium resolves them; relative assets, and without host
+link routing offline relative navigation to other captured files in scope, resolve
+below that folder through host capabilities. A reference that climbs above it (`../x`)
+or is root-relative (`/x`) is denied, never mapped onto a same-named file of the
+document directory. `State.url` always reports
+`https://mewv-<generation>.invalid/mewv-document/` (not the page shown after an
+in-scope navigation), and `State.editable` is always false. Online exposes
 only the captured main document and permits HTTP(S); relative native/archive assets
 are revoked. Scripts require explicit online mode. Navigation, redirects, downloads,
 popups, file dialogs, permissions and external protocols cannot grant native
 authority. Select-control popup surfaces are separately bounded and composited into
 owned RGBA frames; without a visible popup each converted paint moves into its
 frame without a second copy. No OnPaint or resource-output pointer survives its callback.
+
+With the host's exact `MIDNIGHT_WEB_VIEWER_LINKS=host-v1` launch value (web-viewer API
+0.3), the provider routes links to the host instead (`src/links.rs`, routes in
+`src/navigation_route.rs`): Chromium's status URL of the hovered link becomes
+`LinkHover` when it changes, and a navigation of the main frame to another document
+that the user started (a click of any kind, Enter on a link, `target=_blank`,
+`window.open`) is cancelled and becomes `LinkActivated`, at most one per 500 ms.
+The first load, reloads and fragment navigations within the document stay in the
+browser; navigations without a user gesture, form submissions and targets that cannot
+be expressed are refused with one `Denied` notice per second at most. Targets are
+absolute URLs off the private origin and folder-relative references (up to 16 `../`)
+on it; see the [web viewer API](../../docs/developer/WEB_VIEWER_API.md#link-routing-apisdk-03).
+Without that value, links load in the browser as before.
 
 At most 32 host resource requests are in flight; further browser requests wait in
 a FIFO of at most 4096 instead of failing, and a relative URL over 8 KiB is denied

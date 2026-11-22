@@ -122,7 +122,7 @@ pub(super) fn profile_parent() -> io::Result<std::path::PathBuf> {
 pub(super) fn spawn(
     executable: &Path,
     profile: super::profile::Profile,
-    host_shortcuts: bool,
+    extensions: super::Extensions,
 ) -> io::Result<Browser> {
     let wide: Vec<u16> = executable.as_os_str().encode_wide().chain([0]).collect();
     if wide[..wide.len() - 1].contains(&0) {
@@ -168,19 +168,19 @@ pub(super) fn spawn(
         )
     })?;
     // Explicit environment allowlist: no user tokens, proxy credentials, PATH or source names.
+    // Names stay sorted case-insensitively, as Windows expects of an environment block.
     let mut environment = Vec::<u16>::new();
     for key in [
         "LOCALAPPDATA",
         super::HOST_SHORTCUTS_ENV,
+        super::LINKS_ENV,
         "MIDNIGHT_WEB_VIEWER_PROFILE",
         "SystemRoot",
         "TEMP",
         "TMP",
     ] {
         let value = match key {
-            super::HOST_SHORTCUTS_ENV => {
-                host_shortcuts.then(|| super::HOST_SHORTCUTS_PHYSICAL_V1.into())
-            }
+            super::HOST_SHORTCUTS_ENV | super::LINKS_ENV => extensions.value(key).map(Into::into),
             "MIDNIGHT_WEB_VIEWER_PROFILE" | "TEMP" | "TMP" => {
                 Some(profile.path().as_os_str().to_owned())
             }

@@ -499,9 +499,11 @@ pub(super) fn run(
         );
     }
     validation.map_err(|error| error.to_string())?;
-    let browser =
-        midnight_worker_platform::browser::spawn_with_host_shortcuts(&provider.executable)
-            .map_err(|error| launch_failed(shared, &error))?;
+    let browser = midnight_worker_platform::browser::spawn_with_extensions(
+        &provider.executable,
+        launch_extensions(shared.links),
+    )
+    .map_err(|error| launch_failed(shared, &error))?;
     let transport = Transport {
         input: Box::new(browser.input),
         output: Box::new(browser.output),
@@ -510,6 +512,15 @@ pub(super) fn run(
     // The rest of `browser`, its private profile, is dropped when this function returns:
     // after `run_with` waited for the whole process tree.
     run_with(transport, owner, viewport, shared, Limits::default())
+}
+
+/// The web-viewer API extensions this host accepts from a browser it launches: always the
+/// physical-v1 shortcuts, and link routing only for a session that routes links to the host.
+fn launch_extensions(links: LinkRouting) -> midnight_worker_platform::browser::Extensions {
+    midnight_worker_platform::browser::Extensions {
+        host_shortcuts: true,
+        links: links == LinkRouting::Host,
+    }
 }
 
 /// The message of the terminal error of a browser that could not start. A refused sandbox
@@ -735,6 +746,14 @@ fn forward(
                 }
             }
             api::EventKind::Ready => shared.signal.ready(),
+            // A provider sends link events only under the launch opt-in (`LinkRouting`).
+            api::EventKind::LinkHover { .. } | api::EventKind::LinkActivated { .. }
+                if shared.links == LinkRouting::Browser =>
+            {
+                return Err(
+                    "Browser sent a link event without the link-routing launch opt-in".into(),
+                );
+            }
             _ => {}
         }
         shared
@@ -794,6 +813,43 @@ fn physical_key_launch_contract_matches_the_public_api() {
     assert_eq!(
         midnight_worker_platform::browser::HOST_SHORTCUTS_PHYSICAL_V1,
         api::HOST_SHORTCUTS_PHYSICAL_V1
+    );
+}
+
+#[test]
+fn only_a_session_that_routes_links_to_the_host_launches_with_the_link_opt_in() {
+    use midnight_worker_platform::browser::{Extensions, LINKS_ENV, LINKS_HOST_V1};
+    assert_eq!(
+        (LINKS_ENV, LINKS_HOST_V1),
+        (api::LINKS_ENV, api::LINKS_HOST_V1)
+    );
+    let launched = |links| {
+        let extensions = launch_extensions(links);
+        (extensions, extensions.environment().collect::<Vec<_>>())
+    };
+    assert_eq!(LinkRouting::default(), LinkRouting::Browser);
+    assert_eq!(
+        launched(LinkRouting::Browser),
+        (
+            Extensions {
+                host_shortcuts: true,
+                links: false
+            },
+            vec![(api::HOST_SHORTCUTS_ENV, api::HOST_SHORTCUTS_PHYSICAL_V1)]
+        )
+    );
+    assert_eq!(
+        launched(LinkRouting::Host),
+        (
+            Extensions {
+                host_shortcuts: true,
+                links: true
+            },
+            vec![
+                (api::HOST_SHORTCUTS_ENV, api::HOST_SHORTCUTS_PHYSICAL_V1),
+                (api::LINKS_ENV, api::LINKS_HOST_V1)
+            ]
+        )
     );
 }
 

@@ -27,6 +27,8 @@ pub(crate) struct Page {
     pub styles: Vec<StyleSpan>,
     pub tables: Vec<TableRow>,
     pub document_blocks: Vec<DocumentBlock>,
+    /// A document page's links and headings (`worker_links.rs`).
+    pub links: PageLinks,
     /// Font size used when converting semantic styles; reflow scales these styles.
     pub style_size: f32,
     pub anchors: Vec<viewer::Anchor>,
@@ -38,6 +40,28 @@ pub(crate) struct Page {
     pub partial_line: bool,
     /// The source revision the provider read this page from.
     pub revision: u64,
+}
+
+/// The links and headings of a document page, in its text's byte offsets.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PageLinks {
+    /// In text order, never empty and never overlapping (the plugin API checks both).
+    pub links: Vec<PageLink>,
+    /// In text order, with the source offset each heading starts at.
+    pub headings: Vec<PageHeading>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PageLink {
+    pub range: std::ops::Range<usize>,
+    /// As the document states it; the link policy decides what it does.
+    pub target: Arc<str>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PageHeading {
+    pub range: std::ops::Range<usize>,
+    pub source: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +131,7 @@ impl Page {
         Self {
             tables: Vec::new(),
             document_blocks: Vec::new(),
+            links: Default::default(),
             style_size: appearance.font_size,
             anchors: page.anchors,
             styles: page
@@ -261,6 +286,7 @@ impl Page {
             text: text.into(),
             tables: Vec::new(),
             document_blocks: Vec::new(),
+            links: Default::default(),
             spans: vec![],
             roles: vec![],
             styles: vec![],
@@ -283,6 +309,7 @@ impl Page {
         let mut anchors = Vec::new();
         let mut tables = Vec::new();
         let mut document_blocks = Vec::new();
+        let mut links = PageLinks::default();
         for block in page.blocks {
             if !text.is_empty() {
                 text.push_str("\n\n");
@@ -297,6 +324,16 @@ impl Page {
             text.push_str(prefix);
             let start = text.len();
             text.push_str(&block.text.text);
+            links.links.extend(block.links.iter().map(|link| PageLink {
+                range: start + link.start as usize..start + link.end as usize,
+                target: link.target.as_str().into(),
+            }));
+            if block.kind == document::BLOCK_HEADING {
+                links.headings.push(PageHeading {
+                    range: start..text.len(),
+                    source: block.text.source.offset,
+                });
+            }
             document_blocks.push(DocumentBlock {
                 range: block_start..text.len(),
                 kind: match block.kind {
@@ -357,6 +394,7 @@ impl Page {
             styles,
             tables,
             document_blocks,
+            links,
             style_size: appearance.font_size,
             anchors,
             start: page.source.offset,

@@ -2,7 +2,7 @@
 use crate::{
     decode::{self, Decoded},
     fence::{self, Kind, OpenBlock},
-    markdown::safe_link,
+    markdown::link_target,
 };
 use midnight_plugin_sdk::api::{document::*, viewer::*};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -422,8 +422,10 @@ impl<'a> Builder<'a> {
             Tag::Emphasis => self.emphasis = self.emphasis.saturating_add(1),
             Tag::Strikethrough => self.strike = self.strike.saturating_add(1),
             Tag::Image { .. } => self.images = self.images.saturating_add(1),
-            Tag::Link { dest_url, .. } if self.images == 0 && safe_link(&dest_url) => {
-                let at = self.active.as_ref().map_or(0, |b| b.text.text.len() as u32);
+            Tag::Link { dest_url, .. } if self.images == 0 && link_target(&dest_url) => {
+                // The block that receives the link's text exists first: an ordered item's
+                // first block starts with its number, which the link must not cover.
+                let at = self.current()?.text.text.len() as u32;
                 self.pending_link = Some((at, dest_url.into_string()));
             }
             _ => {}

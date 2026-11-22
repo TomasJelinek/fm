@@ -196,6 +196,38 @@ fn build() -> Vec<ShortcutDefinition> {
         ViewerOnlyContent,
         &["Backspace", "Alt+Left"],
     );
+    // Tab, Shift+Tab and Enter stay with a document's links only while there is one to
+    // move to or follow (midnight-viewer-ui `links.rs`); HTML pages keep them.
+    add(
+        "viewer.next-link",
+        "Focus the next link in the viewed document",
+        ViewerOnlyContent,
+        &["Tab"],
+    );
+    add(
+        "viewer.previous-link",
+        "Focus the previous link in the viewed document",
+        ViewerOnlyContent,
+        &["Shift+Tab"],
+    );
+    add(
+        "viewer.follow-link",
+        "Follow the focused link",
+        ViewerOnlyContent,
+        &["Enter"],
+    );
+    add(
+        "viewer.link-back",
+        "Back to the document a link was followed from",
+        ViewerOnlyContent,
+        &["Alt+Shift+Left"],
+    );
+    add(
+        "viewer.link-forward",
+        "Forward to the document a link opened",
+        ViewerOnlyContent,
+        &["Alt+Shift+Right"],
+    );
     add("viewer.find", "Find in viewed file", ViewerAny, &["Ctrl+F"]);
     add("viewer.wrap", "Wrap viewer text", ViewerAny, &["Ctrl+W"]);
     add(

@@ -19,6 +19,16 @@ pub const HOST_SHORTCUTS_ENV: &str = "MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS";
 /// Enables Backspace/AltLeft/AltRight after the browser's live editable-focus arbitration.
 pub const HOST_SHORTCUTS_PHYSICAL_V1: &str = "physical-v1";
 
+/// Explicit host launch opt-in for link routing (API 0.3). Never inherit this value.
+/// Providers emit `LinkHover`/`LinkActivated` only for the exact value below; otherwise
+/// they keep every link navigation inside the browser, as API 0.2 providers do.
+pub const LINKS_ENV: &str = "MIDNIGHT_WEB_VIEWER_LINKS";
+/// Reports the hovered link and hands every followed link to the host instead of
+/// navigating the browser.
+pub const LINKS_HOST_V1: &str = "host-v1";
+/// Longest link target in UTF-8 bytes.
+pub const MAX_LINK_TARGET_BYTES: usize = 8192;
+
 /// Identities are scoped to one process; zero is reserved and invalid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -281,6 +291,25 @@ pub enum EventKind {
         message: String,
     },
     Closed,
+    /// The target of the link under the pointer (the browser's status link, which is the
+    /// keyboard-focused link while the pointer is over none); empty once there is none.
+    /// Sent only when it changes and only under the host-v1 link-routing launch opt-in.
+    /// A nonempty target has the format of `LinkActivated`.
+    LinkHover {
+        target: String,
+    },
+    /// A link the user followed (click, middle or modified click, Enter, a new window or
+    /// tab) to another document. The browser cancelled that navigation; only the host
+    /// decides what happens. Sent only under the host-v1 link-routing launch opt-in.
+    ///
+    /// Outside the provider's private document origin the target is the absolute URL
+    /// exactly as the browser resolved it, which starts with a scheme. On that origin it
+    /// is a reference relative to the document's folder, without a scheme and keeping
+    /// `?query#fragment`, such as `sub/other.html#part` or `../README.md`. Targets are
+    /// nonempty, at most [`MAX_LINK_TARGET_BYTES`] of UTF-8 and free of control characters.
+    LinkActivated {
+        target: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

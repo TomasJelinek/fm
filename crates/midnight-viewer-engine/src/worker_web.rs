@@ -274,11 +274,13 @@ impl Worker {
         provider: midnight_web_viewer_host::Provider,
         file: midnight_plugin_host::CapturedFile,
     ) -> Result<(), String> {
+        // Its links go to the host's link policy (`worker_links.rs`).
         self.start_web(
             provider,
             file,
             None,
             midnight_web_viewer_host::PolicyCeiling::UserChoice,
+            midnight_web_viewer_host::LinkRouting::Host,
         )
     }
 
@@ -289,11 +291,13 @@ impl Worker {
         output: &Mailbox,
     ) -> Result<(), String> {
         let prepared = self.prepare_office(file, output)?;
+        // The preview's own paging links stay in the browser; it shows no document links.
         self.start_web(
             provider,
             prepared.main,
             Some(prepared.resources),
             midnight_web_viewer_host::PolicyCeiling::OfflineOnly,
+            midnight_web_viewer_host::LinkRouting::Browser,
         )
     }
 
@@ -332,6 +336,7 @@ impl Worker {
         file: midnight_plugin_host::CapturedFile,
         resources: Option<Arc<dyn midnight_web_viewer_host::Resources>>,
         ceiling: midnight_web_viewer_host::PolicyCeiling,
+        links: midnight_web_viewer_host::LinkRouting,
     ) -> Result<(), String> {
         let viewport = api::Viewport {
             revision: 1,
@@ -339,13 +344,14 @@ impl Worker {
             height: self.geometry.height,
             scale: f64::from(self.geometry.scale),
         };
-        let session = midnight_web_viewer_host::Session::open_with_policy_ceiling(
+        let session = midnight_web_viewer_host::Session::open_with_links(
             provider,
             file,
             resources,
             viewport,
             self.wake.clone(),
             ceiling,
+            links,
         )?;
         self.web = Some(WebView::new(
             Box::new(session),
@@ -659,6 +665,11 @@ impl Worker {
                     };
                     self.status(status, output);
                 }
+                // The page's links: where the pointer is, and a followed one.
+                api::EventKind::LinkHover { target } => {
+                    output.put(ViewerOutput::LinkHover(self.web_link_status(&target)));
+                }
+                api::EventKind::LinkActivated { target } => self.follow_link(&target, output),
                 api::EventKind::HostShortcut(shortcut) => {
                     output.put(ViewerOutput::WebShortcut(shortcut))
                 }
@@ -679,6 +690,27 @@ impl Worker {
                 _ => {}
             }
         }
+    }
+
+    /// A message about a followed link as the browser's notice, which stays through frames
+    /// until the next user action, like a refused navigation.
+    pub(super) fn web_link_notice(&mut self, message: String, output: &Mailbox) {
+        let Some(web) = self.web.as_mut() else {
+            self.status(message, output);
+            return;
+        };
+        web.action_notice.observe(&api::EventKind::Error {
+            code: api::ErrorCode::Denied,
+            message,
+        });
+        let status = web_presentation_status(
+            web.policy,
+            web.session.policy_change_allowed(),
+            web.find_result.as_deref(),
+            web.source_change.reported,
+            web.action_notice.text(),
+        );
+        self.status(status, output);
     }
 
     /// The active browser session stopped and accepts no more input. Handle that once,
