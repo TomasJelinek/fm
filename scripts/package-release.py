@@ -399,6 +399,11 @@ def copy_worker_files(stage, source_root, prefix, files, executables):
     return inventory, digest
 
 
+# The filesystem worker protocols the host accepts: filesystem-api's `Protocol`
+# (`TryFrom<u16>`); test_worker_packages checks that both agree.
+FILESYSTEM_WORKER_PROTOCOLS = (1, 2, 3, 4)
+
+
 def copy_filesystem_packages(stage, source, target, require_native=False, require_network=False,
                              *, require_archive=False, validate_only=False):
     source = worker_input(stage, source)
@@ -421,7 +426,7 @@ def copy_filesystem_packages(stage, source, target, require_native=False, requir
                 or type(manifest.get("schema_version")) is not int
                 or manifest["schema_version"] != 1 or manifest.get("kind") != "filesystem-worker"
                 or manifest.get("target") != target or type(manifest.get("protocol")) is not int
-                or manifest["protocol"] not in (1, 2, 3) or not isinstance(formats, list) or not 1 <= len(formats) <= 16
+                or manifest["protocol"] not in FILESYSTEM_WORKER_PROTOCOLS or not isinstance(formats, list) or not 1 <= len(formats) <= 16
                 or any(value not in ("zip", "tar", "gzip", "tar-gzip", "7z", "xz", "tar-xz",
                                      "bzip2", "tar-bzip2", "zstd", "tar-zstd") for value in formats)):
             raise ValueError("Incompatible filesystem worker manifest")

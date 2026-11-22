@@ -1,6 +1,7 @@
 """Installed worker manifests and executable modes survive release packaging."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tarfile
 import tempfile
@@ -121,7 +122,7 @@ class WorkerPackages(unittest.TestCase):
         manifest = source / "archive/plugin.toml"
         original = manifest.read_text()
         for old, new in [('kind="filesystem-worker"', 'kind="viewer"'),
-                         (self.target, "wrong-target"), ('protocol=1', 'protocol=true'), ('protocol=1', 'protocol=4'),
+                         (self.target, "wrong-target"), ('protocol=1', 'protocol=true'), ('protocol=1', 'protocol=5'),
                          ('entry_executable="archive-worker"', 'entry_executable="../worker"'),
                          ('formats=["zip","gzip","tar","tar-gzip","7z"]', 'formats=["rar"]')]:
             with self.subTest(new=new):
@@ -157,6 +158,33 @@ class WorkerPackages(unittest.TestCase):
         self.assertEqual(inventory[0]["kind"], "filesystem-worker")
         self.assertIn("protocol=3", (self.stage / "filesystems/archive/plugin.toml").read_text())
         self.assertEqual((self.stage / "filesystems/archive/archive-worker").read_bytes(), b"archive fixture")
+
+    def test_password_filesystem_protocol_four_preserves_manifest_and_executable(self):
+        source = self.filesystem()
+        manifest = source / "archive/plugin.toml"
+        manifest.write_text(manifest.read_text().replace("protocol=1", "protocol=4"))
+        inventory = packaging.copy_filesystem_packages(self.stage, source, self.target)
+        self.assertEqual(inventory[0]["kind"], "filesystem-worker")
+        self.assertIn("protocol=4", (self.stage / "filesystems/archive/plugin.toml").read_text())
+
+    def test_accepted_protocols_are_the_hosts_and_include_the_archive_builds(self):
+        # Packaging must accept exactly the protocols the host parses, and the one the
+        # archive worker's build scripts write (a protocol bump once broke deployment).
+        root = Path(__file__).resolve().parents[2]
+        api = (root / "filesystem-api/midnight-filesystem-api/src/lib.rs").read_text(encoding="utf-8")
+        parsing = api.split("impl TryFrom<u16> for Protocol", 1)[1].split("\n}\n", 1)[0]
+        host = {int(value) for value in re.findall(r"(\d+) => Ok\(Self::V\d+\)", parsing)}
+        self.assertTrue(host)
+        self.assertEqual(set(packaging.FILESYSTEM_WORKER_PROTOCOLS), host)
+        written = set()
+        for script in ("build.ps1", "build.sh"):
+            text = (root / "plugins/midnight-fs-archive/scripts" / script).read_text(encoding="utf-8")
+            values = re.findall(r"^protocol = (\d+)$", text, re.MULTILINE)
+            with self.subTest(script=script):
+                self.assertEqual(len(values), 1)
+            written.update(int(value) for value in values)
+        self.assertEqual(len(written), 1, "both build scripts write the same protocol")
+        self.assertLessEqual(written, host)
 
     def test_optional_stable_member_ids_are_preserved_with_boolean_type(self):
         source = self.filesystem()
