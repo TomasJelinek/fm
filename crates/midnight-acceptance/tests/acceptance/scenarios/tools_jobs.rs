@@ -4,7 +4,7 @@
 use crate::{
     Context,
     app::{self, App, Config},
-    input, inspect, panel,
+    files_support as support, input, inspect, panel,
     scenarios::transfers::{copy_tree, snapshot},
     tools_support::{self as tools, Tool},
 };
@@ -280,7 +280,7 @@ pub fn jobs_copy_control(context: &mut Context) -> Result<(), String> {
         tools::tool_titled(app, "Copy").is_none()
     });
     let before = app.tool_windows().len();
-    app.window.invoke_show_operations();
+    support::open_jobs(&mut app)?;
     let jobs = tools::wait_tool(&mut app, "the Jobs window", before, SIZE);
     let rows = job_rows(&jobs);
     if rows.len() != 2 || rows[0].1 != "Completed" || rows[1].1 != "Cancelled" {

@@ -1,6 +1,8 @@
 //! Copy and Move onto existing names: Replace (original kept in recovery), Skip, Copy as
-//! (keep both), Replace all / Skip all, folder Merge, Cancel job midway, copying within
-//! the same folder, and the refusal to move a folder into itself.
+//! (keep both), Replace all (each original kept in recovery) / Skip all, folder Merge,
+//! Cancel job midway, copying within the same folder, the refusal to move a folder into
+//! itself, Move with Skip, Replace (original kept in recovery), another name and Merge
+//! folders.
 use crate::{
     Context,
     app::{App, Config},
@@ -32,12 +34,15 @@ fn expect_text(failures: &mut Vec<String>, path: &Path, wanted: &str, what: &str
     }
 }
 
-/// Recovery folders the application created in `folder` and the files they keep.
+/// Recovery folders the application created in `folder` and the files they keep: its
+/// `.midnight-recovery-*` folders and the private `.midnight-move-*` stage in which a
+/// Move on Linux keeps a replaced original as recovery data, beside the source
+/// (TRANSFERS.md).
 fn recovered(folder: &Path) -> Vec<(String, String)> {
     let mut found = Vec::new();
     for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(".midnight-recovery-") {
+        if !name.starts_with(".midnight-recovery-") && !name.starts_with(".midnight-move-") {
             continue;
         }
         let mut stack = vec![entry.path()];
@@ -56,6 +61,23 @@ fn recovered(folder: &Path) -> Vec<(String, String)> {
         }
     }
     found
+}
+
+/// The recovery copies that appeared in `folder` since `before` was taken: each kept
+/// text that is there more often than before, once per new copy.
+fn new_recovery(folder: &Path, before: &[(String, String)]) -> Vec<String> {
+    let mut earlier: Vec<&String> = before.iter().map(|(_, text)| text).collect();
+    let mut added = Vec::new();
+    for (_, text) in recovered(folder) {
+        match earlier.iter().position(|seen| **seen == text) {
+            Some(index) => {
+                earlier.swap_remove(index);
+            }
+            None => added.push(text),
+        }
+    }
+    added.sort();
+    added
 }
 
 /// Finding AF-1: a skip the user chose must not be reported as a failed copy.
@@ -108,6 +130,8 @@ pub fn conflicts(context: &mut Context) -> Result<(), String> {
     write(&target.join("c2-conflict.txt"), "c2 old")?;
     write(&source.join("keep.txt"), "keep")?;
     write(&source.join("nest/sub/deeper.txt"), "deeper")?;
+    write(&source.join("mdir/a.txt"), "ma new")?;
+    write(&target.join("mdir/b.txt"), "mb old")?;
     let mut app = App::start(Config::new(&source, &target));
     let (left, right) = (PaneId::Left, PaneId::Right);
     let mut failures = Vec::new();
@@ -192,6 +216,7 @@ pub fn conflicts(context: &mut Context) -> Result<(), String> {
         write(&target.join(name), old)?;
     }
     mark(&mut app, left, &["one.txt", "two.txt", "three.txt"])?;
+    let recovery = recovered(&target);
     let run = support::transfer(
         &mut app,
         context,
@@ -214,6 +239,13 @@ pub fn conflicts(context: &mut Context) -> Result<(), String> {
         ("three.txt", "three new"),
     ] {
         expect_text(&mut failures, &target.join(name), new, "Replace all");
+    }
+    // Each replaced original is kept for recovery, once.
+    let kept = new_recovery(&target, &recovery);
+    if kept != ["one old", "three old", "two old"] {
+        failures.push(format!(
+            "Replace all kept {kept:?} for recovery, not the three originals"
+        ));
     }
 
     // Skip all: one decision, nothing replaced.
@@ -428,6 +460,10 @@ pub fn conflicts(context: &mut Context) -> Result<(), String> {
     expect_text(&mut failures, &source.join("c1.txt"), "c1", "Move Skip");
     expect_text(&mut failures, &target.join("c1.txt"), "c1 old", "Move Skip");
     panel::select_row(&mut app, left, "c1.txt")?;
+    // A Move renames on one volume. Linux exchanges the replaced original into the
+    // private stage the moved file left, beside the source; Windows keeps it in a
+    // recovery folder beside the destination (TRANSFERS.md), so both folders count.
+    let recovery = [recovered(&source), recovered(&target)];
     let run = support::transfer(
         &mut app,
         context,
@@ -441,7 +477,80 @@ pub fn conflicts(context: &mut Context) -> Result<(), String> {
         failures.push("Move Replace left the source c1.txt".into());
     }
     expect_text(&mut failures, &target.join("c1.txt"), "c1", "Move Replace");
+    let kept = [
+        new_recovery(&source, &recovery[0]),
+        new_recovery(&target, &recovery[1]),
+    ];
+    // The conflict window promises that Recent Jobs show where the original is kept: the
+    // job names that location, and it holds the original.
+    let reported = &run.progress.recovery_paths;
+    let held: Vec<String> = reported.iter().map(|path| read(path.as_path())).collect();
+    context.note(format!(
+        "Move Replace kept for recovery: beside the source {:?}, beside the destination {:?}; \
+         the job reports {} recovery object(s): {:?}",
+        kept[0],
+        kept[1],
+        run.progress.recovery_count,
+        reported
+            .iter()
+            .map(|path| support::slashed(path.as_path()))
+            .collect::<Vec<_>>()
+    ));
+    if kept.concat() != ["c1 old"] {
+        failures.push(format!(
+            "Move Replace kept {kept:?} for recovery (source, destination), not the replaced \
+             original"
+        ));
+    }
+    if run.progress.recovery_count != 1 || held != ["c1 old"] {
+        failures.push(format!(
+            "Move Replace reported {} recovery object(s) at {reported:?} holding {held:?}, not \
+             the replaced original",
+            run.progress.recovery_count
+        ));
+    }
     support::wait_row(&mut app, left, "c1.txt", false);
+
+    // Move a folder onto an existing one: Merge folders moves its entries in beside the
+    // existing ones, and the moved folder is gone from the source.
+    panel::select_row(&mut app, left, "mdir")?;
+    let run = support::transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            choices: vec![Choice::Merge],
+            ..TransferSpec::moving()
+        },
+    )?;
+    if let Err(error) = support::completed(&run, "Move with Merge folders") {
+        failures.push(error);
+    }
+    if run.decisions.len() != 1 {
+        failures.push(format!(
+            "Move with Merge folders asked {} times: {:?}",
+            run.decisions.len(),
+            run.decisions
+        ));
+    }
+    expect_text(
+        &mut failures,
+        &target.join("mdir/a.txt"),
+        "ma new",
+        "Move Merge",
+    );
+    expect_text(
+        &mut failures,
+        &target.join("mdir/b.txt"),
+        "mb old",
+        "Move Merge",
+    );
+    if fs::symlink_metadata(source.join("mdir")).is_ok() {
+        failures.push(format!(
+            "Move with Merge folders left the source mdir/ holding {:?}",
+            support::names_on_disk(&source.join("mdir"))
+        ));
+    }
+    support::wait_row(&mut app, left, "mdir", false);
 
     // Move onto an existing name under a different name (keep both).
     write(&target.join("c3.txt"), "c3 old")?;

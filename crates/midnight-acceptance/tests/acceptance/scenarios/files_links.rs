@@ -37,7 +37,7 @@ use std::{
 const LINKS: [&str; 4] = ["dangling", "to-file", "to-folder", "to-self"];
 
 /// What arrived at `path`, in words.
-fn describe(path: &Path) -> String {
+pub fn describe(path: &Path) -> String {
     match support::facts(path) {
         Err(_) => "nothing".into(),
         Ok(facts) => match facts.content {
@@ -52,7 +52,7 @@ fn describe(path: &Path) -> String {
     }
 }
 
-fn outcome(run: &Result<TransferRun, String>) -> String {
+pub fn outcome(run: &Result<TransferRun, String>) -> String {
     match run {
         Err(error) => format!("refused: {error}"),
         Ok(run) => format!(
@@ -121,13 +121,13 @@ fn clean(
     false
 }
 
-fn is_link_to(path: &Path, target: &Path) -> bool {
+pub fn is_link_to(path: &Path, target: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         && fs::read_link(path).ok().as_deref() == Some(target)
 }
 
 /// Whether `copy` holds the same tree (content, names and kinds) as `original`.
-fn same_tree(original: &Path, copy: &Path) -> bool {
+pub fn same_tree(original: &Path, copy: &Path) -> bool {
     let shape = |root: &Path| {
         tree_facts(root).map(|tree| {
             tree.into_iter()
@@ -139,7 +139,7 @@ fn same_tree(original: &Path, copy: &Path) -> bool {
 }
 
 /// The job's notes that name `name` and say `words`.
-fn notes_about(run: &Result<TransferRun, String>, name: &str, words: &str) -> usize {
+pub fn notes_about(run: &Result<TransferRun, String>, name: &str, words: &str) -> usize {
     run.as_ref().map_or(0, |run| {
         run.progress
             .notes
@@ -431,10 +431,209 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
     }
     app.screenshot(context, "links-moved", "Target after moving the four links");
     app.shutdown()?;
+    move_projects(context, &mut failures, &mut outcomes)?;
     for outcome in &outcomes {
         context.note(outcome.clone());
     }
     support::report(&failures)
+}
+
+/// A project folder `proj` beside the `data` its links point to, in `base`: a folder link
+/// (`dir-link` to `data/dir`), a dangling link (`dangling` to `data/missing`), on Unix a
+/// file link (`file-link` to `data/target.txt`), and `plain.txt`. Unix links are relative
+/// (`../data/…`); Windows ones are junctions, which need no privilege, so there is no
+/// file link. Returns each link's name and target as it reads back.
+pub fn project(base: &Path) -> Result<Vec<(&'static str, PathBuf)>, String> {
+    let write = |path: &Path, text: &str| -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| support::io_error(parent, error))?;
+        }
+        fs::write(path, text).map_err(|error| support::io_error(path, error))
+    };
+    write(&base.join("data/target.txt"), "the linked file\n")?;
+    write(&base.join("data/dir/a.txt"), "a\n")?;
+    write(&base.join("data/dir/sub/b.txt"), "bb\n")?;
+    write(&base.join("proj/plain.txt"), "plain\n")?;
+    let proj = base.join("proj");
+    #[cfg(unix)]
+    let links = {
+        let links = [
+            ("dir-link", PathBuf::from("../data/dir")),
+            ("dangling", PathBuf::from("../data/missing")),
+            ("file-link", PathBuf::from("../data/target.txt")),
+        ];
+        for (name, target) in &links {
+            std::os::unix::fs::symlink(target, proj.join(name))
+                .map_err(|error| support::io_error(&proj.join(name), error))?;
+        }
+        links
+    };
+    #[cfg(windows)]
+    let links = {
+        let links = [
+            ("dir-link", base.join("data").join("dir")),
+            ("dangling", base.join("data").join("missing")),
+        ];
+        for (name, target) in &links {
+            crate::fixtures::junction(&proj.join(name), target)?;
+        }
+        links
+    };
+    Ok(links.into_iter().collect())
+}
+
+/// The identities of every entry below `root` (links not followed), by relative path.
+pub fn identities(root: &Path) -> Result<std::collections::BTreeMap<String, (u64, u64)>, String> {
+    tree_facts(root)?
+        .into_keys()
+        .map(|path| {
+            let identity = support::identity(&root.join(&path))?;
+            Ok((path, identity))
+        })
+        .collect()
+}
+
+/// Moves of a project holding links (`project`), on one volume:
+/// - "Copy the files links point to": the folder and the file a link points to arrive as
+///   copies, the dangling link moves as a link (noted), `proj` is gone, and what the
+///   links point to keeps its bytes and its identity; `plain.txt` is renamed (same
+///   identity), as the folder is not renamed whole.
+/// - "Keep links as links" (as offered): the folder is renamed whole, so it and every
+///   entry in it keep their identity, the links their targets.
+fn move_projects(
+    context: &mut Context,
+    failures: &mut Vec<String>,
+    outcomes: &mut Vec<String>,
+) -> Result<(), String> {
+    for (choice, label) in [
+        (LinkChoice::CopyFiles, "copy the files"),
+        (LinkChoice::Keep, "keep links"),
+    ] {
+        let base = support::scratch(
+            context,
+            match choice {
+                LinkChoice::CopyFiles => "move-copy-files",
+                LinkChoice::Keep => "move-keep",
+            },
+        )?;
+        let links = project(&base)?;
+        let destination = base.join("destination");
+        fs::create_dir(&destination).map_err(|error| support::io_error(&destination, error))?;
+        let data_before = tree_facts(&base.join("data"))?;
+        let data_identity = identities(&base.join("data"))?;
+        let proj_identity = identities(&base.join("proj"))?;
+        let folder_identity = support::identity(&base.join("proj"))?;
+        let mut app = App::start(Config::new(&base, &destination));
+        panel::select_row(&mut app, PaneId::Left, "proj")?;
+        let run = support::transfer(
+            &mut app,
+            context,
+            TransferSpec {
+                links: (choice == LinkChoice::CopyFiles).then_some(choice),
+                link_input: LinkInput::Keyboard,
+                choices: vec![Choice::CancelJob],
+                ..TransferSpec::moving()
+            },
+        );
+        let moved = destination.join("proj");
+        outcomes.push(format!(
+            "F6 of proj with links ({label}): {}; {}",
+            describe(&moved),
+            outcome(&run)
+        ));
+        let what = format!("F6 of a project holding links ({label})");
+        if !clean(&run, &what, choice, failures) {
+            support::dismiss_all(&mut app);
+            app.shutdown()?;
+            continue;
+        }
+        let mut problems = Vec::new();
+        if fs::symlink_metadata(base.join("proj")).is_ok() {
+            problems.push(format!(
+                "proj is still in the source, holding {:?}",
+                support::names_on_disk(&base.join("proj"))
+            ));
+        }
+        for (name, target) in &links {
+            let arrived = moved.join(name);
+            let followed = choice == LinkChoice::CopyFiles && *name != "dangling";
+            let ok = match (*name, followed) {
+                ("dir-link", true) => {
+                    same_tree(&base.join("data/dir"), &arrived)
+                        && !fs::symlink_metadata(&arrived).is_ok_and(|meta| meta.is_symlink())
+                }
+                ("file-link", true) => {
+                    fs::symlink_metadata(&arrived).is_ok_and(|meta| meta.is_file())
+                        && fs::read(&arrived).ok() == fs::read(base.join("data/target.txt")).ok()
+                }
+                _ => is_link_to(&arrived, target),
+            };
+            if !ok {
+                problems.push(format!(
+                    "{name} arrived as {}, not {}",
+                    describe(&arrived),
+                    if followed {
+                        "a copy of what it points to"
+                    } else {
+                        "the same link"
+                    }
+                ));
+            }
+        }
+        if choice == LinkChoice::CopyFiles && notes_about(&run, "dangling", "moved as a link") != 1
+        {
+            problems.push(format!(
+                "no note says the dangling link was moved as a link: {:?}",
+                run.as_ref().map(|run| &run.progress.notes)
+            ));
+        }
+        // Renamed entries keep their identity; copies of what links point to are new.
+        let after = identities(&moved).unwrap_or_default();
+        let changed: Vec<String> = proj_identity
+            .iter()
+            .filter(|(path, identity)| {
+                let replaced = choice == LinkChoice::CopyFiles
+                    && links
+                        .iter()
+                        .any(|(name, _)| path.as_str() == *name && *name != "dangling");
+                !replaced && after.get(path.as_str()) != Some(*identity)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        if !changed.is_empty() {
+            problems.push(format!(
+                "these entries were not renamed (their identity changed): {changed:?}"
+            ));
+        }
+        let renamed_whole = support::identity(&moved).ok() == Some(folder_identity);
+        if choice == LinkChoice::Keep && !renamed_whole {
+            problems.push("the folder proj was not renamed whole".into());
+        }
+        if choice == LinkChoice::CopyFiles && renamed_whole {
+            problems.push(
+                "the folder proj was renamed whole, so its links could not be followed".into(),
+            );
+        }
+        // What the links point to: the same files with the same bytes.
+        if tree_facts(&base.join("data")).ok().as_ref() != Some(&data_before)
+            || identities(&base.join("data")).ok().as_ref() != Some(&data_identity)
+        {
+            problems.push("what the links point to changed (bytes or identity)".into());
+        }
+        if !problems.is_empty() {
+            failures.push(format!("[AF-3] {what}: {}", problems.join("; ")));
+        }
+        app.screenshot(
+            context,
+            match choice {
+                LinkChoice::CopyFiles => "project-moved-copy-files",
+                LinkChoice::Keep => "project-moved-keep",
+            },
+            &format!("A project holding links moved ({label})"),
+        );
+        app.shutdown()?;
+    }
+    Ok(())
 }
 
 /// The Windows variant: directory junctions (see the module documentation).
@@ -652,6 +851,7 @@ fn junctions(context: &mut Context) -> Result<(), String> {
         "Target after moving the junctions",
     );
     app.shutdown()?;
+    move_projects(context, &mut failures, &mut outcomes)?;
     for outcome in &outcomes {
         context.note(outcome.clone());
     }

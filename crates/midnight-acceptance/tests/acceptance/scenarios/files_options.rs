@@ -1,7 +1,8 @@
 //! The Copy/Move dialog itself: what F5 and F6 show (the Links choice on a fixed local
 //! folder: "Keep links as links" of its two entries, no reason or warning), a destination
-//! typed as a missing folder, a relative path or nothing (refused in the dialog, nothing
-//! copied), Escape, "Preserve exact modified time" offered for files only, the
+//! typed as a missing folder, a relative path or nothing (refused in the dialog by Copy
+//! and Move alike, nothing copied), Escape, Move's Cancel button, the order in which Tab
+//! visits the dialog's controls, "Preserve exact modified time" offered for files only, the
 //! verification chosen in Options › General (full SHA-256, or size and samples) and what
 //! the job then verifies, and many small files in one job.
 use crate::{
@@ -48,6 +49,67 @@ fn close_dialog(app: &mut App) {
 fn checkbox(app: &App, label: &str) -> Option<(bool, bool)> {
     inspect::find(app.slint(), AccessibleRole::Checkbox, label)
         .map(|item| (tools::checked(&item), tools::enabled(&item)))
+}
+
+/// Tab through the open dialog of one file from its destination field: Links, the
+/// exact-time option where it is offered, the queueing option, Cancel, the primary action
+/// (`verb`), then around to the destination field again (past the header's close button
+/// when it takes focus).
+fn tab_order(app: &mut App, verb: &str) -> Result<(), String> {
+    // The exact-time option is a stop only where it is offered.
+    let offered = checkbox(app, PRESERVE).is_some_and(|(_, enabled)| enabled);
+    let stops: Vec<(AccessibleRole, &str)> = [
+        (AccessibleRole::Combobox, support::LINKS_LABEL),
+        (AccessibleRole::Checkbox, PRESERVE),
+        (AccessibleRole::Checkbox, support::WAIT_OPTION),
+        (AccessibleRole::Button, "Cancel"),
+        (AccessibleRole::Button, verb),
+    ]
+    .into_iter()
+    .filter(|(_, label)| offered || *label != PRESERVE)
+    .collect();
+    // The dialog opens with the destination field focused.
+    if !support::focus_inside(app.slint(), AccessibleRole::TextInput, "Destination folder") {
+        return Err(format!(
+            "the {verb} dialog does not open with its destination field focused"
+        ));
+    }
+    for (role, label) in &stops {
+        input::key(app.slint(), Key::Tab);
+        app.settle();
+        if !support::focus_inside(app.slint(), *role, label) {
+            return Err(format!(
+                "Tab in the {verb} dialog did not reach {label:?} next (stops {:?})",
+                stops.iter().map(|(_, label)| *label).collect::<Vec<_>>()
+            ));
+        }
+    }
+    // Around: the header's close button may take one stop before the field.
+    for _ in 0..2 {
+        input::key(app.slint(), Key::Tab);
+        app.settle();
+        if support::focus_inside(app.slint(), AccessibleRole::TextInput, "Destination folder") {
+            break;
+        }
+    }
+    if !support::focus_inside(app.slint(), AccessibleRole::TextInput, "Destination folder") {
+        return Err(format!(
+            "Tab after {verb} did not come back to the destination field"
+        ));
+    }
+    // Shift+Tab goes back to the primary action (or the close button first).
+    input::chord(app.slint(), &[Key::Shift], Key::Tab);
+    app.settle();
+    if !support::focus_inside(app.slint(), AccessibleRole::Button, verb) {
+        input::chord(app.slint(), &[Key::Shift], Key::Tab);
+        app.settle();
+    }
+    if !support::focus_inside(app.slint(), AccessibleRole::Button, verb) {
+        return Err(format!(
+            "Shift+Tab from the destination field did not go back to {verb}"
+        ));
+    }
+    Ok(())
 }
 
 /// The open dialog's Links choice on a fixed local folder, once the folder's link facts
@@ -266,7 +328,32 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
     }
     check_links(&mut app, &trace, "Move", &mut failures);
     app.screenshot(context, "move-dialog", "F6 of one file");
-    close_dialog(&mut app);
+    // Tab visits the destination, the exact-time option, Links, the queueing option,
+    // Cancel and Move in the order shown, and wraps.
+    if let Err(error) = tab_order(&mut app, "Move") {
+        failures.push(error);
+    }
+    // Move refuses the same destinations as Copy, and its Cancel button moves nothing.
+    let start = app.copies.len();
+    for destination in [
+        "relative/dir".to_owned(),
+        String::new(),
+        target.join("missing").to_string_lossy().into_owned(),
+    ] {
+        if let Err(error) = refused(&mut app, &destination, start) {
+            failures.push(format!("Move: {error}"));
+            break;
+        }
+    }
+    match input::click_button(app.slint(), "Cancel") {
+        Err(error) => failures.push(format!("the Move dialog's Cancel: {error}")),
+        Ok(()) => app.until("Cancel to close the Move dialog", |app| {
+            app.window.get_copy_draft_token().is_empty()
+        }),
+    }
+    if app.copies.len() != start || !source.join("a.txt").is_file() {
+        failures.push("Cancel in the Move dialog moved something".into());
+    }
 
     // Full verification (the default) reads every copied byte back.
     panel::select_row(&mut app, LEFT, "huge.bin")?;

@@ -1,8 +1,10 @@
 //! Copy jobs side by side and their windows: "Wait for earlier transfers" off (a
 //! second job runs at once beside a paused one) and on (a third waits for the
 //! paused one and runs after it), the Jobs window's states and its Cancel job, the
-//! progress window's totals, time remaining, speed chart and per-file progress, Cancel
-//! operation, the Jobs window's two Clear buttons, and the job windows' wording.
+//! progress window's totals, time remaining (held while paused), speed chart and
+//! per-file progress, Cancel operation (its question, Escape keeping the job, a waiting
+//! Move cancelled in its own words), the Jobs window's two Clear buttons, and the job
+//! windows' wording.
 use crate::{
     Context,
     app::{self, App, Config},
@@ -166,6 +168,125 @@ fn whole_copies(source: &Path, target: &Path) -> Result<usize, String> {
     Ok(files)
 }
 
+/// The question a job window asks before it cancels.
+const CANCEL_QUESTION: &str = "Cancel this operation?";
+
+/// F6 of `source`/move-me with "Wait for earlier transfers" while an earlier
+/// copy is paused: its window offers Cancel operation, whose question ("Cancel this
+/// operation?", "This does not undo completed changes.", Continue) Escape closes with
+/// the job still waiting; Cancel operation twice ends it Cancelled with "Move cancelled;
+/// nothing was moved.", and nothing moved.
+fn cancel_waiting_move(
+    app: &mut App,
+    context: &mut Context,
+    source: &Path,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    let moving = source.join("move-me");
+    let before_tree = tree_facts(&moving)?;
+    let destination = support::scratch(context, "t-move")?;
+    let before = titled(app, "Move").len();
+    panel::select_row(app, LEFT, "move-me")?;
+    let start = support::start_transfer(
+        app,
+        context,
+        TransferSpec {
+            destination: Some(destination.as_path()),
+            wait: Some(true),
+            ..TransferSpec::moving()
+        },
+    )?;
+    let window = new_window(app, "Move", before)?;
+    app.until("the Move to wait for the paused copy", move |app| {
+        support::job(app, start)
+            .is_some_and(|job| job.wait_reason.is_some() || job.state.is_terminal())
+    });
+    let mut problems = Vec::new();
+    tools::click_last(window.window(), "Cancel operation")?;
+    if wait_text(app, &window, Duration::from_secs(10), |text| {
+        text == CANCEL_QUESTION
+    })
+    .is_none()
+        && !support::job(app, start).is_some_and(|job| job.state.is_terminal())
+    {
+        // Left waiting: it moves move-me once job 1 ends, which no later step uses.
+        failures.push(format!(
+            "T17: Cancel operation of a waiting Move asked nothing: {:?}",
+            texts(&window)
+        ));
+        return Ok(());
+    }
+    if !texts(&window).iter().any(|text| text == CANCEL_QUESTION) {
+        problems.push("the waiting Move ended without the cancel question".into());
+    } else {
+        let shown = texts(&window);
+        if !shown
+            .iter()
+            .any(|text| text == "This does not undo completed changes.")
+            || !tools::has(window.window(), AccessibleRole::Button, "Continue")
+        {
+            problems.push(format!(
+                "the cancel question offers no Continue or does not say it keeps completed \
+                 changes: {shown:?}"
+            ));
+        }
+        app.screenshot_window(context, &window, "move-cancel-question", CANCEL_QUESTION);
+        // Escape answers the question with Continue: the job keeps waiting.
+        crate::input::key(window.window(), Key::Escape);
+        if wait_text(app, &window, Duration::from_secs(10), |text| {
+            text.starts_with("Queued") || text.starts_with("Waiting for")
+        })
+        .is_none()
+            || texts(&window).iter().any(|text| text == CANCEL_QUESTION)
+            || support::job(app, start).is_some_and(|job| job.state.is_terminal())
+        {
+            problems.push(format!(
+                "Escape at the cancel question did not keep the job waiting: {:?}; job {:?}",
+                texts(&window),
+                support::job(app, start).map(|job| job.state)
+            ));
+        }
+        tools::click_last(window.window(), "Cancel operation")?;
+        if wait_text(app, &window, Duration::from_secs(10), |text| {
+            text == CANCEL_QUESTION
+        })
+        .is_some()
+        {
+            tools::click_last(window.window(), "Cancel operation")?;
+        }
+    }
+    app.until("the waiting Move to end", move |app| {
+        support::job(app, start).is_some_and(|job| job.state.is_terminal())
+    });
+    let done = support::wait_job(app, start);
+    let said = wait_text(app, &window, Duration::from_secs(10), |text| {
+        text.contains("Move cancelled; nothing was moved.")
+    });
+    if done.state != CopyOperationState::Cancelled || said.is_none() {
+        problems.push(format!(
+            "the cancelled Move ended {:?} and its window says {:?}",
+            done.state,
+            texts(&window)
+        ));
+    }
+    if tree_facts(&moving).ok().as_ref() != Some(&before_tree)
+        || !support::names_on_disk(&destination).is_empty()
+    {
+        problems.push("the cancelled Move changed its source or destination".into());
+    }
+    if !problems.is_empty() {
+        failures.push(format!(
+            "T17 (Move cancelled while waiting): {}",
+            problems.join("; ")
+        ));
+    }
+    if tools::click_last(window.window(), "Close").is_err() {
+        crate::input::key(window.window(), Key::Escape);
+    }
+    app.settle();
+    Ok(())
+}
+
 /// The words a job window must not use; returns the offending texts.
 fn published(texts: &[String]) -> Vec<String> {
     texts
@@ -183,6 +304,11 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     copy_tree(&context.fixture.path("many"), &source.join("many"))?;
     let small = source.join("small");
     fs::create_dir(&small).map_err(|error| support::io_error(&small, error))?;
+    let move_me = source.join("move-me");
+    fs::create_dir(&move_me).map_err(|error| support::io_error(&move_me, error))?;
+    for name in ["one.txt", "two.txt"] {
+        fs::write(move_me.join(name), name).map_err(|error| support::io_error(&move_me, error))?;
+    }
     for index in 0..3 {
         let path = small.join(format!("small-{index}.txt"));
         fs::write(&path, format!("small {index}\n"))
@@ -353,7 +479,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     }
     // The Jobs window lists the three jobs and their states.
     let before = app.tool_windows().len();
-    app.window.invoke_show_operations();
+    support::open_jobs(&mut app)?;
     let jobs = tools::wait_tool(&mut app, "the Jobs window", before, SIZE);
     let states: Vec<String> = inspect::controls(jobs.window(), AccessibleRole::ListItem)
         .into_iter()
@@ -388,6 +514,23 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         ));
     }
     tools::close_tool(&mut app, &jobs, "the Jobs window");
+
+    // The paused job 1's estimate holds still and says so.
+    let eta = texts(&window1)
+        .into_iter()
+        .find(|text| text.starts_with("Time remaining:"));
+    if !eta.as_deref().is_some_and(|text| {
+        text == "Time remaining: Paused"
+            || (text.starts_with("Time remaining: About ") && text.ends_with(" (paused)"))
+    }) {
+        failures.push(format!(
+            "the paused job 1 shows {eta:?}, not \"Time remaining: Paused\" or \"Time \
+             remaining: About … (paused)\""
+        ));
+    }
+    // A Move that waits for job 1, cancelled from its window: the question keeps the job
+    // with Escape, then Cancel operation ends it in the Move's own words; nothing moved.
+    cancel_waiting_move(&mut app, context, &source, &mut failures)?;
 
     // Resume job 1: it completes, and only then job 3 runs. Its thousands of small
     // files, each written, synced and read back, take minutes on a busy disk.
@@ -632,7 +775,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     let window6 = new_window(&mut app, "Copy", before)?;
     pause(&mut app, &window6, stopped, "the copy to cancel from Jobs")?;
     let before = app.tool_windows().len();
-    app.window.invoke_show_operations();
+    support::open_jobs(&mut app)?;
     let jobs = tools::wait_tool(&mut app, "the Jobs window", before, SIZE);
     let rows = inspect::controls(jobs.window(), AccessibleRole::ListItem);
     match rows.iter().find(|(_, item)| {
@@ -696,7 +839,7 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     // Clear finished without errors removes the jobs that completed cleanly and keeps
     // the one with an error; Clear all finished then empties the list.
     let before = app.tool_windows().len();
-    app.window.invoke_show_operations();
+    support::open_jobs(&mut app)?;
     let jobs = tools::wait_tool(&mut app, "the Jobs window", before, SIZE);
     let rows = |jobs: &Tool| -> Vec<Vec<String>> {
         inspect::controls(jobs.window(), AccessibleRole::ListItem)

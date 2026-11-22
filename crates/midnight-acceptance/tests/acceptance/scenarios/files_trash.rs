@@ -5,7 +5,9 @@
 //! write-protected cases. A write-protected folder inside the deleted tree is deleted
 //! (owner write is added for it); an entry of a write-protected folder outside the
 //! deleted tree is refused with a Retry/Skip/Skip all/Cancel question, and Retry works
-//! once the folder is writable.
+//! once the folder is writable. Last, F8 of a file on another filesystem than the Trash
+//! (tmpfs `$XDG_RUNTIME_DIR`) is refused in words and the file stays: a failed Trash is
+//! never a permanent delete.
 use crate::{
     Context,
     app::{App, Config},
@@ -656,5 +658,83 @@ fn run(context: &mut Context) -> Result<(), String> {
     ));
     context.note(timings.summary());
     app.shutdown()?;
+    // A failed Trash is never a permanent delete.
+    if let Err(error) = trash_elsewhere(context, &trash_root) {
+        failures.push(format!("F8 on another filesystem: {error}"));
+    }
     support::report(&failures)
+}
+
+/// What F8 says of a file on another filesystem than the home Trash.
+const ELSEWHERE: &str =
+    "home trash is on another filesystem; cross-filesystem trash is unsupported";
+
+/// F8 of a file on another filesystem than the private Trash (tmpfs `$XDG_RUNTIME_DIR`):
+/// refused in words, and the file stays with its bytes (it is never deleted for good).
+fn trash_elsewhere(context: &mut Context, trash_root: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    let parent = {
+        use std::os::unix::fs::MetadataExt;
+        let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
+        let trash_device = device(trash_root.parent().unwrap_or(trash_root));
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.is_dir() && device(path) != trash_device)
+    };
+    #[cfg(not(unix))]
+    let parent: Option<PathBuf> = None;
+    let Some(parent) = parent else {
+        context.note(
+            "SKIP: F8 on another filesystem: no $XDG_RUNTIME_DIR on another filesystem than \
+             the private Trash",
+        );
+        return Ok(());
+    };
+    let run = context
+        .run_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let folder = crate::fixtures::create_fresh(&parent, &format!("midnight-acceptance-{run}"))?;
+    let result = (|| -> Result<(), String> {
+        let file = folder.join("elsewhere.txt");
+        fs::write(&file, "kept\n").map_err(|error| io_error(&file, error))?;
+        let before = facts(&file)?;
+        let entries = trashed(trash_root).len();
+        let mut app = App::start(Config::new(&folder, &context.work));
+        panel::select_row(&mut app, LEFT, "elsewhere.txt")?;
+        let start = app.operations.len();
+        input::key(app.slint(), Key::F8);
+        support::wait_operation_dialog(&mut app, "the Trash confirmation");
+        if app.window.get_operation_dangerous() {
+            return Err("F8 asked for a permanent delete".into());
+        }
+        input::key(app.slint(), Key::Return);
+        let said = match support::wait_delete(&mut app, start) {
+            DeleteEnd::Done(progress) => {
+                let notice = support::take_notice(&mut app);
+                format!(
+                    "{:?}: {} {:?}; notice {notice:?}",
+                    progress.state, progress.message, progress.errors
+                )
+            }
+            DeleteEnd::Asked(window) => {
+                let question = support::describe_window(&window);
+                let ended = support::cancel_delete(&mut app, &window, start);
+                format!("asked {question}; then {:?}", ended.map(|done| done.state))
+            }
+        };
+        support::dismiss_all(&mut app);
+        context.note(format!("F8 of a file on another filesystem: {said}"));
+        let kept = facts(&file).ok().as_ref() == Some(&before);
+        app.shutdown()?;
+        if !said.contains(ELSEWHERE) || !kept || trashed(trash_root).len() != entries {
+            return Err(format!(
+                "F8 was not refused with {ELSEWHERE:?} leaving the file (kept {kept}): {said}"
+            ));
+        }
+        Ok(())
+    })();
+    let _ = crate::fixtures::remove_tree(&folder);
+    result
 }

@@ -94,6 +94,127 @@ fn mode_of(metadata: &fs::Metadata) -> u32 {
     }
 }
 
+/// An entry's identity, links not followed: its device and inode on Unix, its volume
+/// serial number and file index on Windows. An entry with the same identity after a
+/// Move was renamed, not copied.
+pub fn identity(path: &Path) -> Result<(u64, u64), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        identity_windows::of(path).map_err(|error| io_error(path, error))
+    }
+}
+
+/// `GetFileInformationByHandle`, which the suite's `windows` features do not include, is
+/// declared here, as `junction_windows` declares its one call.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "one audited GetFileInformationByHandle call that reads an entry's file index"
+)]
+mod identity_windows {
+    use std::{
+        ffi::c_void,
+        fs::OpenOptions,
+        io,
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        path::Path,
+    };
+
+    /// Open a folder itself (`FILE_FLAG_BACKUP_SEMANTICS`) and a link itself, not what it
+    /// names (`FILE_FLAG_OPEN_REPARSE_POINT`).
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        /// `information` is a `BY_HANDLE_FILE_INFORMATION`: 13 DWORDs (attributes, three
+        /// FILETIMEs, the volume serial number, the size, the link count, the file index).
+        fn GetFileInformationByHandle(file: *mut c_void, information: *mut u32) -> i32;
+    }
+
+    /// The volume serial number and the 64-bit file index of `path`.
+    pub fn of(path: &Path) -> io::Result<(u64, u64)> {
+        // No data access: only the entry's own facts are queried.
+        let file = OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let mut information = [0_u32; 13];
+        // SAFETY: `file` is a live handle for the call's duration, and `information` is a
+        // writable, DWORD-aligned BY_HANDLE_FILE_INFORMATION (13 DWORDs) that the
+        // synchronous call fills and that outlives it.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((
+            u64::from(information[7]),
+            (u64::from(information[11]) << 32) | u64::from(information[12]),
+        ))
+    }
+}
+
+/// What a Move from another drive into `folder` says before any job when the folder
+/// cannot keep a replaced file recoverable (finding O-1): "Items from another drive
+/// cannot be moved <here>: …". Its start and its end.
+pub const MOVE_REFUSED_START: &str = "Items from another drive cannot be moved ";
+pub const MOVE_REFUSED_END: &str =
+    "Move cannot verify their copies there before removing the originals. Copy them instead.";
+
+/// The whole O-1 refusal for a destination the product names `here` ("to a network
+/// location", "to this drive (FAT)", "to this drive").
+pub fn move_refused(here: &str) -> String {
+    format!("{MOVE_REFUSED_START}{here}: {MOVE_REFUSED_END}")
+}
+
+/// Whether `text` is an O-1 refusal, whatever destination it names.
+pub fn is_move_refusal(text: &str) -> bool {
+    text.contains(MOVE_REFUSED_START) && text.contains(MOVE_REFUSED_END)
+}
+
+/// Whether a Move from another drive may go into `folder`: only a filesystem that keeps a
+/// replaced file recoverable takes one (Linux ext2/3/4; Windows NTFS on a fixed drive,
+/// which the drives these checks use are). On Linux the filesystem is read from the mount
+/// table; `None` when it cannot be told.
+pub fn takes_cross_volume_move(folder: &Path) -> Option<bool> {
+    #[cfg(windows)]
+    {
+        let _ = folder;
+        Some(true)
+    }
+    #[cfg(not(windows))]
+    {
+        filesystem_type(folder).map(|kind| matches!(kind.as_str(), "ext2" | "ext3" | "ext4"))
+    }
+}
+
+/// The type of the filesystem mounted at the longest mount point that holds `folder`
+/// (`/proc/self/mounts`).
+#[cfg(not(windows))]
+pub fn filesystem_type(folder: &Path) -> Option<String> {
+    let folder = fs::canonicalize(folder).ok()?;
+    let mounts = fs::read_to_string("/proc/self/mounts").ok()?;
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ');
+            let _device = fields.next()?;
+            // Spaces in mount points are written as \040.
+            let point = PathBuf::from(fields.next()?.replace("\\040", " "));
+            let kind = fields.next()?.to_owned();
+            folder.starts_with(&point).then_some((point, kind))
+        })
+        .max_by_key(|(point, _)| point.as_os_str().len())
+        .map(|(_, kind)| kind)
+}
+
 /// The root of the filesystem holding `path`, where Ctrl+Backspace goes: `/` on Unix,
 /// the drive's root (`D:\`) on Windows.
 pub fn filesystem_root(path: &Path) -> PathBuf {
@@ -267,6 +388,23 @@ pub fn wait_decision(app: &mut App, what: &str) -> Rc<MinimalSoftwareWindow> {
     window
 }
 
+/// Open the Jobs window as a user does, with the function bar's Jobs button.
+pub fn open_jobs(app: &mut App) -> Result<(), String> {
+    let item = inspect::controls(app.slint(), AccessibleRole::Button)
+        .into_iter()
+        .find(|(label, _)| label == "Jobs" || label.starts_with("Jobs "))
+        .map(|(_, item)| item)
+        .ok_or_else(|| {
+            format!(
+                "the main window shows no Jobs button: {:?}",
+                inspect::labels(app.slint(), AccessibleRole::Button)
+            )
+        })?;
+    input::click_at(app.slint(), inspect::center(&item));
+    app.settle();
+    Ok(())
+}
+
 /// One answer in the decision window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -337,6 +475,10 @@ pub struct TransferRun {
     /// The job's distinct states (with wait reason and phase) and when they were
     /// first seen, in ms after the confirming key.
     pub timeline: Vec<String>,
+    /// The Links choice the dialog offered once its destination's link facts arrived,
+    /// before the run chose; only when the run chose or expected a hold (otherwise the
+    /// facts are not awaited).
+    pub offered: Option<LinkView>,
     /// The Links choice as the dialog showed it when it was confirmed; None when the
     /// dialog offered none (archive members).
     pub links: Option<LinkView>,
@@ -604,16 +746,18 @@ pub struct TransferSpec<'a> {
     /// facts arrived. The dialog must offer it: a choice it does not show fails.
     pub links: Option<LinkChoice>,
     pub link_input: LinkInput,
-    /// The former link option: true chooses "Copy the files links point to", false "Keep
-    /// links as links" (as [`Self::links`] does). Kept for ui_states.rs until it moves
-    /// to `links`.
-    pub follow_links: Option<bool>,
     /// The first confirmation must hold (the dialog explains and stays open, as for links
     /// kept where none can be stored or a typed folder whose link default differs) and
     /// the second start the transfer. Without it a held confirmation is a refusal.
     pub hold: bool,
+    /// Confirm with the Links choice the destination's link facts decide: wait for them
+    /// first (as a choice or a hold also does), and record what the dialog offered.
+    pub offered_links: bool,
     /// Set "Wait for earlier transfers".
     pub wait: Option<bool>,
+    /// Runs once the dialog is set up, just before it is confirmed (a change on disk
+    /// while the dialog is open, such as a selected file deleted).
+    pub before_confirm: Option<&'a dyn Fn() -> Result<(), String>>,
     pub choices: Vec<Choice>,
     pub shot: Option<&'a str>,
     /// Screenshot name for the first decision window.
@@ -631,9 +775,10 @@ impl TransferSpec<'_> {
             preserve_time: false,
             links: None,
             link_input: LinkInput::default(),
-            follow_links: None,
             hold: false,
+            offered_links: false,
             wait: None,
+            before_confirm: None,
             choices: Vec::new(),
             shot: None,
             decision_shot: None,
@@ -641,15 +786,9 @@ impl TransferSpec<'_> {
         }
     }
 
-    /// The Links choice this run makes, from `links` or the former `follow_links`.
+    /// The Links choice this run makes ([`Self::links`]).
     pub fn link_choice(&self) -> Option<LinkChoice> {
-        self.links.or(self.follow_links.map(|follow| {
-            if follow {
-                LinkChoice::CopyFiles
-            } else {
-                LinkChoice::Keep
-            }
-        }))
+        self.links
     }
 
     pub fn moving() -> Self {
@@ -693,17 +832,20 @@ pub const KEEP_LINKS: &str = "Keep links as links";
 pub const LINKS_LABEL: &str = "Links";
 
 /// Whether the keyboard focus of `window` lies inside the visible control `role`/`label`.
-fn focus_inside(window: &slint::Window, role: AccessibleRole, label: &str) -> bool {
+pub fn focus_inside(window: &slint::Window, role: AccessibleRole, label: &str) -> bool {
     let focused = i_slint_core::window::WindowInner::from_pub(window)
         .focus_item
         .borrow()
         .upgrade();
-    let (Some(item), Some(area)) = (focused, inspect::find(window, role, label)) else {
+    let Some(item) = focused else {
         return false;
     };
-    let (x, y, w, h) = inspect::rect(&area);
     let center = inspect::center(&item);
-    center.x >= x && center.x <= x + w && center.y >= y && center.y <= y + h
+    // Any visible control of that name (the main window may show another one).
+    inspect::find_all(window, role, label).iter().any(|area| {
+        let (x, y, w, h) = inspect::rect(area);
+        center.x >= x && center.x <= x + w && center.y >= y && center.y <= y + h
+    })
 }
 
 /// Choose the open dialog's link handling as a user does, by `input`
@@ -805,6 +947,7 @@ pub fn choose_links(app: &mut App, wanted: LinkChoice, input: LinkInput) -> Resu
 struct Confirmed {
     start: usize,
     confirmed: Instant,
+    offered: Option<LinkView>,
     links: Option<LinkView>,
     hold: Option<Hold>,
 }
@@ -858,13 +1001,11 @@ fn confirm_dialog(
     // the default and whether keeping links holds), and last, so that Enter by
     // keyboard confirms from the Links box.
     let choice = spec.link_choice();
-    if (choice.is_some() || spec.hold)
-        && link_view(app).is_some()
-        && !wait_link_facts(app, &trace)
-        && spec.hold
-    {
+    let awaited = (choice.is_some() || spec.hold || spec.offered_links) && link_view(app).is_some();
+    if awaited && !wait_link_facts(app, &trace) && (spec.hold || spec.offered_links) {
         return Err("the destination's link facts did not arrive within 10 s".into());
     }
+    let offered = if awaited { link_view(app) } else { None };
     if let Some(choice) = choice {
         choose_links(app, choice, spec.link_input)?;
     }
@@ -875,6 +1016,9 @@ fn confirm_dialog(
             name,
             if moving { "Move dialog" } else { "Copy dialog" },
         );
+    }
+    if let Some(before_confirm) = spec.before_confirm {
+        before_confirm()?;
     }
     let confirmed = Instant::now();
     let mut hold = None;
@@ -916,6 +1060,7 @@ fn confirm_dialog(
     Ok(Confirmed {
         start,
         confirmed,
+        offered,
         links,
         hold,
     })
@@ -977,6 +1122,7 @@ pub fn transfer(
     let Confirmed {
         start,
         confirmed,
+        offered,
         links,
         hold,
     } = confirm_dialog(app, context, &spec)?;
@@ -1055,6 +1201,7 @@ pub fn transfer(
                 finished,
                 notice,
                 timeline,
+                offered,
                 links,
                 hold,
             });
