@@ -6,18 +6,13 @@ job ID and window session. Multiple operations may have visible windows at once.
 The Jobs window is a session ledger; Open displays a selected operation's progress
 or retained diagnostics. It does not mix an active transfer with previous jobs.
 
-**Status:** producer/UI behavior has bounded headless-fixture qualification.
-Concurrent scheduling and the native namespace registry described below are
-implemented in the current source; their real-storage qualification and fresh
-application delivery remain pending.
-
 ## Lifetime and controls
 
-- Cancel in the confirmation form admits no destructive work and no Jobs receipt.
+- Cancel in the confirmation form admits no destructive work and no Jobs record.
 - X, Escape and Cancel operation in active progress first open an in-window
   cancellation confirmation for that exact job and window session. Continue is
   the default; Continue, Escape or closing the confirmation leaves the operation
-  running in its existing pause state. Other operation windows remain usable.
+  running in its pause state. Other operation windows remain usable.
 - Confirming Cancel operation requests cooperative cancellation. A rejected
   command leaves the window visible with an actionable retry. A completion or
   replaced/stale window session while the question is open cannot send a new
@@ -43,13 +38,13 @@ application delivery remain pending.
 - Details shows and hides an area below the progress or outcome with the job's
   complete details (counters, source, destination, diagnostics, every retained
   error and informational note), in a box of its own that scrolls; a window lower
-  than 350 px adds them to the end of its scrolled content instead. Copy details
+  than 350 px (`compact` in `job-progress-window.slint`) adds them to the end of its
+  scrolled content instead. Copy details
   copies the same text.
 - While a job's own window is open, the main window adds no notice when the job
   ends, whether it was cancelled, failed or completed: the window shows the outcome.
   A job whose window is not open (closed while it was cancelling, or a Rename,
-  creation or Properties job never opened from Jobs) is reported by a notice as
-  before.
+  creation or Properties job never opened from Jobs) is reported by a notice.
 - Cancellation remains cooperative: finish the safe checkpoint and clean up owned
   unpublished temporary files. Earlier committed changes remain. Jobs retains the
   final result, including cleanup errors; closing presentation never means success.
@@ -149,22 +144,21 @@ application delivery remain pending.
   changed: when it does not let the selected item leave (write-protected, or owned by
   another user who does not allow it), the Move stops at preparation, before anything
   is copied, with a permission error that names the item: Retry once the folder is
-  writable, Skip and Skip all (T-E06; before 21 November it was an Unsupported error
-  that ended the job without a question). Windows needs nothing for this rule: a
+  writable, Skip and Skip all. Windows needs nothing for this rule: a
   folder's read-only attribute does not stop entries from leaving it; a folder whose
   access list denies deleting its entries refuses the item's preparation with the same
-  Retry, Skip and Skip all. A Windows cross-volume Move still refuses a source
+  Retry, Skip and Skip all. Known limit: a Windows cross-volume Move refuses a source
   file or folder that itself has the read-only attribute, before copying it, because
-  its removal does not override the attribute (unlike Delete's POSIX disposition);
-  that is a separate gap ([transfers](TRANSFERS.md)).
+  its removal does not override the attribute (unlike Delete's POSIX disposition;
+  [transfers](TRANSFERS.md)).
 - Copy/Move stages that still end the job, or the rest of a folder, without an
-  item-level Skip (20 November audit, revised 21 November), and why:
+  item-level Skip, and why:
   - Preparation (stage Preparing) of captured (tree) or archive sources: a failure
     blocks the whole job before anything is copied, with Retry and Cancel only (no
     Retry when retrying cannot help). A selected native item that fails alone (its path
     is the error's) also offers Skip and Skip all: `Preparation::skip_root` plans the
     job again without it, it counts as skipped and as one error, and the others are
-    copied. Since 21 November this holds for a single selected item too (T-E06): Skip
+    copied. This holds for a single selected item too: Skip
     leaves it where it is and, nothing being left to do, the job ends at once
     (`Preparation::is_last_root`), Failed as a job that completed nothing ends, with
     the item's error and "1 entries or subtrees skipped; source data retained." A job
@@ -189,12 +183,12 @@ application delivery remain pending.
     place; files, and links in a Copy; the source stays, a Move keeps it), a link stage
     that cannot be cleaned up after its publication, a native Move rename that needs
     recovery (stage Moving the source; the entry waits in its private stage or at the
-    destination, with receipts), the cleanup of the private stage or the durability of
+    destination, with its recovery facts), the cleanup of the private stage or the durability of
     a verified source removal (the source is gone and its copy verified; stage
     Cleaning up or Removing the verified source), a moved directory link whose
     original needs recovery, and a cleanup that fails while the job carries out a Skip
     (a link stage, a Move's retained copy stage, or a stage left after a failed
-    file's source was put back; a Copy reports a copy stage and goes on, as before).
+    file's source was put back; a Copy reports a copy stage and goes on).
     These still end the job, because continuing would be unsafe:
     - a capture that does not match: an object other than the selected source was
       taken from its name, so the provider's results can no longer be trusted;
@@ -207,7 +201,7 @@ application delivery remain pending.
       its private stage, reported with the job's results; the job stops so that
       nothing else changes before the user sees where it is.
     Folder permissions that could not be given to a copied folder are reported and the
-    job goes on; they never ended it.
+    job goes on; they do not end it.
 - A completed or completed-with-errors Copy, Move, Delete, Rename, New file, New
   folder or Properties job refreshes every native panel showing an affected folder as
   soon as its terminal progress is applied, without waiting for a watch notification.
@@ -216,7 +210,7 @@ application delivery remain pending.
   comparison or a drag from the panel still defers it. A tree panel whose root
   contains an affected folder refreshes its loaded branches.
 - When the user waited for the job (it ended within 5 seconds of first reporting
-  that it runs, or sooner), the input of each panel showing its change then waits
+  that it runs, or sooner; `WAITED_JOB` in `presenter/operations.rs`), the input of each panel showing its change then waits
   until those re-reads and tree refreshes complete, fail or are superseded: a Copy's
   destination (never its sources, which a Copy does not change), a Move's sources and
   destination, and the folder of a Delete, Rename, creation or Properties job. A
@@ -224,7 +218,8 @@ application delivery remain pending.
   (the tree worker sends a refresh pass's reply only after every view of that pass).
   Only that panel waits: its pointer and wheel input over the panel, with a wait
   cursor, and the keys typed while its file list has focus, including the digit-row
-  and bracket shortcuts the native window hook takes. Those keys (at most 64) are
+  and bracket shortcuts the native window hook takes. Those keys (at most 64,
+  `MAX_HELD` in `held_input.rs`) are
   kept and replayed in order, with the modifiers they were typed with, once the panel
   shows the change; they are dropped if the focus moved to another panel, the command
   line or a dialog meanwhile. The other panel, the command line, the toolbars and the
@@ -237,8 +232,9 @@ application delivery remain pending.
   `Creating “name”…`, `Creating folder “name”…`); its completion counts as waited for
   however long it ran. Failed or cancelled jobs, a Rename name-conflict question, a
   refresh that cannot start at once and other jobs that ran longer never hold input;
-  a failure or cancellation releases a held panel at once and is reported as before.
-  The wait for the re-reads after a completion is limited to 3 seconds, counted from
+  a failure or cancellation releases a held panel at once and is reported.
+  The wait for the re-reads after a completion is limited to 3 seconds
+  (`panel-hold.slint`), counted from
   the completion: then the waiting keys are replayed, input is released, and the
   status line says `Updating the file list…` until the change appears. Escape ends
   either wait at once; it is not replayed, and the keys typed before it are. A panel
@@ -254,8 +250,8 @@ application delivery remain pending.
 - A Move counts a change it made as unconfirmed (`source_removal_durability_unconfirmed`,
   "Source changes the system could not confirm as saved to disk: N") only when a step
   it takes to save that change to disk fails, never merely because the platform has no
-  such step. Any such count gives the job a closure receipt, so it ends "Completed with
-  warnings" with an attention mark in Jobs. Linux syncs the folders a change touched.
+  such step. Any such count gives the job a `CopyClosureReceipt`, so it ends "Completed
+  with warnings" with an attention mark in Jobs. Linux syncs the folders a change touched.
   Windows flushes the source and destination folders of a Move's native renames, each
   folder once for the renames the job saves together (before it removes a folder and
   when it ends), and confirms a source removal by delete disposition (a cross-volume
@@ -263,29 +259,29 @@ application delivery remain pending.
   handles on it are closed, its name is gone from its folder and that folder is
   flushed; a filesystem that does not flush folders leaves nothing to report
   ([Move durability on Windows](TRANSFERS.md#move-durability-on-windows)). A Move on
-  Windows, on one volume or across volumes, therefore ends Completed (WIN-6). A Windows
+  Windows, on one volume or across volumes, therefore ends Completed when every change is
+  confirmed. A Windows
   removal whose name is still there, or whose folder could not be flushed, is counted
   as unconfirmed and noted as accepted by Windows ("Source removals accepted by
   Windows: N"); both are then true.
 - Pause requests a safe backend checkpoint. Until acknowledged the UI says
   Pausing; it must not claim a native call has stopped. Resume and Cancel remain
   available while paused. Cancellation wakes paused waits and takes precedence.
-- Finished receipts stay for the session, with separate clear-finished and
-  clear-finished-without-errors actions. Metadata outcome details follow the same
+- Finished records stay for the session, with separate **Clear all finished** and
+  **Clear finished without errors** actions. Metadata outcome details follow the same
   lifetime: there is no last-16-jobs eviction. Results are keyed by operation ID
   for constant-time lookup/replacement; each result still has at most 32 sampled
   outcomes plus complete totals. Clearing also removes matching details, and late
-  receipts cannot resurrect cleared jobs. Replaced, cleared, late and shutdown
+  results cannot bring cleared jobs back. Replaced, cleared, late and shutdown
   metadata payloads go through backend reclamation rather than being freed on the
   UI thread. No queue persistence is implied.
 
 ## Admission policy and waits
 
-Requests default to `TransferStartPolicy::Immediate`. The accepted scheduler
-contract makes these jobs runnable concurrently, subject to configured worker,
-physical I/O and safety admission. The dialog's **Wait for earlier transfers** option
-(called "Wait for other operations to finish" until 22 November 2026) starts unchecked
-for every new draft and is not persisted.
+Requests default to `TransferStartPolicy::Immediate`. The scheduler runs these jobs
+concurrently, subject to configured worker, physical I/O and safety admission. The
+dialog's **Wait for earlier transfers** option (`operation-controls.slint`) starts
+unchecked for every new draft and is not persisted.
 Confirmation freezes the choice; rejection, reconfirmation and Retry retain it.
 Other submission routes default to Immediate.
 
@@ -328,7 +324,8 @@ executes native steps:
 
 - Pause, user decisions and namespace waits return the slot. The job readmits it
   through the FIFO gate before its next native step (Waiting for disk capacity once
-  that takes longer than 250 ms); a paused job takes neither lease.
+  that takes longer than 250 ms, `DISK_WAIT_SHOWN` in `copy_operations.rs`); a paused
+  job takes neither lease.
 - At each step boundary a running job yields its slot while anything else is queued
   for it: a call-scoped request (checksum, thumbnail, viewer, folder-size or
   file-list I/O) or another transfer. Such a request waits for at most one step of
@@ -344,14 +341,15 @@ executes native steps:
   waits for capacity (it may briefly exceed the limit). Quarantine returns the slot
   but keeps native authority, the namespace share and the claim.
 
-Initial acquisition takes the namespace share and then the FIFO disk slot. Legacy
-namespace consumers take their complete namespace before any disk slot, and no
+Initial acquisition takes the namespace share and then the FIFO disk slot. Whole-namespace
+operations (Delete, Rename, new folder, a saved list) take their complete namespace
+before any disk slot, and no
 slot holder waits for a namespace share, so this order cannot deadlock. The share
 semaphore is fair: a copy started while a whole-namespace operation is queued waits
 behind it (Waiting for another file operation). One job performs one native call at
 a time; a disk-I/O limit of one runs one step at a time, alternating between jobs.
-Future within-job multiple streams still require positive local SSD classification
-at both endpoints and shared budgets.
+A job never copies in parallel streams (IO-01 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md)).
 
 Namespace admission is an atomic check-and-claim, decided at once under the
 registry lock: the job probes only its own pins and compares them with the
@@ -373,7 +371,7 @@ handle of its own before its first use, and transfers hold folders with write sh
 so the busy job can still publish into a folder the waiting job will read (a prepared
 Move item still holds its guard, see
 [Windows sharing](TRANSFERS.md#windows-sharing-while-a-job-waits-and-runs)).
-Because grants no longer re-probe
+Because grants do not re-probe
 peers, a turn that did not announce every binding it affected refreshes every pin of
 its job when it finishes. All
 namespace changes (stage creation, publication, directory creation, removal) of all
@@ -456,7 +454,8 @@ describes written bytes. The headline does not follow the current file; it shows
 the whole job's completion (below). A file shows its own small bar beside its name,
 with its whole percent rounded down (`45%`, or `Verifying 30%` during readback;
 accessible label "Current file progress"), once its current attempt has run for 2
-seconds of active time (`current_file_active_millis`: pauses, waits and decisions
+seconds of active time (`SLOW_FILE_MILLIS` in `job_file_progress.rs`, measured on
+`current_file_active_millis`: pauses, waits and decisions
 hold it, and the next file or a Retry starts again from zero). Quicker files, steps
 other than writing and readback (such as Move proofs), empty or unknown sizes and
 ended jobs show no bar; a pause keeps it. Details add the
@@ -523,7 +522,8 @@ items as the window counts them: selected items, or files (a Move's once their s
 is removed) and completed folders for Copy and Move, and the items a Delete has
 deleted. A Copy/Move estimate weighs the remaining byte budget at the byte rate
 against the remaining items at the item rate, the more toward items the smaller the
-files that remain (equally at 1 MiB per remaining item); when only one of the two
+files that remain (equally at 1 MiB per remaining item, `SMALL_FILE_BYTES` in
+`job_progress_meter.rs`); when only one of the two
 can be estimated, such as items without a byte budget, it uses that one. An estimate
 is shown only while discovery is complete without skipped or failed items and the
 job runs, a Copy/Move also without a wait. A paused job keeps its estimate, marked
@@ -559,6 +559,4 @@ per-file meter retains the immutable source/target identities of its own lane.
 
 See [native transfers](TRANSFERS.md), the
 [initial Copy/Move form](../superpowers/specs/2026-11-07-copy-dialog-design.md)
-and [retained native tree-Delete evidence](../verification/2026-11-12-tree-delete-integration.md).
-Exact current commands, source hashes, selected results and screenshot limits
-remain in the scoped implementation/verification packet.
+and the [tree Delete record](../verification/2026-11-12-tree-delete-integration.md).

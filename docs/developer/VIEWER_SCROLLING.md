@@ -20,10 +20,10 @@ Markdown uses the same asynchronous viewport pipeline. Its independent plugin
 counts semantic block lines, rather than only literal newlines, before cropping
 the page. A long lookahead with many later blocks must not downgrade the visible
 page to plain text. Parsing and safe-checkpoint discovery share one parser pass.
-Each immutable session keeps an LRU of at most 16 semantic pages and 1 MiB, keyed
-by anchor, direction and viewport budgets. Revisited resident pages require no
-source read or parse; closing/reopening never carries cache across revisions.
-Uncached distant seeks without a trustworthy block checkpoint retain the existing
+Each immutable session keeps an LRU of at most 16 semantic pages and 1 MiB (the
+plugin's `page_cache.rs`), keyed by anchor, direction and viewport budgets. Revisited
+resident pages require no source read or parse; closing/reopening never carries cache
+across revisions. Uncached distant seeks without a trustworthy block checkpoint keep the
 bounded literal fallback. There is no eager full-file Markdown index.
 
 The GitHub preset lays out semantic blocks before rasterization. Heading rules,
@@ -72,11 +72,10 @@ backwards.
 These messages are application-owned, not a change to the external viewer plugin
 ABI. Plugins continue to receive bounded viewport requests through the shared API.
 
-Behavioral reference: Salamander `src/viewer3.cpp`, `OnVScroll` and the
-`SB_THUMBTRACK`/`SB_THUMBPOSITION` handlers, retains the latest tracking position,
-updates content on a 20 ms timer and explicitly applies the final position on
+Behavioral reference: Salamander's viewer keeps the latest tracking position while the
+thumb moves, updates the content on a 20 ms timer and applies the final position on
 release to avoid a flash at the old location. This implementation uses asynchronous
-backend messages and bounded coalescing; no Salamander code is copied.
+backend messages and bounded coalescing instead; no Salamander code is copied.
 
 ## Retained text pixels and delivery
 
@@ -92,13 +91,11 @@ each strip becomes one image when it first arrives. Strips of one viewer hold at
 64 MiB and those of all viewers 256 MiB; the engine's budget and the UI's frame check
 take these from `midnight-core` (`VIEWER_PREPARED_TEXT_BYTES`,
 `VIEWER_PREPARED_TEXT_TOTAL_BYTES`). Refills keep the request ceilings: 12 KiB for
-text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines; the
-prepared screens and a higher DPI do not enlarge those source budgets. An uncovered
-frontier pauses displayed motion until usable pixels arrive; it is not an inferred end
-of file. A camera at rest stands on a whole raster pixel, where strips are exact.
-The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
-defined coverage and continuation; strips replaced its single snapshot and its 256-pixel
-guards on 21 November 2026.
+text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines (the viewer
+engine's `worker.rs`); the prepared screens and a higher DPI do not enlarge those source
+budgets. An uncovered frontier pauses displayed motion until usable pixels arrive; it is
+not an inferred end of file. A camera at rest stands on a whole raster pixel, where
+strips are exact.
 
 A refill paints only the lines, Markdown blocks, table cells and glyphs whose ink
 can reach the raster. That reach is a conservative bound, not a font guarantee:
@@ -127,15 +124,15 @@ buffer dimensions and byte budgets, then copies RGBA into safe
 `SharedPixelBuffer<Rgba8Pixel>` allocations off the UI thread. Only creation of
 Slint images from those shared buffers and window updates happen on the UI thread.
 The engine still publishes toolkit-independent pixels and metadata; reads,
-parsing, shaping and rasterization stay on their existing workers. This adapter
+parsing, shaping and rasterization stay on their backend workers. This adapter
 adds no source reads, larger decoded pages or whole-file loading.
 
 At most one prepared batch waits for UI consumption. Until it is taken, the
-worker does not drain another batch, so the source mailbox retains its existing
+worker does not drain another batch, so the source mailbox keeps its
 eight-output bound, latest-frame coalescing and reserved raster-control slot.
 There is no task or growing queue per frame. A failed event-loop wake is retried
 without requiring another source frame. Delivery is event driven; in addition,
-each open viewer runs one 16 ms UI timer for the work that has no completion
+each open viewer runs one 16 ms UI timer (`midnight-viewer-ui` `lib.rs`) for the work that has no completion
 event: it acknowledges layout geometry and detects canvas or DPI changes, takes
 a prepared batch whose wake was lost, retries position requests that a full input
 queue refused, advances image motion fallback and presents the late font catalog.
@@ -144,7 +141,7 @@ body/gutter buffers for the same generation, surface, pixel identity, dimensions
 and viewport; it does not retain the source pixel Arcs or their backend reservation.
 Frontend shared buffers remain separate from the backend raster storage budget.
 
-Delivery preserves the existing generation, frame revision, position sequence,
+Delivery keeps the generation, frame revision, position sequence,
 surface and rebase checks. Prepared pixels must match the delivered frame revision.
 Rejected frames cannot replace the accepted buffer lease; conversion failures
 leave control/status delivery available. Accepted replacement buffers keep the
@@ -168,25 +165,20 @@ the same way to the image's start or end along the direction it scrolls in: down
 it is taller than the view, else across. The backend's Seek would not move it, since
 the camera, not the backend, owns a retained image's view (`image_key_tests`).
 Decoder work and tile caching remain on backend workers. The UI texture cache
-copies each newly arriving 256×256 tile into a Slint buffer on the event loop (at
-most 128 tiles, 32 MiB, per frame) and reuses it by tile identity, so panning
-copies only newly exposed tiles. The UI refuses a frame with more tiles. These
+copies each newly arriving 256×256 tile into a Slint buffer on the event loop and
+reuses it by tile identity, so panning copies only newly exposed tiles. For images it
+keeps at most 128 tiles and 32 MiB, and the UI refuses a frame with more tiles. These
 bounds, which the backend tile cache uses too, are defined once in `midnight-core`
 (`VIEWER_TILE_CACHE_BYTES`, `VIEWER_TILE_CACHE_ENTRIES`).
 
 ## Documents (PDF)
 
-Documents use the image tile presentation, at exactly the shown zoom. Until 21
-November 2026 every scroll step rendered the whole view again: the engine composed all
-visible page slices into one raster, and a render still running when a newer camera
-arrived was abandoned, its result dropped. Wheel and thumb input every 16 ms therefore
-published no frame until the input stopped (the picture froze for the whole gesture),
-and views over 4 megapixels were rendered smaller and enlarged on screen, which made
-text soft and uneven. Measurements: [PDF scrolling](../verification/2026-11-21-pdf-scrolling.md).
+Documents use the image tile presentation, at exactly the shown zoom. Measurements:
+[PDF scrolling](../verification/2026-11-21-pdf-scrolling.md).
 
 **Canvas and tiles.** The engine keeps one tile canvas per document layout: the current
 page in the Paged layout, the column of every page (`image_tiles::CANVAS`, pages 24
-points apart and centred) in the Continuous layout. Tiles are 256 × 256 premultiplied
+points apart, `PAGE_GAP` in `document_view.rs`, and centred) in the Continuous layout. Tiles are 256 × 256 premultiplied
 RGBA keyed by canvas, scale and tile position; a page's rotation and crop belong to the
 page, so they need no key of their own. One raster pixel is one physical pixel at every
 view size (`image_scene::document_raster`): the cache budget bounds memory, never a
@@ -195,7 +187,8 @@ smaller rendering of what is shown at rest. Only a view beyond the tile position
 three 4K screens) is reduced.
 
 **Bands.** Missing tiles are rendered in bands, rectangles of whole missing tiles of at
-most 16 tiles across and down and 64 tiles in all, within the provider's 4096-pixel edge
+most 16 tiles across and down and 64 tiles in all (`MAX_BAND_EDGE`, `MAX_BAND_TILES` in
+`image_scene.rs`), within the provider's 4096-pixel edge
 and 4-megapixel viewport bounds (`Scene::next_band`). A band starts at the first missing tile of the
 plan, spans the adjacent missing tiles of its row and then whole rows in the direction
 of motion. The image actor asks the provider once for each page the band meets and
@@ -255,8 +248,8 @@ bounded raster geometry.
 
 **Provider.** The PDF plugin keeps Hayro's caches (parsed fonts, glyph outlines and
 bitmaps, decoded images) for the two pages rendered last at their scale, so a page's
-later bands reuse them; any other page or scale replaces the older entry. The plugin
-protocol is unchanged: the host still sends bounded `PageViewport` requests.
+later bands reuse them; any other page or scale replaces the older entry. The host
+sends the plugin bounded `PageViewport` requests.
 
 **Text viewers** keep their retained-raster path (`worker_raster.rs`, `raster_camera`),
 owned separately. The same rules apply there: keep completed work that covers the
@@ -266,7 +259,7 @@ latest target, publish on coverage, and render ahead off the input path.
 the step's anchor (`Textures::preview_zoom`; steps compose), until the new surface's
 visible tiles arrive and replace them at exact resolution.
 
-**Not implemented.** A scrollbar jump to a region with no retained tiles keeps the old
+**Known limit.** A scrollbar jump to a region with no retained tiles keeps the old
 view until the new region's visible tiles arrive (one or a few bands); there is no
 low-resolution placeholder layer.
 
@@ -321,8 +314,6 @@ performance_probe <fixtures> <report> --d3d --native-parent --opening-proof --fi
 `--native-parent` captures placement from an already native parent, matching the
 application's viewer launch path. Standalone logical-size startup has no parent
 DPI to seed and is a distinct scenario. Keep startup modes consistent in before
-and after comparisons. At each observed viewer redraw, the probe latches the publication revision and geometry; it rejects a snapshot if that state changes before capture. These crops match the observed redraw state, but do not read the compositor framebuffer or cover Slint's direct pre-show draw. Opening snapshots are excluded from cadence comparisons;
-these probe capabilities alone do not establish a passing native qualification.
+and after comparisons. At each observed viewer redraw, the probe latches the publication revision and geometry; it rejects a snapshot if that state changes before capture. These crops match the observed redraw state, but do not read the compositor framebuffer or cover Slint's direct pre-show draw. Opening snapshots are excluded from cadence comparisons.
 
-The latest measured results, matched-redraw opening scope, GPU/software limits and
-focused regression evidence are in [the text viewer follow-up](../verification/2026-11-11-text-opening-scroll.md).
+Measurements: [text viewer follow-up](../verification/2026-11-11-text-opening-scroll.md).

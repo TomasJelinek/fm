@@ -7,8 +7,8 @@ host captures `Arc<ViewerPreferences>` in `ViewerLaunch` before opening a source
 ## Plugin catalogs in Options
 
 Options → Plugins has Viewers, Filesystems and Thumbnailers tabs. The latter two are read-only catalogs.
-Viewer enablement, extension overrides and priority retain stable plugin IDs and
-their existing restart/application-settings semantics. Short names and functional
+Viewer enablement, extension overrides and priority keep stable plugin IDs and
+their restart and application-settings semantics. Short names and functional
 descriptions are presentation metadata; they do not redirect routing or migrate
 saved IDs. The source viewer's description identifies its supported lexical
 profiles rather than placing resource-limit wording in its title.
@@ -17,12 +17,12 @@ The Extensions editor is a single-line field. Long lists scroll horizontally
 with the caret, so Home/End and arrow keys reach either end without clipped
 wrapped lines. Spaces, commas and semicolons remain supported separators;
 multiline clipboard input becomes space-separated text. Validation, Reset,
-preview, OK and Cancel retain their existing transaction semantics. Options
-starts at 840×580 logical pixels, grows for larger fonts and remains constrained
-to the available window area; users can still resize it. See the
-[layout verification](../verification/2026-11-11-options-extension-layout.md).
+preview, OK and Cancel keep their transaction semantics. Options starts at 840×660
+logical pixels, grows with larger fonts (at least 28 by 23 font sizes) and stays within the
+window, 12 pixels from each edge (`main.slint`); users can still resize it. Evidence:
+[layout record](../verification/2026-11-11-options-extension-layout.md).
 
-The existing internal `Command::ListViewerPlugins` requests all three catalogs
+The internal `Command::ListViewerPlugins` requests all three catalogs
 through one bounded backend worker. It publishes independent
 `Event::ViewerPluginsListed`, `Event::FilesystemPluginsListed` and
 `Event::ThumbnailerPluginsListed` results. These are application catalog events,
@@ -35,7 +35,7 @@ archive filesystem hosts. Installed means a trusted compatible manifest and
 regular artifact presence were checked. The catalog never loads a library,
 creates a provider, launches a worker, activates a share or infers a running state.
 Its overview has no filesystem enable/disable, priority, extension-edit or runtime
-reload control. Existing archive decoder settings remain on the Archives page.
+reload control. Archive decoder settings are on the Archives page.
 Filesystem selection displays details without saving viewer preferences or
 granting any operation authority from the displayed ID or location.
 
@@ -60,23 +60,22 @@ checkboxes, extension overrides and runtime reload are not exposed by this catal
 | Markdown font | Sans-serif, 16 logical pixels | Family and size |
 | Markdown presentation | GitHub | GitHub, Compact or Comfortable |
 | Raster image zoom | Fit | Fit, actual pixels or manual scale; restored when opening |
-| PDF zoom | Fit on each new source | Legacy document zoom field remains readable/writable; not restored |
+| PDF zoom | Fit on each new source | The document zoom field is read and written but not restored |
 
 Manual scale uses integer basis points: 10,000 means 100%, with 0.01% stored
 precision. Font sizes are 8–48 logical pixels; family names are nonempty Unicode
 strings, at most 256 UTF-8 bytes and without control characters. These are settings
 resource bounds, not native filename/path limits. Invalid values fail atomically.
 
-Each newly opened PDF starts in Fit, including file cycling to another PDF.
-Previously saved document zoom values remain valid in the existing settings
-schema, but no longer set a new document's view. A late settings load also leaves
-the current PDF geometry unchanged. No settings rewrite or schema migration is
-needed: explicit zoom commands control the current document, and its first zoom
-step starts from the displayed scale. Raster images still restore their separate
+Each newly opened PDF starts in Fit, including file cycling to another PDF. Saved
+document zoom values stay valid in the settings schema but do not set a new
+document's view, and a late settings load leaves the current PDF geometry unchanged.
+Explicit zoom commands control the current document, and its first zoom step starts
+from the displayed scale. Raster images still restore their separate
 saved zoom.
 
-PDF Fit enlarges small pages and shrinks large pages to the viewport, retaining
-the existing maximum scale of 64× and bounded raster size. Raster-image Fit keeps
+PDF Fit enlarges small pages and shrinks large pages to the viewport, with a
+maximum scale of 64× and a bounded raster size. Raster-image Fit keeps
 its no-upscale policy. The document Fit policy survives page changes and resizing.
 
 Changing PDF pages retains the current manual zoom or actual-pixels mode in both
@@ -108,7 +107,7 @@ space above it scrolls, and the insets shrink first, so the button stays whole a
 viewer's minimum size and with the largest UI font. Another document removes the
 notice.
 
-## PDF layouts (in development)
+## PDF layouts
 
 Use **Paged** to view one PDF page at a time, with the previous/next page buttons
 or **Ctrl+PageUp / Ctrl+PageDown**. Use **Continuous** to scroll through a sequence
@@ -133,24 +132,6 @@ command anchored at the view's centre and saved like the zoom buttons' commands.
 user's decimal separator comes from the application's number format
 (`ViewerWindows::set_number_locale`).
 
-The new layout controls remain in development until their UI/application gates pass.
-The prior Fit/Paged footer regression and two keyboard cases now pass within the 31
-continuation. Selected39 remains 38/1 because Options focus still fails. The current
-canonical104-source/159-selection packet is source-derived, not 159 passes; the separate
-The earlier Viewer46 timeout and subsequent45/1 retain their dated source.
-On the canonical `fc4fcdf7…` shared-helper checkpoint, the exact former failure
-passed first and the other 45 then passed: **46 actual passes /0 failures**.
-Both raw logs retain their separate 1+45 counts; all nine document cases and
-19 image-presentation cases passed, including the genuine immediate-open errors.
-These overlap earlier scopes and are not additional unique passes or all 159.
-Options focus, native/full-app and production migration acceptance remain open.
-
-The preceding backend slice and two final native PDF cases passed, including
-mixed page sizes and rapid camera replacement with the real C PDF worker. Those
-functional fixtures do not establish full-app input, production native-filesystem
-capture or scrolling performance. See the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
-for the exact accepted source and outstanding gates.
-
 ## Preference updates
 
 `ViewerPreferenceChange` describes one changed field. The viewer service accepts
@@ -167,11 +148,11 @@ The presenter merges each patch into the latest application settings, preserving
 unrelated changes from other viewer windows. During the initial settings read,
 at most one patch per field is retained; those patches merge into the loaded
 configuration rather than replacing unedited values with defaults. Persistence
-uses the existing backend settings command, coalescing and atomic file publication.
-Queue rejection retains the latest unsaved values for the existing save retry and
-shutdown flush. A failed initial read never authorizes overwriting the old file.
+uses the backend settings command, coalescing and atomic file publication. Queue
+rejection keeps the latest unsaved values for the save retry and shutdown flush. A failed initial read never authorizes overwriting the old file.
 
-Startup reveals the main window after 10 seconds without a settings answer, so a
+Startup reveals the main window after 10 seconds without a settings answer
+(`startup::DEADLINE` in `midnight-explorer`), so a
 viewer can be opened before the read arrives; it starts with the defaults plus its
 own edits. When the read arrives, the explorer restores the loaded choices, merged
 with those edits, into every open viewer window, so conflicting edits made in
@@ -186,8 +167,7 @@ defaults, or schema 22 when the comparator font is customized. A customized pane
 split independently requires schema 23, retaining viewer choices and allowing
 an omitted default comparator font. Earlier schemas
 load the Consolas comparator default. Its toolbar offers installed fixed-pitch
-families and System monospace, using the existing backend renderer's cached font
-catalog. Unknown or proportional families cannot be selected. If a stored family
+families and System monospace, using the backend renderer's cached font catalog. Unknown or proportional families cannot be selected. If a stored family
 is absent, rendering uses Consolas when available, then generic monospace, without
 rewriting the user's saved choice. Family changes retain the diff and viewport.
 See the [comparator font contract](../superpowers/specs/2026-11-08-comparator-font.md).
@@ -203,41 +183,18 @@ as other options. Search text, opened file contents, per-file reading offsets an
 viewer window geometry are not serialized here. New viewer windows still use the
 main application's placement.
 
-The [source/Markdown presentation controls](VIEWER_PRESENTATION.md) now expose
-these choices. Actual Windows input checks cover the controls; manager-recreation
-tests cover restoration and immediate Escape. Type/codec and recreation tests
-are not an actual application restart. Live restart, concurrent-window field
-changes, disabled plugins and failed writes remain part of the integrated
-persistence gate; see [current evidence](../verification/2026-11-08-viewer-controls.md).
+The [source/Markdown presentation controls](VIEWER_PRESENTATION.md) expose these
+choices. Evidence: [viewer controls record](../verification/2026-11-08-viewer-controls.md).
 
-## Office contents preview (in development)
+## Office contents preview
 
-The built-in Office preview is intended to open readable text, tables or sheet
-contents immediately, with navigation to further bounded content pages. It aims
-at readable contents rather than faithful Office page layout. An index-only
-opening screen is not the accepted final workflow; the initial-content helper
-contract is approved, with initial-content adapter cases passing in the scoped
-headless gate. Native and application qualification remain open.
-
-**XLSX was the first backend slice.** DOCX, XLSX, PPTX, ODT, ODS and ODP now have
-a scoped six-format gate:68 service,18 XLSX integration and 27 Viewer adapter/
-frame-guard cases passed, with clean compilation. The later scoped repair gate passed 60 checks and strict
-Clippy/format0; prior 113/86 overlap. The earlier native CEF attempt rendered
-content but failed a resource-policy assertion; that failed snapshot remains
-historical. The coherent CSS/
-reader/diagnostic checkpoint later passed 86 scoped headless checks. Worker image
-review found readable minimum-width columns with horizontal scrolling. Its native
-navigation now passed all 11 content proofs with expected generated requests only
-and no denied/unexpected requests. Parent-change then failed with the browser
-exiting before requested evidence. The separately authorized close/cancel case
-then passed once on the same old harness. Those two native passes/one failure
-retain their source identity. The latest parent diagnostic `office-9fe36f20a6` remains **0 passed /1 failed**:
-completed real Find returned 0, Copy failed and Session stayed live. Its blank902×602
-diagnostic frame is not validated fresh content/resize proof (resize_ok=false,
-fresh_contrasted_frame=false). Source refusal remains required; no provider/Find/
-loading root cause is established. Host47 +Viewer44 =91/0 retain their frozen source;
-the later four assertion-style lint fixes passed strict Clippy0/format13files0 and
-two overlapping resource tests, not 93 unique tests or a full91 rerun.
+The built-in Office preview opens readable text, tables or sheet contents at once, with
+navigation to further bounded content pages, for DOCX, XLSX, PPTX, ODT, ODS and ODP and
+the variants below. It shows readable contents, not faithful Office page layout.
+Generated preview pages use bounded inert HTML. The preview does not require external
+Office, run macros, evaluate formulas or refresh external data. A sheet may show a
+stored formula result or inert formula text. Find searches only the currently generated
+page, not the complete workbook or document. See [Viewer protocol](VIEWER_PROTOCOL.md).
 
 Root accepted the generic provider small-body navigation contract for private
 implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
@@ -255,31 +212,11 @@ zero-warning gate. These tests exclude CEF/native execution and do not qualify
 new V3 route/adapter integration. Five native cases await a legitimate complete
 new C product; no new executable or deployment is claimed.
 
-Root accepted the Viewer/Compare live-appearance contract for private
-implementation; it is not implemented or passing. Application UI font is separate
-from document font. Frontend apply_appearance consumes actual applied/preview Theme,
-density and UI font scalars for existing/new windows; backend restore_palette accepts
-foreground/background/selection/accent only. Accepted revision is not painted/native
-acknowledgement. Bounded latest requests, A→B→A, rollback and frame-generation fences
-must preserve source/layout/position without recapture, relaunch or source I/O.
-Source/Markdown semantic roles must recolor active/cached content, gutters and raster;
-Office/author HTML CSS and original image/PDF pixels remain content-owned. Reuse
-supported UI controls and preserve input/accessibility; no SDK expansion is selected.
-
-Generated preview pages use bounded inert HTML. The preview does not require
-external Office, run macros, evaluate formulas or refresh external data. A sheet
-may show a stored formula result or inert formula text. Find searches only the
-currently generated page, not the complete workbook or document. See
-[Viewer protocol](VIEWER_PROTOCOL.md) and the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint)
-for implementation and qualification boundaries.
-
 ### Office packages: what opens and what is refused
 
-Since 21 November 2026 the preview opens packages saved by Microsoft Office. Office
-pads the local headers of its first parts with a 0xA220 "growth hint" extra field
-(520 bytes on `[Content_Types].xml` and `_rels/.rels`, 264 on some others), which
-the first implementation slice (XLSX came first) refused as "local ZIP extras in
-first slice". "First slice" named that delivery phase; it was never a read bound.
+The preview opens packages saved by Microsoft Office, which pads the local headers of
+its first parts with a 0xA220 "growth hint" extra field (520 bytes on
+`[Content_Types].xml` and `_rels/.rels`, 264 on some others).
 
 **Container.** `midnight-office-preview` checks the ZIP container itself before
 `zip` indexes it ([preflight.rs](../../crates/midnight-office-preview/src/preflight.rs)):
@@ -308,20 +245,20 @@ first slice". "First slice" named that delivery phase; it was never a read bound
   extra-field reading, which rejects NTFS records of another length, fails stale
   Unicode path records and renames a member after a current one, never applies, and
   it retains no extra field or comment for the index memory reservation.
-- Limits are unchanged: a 256 MiB file, 10,000 parts, an 8 MiB central directory
+- Limits: a 256 MiB file, 10,000 parts, an 8 MiB central directory
   (extra fields and comments count), 4,096-byte names and 1 MiB of names, a
   16 MiB index reservation and 256 MiB of reads and unpacked data per page. A part
   whose ZIP64 size exceeds 4 GiB is refused. The preflight reads at most the last
   65,557 bytes for the end record, the central directory, and each member's header,
   name, extra field and data descriptor.
 
-**Library decision.** `zip` 8.6.0 (already a dependency) keeps member lookup and
+**Library decision.** `zip` 8.6.0 keeps member lookup and
 Deflate decoding; no other ZIP library is in `Cargo.lock`. It cannot replace the
 preflight under the same limits: it allocates its index from the end record's
 counts, searches for another end record after a central-directory error, never
 compares local and central headers or detects overlapping or duplicate members, and
 its extra-field parser is crate-private and differs from the rules above (see the
-canonical copy). Local extra fields it only skips. No dependency or feature changed.
+canonical copy). Local extra fields it only skips.
 
 **Contents.** Only the parts and elements that carry text and stored values are
 read; other writers' markup is skipped whole and never shown as document text.
@@ -338,7 +275,7 @@ read; other writers' markup is skipped whole and never shown as document text.
   contains only pictures, charts or other objects that the preview does not show."
   (or "This part of the document …") instead of failing. Extension lists (creation
   IDs), slide backgrounds, transitions and timing, and LibreOffice's form, field and
-  change-tracking declarations no longer claim omitted objects.
+  change-tracking declarations do not claim omitted objects.
 - ODS skips scripts, forms, conditional formats and other sheet-level markup;
   shapes, charts, pictures and comments are skipped with the sheet notice. A cell
   value type the preview does not know shows the cell's paragraphs.
