@@ -30,8 +30,12 @@ answering (for example a hard-mounted NFS export), or to an autofs map key that
 is not present yet, holds its listing page until the server or automounter
 answers. Physical PCIe NVMe/ATA storage is classified only after positive
 topology, identity and rotation checks; dm/md stacks are classified only when
-every backing leaf is proven local physical media, and virtual or removable
-devices remain Unknown. Rich capacity distinguishes physical total, free and
+every backing leaf is local. A disk attached to the machine that proves no media
+type (a virtual or cloud machine's disk, such as WSL 2's Hyper-V disk, a USB, MMC,
+virtio, Xen or SCSI disk) is `Local` (ABI minor 4; the package requires host minor
+4); virtual block devices (loop, nbd, rbd, NVMe fabrics), disks behind an iSCSI
+session or Fibre Channel remote port, and filesystems other than single-device block
+filesystems (ext2/3/4, XFS, F2FS, FAT, exFAT, ntfs3) remain Unknown. Rich capacity distinguishes physical total, free and
 caller available; mount fields come from the held descriptor's mount ID.
 Procfs/sysfs-style content without a reliable known length is explicitly
 Unsupported. Reads are live validated regular files, not snapshots: content is

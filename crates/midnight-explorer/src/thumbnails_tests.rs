@@ -508,9 +508,13 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     let window = MainWindow::new().unwrap();
     let root = std::env::current_dir().unwrap();
     let presenter = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
+    // The left pane shows thumbnails; network previews also admit its unclassified folder.
+    let mut accepted = Box::<midnight_core::AcceptedPreferences>::default();
+    accepted.preferences.panel_view_modes[0] = midnight_core::PanelViewMode::Thumbnails;
+    accepted.preferences.thumbnails_network = true;
     presenter
         .borrow_mut()
-        .apply(Event::PreferencesLoaded(Ok(Box::default())));
+        .apply(Event::PreferencesLoaded(Ok(accepted)));
     midnight_ui::install(&window, presenter.clone(), Rc::new(|_| true));
     native.set_size(slint::PhysicalSize::new(1000, 700));
     let mut pixels = vec![slint::Rgb8Pixel::default(); 1000 * 700];
@@ -547,7 +551,10 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
     window.invoke_thumbnail_clear_cache();
     window.show().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
-    while window.get_message_generation() == 0 {
+    while !window
+        .get_left_watch_status()
+        .contains("Previews are unavailable")
+    {
         assert!(
             Instant::now() < deadline,
             "the discovery failure notice was not presented"
@@ -561,11 +568,11 @@ fn preview_initialization_failure_keeps_the_main_window_alive() {
             renderer.render(&mut pixels, 1000);
         });
     }
-    assert_eq!(window.get_message_title(), "Previews");
+    // WIN-11: the thumbnail pane's status row says it; no notice takes the keyboard.
+    assert_eq!(window.get_message_generation(), 0, "never a modal notice");
     assert!(
-        window
-            .get_message_body()
-            .contains("Previews are unavailable")
+        window.get_right_watch_status().is_empty(),
+        "a pane that shows no thumbnails"
     );
     assert!(window.window().is_visible());
     controller.stop();

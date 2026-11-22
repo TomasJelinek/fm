@@ -12,7 +12,8 @@ Changes take effect only after OK saves successfully. Cancel and failed saves
 leave the active setting unchanged.
 
 Parallel reads through this setting are allowed only for confirmed local SSD
-storage. HDD, network and unknown storage keep their exclusive policy. Copy and
+storage. HDD, network and unknown storage, and a local disk whose media type cannot
+be proven (a virtual machine's or USB disk), keep their exclusive policy. Copy and
 Move jobs share this limit: up to that many transfers do their disk work at the
 same time when they touch different files and folders, each copying one file at a
 time. A transfer that is paused, or waiting for your decision or for another

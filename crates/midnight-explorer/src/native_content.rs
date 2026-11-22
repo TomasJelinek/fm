@@ -43,6 +43,19 @@ pub(crate) fn factory(filesystem: Arc<InstalledProvider>) -> Capture {
     })
 }
 
+/// Thumbnail captures through the installed filesystem plugin under the preview
+/// service's `NATIVE_REVISIONS`: as viewers, a file whose change time alone moved still
+/// reads (VIEW-05, WIN-11).
+pub(crate) fn thumbnail_factory(filesystem: Arc<InstalledProvider>) -> Capture {
+    Arc::new(move |path, cancel| {
+        filesystem
+            .capture_with(path, service::NATIVE_REVISIONS, &|| {
+                cancel.load(Ordering::Acquire)
+            })
+            .map_err(|failure| format!("Native filesystem: {failure}"))
+    })
+}
+
 /// Parent-directory pins shared by sibling viewer files: at most `MAX_PINS`, each released
 /// `PIN_IDLE` after its last use by a reaper armed for the earliest expiry. Pins are
 /// dropped only on backend workers, never on the UI: by `pin` (called on a worker), by

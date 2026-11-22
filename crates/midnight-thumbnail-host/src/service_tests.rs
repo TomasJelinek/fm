@@ -698,3 +698,212 @@ fn a_helper_that_cannot_load_its_libraries_is_reported_once() {
     assert_eq!(backend.shared.lock().notice.take(), None);
     backend.stop();
 }
+
+/// A captured source double whose file is found changed after its capture (`changed`).
+struct Captured {
+    changed: Arc<AtomicBool>,
+}
+impl Source for Captured {
+    fn length(&self) -> u64 {
+        1
+    }
+    fn version(&self) -> Vec<u8> {
+        vec![1]
+    }
+    fn validate(&self) -> io::Result<()> {
+        if self.changed.load(Ordering::Acquire) {
+            Err(io::Error::other("Native file changed after capture"))
+        } else {
+            Ok(())
+        }
+    }
+    fn read_at(&self, _: u64, _: u32) -> io::Result<Vec<u8>> {
+        unreachable!("rendering doubles read no content")
+    }
+    fn changed_since_capture(&self) -> bool {
+        self.changed.load(Ordering::Acquire)
+    }
+}
+
+fn rendered(work: Work) -> io::Result<CachedFrame> {
+    Ok(CachedFrame {
+        edge: work.edge,
+        frame: Arc::new(Frame {
+            id: 0,
+            width: 1,
+            height: 1,
+            frame: work.frame,
+            rgba: vec![work.token as u8; 4],
+        }),
+    })
+}
+
+fn cache(root: &tempfile::TempDir) -> Arc<Mutex<Cache>> {
+    Arc::new(Mutex::new(
+        Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap(),
+    ))
+}
+
+/// WIN-11: a tile whose file changed after its capture is not left without a
+/// thumbnail: its pinned capture is replaced, and the retry after a short delay reads
+/// the file again.
+#[test]
+fn a_file_changed_after_its_capture_is_captured_again_and_its_tile_retried() {
+    let root = private_root();
+    let first_changed = Arc::new(AtomicBool::new(false));
+    let captures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (flag, counted) = (first_changed.clone(), captures.clone());
+    let capture: Capture = Arc::new(move |_| {
+        let changed = if counted.fetch_add(1, Ordering::AcqRel) == 0 {
+            flag.clone()
+        } else {
+            Arc::default()
+        };
+        Ok(Arc::new(Captured { changed }) as Arc<dyn Source>)
+    });
+    let renders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = renders.clone();
+    let render: Renderer = Arc::new(move |target, _, work, _, cancel| {
+        let source = (target.capture)(cancel)?;
+        if counted.fetch_add(1, Ordering::AcqRel) == 0 {
+            // The file is rewritten while its thumbnail is made.
+            first_changed.store(true, Ordering::Release);
+        }
+        source.validate()?;
+        rendered(work)
+    });
+    let (output, ready) = mpsc::sync_channel(4);
+    let mut backend = Backend::start(output, cache(&root), render);
+    backend.view(
+        1,
+        vec![Target {
+            capture,
+            ..target(1)
+        }],
+    );
+    let started = Instant::now();
+    let delivered = ready
+        .recv_timeout(crate::scheduler::RETRY_DELAYS[0] + Duration::from_secs(5))
+        .expect("the retried tile gets its thumbnail");
+    assert!(started.elapsed() >= crate::scheduler::RETRY_DELAYS[0] / 2);
+    assert_eq!((delivered.generation, delivered.token), (1, 1));
+    assert_eq!(renders.load(Ordering::Acquire), 2);
+    assert_eq!(
+        captures.load(Ordering::Acquire),
+        2,
+        "the retry captured the file again"
+    );
+    assert_eq!(backend.shared.lock().notice.take(), None, "no notice");
+    backend.stop();
+}
+
+/// A failure that may pass (a busy file, a decoder that timed out) is retried once its
+/// short delay has passed, with the same capture.
+#[test]
+fn a_transient_failure_is_retried_after_a_short_delay() {
+    let root = private_root();
+    let renders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = renders.clone();
+    let render: Renderer = Arc::new(move |target, _, work, _, cancel| {
+        (target.capture)(cancel)?;
+        if counted.fetch_add(1, Ordering::AcqRel) == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Thumbnail decoder timed out",
+            ));
+        }
+        rendered(work)
+    });
+    let (output, ready) = mpsc::sync_channel(4);
+    let mut backend = Backend::start(output, cache(&root), render);
+    backend.view(1, vec![target(1)]);
+    let delivered = ready
+        .recv_timeout(crate::scheduler::RETRY_DELAYS[0] + Duration::from_secs(5))
+        .expect("the retried tile gets its thumbnail");
+    assert_eq!(delivered.token, 1);
+    assert_eq!(renders.load(Ordering::Acquire), 2);
+    backend.stop();
+}
+
+/// Content no decoder accepts is not decoded again and again while its tile is shown:
+/// the tile keeps its file icon. A new view generation tries it once more.
+#[test]
+fn a_failure_that_cannot_pass_is_not_retried_while_its_tile_is_shown() {
+    let root = private_root();
+    let renders = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = renders.clone();
+    let render: Renderer = Arc::new(move |_, _, _, _, _| {
+        counted.fetch_add(1, Ordering::AcqRel);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            crate::decode::Rejected,
+        ))
+    });
+    let (output, ready) = mpsc::sync_channel(4);
+    let mut backend = Backend::start(output, cache(&root), render);
+    backend.view(1, vec![target(1)]);
+    backend.wait_processed(1);
+    thread::sleep(crate::scheduler::RETRY_DELAYS[0] + Duration::from_millis(500));
+    assert_eq!(
+        renders.load(Ordering::Acquire),
+        1,
+        "never retried in this view"
+    );
+    backend.view(2, vec![target(1)]);
+    backend.wait_processed(2);
+    assert_eq!(renders.load(Ordering::Acquire), 2);
+    backend.stop();
+    assert!(ready.try_recv().is_err());
+}
+
+/// WIN-11: a source that fails its revision check while the cache looks up or stores
+/// its frame is the job's own failure, never "Could not store or read preview cache".
+#[test]
+fn a_source_failing_its_check_in_the_cache_is_not_a_cache_failure() {
+    struct Tagged(std::sync::atomic::AtomicUsize);
+    impl Source for Tagged {
+        fn length(&self) -> u64 {
+            1
+        }
+        fn version(&self) -> Vec<u8> {
+            vec![1]
+        }
+        fn validate(&self) -> io::Result<()> {
+            // The cache key is made, then the file changes before the lookup.
+            if self.0.fetch_add(1, Ordering::AcqRel) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::other("Captured native content changed."))
+            }
+        }
+        fn read_at(&self, _: u64, _: u32) -> io::Result<Vec<u8>> {
+            unreachable!("the lookup fails before any read")
+        }
+    }
+    let root = private_root();
+    let cache = Mutex::new(Cache::open(&root.path().join("cache"), 1024 * 1024, 0).unwrap());
+    let provider = fixture_provider(root.path().join("decoder-deliberately-absent"));
+    let target = Target {
+        capture: Arc::new(|_| {
+            Ok(Arc::new(Tagged(std::sync::atomic::AtomicUsize::new(0))) as Arc<dyn Source>)
+        }),
+        ..target(9)
+    };
+    let work = Work {
+        generation: 1,
+        token: 9,
+        edge: 96,
+        frame: 0,
+    };
+    let Err(error) = render(&target, &provider, work, &cache, &AtomicBool::new(false)) else {
+        panic!("a changed source cannot produce a frame");
+    };
+    assert!(
+        !error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<CacheFailure>()),
+        "{error}"
+    );
+    assert!(crate::cache::is_source_failure(&error), "{error}");
+    assert_eq!(error.to_string(), "Captured native content changed.");
+}

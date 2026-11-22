@@ -22,17 +22,41 @@ use std::{
 
 /// Invoked only by an admitted backend job, with that job's live cancellation flag.
 pub type Capture = Arc<dyn Fn(&AtomicBool) -> io::Result<Arc<dyn Source>> + Send + Sync>;
-/// One immutable revision belongs to a visible token, including all its animation samples.
-fn pin_capture(capture: Capture) -> Capture {
-    let source: Mutex<Option<Arc<dyn Source>>> = Mutex::new(None);
-    Arc::new(move |cancel| {
+/// How a preview source captured from a native file compares the file with its capture,
+/// as viewers do (VIEW-05): a new change time alone is accepted. Endpoint protection
+/// (Microsoft Defender's data loss prevention) tags new files with an alternate data
+/// stream and sets their write time back, which moves only the change time (WIN-11).
+/// Identity, length and write time must still match: a real content change invalidates
+/// the capture, and with it its cached frames and its tile.
+pub const NATIVE_REVISIONS: midnight_plugin_host::RevisionPolicy =
+    midnight_plugin_host::RevisionPolicy::AcceptChangeTimeOnly;
+/// One immutable revision belongs to a visible token, including all its animation samples,
+/// until the file is found changed after its capture: then the token's next job captures
+/// it again (`unpin`).
+struct Pinned {
+    capture: Capture,
+    source: Mutex<Option<Arc<dyn Source>>>,
+}
+impl Pinned {
+    fn new(capture: Capture) -> Arc<Self> {
+        Arc::new(Self {
+            capture,
+            source: Mutex::new(None),
+        })
+    }
+    fn lock(&self) -> MutexGuard<'_, Option<Arc<dyn Source>>> {
+        self.source
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+    fn source(&self, cancel: &AtomicBool) -> io::Result<Arc<dyn Source>> {
         check_cancel(cancel)?;
-        let mut pinned = source.lock().unwrap_or_else(|error| error.into_inner());
+        let mut pinned = self.lock();
         check_cancel(cancel)?;
         if let Some(source) = &*pinned {
             return Ok(source.clone());
         }
-        let source = capture(cancel)?;
+        let source = (self.capture)(cancel)?;
         source.validate()?;
         check_cancel(cancel)?;
         let source: Arc<dyn Source> = Arc::new(FrozenSource {
@@ -42,7 +66,27 @@ fn pin_capture(capture: Capture) -> Capture {
         });
         *pinned = Some(source.clone());
         Ok(source)
-    })
+    }
+    /// The pinned source found its file changed after the capture (no I/O).
+    fn changed_since_capture(&self) -> bool {
+        self.lock()
+            .as_ref()
+            .is_some_and(|source| source.changed_since_capture())
+    }
+    /// Forget the pinned source; jobs that hold it keep it until they end.
+    fn unpin(&self) {
+        let source = self.lock().take();
+        // A last reference can release native content: not under this lock.
+        drop(source);
+    }
+    fn capture(self: &Arc<Self>) -> Capture {
+        let pinned = self.clone();
+        Arc::new(move |cancel| pinned.source(cancel))
+    }
+}
+#[cfg(test)]
+fn pin_capture(capture: Capture) -> Capture {
+    Pinned::new(capture).capture()
 }
 struct FrozenSource {
     source: Arc<dyn Source>,
@@ -62,6 +106,11 @@ impl Source for FrozenSource {
             return Err(io::Error::other("Captured preview source revision changed"));
         }
         Ok(())
+    }
+    fn changed_since_capture(&self) -> bool {
+        self.source.changed_since_capture()
+            || self.source.version() != self.version
+            || self.source.length() != self.length
     }
     fn read_at(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
         self.validate()?;
@@ -97,8 +146,31 @@ impl std::fmt::Display for CacheFailure {
     }
 }
 impl std::error::Error for CacheFailure {}
+/// A cache lookup or store that failed because of the cache itself. A source that failed
+/// its revision check there (`cache::SourceFailure`) is the job's ordinary failure.
 fn cache_failure(error: io::Error) -> io::Error {
+    if crate::cache::is_source_failure(&error) {
+        return error;
+    }
     io::Error::other(CacheFailure(error))
+}
+/// Whether a failed job may succeed when it is tried again, with the same capture or,
+/// when its file changed after the capture, a new one. Not when no decoder accepts the
+/// content, a thumbnailer cannot start, or the source or its frame is invalid, missing
+/// or refused (`NotFound`, `PermissionDenied` and the like).
+fn may_pass(error: &io::Error) -> bool {
+    !decode::rejected(error)
+        && !error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<decode::HelperCannotStart>())
+        && !matches!(
+            error.kind(),
+            io::ErrorKind::NotFound
+                | io::ErrorKind::PermissionDenied
+                | io::ErrorKind::Unsupported
+                | io::ErrorKind::InvalidInput
+                | io::ErrorKind::InvalidData
+        )
 }
 #[derive(Clone)]
 pub struct Target {
@@ -412,6 +484,9 @@ impl Source for CapturedSource {
     fn confirmed_local_ssd(&self) -> bool {
         self.confirmed_ssd
     }
+    fn changed_since_capture(&self) -> bool {
+        self.file.changed_since_capture()
+    }
 }
 impl Drop for Service {
     fn drop(&mut self) {
@@ -434,7 +509,7 @@ fn run(
 ) {
     let mut scheduler = Scheduler::default();
     let mut targets: HashMap<u64, (Target, Provider)> = HashMap::new();
-    let mut captures: HashMap<u64, Capture> = HashMap::new();
+    let mut captures: HashMap<u64, Arc<Pinned>> = HashMap::new();
     let mut active: HashMap<u64, (Work, Arc<AtomicBool>, thread::JoinHandle<()>)> = HashMap::new();
     let (sender, receiver) = mpsc::sync_channel::<Completion>(2);
     // Accepted frames waiting for a free presentation slot. No new work starts while any
@@ -486,8 +561,8 @@ fn run(
                 };
                 target.capture = captures
                     .entry(target.token)
-                    .or_insert_with(|| pin_capture(target.capture.clone()))
-                    .clone();
+                    .or_insert_with(|| Pinned::new(target.capture.clone()))
+                    .capture();
                 items.push(Item {
                     token: target.token,
                     edge: target.edge,
@@ -556,12 +631,23 @@ fn run(
                 scheduler.abandon(completion.work);
                 false
             } else {
-                // An interruption nobody requested (e.g. a stopped archive mount) is a
-                // failure; its backoff prevents an immediate decoder respawn loop.
-                scheduler.complete_with_coverage(
-                    completion.work,
-                    completion.result.as_ref().ok().map(|frame| frame.edge),
-                )
+                match &completion.result {
+                    Ok(frame) => {
+                        scheduler.complete_with_coverage(completion.work, Some(frame.edge))
+                    }
+                    // An interruption nobody requested (e.g. a stopped archive mount) is a
+                    // failure; its backoff prevents an immediate decoder respawn loop. A
+                    // file changed after its capture is captured again for the retry
+                    // (WIN-11), while a failure that cannot pass is not retried.
+                    Err(error) => {
+                        let stale = captures
+                            .get(&completion.work.token)
+                            .filter(|pinned| pinned.changed_since_capture())
+                            .inspect(|pinned| pinned.unpin())
+                            .is_some();
+                        scheduler.fail(completion.work, stale || may_pass(error))
+                    }
+                }
             };
             if accepted
                 && !stopped

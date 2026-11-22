@@ -46,6 +46,11 @@ add any public ABI operation. Its Installed status describes validated manifest
 and artifact presence, not successful runtime initialization. The Options overview
 is read-only and supplies no filesystem enable/disable or hot-reload capability.
 `NativeProvider::capture` returns content through the plugin's retained read handle.
+ABI minor 4 adds storage kind 4, `Local`: a disk attached to the machine whose media
+type the provider cannot prove (a virtual or cloud machine's disk, a removable disk).
+The host maps it to `midnight_core::StorageKind::Local`. The Windows and Linux packages
+report it and therefore require host minor 4 (`minimum_host_minor = 4`); see
+[the protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#local-storage-kind-abi-minor-4).
 ABI minor 1 optionally advertises `volume-details`: labels preserve raw native
 text, while rich information keeps physical free/total and caller-available space
 distinct. Old plugins remain loadable; an absent capability returns Unsupported.
@@ -60,10 +65,11 @@ capturing a revision must not pin a reader for every captured file.
 comparison, thumbnail, command-icon artwork and archive-container captures together
 keep at most 16 resident readers. An evicted reader reopens only while the file
 keeps its captured length and revision, and a capture's readers are released when
-that captured source is released or dropped. A viewer capture
+that captured source is released or dropped. A viewer or thumbnail capture
 (`InstalledProvider::capture_with` with `RevisionPolicy::AcceptChangeTimeOnly`,
-VIEW-05) and an archive capture (`capture_matching`) also reopen, and continue
-reading, a file whose revision differs only in its change time; see
+VIEW-05 and WIN-11) and an archive capture
+(`capture_matching`) also reopen, and continue reading, a file whose revision differs
+only in its change time; see
 [change-time drift](CONTENT_READS.md#change-time-drift-view-05). `InstalledProvider::shared(home)` is a
 lazy backend-only installation binding pinned until application exit. It has no
 builtin fallback. Do not call these APIs or drop their resource owners on the UI

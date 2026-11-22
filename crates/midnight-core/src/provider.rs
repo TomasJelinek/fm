@@ -127,9 +127,26 @@ pub struct VolumeDetails {
 pub enum StorageKind {
     LocalSsd,
     Rotational,
+    /// A local block device whose media type cannot be proven: a virtual machine's or
+    /// cloud machine's disk, a USB or other removable disk, a disk behind a controller
+    /// the platform does not classify. Local, but not a positive SSD hint: its I/O stays
+    /// exclusive, as for rotational and unknown storage.
+    Local,
     Network,
+    /// Not classified: a filesystem that cannot prove local block storage (FUSE,
+    /// stacked, multi-device or unrecognized filesystems, a remote block transport) or a
+    /// failed query.
     #[default]
     Unknown,
+}
+
+impl StorageKind {
+    /// Positively local storage: an SSD, a rotational disk or a local disk of unknown
+    /// media type. Network and unclassified storage are not; previews read them only
+    /// with the user's permission (Options › Previews).
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::LocalSsd | Self::Rotational | Self::Local)
+    }
 }
 
 /// Native directory identity for read-only traversal cycle detection.

@@ -18,6 +18,13 @@ qualification or application host/provider cutover. `NativeAdapter::next` return
 helper skips; after 1024 such results in a row within one page, the next one fails
 that page with `Io` and closes the cursor.
 
+An adapter whose `storage_kind` or volume information may report
+`StorageKind::Local` (ABI minor 4) requires host minor 4: export it with
+`export_filesystem!(Provider, id, version, capabilities, minimum_host_minor =
+api::abi::LOCAL_STORAGE_HOST_MINOR)` (`entry_requiring_host_minor`) and require the
+same minor in its manifest. A descriptor that admits an older host reports `Local`
+as `Unknown`, which such a host understands.
+
 Prepared Rename is optional. Advertise `api::abi::CAP_PREPARED_RENAME` (1024)
 explicitly in `export_filesystem!` only when implemented. The SDK sets minimum
 host minor 3; the C descriptor layout is unchanged. Implementing the adapter

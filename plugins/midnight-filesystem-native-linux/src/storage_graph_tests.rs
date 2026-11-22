@@ -37,6 +37,7 @@ fn every_backing_leaf_must_be_known_and_mixed_local_media_is_serial() {
     for (second, expected) in [
         (StorageKind::LocalSsd, StorageKind::LocalSsd),
         (StorageKind::Rotational, StorageKind::Rotational),
+        (StorageKind::Local, StorageKind::Local),
         (StorageKind::Unknown, StorageKind::Unknown),
         (StorageKind::Network, StorageKind::Unknown),
     ] {
@@ -53,6 +54,59 @@ fn every_backing_leaf_must_be_known_and_mixed_local_media_is_serial() {
                 "dm-0",
             ),
             expected
+        );
+    }
+}
+
+/// A virtual machine's disk under LVM and encryption stays local of unknown media;
+/// a rotational leaf still makes a mixed stack rotational.
+#[test]
+fn local_disks_of_unknown_media_stay_local_through_stacks() {
+    assert_eq!(
+        classify(
+            &[
+                ("dm-1", BlockNode::Backing(vec![path("dm-0")])),
+                ("dm-0", BlockNode::Backing(vec![path("sdc2")])),
+                ("sdc2", BlockNode::Partition(path("sdc"))),
+                ("sdc", BlockNode::Physical(StorageKind::Local)),
+            ],
+            "dm-1",
+        ),
+        StorageKind::Local
+    );
+    for (first, second, expected) in [
+        (
+            StorageKind::Local,
+            StorageKind::Rotational,
+            StorageKind::Rotational,
+        ),
+        (
+            StorageKind::Rotational,
+            StorageKind::Local,
+            StorageKind::Rotational,
+        ),
+        (
+            StorageKind::Local,
+            StorageKind::LocalSsd,
+            StorageKind::Local,
+        ),
+        (
+            StorageKind::Local,
+            StorageKind::Unknown,
+            StorageKind::Unknown,
+        ),
+    ] {
+        assert_eq!(
+            classify(
+                &[
+                    ("md0", BlockNode::Backing(vec![path("vda"), path("vdb")])),
+                    ("vda", BlockNode::Physical(first)),
+                    ("vdb", BlockNode::Physical(second)),
+                ],
+                "md0",
+            ),
+            expected,
+            "{first:?} + {second:?}"
         );
     }
 }

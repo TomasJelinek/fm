@@ -13,9 +13,11 @@ use std::{
 };
 use windows_sys::Win32::{
     Storage::FileSystem::{
-        BusTypeAta, BusTypeFibre, BusTypeNvme, BusTypeSata, BusTypeiScsi, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetVolumeNameForVolumeMountPointW,
-        GetVolumePathNameW, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        BusType1394, BusTypeAta, BusTypeAtapi, BusTypeFibre, BusTypeMmc, BusTypeNvme, BusTypeRAID,
+        BusTypeSCM, BusTypeSas, BusTypeSata, BusTypeScsi, BusTypeSd, BusTypeSsa, BusTypeUfs,
+        BusTypeUsb, BusTypeiScsi, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetDriveTypeW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
     },
     System::{
         IO::DeviceIoControl,
@@ -24,7 +26,7 @@ use windows_sys::Win32::{
             PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
             StorageDeviceProperty, StorageDeviceSeekPenaltyProperty, VOLUME_DISK_EXTENTS,
         },
-        WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE},
+        WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE, DRIVE_REMOVABLE},
     },
 };
 
@@ -72,7 +74,8 @@ pub(crate) fn detect(path: &Path, cancelled: &dyn Fn() -> bool) -> StorageKind {
     };
     match drive_type(&root) {
         Some(DRIVE_REMOTE) => return StorageKind::Network,
-        Some(DRIVE_FIXED) => {}
+        // A removable drive (a USB stick, a card reader) is classified by its disk too.
+        Some(DRIVE_FIXED | DRIVE_REMOVABLE) => {}
         _ => return StorageKind::Unknown,
     }
     if cancelled() {
@@ -119,7 +122,7 @@ fn detect_local(path: &Path, cancelled: &dyn Fn() -> bool) -> Option<StorageKind
     // SAFETY: the returned root is terminated and validated by the OS.
     match unsafe { GetDriveTypeW(root.as_ptr()) } {
         DRIVE_REMOTE => return Some(StorageKind::Network),
-        DRIVE_FIXED => {}
+        DRIVE_FIXED | DRIVE_REMOVABLE => {}
         _ => return None,
     }
     // A volume GUID identifier has a documented fixed format, unrelated to path length.
@@ -158,8 +161,13 @@ fn detect_local(path: &Path, cancelled: &dyn Fn() -> bool) -> Option<StorageKind
     }
     let disk = query_handle(Path::new(&format!(r"\\.\PhysicalDrive{disk_number}")))?;
     let device = property(&disk, StorageDeviceProperty, cancelled)?;
-    let seek = property(&disk, StorageDeviceSeekPenaltyProperty, cancelled)?;
-    Some(classify_descriptor(&device, &seek))
+    // A disk whose driver does not answer the seek-penalty query keeps its bus's
+    // classification: local, of unknown media type.
+    let seek = property(&disk, StorageDeviceSeekPenaltyProperty, cancelled);
+    if cancelled() {
+        return None;
+    }
+    Some(classify_descriptor(&device, seek.as_deref()))
 }
 
 fn ioctl(
@@ -241,26 +249,61 @@ fn identity(bytes: &[u8], field: usize) -> Option<&[u8]> {
     Some(&tail[..length])
 }
 
-fn virtual_identity(identity: &[u8]) -> bool {
+fn names(identity: &[u8], words: &[&[u8]]) -> bool {
     let lower = identity.to_ascii_lowercase();
-    [
-        b"virtual".as_slice(),
-        b"vmware",
-        b"qemu",
-        b"vbox",
-        b"xen",
-        b"microsoft",
-        b"msft",
-        b"amazon",
-        b"google",
-        b"elastic",
-        b"iscsi",
-    ]
-    .iter()
-    .any(|word| lower.windows(word.len()).any(|part| part == *word))
+    words
+        .iter()
+        .any(|word| lower.windows(word.len()).any(|part| part == *word))
 }
 
-fn classify_descriptor(device: &[u8], seek: &[u8]) -> StorageKind {
+fn virtual_identity(identity: &[u8]) -> bool {
+    names(
+        identity,
+        &[
+            b"virtual",
+            b"vmware",
+            b"qemu",
+            b"vbox",
+            b"xen",
+            b"microsoft",
+            b"msft",
+            b"amazon",
+            b"google",
+            b"elastic",
+        ],
+    )
+}
+
+/// Buses of disks attached to this machine, whatever their media. Not iSCSI and Fibre
+/// Channel (network storage), file-backed virtual disks (a mounted VHD may live on a
+/// share), Storage Spaces (Storage Spaces Direct pools span machines), software-defined
+/// virtual buses or buses this build does not know.
+fn attached_here(bus: i32) -> bool {
+    [
+        BusTypeScsi,
+        BusTypeAtapi,
+        BusTypeAta,
+        BusType1394,
+        BusTypeSsa,
+        BusTypeUsb,
+        BusTypeRAID,
+        BusTypeSas,
+        BusTypeSata,
+        BusTypeSd,
+        BusTypeMmc,
+        BusTypeNvme,
+        BusTypeSCM,
+        BusTypeUfs,
+    ]
+    .contains(&bus)
+}
+
+/// An SSD or a rotational disk only when a nonremovable, non-virtual ATA, SATA or NVMe
+/// disk and its seek-penalty answer prove it; `Local` for any other disk on a bus of
+/// this machine (a virtual or cloud machine's disk, a USB, SD, SCSI, SAS or RAID disk)
+/// and for a disk whose driver gives no seek-penalty answer (`seek` is `None`);
+/// `Unknown` for malformed driver data and disks that may be elsewhere.
+fn classify_descriptor(device: &[u8], seek: Option<&[u8]>) -> StorageKind {
     let Some(device) = validated(device, size_of::<STORAGE_DEVICE_DESCRIPTOR>()) else {
         return StorageKind::Unknown;
     };
@@ -272,34 +315,40 @@ fn classify_descriptor(device: &[u8], seek: &[u8]) -> StorageKind {
     if bus == BusTypeiScsi || bus == BusTypeFibre {
         return StorageKind::Network;
     }
-    if ![BusTypeAta, BusTypeSata, BusTypeNvme].contains(&bus)
-        || device[offset_of!(STORAGE_DEVICE_DESCRIPTOR, RemovableMedia)] != 0
-    {
-        return StorageKind::Unknown;
-    }
-    let Some(model) = identity(
+    let removable = match device[offset_of!(STORAGE_DEVICE_DESCRIPTOR, RemovableMedia)] {
+        0 => false,
+        1 => true,
+        _ => return StorageKind::Unknown,
+    };
+    let model = identity(
         device,
         offset_of!(STORAGE_DEVICE_DESCRIPTOR, ProductIdOffset),
-    ) else {
-        return StorageKind::Unknown;
-    };
-    if virtual_identity(model) {
-        return StorageKind::Unknown;
-    }
+    );
     let vendor_offset = u32_at(
         device,
         offset_of!(STORAGE_DEVICE_DESCRIPTOR, VendorIdOffset),
     )
     .unwrap_or(0);
-    if vendor_offset != 0
-        && !identity(
-            device,
-            offset_of!(STORAGE_DEVICE_DESCRIPTOR, VendorIdOffset),
-        )
-        .is_some_and(|vendor| !virtual_identity(vendor))
+    let vendor = identity(
+        device,
+        offset_of!(STORAGE_DEVICE_DESCRIPTOR, VendorIdOffset),
+    );
+    // A disk that names iSCSI is a target that may be on another machine.
+    if !attached_here(bus)
+        || [model, vendor]
+            .into_iter()
+            .flatten()
+            .any(|identity| names(identity, &[b"iscsi"]))
     {
         return StorageKind::Unknown;
     }
+    let proven = [BusTypeAta, BusTypeSata, BusTypeNvme].contains(&bus)
+        && !removable
+        && model.is_some_and(|model| !virtual_identity(model))
+        && (vendor_offset == 0 || vendor.is_some_and(|vendor| !virtual_identity(vendor)));
+    let Some(seek) = seek.filter(|_| proven) else {
+        return StorageKind::Local;
+    };
     let Some(seek) = validated(seek, size_of::<DEVICE_SEEK_PENALTY_DESCRIPTOR>()) else {
         return StorageKind::Unknown;
     };
@@ -316,7 +365,9 @@ mod tests {
     use std::mem::{offset_of, size_of};
     use windows_sys::Win32::{
         Storage::FileSystem::{
-            BusTypeAta, BusTypeNvme, BusTypeSata, BusTypeUsb, BusTypeVirtual, BusTypeiScsi,
+            BusTypeAta, BusTypeFileBackedVirtual, BusTypeNvme, BusTypeSas, BusTypeSata,
+            BusTypeScsi, BusTypeSd, BusTypeSpaces, BusTypeUnknown, BusTypeUsb, BusTypeVirtual,
+            BusTypeiScsi,
         },
         System::Ioctl::{DEVICE_SEEK_PENALTY_DESCRIPTOR, STORAGE_DEVICE_DESCRIPTOR},
     };
@@ -348,57 +399,96 @@ mod tests {
     fn only_positive_local_nonremovable_nonvirtual_no_seek_disks_allow_parallelism() {
         for bus in [BusTypeAta, BusTypeSata, BusTypeNvme] {
             assert_eq!(
-                classify_descriptor(&descriptor(bus, b"Physical SSD model"), &seek(0)),
+                classify_descriptor(&descriptor(bus, b"Physical SSD model"), Some(&seek(0))),
                 StorageKind::LocalSsd
             );
             assert_eq!(
-                classify_descriptor(&descriptor(bus, b"Physical HDD model"), &seek(1)),
+                classify_descriptor(&descriptor(bus, b"Physical HDD model"), Some(&seek(1))),
                 StorageKind::Rotational
             );
         }
+        assert_eq!(
+            classify_descriptor(&descriptor(BusTypeiScsi, b"Remote"), Some(&seek(0))),
+            StorageKind::Network
+        );
+    }
+
+    /// THUMB-UNKNOWN-STORAGE: a virtual or cloud machine's disk and a removable disk are
+    /// attached to this machine, so they are `Local` of unknown media, never `Unknown`.
+    #[test]
+    fn virtual_machine_removable_and_controller_disks_are_local_of_unknown_media() {
         for (bus, model) in [
             (BusTypeUsb, b"SSD".as_slice()),
-            (BusTypeVirtual, b"Disk"),
+            (BusTypeSd, b"SD Card"),
             (BusTypeAta, b"QEMU HARDDISK"),
+            (BusTypeSata, b"VBOX HARDDISK"),
+            (BusTypeScsi, b"Virtual Disk"),
+            (BusTypeSas, b"VMware Virtual disk"),
             (BusTypeNvme, b"Amazon Elastic Block Store"),
             (BusTypeNvme, b""),
         ] {
             assert_eq!(
-                classify_descriptor(&descriptor(bus, model), &seek(0)),
-                StorageKind::Unknown
+                classify_descriptor(&descriptor(bus, model), Some(&seek(0))),
+                StorageKind::Local,
+                "{bus} {model:?}"
             );
         }
-        assert_eq!(
-            classify_descriptor(&descriptor(BusTypeiScsi, b"Remote"), &seek(0)),
-            StorageKind::Network
-        );
         let mut removable = descriptor(BusTypeSata, b"SSD");
         removable[offset_of!(STORAGE_DEVICE_DESCRIPTOR, RemovableMedia)] = 1;
         assert_eq!(
-            classify_descriptor(&removable, &seek(0)),
-            StorageKind::Unknown
+            classify_descriptor(&removable, Some(&seek(0))),
+            StorageKind::Local
         );
+        // A physical disk whose driver gives no seek-penalty answer.
+        assert_eq!(
+            classify_descriptor(&descriptor(BusTypeNvme, b"Physical SSD model"), None),
+            StorageKind::Local
+        );
+    }
+
+    #[test]
+    fn disks_that_may_be_elsewhere_prove_nothing_local() {
+        for (bus, model) in [
+            (BusTypeVirtual, b"Disk".as_slice()),
+            (BusTypeFileBackedVirtual, b"Msft Virtual Disk"),
+            (BusTypeSpaces, b"Storage Space"),
+            (BusTypeUnknown, b"Disk"),
+            (20, b"Disk"),
+            (BusTypeScsi, b"iSCSI Disk"),
+        ] {
+            assert_eq!(
+                classify_descriptor(&descriptor(bus, model), Some(&seek(0))),
+                StorageKind::Unknown,
+                "{bus} {model:?}"
+            );
+        }
     }
 
     #[test]
     fn truncated_or_invalid_driver_descriptors_are_unknown_without_bool_transmute() {
         let device = descriptor(BusTypeNvme, b"SSD");
         assert_eq!(
-            classify_descriptor(&device[..8], &seek(0)),
+            classify_descriptor(&device[..8], Some(&seek(0))),
             StorageKind::Unknown
         );
-        assert_eq!(classify_descriptor(&device, &[]), StorageKind::Unknown);
-        assert_eq!(classify_descriptor(&device, &seek(2)), StorageKind::Unknown);
+        assert_eq!(
+            classify_descriptor(&device, Some(&[])),
+            StorageKind::Unknown
+        );
+        assert_eq!(
+            classify_descriptor(&device, Some(&seek(2))),
+            StorageKind::Unknown
+        );
         let mut invalid = device.clone();
         invalid[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(
-            classify_descriptor(&invalid, &seek(0)),
+            classify_descriptor(&invalid, Some(&seek(0))),
             StorageKind::Unknown
         );
         invalid = device;
         invalid[offset_of!(STORAGE_DEVICE_DESCRIPTOR, RemovableMedia)] = 2;
         assert_eq!(
-            classify_descriptor(&invalid, &seek(0)),
+            classify_descriptor(&invalid, Some(&seek(0))),
             StorageKind::Unknown
         );
     }

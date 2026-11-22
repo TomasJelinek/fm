@@ -136,6 +136,39 @@ fn every_response_roundtrips_missing_metadata_negative_time_and_exact_revision_b
     }
 }
 
+/// ABI minor 4 adds storage kind 4 (a local disk of unknown media type) to both
+/// responses that carry a storage kind; every later value is still refused.
+#[test]
+fn minor_four_local_storage_roundtrips_and_later_values_stay_unsupported() {
+    assert_eq!(abi::LOCAL_STORAGE_HOST_MINOR, 4);
+    const { assert!(abi::ABI_MINOR >= abi::LOCAL_STORAGE_HOST_MINOR) };
+    let information = VolumeInformation {
+        storage: StorageKind::Local,
+        ..VolumeInformation::default()
+    };
+    for response in [
+        Response::StorageKind(StorageKind::Local),
+        Response::VolumeInformation(information),
+    ] {
+        let bytes = encode_response(&response, DEFAULT_REPLY_BYTES as usize).unwrap();
+        assert_eq!(
+            decode_response(&bytes, DEFAULT_REPLY_BYTES as usize).unwrap(),
+            response
+        );
+    }
+    let mut bytes = encode_response(
+        &Response::StorageKind(StorageKind::Local),
+        DEFAULT_REPLY_BYTES as usize,
+    )
+    .unwrap();
+    assert_eq!(bytes.last(), Some(&4));
+    *bytes.last_mut().unwrap() = 5;
+    assert!(matches!(
+        decode_response(&bytes, DEFAULT_REPLY_BYTES as usize),
+        Err(WireError::Unsupported)
+    ));
+}
+
 #[test]
 fn windows_surrogates_and_paths_far_beyond_max_path_remain_exact() {
     let units: Vec<u16> = [b'C' as u16, b':' as u16, b'\\' as u16]

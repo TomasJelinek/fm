@@ -45,7 +45,7 @@ class NetworkFilesystemPackages(unittest.TestCase):
         path = package / "plugin.toml"
         original = path.read_text()
         for old, new in [('minimum_host_minor = 2', 'minimum_host_minor = 1'),
-                         ('minimum_host_minor = 2', 'minimum_host_minor = 4'),
+                         ('minimum_host_minor = 2', 'minimum_host_minor = 5'),
                          ('abi_major = 1', 'abi_major = 2'),
                          ('"opaque"', '"unix-bytes"'),
                          ('"activate"', '"read"'),

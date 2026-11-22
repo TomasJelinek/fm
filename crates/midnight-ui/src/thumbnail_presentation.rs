@@ -1,14 +1,19 @@
 //! Visible identities and bounded Slint image handles. No source access or decoding occurs here.
 use crate::{Presenter, ThumbnailContent, presenter::Pane};
-use midnight_core::{Entry, EntryKind, PaneId, PanelViewMode, StorageKind};
+#[cfg(test)]
+use midnight_core::PanelViewMode;
+use midnight_core::{Entry, EntryKind, PaneId, StorageKind};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::path::PathBuf;
+#[path = "thumbnail_availability.rs"]
+mod availability;
 #[path = "thumbnail_image_cache.rs"]
 mod cache;
 #[path = "file_icons.rs"]
 mod file_icons;
+use availability::PanelPreviews;
 
 /// Targets per thumbnail request; the thumbnail host refuses larger views.
 pub(crate) const MAX_THUMBNAIL_TARGETS: usize = midnight_core::MAX_THUMBNAIL_VIEW_TARGETS;
@@ -46,6 +51,8 @@ pub(crate) struct ThumbnailState {
     tick: u64,
     pulse: usize,
     file_icons: file_icons::State,
+    /// The preview service's latest notice (`report_thumbnail_error`).
+    notice: Option<String>,
 }
 pub(crate) fn identity(pane: &Pane, entry: &Entry, side: PaneId) -> String {
     if pane.tree_view().is_some() {
@@ -75,26 +82,12 @@ pub(crate) fn identity(pane: &Pane, entry: &Entry, side: PaneId) -> String {
 }
 impl Presenter {
     fn panel_thumbnails_allowed(&self, side: PaneId) -> bool {
-        let pane = &self.panes[side.index()];
-        self.preferences.values.thumbnails_enabled
-            && self.preferences.values.panel_view_modes[side.index()] == PanelViewMode::Thumbnails
-            && ((self.preferences.values.thumbnails_archives
-                && pane
-                    .thumbnail_archive_location()
-                    .is_some_and(|location| location.mount.is_some()))
-                || (pane.native_capabilities()
-                    && (self.preferences.values.thumbnails_network
-                        || !matches!(
-                            pane.visible_storage_kind(),
-                            StorageKind::Network | StorageKind::Unknown
-                        ))))
-    }
-    pub fn report_thumbnail_error(&mut self, error: String) {
-        self.desktop.report("Previews", error);
+        self.panel_previews(side) == PanelPreviews::Allowed
     }
     pub fn clear_thumbnail_images(&mut self) {
         self.thumbnails.clear();
         self.thumbnails.forget_file_icons();
+        self.thumbnails.notice = None;
         self.command_toolbar.native.borrow_mut().invalidate();
         self.command_toolbar
             .image_revision
@@ -114,8 +107,9 @@ impl Presenter {
         let mut candidates: [Vec<ThumbnailTarget>; 2] = Default::default();
         for side in [PaneId::Left, PaneId::Right] {
             let slot = side.index();
-            // Classification can arrive after the listing. Unknown must not start a read
-            // before a delayed network classification when network previews are disabled.
+            // Classification can arrive after the listing: a pending one must not start a
+            // read before a delayed network answer when network previews are disabled.
+            // A local disk of unknown media (`StorageKind::Local`) is final and local.
             if !self.panel_thumbnails_allowed(side) {
                 continue;
             }

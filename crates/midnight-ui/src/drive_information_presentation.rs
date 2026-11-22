@@ -52,6 +52,7 @@ pub(crate) fn body(
         match info.storage {
             StorageKind::LocalSsd => "Local solid-state storage",
             StorageKind::Rotational => "Rotational storage",
+            StorageKind::Local => "Local storage (media type unknown)",
             StorageKind::Network => "Network filesystem",
             StorageKind::Unknown => "Unavailable",
         }

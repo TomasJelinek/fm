@@ -17,7 +17,7 @@ from pathlib import Path
 
 REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
                     "midnight.viewer.image", "midnight.viewer.pdf", "midnight.viewer.html")
-FILESYSTEM_ABI_MINOR = 3
+FILESYSTEM_ABI_MINOR = 4
 
 
 def portable_component(name):

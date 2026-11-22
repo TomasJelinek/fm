@@ -26,6 +26,8 @@ mod volume_information;
 
 pub type Provider = midnight_filesystem_plugin_sdk::native::NativeFilesystem<adapter::Windows>;
 use midnight_filesystem_plugin_api::abi::*;
+// Storage queries report `StorageKind::Local` (a local disk of unknown media type),
+// which hosts accept from ABI minor 4; plugin.toml requires the same minor.
 midnight_filesystem_plugin_sdk::export_filesystem!(
     Provider,
     "native.windows",
@@ -37,5 +39,6 @@ midnight_filesystem_plugin_sdk::export_filesystem!(
         | CAP_STORAGE
         | CAP_NATIVE_ADDRESS
         | CAP_VOLUME_DETAILS
-        | CAP_PREPARED_RENAME
+        | CAP_PREPARED_RENAME,
+    minimum_host_minor = LOCAL_STORAGE_HOST_MINOR
 );

@@ -1,6 +1,11 @@
 //! Synchronous C declarations; pointers are borrowed only during calls unless leased.
 pub const ABI_MAJOR: u16 = 1;
-pub const ABI_MINOR: u16 = 3;
+pub const ABI_MINOR: u16 = 4;
+/// The host minor that defines storage kind 4, `StorageKind::Local`. It adds no
+/// capability: a provider that may report it requires this host minor in its manifest
+/// and descriptor (the SDK's `entry_requiring_host_minor`), since an older host rejects
+/// the value.
+pub const LOCAL_STORAGE_HOST_MINOR: u16 = 4;
 pub const KIND_FILESYSTEM: u32 = 2;
 pub const ENTRY_SYMBOL: &std::ffi::CStr = c"midnight_filesystem_entry_v1";
 pub type Status = u32;

@@ -25,7 +25,11 @@ removed volume) fails the listing instead of skipping rows. Volume information
 names roots as Win32 does (`C:\`, `\\server\share\`); volume GUID roots and roots
 Win32 would normalize keep their verbatim form. Physical storage classification
 requires positive single-device, nonremovable ATA/SATA/NVMe and seek-penalty
-evidence. Other devices remain conservative. Rich capacity keeps actual filesystem
+evidence. Another single-extent disk of a fixed or removable drive on a local bus
+(a virtual or cloud machine's disk, a USB, SD, SCSI, SAS or RAID disk) is `Local`
+(ABI minor 4; the package requires host minor 4); file-backed virtual disks,
+Storage Spaces, software-defined buses and multi-extent volumes remain Unknown,
+iSCSI and Fibre Channel disks Network. Rich capacity keeps actual filesystem
 total/free distinct from caller quotas. Reads are live metadata-validated regular
 files, not snapshots: content is opened once, and each validation checks the
 current name through an attribute-only handle (no data access, sharing conflict

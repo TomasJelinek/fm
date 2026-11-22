@@ -1136,7 +1136,14 @@ editor scope and shortcuts reserved for later stages.
   including for older saved settings. Turning it off hides archive-member previews
   and removes them from background scheduling. Network archives also require
   **Allow previews on network locations**. Options OK saves these choices;
-  Cancel restores their previous values.
+  Cancel restores their previous values. Previews read local disks, including a
+  virtual or cloud machine's disk and USB disks, without that permission; network
+  folders and folders whose storage cannot be shown to be local need it, and the
+  Thumbnails view then says so in the panel's status line, with the option to turn
+  on. Problems of the preview service (a cache that cannot be written, a thumbnailer
+  that cannot start) are shown in that line too, never in a window that takes the
+  keyboard. A thumbnail that failed for a passing reason is tried again after 2 and
+  8 seconds; a file no thumbnailer can read keeps its type icon.
   **Options → Previews → Thumbnail size** offers 48, 64, 72, 96 (default), 128,
   192 and 256 logical pixels. Larger sizes retain the current preview while a
   sharper image is prepared for that file; smaller sizes reuse larger cached
@@ -1279,7 +1286,8 @@ expanded branches waits for a running comparison. When the focused item
 disappears, the cursor moves to its nearest remaining neighbor.
 Folder sizing uses a bounded fair batch and a shared I/O budget: up to the Disk
 operations limit (four by default) of parallel reads only for proven local SSD,
-one stream for HDD/network/unknown storage. Detection errors remain conservative;
+one stream for HDD/network/unknown storage and local disks of unknown media type
+(a virtual machine's or USB disk). Detection errors remain conservative;
 storage is classified once per device on each scan lane. File lengths come from
 complete directory enumeration data without opening each file. Other navigation
 work has independent capacity.

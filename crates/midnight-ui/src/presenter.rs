@@ -240,7 +240,9 @@ pub(crate) struct Pane {
     pub(crate) loading: bool,
     pub(crate) sort: SortSpec,
     pub(crate) space: Option<SpaceInfo>,
-    pub(crate) storage_kind: StorageKind,
+    /// The shown location's storage classification, `None` until the backend's answer
+    /// (`Event::StorageKindUpdated`) arrives, which can be after the listing.
+    pub(crate) storage_kind: Option<StorageKind>,
     pub(crate) streaming: Vec<Entry>,
     pub(crate) metadata: HashMap<EntryId, EntryMetadata>,
     pub(crate) index: Arc<DirectoryIndex>,
@@ -1175,11 +1177,12 @@ impl Presenter {
             return;
         }
         if let Event::LocaleLoaded(result) = event {
+            // Startup loads the locale on its own: a failure is no answer to a gesture.
             match result {
                 Ok(locale) => self.number_locale = locale,
-                Err(error) => self.desktop.report(
+                Err(error) => self.desktop.report_background(
                     "Regional format unavailable",
-                    crate::error_presentation::describe(&error),
+                    &crate::error_presentation::describe(&error),
                 ),
             }
             return;
@@ -1441,11 +1444,11 @@ impl Presenter {
                     cursor.or_else(|| entries.first().map(|e| e.id))
                 };
                 p.space = request.space.or(if same_location { p.space } else { None });
-                p.storage_kind = request.storage_kind.unwrap_or(if same_location {
-                    p.storage_kind
-                } else {
-                    StorageKind::Unknown
-                });
+                // Another location stays unclassified until its own answer arrives.
+                p.storage_kind =
+                    request
+                        .storage_kind
+                        .or(if same_location { p.storage_kind } else { None });
                 p.path = mem::take(&mut request.path);
                 if let Some(volume) = self
                     .volumes
@@ -1556,7 +1559,7 @@ impl Presenter {
                 if let Some(request) = &mut p.pending {
                     request.storage_kind = Some(kind);
                 } else if p.successful_generation == Some(navigation) {
-                    p.storage_kind = kind;
+                    p.storage_kind = Some(kind);
                 }
             }
             // The listing variants were selected above; retire anything else.
@@ -2020,7 +2023,7 @@ impl Pane {
             loading: false,
             sort: SortSpec::default(),
             space: None,
-            storage_kind: StorageKind::Unknown,
+            storage_kind: None,
             streaming: vec![],
             metadata: HashMap::new(),
             pending: None,
@@ -2093,18 +2096,22 @@ impl Pane {
             .as_ref()
             .map_or(self.space, |request| request.space)
     }
+    /// The visible location's storage, `Unknown` while it is not classified yet.
     pub(crate) fn visible_storage_kind(&self) -> StorageKind {
+        self.visible_storage_classification().unwrap_or_default()
+    }
+    /// The visible location's storage classification, `None` while the backend's
+    /// answer for it is pending. A same-folder re-read keeps the shown classification.
+    pub(crate) fn visible_storage_classification(&self) -> Option<StorageKind> {
         if self.network_request || (self.network.is_some() && self.pending.is_none()) {
-            return StorageKind::Network;
+            return Some(StorageKind::Network);
         }
         self.pending.as_ref().map_or(self.storage_kind, |request| {
-            request
-                .storage_kind
-                .unwrap_or(if request.path == self.path {
-                    self.storage_kind
-                } else {
-                    StorageKind::Unknown
-                })
+            request.storage_kind.or(if request.path == self.path {
+                self.storage_kind
+            } else {
+                None
+            })
         })
     }
     pub(crate) fn rows(&self) -> &[Entry] {

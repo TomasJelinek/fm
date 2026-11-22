@@ -315,6 +315,7 @@ fn c_header_values_match_the_public_codec() {
         ("LOCAL_SSD", StorageKind::LocalSsd),
         ("ROTATIONAL", StorageKind::Rotational),
         ("NETWORK", StorageKind::Network),
+        ("LOCAL", StorageKind::Local),
     ] {
         check(format!("ME_FS_STORAGE_KIND_{name}"), kind as u64);
     }

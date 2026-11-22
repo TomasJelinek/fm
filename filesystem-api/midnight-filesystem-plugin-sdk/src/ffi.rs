@@ -44,6 +44,25 @@ pub unsafe fn entry<F: Filesystem>(
     version: &'static str,
     capabilities: u64,
 ) -> Status {
+    // SAFETY: the caller upholds the same contract.
+    unsafe { entry_requiring_host_minor::<F>(out, capacity, id, version, capabilities, 0) }
+}
+
+/// [`entry`] for a provider that also reports a value that a later host minor defines
+/// without a capability, such as `StorageKind::Local` (`LOCAL_STORAGE_HOST_MINOR`): the
+/// descriptor requires at least `minimum_host_minor`, and the package manifest must
+/// require the same. A minor above this ABI's own is INVALID. A descriptor that a host
+/// older than `LOCAL_STORAGE_HOST_MINOR` may load reports `Local` as `Unknown`.
+/// # Safety
+/// `out` must be aligned, mapped and writable for `capacity` bytes during the call.
+pub unsafe fn entry_requiring_host_minor<F: Filesystem>(
+    out: *mut Api,
+    capacity: u32,
+    id: &'static str,
+    version: &'static str,
+    capabilities: u64,
+    minimum_host_minor: u16,
+) -> Status {
     guarded(|| {
         if out.is_null() || !out.is_aligned() || capacity < size_of::<Api>() as u32 {
             return INVALID;
@@ -56,6 +75,7 @@ pub unsafe fn entry<F: Filesystem>(
             || version.is_empty()
             || version.len() > 64
             || version.contains('\0')
+            || minimum_host_minor > ABI_MINOR
         {
             return INVALID;
         }
@@ -66,6 +86,8 @@ pub unsafe fn entry<F: Filesystem>(
         if capabilities & CAP_PREPARED_RENAME != 0 {
             header.minimum_host_minor = 3;
         }
+        header.minimum_host_minor = header.minimum_host_minor.max(minimum_host_minor);
+        let local_storage = header.minimum_host_minor >= LOCAL_STORAGE_HOST_MINOR;
         let table = Api {
             header,
             capabilities,
@@ -78,7 +100,11 @@ pub unsafe fn entry<F: Filesystem>(
                 len: version.len() as u64,
             },
             create: Some(create::<F>),
-            call: Some(call::<F>),
+            call: Some(if local_storage {
+                call::<F, true>
+            } else {
+                call::<F, false>
+            }),
             release_buffer: Some(release::<F>),
             destroy: Some(destroy::<F>),
         };
@@ -112,7 +138,12 @@ unsafe extern "C" fn create<F: Filesystem>(config: *const Config, out: *mut u64)
         }
     })
 }
-unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut Buffer) -> Status {
+/// `LOCAL_STORAGE`: the descriptor requires a host minor that knows `StorageKind::Local`.
+unsafe extern "C" fn call<F: Filesystem, const LOCAL_STORAGE: bool>(
+    id: u64,
+    input: *const Call,
+    out: *mut Buffer,
+) -> Status {
     guarded(|| {
         if out.is_null() || !out.is_aligned() {
             return INVALID;
@@ -234,6 +265,9 @@ unsafe extern "C" fn call<F: Filesystem>(id: u64, input: *const Call, out: *mut 
             return INVALID;
         }
         runtime::bound_diagnostics(&mut response);
+        if !LOCAL_STORAGE {
+            runtime::without_local_storage(&mut response);
+        }
         let bytes = match permit.encode(&response) {
             Ok(bytes) => bytes,
             Err(status) => return status,

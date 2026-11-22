@@ -9,6 +9,9 @@ pub(crate) struct ColorState {
     next: u64,
     pub(crate) validation: Option<u64>,
     pub(crate) error: String,
+    /// Each pane's failed background match, with its request: shown in the pane's
+    /// status row while that request is the pane's current one, never as a notice.
+    match_errors: [Option<(u64, String)>; 2],
     ready: Option<Vec<FilenameColorRule>>,
     pub(crate) editor: crate::color_options::Editor,
 }
@@ -27,6 +30,15 @@ impl Presenter {
         self.retired.push(Box::new(self.colors.ready.take()));
         self.colors.editor = Default::default();
         self.colors.error.clear();
+    }
+    /// Why the pane's filename colors could not be applied: its current background
+    /// match failed. A later request for the pane hides it.
+    pub(crate) fn filename_colors_failure(&self, pane: PaneId) -> Option<String> {
+        let (id, error) = self.colors.match_errors[pane.index()].as_ref()?;
+        self.colors.inputs[pane.index()]
+            .as_ref()
+            .is_some_and(|input| input.id == *id)
+            .then(|| format!("Filename colors could not be applied: {error}"))
     }
     pub(crate) fn filename_style(&self, pane: PaneId, entry: &Entry) -> Option<FilenameStyle> {
         let panel = &self.panes[pane.index()];
@@ -175,7 +187,11 @@ impl Presenter {
                             .push(Box::new(self.colors.results[slot].replace(result)))
                     }
                     Ok(result) => self.retired.push(Box::new(result)),
-                    Err(error) if current => self.desktop.report("Filename colors", error),
+                    // The match runs in the background for every listing: its failure
+                    // must not take the keyboard from the panel.
+                    Err(error) if current => {
+                        self.colors.match_errors[slot] = Some((request.id, error));
+                    }
                     Err(_) => {}
                 }
                 self.retired.push(Box::new(request));

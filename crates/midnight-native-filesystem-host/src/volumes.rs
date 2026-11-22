@@ -74,6 +74,7 @@ pub(crate) fn storage_kind(
         Wire::Unknown => midnight_core::StorageKind::Unknown,
         Wire::LocalSsd => midnight_core::StorageKind::LocalSsd,
         Wire::Rotational => midnight_core::StorageKind::Rotational,
+        Wire::Local => midnight_core::StorageKind::Local,
         Wire::Network => midnight_core::StorageKind::Network,
     }
 }

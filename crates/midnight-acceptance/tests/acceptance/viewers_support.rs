@@ -837,7 +837,9 @@ fn thumbnail_pass(
                 (path.clone(), provider.clone(), row.confirmed_ssd);
             let capture: thumbnail::Capture = Arc::new(move |cancel: &AtomicBool| {
                 let file = filesystem
-                    .capture(&capture_path, &|| cancel.load(Ordering::Acquire))
+                    .capture_with(&capture_path, thumbnail::NATIVE_REVISIONS, &|| {
+                        cancel.load(Ordering::Acquire)
+                    })
                     .map_err(|failure| {
                         if cancel.load(Ordering::Acquire) {
                             io::ErrorKind::Interrupted.into()

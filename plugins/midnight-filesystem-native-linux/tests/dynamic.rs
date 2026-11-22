@@ -93,7 +93,11 @@ fn actual_loaded_shared_library_owns_its_callbacks_and_content() {
     assert_eq!(client.call(Request::CloseRead { reader }), Response::Unit);
 
     assert_ne!(client.api.capabilities & CAP_PREPARED_RENAME, 0);
-    assert_eq!(client.api.header.minimum_host_minor, 3);
+    // Prepared Rename needs host minor 3; reporting `StorageKind::Local` needs 4.
+    assert_eq!(
+        client.api.header.minimum_host_minor,
+        LOCAL_STORAGE_HOST_MINOR
+    );
     // SAFETY: the loaded module retains this immutable bounded descriptor string.
     assert_eq!(
         unsafe {

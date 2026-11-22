@@ -39,6 +39,38 @@ const MAX_RECORD_BYTES: usize = api::MAX_FRAME_BYTES + MAX_KEY_BYTES + 128;
 /// record's on-disk recency at most this often instead of writing on every lookup.
 const TOUCH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// The captured source failed its revision check while the cache looked it up or stored
+/// its frame: the file changed after its capture, or it cannot be reached. Not a failure
+/// of the cache; the error keeps the source's own kind and message.
+#[derive(Debug)]
+pub struct SourceFailure(io::Error);
+
+impl std::fmt::Display for SourceFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for SourceFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+fn source_failure(error: io::Error) -> io::Error {
+    if is_source_failure(&error) {
+        return error;
+    }
+    io::Error::new(error.kind(), SourceFailure(error))
+}
+
+/// Whether a cache operation failed because of its source, not the cache.
+pub fn is_source_failure(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<SourceFailure>())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Key {
     encoded: Vec<u8>,
@@ -61,7 +93,7 @@ impl Key {
         if frame >= api::MAX_ANIMATION_FRAMES {
             return Err(invalid("Invalid frame index"));
         }
-        source.validate()?;
+        source.validate().map_err(source_failure)?;
         let version = source.version();
         let length = source.length();
         let mut encoded = b"MidnightThumbnailKey\0v1\0RGBA8-straight-sRGB\0".to_vec();
@@ -102,10 +134,11 @@ impl Key {
         key.dimensions = (edge, edge);
         key
     }
+    /// A source that fails its revision check is a `SourceFailure`, not a cache failure.
     fn validate(&self, source: &dyn Source) -> io::Result<()> {
-        source.validate()?;
+        source.validate().map_err(source_failure)?;
         if self.version != source.version() || self.length != source.length() {
-            return Err(invalid("Source version changed"));
+            return Err(source_failure(invalid("Source version changed")));
         }
         Ok(())
     }
@@ -546,3 +579,7 @@ fn invalid(message: &str) -> io::Error {
 #[cfg(test)]
 #[path = "cache_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "cache_revision_tests.rs"]
+mod revision_tests;

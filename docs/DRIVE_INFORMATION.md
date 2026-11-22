@@ -46,7 +46,9 @@ remain raw until presentation. An optional label comes from the matching device'
 bounded udev database record; absent udev metadata is ordinary unavailability.
 Classification uses the existing conservative backend and is discarded if its final
 path query no longer matches the held mount. Unknown or virtual storage is never
-assumed to be an SSD. Linux capability rows list actual mount restrictions; they do
+assumed to be an SSD: a disk attached to the machine whose media type cannot be proven
+(a virtual machine's disk, a USB disk) shows "Local storage (media type unknown)",
+storage that cannot be shown to be local "Unavailable". Linux capability rows list actual mount restrictions; they do
 not infer NTFS-like capabilities from filesystem names.
 
 All native work runs on a dedicated backend actor with one active call and one

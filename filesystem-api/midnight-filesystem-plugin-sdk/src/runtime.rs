@@ -1,6 +1,6 @@
 use crate::{
     CallContext, Filesystem, Reply,
-    api::{Failure, Request, Response, abi::*},
+    api::{Failure, Request, Response, StorageKind, abi::*},
 };
 use std::{
     any::TypeId,
@@ -293,6 +293,19 @@ pub(crate) fn bound_diagnostics(response: &mut Response) {
                 .for_each(bound_diagnostic);
         }
         _ => {}
+    }
+}
+/// For a descriptor that a host older than `LOCAL_STORAGE_HOST_MINOR` may load:
+/// `StorageKind::Local` becomes `Unknown`, that host's answer for such a disk, because
+/// it rejects a reply with a storage kind it does not know.
+pub(crate) fn without_local_storage(response: &mut Response) {
+    let storage = match response {
+        Response::StorageKind(storage) => storage,
+        Response::VolumeInformation(information) => &mut information.storage,
+        _ => return,
+    };
+    if *storage == StorageKind::Local {
+        *storage = StorageKind::Unknown;
     }
 }
 /// Also applied to an adapter's Rename receipt before the ledger validates and

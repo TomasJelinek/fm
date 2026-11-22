@@ -6,7 +6,7 @@ pub mod native;
 mod reply;
 mod runtime;
 pub use api::{Failure, Request, Response};
-pub use ffi::{CallContext, entry};
+pub use ffi::{CallContext, entry, entry_requiring_host_minor};
 pub use midnight_filesystem_plugin_api as api;
 pub use reply::Reply;
 
@@ -40,6 +40,31 @@ macro_rules! export_filesystem {
         ) -> $crate::api::abi::Status {
             // SAFETY: the exported C caller supplies the documented writable capacity.
             unsafe { $crate::entry::<$filesystem>(out, capacity, $id, $version, $capabilities) }
+        }
+    };
+    // A provider that reports a value of a later host minor (`entry_requiring_host_minor`).
+    ($filesystem:ty,$id:literal,$version:literal,$capabilities:expr,
+     minimum_host_minor = $minor:expr) => {
+        #[allow(unsafe_code)]
+        /// Filesystem C entry; the caller must supply aligned writable output capacity.
+        /// # Safety
+        /// `out` must remain mapped for `capacity` bytes throughout this call.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn midnight_filesystem_entry_v1(
+            out: *mut $crate::api::abi::Api,
+            capacity: u32,
+        ) -> $crate::api::abi::Status {
+            // SAFETY: the exported C caller supplies the documented writable capacity.
+            unsafe {
+                $crate::entry_requiring_host_minor::<$filesystem>(
+                    out,
+                    capacity,
+                    $id,
+                    $version,
+                    $capabilities,
+                    $minor,
+                )
+            }
         }
     };
 }

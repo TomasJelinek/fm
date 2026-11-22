@@ -58,6 +58,9 @@ pub(crate) struct DesktopState {
     pub(crate) network_position: Option<usize>,
     pub(crate) error: String,
     pub(crate) status: String,
+    /// The latest failure of background work nobody asked for just now (a startup
+    /// request): shown on the status line, never as a notice (`report_background`).
+    pub(crate) background: Option<String>,
     pub(crate) notice: Option<(String, String)>,
     pub(crate) notice_error: bool,
     pub(crate) notice_path: String,
@@ -106,6 +109,12 @@ impl DesktopState {
     pub(crate) fn inform(&mut self, title: &str, body: String) {
         self.report(title, body);
         self.notice_error = false;
+    }
+    /// A failure of background work that no gesture of the user started: the status
+    /// line shows it until another replaces it. A notice would take the keyboard from
+    /// whatever the user is doing (WIN-11).
+    pub(crate) fn report_background(&mut self, title: &str, body: &str) {
+        self.background = Some(format!("{title}: {body}"));
     }
     pub(crate) fn image(&self, key: &IconKey, place: IconPlace) -> Image {
         self.entry_image(key, place, false)

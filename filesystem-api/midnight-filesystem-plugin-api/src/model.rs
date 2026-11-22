@@ -72,6 +72,12 @@ pub enum StorageKind {
     LocalSsd = 1,
     Rotational = 2,
     Network = 3,
+    /// A local block device whose media type cannot be proven (a virtual or cloud
+    /// machine's disk, a removable disk): local, but no positive SSD hint. Defined by
+    /// ABI minor 4 ([`crate::abi::LOCAL_STORAGE_HOST_MINOR`]): a provider that reports
+    /// it requires that host minor in its manifest and descriptor, since an older host
+    /// rejects the value.
+    Local = 4,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]

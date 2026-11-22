@@ -526,3 +526,33 @@ fn colors_of_rows_a_background_reread_edits_in_place_stay_until_matched_again() 
     deliver(&mut p, second);
     assert!(style(&p, &listed[1]).is_some());
 }
+
+/// WIN-11's sibling: the color match runs in the background for every listing, so its
+/// failure is the pane's status row while that match is current, never a notice that
+/// takes the keyboard.
+#[test]
+fn a_failed_background_color_match_is_a_status_row_never_a_notice() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.preferences_loaded(Ok(colored_preferences()));
+    let generation = begin(&mut p, PaneId::Left, "left");
+    finish(&mut p, PaneId::Left, generation, vec![entry(1, "a.rs")]);
+    let failed = request(&mut p);
+    p.apply(Event::FilenameColorsReady {
+        request: failed.clone(),
+        result: Err("Ambiguous filename color identity".into()),
+    });
+    assert!(p.desktop.notice.is_none(), "never a dialog");
+    assert_eq!(
+        p.filename_colors_failure(PaneId::Left).as_deref(),
+        Some("Filename colors could not be applied: Ambiguous filename color identity")
+    );
+    assert_eq!(p.filename_colors_failure(PaneId::Right), None);
+    // A new listing makes a new match current; the old failure is not shown.
+    let generation = begin(&mut p, PaneId::Left, "left");
+    finish(&mut p, PaneId::Left, generation, vec![entry(2, "b.rs")]);
+    let current = request(&mut p);
+    assert_ne!(current.id, failed.id);
+    assert_eq!(p.filename_colors_failure(PaneId::Left), None);
+    deliver(&mut p, current);
+    assert_eq!(p.filename_colors_failure(PaneId::Left), None);
+}

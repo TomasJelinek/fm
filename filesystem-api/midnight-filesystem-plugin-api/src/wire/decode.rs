@@ -155,13 +155,7 @@ pub fn decode_response(bytes: &[u8], maximum: usize) -> Result<Response, WireErr
             }
             Response::Volumes(volumes)
         }
-        9 => Response::StorageKind(match input.u8()? {
-            0 => StorageKind::Unknown,
-            1 => StorageKind::LocalSsd,
-            2 => StorageKind::Rotational,
-            3 => StorageKind::Network,
-            _ => return Err(WireError::Unsupported),
-        }),
+        9 => Response::StorageKind(input.storage_kind()?),
         10 => Response::SpaceInfo {
             available: input.u64()?,
             total: input.u64()?,
@@ -466,6 +460,17 @@ impl<'a> Reader<'a> {
             None
         })
     }
+    /// Values 0–3, and 4 (`Local`) of ABI minor 4.
+    fn storage_kind(&mut self) -> Result<StorageKind, WireError> {
+        Ok(match self.u8()? {
+            0 => StorageKind::Unknown,
+            1 => StorageKind::LocalSsd,
+            2 => StorageKind::Rotational,
+            3 => StorageKind::Network,
+            4 => StorageKind::Local,
+            _ => return Err(WireError::Unsupported),
+        })
+    }
     fn volume_information(&mut self) -> Result<VolumeInformation, WireError> {
         let root = if self.bool()? {
             Some(self.address()?)
@@ -480,13 +485,7 @@ impl<'a> Reader<'a> {
             free: self.optional_u64()?,
             available: self.optional_u64()?,
         };
-        let storage = match self.u8()? {
-            0 => StorageKind::Unknown,
-            1 => StorageKind::LocalSsd,
-            2 => StorageKind::Rotational,
-            3 => StorageKind::Network,
-            _ => return Err(WireError::Unsupported),
-        };
+        let storage = self.storage_kind()?;
         let read_only = if self.bool()? {
             Some(self.bool()?)
         } else {

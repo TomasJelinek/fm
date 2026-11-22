@@ -101,7 +101,11 @@ fn actual_loaded_dll_owns_descriptor_buffers_and_selected_file_content() {
     );
     assert_eq!(client.call(Request::CloseRead { reader }), Response::Unit);
     assert_ne!(client.api.capabilities & CAP_PREPARED_RENAME, 0);
-    assert_eq!(client.api.header.minimum_host_minor, 3);
+    // Prepared Rename needs host minor 3; reporting `StorageKind::Local` needs 4.
+    assert_eq!(
+        client.api.header.minimum_host_minor,
+        LOCAL_STORAGE_HOST_MINOR
+    );
     // SAFETY: descriptor strings belong to the retained loaded DLL.
     assert_eq!(
         unsafe {

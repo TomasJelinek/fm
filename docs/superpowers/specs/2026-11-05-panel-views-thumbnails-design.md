@@ -80,7 +80,9 @@ jobs, serial source reads on HDD/network/unknown storage, and explicit opt-in fo
 network thumbnails. Unknown or not-yet-classified storage is also withheld until
 the network opt-in is enabled; it must not bypass that setting during directory
 loading. Repeated failures
-receive a short negative-cache TTL, invalidated when the source changes.
+receive a short negative-cache TTL, invalidated when the source changes. A local disk
+of unknown media type and the handling of failed tiles changed on 22 November (see
+"Storage policy, notices and failed tiles" below).
 
 Persist every successfully generated static thumbnail and animation frame;
 temporary offscreen state does not discard already generated valid frames. Keep
@@ -158,6 +160,45 @@ See the [implementation plan](../plans/2026-11-10-archive-thumbnails.md) and
 current source, native qualification and remaining cross-platform gates. Generic
 remote providers still need their own readable content leases; network-discovery
 nodes intentionally do not expose file content.
+
+### Storage policy, notices and failed tiles (22 November 2026)
+
+THUMB-UNKNOWN-STORAGE and WIN-11 changed three rules; the implementation is
+`midnight-ui/src/thumbnail_availability.rs`, `midnight-thumbnail-host/src/scheduler.rs`
+and `service.rs`, and `midnight-explorer/src/native_content.rs`.
+
+- **A local disk of unknown media type is local.** The native filesystem plugins
+  report `StorageKind::Local` (filesystem ABI minor 4) for a disk attached to the
+  machine whose media they cannot prove: a virtual or cloud machine's disk (WSL 2's
+  Hyper-V disk, VMware, QEMU, VirtualBox, Amazon EBS), a USB, SD, SCSI, SAS or RAID
+  disk. Previews read it without the network permission, with exclusive I/O, and
+  archives on it too. Network storage, storage the platform cannot show to be local
+  (FUSE, overlay, Btrfs, a mounted VHD, Storage Spaces, iSCSI) and a classification
+  that has not arrived keep the earlier rule: nothing is read without the permission,
+  and nothing is read before the classification arrives.
+- **The view says why.** A pane in Thumbnails view whose previews a setting withholds
+  names the reason and the setting in its status row (network storage or storage not
+  known to be local: Options › Previews › Allow previews on network locations;
+  archive members: Allow previews inside archives). A pending classification and
+  previews the user switched off say nothing. The preview service's notices (a cache
+  that cannot be read or written, a thumbnailer that cannot start, discovery failure)
+  are shown in the same row of Thumbnails-view panes, never as a notice that takes the
+  keyboard; clearing the thumbnail cache clears them. A source that failed its
+  revision check while the cache looked it up or stored its frame is the job's own
+  failure, not a cache failure, and is not reported.
+- **Failed tiles are retried, boundedly.** Thumbnails capture under
+  `RevisionPolicy::AcceptChangeTimeOnly` (`service::NATIVE_REVISIONS`), as viewers do: a change time that moved
+  alone (Defender's data loss prevention tagging a new file) keeps the capture valid
+  and its cached frame a hit; a new write time, length or identity still invalidates
+  them. A failure that may pass (the file changed after its capture, which also
+  replaces the tile's pinned capture, a busy file, a decoder that timed out or
+  crashed, a cache write that failed) is retried after 2 s and once more after 8 s; a
+  failure that cannot pass (content no decoder accepts, a thumbnailer that cannot
+  start, a missing, refused or invalid source) and a tile whose retries are spent are
+  not tried again while the tile stays in view. Such a tile shows its file's type
+  icon. A new view generation or the tile's return to view tries it again. This
+  replaces the earlier fixed 30 s backoff, which retried every failure forever with
+  the same pinned capture.
 
 ## Acceptance before real previews ship
 

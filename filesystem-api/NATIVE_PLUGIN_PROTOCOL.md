@@ -1,4 +1,4 @@
-# Native filesystem protocol 1 (ABI 1.3)
+# Native filesystem protocol 1 (ABI 1.4)
 
 This is an additive in-process filesystem service. The existing archive worker
 protocol 1 and viewer ABI are unchanged. Native packages are trusted code; loading
@@ -14,7 +14,7 @@ workspaces depending only on these public crates and their OS bindings.
 
 `midnight_filesystem_entry_v1(Api *out, uint32_t capacity)` fills the descriptor
 declared in [the C header](include/midnight_filesystem.h). The current ABI is
-major 1, minor 3, service kind 2. Explicit structure capacities are required.
+major 1, minor 4, service kind 2. Explicit structure capacities are required.
 Older minor descriptors remain valid when their capabilities and minimum host
 minor are compatible. Function pointers are nullable in the representation;
 required null callbacks fail validation.
@@ -24,7 +24,8 @@ The public `abi::Api::validate` performs these descriptor checks. It also return
 INCOMPATIBLE when the descriptor ABI minor is below the minor that defines an
 advertised extension: 1 for VolumeDetails, 2 for Activate, Refresh and ResolveText,
 3 for PreparedRename. The minimum host minor must reach 2 or 3 for those later
-extensions; VolumeDetails may keep 0 (see ABI minor 1 below).
+extensions; VolumeDetails may keep 0 (see ABI minor 1 below). Minor 4 adds a value
+only, storage kind 4 (see ABI minor 4 below).
 
 Callbacks are synchronous: create, call, release_buffer, destroy. All calls,
 encoding and resource destruction run on backend workers. The host retains the
@@ -174,7 +175,8 @@ below; ResolveText carries one text. Every response is the u16 tag and its field
   text. Codes 1–10 are Invalid, Unsupported, NotFound, PermissionDenied,
   SourceChanged, Cancelled, ResourceLimit, Io, StaleReference and Busy; ABI minor 2
   adds 11–15.
-- **Storage kind:** 0 Unknown, 1 LocalSsd, 2 Rotational, 3 Network.
+- **Storage kind:** 0 Unknown, 1 LocalSsd, 2 Rotational, 3 Network; ABI minor 4 adds
+  4 Local.
 
 The C header declares every tag and value in this document as an `ME_FS_*`
 constant; a test checks them against the public encoder.
@@ -226,8 +228,15 @@ One synchronous OS call cannot be forcibly interrupted by this ABI.
 SSD hints require positive local physical evidence: Windows validates the single
 disk extent, nonremovable ATA/SATA/NVMe descriptor and seek-penalty query; Linux
 validates local mount/device identity, physical PCIe NVMe or ATA topology and
-rotation metadata. Virtual, stacked, removable, unsupported and ambiguous devices
-remain Unknown. Recognized network mounts remain Network. No read-only property
+rotation metadata. A disk that is attached to the machine but proves no media type
+(a virtual or cloud machine's disk, a removable, USB, SD, SCSI, SAS or RAID disk, a
+disk whose driver gives no seek-penalty answer) is Local (ABI minor 4): Windows
+accepts its fixed or removable drive's single extent on a local bus, Linux a block
+device below `/sys/devices` that is no virtual block device and sits behind no iSCSI
+session or Fibre Channel remote port, under a single-device block filesystem (ext2,
+ext3, ext4, XFS, F2FS, FAT, exFAT, ntfs3). Stacked, multi-device, FUSE, file-backed,
+remote-transport (iSCSI, Fibre Channel, NVMe over fabrics) and ambiguous storage
+remains Unknown. Recognized network mounts remain Network. No read-only property
 is inferred solely from a filesystem name.
 
 Listing starts an OS iterator and returns at most 128 entries per call. It does
@@ -277,6 +286,21 @@ does not define generic writes, Watch, delete, recursive traversal, authenticati
 executable launch or UI callbacks. Host composition must route listing and native
 F3 capture through loaded packages and disable those capabilities when a package
 is absent; independent conformance tests alone do not establish host cutover.
+
+## Local storage kind, ABI minor 4
+
+Storage kind 4, `Local`, is a local block device whose media type cannot be proven.
+It is local (the application reads it for previews without the network-preview
+permission) but no positive SSD hint: its I/O stays exclusive, as for Rotational and
+Unknown. Minor 4 adds no capability, operation, response tag or layout: hosts of
+minor 4 decode the value in the StorageKind response and in VolumeInformation, older
+hosts reject it as an unknown value. A provider that may report it therefore
+requires host minor 4 in its manifest and in its descriptor; the SDK's
+`entry_requiring_host_minor` (or `export_filesystem!(…, minimum_host_minor = 4)`)
+sets the descriptor's minimum, `abi::LOCAL_STORAGE_HOST_MINOR` names the minor. The
+SDK replies `Unknown` for `Local` when a descriptor admits an older host. The native
+Windows and Linux packages require it. Older providers never report the value and
+remain accepted.
 
 ## Optional explicit activation, ABI minor 2
 

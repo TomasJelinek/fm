@@ -125,6 +125,29 @@ fn archive_network_and_unknown_storage_require_explicit_opt_in() {
     }
 }
 
+/// THUMB-UNKNOWN-STORAGE: an archive on a virtual machine's disk (a local disk of
+/// unknown media type) is read without the network permission, as the panel is.
+#[test]
+fn archives_on_local_disks_of_unknown_media_need_no_network_permission() {
+    for kind in [
+        StorageKind::Local,
+        StorageKind::Rotational,
+        StorageKind::LocalSsd,
+    ] {
+        let mount = Arc::new(Mount::default());
+        let factory = Factory {
+            native: Arc::new(|_, _| panic!("archive native fallback")),
+            storage: Arc::new(move |_| kind),
+        };
+        let prepared = factory
+            .target(&target(mount.clone(), false), 10, 96)
+            .unwrap();
+        let source = (prepared.capture)(&AtomicBool::new(false)).unwrap();
+        assert_eq!(source.read_at(0, 1).unwrap(), [7], "{kind:?}");
+        assert!(!source.confirmed_local_ssd(), "member reads stay exclusive");
+    }
+}
+
 #[test]
 fn canceled_archive_capture_does_not_query_or_read_storage() {
     let factory = Factory {

@@ -74,6 +74,8 @@ mod shown_name_tests;
 #[cfg(test)]
 mod test_harness;
 #[cfg(test)]
+mod thumbnail_status_tests;
+#[cfg(test)]
 mod tool_window_shutdown_tests;
 #[cfg(test)]
 mod watch_status_tests;
@@ -704,11 +706,13 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         f32::from(presenter.preferences.values.panel_split_basis_points) / 10_000.0,
     );
     // A directory comparison's result also uses this line: the user asked for no
-    // window after Compare, and the panels show the differences selected.
+    // window after Compare, and the panels show the differences selected. So does a
+    // failure of background work nobody asked for (`DesktopState::report_background`).
     window.set_desktop_feedback_important(
         presenter.desktop.terminal_guidance.is_some()
             || !presenter.desktop.error.is_empty()
-            || presenter.comparison_status().is_some(),
+            || presenter.comparison_status().is_some()
+            || presenter.desktop.background.is_some(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
     window.set_preferences_saving(presenter.preferences.saving);
@@ -835,16 +839,25 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         };
         // Copying or inspecting the shown error maps it back (`Presenter::copy_panel_error`).
         let error = shown_text(presenter.panel_error_text(pane_id));
-        // What Enter or a command did not do takes the pane's status row while it applies.
-        let (watch, watch_details) = if let Some(note) = presenter.search_note(pane_id) {
-            (note, String::new())
-        } else {
-            presenter
-                .watch_notice(pane_id)
-                .map_or(("", String::new()), |notice| (notice.text, notice.details))
-        };
+        // What Enter or a command did not do takes the pane's status row while it applies;
+        // then why a Thumbnails view shows no previews, a failed filename-color match and
+        // the watch status. None of them is a dialog or takes the keyboard.
+        let (watch, watch_details): (SharedString, String) =
+            if let Some(note) = presenter.search_note(pane_id) {
+                (note.into(), String::new())
+            } else if let Some(previews) = presenter.thumbnail_status(pane_id) {
+                (shown_text(&previews.text), previews.details)
+            } else if let Some(failure) = presenter.filename_colors_failure(pane_id) {
+                (shown_text(&failure), String::new())
+            } else {
+                presenter
+                    .watch_notice(pane_id)
+                    .map_or((SharedString::new(), String::new()), |notice| {
+                        (notice.text.into(), notice.details)
+                    })
+            };
         if index == 0 {
-            window.set_left_watch_status(watch.into());
+            window.set_left_watch_status(watch);
             window.set_left_watch_details(shown_text(&watch_details));
             window.set_left_path(location);
             window.set_left_volume(volume);
@@ -857,7 +870,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             window.set_left_sort(column_index(p.sort.column));
             window.set_left_descending(p.sort.descending);
         } else {
-            window.set_right_watch_status(watch.into());
+            window.set_right_watch_status(watch);
             window.set_right_watch_details(shown_text(&watch_details));
             window.set_right_path(location);
             window.set_right_volume(volume);
@@ -936,6 +949,8 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             &presenter.desktop.error
         } else if let Some(compared) = presenter.comparison_status() {
             compared
+        } else if let Some(background) = &presenter.desktop.background {
+            background
         } else {
             &presenter.desktop.status
         },
@@ -1859,10 +1874,12 @@ pub fn install_with_owned(
             slint::CloseRequestResponse::KeepWindowShown
         });
     }
+    // Startup's own requests: a refusal is a background failure on the status line,
+    // never a notice that takes the keyboard from the first panel.
     if !send(Command::LoadLocale) {
-        presenter.borrow_mut().desktop.report(
+        presenter.borrow_mut().desktop.report_background(
             "Regional format unavailable",
-            "Request queue is busy; invariant format is used.".into(),
+            "Request queue is busy; invariant format is used.",
         );
     }
     if !send(Command::ListVolumes) {
@@ -1872,9 +1889,9 @@ pub fn install_with_owned(
         presenter.borrow_mut().desktop.error = "Desktop context queue is busy.".into();
     }
     if !send(Command::LoadPreferences) {
-        presenter.borrow_mut().desktop.report(
+        presenter.borrow_mut().desktop.report_background(
             "Options queue busy",
-            "Default appearance is active; saved options could not be requested.".into(),
+            "Default appearance is active; saved options could not be requested.",
         );
     }
     for id in [PaneId::Left, PaneId::Right] {

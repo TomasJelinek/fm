@@ -41,9 +41,9 @@ written, while the volume, file ID, length and LastWriteTime stay the same. Ever
 capture therefore carries an explicit `RevisionPolicy`:
 
 - `Exact`, the default of `CapturedFile::capture` and `InstalledProvider::capture`:
-  every captured field must still match. Comparison, thumbnail, command-icon artwork
-  import, manifest and package captures use it; the comparator's own content check
-  for a moved change time is described in [file comparison](FILE_COMPARISON.md).
+  every captured field must still match. Comparison, command-icon artwork import,
+  manifest and package captures use it; the comparator's own content check for a
+  moved change time is described in [file comparison](FILE_COMPARISON.md).
 - `AcceptChangeTimeOnly`, which viewers request through
   `CapturedFile::capture_with` (the viewer engine's in-process capture) and
   `InstalledProvider::capture_with` (the application's viewer capture): a revision
@@ -56,7 +56,16 @@ capture therefore carries an explicit `RevisionPolicy`:
   every later read of the open archive failed
   ([archive members as a source](TRANSFERS.md#archive-members-as-a-source)). The icon
   check of user-command buttons shares the engine's archive capture callback, so it
-  accepts such a change too.
+  accepts such a change too. Since 22 November thumbnails use it as well
+  (`midnight_thumbnail_host::service::NATIVE_REVISIONS`, which
+  `native_content::thumbnail_factory` and the acceptance harness's thumbnail pulse use;
+  WIN-11): Microsoft
+  Defender's data loss prevention writes a `sec.endpointdlp` alternate data stream to
+  new files and sets their write time back, so only the change time moves, and the
+  thumbnail cache, which revalidates a capture when it stores a frame and on every
+  hit, failed those files. A capture's cache key keeps its revision bytes, change
+  time included, so a new capture after such a change decodes the file once more
+  under a new key; a frame cached for the same capture stays a hit.
 
 The revision bytes that a capture reports (`stable_version`) never change. The
 native filesystem plugin's reader keeps checking each read against its own revision,

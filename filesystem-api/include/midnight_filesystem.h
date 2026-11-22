@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 #define ME_FS_ABI_MAJOR 1
-#define ME_FS_ABI_MINOR 3
+#define ME_FS_ABI_MINOR 4
 #define ME_FS_KIND 2
 #define ME_FS_CAP_BROWSE UINT64_C(1)
 #define ME_FS_CAP_READ UINT64_C(2)
@@ -60,6 +60,9 @@ enum { ME_FS_NAME_OPAQUE=0, ME_FS_NAME_UTF8=1, ME_FS_NAME_WINDOWS_UTF16LE=2,
        ME_FS_NAME_UNIX_BYTES=3 };
 enum { ME_FS_STORAGE_KIND_UNKNOWN=0, ME_FS_STORAGE_KIND_LOCAL_SSD=1,
        ME_FS_STORAGE_KIND_ROTATIONAL=2, ME_FS_STORAGE_KIND_NETWORK=3 };
+/* u8 storage kind of minor 4: a local disk of unknown media type; reporting it
+   requires host minor 4 */
+enum { ME_FS_STORAGE_KIND_LOCAL=4 };
 enum { ME_FS_COMPRESSION_UNKNOWN=0, ME_FS_COMPRESSION_UNCOMPRESSED=1,
        ME_FS_COMPRESSION_COMPRESSED=2 };
 /* u16 metadata presence bits; present fields follow in bit order */

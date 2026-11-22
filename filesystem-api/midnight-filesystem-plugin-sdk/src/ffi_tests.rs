@@ -592,12 +592,115 @@ fn prepared_rename_capability_requires_minor_three_without_changing_the_table() 
         OK
     );
     assert_eq!(table.header.minimum_host_minor, 3);
-    assert_eq!(table.header.abi_minor, 3);
+    assert_eq!(table.header.abi_minor, ABI_MINOR);
     let mut forged = table;
     forged.header.minimum_host_minor = 2;
     assert_eq!(forged.validate(size_of::<Api>() as u32), Err(INCOMPATIBLE));
     assert_eq!(size_of::<Api>(), 88);
     table.validate(size_of::<Api>() as u32).unwrap();
+}
+
+/// A provider that reports `StorageKind::Local` requires host minor 4 in its descriptor;
+/// capability-derived minimums still apply, and a future minor is refused.
+#[test]
+fn a_required_host_minor_raises_the_descriptor_minimum_only() {
+    let fill = |capabilities, minor| {
+        let mut table = Api::default();
+        // SAFETY: the aligned output is live and covers the declared table capacity.
+        let status = unsafe {
+            entry_requiring_host_minor::<Fake>(
+                &mut table,
+                size_of::<Api>() as u32,
+                "native.test",
+                "0.2.0",
+                capabilities,
+                minor,
+            )
+        };
+        (status, table)
+    };
+    let storage = CAP_BROWSE | CAP_STORAGE | CAP_NATIVE_ADDRESS;
+    let (status, table) = fill(storage, LOCAL_STORAGE_HOST_MINOR);
+    assert_eq!(status, OK);
+    assert_eq!(table.header.minimum_host_minor, 4);
+    assert_eq!(table.capabilities, storage);
+    table.validate(size_of::<Api>() as u32).unwrap();
+    let (status, table) = fill(storage | CAP_PREPARED_RENAME, 0);
+    assert_eq!(status, OK);
+    assert_eq!(table.header.minimum_host_minor, 3);
+    let (status, table) = fill(storage | CAP_PREPARED_RENAME, LOCAL_STORAGE_HOST_MINOR);
+    assert_eq!(status, OK);
+    assert_eq!(table.header.minimum_host_minor, 4);
+    assert_eq!(fill(storage, ABI_MINOR + 1).0, INVALID);
+}
+
+/// A provider that reports `Local` on every storage question.
+struct LocalDisk;
+impl Filesystem for LocalDisk {
+    fn create(_: Config) -> Result<Self, Failure> {
+        Ok(Self)
+    }
+    fn handle(&self, request: Request, _: &CallContext<'_>) -> Result<Reply, Failure> {
+        Reply::stateless(match request {
+            Request::StorageKind { .. } => Response::StorageKind(StorageKind::Local),
+            Request::VolumeInformation { .. } => Response::VolumeInformation(VolumeInformation {
+                storage: StorageKind::Local,
+                ..VolumeInformation::default()
+            }),
+            _ => Response::Unit,
+        })
+    }
+}
+
+/// A host older than minor 4 rejects a reply with storage kind 4, so a descriptor such
+/// a host may load answers `Unknown` (that host's answer for the disk) instead; only a
+/// descriptor that requires minor 4 sends `Local`.
+#[test]
+fn local_storage_reaches_only_hosts_that_know_it() {
+    let address = Address {
+        encoding: AddressEncoding::Opaque,
+        bytes: b"volume".to_vec(),
+    };
+    let storage = CAP_BROWSE | CAP_STORAGE | CAP_NATIVE_ADDRESS;
+    for (capabilities, minor, expected) in [
+        (storage, 0, StorageKind::Unknown),
+        (storage | CAP_PREPARED_RENAME, 0, StorageKind::Unknown),
+        (storage, LOCAL_STORAGE_HOST_MINOR, StorageKind::Local),
+    ] {
+        let mut api = Api::default();
+        // SAFETY: the aligned output is live and covers the declared table capacity.
+        let status = unsafe {
+            entry_requiring_host_minor::<LocalDisk>(
+                &mut api,
+                size_of::<Api>() as u32,
+                "native.test",
+                "0.2.0",
+                capabilities,
+                minor,
+            )
+        };
+        assert_eq!(status, OK);
+        let instance = create_instance(&api, Config::default());
+        for request in [
+            Request::StorageKind {
+                address: address.clone(),
+            },
+            Request::VolumeInformation {
+                address: address.clone(),
+            },
+        ] {
+            let (status, buffer) = invoke(&api, instance, request, Cancellation::default());
+            assert_eq!(status, OK);
+            let reported = match read(buffer) {
+                Response::StorageKind(kind) => kind,
+                Response::VolumeInformation(information) => information.storage,
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(reported, expected, "minimum host minor {minor}");
+            assert_eq!(release(&api, instance, buffer.id), OK);
+        }
+        assert_eq!(destroy(&api, instance), OK);
+    }
 }
 
 struct ControlFixture;

@@ -19,7 +19,7 @@ pools, mutation/capture/cleanup admission or a new per-entry task scheduler.
 
 Admission uses semantic `Shared` or `Exclusive` requests. For call-scoped reads,
 only positive local-SSD evidence allows Shared; HDD, network and unknown storage
-use Exclusive. Transfers (Copy/Move jobs) request a *retained* Shared slot whatever
+and local disks of unknown media type (`StorageKind::Local`) use Exclusive. Transfers (Copy/Move jobs) request a *retained* Shared slot whatever
 the storage class: the job keeps one slot identity for its lifetime but holds
 capacity only while it executes native steps. It releases the slot while paused,
 waiting for a user decision or for another job's namespace; at each step boundary it

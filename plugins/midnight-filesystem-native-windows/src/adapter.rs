@@ -77,6 +77,9 @@ impl NativeAdapter for Windows {
         system::volumes(context)
     }
     fn storage_kind(path: &Path, context: &CallContext<'_>) -> Result<StorageKind, Failure> {
+        // Removable drives are classified too: an empty card reader must not raise a
+        // system media-error dialog, as for volume information.
+        let _mode = crate::volume_details::ErrorMode::new().map_err(Failure::from_io)?;
         Ok(crate::storage_kind::detect(path, &|| {
             context.is_cancelled()
         }))

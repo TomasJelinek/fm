@@ -79,6 +79,12 @@ pub trait Source: Send + Sync {
     fn confirmed_local_ssd(&self) -> bool {
         false
     }
+    /// Cached observation that the file this source captured was changed after the
+    /// capture (`CapturedFile::changed_since_capture`), so that failed reads and checks
+    /// of this capture will not pass, while a new capture may. No I/O.
+    fn changed_since_capture(&self) -> bool {
+        false
+    }
 }
 
 impl Source for CapturedFile {
@@ -93,6 +99,9 @@ impl Source for CapturedFile {
     }
     fn read_at(&self, offset: u64, length: u32) -> io::Result<Vec<u8>> {
         self.read_at(offset, length).map_err(io::Error::other)
+    }
+    fn changed_since_capture(&self) -> bool {
+        CapturedFile::changed_since_capture(self)
     }
 }
 

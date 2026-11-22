@@ -86,7 +86,7 @@ class NativeFilesystemPackages(unittest.TestCase):
         source, package = self.native()
         path = package / "plugin.toml"
         original = path.read_text()
-        for old, new in [('minimum_host_minor=0', 'minimum_host_minor=4'),
+        for old, new in [('minimum_host_minor=0', 'minimum_host_minor=5'),
                          ('abi_major=1', 'abi_major=2'),
                          ('"unix-bytes"', '"windows-utf16le"'),
                          ('"volume-details"', '"invented"'),
@@ -117,11 +117,11 @@ class NativeFilesystemPackages(unittest.TestCase):
                                if item["path"].endswith("/" + manifest["entry_library"]))
                 self.assertFalse(library["executable"])
 
-    def test_ordinary_native_minors_zero_through_three_remain_supported(self):
+    def test_ordinary_native_minors_zero_through_four_remain_supported(self):
         source, package = self.native()
         path = package / "plugin.toml"
         original = path.read_text()
-        for minor in range(4):
+        for minor in range(5):
             with self.subTest(minor=minor):
                 path.write_text(original.replace('minimum_host_minor=0',
                                                  f'minimum_host_minor={minor}'))
@@ -130,6 +130,27 @@ class NativeFilesystemPackages(unittest.TestCase):
                 result = packaging.copy_filesystem_packages(stage, source, self.target)
                 self.assertEqual(result[1]["minimum_host_minor"], minor)
                 self.assertNotIn("prepared-rename", result[1]["capabilities"])
+
+    def test_current_native_manifests_require_the_local_storage_minor(self):
+        # Their storage queries report a local disk of unknown media type (ABI minor 4).
+        repository = Path(__file__).resolve().parents[2]
+        for platform in PREPARED_RENAME_MANIFESTS:
+            with self.subTest(platform=platform):
+                text = (repository / "plugins" / f"midnight-filesystem-native-{platform}"
+                        / "plugin.toml").read_text(encoding="utf-8")
+                manifest = tomllib.loads(text)
+                self.assertEqual(manifest["minimum_host_minor"], 4)
+                source = self.root / f"current-filesystems-{platform}"
+                package = source / manifest["id"]
+                package.mkdir(parents=True)
+                (package / "plugin.toml").write_bytes(text.encode("utf-8"))
+                (package / manifest["entry_library"]).write_bytes(b"native library fixture")
+                self.notices(package)
+                stage = self.root / f"release-current-{platform}"
+                stage.mkdir()
+                result = packaging.copy_filesystem_packages(stage, source, manifest["target"],
+                                                            require_native=True)
+                self.assertEqual(result[0]["minimum_host_minor"], 4)
 
     def test_prepared_rename_does_not_require_browse_or_read(self):
         source, package, manifest = self.rename_native("linux")
@@ -145,7 +166,7 @@ class NativeFilesystemPackages(unittest.TestCase):
         source, package, manifest = self.rename_native("linux")
         path = package / "plugin.toml"
         original = path.read_text(encoding="utf-8")
-        for minor in ("-1", "0", "1", "2", "4", "true", '"3"'):
+        for minor in ("-1", "0", "1", "2", "5", "true", '"3"'):
             with self.subTest(minor=minor):
                 path.write_text(original.replace("minimum_host_minor = 3",
                                                  f"minimum_host_minor = {minor}"),

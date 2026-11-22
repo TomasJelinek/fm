@@ -118,8 +118,20 @@ fn mount_kind(input: &[u8], path: &Path) -> (StorageKind, Option<(u32, u32)>) {
             best = Some((StorageKind::Network, None));
             continue;
         }
-        // Multi-device/stacked/virtual filesystems cannot prove a single physical SSD.
-        if !matches!(filesystem, b"ext2" | b"ext3" | b"ext4" | b"xfs" | b"f2fs") {
+        // Single-device block filesystems only: multi-device, stacked, FUSE and virtual
+        // filesystems cannot prove which block device, if any, holds their files.
+        if !matches!(
+            filesystem,
+            b"ext2"
+                | b"ext3"
+                | b"ext4"
+                | b"xfs"
+                | b"f2fs"
+                | b"vfat"
+                | b"msdos"
+                | b"exfat"
+                | b"ntfs3"
+        ) {
             best = Some((StorageKind::Unknown, None));
             continue;
         }
@@ -170,17 +182,24 @@ impl StorageGraph<'_> {
             BlockNode::Backing(children)
                 if !children.is_empty() && children.len() <= MAX_STORAGE_NODES =>
             {
+                // Every leaf must be local. A rotational leaf makes the stack rotational;
+                // otherwise one leaf of unknown media leaves the stack's media unknown.
                 let mut kind = StorageKind::LocalSsd;
                 for child in children {
-                    match self.visit(&child, depth + 1)? {
-                        StorageKind::LocalSsd => {}
-                        StorageKind::Rotational => kind = StorageKind::Rotational,
-                        _ => return None,
-                    }
+                    kind = match (kind, self.visit(&child, depth + 1)?) {
+                        (_, StorageKind::Network | StorageKind::Unknown) => return None,
+                        (StorageKind::Rotational, _) | (_, StorageKind::Rotational) => {
+                            StorageKind::Rotational
+                        }
+                        (StorageKind::Local, _) | (_, StorageKind::Local) => StorageKind::Local,
+                        _ => StorageKind::LocalSsd,
+                    };
                 }
                 kind
             }
-            BlockNode::Physical(kind @ (StorageKind::LocalSsd | StorageKind::Rotational)) => kind,
+            BlockNode::Physical(
+                kind @ (StorageKind::LocalSsd | StorageKind::Rotational | StorageKind::Local),
+            ) => kind,
             _ => return None,
         };
         if (self.cancelled)() {
@@ -281,13 +300,13 @@ fn probe_block(disk: &Path, cancelled: &dyn Fn() -> bool) -> Option<BlockNode> {
             read_bounded(&controller.join("model"), 128)?,
         )
     } else {
-        let vendor = read_bounded(&disk.join("device/vendor"), 64)?;
-        if vendor.trim_ascii() != b"ATA" {
-            return None;
-        }
+        // libata names its disks' vendor "ATA". Other disks (a virtual machine's, USB,
+        // SCSI, MMC or virtio disks) may name no vendor or model at all.
+        let ata = read_bounded(&disk.join("device/vendor"), 64)
+            .is_some_and(|vendor| vendor.trim_ascii() == b"ATA");
         (
-            b"ata".to_vec(),
-            read_bounded(&disk.join("device/model"), 128)?,
+            if ata { b"ata".to_vec() } else { Vec::new() },
+            read_bounded(&disk.join("device/model"), 128).unwrap_or_default(),
         )
     };
     Some(BlockNode::Physical(classify_physical(
@@ -303,6 +322,10 @@ fn decimal(bytes: &[u8]) -> bool {
     !bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit)
 }
 
+/// A leaf block device by its canonical sysfs path and metadata: an SSD or a rotational
+/// disk only when a physical PCIe NVMe or libata disk proves it; `Local` for any other
+/// disk attached to this machine (a virtual or cloud machine's disk, a USB, removable,
+/// SCSI, MMC or virtio disk); `Unknown` when the disk may be elsewhere.
 fn classify_physical(
     path: &Path,
     rotational: &[u8],
@@ -321,14 +344,7 @@ fn classify_physical(
         })
         .take(129)
         .collect();
-    if parts.len() > 128
-        || !path.starts_with("/sys/devices")
-        || !parts.iter().any(|part| part.starts_with(b"pci"))
-        || parts.iter().any(|part| {
-            *part == b"virtual" || part.starts_with(b"usb") || part.starts_with(b"virtio")
-        })
-        || removable.trim_ascii() != b"0"
-    {
+    if parts.len() > 128 || !attached_here(path, &parts) {
         return StorageKind::Unknown;
     }
     let Some(name) = path.file_name().map(|name| name.as_bytes()) else {
@@ -342,43 +358,64 @@ fn classify_physical(
                 .map(|split| decimal(&tail[..split]) && decimal(&tail[split + 1..]))
         })
         .unwrap_or(false);
+    let transport = transport.trim_ascii();
+    let model = model.trim_ascii();
+    let lower = model.to_ascii_lowercase();
+    let names = |words: &[&[u8]]| {
+        words
+            .iter()
+            .any(|word| lower.windows(word.len()).any(|part| part == *word))
+    };
+    // An NVMe namespace reached over TCP, RDMA, Fibre Channel or a loop target, or a
+    // disk that names iSCSI, is a target that may be on another machine.
+    if (nvme && transport != b"pcie") || names(&[b"iscsi"]) {
+        return StorageKind::Unknown;
+    }
     let sata = name
         .strip_prefix(b"sd")
         .is_some_and(|tail| !tail.is_empty() && tail.iter().all(u8::is_ascii_lowercase))
         && parts
             .iter()
             .any(|part| part.strip_prefix(b"ata").is_some_and(decimal));
-    if !(nvme && transport.trim_ascii() == b"pcie" || sata && transport.trim_ascii() == b"ata") {
-        return StorageKind::Unknown;
+    let proven = parts.iter().any(|part| part.starts_with(b"pci"))
+        && !parts
+            .iter()
+            .any(|part| part.starts_with(b"usb") || part.starts_with(b"virtio"))
+        && removable.trim_ascii() == b"0"
+        && (nvme || (sata && transport == b"ata"))
+        && !model.is_empty()
+        && model.len() <= 128
+        && model.is_ascii()
+        && !names(&[
+            b"virtual",
+            b"vmware",
+            b"qemu",
+            b"vbox",
+            b"xen",
+            b"microsoft",
+            b"msft",
+            b"amazon",
+            b"google",
+            b"elastic",
+        ]);
+    match (proven, rotational.trim_ascii()) {
+        (true, b"0") => StorageKind::LocalSsd,
+        (true, b"1") => StorageKind::Rotational,
+        _ => StorageKind::Local,
     }
-    let model = model.trim_ascii();
-    if model.is_empty() || model.len() > 128 || !model.is_ascii() {
-        return StorageKind::Unknown;
-    }
-    let lower = model.to_ascii_lowercase();
-    if [
-        b"virtual".as_slice(),
-        b"vmware",
-        b"qemu",
-        b"vbox",
-        b"xen",
-        b"microsoft",
-        b"msft",
-        b"amazon",
-        b"google",
-        b"elastic",
-        b"iscsi",
-    ]
-    .iter()
-    .any(|word| lower.windows(word.len()).any(|part| part == *word))
-    {
-        return StorageKind::Unknown;
-    }
-    match rotational.trim_ascii() {
-        b"0" => StorageKind::LocalSsd,
-        b"1" => StorageKind::Rotational,
-        _ => StorageKind::Unknown,
-    }
+}
+
+/// A leaf's device path belongs to a disk attached to this machine: below
+/// `/sys/devices`, but not a virtual block device (loop, nbd, rbd, zram, an NVMe
+/// fabrics or multipath namespace) and not behind an iSCSI session or a Fibre Channel
+/// remote port.
+fn attached_here(path: &Path, parts: &[&[u8]]) -> bool {
+    path.starts_with("/sys/devices")
+        && !parts.iter().any(|part| {
+            *part == b"virtual"
+                || part.strip_prefix(b"session").is_some_and(decimal)
+                || part.starts_with(b"rport-")
+        })
 }
 
 #[cfg(test)]
@@ -418,11 +455,19 @@ mod tests {
                 (StorageKind::Network, None)
             );
         }
-        for fs in ["overlay", "btrfs", "tmpfs", "fuse", "zfs"] {
+        for fs in ["overlay", "btrfs", "tmpfs", "fuse", "zfs", "fuseblk"] {
             let input = format!("1 0 8:1 / / rw - {fs} source rw\n");
             assert_eq!(
                 mount_kind(input.as_bytes(), Path::new("/anything")),
                 (StorageKind::Unknown, None)
+            );
+        }
+        // Single-device block filesystems name the block device that holds them.
+        for fs in ["ext4", "xfs", "vfat", "exfat", "ntfs3"] {
+            let input = format!("1 0 8:17 / /media/stick rw - {fs} /dev/sdb1 rw\n");
+            assert_eq!(
+                mount_kind(input.as_bytes(), Path::new("/media/stick/photos")),
+                (StorageKind::Unknown, Some((8, 17)))
             );
         }
     }
@@ -439,40 +484,133 @@ mod tests {
             classify_physical(sata, b"1\n", b"0\n", b"ata\n", b"Physical HDD"),
             StorageKind::Rotational
         );
+        // Attached to this machine, but not a physical disk that proves its media.
         for (path, transport, model) in [
             (
-                Path::new("/sys/devices/virtual/block/dm-0"),
-                b"pcie".as_slice(),
-                b"SSD".as_slice(),
-            ),
-            (
                 Path::new("/sys/devices/pci0000:00/usb1/ata1/block/sda"),
-                b"ata",
-                b"SSD",
+                b"ata".as_slice(),
+                b"SSD".as_slice(),
             ),
             (
                 Path::new("/sys/devices/pci0000:00/virtio0/block/vda"),
                 b"ata",
                 b"SSD",
             ),
-            (nvme, b"tcp", b"SSD"),
             (nvme, b"pcie", b"QEMU NVMe"),
             (nvme, b"pcie", b"Amazon Elastic Block Store"),
             (nvme, b"pcie", b""),
         ] {
             assert_eq!(
                 classify_physical(path, b"0", b"0", transport, model),
-                StorageKind::Unknown
+                StorageKind::Local,
+                "{path:?} {model:?}"
             );
         }
         assert_eq!(
             classify_physical(nvme, b"0", b"1", b"pcie", b"SSD"),
-            StorageKind::Unknown
+            StorageKind::Local
         );
         assert_eq!(
             classify_physical(nvme, b"garbage", b"0", b"pcie", b"SSD"),
-            StorageKind::Unknown
+            StorageKind::Local
         );
+        // Virtual block devices and remote transports prove nothing local.
+        for (path, transport, model) in [
+            (
+                Path::new("/sys/devices/virtual/block/dm-0"),
+                b"pcie".as_slice(),
+                b"SSD".as_slice(),
+            ),
+            (Path::new("/sys/devices/virtual/block/nbd0"), b"", b""),
+            (nvme, b"tcp", b"SSD"),
+            (nvme, b"rdma", b"SSD"),
+            (nvme, b"loop", b"SSD"),
+            (
+                Path::new("/sys/devices/virtual/nvme-fabrics/ctl/nvme1/nvme1n1"),
+                b"pcie",
+                b"SSD",
+            ),
+            (
+                Path::new("/sys/devices/platform/host3/session1/target3:0:0/3:0:0:0/block/sdb"),
+                b"",
+                b"VIRTUAL-DISK",
+            ),
+            (
+                Path::new(
+                    "/sys/devices/pci0000:00/0000:00:03.0/host5/rport-5:0-0/target5:0:0/5:0:0:0/block/sdc",
+                ),
+                b"",
+                b"SAN LUN",
+            ),
+            (
+                Path::new(
+                    "/sys/devices/pci0000:00/0000:00:02.0/host2/target2:0:0/2:0:0:0/block/sdd",
+                ),
+                b"",
+                b"iSCSI Disk",
+            ),
+            (Path::new("/proc/self/block/sda"), b"ata", b"SSD"),
+        ] {
+            assert_eq!(
+                classify_physical(path, b"0", b"0", transport, model),
+                StorageKind::Unknown,
+                "{path:?} {model:?}"
+            );
+        }
+    }
+
+    /// THUMB-UNKNOWN-STORAGE: the disks of WSL 2 and other virtual and cloud machines,
+    /// and removable disks, are final `Local` storage, never `Unknown`.
+    #[test]
+    fn virtual_machine_and_removable_disks_are_local_of_unknown_media() {
+        for (path, rotational, removable, transport, model) in [
+            // WSL 2 and Hyper-V: a SCSI disk on the VMBus, vendor "Msft".
+            (
+                "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/VMBUS:00/\
+                 fd1d2cbd-ce7c-535c-966b-eb5f811c95f0/host0/target0:0:0/0:0:0:0/block/sdc",
+                b"1".as_slice(),
+                b"0".as_slice(),
+                b"".as_slice(),
+                b"Virtual Disk".as_slice(),
+            ),
+            // VMware's SCSI disk and VirtualBox's SATA disk.
+            (
+                "/sys/devices/pci0000:00/0000:00:10.0/host2/target2:0:0/2:0:0:0/block/sda",
+                b"1",
+                b"0",
+                b"",
+                b"Virtual disk",
+            ),
+            (
+                "/sys/devices/pci0000:00/0000:00:0d.0/ata3/host2/target2:0:0/2:0:0:0/block/sda",
+                b"0",
+                b"0",
+                b"ata",
+                b"VBOX HARDDISK",
+            ),
+            // Xen, MMC and a USB stick.
+            ("/sys/devices/vbd-51712/block/xvda", b"0", b"0", b"", b""),
+            (
+                "/sys/devices/platform/soc/fe340000.mmc/mmc_host/mmc0/mmc0:aaaa/block/mmcblk0",
+                b"0",
+                b"0",
+                b"",
+                b"",
+            ),
+            (
+                "/sys/devices/pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host6/target6:0:0/6:0:0:0/block/sdb",
+                b"1",
+                b"1",
+                b"",
+                b"Flash Disk",
+            ),
+        ] {
+            assert_eq!(
+                classify_physical(Path::new(path), rotational, removable, transport, model),
+                StorageKind::Local,
+                "{path}"
+            );
+        }
     }
 
     #[test]

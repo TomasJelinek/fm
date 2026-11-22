@@ -194,7 +194,7 @@ fn extensions_require_their_defining_minor_and_unknown_capabilities_are_incompat
 #[test]
 fn prepared_rename_is_additive_and_requires_an_honest_minor_three_descriptor() {
     assert_eq!(ABI_MAJOR, 1);
-    assert_eq!(ABI_MINOR, 3);
+    const { assert!(ABI_MINOR >= 3) };
     assert_eq!(CAP_PREPARED_RENAME, 1024);
     for minor in 0..=2 {
         assert_eq!(
@@ -215,11 +215,36 @@ fn prepared_rename_is_additive_and_requires_an_honest_minor_three_descriptor() {
     assert_eq!(old.validate(88, 88), Ok(()));
     let header = include_str!("../../include/midnight_filesystem.h");
     for declaration in [
-        "#define ME_FS_ABI_MINOR 3",
         "ME_FS_CAP_PREPARED_RENAME UINT64_C(1024)",
         "ME_FS_PREPARE_RENAME=20",
         "ME_FS_GET_RENAME_STATE=22",
     ] {
+        assert!(header.contains(declaration), "{declaration}");
+    }
+}
+
+/// ABI minor 4 defines only a storage-kind value: no capability, operation, response
+/// tag or layout changes, so every older descriptor stays valid, and a provider that
+/// reports the value may require host minor 4.
+#[test]
+fn minor_four_adds_only_the_local_storage_value() {
+    assert_eq!(ABI_MINOR, 4);
+    assert_eq!(LOCAL_STORAGE_HOST_MINOR, 4);
+    let size = size_of::<Api>() as u32;
+    let storage = CAP_BROWSE | CAP_READ | CAP_STAT | CAP_STORAGE | CAP_NATIVE_ADDRESS;
+    for minor in 0..=ABI_MINOR {
+        assert_eq!(descriptor(storage, minor).validate(size), Ok(()), "{minor}");
+    }
+    assert_eq!(
+        descriptor(storage | CAP_PREPARED_RENAME, LOCAL_STORAGE_HOST_MINOR).validate(size),
+        Ok(())
+    );
+    assert_eq!(
+        descriptor(storage, ABI_MINOR + 1).validate(size),
+        Err(INCOMPATIBLE)
+    );
+    let header = include_str!("../../include/midnight_filesystem.h");
+    for declaration in ["#define ME_FS_ABI_MINOR 4", "ME_FS_STORAGE_KIND_LOCAL=4"] {
         assert!(header.contains(declaration), "{declaration}");
     }
 }

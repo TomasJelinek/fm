@@ -77,6 +77,30 @@ fn assert_rich_volume_fields(text: fn(&str) -> NativeText) {
     assert_eq!(fake.requests.lock().unwrap().len(), 2);
 }
 
+/// A local disk of unknown media type (storage kind 4, ABI minor 4) reaches the
+/// application as `Local`: neither an SSD hint nor unclassified storage.
+#[test]
+fn a_local_disk_of_unknown_media_stays_local_in_both_storage_answers() {
+    let information = VolumeInformation {
+        storage: StorageKind::Local,
+        ..VolumeInformation::default()
+    };
+    let (host, _) = fixture(vec![
+        Response::StorageKind(StorageKind::Local),
+        Response::VolumeInformation(information),
+    ]);
+    assert_eq!(
+        host.storage_kind(&path()).unwrap(),
+        midnight_core::StorageKind::Local
+    );
+    assert_eq!(
+        host.volume_information(&path(), &Cancellation::default())
+            .unwrap()
+            .storage,
+        midnight_core::StorageKind::Local
+    );
+}
+
 #[test]
 fn cancelled_or_unsupported_rich_queries_never_open_a_native_path() {
     let (mut host, fake) = fixture(vec![]);

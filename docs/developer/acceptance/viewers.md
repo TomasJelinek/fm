@@ -204,11 +204,11 @@ Checked in source on 21 November, without a new acceptance run:
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| T1 | Alt+5: every visible tile shows its own image, no flicker while still | `viewers_thumbnails` | FAIL: THUMB-UNKNOWN-STORAGE (below); the 20 November run passed |
-| T2 | End and the wheel scroll to tiles that load; Home shows cached tiles at once | `viewers_thumbnails` | FAIL: THUMB-UNKNOWN-STORAGE |
-| T3 | PNG, JPEG, GIF, WebP and SVG thumbnails | `viewers_thumbnails` › image formats | FAIL: THUMB-UNKNOWN-STORAGE |
-| T4 | BMP, ICO and TIFF thumbnails | `viewers_thumbnails` › BMP, ICO and TIFF thumbnails | FAIL: THUMB-UNKNOWN-STORAGE |
-| T5 | A PDF thumbnail shows its first page | `viewers_thumbnails` › PDF first page | FAIL: THUMB-UNKNOWN-STORAGE |
+| T1 | Alt+5: every visible tile shows its own image, no flicker while still | `viewers_thumbnails` | FAIL: THUMB-UNKNOWN-STORAGE (below), fixed in source on 22 November, rerun pending; the 20 November run passed |
+| T2 | End and the wheel scroll to tiles that load; Home shows cached tiles at once | `viewers_thumbnails` | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T3 | PNG, JPEG, GIF, WebP and SVG thumbnails | `viewers_thumbnails` › image formats | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T4 | BMP, ICO and TIFF thumbnails | `viewers_thumbnails` › BMP, ICO and TIFF thumbnails | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T5 | A PDF thumbnail shows its first page | `viewers_thumbnails` › PDF first page | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
 | T6 | AVIF thumbnails | none | SKIP: no AVIF encoder to make a fixture |
 
 THUMB-UNKNOWN-STORAGE (Linux run `20261121-144246`, again in `20261121-164146`): in the
@@ -228,6 +228,24 @@ preferences (a temporary experiment, run `20261121-170455`) every check passed i
 on the same machine. A product decision is needed (the Architect's): treat a final
 `Unknown` local disk like local storage (with the exclusive I/O admission `Unknown`
 already gets), or say in the view why previews are off.
+
+Fixed in source on 22 November, both ways (the owner's decision: a local block device
+whose kind cannot be proven counts as local for previews; network storage and pending
+classifications keep the rule). Not yet rerun, so T1–T5 stay FAIL until an acceptance
+run passes them. The native filesystem plugins report a disk attached to the machine
+whose media they cannot prove, the WSL disk among them, as `StorageKind::Local`
+(filesystem ABI minor 4; `classify_physical` in both Linux classifiers,
+`classify_descriptor` in both Windows ones); the presenter tells a pending
+classification (`None`) from a final one and admits `Local` without network previews,
+with exclusive I/O (`thumbnail_availability.rs`). A Thumbnails view withheld by a
+setting (network storage, storage not known to be local, archive members with archive
+previews off) names the reason and the option in its panel's status row, never in a
+dialog. Tests: the Linux classifiers' `virtual_machine_and_removable_disks_are_local_of_unknown_media`
+and `local_disks_of_unknown_media_stay_local_through_stacks` (compiled for Linux with
+Clippy, not run: no Linux run of this change yet), the presenter's
+`a_local_disk_of_unknown_media_admits_previews_without_network_permission`,
+`network_and_unclassified_storage_withhold_previews_and_say_which_option_allows_them`
+and the window test `storage_reasons_and_preview_failures_are_status_rows_that_leave_the_keyboard_alone`.
 
 ## Archives
 

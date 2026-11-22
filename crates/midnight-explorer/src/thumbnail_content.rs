@@ -23,7 +23,8 @@ impl Factory {
         filesystem: Arc<midnight_native_filesystem_host::InstalledProvider>,
     ) -> Self {
         Self {
-            native: crate::native_content::factory(filesystem.clone()),
+            // As viewers: a file whose change time alone moved still reads (WIN-11).
+            native: crate::native_content::thumbnail_factory(filesystem.clone()),
             storage: Arc::new(move |path| filesystem.storage_kind(path).unwrap_or_default()),
         }
     }
@@ -71,12 +72,14 @@ impl Factory {
                     address.validate().map_err(io::Error::other)?;
                     // A restored archive/Hot Path may live on a different device than the
                     // previous native panel. Never inherit that panel's cached SSD hint.
+                    // Only positively local storage (a local disk of unknown media type
+                    // included) is read without the network permission.
                     if !network_allowed {
                         mount.validate().map_err(io::Error::other)?;
                         let kind = mount
                             .native_container_locator()
                             .map_or(StorageKind::Unknown, |path| storage(path));
-                        if matches!(kind, StorageKind::Network | StorageKind::Unknown) {
+                        if !kind.is_local() {
                             return Err(io::Error::new(
                                 io::ErrorKind::PermissionDenied,
                                 "Archive previews require permission for network or unknown storage",
