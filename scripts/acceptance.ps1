@@ -4,7 +4,7 @@ counterpart of scripts/acceptance.sh.
 
 Usage: pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list]
            [--scale smoke|full] [--only NAME[,NAME...]] [--strict-review]
-           [--keep-fixture] [--all-themes] [--run-dir DIR]
+           [--keep-fixture] [--all-themes] [--stress] [--run-dir DIR]
            [--plugins DIR | --validation-packages] [--test-binary FILE] [--offline]
 
 Builds the `acceptance` test target of crates/midnight-acceptance (it needs the
@@ -16,8 +16,8 @@ test executable (a rebuild cannot replace the running one; staged scenarios star
 again) and the plugin packages the viewer scenarios stage; it is removed afterwards.
 Run in-process instead (`& scripts\acceptance.ps1`), it restores the session's working
 directory and the environment variables it sets when it ends, however it ends.
-Exit codes: 0 every scenario passed or warned, 1 a failure, 2 invalid arguments,
-127 cargo is missing.
+Exit codes: 0 every scenario passed or warned, 1 a failure, 2 invalid arguments or run
+folders on a volume that is not qualified for Copy and Move, 127 cargo is missing.
 #>
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -25,16 +25,27 @@ $ProgressPreference = 'SilentlyContinue'
 $usage = @'
 Usage: pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list]
            [--scale smoke|full] [--only NAME[,NAME...]] [--strict-review]
-           [--keep-fixture] [--all-themes] [--run-dir DIR]
+           [--keep-fixture] [--all-themes] [--stress] [--run-dir DIR]
            [--plugins DIR | --validation-packages] [--test-binary FILE] [--offline]
 Tests always use the debug test profile; the profile names the build whose plugin
 packages (<target>\<profile>\viewers, filesystems, thumbnailers) the viewer scenarios
 stage. --plugins names another folder with that layout; --validation-packages takes the
 packages scripts\validate.ps1 left in _build\validate. --test-binary runs an already
 built test executable instead of building one. --run-dir names an absolute folder for
-the run folders (default _build\acceptance).
+the run folders (default _build\acceptance). --stress runs the opt-in stress sizes
+(MIDNIGHT_ACCEPTANCE_STRESS=1). The gated volumes' variables (MIDNIGHT_ACCEPTANCE_FAT_DIR,
+_REMOVABLE_DIR, _NETWORK_DIR, _OTHER_EXT_DIR, _NO_TMPFILE_DIR, _WIN_SYMLINKS) name
+absolute folders; the suite and its staged children get them as they are. A run stops
+(exit 2) when the run folders' volume is not qualified for Copy and Move: NTFS with 8.3
+short-name creation disabled (docs\developer\TEST_EXECUTION.md).
 Results: _build\acceptance\<run>\index.html; exit 0 pass, 1 failure, 2 usage, 127 no cargo.
 '@
+
+# The gated volumes' folders (crates/midnight-acceptance/tests/acceptance/fixtures.rs,
+# `GATED`): the scenarios that need such a volume report SKIP without theirs.
+$gatedVariables = @('MIDNIGHT_ACCEPTANCE_FAT_DIR', 'MIDNIGHT_ACCEPTANCE_REMOVABLE_DIR',
+    'MIDNIGHT_ACCEPTANCE_NETWORK_DIR', 'MIDNIGHT_ACCEPTANCE_OTHER_EXT_DIR',
+    'MIDNIGHT_ACCEPTANCE_NO_TMPFILE_DIR', 'MIDNIGHT_ACCEPTANCE_WIN_SYMLINKS')
 
 function Write-Line([string]$Text = '') { [Console]::Out.WriteLine($Text) }
 
@@ -58,6 +69,120 @@ function Stop-Usage([string]$Message) {
     exit 2
 }
 
+# Whether the volume of `Folder` (or of its nearest existing parent) is qualified for Copy
+# and Move as the platform decides it (docs/developer/TEST_EXECUTION.md, "Windows Copy/Move
+# qualification volume"): NTFS whose persistent volume state has 8.3 short-name creation
+# disabled, read with FSCTL_QUERY_PERSISTENT_VOLUME_STATE on the volume's root folder (no
+# elevation needed). Elsewhere the engine takes its opaque lane, where Copy and Move jobs
+# wait for each other. The script tests stand in for the probe with
+# MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME (qualified or unqualified); nothing else sets it.
+function Get-CopyVolume([string]$Folder) {
+    $existing = [IO.Path]::GetFullPath($Folder)
+    while (-not (Test-Path -LiteralPath $existing -PathType Container)) {
+        $parent = Split-Path -Parent $existing
+        if (-not $parent -or $parent -eq $existing) { break }
+        $existing = $parent
+    }
+    $volume = [ordered]@{ Root = $existing; Qualified = $false; Reason = '' }
+    $forced = $env:MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME
+    if ($forced -in @('qualified', 'unqualified')) {
+        $volume.Qualified = $forced -eq 'qualified'
+        $volume.Reason = "$forced by MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME"
+        return [pscustomobject]$volume
+    }
+    if (-not ('MidnightAcceptance.CopyVolume' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+namespace MidnightAcceptance {
+    public static class CopyVolume {
+        [StructLayout(LayoutKind.Sequential)]
+        struct PersistentVolumeInformation {
+            public uint VolumeFlags;
+            public uint FlagMask;
+            public uint Version;
+            public uint Reserved;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool GetVolumePathNameW(string fileName, StringBuilder volumePath, uint length);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool GetVolumeInformationW(string root, StringBuilder name, uint nameLength,
+            IntPtr serial, IntPtr maximumComponent, IntPtr flags, StringBuilder fileSystem,
+            uint fileSystemLength);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
+            uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool DeviceIoControl(SafeFileHandle device, uint code,
+            ref PersistentVolumeInformation input, uint inputLength,
+            out PersistentVolumeInformation output, uint outputLength, out uint returned,
+            IntPtr overlapped);
+
+        // The root (mount point) of the volume an existing folder is on.
+        public static string Root(string folder) {
+            var root = new StringBuilder(1024);
+            if (!GetVolumePathNameW(folder, root, (uint)root.Capacity)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return root.ToString();
+        }
+
+        public static string FileSystem(string root) {
+            var fileSystem = new StringBuilder(64);
+            if (!GetVolumeInformationW(root, null, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero,
+                    fileSystem, (uint)fileSystem.Capacity)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return fileSystem.ToString();
+        }
+
+        // PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED in the volume's persistent
+        // state, read on its root folder (FILE_READ_ATTRIBUTES, every sharing mode,
+        // OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS) with FSCTL_QUERY_PERSISTENT_VOLUME_STATE.
+        public static bool ShortNamesDisabled(string root) {
+            using (var handle = CreateFileW(root, 0x80, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (handle.IsInvalid) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                var request = new PersistentVolumeInformation { FlagMask = 1, Version = 1 };
+                PersistentVolumeInformation response;
+                uint returned;
+                if (!DeviceIoControl(handle, 0x9023C, ref request, 16, out response, 16, out returned,
+                        IntPtr.Zero)) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                return returned >= 16 && (response.VolumeFlags & 1) != 0;
+            }
+        }
+    }
+}
+'@
+    }
+    try {
+        $volume.Root = [MidnightAcceptance.CopyVolume]::Root($existing)
+        $fileSystem = [MidnightAcceptance.CopyVolume]::FileSystem($volume.Root)
+        if ($fileSystem -ne 'NTFS') {
+            $volume.Reason = "$fileSystem, not NTFS"
+        } elseif ([MidnightAcceptance.CopyVolume]::ShortNamesDisabled($volume.Root)) {
+            $volume.Qualified = $true
+            $volume.Reason = 'NTFS, 8.3 short-name creation disabled'
+        } else {
+            $volume.Reason = 'NTFS whose volume state does not disable 8.3 short names'
+        }
+    } catch {
+        $volume.Reason = "its 8.3 short-name state cannot be read: $($_.Exception.Message)"
+    }
+    [pscustomobject]$volume
+}
+
 # GNU-style options, the same as scripts/acceptance.sh.
 $profileName = $null
 $dryRun = $false
@@ -68,6 +193,7 @@ $testBinary = $null
 $runDirectory = $null
 $runner = New-Object Collections.Generic.List[string]
 $listOnly = $false
+$stress = $false
 $valueOptions = @('--scale', '--only', '--run-dir', '--plugins', '--test-binary')
 for ($index = 0; $index -lt $args.Count; $index++) {
     $argument = [string]$args[$index]
@@ -89,6 +215,7 @@ for ($index = 0; $index -lt $args.Count; $index++) {
         '--validation-packages' { $validationPackages = $true }
         '--list' { $listOnly = $true; $runner.Add('--list') }
         { $_ -in @('--strict-review', '--keep-fixture', '--all-themes') } { $runner.Add($_) }
+        '--stress' { $stress = $true; $runner.Add('--stress') }
         '--scale' {
             if ($value -notin @('smoke', 'full')) { Stop-Usage "unknown scale $value" }
             $runner.Add('--scale'); $runner.Add($value)
@@ -111,13 +238,21 @@ for ($index = 0; $index -lt $args.Count; $index++) {
 }
 if (-not $profileName) { $profileName = 'debug' }
 if ($plugins -and $validationPackages) { Stop-Usage '--plugins and --validation-packages exclude each other' }
+# A gated folder that is set must be absolute, as the suite requires.
+$gated = [ordered]@{}
+foreach ($variable in $gatedVariables) {
+    $value = [Environment]::GetEnvironmentVariable($variable)
+    if (-not $value) { continue }
+    if (-not [IO.Path]::IsPathFullyQualified($value)) { Stop-Usage "$variable $value is not an absolute folder" }
+    $gated[$variable] = $value
+}
 
 # Everything below changes the session's working directory and these variables. Run
 # in-process, the script would otherwise leave them changed, MIDNIGHT_ACCEPTANCE_PLUGINS
 # pointing at the removed installation's packages, so that the next run in that session
 # would stage none. The `finally` at the end restores them on every exit.
 $restoredVariables = @('TEMP', 'TMP', 'CARGO_HOME', 'RUSTUP_HOME', 'MIDNIGHT_ACCEPTANCE_PLUGINS',
-    'MIDNIGHT_ACCEPTANCE_STAGE_ROOT', 'MIDNIGHT_ACCEPTANCE_RUN_DIR')
+    'MIDNIGHT_ACCEPTANCE_STAGE_ROOT', 'MIDNIGHT_ACCEPTANCE_RUN_DIR', 'MIDNIGHT_ACCEPTANCE_STRESS')
 $savedVariables = @{}
 foreach ($variable in $restoredVariables) {
     $savedVariables[$variable] = [Environment]::GetEnvironmentVariable($variable)
@@ -152,6 +287,15 @@ try {
         '--message-format', 'json-render-diagnostics')
     $installation = Join-Path $env:USERPROFILE ('MidnightAcceptance-' + [guid]::NewGuid().ToString('N'))
 
+    # Copy and Move run in the run folder. On a volume that is not qualified for them
+    # (Get-CopyVolume) their jobs wait for each other, so the scenarios that run jobs side
+    # by side would fail for no fault of the product: such a run is refused (--list runs
+    # no scenario).
+    $runFolders = if ($runDirectory) { $runDirectory }
+        elseif ($env:MIDNIGHT_ACCEPTANCE_RUN_DIR) { $env:MIDNIGHT_ACCEPTANCE_RUN_DIR }
+        else { Join-Path $root '_build\acceptance' }
+    $copyVolume = if ($dryRun -or -not $listOnly) { Get-CopyVolume $runFolders }
+
     if ($dryRun) {
         Write-Line "Working directory: $root"
         Write-Line "Build profile: $profileName (the suite uses the debug test profile)"
@@ -160,8 +304,22 @@ try {
         foreach ($source in $packageSources) { Write-Line ("Plugin packages: {0} <- {1}" -f $source[0], $source[1]) }
         Write-Line "Private installation: $installation (owner, SYSTEM and Administrators only; removed afterwards)"
         if ($runDirectory) { Write-Line "Run folders: $runDirectory" }
+        $verdict = if ($copyVolume.Qualified) { '' } else { '; a run there stops' }
+        Write-Line "Run folder volume: $($copyVolume.Root) ($($copyVolume.Reason))$verdict"
+        if ($stress) { Write-Line 'Stress sizes: on (MIDNIGHT_ACCEPTANCE_STRESS=1)' }
+        foreach ($variable in $gated.Keys) { Write-Line "Gated folder: $variable = $($gated[$variable])" }
         Write-Line ('Command: [<installation>\bin\acceptance.exe] ' + (($runner | ForEach-Object { "[$_]" }) -join ' '))
         exit 0
+    }
+    if (-not $listOnly -and -not $copyVolume.Qualified) {
+        $refusal = ("acceptance.ps1: the run folders {0} are on {1} ({2}). Copy and Move jobs " +
+            "there take the engine's opaque lane and wait for each other, so the scenarios " +
+            "that run jobs side by side would fail for no fault of the product. Run on an NTFS " +
+            "volume whose 8.3 short-name creation is disabled, with --run-dir " +
+            "(docs/developer/TEST_EXECUTION.md, `"Windows Copy/Move qualification volume`").") -f
+            $runFolders, $copyVolume.Root, $copyVolume.Reason
+        [Console]::Error.WriteLine($refusal)
+        exit 2
     }
 
     $temporary = Join-Path $root '_build\tmp'
@@ -229,8 +387,9 @@ try {
         $installed = @{}
         foreach ($kind in @('viewers', 'filesystems', 'thumbnailers')) {
             $installed[$kind] = New-Object Collections.Generic.List[string]
-            New-Item -ItemType Directory -Path (Join-Path $packages $kind) | Out-Null
         }
+        # A kind's folder exists only when a package of it is staged, as in a build folder:
+        # the staged scenarios report SKIP without viewers\ and filesystems\, as on Linux.
         foreach ($source in $packageSources) {
             $kind = $source[0]
             $from = $source[1]
@@ -245,8 +404,10 @@ try {
                 # Network providers are never staged (they would reach real network shares);
                 # a package already taken from an earlier source is kept.
                 if ($kind -eq 'filesystems' -and $package.Name.StartsWith('network.')) { continue }
-                $to = Join-Path (Join-Path $packages $kind) $package.Name
+                $folder = Join-Path $packages $kind
+                $to = Join-Path $folder $package.Name
                 if (Test-Path -LiteralPath $to) { continue }
+                if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
                 Copy-Item -LiteralPath $package.FullName -Destination $to -Recurse
                 if ($kind -ne 'thumbnailers') { $installed[$kind].Add($package.Name) }
                 elseif (-not $package.PSIsContainer -and $package.Extension -eq '.json') {
@@ -279,6 +440,10 @@ try {
         $env:MIDNIGHT_ACCEPTANCE_PLUGINS = $packages
         $env:MIDNIGHT_ACCEPTANCE_STAGE_ROOT = $installation
         if ($runDirectory) { $env:MIDNIGHT_ACCEPTANCE_RUN_DIR = $runDirectory }
+        # Staged children read the stress sizes from the environment, as they inherit the
+        # gated volumes' variables.
+        if ($stress) { $env:MIDNIGHT_ACCEPTANCE_STRESS = '1' }
+        foreach ($variable in $gated.Keys) { Write-Line "Gated folder: $variable = $($gated[$variable])" }
         Write-Line "Private installation: $installation"
         & $executable @runner
         $exitCode = $LASTEXITCODE

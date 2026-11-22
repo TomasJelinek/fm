@@ -7,8 +7,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// Runs kept below `_build/acceptance`; older ones are deleted when a run starts.
+/// Finished runs kept in a run folder's parent, the new run included; older ones are
+/// deleted when a run starts.
 const KEPT_RUNS: usize = 5;
+/// A run folder without its `summary.json` is a run still going (another checkout's, or
+/// another package's in a shared folder) or one that was killed: it is deleted only once
+/// it is older than this, which no run lasts.
+const UNFINISHED_KEPT: Duration = Duration::from_secs(2 * 24 * 60 * 60);
+/// Written into every run folder as it is created: pruning deletes only folders that
+/// hold it (and, in the default `_build/acceptance`, run folders of earlier versions).
+const RUN_MARKER: &str = ".acceptance-run";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Status {
@@ -115,6 +123,11 @@ pub fn run_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default();
+    stamp(seconds)
+}
+
+/// `YYYYMMDD-HHMMSS` in UTC of `seconds` since the Unix epoch.
+fn stamp(seconds: u64) -> String {
     let (days, time) = (seconds / 86_400, seconds % 86_400);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days as i64 + 719_468;
@@ -195,30 +208,51 @@ pub fn create_run(root: &Path) -> Result<PathBuf, String> {
             root.display()
         ));
     }
-    super::fixtures::create_fresh(&root, &run_id())
+    let run = super::fixtures::create_fresh(&root, &run_id())?;
+    fs::write(run.join(RUN_MARKER), "")
+        .map_err(|error| format!("cannot mark {} as a run: {error}", run.display()))?;
+    Ok(run)
 }
 
-/// Keep the newest [`KEPT_RUNS`] run directories next to `current` (including it).
-/// Only the default location `_build/acceptance` is pruned (the caller decides): a run
-/// placed elsewhere with `--run-dir` never deletes its siblings.
-pub fn prune_old_runs(current: &Path) {
+/// Prune the run folders beside `current`, the folder this run just created: keep the
+/// newest [`KEPT_RUNS`] finished runs (with `summary.json`), `current` included, and
+/// delete older finished runs and unfinished ones older than [`UNFINISHED_KEPT`]. Only
+/// folders named like runs that hold the run marker are ever deleted; in the default
+/// `_build/acceptance` (`default_root`) also run folders without one, which earlier
+/// versions made. A run still going is never deleted, so runs in one folder never prune
+/// each other's, and a run in its own `--run-dir` prunes only its own runs there.
+pub fn prune_old_runs(current: &Path, default_root: bool) {
     let Some(parent) = current.parent() else {
         return;
     };
-    let mut runs: Vec<PathBuf> = fs::read_dir(parent)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .filter(|entry| entry.file_name().to_str().is_some_and(is_run_name))
-        .map(|entry| entry.path())
-        .collect();
-    runs.sort();
-    let excess = runs.len().saturating_sub(KEPT_RUNS);
-    for old in runs.into_iter().take(excess) {
-        if old != current {
-            let _ = super::fixtures::remove_tree(&old);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let cutoff = stamp(now.saturating_sub(UNFINISHED_KEPT.as_secs()));
+    let mut finished = Vec::new();
+    for entry in fs::read_dir(parent).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if path == current
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            || !is_run_name(&name)
+            || !(default_root || path.join(RUN_MARKER).is_file())
+        {
+            continue;
         }
+        if path.join("summary.json").is_file() {
+            finished.push(path);
+        } else if name[..15] < *cutoff {
+            let _ = super::fixtures::remove_tree(&path);
+        }
+    }
+    finished.sort();
+    let excess = finished.len().saturating_sub(KEPT_RUNS.saturating_sub(1));
+    for old in finished.into_iter().take(excess) {
+        let _ = super::fixtures::remove_tree(&old);
     }
 }
 

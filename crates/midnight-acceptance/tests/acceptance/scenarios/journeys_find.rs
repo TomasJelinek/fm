@@ -133,7 +133,7 @@ fn compare(app: &mut App, what: &str, wanted: i32) -> Result<(), String> {
         if Instant::now() >= deadline {
             break state;
         }
-        app.idle(Duration::from_millis(10));
+        app.pump(crate::app::FRAME);
     };
     let status = window.get_status().to_string();
     input::key(window.window(), Key::Escape);

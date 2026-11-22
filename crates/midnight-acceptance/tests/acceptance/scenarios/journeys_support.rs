@@ -52,6 +52,7 @@ impl Journey {
     }
 
     /// A check of announced behavior that has not landed yet: `reason` names it.
+    #[allow(dead_code)] // No journey has such a check now; the quick drop became strict.
     pub fn pending(&mut self, what: &str, reason: &'static str, result: Result<(), String>) {
         self.pending.check(what, reason, result);
     }
@@ -112,7 +113,7 @@ pub fn wait(
                 tools::tool_titles(app)
             ));
         }
-        app.idle(Duration::from_millis(10));
+        app.pump(app::FRAME);
     }
 }
 

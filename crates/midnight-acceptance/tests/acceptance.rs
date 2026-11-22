@@ -23,6 +23,8 @@ mod fixtures;
 mod input;
 #[path = "acceptance/inspect.rs"]
 mod inspect;
+#[path = "acceptance/launches.rs"]
+mod launches;
 #[path = "acceptance/options_support.rs"]
 mod options_support;
 #[path = "acceptance/panel.rs"]
@@ -86,13 +88,18 @@ pub struct Options {
     pub scale: fixtures::Scale,
     /// The folder in which the run creates its own folder (`<run_root>/<run id>`).
     pub run_root: PathBuf,
-    /// Whether `run_root` is the default `_build/acceptance`, the only place where old
-    /// runs are pruned.
+    /// Whether `run_root` is the default `_build/acceptance`, where run folders of
+    /// earlier versions (without the run marker) are pruned too.
     pub default_root: bool,
     pub keep_fixture: bool,
     pub strict_review: bool,
     /// Review every theme instead of the representative subset.
     pub all_themes: bool,
+    /// The opt-in stress sizes (the archive scenarios' 100,001-entry folder) instead of
+    /// the default ones. Staged children follow `MIDNIGHT_ACCEPTANCE_STRESS`, which the
+    /// runner scripts set for `--stress`.
+    #[allow(dead_code)] // Read by the scenarios that have a stress size.
+    pub stress: bool,
     pub list: bool,
     /// In a staged child process: when it must have reported (see `viewers_stage`).
     pub staged_deadline: Option<Instant>,
@@ -100,13 +107,14 @@ pub struct Options {
 
 fn usage() -> &'static str {
     "Usage: acceptance [FILTER...] [--list] [--scale smoke|full] [--run-dir DIR] \
-     [--keep-fixture] [--strict-review] [--all-themes]\n\
+     [--keep-fixture] [--strict-review] [--all-themes] [--stress]\n\
      FILTER selects scenarios whose name contains it. --run-dir names an absolute \
      folder in which the run creates its own new folder (default _build/acceptance). \
-     Environment equivalents: MIDNIGHT_ACCEPTANCE_FILTER (comma-separated), \
-     MIDNIGHT_ACCEPTANCE_SCALE, MIDNIGHT_ACCEPTANCE_RUN_DIR, \
-     MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE=1, MIDNIGHT_ACCEPTANCE_STRICT_REVIEW=1, \
-     MIDNIGHT_ACCEPTANCE_ALL_THEMES=1."
+     --stress runs the opt-in stress sizes. Environment equivalents: \
+     MIDNIGHT_ACCEPTANCE_FILTER (comma-separated), MIDNIGHT_ACCEPTANCE_SCALE, \
+     MIDNIGHT_ACCEPTANCE_RUN_DIR, MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE=1, \
+     MIDNIGHT_ACCEPTANCE_STRICT_REVIEW=1, MIDNIGHT_ACCEPTANCE_ALL_THEMES=1, \
+     MIDNIGHT_ACCEPTANCE_STRESS=1 (staged children read only this one)."
 }
 
 fn env_flag(name: &str) -> bool {
@@ -159,6 +167,7 @@ fn options() -> Result<Options, String> {
         keep_fixture: env_flag("MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE"),
         strict_review: env_flag("MIDNIGHT_ACCEPTANCE_STRICT_REVIEW"),
         all_themes: env_flag("MIDNIGHT_ACCEPTANCE_ALL_THEMES"),
+        stress: env_flag("MIDNIGHT_ACCEPTANCE_STRESS"),
         list: false,
         staged_deadline,
     };
@@ -181,6 +190,7 @@ fn options() -> Result<Options, String> {
             "--keep-fixture" => options.keep_fixture = true,
             "--strict-review" => options.strict_review = true,
             "--all-themes" => options.all_themes = true,
+            "--stress" => options.stress = true,
             "--scale" => {
                 let value = arguments.next().ok_or("--scale needs a value")?;
                 scale = Some(value.to_string_lossy().into_owned());
@@ -278,9 +288,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    if options.default_root {
-        report::prune_old_runs(&run_dir);
-    }
+    report::prune_old_runs(&run_dir, options.default_root);
     println!("Acceptance run: {}", run_dir.display());
     let fixture_root = run_dir.join("fixture");
     let generated = Instant::now();
@@ -313,14 +321,14 @@ fn main() -> std::process::ExitCode {
         }
         print!("{:<28} ", scenario.name);
         let _ = std::io::Write::flush(&mut std::io::stdout());
-        let outcome = run_one(scenario, &fixture, &run_dir, &options);
+        let (outcome, hung) = run_one(scenario, &fixture, &run_dir, &options);
         println!(
             "{} {:>7.1} s {}",
             outcome.status.label(),
             outcome.duration.as_secs_f64(),
             outcome.headline()
         );
-        if outcome.status == Status::Timeout {
+        if hung {
             abandoned = true;
         }
         results.push((scenario, outcome));
@@ -363,20 +371,30 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// How long the runner waits, after a staged scenario's timeout, for its thread to come
+/// back. Its parent side stops the staged child before the timeout (`viewers_stage`);
+/// a thread that returns within this time has ended, and the run goes on.
+const STAGED_GRACE: Duration = Duration::from_secs(60);
+
+/// Run one scenario on its own thread under its timeout; its outcome, and whether its
+/// thread hung and was abandoned (the run then stops).
 fn run_one(
     scenario: &Scenario,
     fixture: &Arc<fixtures::Fixture>,
     run_dir: &Path,
     options: &Arc<Options>,
-) -> Outcome {
+) -> (Outcome, bool) {
     // A new folder in this run's new folder: never one that existed before.
     let work = run_dir.join("work").join(scenario.name);
     if let Err(error) =
         std::fs::create_dir_all(run_dir.join("work")).and_then(|()| std::fs::create_dir(&work))
     {
-        return Outcome::with(
-            Status::Fail,
-            format!("cannot create {}: {error}", work.display()),
+        return (
+            Outcome::with(
+                Status::Fail,
+                format!("cannot create {}: {error}", work.display()),
+            ),
+            false,
         );
     }
     let started = Instant::now();
@@ -419,24 +437,63 @@ fn run_one(
             }
             let _ = sender.send(outcome);
         });
-    let mut outcome = match spawned {
-        Err(error) => Outcome::with(
-            Status::Fail,
-            format!("cannot start the scenario thread: {error}"),
+    let (mut outcome, hung) = match spawned {
+        Err(error) => (
+            Outcome::with(
+                Status::Fail,
+                format!("cannot start the scenario thread: {error}"),
+            ),
+            false,
         ),
         Ok(handle) => match receiver.recv_timeout(scenario.timeout) {
             Ok(outcome) => {
                 let _ = handle.join();
-                outcome
+                (outcome, false)
             }
             Err(_) => {
-                // The thread is abandoned, so its guards never run: stop its staged
-                // child's process group and remove its stage here.
-                viewers_stage::stop_all();
-                Outcome::with(
-                    Status::Timeout,
-                    format!("no result within {:?}", scenario.timeout),
-                )
+                // A staged scenario (it made its `staged` folder) stops its child at its
+                // own deadline, before this timeout: a thread that comes back after that
+                // has ended, and the run goes on. An in-process one cannot be stopped.
+                let late = work_folder
+                    .join("staged")
+                    .is_dir()
+                    .then(|| receiver.recv_timeout(STAGED_GRACE).ok())
+                    .flatten();
+                match late {
+                    Some(late) => {
+                        let _ = handle.join();
+                        let mut outcome = Outcome::with(
+                            Status::Timeout,
+                            format!(
+                                "no result within {:?}; the staged scenario ended {:.1} s \
+                                 later and the run went on. Its own result: {} {}",
+                                scenario.timeout,
+                                started
+                                    .elapsed()
+                                    .saturating_sub(scenario.timeout)
+                                    .as_secs_f64(),
+                                late.status.label(),
+                                late.message
+                            ),
+                        );
+                        outcome.notes = late.notes;
+                        outcome.shots = late.shots;
+                        outcome.flags = late.flags;
+                        (outcome, false)
+                    }
+                    None => {
+                        // The thread is abandoned, so its guards never run: stop its
+                        // staged child's process group and remove its stage here.
+                        viewers_stage::stop_all();
+                        (
+                            Outcome::with(
+                                Status::Timeout,
+                                format!("no result within {:?}", scenario.timeout),
+                            ),
+                            true,
+                        )
+                    }
+                }
             }
         },
     };
@@ -457,7 +514,7 @@ fn run_one(
             outcome.message = message;
         }
     }
-    outcome
+    (outcome, hung)
 }
 
 /// Restore owner permissions below `folder` (links not followed) and return what still

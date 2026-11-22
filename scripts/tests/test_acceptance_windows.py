@@ -5,8 +5,12 @@ The run tests give the runner a stand-in test executable, the `py.exe` launcher,
 first argument (passed as a scenario name) is a script that records what it sees: the
 environment, the installation's folders and its access control list. No Cargo build
 runs. They give the runner a private `USERPROFILE` below the test's temporary folder,
-so the installation it creates and removes never touches the real profile.
+so the installation it creates and removes never touches the real profile. A run is
+refused when its run folders' volume is not qualified for Copy and Move (8.3 short names);
+the run tests stand in for that probe with `MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME`, and
+the probe itself is checked against the volume's state read here.
 """
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -27,6 +31,51 @@ VIDEO_FILES = ["avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10
 # The SID of the top-level AppContainer `MidnightExplorer.RestrictedWorker.v1`
 # (scripts/tests/test_restricted_worker_identity.py checks it against Windows).
 WORKER_SID = "S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998"
+# The runner's stand-in for its run-folder volume probe, for the tests whose run folders
+# are wherever the test's temporary folder is.
+QUALIFIED = {"MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME": "qualified"}
+
+
+def copy_volume(folder):
+    """The root of the volume `folder` is on, and the runner's reason for it: NTFS whose
+    persistent volume state disables 8.3 short names (FSCTL_QUERY_PERSISTENT_VOLUME_STATE
+    on the root folder, as the platform reads it) is qualified for Copy and Move."""
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE]
+    kernel32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID,
+                                         wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                                         ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    root = ctypes.create_unicode_buffer(1024)
+    if not kernel32.GetVolumePathNameW(str(folder), root, len(root)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    filesystem = ctypes.create_unicode_buffer(64)
+    if not kernel32.GetVolumeInformationW(root.value, None, 0, None, None, None, filesystem,
+                                          len(filesystem)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if filesystem.value != "NTFS":
+        return root.value, f"{filesystem.value}, not NTFS"
+    # FILE_READ_ATTRIBUTES, every sharing mode, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS.
+    handle = kernel32.CreateFileW(root.value, 0x80, 7, None, 3, 0x02000000, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # FILE_FS_PERSISTENT_VOLUME_INFORMATION: VolumeFlags, FlagMask, Version, Reserved.
+        request = (ctypes.c_uint32 * 4)(0, 1, 1, 0)
+        response = (ctypes.c_uint32 * 4)()
+        returned = wintypes.DWORD()
+        if not kernel32.DeviceIoControl(handle, 0x9023C, request, 16, response, 16,
+                                        ctypes.byref(returned), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
+    if returned.value >= 16 and response[0] & 1:
+        return root.value, "NTFS, 8.3 short-name creation disabled"
+    return root.value, "NTFS whose volume state does not disable 8.3 short names"
 # What the private installation's packages\thumbnailers holds of the stub plugins.
 THUMBNAILERS = sorted(VIDEO_FILES + ["midnight-thumbnail-image.exe", "midnight-thumbnail-image.json",
                                      "midnight-thumbnail-video.exe", "midnight-thumbnail-video.json",
@@ -42,14 +91,18 @@ record = {
     "packages": str(packages),
     "root": str(root),
     "run_dir": os.environ.get("MIDNIGHT_ACCEPTANCE_RUN_DIR"),
+    "stress": os.environ.get("MIDNIGHT_ACCEPTANCE_STRESS"),
+    "fat_dir": os.environ.get("MIDNIGHT_ACCEPTANCE_FAT_DIR"),
     "temp": os.environ.get("TEMP"),
     "bin": sorted(p.name for p in (root / "bin").iterdir()),
     "arguments": sys.argv[1:],
+    # None: the kind's folder does not exist.
     "installed": {kind: sorted(p.name for p in (packages / kind).iterdir())
+                  if (packages / kind).is_dir() else None
                   for kind in ("viewers", "filesystems", "thumbnailers")},
     "acl": acl,
     "file_acls": {p.name: subprocess.run(["icacls", str(p)], capture_output=True, text=True).stdout
-                  for p in thumbnailers.iterdir() if p.is_file()},
+                  for p in (thumbnailers.iterdir() if thumbnailers.is_dir() else []) if p.is_file()},
 }
 Path(os.environ["RECORD"]).write_text(json.dumps(record), encoding="utf-8")
 sys.exit(int(os.environ.get("RECORD_EXIT", "0")))
@@ -59,7 +112,7 @@ sys.exit(int(os.environ.get("RECORD_EXIT", "0")))
 IN_PROCESS = r'''
 $ErrorActionPreference = 'Stop'
 $names = @('TEMP', 'TMP', 'CARGO_HOME', 'RUSTUP_HOME', 'MIDNIGHT_ACCEPTANCE_PLUGINS',
-    'MIDNIGHT_ACCEPTANCE_STAGE_ROOT', 'MIDNIGHT_ACCEPTANCE_RUN_DIR')
+    'MIDNIGHT_ACCEPTANCE_STAGE_ROOT', 'MIDNIGHT_ACCEPTANCE_RUN_DIR', 'MIDNIGHT_ACCEPTANCE_STRESS')
 function Get-SessionState {
     $variables = [ordered]@{}
     foreach ($name in $names) { $variables[$name] = [Environment]::GetEnvironmentVariable($name) }
@@ -69,7 +122,7 @@ Set-Location -LiteralPath $env:START
 $steps = @([ordered]@{ step = 'before'; code = 0; state = Get-SessionState })
 foreach ($run in 1, 2) {
     $env:RECORD = Join-Path $env:START "record-$run.json"
-    & $env:RUNNER --test-binary $env:LAUNCHER --run-dir $env:RUNS --only $env:RECORDER
+    & $env:RUNNER --test-binary $env:LAUNCHER --run-dir $env:RUNS --only $env:RECORDER --stress
     $steps += [ordered]@{ step = "run $run"; code = $LASTEXITCODE; state = Get-SessionState }
 }
 & $env:RUNNER --dry-run
@@ -129,8 +182,10 @@ class AcceptanceRunnerTests(unittest.TestCase):
 
     def test_dry_run_prints_the_plan_without_creating_anything(self):
         before = set(Path(os.environ["USERPROFILE"]).glob("MidnightAcceptance-*"))
+        fat = self.root / "fat volume"
         result = self.run_script("--dry-run", "--validation-packages", "--scale", "smoke",
-                                 "--only", "startup,files_links", "--run-dir", str(self.root))
+                                 "--only", "startup,files_links", "--run-dir", str(self.root),
+                                 "--stress", environment={"MIDNIGHT_ACCEPTANCE_FAT_DIR": str(fat)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         lines = result.stdout.splitlines()
         self.assertIn("Build: [cargo] [test] [--workspace] [--locked] [--features] "
@@ -141,11 +196,64 @@ class AcceptanceRunnerTests(unittest.TestCase):
                              ("filesystems", "archive-ci\\package")):
             self.assertIn(f"Plugin packages: {kind} <- {validation / folder}", lines)
         self.assertIn(f"Run folders: {self.root}", lines)
+        self.assertIn("Stress sizes: on (MIDNIGHT_ACCEPTANCE_STRESS=1)", lines)
+        self.assertIn(f"Gated folder: MIDNIGHT_ACCEPTANCE_FAT_DIR = {fat}", lines)
         self.assertIn("Command: [<installation>\\bin\\acceptance.exe] [--scale] [smoke] "
-                      "[startup] [files_links]", lines)
+                      "[startup] [files_links] [--stress]", lines)
         self.assertTrue(any(line.startswith("Private installation: " + os.environ["USERPROFILE"]
                                             + "\\MidnightAcceptance-") for line in lines), lines)
         self.assertEqual(set(Path(os.environ["USERPROFILE"]).glob("MidnightAcceptance-*")), before)
+
+    def test_the_dry_run_names_the_run_folders_volume_as_the_platform_reads_it(self):
+        # The probe reads the volume's persistent state, as the platform does, not the
+        # registry or whether a file got a short name.
+        root, reason = copy_volume(self.root)
+        verdict = "" if reason == "NTFS, 8.3 short-name creation disabled" else "; a run there stops"
+        result = self.run_script("--dry-run", "--run-dir", str(self.root / "runs"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"Run folder volume: {root} ({reason}){verdict}", result.stdout.splitlines())
+        # A dry run only says that a run would stop.
+        result = self.run_script("--dry-run", "--run-dir", str(self.root / "runs"),
+                                 environment={"MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME": "unqualified"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"Run folder volume: {self.root} (unqualified by "
+                      "MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME); a run there stops",
+                      result.stdout.splitlines())
+
+    @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
+    def test_a_run_on_a_volume_that_keeps_8dot3_names_stops_before_anything(self):
+        # There Copy and Move take the engine's opaque lane and their jobs wait for each
+        # other, so side-by-side checks would fail for no fault of the product.
+        plugins = self.stub_plugins()
+        profile = self.private_profile()
+        recorder = self.root / "recorder.py"
+        recorder.write_text(RECORDER, encoding="utf-8")
+        record = self.root / "record.json"
+        runs = self.root / "runs"
+        result = self.run_script("--test-binary", LAUNCHER, "--plugins", str(plugins),
+                                 "--run-dir", str(runs), "--only", str(recorder),
+                                 environment={"RECORD": str(record), "USERPROFILE": str(profile),
+                                              "MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME":
+                                              "unqualified"})
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(f"the run folders {runs} are on {self.root} (unqualified by "
+                      "MIDNIGHT_ACCEPTANCE_SCRIPT_TEST_VOLUME)", result.stderr)
+        self.assertIn("opaque lane", result.stderr)
+        self.assertIn('docs/developer/TEST_EXECUTION.md, "Windows Copy/Move qualification volume"',
+                      result.stderr)
+        # Nothing ran and nothing was made: no installation, no run folder, no record.
+        self.assertFalse(record.exists())
+        self.assertFalse(runs.exists())
+        self.assertEqual(list(profile.glob("MidnightAcceptance-*")), [])
+
+    def test_a_relative_gated_folder_stops_with_usage(self):
+        for variable in ("MIDNIGHT_ACCEPTANCE_FAT_DIR", "MIDNIGHT_ACCEPTANCE_WIN_SYMLINKS"):
+            for value in ("relative", "C:relative"):
+                with self.subTest(variable=variable, value=value):
+                    result = self.run_script("--dry-run", environment={variable: value})
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn(f"{variable} {value} is not an absolute folder", result.stderr)
+                    self.assertIn("Usage: pwsh -File scripts\\acceptance.ps1", result.stderr)
 
     def test_the_worker_sid_is_never_asked_of_windows_in_this_process(self):
         # In a packaged PowerShell that API returns a child AppContainer of the package.
@@ -176,10 +284,12 @@ class AcceptanceRunnerTests(unittest.TestCase):
         record = self.root / "record.json"
         runs = self.root / "runs"
         runs.mkdir()
+        fat = self.root / "fat volume"
         result = self.run_script("--test-binary", LAUNCHER, "--plugins", str(plugins),
                                  "--run-dir", str(runs), "--only", str(recorder),
                                  environment={"RECORD": str(record), "RECORD_EXIT": "1",
-                                              "USERPROFILE": str(profile)})
+                                              "USERPROFILE": str(profile),
+                                              "MIDNIGHT_ACCEPTANCE_FAT_DIR": str(fat), **QUALIFIED})
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         seen = json.loads(record.read_text(encoding="utf-8"))
         installation = Path(seen["root"])
@@ -191,6 +301,9 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual(seen["bin"], [Path(LAUNCHER).name])
         self.assertEqual(seen["arguments"], [])
         self.assertEqual(seen["run_dir"], str(runs))
+        # A gated volume's folder reaches the suite (and its staged children) as it is.
+        self.assertEqual(seen["fat_dir"], str(fat))
+        self.assertIn(f"Gated folder: MIDNIGHT_ACCEPTANCE_FAT_DIR = {fat}", result.stdout.splitlines())
         self.assertEqual(Path(seen["temp"]), ROOT / "_build" / "tmp")
         # Network providers are never staged; the flat thumbnailers folder is copied whole.
         self.assertEqual(seen["installed"], {"viewers": ["basic"], "filesystems": ["native.windows"],
@@ -209,6 +322,34 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assert_worker_grants(seen["file_acls"])
 
     @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
+    def test_without_packages_no_package_folder_is_made(self):
+        # The staged scenarios report SKIP when viewers\ or filesystems\ is missing, as on
+        # Linux; empty folders made them fail instead ("Native filesystem plugin is
+        # unavailable"). Only network providers, which are never staged, count as none.
+        plugins = self.root / "plugins"
+        (plugins / "filesystems" / "network.windows").mkdir(parents=True)
+        (plugins / "filesystems" / "network.windows" / "plugin.toml").write_text(
+            "name = 'stub'\n", encoding="utf-8")
+        (plugins / "viewers").mkdir()
+        profile = self.private_profile()
+        recorder = self.root / "recorder.py"
+        recorder.write_text(RECORDER, encoding="utf-8")
+        record = self.root / "record.json"
+        runs = self.root / "runs"
+        runs.mkdir()
+        result = self.run_script("--test-binary", LAUNCHER, "--plugins", str(plugins),
+                                 "--run-dir", str(runs), "--only", str(recorder),
+                                 environment={"RECORD": str(record), "RECORD_EXIT": "0",
+                                              "USERPROFILE": str(profile), **QUALIFIED})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        seen = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(seen["installed"], {"viewers": None, "filesystems": None,
+                                             "thumbnailers": None})
+        for kind in ("viewers", "filesystems", "thumbnailers"):
+            self.assertIn(f"Plugin packages ({kind}): none", result.stdout.splitlines())
+        self.assertFalse(Path(seen["root"]).exists(), "the private installation was not removed")
+
+    @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
     def test_in_process_runs_restore_the_session_and_stage_the_packages_again(self):
         # Run in-process, the runner used to leave MIDNIGHT_ACCEPTANCE_PLUGINS naming the
         # removed installation's packages (the next run staged none), and TEMP, TMP,
@@ -225,7 +366,8 @@ class AcceptanceRunnerTests(unittest.TestCase):
         temporary.mkdir()
         report = self.root / "report.json"
         environment = {name: value for name, value in os.environ.items() if name.upper() not in
-                       ("MIDNIGHT_ACCEPTANCE_STAGE_ROOT", "MIDNIGHT_ACCEPTANCE_RUN_DIR")}
+                       ("MIDNIGHT_ACCEPTANCE_STAGE_ROOT", "MIDNIGHT_ACCEPTANCE_RUN_DIR",
+                        "MIDNIGHT_ACCEPTANCE_STRESS")}
         environment.update({
             "TEMP": str(temporary), "TMP": str(temporary),
             "CARGO_HOME": "cargo home before", "RUSTUP_HOME": "rustup home before",
@@ -234,7 +376,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
             "USERPROFILE": str(profile), "RECORD_EXIT": "0",
             "START": str(start), "RUNNER": str(ROOT / "scripts/acceptance.ps1"),
             "LAUNCHER": LAUNCHER, "RUNS": str(runs), "RECORDER": str(recorder),
-            "REPORT": str(report),
+            "REPORT": str(report), **QUALIFIED,
         })
         result = subprocess.run([PWSH, "-NoLogo", "-NoProfile", "-Command", IN_PROCESS],
                                 capture_output=True, text=True, timeout=240, env=environment)
@@ -245,6 +387,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertEqual(Path(before["location"]), start)
         self.assertEqual(before["variables"]["MIDNIGHT_ACCEPTANCE_PLUGINS"], str(plugins))
         self.assertIsNone(before["variables"]["MIDNIGHT_ACCEPTANCE_STAGE_ROOT"])
+        self.assertIsNone(before["variables"]["MIDNIGHT_ACCEPTANCE_STRESS"])
         for step in steps[1:]:
             with self.subTest(step=step["step"]):
                 self.assertEqual(step["code"], 0, result.stdout + result.stderr)
@@ -252,6 +395,9 @@ class AcceptanceRunnerTests(unittest.TestCase):
         for run in (1, 2):
             with self.subTest(run=run):
                 seen = json.loads((start / f"record-{run}.json").read_text(encoding="utf-8"))
+                # --stress reaches the suite as its flag and staged children as the variable.
+                self.assertEqual(seen["arguments"], ["--stress"])
+                self.assertEqual(seen["stress"], "1")
                 self.assertEqual(seen["installed"], {"viewers": ["basic"], "filesystems": ["native.windows"],
                                                      "thumbnailers": THUMBNAILERS})
                 self.assert_worker_grants(seen["file_acls"])

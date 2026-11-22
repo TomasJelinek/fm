@@ -3,14 +3,18 @@
 //!
 //! The wiring follows `crates/midnight-explorer/src/main.rs` (`run_window`): the same
 //! Engine services where they work headless, `install_with_owned`, the owned command
-//! scope and the event pump of its `backend_ready` callback. Differences, all
-//! deliberate and documented in docs/developer/ACCEPTANCE.md: settings are in memory
-//! (the user's profile is never read or written), browsing uses the host-native
-//! `LocalFileSystem` service rather than the installed native filesystem plugin, and
-//! desktop launching, clipboard and drag-and-drop are not installed. Editors and user
-//! commands are opt-in (`Config::editor`, `Config::user_commands`), and
+//! scope, the event pump of its `backend_ready` callback and its startup deadline for a
+//! slow settings read. Differences, all deliberate and documented in
+//! docs/developer/ACCEPTANCE.md: settings are in memory (the user's profile is never read
+//! or written), browsing uses the host-native `LocalFileSystem` service rather than the
+//! installed native filesystem plugin, the clipboard is an opt-in in-process one
+//! (`Config::clipboard`), the desktop service is an opt-in stand-in that records its
+//! launches (`Config::desktop`, `launches.rs`), and the desktop drag-and-drop hand-off is
+//! not installed. Editors and Custom Commands are opt-in (`Config::editor`,
+//! `Config::user_commands`; a Custom Command's terminal is recorded, never started), and
 //! `Config::plugins` opts a staged viewer scenario into the installed native filesystem
 //! plugin (archives included), viewers, comparators and thumbnails (`viewers_support`).
+//! Slint's timers and animations follow a [`Clock`] that a scenario can hold and advance.
 // Production's owned-command reclaimer. Test targets compile with cfg(test), so its
 // unit-test module comes along (never run here); allow what that leaves unused.
 #[allow(dead_code, unused_imports)]
@@ -45,38 +49,116 @@ use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 /// One wait for UI or Engine progress. Waits end as soon as their condition holds.
 pub const WAIT: Duration = Duration::from_secs(60);
 const ENGINE_SHUTDOWN: Duration = Duration::from_secs(8);
+/// How often [`App::pump`] and [`App::advance`] settle: about one frame.
+pub const FRAME: Duration = Duration::from_millis(10);
+/// Production's startup deadline (`crates/midnight-explorer/src/startup.rs`, `DEADLINE`):
+/// a settings read slower than this no longer keeps the window hidden; the window shows
+/// the defaults and says so until the read applies.
+pub const SETTINGS_DEADLINE: Duration = Duration::from_secs(10);
 
 type Windows = Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>;
 
-/// Every window the application creates gets a software adapter recorded here.
-struct SoftwarePlatform(Windows);
+/// The time Slint's timers and animations follow on this thread, and with them every
+/// product rule timed on the platform clock: the drag bridge's 0.4 s quick-drop rule,
+/// the time picker's repeat, the panels' rest and glide, the startup deadline. It runs
+/// with real time until a scenario holds it ([`App::hold_clock`]); then it moves only by
+/// [`App::advance`], until [`App::resume_clock`]. It never goes back.
+#[derive(Clone)]
+pub struct Clock(Rc<RefCell<ClockState>>);
+
+struct ClockState {
+    /// The clock's time at `since`.
+    base: Duration,
+    /// When it was created, last held or resumed (real time).
+    since: Instant,
+    held: bool,
+}
+
+impl Clock {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(ClockState {
+            base: Duration::ZERO,
+            since: Instant::now(),
+            held: false,
+        })))
+    }
+
+    /// The platform's time since this thread's platform was installed.
+    pub fn now(&self) -> Duration {
+        let state = self.0.borrow();
+        if state.held {
+            state.base
+        } else {
+            state.base + state.since.elapsed()
+        }
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.0.borrow().held
+    }
+
+    fn hold(&self) {
+        let now = self.now();
+        let mut state = self.0.borrow_mut();
+        state.base = now;
+        state.held = true;
+    }
+
+    /// Run with real time again, on from where the held clock stands.
+    fn resume(&self) {
+        let mut state = self.0.borrow_mut();
+        if state.held {
+            state.since = Instant::now();
+            state.held = false;
+        }
+    }
+
+    fn step(&self, by: Duration) {
+        self.0.borrow_mut().base += by;
+    }
+}
+
+/// Every window the application creates gets a software adapter recorded here; timers
+/// and animations follow its [`Clock`].
+struct SoftwarePlatform {
+    windows: Windows,
+    clock: Clock,
+}
 
 impl Platform for SoftwarePlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-        self.0.borrow_mut().push(window.clone());
+        self.windows.borrow_mut().push(window.clone());
         Ok(window)
+    }
+
+    fn duration_since_start(&self) -> Duration {
+        self.clock.now()
     }
 }
 
 thread_local! {
     // Slint's platform is per thread and can be set once; later Apps on the same
-    // thread reuse it with a cleared window list.
-    static PLATFORM: RefCell<Option<Windows>> = const { RefCell::new(None) };
+    // thread reuse it with a cleared window list and a running clock.
+    static PLATFORM: RefCell<Option<(Windows, Clock)>> = const { RefCell::new(None) };
 }
 
-fn platform_windows() -> Windows {
+fn platform() -> (Windows, Clock) {
     PLATFORM.with(|slot| {
         let mut slot = slot.borrow_mut();
-        if let Some(windows) = slot.as_ref() {
+        if let Some((windows, clock)) = slot.as_ref() {
             windows.borrow_mut().clear();
-            return windows.clone();
+            clock.resume();
+            return (windows.clone(), clock.clone());
         }
-        let windows: Windows = Rc::default();
-        slint::platform::set_platform(Box::new(SoftwarePlatform(windows.clone())))
-            .expect("the scenario thread's Slint platform");
-        *slot = Some(windows.clone());
-        windows
+        let (windows, clock): (Windows, Clock) = (Rc::default(), Clock::new());
+        slint::platform::set_platform(Box::new(SoftwarePlatform {
+            windows: windows.clone(),
+            clock: clock.clone(),
+        }))
+        .expect("the scenario thread's Slint platform");
+        *slot = Some((windows.clone(), clock.clone()));
+        (windows, clock)
     })
 }
 
@@ -305,8 +387,17 @@ pub struct Config {
     pub plugins: Option<PathBuf>,
     /// Opt-in: settings that outlive this run (restarts load what it saved).
     pub settings: Option<Arc<crate::options_support::SettingsStore>>,
-    /// Opt-in: install the native Custom Command launcher, as the application does.
+    /// Opt-in: the Custom Command launcher (`launches::UserCommands`): the platform's own
+    /// validation, programs started as configured, terminals recorded in
+    /// [`App::launches`] and never started.
     pub user_commands: bool,
+    /// Opt-in: a stand-in desktop service (`launches::Desktop`): the platform's
+    /// locations, icons, property details and link targets; the command line's and the
+    /// terminal button's terminals, files opened with their association and system
+    /// locations recorded in [`App::launches`] and never started; Properties shows the
+    /// application's own summary. Without it the command line reports "Terminal
+    /// unavailable" and opening a file is unavailable.
+    pub desktop: bool,
     /// Opt-in: install the native external editor launcher (F4), as the application does.
     pub editor: bool,
     /// Opt-in: an in-process clipboard (`MemoryClipboard`) for Ctrl+C, Ctrl+X and Ctrl+V.
@@ -323,6 +414,10 @@ pub struct Config {
     /// Windows: `USERPROFILE`, `LOCALAPPDATA`) lie in its private folder: `App::start`
     /// checks that they do.
     pub real_settings: bool,
+    /// Opt-in: every settings read (of whichever store) answers this late, as from a
+    /// slow profile folder. Longer than [`SETTINGS_DEADLINE`], the window shows the
+    /// defaults first and `App::start` returns before the read ([`App::settings_late`]).
+    pub settings_delay: Option<Duration>,
 }
 
 impl Config {
@@ -338,11 +433,13 @@ impl Config {
             plugins: None,
             settings: None,
             user_commands: false,
+            desktop: false,
             editor: false,
             clipboard: false,
             restore_tabs: false,
             explicit_paths: None,
             real_settings: false,
+            settings_delay: None,
         }
     }
 }
@@ -375,8 +472,26 @@ pub struct App {
     /// Rejected checksum jobs and finished manifest saves (errors as text).
     pub checksum_errors: Vec<String>,
     pub manifests: Vec<Result<ChecksumManifestReceipt, String>>,
+    /// Every answer to the Copy/Move dialog's question how links fare at a destination
+    /// (`Event::TransferLinksInspected`), in arrival order: a step waits for one more.
+    pub links_inspected: Vec<TransferLinksResult>,
+    /// Every answer to an archive password (`Event::ArchiveUnlocked`), in arrival order:
+    /// the outcome, or the error's text.
+    #[allow(dead_code)] // Read by the archive password scenarios.
+    pub archive_unlocks: Vec<Result<ArchiveUnlock, String>>,
+    /// The settings reads applied (`Event::PreferencesLoaded`, read or failed).
+    pub settings_reads: usize,
+    /// Every program, terminal, file association and system location the application
+    /// asked to start ([`Config::user_commands`], [`Config::desktop`]), in order. No
+    /// terminal is ever started: no platform launcher is installed for them.
+    pub launches: Arc<super::launches::Launches>,
+    /// The startup deadline passed before the first settings read applied: the window
+    /// showed the defaults, as production's does ([`SETTINGS_DEADLINE`]).
+    pub settings_late: bool,
     /// The last pointer click on a panel row (double-click protection).
     pub last_click: Option<(Instant, slint::LogicalPosition)>,
+    /// The Slint clock of this thread ([`App::hold_clock`]).
+    pub clock: Clock,
     /// The last few events, for failure messages.
     trace: Trace,
     /// Viewers, comparators and thumbnails, when `Config::plugins` asked for them.
@@ -389,7 +504,7 @@ impl App {
     /// Start the application on `config` and wait until both panes show their folders.
     #[track_caller]
     pub fn start(config: Config) -> Self {
-        let windows = platform_windows();
+        let (windows, clock) = platform();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .max_blocking_threads(16)
@@ -444,7 +559,8 @@ impl App {
             .install(local.clone());
         engine.configure_mutations().unwrap().install(local.clone());
         engine.configure_watch().unwrap().install(local.clone());
-        install_opt_in_services(&mut engine, &config, &local);
+        let launches = Arc::new(super::launches::Launches::default());
+        install_opt_in_services(&mut engine, &config, &local, &launches);
         let clipboard = config
             .clipboard
             .then(|| Arc::new(MemoryClipboard::default()));
@@ -532,6 +648,7 @@ impl App {
                 )
             });
         let startup_tabs = active_tabs(&presenter.borrow());
+        let started = clock.now();
         let mut app = Self {
             window,
             main,
@@ -555,33 +672,59 @@ impl App {
             checksum_runs: Vec::new(),
             checksum_errors: Vec::new(),
             manifests: Vec::new(),
+            links_inspected: Vec::new(),
+            archive_unlocks: Vec::new(),
+            settings_reads: 0,
+            launches,
+            settings_late: false,
             last_click: None,
+            clock,
             trace,
             plugins,
             clipboard,
         };
         app.resize(config.width, config.height);
         // Installing requests the preferences; their tab restore lists both panes again.
-        // Production keeps the window hidden until then, so wait before any input.
+        // Production keeps the window hidden until the first read applied (read or
+        // failed) or its startup deadline passed, so no input is sent before either.
         let ready = |app: &Self| {
             let presenter = app.presenter.borrow();
-            presenter.window_geometry_ready()
-                && active_tabs(&presenter)
+            let revealed = if app.settings_reads > 0 {
+                active_tabs(&presenter)
                     .iter()
                     .zip(&startup_tabs)
                     .zip(&relisted)
                     .all(|((active, startup), relisted)| !relisted || active != startup)
-                && !app.window.get_left_loading()
-                && !app.window.get_right_loading()
+            } else {
+                app.settings_late
+            };
+            revealed && !app.window.get_left_loading() && !app.window.get_right_loading()
         };
         let deadline = Instant::now() + WAIT;
-        while !ready(&app) {
+        loop {
+            app.settle();
+            if app.settings_reads == 0
+                && !app.settings_late
+                && app.clock.now() >= started + SETTINGS_DEADLINE
+            {
+                // What production's deadline does (`run_window`, `startup.arm`): the
+                // window shows the defaults and its status says why.
+                app.settings_late = true;
+                app.presenter.borrow_mut().note_settings_pending();
+                refresh(&app.window, &app.presenter.borrow());
+            }
+            if ready(&app) {
+                break;
+            }
             if Instant::now() >= deadline {
                 let presenter = app.presenter.borrow();
                 panic!(
-                    "startup did not finish within {WAIT:?}: window geometry ready {}, active \
-                     tabs {:?} (at construction {startup_tabs:?}, relisted {relisted:?}), \
-                     loading {} / {}; panels {:?} / {:?}",
+                    "startup did not finish within {WAIT:?}: settings reads applied {}, late \
+                     {}, window geometry ready {}, active tabs {:?} (at construction \
+                     {startup_tabs:?}, relisted {relisted:?}), loading {} / {}; panels {:?} / \
+                     {:?}",
+                    app.settings_reads,
+                    app.settings_late,
                     presenter.window_geometry_ready(),
                     active_tabs(&presenter),
                     app.window.get_left_loading(),
@@ -590,8 +733,7 @@ impl App {
                     app.location(PaneId::Right)
                 );
             }
-            app.settle();
-            app.idle(Duration::from_millis(5));
+            app.sleep(Duration::from_millis(5));
         }
         if let Some(plugins) = &app.plugins {
             plugins.settings_applied(&app.presenter);
@@ -727,6 +869,11 @@ impl App {
                 }
                 _ => {}
             },
+            Event::TransferLinksInspected(result) => self.links_inspected.push((**result).clone()),
+            Event::ArchiveUnlocked { result, .. } => self
+                .archive_unlocks
+                .push(result.clone().map_err(|error| error.to_string())),
+            Event::PreferencesLoaded(_) => self.settings_reads += 1,
             _ => {}
         }
         trace_line(&self.trace, format!("{event:?}"));
@@ -837,12 +984,67 @@ impl App {
         }
     }
 
-    /// Wait without taking events or holding a claim.
+    /// Wait without taking events or holding a claim, then settle once: timers and
+    /// animations advance in one jump. Not a synchronisation: wait for what should
+    /// happen with [`App::until`], or let time pass in frames with [`App::pump`].
     pub fn idle(&mut self, duration: Duration) {
+        self.sleep(duration);
+        self.settle();
+    }
+
+    /// Sleep in real time without taking events or holding a claim.
+    fn sleep(&self, duration: Duration) {
         if let Some(runtime) = &self.runtime {
             // The timer must be created inside the runtime's context.
             runtime.block_on(async { tokio::time::sleep(duration).await });
         }
+    }
+
+    /// Let `duration` of real time pass the way the event loop does: settle about every
+    /// [`FRAME`], so Engine events are applied as they come and timers and animations
+    /// advance frame by frame (while the clock runs; a held clock stays where it is).
+    pub fn pump(&mut self, duration: Duration) {
+        let end = Instant::now() + duration;
+        loop {
+            self.settle();
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            self.sleep(left.min(FRAME));
+        }
+    }
+
+    /// Stop the Slint clock (the [`Clock`]): from now on Slint's timers and animations,
+    /// and every product rule timed on that clock, move only with [`App::advance`].
+    /// Engine events are still applied by every settle. Two clicks at one place within
+    /// the double-click interval of the clock's time are a double click, whatever real
+    /// time passes between them: advance the clock past that interval in between.
+    pub fn hold_clock(&mut self) {
+        self.settle();
+        self.clock.hold();
+    }
+
+    /// Move the held clock forward by `by` in steps of at most [`FRAME`], settling after
+    /// each step: timers due in a step fire in it, animations take every step.
+    #[track_caller]
+    pub fn advance(&mut self, by: Duration) {
+        assert!(
+            self.clock.is_held(),
+            "App::advance moves a held clock; call App::hold_clock first"
+        );
+        let mut left = by;
+        while !left.is_zero() {
+            let step = left.min(FRAME);
+            self.clock.step(step);
+            left -= step;
+            self.settle();
+        }
+    }
+
+    /// Let the held clock run with real time again, on from where it stands.
+    pub fn resume_clock(&mut self) {
+        self.clock.resume();
         self.settle();
     }
 
@@ -862,7 +1064,12 @@ impl App {
             }
             if Instant::now() >= deadline {
                 panic!(
-                    "timed out after {limit:?} waiting for {what}\n  left: {:?} loading={} error={:?}\n  right: {:?} loading={} error={:?}\n  notice: {:?}\n  modal={} tool windows={}{}\n  last copy: {:?}\n  last operation: {:?}\n  recent events:\n    {}",
+                    "timed out after {limit:?} waiting for {what}{}\n  left: {:?} loading={} error={:?}\n  right: {:?} loading={} error={:?}\n  notice: {:?}\n  modal={} tool windows={}{}\n  last copy: {:?}\n  last operation: {:?}\n  recent events:\n    {}",
+                    if self.clock.is_held() {
+                        format!(" (the Slint clock is held at {:?})", self.clock.now())
+                    } else {
+                        String::new()
+                    },
                     self.location(PaneId::Left),
                     self.loading(PaneId::Left),
                     self.error(PaneId::Left),
@@ -883,9 +1090,7 @@ impl App {
                         .join("\n    ")
                 );
             }
-            if let Some(runtime) = &self.runtime {
-                runtime.block_on(async { tokio::time::sleep(Duration::from_millis(5)).await });
-            }
+            self.sleep(Duration::from_millis(5));
         }
     }
 
@@ -933,7 +1138,9 @@ impl App {
         relative
     }
 
-    /// Render a tool window at its current size into the run's screenshots.
+    /// Render a tool window at its current size into the run's screenshots. A window
+    /// that closed while the events were applied (a job window whose job ended) is noted
+    /// instead: it has nothing left to render ([`shown`]).
     pub fn screenshot_window(
         &mut self,
         context: &mut Context,
@@ -942,8 +1149,14 @@ impl App {
         caption: &str,
     ) -> String {
         self.settle();
-        let (width, height, pixels) = render(window);
         let relative = format!("shots/{}/{name}.png", context_name());
+        if !shown(window) {
+            context.note(format!(
+                "screenshot {name} ({caption}) not taken: the window had closed"
+            ));
+            return relative;
+        }
+        let (width, height, pixels) = render(window);
         let path = context.run_dir.join(&relative);
         if let Err(error) = report::save_png(&path, width, height, &pixels) {
             context.note(format!("screenshot {name} failed: {error}"));
@@ -1065,22 +1278,43 @@ pub fn context_name() -> String {
         .to_owned()
 }
 
-/// Size a tool window and settle its layout (no rendering).
-pub fn layout_tool(window: &MinimalSoftwareWindow, width: u32, height: u32) {
+/// Whether `window` is still shown with its content. A tool window that closed (a job
+/// window whose job ended, a dialog answered) keeps its adapter but loses its component,
+/// and Slint 1.18.1 panics (`WindowInner::component`, window.rs:781) when such a window
+/// is resized or rendered; a panic there can leave Slint's state borrowed, and a second
+/// one while the scenario unwinds aborts the whole run.
+pub fn shown(window: &MinimalSoftwareWindow) -> bool {
+    window.window().is_visible()
+        && i_slint_core::window::WindowInner::from_pub(window.window())
+            .try_component()
+            .is_some()
+}
+
+/// Size a tool window and settle its layout (no rendering); false, and nothing done,
+/// when the window has closed ([`shown`]).
+pub fn layout_tool(window: &MinimalSoftwareWindow, width: u32, height: u32) -> bool {
+    if !shown(window) {
+        return false;
+    }
     window.set_size(slint::PhysicalSize::new(width, height));
     window.window().dispatch_event(WindowEvent::Resized {
         size: slint::LogicalSize::new(width as f32, height as f32),
     });
     inspect_tree(window);
+    true
 }
 
 fn inspect_tree(window: &MinimalSoftwareWindow) {
     i_slint_core::window::WindowInner::from_pub(window.window()).ensure_tree_instantiated();
 }
 
-/// Software-render any window at its current size.
+/// Software-render any window at its current size; an empty frame (0 × 0) when the
+/// window has closed ([`shown`]).
 pub fn render(window: &MinimalSoftwareWindow) -> (usize, usize, Vec<slint::Rgb8Pixel>) {
     slint::platform::update_timers_and_animations();
+    if !shown(window) {
+        return (0, 0, Vec::new());
+    }
     let size = window.window().size();
     let (width, height) = (size.width as usize, size.height as usize);
     let mut pixels = vec![slint::Rgb8Pixel::default(); width * height];
@@ -1143,7 +1377,8 @@ fn private_settings() -> Result<(), String> {
 
 /// The settings service of a run: the application's own store (opt-in), the opt-in
 /// store shared across restarts, otherwise in-memory preferences whose saves are
-/// forgotten. Also which panels have a saved tab session the first read restores.
+/// forgotten; slowed down by `Config::settings_delay`. Also which panels have a saved
+/// tab session the first read restores.
 fn settings_service(
     config: &Config,
     preferences: UserPreferences,
@@ -1155,39 +1390,99 @@ fn settings_service(
             .each_ref()
             .map(|tabs| tabs.validate().is_ok() && tabs.paths.get(tabs.active).is_some())
     };
-    if config.real_settings {
+    let (service, saved): (Arc<dyn SettingsService>, _) = if config.real_settings {
         if let Err(problem) = private_settings() {
             panic!("Config::real_settings needs a staged process with private settings: {problem}");
         }
         // Read once before the start, as production's startup read does; the engine's
         // first load then reads the store again, asynchronously.
         let stored = SettingsService::load_preferences_for_acceptance(local.as_ref()).ok();
-        return (
+        (
             local.clone(),
             stored.as_ref().map_or([false; 2], restorable),
-        );
-    }
-    match &config.settings {
-        Some(store) => {
-            let service = store.service(preferences);
-            (service, restorable(&store.current()))
+        )
+    } else {
+        match &config.settings {
+            Some(store) => (store.service(preferences), restorable(&store.current())),
+            None => {
+                let saved = restorable(&preferences);
+                (Arc::new(Settings(preferences)), saved)
+            }
         }
-        None => {
-            let saved = restorable(&preferences);
-            (Arc::new(Settings(preferences)), saved)
-        }
+    };
+    match config.settings_delay {
+        Some(delay) => (
+            Arc::new(SlowSettings {
+                inner: service,
+                delay,
+            }),
+            saved,
+        ),
+        None => (service, saved),
     }
 }
 
-/// Opt-in production services, installed exactly as `run_window` installs them. They
-/// launch the programs a scenario configured, so only scenarios that configure
-/// harmless commands inside their work folder enable them.
-fn install_opt_in_services(engine: &mut Engine, config: &Config, local: &Arc<LocalFileSystem>) {
+/// A settings store whose reads answer `delay` late, as one in a slow profile folder;
+/// everything else goes to `inner` unchanged. The Engine reads on a blocking worker, so
+/// the delay holds up nothing but the read.
+struct SlowSettings {
+    inner: Arc<dyn SettingsService>,
+    delay: Duration,
+}
+
+impl SettingsService for SlowSettings {
+    fn font_families(&self) -> Result<Vec<String>, FsError> {
+        self.inner.font_families()
+    }
+
+    fn load_preferences(&self) -> Result<UserPreferences, FsError> {
+        std::thread::sleep(self.delay);
+        self.inner.load_preferences()
+    }
+
+    fn save_preferences(&self, preferences: UserPreferences) -> Result<(), FsError> {
+        self.inner.save_preferences(preferences)
+    }
+
+    fn load_preferences_for_acceptance(&self) -> Result<UserPreferences, FsError> {
+        std::thread::sleep(self.delay);
+        self.inner.load_preferences_for_acceptance()
+    }
+
+    fn save_preferences_prepared(
+        &self,
+        preferences: UserPreferences,
+        proof: ComparatorValidationProof<'_>,
+    ) -> Result<(), FsError> {
+        self.inner.save_preferences_prepared(preferences, proof)
+    }
+}
+
+/// Opt-in services that launch programs. Custom Commands and the external editor start
+/// the programs a scenario configured, so only scenarios that configure harmless
+/// commands inside their work folder enable them. No terminal is ever started: the
+/// slots that launch terminals (Custom Commands' terminal mode, the desktop's command
+/// line and terminal button) get only the recording stand-ins of `launches.rs`, never
+/// the platform's own launcher.
+fn install_opt_in_services(
+    engine: &mut Engine,
+    config: &Config,
+    local: &Arc<LocalFileSystem>,
+    launches: &Arc<super::launches::Launches>,
+) {
     if config.user_commands {
+        engine.configure_user_commands().unwrap().install(Arc::new(
+            super::launches::UserCommands::new(local.clone(), launches.clone()),
+        ));
+    }
+    if config.desktop {
         engine
-            .configure_user_commands()
+            .configure_desktop()
             .unwrap()
-            .install(local.clone());
+            .install(Arc::new(super::launches::Desktop::new(
+                local.clone(),
+                launches.clone(),
+            )));
     }
     if config.editor {
         engine.configure_editor().unwrap().install(local.clone());

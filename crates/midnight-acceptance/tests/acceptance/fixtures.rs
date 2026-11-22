@@ -754,6 +754,82 @@ fn sentence(random: &mut Random, words: usize) -> String {
         .join(" ")
 }
 
+/// The environment variables of the gated volumes: each names an absolute folder, which
+/// the user owns, on a kind of volume a fixture cannot make (a FAT, removable or network
+/// volume, another ext filesystem, a filesystem without `O_TMPFILE`, and a folder holding
+/// Windows symbolic links made with the privilege the suite lacks). The runner scripts
+/// pass them on, and staged children inherit them.
+pub const GATED: [&str; 6] = [
+    "MIDNIGHT_ACCEPTANCE_FAT_DIR",
+    "MIDNIGHT_ACCEPTANCE_REMOVABLE_DIR",
+    "MIDNIGHT_ACCEPTANCE_NETWORK_DIR",
+    "MIDNIGHT_ACCEPTANCE_OTHER_EXT_DIR",
+    "MIDNIGHT_ACCEPTANCE_NO_TMPFILE_DIR",
+    "MIDNIGHT_ACCEPTANCE_WIN_SYMLINKS",
+];
+
+/// The folder that the gated variable `variable` (one of [`GATED`]) names, as it is: an
+/// error starting `SKIP:` when the variable is not set, so that the scenario reports
+/// `SKIP` with that reason, and a plain error when it names no absolute, existing folder.
+pub fn gated_dir(variable: &str) -> Result<PathBuf, String> {
+    if !GATED.contains(&variable) {
+        return Err(format!("{variable} is not a gated volume's variable"));
+    }
+    let Some(value) = std::env::var_os(variable).filter(|value| !value.is_empty()) else {
+        return Err(format!("SKIP: {variable} not set"));
+    };
+    let folder = PathBuf::from(value);
+    if !folder.is_absolute() {
+        return Err(format!(
+            "{variable} {} is not an absolute folder",
+            folder.display()
+        ));
+    }
+    if !folder.is_dir() {
+        return Err(format!("{variable} {} is not a folder", folder.display()));
+    }
+    Ok(folder)
+}
+
+/// A scenario's own new folder in a gated volume's folder ([`gated`]). Dropping it gives
+/// the owner back every permission below it and removes it, as the runner does for a
+/// work folder; a folder that cannot be removed is named on the console.
+pub struct Gated(PathBuf);
+
+impl std::ops::Deref for Gated {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Gated {
+    fn drop(&mut self) {
+        restore_owner_write(&self.0);
+        if let Err(error) = remove_tree(&self.0) {
+            eprintln!(
+                "acceptance: cannot remove the gated folder {}: {error}",
+                self.0.display()
+            );
+        }
+    }
+}
+
+/// A new folder `midnight-acceptance-<run>-<scenario>` in the folder that the gated
+/// variable `variable` names ([`gated_dir`]; `SKIP:` when it is not set), removed with
+/// everything in it when the returned guard drops.
+pub fn gated(context: &super::Context, variable: &str) -> Result<Gated, String> {
+    let folder = gated_dir(variable)?;
+    let run = context
+        .run_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let base = format!("midnight-acceptance-{run}-{}", super::app::context_name());
+    create_fresh(&folder, &base).map(Gated)
+}
+
 /// Create a new folder `base` in `parent` (`base-2`, `base-3`, … when the name is
 /// taken) and return it. Never returns a folder that existed before: the suite deletes
 /// only what it created itself.

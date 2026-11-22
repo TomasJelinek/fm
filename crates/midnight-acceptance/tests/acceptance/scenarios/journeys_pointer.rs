@@ -17,36 +17,45 @@
 //! 7. A click on a row, the footer's F8 cell and the confirmation's button move a file
 //!    to the (private) Trash. Windows has no private Recycle Bin: there the
 //!    confirmation is cancelled and the file must stay.
-//! 8. A drop within 400 ms of the press is cancelled: nothing is copied or moved
-//!    (pending until announced).
+//! 8. On the Slint clock, which the journey holds so that the time a synthetic gesture
+//!    takes does not count: a drop 250 ms after the press is cancelled (nothing copied
+//!    or moved, the panel's status says why), and the same drop 450 ms after the press
+//!    moves the folder.
+//! 9. In a folder of 60 rows, a wheel of one and a half rows leaves a row cut at the
+//!    list's top, drawn in every frame (no blank band), until the list rests on a whole
+//!    row; a double click opens the first fully visible row.
 use super::{
     journeys_support::{self as journey, Journey, wait},
     panels_support as panels,
 };
 use crate::{
     Context,
-    app::{App, Config},
+    app::{self, App, Config},
     files_support::{self as files, Choice},
     input, inspect, panel, viewers_stage,
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::{CopyOperationState, OperationState, PaneId};
 use slint::{
-    LogicalPosition,
+    LogicalPosition, Model,
     platform::{PointerEventButton, WindowAdapter, WindowEvent},
 };
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const LEFT: PaneId = PaneId::Left;
 const RIGHT: PaneId = PaneId::Right;
 const STEP: Duration = Duration::from_secs(30);
 pub const TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const QUICK_DROP: &str = "a drop within 400 ms of the press is cancelled";
 /// Drag feedback states (`MainWindow.drag-feedback-state`).
 const MOVE: i32 = 4;
+/// The panel's status line after a drop sooner than 0.4 s (`quick_drag_note`).
+const QUICK_NOTE: &str = "Drag cancelled: released within 0.4 s";
+/// The folders of step 9's list.
+const ROWS: usize = 60;
 const LONG: &str = "one, the longest of the three files\n";
 /// The Copy window's outcome line for the original kept by Replace · keep original.
 const KEPT: &str = "1 file was kept in a recovery folder; Details shows where.";
@@ -55,7 +64,7 @@ pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_pointer_only",
         area: "journeys",
-        summary: "A session by mouse only: double clicks into and out of a folder, a rubber band, the footer's F5 and the dialog's Copy with Replace, a drag onto a folder row (Move), header sorting, Jobs and its Close, F8 to a private Trash by clicks, and a drop within 400 ms cancelled (pending).",
+        summary: "A session by mouse only: double clicks into and out of a folder, a rubber band, the footer's F5 and the dialog's Copy with Replace, a drag onto a folder row (Move), header sorting, Jobs and its Close, F8 to a private Trash by clicks; on the held Slint clock a drop 250 ms after the press cancelled with its note and one 450 ms after it moving the folder; a wheel of 1.5 rows drawn without a blank band and resting on a whole row; a double click on the first fully visible row.",
         run: pointer_only,
         timeout: TIMEOUT,
     }
@@ -93,6 +102,10 @@ fn run(context: &mut Context) -> Result<(), String> {
     }
     journey::write(&other.join("b-two.txt"), "two old\n")?;
     std::fs::create_dir(other.join("into")).map_err(|error| files::io_error(&other, error))?;
+    for row in 0..ROWS {
+        let folder = home.join("rows").join(format!("r{row:02}"));
+        std::fs::create_dir_all(&folder).map_err(|error| files::io_error(&folder, error))?;
+    }
     let mut app = App::start(Config::new(&home, &other));
     let mut journey = Journey::default();
     let ended = steps(
@@ -447,38 +460,13 @@ fn steps(
         );
     }
 
-    // 8. A drop within 400 ms of the press.
+    // 8. Drops timed on the held clock: 250 ms after the press, then 450 ms.
     let start = app.copies.len();
-    let from = row(app, LEFT, "folder")?;
     let to = panel::list_spot(app, RIGHT);
-    let pressed = Instant::now();
-    let button = PointerEventButton::Left;
-    input::move_to(app.slint(), from);
-    app.slint().dispatch_event(WindowEvent::PointerPressed {
-        position: from,
-        button,
-    });
-    for step in 1..=8 {
-        let t = step as f32 / 8.0;
-        input::move_to(
-            app.slint(),
-            LogicalPosition::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t),
-        );
-        app.idle(Duration::from_millis(8));
-    }
-    while !matches!(app.window.get_drag_feedback_state(), 3..=5)
-        && pressed.elapsed() < Duration::from_millis(300)
-    {
-        input::move_to(app.slint(), to);
-        app.idle(Duration::from_millis(10));
-    }
-    let offered = app.window.get_drag_feedback_state();
-    app.slint().dispatch_event(WindowEvent::PointerReleased {
-        position: to,
-        button,
-    });
-    let released = pressed.elapsed();
-    app.idle(Duration::from_millis(1500));
+    let from = row(app, LEFT, "folder")?;
+    let quick = timed_drop(app, from, to, Duration::from_millis(250))?;
+    // Whatever a drop would start has begun once its events are applied.
+    app.pump(Duration::from_millis(300));
     let draft = !app.window.get_copy_draft_token().is_empty();
     let started = app.copies.len() - start;
     if draft {
@@ -491,25 +479,56 @@ fn steps(
         close_finished(app, "Move")?;
         close_finished(app, "Copy")?;
     }
-    journey.pending(
-        "a drop released within 400 ms of the press does nothing",
-        QUICK_DROP,
-        if !draft && started == 0 && home.join("folder").is_dir() && !other.join("folder").exists()
+    journey.check(
+        "a drop 250 ms after the press does nothing, and the panel says why",
+        if !draft
+            && started == 0
+            && quick.noted
+            && home.join("folder").is_dir()
+            && !other.join("folder").exists()
         {
             Ok(())
         } else {
             Err(format!(
-                "released after {} ms (feedback {offered}): dialog {draft}, {started} job(s), \
-                 folder/ moved {}",
-                released.as_millis(),
+                "feedback {}: dialog {draft}, {started} job(s), note {}, folder/ moved {}",
+                quick.offered,
+                quick.noted,
                 other.join("folder").exists()
             ))
         },
     );
+    let start = app.copies.len();
+    let from = row(app, LEFT, "folder")?;
+    let late = timed_drop(app, from, to, Duration::from_millis(450))?;
+    let moved = wait(
+        app,
+        "the 450 ms drop to start a move or ask",
+        STEP,
+        move |app| app.copies.len() > start || !app.window.get_copy_draft_token().is_empty(),
+    )
+    .and_then(|()| {
+        if !app.window.get_copy_draft_token().is_empty() {
+            click(app, "Move")?;
+        }
+        wait(app, "the 450 ms drop's move to end", STEP, move |app| {
+            files::job(app, start).is_some_and(|job| job.state.is_terminal())
+        })
+    })
+    .and_then(|()| journey::holds(&other.join("folder/x.txt"), "x\n"))
+    .and_then(|()| journey::absent(&home.join("folder")));
+    journey.check(
+        "the same drop 450 ms after the press moves the folder",
+        moved.map_err(|error| format!("feedback {}: {error}", late.offered)),
+    );
+    close_finished(app, "Move")?;
     journey.step(format!(
-        "a drop {} ms after the press (feedback {offered}): dialog {draft}, {started} job(s)",
-        released.as_millis()
+        "on the held clock a drop 250 ms after the press (feedback {}) did nothing and noted \
+         {QUICK_NOTE:?}; 450 ms after it (feedback {}) it moved folder/",
+        quick.offered, late.offered
     ));
+
+    // 9. A wheel of one and a half rows, its rest on a whole row, a double click.
+    wheel_and_rest(app, journey, home)?;
     journey.check(
         "nothing is left open",
         if files::main_idle(app) && files::shown_notice(app).is_none() {
@@ -523,5 +542,238 @@ fn steps(
         },
     );
     app.screenshot(context, "done", "After the mouse-only session");
+    Ok(())
+}
+
+/// What a drop timed on the held clock showed.
+struct TimedDrop {
+    /// The drop feedback before the release (3 Copy, 4 Move, 5 not allowed).
+    offered: i32,
+    /// Whether the left panel's status line then said the drag was released too soon.
+    noted: bool,
+}
+
+/// Press at `from`, move to `to` and release there `held_for` after the press on the
+/// Slint clock, which is held meanwhile: the drag rule counts the clock's time only, so
+/// the real time synthetic events take does not count, while the Engine prepares the
+/// drag in real time. The clock runs again afterwards.
+fn timed_drop(
+    app: &mut App,
+    from: LogicalPosition,
+    to: LogicalPosition,
+    held_for: Duration,
+) -> Result<TimedDrop, String> {
+    panel::wait_input(app);
+    let button = PointerEventButton::Left;
+    app.hold_clock();
+    input::move_to(app.slint(), from);
+    app.slint().dispatch_event(WindowEvent::PointerPressed {
+        position: from,
+        button,
+    });
+    // The list's press delay, then small, mostly horizontal moves, a frame each.
+    let mut elapsed = Duration::from_millis(150);
+    app.advance(elapsed);
+    const MOVES: u32 = 8;
+    for step in 1..=MOVES {
+        let t = step as f32 / MOVES as f32;
+        input::move_to(
+            app.slint(),
+            LogicalPosition::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t),
+        );
+        app.advance(app::FRAME);
+        elapsed += app::FRAME;
+    }
+    // The Engine answers in real time; the bridge publishes the target on its poll,
+    // which runs on the clock: let both happen, a millisecond of the clock at a time,
+    // keeping a frame before the release.
+    let deadline = std::time::Instant::now() + STEP;
+    while !matches!(app.window.get_drag_feedback_state(), 3..=5)
+        && std::time::Instant::now() < deadline
+    {
+        input::move_to(app.slint(), to);
+        app.pump(app::FRAME);
+        if elapsed + app::FRAME < held_for {
+            app.advance(Duration::from_millis(1));
+            elapsed += Duration::from_millis(1);
+        }
+    }
+    app.advance(held_for.saturating_sub(elapsed));
+    let offered = app.window.get_drag_feedback_state();
+    app.slint().dispatch_event(WindowEvent::PointerReleased {
+        position: to,
+        button,
+    });
+    app.advance(Duration::from_millis(50));
+    let noted = app
+        .window
+        .get_left_details()
+        .iter()
+        .any(|field| field.value == QUICK_NOTE);
+    app.resume_clock();
+    Ok(TimedDrop { offered, noted })
+}
+
+/// Whether a row of the left list is shown across the list's top edge (a row cut by the
+/// edge counts): a list that leaves the band above its first whole row undrawn has none.
+fn top_edge_row(app: &App) -> bool {
+    let window = &app.window;
+    let (left, right) = (
+        window.get_left_list_left(),
+        window.get_left_list_left() + window.get_left_list_width(),
+    );
+    let edge = window.get_left_list_top() + 0.5;
+    inspect::controls(app.slint(), AccessibleRole::ListItem)
+        .iter()
+        .map(|(_, item)| inspect::rect(item))
+        .any(|(x, y, w, h)| x + w / 2.0 >= left && x + w / 2.0 < right && y <= edge && y + h > edge)
+}
+
+/// The distinct colours of the left list's top band in a frame rendered now: the rows
+/// of pixels from the list's top edge down half a row, across the list but its
+/// scrollbar. A band no row is drawn in is one plain colour.
+fn top_band_colours(app: &App) -> usize {
+    let (width, height, pixels) = app::render(&app.main);
+    let scale = app.slint().scale_factor();
+    let window = &app.window;
+    let left = ((window.get_left_list_left() + 2.0) * scale) as usize;
+    let right = ((window.get_left_list_left() + window.get_left_list_width() - 18.0) * scale)
+        .max(0.0) as usize;
+    let top = (window.get_left_list_top() * scale) as usize;
+    let bottom =
+        ((window.get_left_list_top() + window.get_left_view_row_height() / 2.0) * scale) as usize;
+    let mut colours = BTreeSet::new();
+    for y in top..bottom.min(height) {
+        for x in left..right.min(width) {
+            let pixel = pixels[y * width + x];
+            colours.insert((pixel.r, pixel.g, pixel.b));
+        }
+    }
+    colours.len()
+}
+
+/// Step 9: in `rows/`, a wheel of one and a half rows on the held clock; every frame
+/// until the list rests is drawn to its top edge; the rest is on a whole row; a double
+/// click opens the first fully visible row.
+fn wheel_and_rest(app: &mut App, journey: &mut Journey, home: &Path) -> Result<(), String> {
+    let position = row(app, LEFT, "rows")?;
+    panels::double_click(app, position);
+    let folder = home.join("rows");
+    wait(app, "a double click to open rows/", STEP, |app| {
+        app.location(LEFT).as_deref() == Some(folder.as_path()) && !app.loading(LEFT)
+    })?;
+    let height = app.window.get_left_view_row_height();
+    let window = &app.window;
+    let middle = LogicalPosition::new(
+        window.get_left_list_left() + window.get_left_list_width() / 2.0,
+        window.get_left_list_top() + window.get_left_list_height() / 2.0,
+    );
+    app.hold_clock();
+    input::move_to(app.slint(), middle);
+    app.slint().dispatch_event(WindowEvent::PointerScrolled {
+        position: middle,
+        delta_x: 0.0,
+        delta_y: -1.5 * height,
+    });
+    app.settle();
+    // Slint eases a wheel's delta in over the clock; the list then holds still for the
+    // rest check (100 ms) before it glides to a whole row (200 ms).
+    let offset = |app: &App| -app.window.get_left_list_content_y();
+    let part = |y: f32| y.rem_euclid(height);
+    let wheeled = 1.5 * height;
+    let mut cut = None;
+    let mut seen = Vec::new();
+    let mut blank = Vec::new();
+    let mut frames = 0;
+    let mut still = 0;
+    let mut last = offset(app);
+    // Two seconds of the clock at most; the list rests within half of that.
+    for _ in 0..200 {
+        frames += 1;
+        let now = offset(app);
+        if cut.is_none() && (now - wheeled).abs() <= 1.0 {
+            cut = Some(now);
+        }
+        if seen.last() != Some(&now) {
+            seen.push(now);
+        }
+        if !top_edge_row(app) {
+            blank.push(format!("{now:.1} px: no row at the list's top edge"));
+        } else if now >= height && part(now) <= 0.4 * height {
+            // A named folder row fills the band: its text must be in the pixels.
+            let colours = top_band_colours(app);
+            if colours <= 2 {
+                blank.push(format!("{now:.1} px: the top band is {colours} colour(s)"));
+            }
+        }
+        app.advance(app::FRAME);
+        let next = offset(app);
+        if (next - last).abs() < 0.01 {
+            still += 1;
+            if still >= 30 {
+                break;
+            }
+        } else {
+            still = 0;
+        }
+        last = next;
+    }
+    app.resume_clock();
+    let rest = offset(app);
+    journey.check(
+        "a wheel of 1.5 rows takes the list 1.5 rows down, a row cut at its top",
+        match cut {
+            Some(cut) if (1.0..height - 1.0).contains(&part(cut)) => Ok(()),
+            _ => Err(format!(
+                "{height} px rows; the offsets were {:?}",
+                seen.iter().take(40).collect::<Vec<_>>()
+            )),
+        },
+    );
+    let cut = cut.unwrap_or_default();
+    journey.check(
+        "every frame until the rest draws the list to its top edge",
+        if blank.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} of {frames} frames blank: {blank:?}",
+                blank.len()
+            ))
+        },
+    );
+    journey.check(
+        "the list rests on a whole row",
+        if still >= 30 && !(0.5..=height - 0.5).contains(&part(rest)) && rest > 0.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "offset {rest:.2} px with {height} px rows (still for {still} frames)"
+            ))
+        },
+    );
+    // Rows are listed `..` first; the first one whose top is in view.
+    let first = ((rest - 0.5) / height).ceil().max(0.0) as usize;
+    let name = app
+        .names(LEFT)
+        .get(first)
+        .cloned()
+        .ok_or_else(|| format!("no row {first} in rows/"))?;
+    let position = row(app, LEFT, &name)?;
+    panels::double_click(app, position);
+    let opened = folder.join(&name);
+    journey.check(
+        "a double click opens the first fully visible row",
+        wait(
+            app,
+            &format!("a double click to open {name}"),
+            STEP,
+            |app| app.location(LEFT).as_deref() == Some(opened.as_path()) && !app.loading(LEFT),
+        ),
+    );
+    journey.step(format!(
+        "rows/: a wheel of 1.5 rows cut a row at {cut:.1} px, {frames} frames drawn to the \
+         top, rest at {rest:.1} px ({height} px rows), a double click opened {name}"
+    ));
     Ok(())
 }

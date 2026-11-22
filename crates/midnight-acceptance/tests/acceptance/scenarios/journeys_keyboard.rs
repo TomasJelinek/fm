@@ -320,7 +320,9 @@ fn steps(
     // 6. Ctrl+G and Alt+Left.
     journey::key_focus(app, LEFT)?;
     key(app, &[Key::Control], "g");
-    app.idle(Duration::from_millis(100));
+    wait(app, "Ctrl+G to focus the path editor", STEP, |app| {
+        journey::focus_inside(app.slint(), AccessibleRole::TextInput, "Folder path")
+    })?;
     input::replace_text(app.slint(), &home.join("sub").display().to_string());
     key(app, &[], Key::Return);
     location(app, LEFT, &home.join("sub"))?;

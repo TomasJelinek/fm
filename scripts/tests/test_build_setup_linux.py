@@ -200,20 +200,91 @@ class LinuxBuildSetupTests(unittest.TestCase):
     def test_acceptance_script_rejects_invalid_arguments(self):
         shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
         for arguments in (("release", "debug"), ("--only",), ("--only", ""), ("--only", "a,-x"),
-                          ("--scale", "huge"), ("--unknown",)):
+                          ("--scale", "huge"), ("--unknown",), ("--run-dir",),
+                          ("--run-dir", "relative"), ("--run-dir", "/")):
             with self.subTest(arguments=arguments):
                 result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), *arguments],
                                         cwd=self.root.parent, env=self.environment, text=True,
                                         capture_output=True, timeout=20)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertEqual(self.calls(), "")
+        # A gated volume's folder must be absolute.
+        for variable in ("MIDNIGHT_ACCEPTANCE_FAT_DIR", "MIDNIGHT_ACCEPTANCE_NO_TMPFILE_DIR"):
+            with self.subTest(variable=variable):
+                result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), "--dry-run"],
+                                        cwd=self.root.parent, env=dict(self.environment, **{variable: "relative"}),
+                                        text=True, capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(f"{variable} relative is not an absolute folder", result.stderr)
+        runs = self.root / "runs & $(literal)"
+        fat = self.root / "fat volume"
         result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), "--dry-run",
-                                 "--only", "startup,ui_review", "--scale", "smoke", "--strict-review"],
-                                cwd=self.root.parent, env=self.environment, text=True,
-                                capture_output=True, timeout=20)
+                                 "--only", "startup,ui_review", "--scale", "smoke", "--strict-review",
+                                 "--run-dir", str(runs), "--stress"],
+                                cwd=self.root.parent,
+                                env=dict(self.environment, MIDNIGHT_ACCEPTANCE_FAT_DIR=str(fat)),
+                                text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[--] [startup] [ui_review] [--scale] [smoke] [--strict-review]", result.stdout)
+        lines = result.stdout.splitlines()
+        self.assertIn("[--] [startup] [ui_review] [--scale] [smoke] [--strict-review] [--stress]",
+                      result.stdout)
+        self.assertIn(f"Run folders: {runs}", lines)
+        self.assertIn("Stress sizes: on (MIDNIGHT_ACCEPTANCE_STRESS=1)", lines)
+        self.assertIn(f"Gated folder: MIDNIGHT_ACCEPTANCE_FAT_DIR = {fat}", lines)
         self.assertEqual(self.calls(), "")
+
+    def test_acceptance_script_exports_the_run_folder_stress_and_gated_folders(self):
+        shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
+        # The stub cargo records the variables the suite (and its staged children) inherit.
+        self.command("cargo", 'printf "cargo [%s] [%s] [%s]\\n" "${MIDNIGHT_ACCEPTANCE_RUN_DIR-unset}" '
+                     '"${MIDNIGHT_ACCEPTANCE_STRESS-unset}" "${MIDNIGHT_ACCEPTANCE_FAT_DIR-unset}" '
+                     '>> "$BUILD_SETUP_LOG"\n')
+        runs = self.root / "runs"
+        fat = self.root / "fat volume"
+        environment = dict(self.environment, MIDNIGHT_ACCEPTANCE_FAT_DIR=str(fat))
+        for name in ("MIDNIGHT_ACCEPTANCE_RUN_DIR", "MIDNIGHT_ACCEPTANCE_STRESS"):
+            environment.pop(name, None)
+        result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), "--run-dir", str(runs),
+                                 "--stress", "--only", "startup"],
+                                cwd=self.root.parent, env=environment, text=True,
+                                capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.calls().splitlines(), [f"cargo [{runs}] [1] [{fat}]"])
+        self.assertIn(f"Gated folder: MIDNIGHT_ACCEPTANCE_FAT_DIR = {fat}", result.stdout.splitlines())
+
+    def test_acceptance_script_stages_packages_from_elsewhere_in_its_own_build(self):
+        # A staged scenario makes its stage beside the packages' folder unless
+        # MIDNIGHT_ACCEPTANCE_STAGE_ROOT names another: packages outside the checkout
+        # (another checkout's or a shared build) must not get stages written beside them.
+        shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
+        self.command("cargo", 'printf "cargo [%s] [%s]\\n" "${MIDNIGHT_ACCEPTANCE_PLUGINS-unset}" '
+                     '"${MIDNIGHT_ACCEPTANCE_STAGE_ROOT-unset}" >> "$BUILD_SETUP_LOG"\n')
+        checkout = self.root.resolve()
+        shared = self.root.parent / "shared build" / "debug"
+        own = checkout / "_build" / "release"
+        stages = self.root.parent / "my stages"
+        environment = {name: value for name, value in self.environment.items()
+                       if name not in ("MIDNIGHT_ACCEPTANCE_PLUGINS", "MIDNIGHT_ACCEPTANCE_STAGE_ROOT")}
+        for variables, plugins, stage_root in (
+                ({"MIDNIGHT_ACCEPTANCE_PLUGINS": str(shared)}, shared, checkout / "_build"),
+                ({"MIDNIGHT_ACCEPTANCE_PLUGINS": str(own)}, own, None),
+                ({"MIDNIGHT_ACCEPTANCE_PLUGINS": str(shared),
+                  "MIDNIGHT_ACCEPTANCE_STAGE_ROOT": str(stages)}, shared, stages)):
+            with self.subTest(variables=variables):
+                self.log.unlink(missing_ok=True)
+                for arguments in (("--dry-run",), ("--only", "startup")):
+                    result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), *arguments],
+                                            cwd=self.root.parent, env=dict(environment, **variables),
+                                            text=True, capture_output=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    if arguments == ("--dry-run",):
+                        stage_lines = [line for line in result.stdout.splitlines()
+                                       if line.startswith("Stages: ")]
+                        self.assertEqual(stage_lines, [] if stage_root is None else [f"Stages: {stage_root}"])
+                self.assertEqual(self.calls().splitlines(),
+                                 [f"cargo [{plugins}] [{stage_root or 'unset'}]"])
+                if stage_root is not None:
+                    self.assertTrue(Path(stage_root).is_dir())
 
     def test_invalid_or_conflicting_arguments_stop_before_any_tool(self):
         for arguments in (("release", "debug"), ("clean", "--install-deps"),

@@ -24,6 +24,9 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 const LEFT: PaneId = PaneId::Left;
 const RIGHT: PaneId = PaneId::Right;
 const STEP: Duration = Duration::from_secs(30);
+/// How long a key that should do nothing gets to open a dialog all the same: its handler
+/// runs at once, and an Engine round trip after it takes far less.
+const INERT: Duration = Duration::from_millis(800);
 const OPEN_LIMIT: Duration = Duration::from_secs(60);
 pub const TIMEOUT: Duration = Duration::from_secs(12 * 60);
 const RED: (u8, u8, u8) = (0xFF, 0x20, 0x50);
@@ -112,16 +115,20 @@ fn red(app: &App, pane: PaneId, name: &str) -> bool {
 }
 
 /// Press a key in the focused left list; whether the Copy dialog opened (closed again
-/// with Escape unless `keep`), and the mean luma of the dialog's area.
+/// with Escape unless `keep`), and the mean luma of the dialog's area. The dialog opens
+/// in the key's own handler: when it is `expected` the wait is a hang guard, otherwise
+/// [`INERT`] after the key decides that the key did nothing.
 fn opens_copy(
     app: &mut App,
     modifiers: &[Key],
     key: impl Into<SharedString>,
     keep: bool,
+    expected: bool,
 ) -> Result<Option<f32>, String> {
     panel::select_row(app, LEFT, "report.log")?;
     input::chord(app.slint(), modifiers, key);
-    let opened = wait(app, "the Copy dialog", Duration::from_millis(800), |app| {
+    let limit = if expected { STEP } else { INERT };
+    let opened = wait(app, "the Copy dialog", limit, |app| {
         !app.window.get_copy_draft_token().is_empty()
     })
     .is_ok();
@@ -219,7 +226,10 @@ fn rebind(app: &mut App) -> Result<(), String> {
     let field = options::reveal(app, AccessibleRole::TextInput, CAPTURE)?;
     options::click_item(app, &field)?;
     input::chord(app.slint(), &[Key::Control, Key::Alt], "y");
-    app.idle(Duration::from_millis(60));
+    // A wrong capture is reported below, with what was captured.
+    let _ = wait(app, "Ctrl+Alt+Y to be captured", STEP, |app| {
+        options::value(app, AccessibleRole::TextInput, CAPTURE).as_deref() == Some(NEW_KEY)
+    });
     let captured = options::value(app, AccessibleRole::TextInput, CAPTURE);
     if captured.as_deref() != Some(NEW_KEY) || used_by(app) != "Unassigned" {
         return Err(format!(
@@ -243,7 +253,8 @@ fn before_restart(
 ) -> Result<Baseline, String> {
     // The default appearance.
     let panel = Frame::of(app).luma(options::list_area(app, LEFT));
-    let dialog = opens_copy(app, &[], Key::F5, false)?.ok_or("F5 does not open Copy by default")?;
+    let dialog =
+        opens_copy(app, &[], Key::F5, false, true)?.ok_or("F5 does not open Copy by default")?;
     let baseline = Baseline { panel, dialog };
     journey.check(
         "report.log is not red before the rule",
@@ -277,7 +288,7 @@ fn before_restart(
     // 2. At once.
     check_effects(app, context, journey, &baseline, "at once")?;
     let start = app.copies.len();
-    match opens_copy(app, &[Key::Control, Key::Alt], "y", true)? {
+    match opens_copy(app, &[Key::Control, Key::Alt], "y", true, true)? {
         None => journey.check("Ctrl+Alt+Y opens Copy", Err("no dialog".into())),
         Some(_) => {
             input::key(app.slint(), Key::Return);
@@ -339,14 +350,14 @@ fn check_effects(
     );
     journey.check(
         &format!("{when}: F5 no longer opens Copy"),
-        match opens_copy(app, &[], Key::F5, false)? {
+        match opens_copy(app, &[], Key::F5, false, false)? {
             None => Ok(()),
             Some(_) => Err("it does".into()),
         },
     );
     journey.check(
         &format!("{when}: Ctrl+Alt+Y opens a light Copy dialog"),
-        match opens_copy(app, &[Key::Control, Key::Alt], "y", false)? {
+        match opens_copy(app, &[Key::Control, Key::Alt], "y", false, true)? {
             None => Err("Ctrl+Alt+Y opened nothing".into()),
             Some(luma) if luma > baseline.dialog + 60.0 => Ok(()),
             Some(luma) => Err(format!(

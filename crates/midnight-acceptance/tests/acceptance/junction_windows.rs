@@ -1,12 +1,13 @@
 //! Native NTFS directory junctions for the Windows scenarios, set with
 //! `FSCTL_SET_REPARSE_POINT` as SECURITY.md requires of test fixtures: no shell or
 //! command text sees the paths, so `%`, `!`, `^` and `&` in them are only data. This is
-//! the fixture of `crates/midnight-worker-platform/tests/support/junction_windows.rs`;
-//! the suite does not depend on `windows-sys`, so its one Win32 call is declared here.
-#![allow(
-    unsafe_code,
-    reason = "one audited DeviceIoControl call; the suite has no other unsafe code"
-)]
+//! the fixture of `crates/midnight-worker-platform/tests/support/junction_windows.rs`.
+//! Its one Win32 call is declared here: the suite's `windows` dependency carries only the
+//! features of the video scenario's Media Foundation encoder. The suite's other unsafe
+//! code, each with its own allowance, is the video scenario's `FSCTL_SET_COMPRESSION`
+//! call (`scenarios/viewers_video.rs`) and its Media Foundation calls
+//! (`scenarios/viewers_video_h264.rs`).
+#![allow(unsafe_code, reason = "one audited DeviceIoControl call")]
 use std::{
     ffi::c_void,
     fs::{self, OpenOptions},

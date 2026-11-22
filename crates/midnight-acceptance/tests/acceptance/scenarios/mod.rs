@@ -34,6 +34,7 @@ pub mod find_query;
 pub mod find_roots;
 pub mod find_support;
 pub mod find_viewers;
+pub mod harness_checks;
 pub mod journeys_archive;
 pub mod journeys_conflicts;
 pub mod journeys_find;
@@ -137,6 +138,7 @@ pub fn all() -> &'static [Scenario] {
                 run: startup,
                 timeout: minutes(2),
             },
+            harness_checks::scenario(),
             Scenario {
                 name: "startup_paths",
                 area: "panels",
@@ -217,7 +219,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "files_links",
                 area: "transfers",
-                summary: "Links under F5 and F6: cleared, every link arrives as a link with the same target; checked, folder and file links are followed and a dangling or cyclic link stays a link with a note; a self-linked folder copies once; F6 moves each link itself.",
+                summary: "Links under F5 and F6 through the dialog's Links choice (by keys, pointer and the open list): Keep links as links, proposed on a fixed local folder, recreates every link with the same target; Copy the files links point to follows folder and file links, and a dangling or cyclic link stays a link with a note; a self-linked folder copies once; F6 keeping links moves each link itself. Windows: junctions recreated as junctions, or followed.",
                 run: files_links::links,
                 timeout: minutes(10),
             },
@@ -315,7 +317,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "files_copy_options",
                 area: "transfers",
-                summary: "The Copy/Move dialog: summary, destination, options and policy; refused destinations; exact times for files only; full and size-and-samples verification from Options; many small files.",
+                summary: "The Copy/Move dialog: summary, destination, options and policy; the Links choice proposing Keep links as links on a fixed local folder, no former link check box; refused destinations; exact times for files only; full and size-and-samples verification from Options; many small files.",
                 run: files_options::copy_options,
                 timeout: minutes(10),
             },
