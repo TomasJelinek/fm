@@ -83,6 +83,34 @@ impl fmt::Display for SandboxUnavailable {
 }
 impl std::error::Error for SandboxUnavailable {}
 
+/// The browser could not start because the system lacks shared libraries that it needs
+/// (Linux: the dynamic loader stopped it before its first message). The message names the
+/// libraries and how to install them; show it instead of a transport error. Returned by
+/// [`Process::startup_failure`].
+#[derive(Debug)]
+pub struct LibrariesMissing {
+    libraries: Vec<String>,
+    message: String,
+}
+impl LibrariesMissing {
+    pub fn new(libraries: Vec<String>, message: impl Into<String>) -> Self {
+        Self {
+            libraries,
+            message: message.into(),
+        }
+    }
+    /// The missing libraries' names (sonames), in the order the loader needs them.
+    pub fn libraries(&self) -> &[String] {
+        &self.libraries
+    }
+}
+impl fmt::Display for LibrariesMissing {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+impl std::error::Error for LibrariesMissing {}
+
 /// Only a host-validated, private installed CEF bootstrap may be launched here.
 /// The plugin must use Chromium's sandbox; this profile does not grant renderer authority.
 pub fn spawn(executable: &Path) -> io::Result<Browser> {

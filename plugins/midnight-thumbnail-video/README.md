@@ -131,14 +131,20 @@ Nothing is bundled, and the helpers link neither family: both are loaded at run 
   tables against the headers again.
 - FFmpeg reads only through a custom AVIO context over the brokered capture, with an
   empty protocol whitelist, a refusing `io_open`, the container whitelist of the
-  registered extensions, one decoder thread and the bundled profile's pixel bound.
+  registered extensions (MP4/MOV, Matroska/WebM, AVI, Ogg and ASF for `.wmv`/`.asf`),
+  one decoder thread and the bundled profile's pixel bound.
 - Then GStreamer 1.x, declared by hand against its stable 1.x C ABI. A fixed list of
   plugins is loaded from the folder beside libgstreamer: base (typefind, converters,
   Ogg, Theora, Vorbis, Opus), good (MP4/MOV, Matroska/WebM, AVI, audio parsers, VP8/VP9,
   FLAC, mpg123), bad (video parsers, OpenH264, libde265, dav1d, AOM AV1, faad, fdk-aac,
-  DTS), ugly (a52dec), and gst-libav only when no distribution FFmpeg was loaded.
-  Device, hardware-decoder, network, display and capture plugins are never loaded, and
-  neither are the user's plugin folders: there is no plugin registry at all.
+  DTS), ugly (a52dec, and the ASF demuxer `asf` for `.wmv`/`.asf`), and gst-libav only
+  when no distribution FFmpeg was loaded; Windows Media Video (WMV 1/2/3, VC-1) and
+  Windows Media Audio have no GStreamer decoder but gst-libav's. The `asf` plugin also
+  registers an RTSP extension and an RTP depayloader, which no graph here selects (they
+  take no demuxed caps, and no network source is loaded). A test checks that every
+  extension in `thumbnailer.json` has its container in both lists. Device,
+  hardware-decoder, network, display and capture plugins are never loaded, and neither
+  are the user's plugin folders: there is no plugin registry at all.
 - The GStreamer graph runs on the helper's one thread with no pipeline, bus, queue,
   decodebin or appsrc (each starts threads). The helper owns a source pad and pushes
   the brokered bytes into the demuxer; demuxing, parsing, decoding and conversion run
@@ -167,8 +173,10 @@ beside them can be found by soname (the packaging script unsets `RUSTFLAGS`):
 
 Test them the same way, with `--test-threads=1`. The tests encode their fixtures at
 test time with the distribution's `ffmpeg` command (H.264 + AAC MP4, also with the
-index after the media, HEVC + AAC Matroska, MPEG-4 Part 2 + MP3 AVI, a rotated MP4, a
-4K H.264 MP4); none is committed. Each test that loads a family runs in a forked
+index after the media, HEVC + AAC Matroska, MPEG-4 Part 2 + MP3 AVI, Windows Media
+Video 8 + Windows Media Audio 2 in `.wmv` and version 7 + 1 in `.asf`, a rotated MP4, a
+4K H.264 MP4); none is committed. FFmpeg encodes no WMV 9 or VC-1, so those decoders
+are not exercised. Each test that loads a family runs in a forked
 child, because a process maps one FFmpeg series; some children enter the real worker
 sandbox first. `tests/system_linux.rs` runs the built helpers as the host does and
 checks their dynamic section. Optional coverage: `MIDNIGHT_TEST_FFMPEG_DIRS` (folders

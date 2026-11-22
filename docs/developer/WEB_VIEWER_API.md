@@ -141,6 +141,19 @@ other failures keep Install… available; a pkexec that became untrusted leaves 
 manual instructions; closing the window cancels a pending prompt. A profile the browser
 gets from the installed policy or inherits from the application allows the namespaces,
 so it is never reported. Other launch failures keep the generic error and offer nothing.
+A browser that stops before it reports Ready may not have started at all: once the
+watchdog has waited for its process tree, the host session asks the platform why
+(`browser::Process::startup_failure`). On Linux, when the browser ended with the dynamic
+loader's status 127, that reads the ELF dynamic sections of the viewer executable and of
+every library it needs, looked up as glibc's loader looks them up (DT_RPATH chain or
+DT_RUNPATH, `/etc/ld.so.cache`, default folders), without executing anything, and returns
+`browser::LibrariesMissing`, which names the missing libraries and the command that
+installs them for the running distribution family (apt package names for
+Debian/Ubuntu, soname capabilities for dnf and zypper; in a source checkout also
+`scripts/setup-linux.sh --install`). The host shows that message instead of "Chromium
+transport stopped: failed to fill whole buffer"; it is no sandbox refusal and offers
+nothing. A browser that reported Ready keeps its own error, and Windows reports no such
+reason.
 IME composition/commit pass CEF's required invalid replacement range (a synthetic
 commit is covered by the opt-in native fixture); physical IME input, native Chromium
 Wayland and other display/system policies still need their own qualification. Windows measurements do not establish Linux frame pacing.

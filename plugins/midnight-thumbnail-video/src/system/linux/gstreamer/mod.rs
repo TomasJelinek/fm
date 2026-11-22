@@ -39,7 +39,7 @@ use std::{
 pub(super) use pipeline::Refusal;
 
 /// Upstream plugin names (`libgst<name>.so`) that may be loaded, and what they provide.
-const PLUGINS: &[&str] = &[
+pub(super) const PLUGINS: &[&str] = &[
     // GStreamer core: capsfilter.
     "coreelements",
     // gst-plugins-base: typefinding, converters, Ogg, Theora, Vorbis, Opus.
@@ -70,8 +70,11 @@ const PLUGINS: &[&str] = &[
     "faad",
     "fdkaac",
     "dtsdec",
-    // gst-plugins-ugly: AC-3.
+    // gst-plugins-ugly: AC-3; the ASF demuxer (`.wmv`, `.asf`), whose plugin also registers
+    // an RTSP extension and an RTP depayloader that no graph here selects: they take no
+    // demuxed caps, and no network source is loaded.
     "a52dec",
+    "asf",
     // gst-libav: the FFmpeg decoders (only when no distribution FFmpeg was loaded).
     "libav",
 ];

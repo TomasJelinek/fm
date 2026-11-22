@@ -2,6 +2,8 @@
 use super::Browser;
 #[path = "browser_cgroup_linux.rs"]
 mod cgroup;
+#[path = "browser_libraries_linux.rs"]
+mod libraries;
 #[path = "browser_sandbox_linux.rs"]
 mod sandbox;
 #[path = "browser_temporary_linux.rs"]
@@ -13,7 +15,7 @@ use std::{
     fs::File,
     io,
     os::{fd::OwnedFd, unix::process::CommandExt},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
 };
 
@@ -21,6 +23,7 @@ pub struct Process {
     child: Child,
     cgroup: cgroup::Session,
     temporary: temporary::Directory,
+    executable: PathBuf,
 }
 impl Process {
     pub fn kill(&mut self) -> io::Result<()> {
@@ -33,6 +36,15 @@ impl Process {
         self.cgroup.wait_empty()?;
         self.temporary.tree_reaped();
         Ok(status.success())
+    }
+    /// Why a browser that ended before its first message could not start, once `wait`
+    /// returned: when the dynamic loader stopped it (exit status 127), the shared libraries
+    /// that the system lacks, as a [`LibrariesMissing`](super::LibrariesMissing) that names
+    /// them and how to install them. `None` for any other end, and while the browser runs.
+    /// Reads the executable's and its libraries' dynamic sections; runs nothing.
+    pub fn startup_failure(&mut self) -> Option<io::Error> {
+        let status = self.child.try_wait().ok().flatten()?;
+        libraries::diagnose(status, &self.executable)
     }
 }
 impl Drop for Process {
@@ -109,6 +121,7 @@ pub(super) fn spawn(
         child,
         cgroup,
         temporary,
+        executable: executable.to_path_buf(),
     };
     // Checked as soon as Chromium has executed, when its AppArmor label is final and long
     // before it tries its sandbox. Dropping the process stops and reaps its tree.

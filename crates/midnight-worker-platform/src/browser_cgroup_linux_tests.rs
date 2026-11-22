@@ -180,6 +180,7 @@ fn native_tree_membership_and_termination_include_independent_process_groups() {
         child,
         cgroup: session,
         temporary: super::super::temporary::Directory::new().unwrap(),
+        executable: "/bin/sh".into(),
     };
     let mut descendant = String::new();
     BufReader::new(process.child.stdout.take().unwrap())

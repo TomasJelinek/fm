@@ -32,7 +32,7 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [image](https://crates.io/crates/image/0.25.10) | 0.25.10 | MIT OR Apache-2.0 | midnight-engine, midnight-platform-common, midnight-platform-linux |
 | [indexmap](https://crates.io/crates/indexmap/2.14.2) | 2.14.2 | Apache-2.0 OR MIT | midnight-ui-input |
 | [lazy_static](https://crates.io/crates/lazy_static/1.5.1) | 1.5.1 | MIT OR Apache-2.0 | midnight-ui-input |
-| [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-linux, midnight-filesystem-native-macos, midnight-platform-linux, midnight-plugin-host, midnight-worker-sdk |
+| [libc](https://crates.io/crates/libc/0.2.191) | 0.2.191 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-linux, midnight-filesystem-native-macos, midnight-platform-linux, midnight-plugin-host, midnight-thumbnail-video, midnight-worker-sdk |
 | [libloading](https://crates.io/crates/libloading/0.8.9) | 0.8.9 | ISC | midnight-filesystem-network, midnight-media-output |
 | [lzma-rust2](https://crates.io/crates/lzma-rust2/0.21.0) | 0.21.0 | Apache-2.0 | midnight-fs-archive |
 | [md-5](https://crates.io/crates/md-5/0.10.6) | 0.10.6 | MIT OR Apache-2.0 | midnight-engine |
@@ -68,8 +68,8 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [unicase](https://crates.io/crates/unicase/2.10.0) | 2.10.0 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-core, midnight-engine, midnight-viewer-engine |
 | [unicode-segmentation](https://crates.io/crates/unicode-segmentation/1.13.3) | 1.13.3 | MIT OR Apache-2.0 | midnight-compare-engine, midnight-engine, midnight-ui, midnight-viewer-engine, midnight-viewer-render |
 | [unicode-width](https://crates.io/crates/unicode-width/0.2.3) | 0.2.3 | MIT OR Apache-2.0 | midnight-viewer-render |
-| [windows](https://crates.io/crates/windows/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-media-output, midnight-platform-windows |
-| [windows-core](https://crates.io/crates/windows-core/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-platform-windows |
+| [windows](https://crates.io/crates/windows/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-media-output, midnight-platform-windows, midnight-thumbnail-video |
+| [windows-core](https://crates.io/crates/windows-core/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-platform-windows, midnight-thumbnail-video |
 | [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-windows, midnight-filesystem-network, midnight-platform-windows, midnight-plugin-host, midnight-ui, midnight-worker-platform, midnight-worker-sdk |
 | [wl-clipboard-rs](https://crates.io/crates/wl-clipboard-rs/0.9.5) | 0.9.5 | MIT OR Apache-2.0 | midnight-platform-linux |
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | midnight-ui |

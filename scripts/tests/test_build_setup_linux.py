@@ -244,6 +244,56 @@ class LinuxBuildSetupTests(unittest.TestCase):
                 self.assertIn("[python3]", result.stdout)
                 self.assertEqual(self.calls(), "")
 
+    def install_commands(self, identifier):
+        result = self.run_script("scripts/setup-linux.sh", "--install", "--dry-run",
+                                 "--os-release", self.release_file(identifier))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), "")
+        return [line for line in result.stdout.splitlines()
+                if line.startswith("Command:") and "[install]" in line]
+
+    def test_install_plans_add_the_runtime_libraries_after_the_build_packages(self):
+        # The application's desktop libraries and every library of the HTML viewer's
+        # Chromium: Ubuntu 24.04 package names, and sonames as RPM package capabilities.
+        runtime = {
+            "ubuntu": ("libnss3", "libnspr4", "libasound2t64", "libatk1.0-0t64",
+                       "libatk-bridge2.0-0t64", "libatspi2.0-0t64", "libcups2t64", "libgbm1",
+                       "libdrm2", "libpango-1.0-0", "libcairo2", "libxcomposite1", "libxdamage1",
+                       "libxfixes3", "libxrandr2", "libxcursor1", "libxi6", "libvulkan1", "xdg-utils"),
+            "fedora": ("libnss3.so()(64bit)", "libnspr4.so()(64bit)", "libasound.so.2()(64bit)",
+                       "libatk-1.0.so.0()(64bit)", "libatk-bridge-2.0.so.0()(64bit)",
+                       "libcups.so.2()(64bit)", "libgbm.so.1()(64bit)", "libXi.so.6()(64bit)",
+                       "libvulkan.so.1()(64bit)"),
+        }
+        runtime["linuxmint"] = runtime["ubuntu"]
+        runtime["opensuse-leap"] = runtime["opensuse-tumbleweed"] = runtime["fedora"]
+        for identifier, libraries in runtime.items():
+            with self.subTest(identifier=identifier):
+                build, libraries_command = self.install_commands(identifier)
+                self.assertIn("[python3]", build)
+                for library in libraries:
+                    self.assertIn(f"[{library}]", libraries_command)
+                    self.assertNotIn(f"[{library}]", build)
+                # Each capability stays one literal argument.
+                self.assertNotIn("[(64bit)]", libraries_command)
+                self.assertNotIn("'", libraries_command)
+
+    def test_opted_in_setup_installs_runtime_libraries_only_after_the_build_packages(self):
+        result = self.run_script("scripts/setup-linux.sh", "--install", "--os-release",
+                                 self.release_file("fedora"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        installs = [line for line in self.calls().splitlines() if line.startswith("dnf [install]")]
+        self.assertEqual(len(installs), 2, self.calls())
+        self.assertIn("[gcc]", installs[0])
+        self.assertIn("[libnss3.so()(64bit)]", installs[1])
+        self.environment["BUILD_SETUP_EXIT"] = "44"
+        self.log.unlink()
+        result = self.run_script("scripts/setup-linux.sh", "--install", "--os-release",
+                                 self.release_file("opensuse-leap"))
+        self.assertEqual(result.returncode, 44, result.stderr)
+        self.assertEqual(self.calls().count("zypper [install]"), 1, self.calls())
+        self.assertNotIn("[libnss3.so()(64bit)]", self.calls())
+
     def test_os_release_is_data_and_supported_id_like_can_select_the_plan(self):
         marker = self.root / "unexpected-execution"
         result = self.run_script("scripts/setup-linux.sh", "--dry-run", "--os-release",

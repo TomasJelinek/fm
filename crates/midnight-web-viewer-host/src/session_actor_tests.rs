@@ -169,6 +169,8 @@ struct Process {
     /// The commands pipe of a stalled browser, open and unread.
     _stalled: Option<PipeReader>,
     kills: Arc<AtomicU64>,
+    /// Why the platform says this browser could not start, once.
+    failure: Option<io::Error>,
 }
 impl BrowserProcess for Process {
     fn kill(&mut self) -> io::Result<()> {
@@ -185,6 +187,9 @@ impl BrowserProcess for Process {
                 .map_err(|_| io::Error::other("the scripted browser panicked"))?;
         }
         Ok(true)
+    }
+    fn startup_failure(&mut self) -> Option<io::Error> {
+        self.failure.take()
     }
 }
 
@@ -219,6 +224,12 @@ fn painted(viewport: &api::Viewport) -> api::EventKind {
 }
 
 fn browser(script: Script) -> (Transport, Browser) {
+    browser_failing(script, None)
+}
+
+/// A scripted browser whose process reports `failure` as the platform's reason that it
+/// could not start.
+fn browser_failing(script: Script, failure: Option<io::Error>) -> (Transport, Browser) {
     let (commands, from_host, to_browser) = Pipe::ends();
     let (output, from_browser, to_host) = Pipe::ends();
     let events = Arc::new(Mutex::new(Events {
@@ -257,6 +268,7 @@ fn browser(script: Script) -> (Transport, Browser) {
             thread,
             _stalled: stalled,
             kills: kills.clone(),
+            failure,
         }),
     };
     (
@@ -846,6 +858,60 @@ fn the_session_thread_marks_itself_finished_before_its_last_wake() {
     );
 }
 
+const LIBRARIES_MISSING: &str = "The HTML viewer needs system libraries that are not \
+                                 installed: libnss3.so, libatk-1.0.so.0. Install them with: \
+                                 sudo apt install libnss3 libatk1.0-0t64";
+
+/// What the Linux platform reports for a browser that its dynamic loader stopped.
+fn libraries_missing() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        midnight_worker_platform::browser::LibrariesMissing::new(
+            vec!["libnss3.so".into(), "libatk-1.0.so.0".into()],
+            LIBRARIES_MISSING,
+        ),
+    )
+}
+
+#[test]
+fn a_browser_that_could_not_start_is_reported_with_the_platforms_reason() {
+    // Like a browser that its loader refused: its output ends before any message.
+    let (transport, scripted) = browser_failing(Script::Silent, Some(libraries_missing()));
+    locked(&scripted.events).pipe = None;
+    let harness = open_with(transport, scripted, document(), None, Limits::default());
+    harness.finished();
+    assert_eq!(harness.browser.kills(), 1);
+    assert_eq!(runtime_error(&harness.kinds()), LIBRARIES_MISSING);
+    assert_eq!(harness.session.sandbox_refusal(), None);
+    // Without a reason from the platform, the stopped transport is reported as before.
+    let (transport, scripted) = browser(Script::Silent);
+    locked(&scripted.events).pipe = None;
+    let harness = open_with(transport, scripted, document(), None, Limits::default());
+    harness.finished();
+    let kinds = harness.kinds();
+    let message = runtime_error(&kinds);
+    assert!(
+        message.starts_with("Chromium transport stopped"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_browser_that_was_ready_keeps_its_own_failure() {
+    // Its libraries were loaded: whatever the platform would say about them, it started.
+    let (transport, scripted) = browser_failing(Script::Ready, Some(libraries_missing()));
+    let harness = open_with(transport, scripted, document(), None, Limits::default());
+    harness.shown();
+    locked(&harness.browser.events).pipe = None;
+    harness.finished();
+    let kinds = harness.kinds();
+    let message = runtime_error(&kinds);
+    assert!(
+        message.starts_with("Chromium transport stopped"),
+        "{message}"
+    );
+}
+
 #[test]
 fn a_denied_sandbox_is_reported_with_its_own_fix_and_other_launch_failures_keep_the_prefix() {
     let fix = "The HTML viewer needs permission for Chromium's sandbox on this system. \
@@ -858,6 +924,11 @@ fn a_denied_sandbox_is_reported_with_its_own_fix_and_other_launch_failures_keep_
         midnight_worker_platform::browser::SandboxUnavailable::new(fix, refusal.clone()),
     );
     assert_eq!(startup_error(&denied), (fix.to_owned(), Some(refusal)));
+    assert_eq!(
+        startup_error(&libraries_missing()),
+        (LIBRARIES_MISSING.to_owned(), None),
+        "missing libraries are named without the generic prefix and are no sandbox refusal"
+    );
     let missing = io::Error::new(io::ErrorKind::NotFound, "No such file or directory");
     assert_eq!(
         startup_error(&missing),

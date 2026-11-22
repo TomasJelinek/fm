@@ -229,6 +229,16 @@ fn encode(name: &str) -> Option<Vec<u8>> {
             push(&colours);
             push(&["-c:v", "mpeg4", "-g", "25", "-c:a", "libmp3lame"]);
         }
+        // Windows Media Video 8 and Audio 2, and version 7 and 1, in ASF: the containers
+        // of `.wmv` and `.asf` files. FFmpeg encodes no WMV 9 or VC-1, which it decodes.
+        "wmv2-wmav2.wmv" => {
+            push(&colours);
+            push(&["-c:v", "wmv2", "-g", "25", "-c:a", "wmav2"]);
+        }
+        "wmv1-wmav1.asf" => {
+            push(&colours);
+            push(&["-c:v", "wmv1", "-g", "25", "-c:a", "wmav1", "-f", "asf"]);
+        }
         "rotated.mp4" => {
             let base = scratch().join("rotation-base.mp4");
             let status = Command::new(&ffmpeg)
@@ -406,6 +416,13 @@ fn play(decoders: &Decoders, bytes: Vec<u8>) -> io::Result<Session> {
 
 /// Checks shared by both families on the four-colour H.264/AAC fixture.
 fn check_four_colour_session(seen: &Session) -> Result<(), String> {
+    check_four_colours_from(seen, 0)
+}
+
+/// The checks of `check_four_colour_session` for a fixture whose first video frame is at
+/// `start` milliseconds of the container's timeline: 0 in MP4; one audio frame (46 ms)
+/// in ASF as FFmpeg writes it, which starts the video after the first audio frame.
+fn check_four_colours_from(seen: &Session, start: i64) -> Result<(), String> {
     check(seen.size == (320, 240), || format!("size {:?}", seen.size))?;
     check(
         seen.duration
@@ -418,7 +435,7 @@ fn check_four_colour_session(seen: &Session) -> Result<(), String> {
     check(seen.frames.len() == 30, || {
         format!("{} frames", seen.frames.len())
     })?;
-    check(seen.frames[0] == (0, 'r'), || {
+    check(seen.frames[0] == (start, 'r'), || {
         format!("first frame {:?}", seen.frames[0])
     })?;
     check(
@@ -432,7 +449,7 @@ fn check_four_colour_session(seen: &Session) -> Result<(), String> {
             )
         },
     )?;
-    check(seen.frames[25] == (1000, 'g'), || {
+    check(seen.frames[25] == (start + 1000, 'g'), || {
         format!("frame 25 {:?}", seen.frames[25])
     })?;
     check(seen.pcm_frames == 48_000, || {
@@ -441,7 +458,9 @@ fn check_four_colour_session(seen: &Session) -> Result<(), String> {
     check(seen.pcm_peak > 2_000, || {
         format!("PCM peak {}", seen.pcm_peak)
     })?;
-    check(seen.after_seek.first() == Some(&(2520, 'b')), || {
+    // The first frame at or after the 2.5 s target (2520 ms from a start at 0).
+    let after = start + (2500 - start + 39) / 40 * 40;
+    check(seen.after_seek.first() == Some(&(after, 'b')), || {
         format!("after seek {:?}", seen.after_seek)
     })?;
     check(seen.pcm_after_seek == Some(0), || {
@@ -558,8 +577,123 @@ fn hevc_mpeg4_and_mp3_decode_through_the_distribution_ffmpeg() {
     }
 }
 
+/// The extensions that `thumbnailer.json` routes to the video helpers.
+fn routed_extensions() -> Vec<String> {
+    let manifest = include_str!("../../../thumbnailer.json");
+    let list = manifest
+        .split_once("\"extensions\"")
+        .and_then(|(_, rest)| rest.split_once('['))
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list)
+        .expect("thumbnailer.json lists extensions");
+    list.split(',')
+        .map(|item| item.trim().trim_matches('"').to_owned())
+        .collect()
+}
+
+#[test]
+fn every_routed_extension_has_its_demuxer_in_both_families() {
+    let whitelist: Vec<&str> = ffmpeg::FORMATS.to_str().unwrap().split(',').collect();
+    let extensions = routed_extensions();
+    assert!(extensions.iter().any(|extension| extension == "wmv"));
+    for extension in &extensions {
+        // FFmpeg's demuxer name and GStreamer's plugin of each extension's container.
+        let (demuxer, plugin) = match extension.as_str() {
+            "webm" | "mkv" | "mk3d" => ("matroska", "matroska"),
+            "avi" => ("avi", "avi"),
+            "ogg" | "ogv" => ("ogg", "ogg"),
+            "mp4" | "m4v" | "mov" | "qt" | "3gp" | "3g2" => ("mov", "isomp4"),
+            "wmv" | "asf" => ("asf", "asf"),
+            other => panic!("no container known for the routed extension {other}"),
+        };
+        assert!(
+            whitelist.contains(&demuxer),
+            "{extension}: FFmpeg {demuxer}"
+        );
+        assert!(
+            gstreamer::PLUGINS.contains(&plugin),
+            "{extension}: GStreamer {plugin}"
+        );
+    }
+}
+
+/// Thumbnails at the six sample positions and a playback session of the four-colour
+/// Windows Media fixture, checked as for H.264.
+fn decode_windows_media(decoders: &Decoders, bytes: Vec<u8>) -> Result<String, String> {
+    let mut colours = String::new();
+    for frame in 0..6 {
+        let thumbnail = thumbnail(decoders, &bytes, frame, 64).map_err(|error| describe(&error))?;
+        check((thumbnail.width, thumbnail.height) == (64, 48), || {
+            format!("thumbnail size {}x{}", thumbnail.width, thumbnail.height)
+        })?;
+        colours.push(colour(thumbnail.width, thumbnail.height, &thumbnail.rgba));
+    }
+    check(colours == "rggbbw", || {
+        format!("thumbnail colours {colours}")
+    })?;
+    let seen = play(decoders, bytes).map_err(|error| describe(&error))?;
+    // FFmpeg's ASF muxer starts the video one Windows Media Audio frame (2048 samples at
+    // 44.1 kHz, 46 ms in ASF's millisecond time base) after the audio.
+    check_four_colours_from(&seen, 46)?;
+    Ok(format!("{colours} {seen:?}"))
+}
+
+#[test]
+fn windows_media_in_asf_decodes_through_the_distribution_ffmpeg() {
+    for name in ["wmv2-wmav2.wmv", "wmv1-wmav1.asf"] {
+        let Some(bytes) = fixture(name) else { continue };
+        let result = in_child(move |_| {
+            let decoders = Decoders::load(&options(Search::System, Search::Hidden));
+            check(decoders.ffmpeg.is_some(), || {
+                "no distribution FFmpeg".into()
+            })?;
+            decode_windows_media(&decoders, bytes)
+        });
+        result.unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Tests: GStreamer, with the FFmpeg libraries hidden from the helper
+
+#[test]
+fn without_ffmpeg_gstreamer_decodes_windows_media_with_its_asf_demuxer() {
+    let Some(bytes) = fixture("wmv2-wmav2.wmv") else {
+        return;
+    };
+    let result = in_child(move |_| {
+        let decoders = Decoders::load(&options(Search::Hidden, Search::System));
+        let gstreamer = decoders.gstreamer.ok_or("GStreamer is not installed")?;
+        let asf = gstreamer.plugins.contains(&"asf");
+        let libav = gstreamer.plugins.contains(&"libav");
+        if asf && libav {
+            return decode_windows_media(&decoders, bytes);
+        }
+        // Without gst-plugins-ugly's demuxer, or without gst-libav's decoders, the report
+        // is precise: a missing plugin for the container, or the codec.
+        let error = thumbnail(&decoders, &bytes, 0, 64)
+            .err()
+            .ok_or("decoded without the plugins")?;
+        let codec = if asf { Codec::Vc1 } else { Codec::Unknown };
+        check(
+            NoDecoder::find(&error)
+                == Some(NoDecoder {
+                    codec,
+                    tried: Tried::GSTREAMER,
+                }),
+            || describe(&error),
+        )?;
+        Ok(format!(
+            "skipped decoding: asf {asf}, libav {libav} (plugins {:?}, skipped {:?})",
+            gstreamer.plugins, gstreamer.skipped
+        ))
+    });
+    match result {
+        Ok(outcome) => eprintln!("{outcome}"),
+        Err(error) if error.contains("GStreamer is not installed") => eprintln!("skipped: {error}"),
+        Err(error) => panic!("{error}"),
+    }
+}
 
 #[test]
 fn without_ffmpeg_gstreamer_decodes_h264_and_aac_thumbnails_and_playback() {
@@ -764,9 +898,16 @@ fn gstreamer_loads_only_listed_plugins_and_never_touches_the_registry() {
             || "something was written below HOME".into(),
         )?;
         check(!loaded.plugins.is_empty(), || "no plugin loaded".into())?;
-        // Installed plugins that are not on the list stay unloaded: no network source, no
-        // VA-API decoder.
-        for element in [c"souphttpsrc", c"vah264dec", c"v4l2src", c"playbin"] {
+        // Installed plugins that are not on the list stay unloaded: no network source (the
+        // ASF plugin's RTSP extension has no RTSP source to extend), no VA-API decoder.
+        for element in [
+            c"souphttpsrc",
+            c"rtspsrc",
+            c"udpsrc",
+            c"vah264dec",
+            c"v4l2src",
+            c"playbin",
+        ] {
             // SAFETY: a factory lookup on the loaded GStreamer.
             check(!gstreamer::has_element(loaded, element), || {
                 format!("{element:?} is available")

@@ -184,6 +184,14 @@ been qualified with the native Linux package.
 Physical IME input and native Chromium Wayland remain unqualified. Other display/system
 policies require their own native qualification. macOS has no implementation here.
 
+The launcher links `libcef.so` through a literal `$ORIGIN` DT_RPATH; CEF's other shared
+libraries come from the distribution (NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, D-Bus, DRM/GBM,
+Expat, GLib, Pango/Cairo, X11/XCB and its extensions; `scripts/setup-linux.sh --install`
+installs them). When one is missing, the dynamic loader stops the launcher with status
+127 before its first message, and the host names the missing libraries and the command
+that installs them instead of a stopped transport, from the ELF dynamic sections of the
+launcher and its libraries ([web viewer API](../../docs/developer/WEB_VIEWER_API.md)).
+
 The host keeps the full profile path and separately owns a short private socket
 directory, retained through whole-tree reaping. This avoids Chromium's AF_UNIX path
 limit without truncating source/profile identities. Existing user delegation and

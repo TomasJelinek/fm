@@ -487,12 +487,34 @@ optional Windows-only windows 0.62.2 dependency (`Win32_Foundation`,
 `Win32_Media_MediaFoundation`, `Win32_System_Com`) behind its `acceptance` feature to
 write its H.264 test movie, so the application's `Cargo.lock` gains only that edge.
 The plugin's distribution notices (`scripts/thumbnail-notices.py`) now record the
-`system` feature too. No licence, selection or version changes. The generated tables
-(`docs/dependencies/`) were not recaptured for this change: at the next capture these
-packages' rows gain the `thumbnail-video` scope, and `midnight-thumbnail-video` is
-listed as declaring windows, windows-core and libc. Media Foundation and its decoders
-are Windows components, listed with the native runtimes below; nothing of them is
-bundled.
+`system` feature too. No licence, selection or version changes. Media Foundation and its
+decoders are Windows components, listed with the native runtimes below; nothing of them
+is bundled.
+
+On 22 November 2026 the plugin's libc requirement became the exact pin `=0.2.191`
+(default features off, `std` on, as in the native filesystem plugins); its lockfile
+already resolved 0.2.191, so `Cargo.lock` is unchanged, and
+`scripts/tests/test_plugin_dependency_pins.py` now checks that every independent plugin
+pins each registry dependency exactly to its locked version. The generated tables were
+recaptured for the `thumbnail-video` scope only, from fresh `--locked --offline`
+metadata/tree pairs with `--features system,playback-worker` (the capture instructions
+below now ask for these features; the default features had left the platform helpers'
+crates out): Windows on Windows (x86_64-pc-windows-msvc) and Linux on WSL Ubuntu 24.04
+(x86_64-unknown-linux-gnu), retained in `_build/verification/dependency-inventory/` of
+the working copy that made the change. The generator's own selection
+(`inventory()` with the Cargo tree selections) gave the scope's records; the committed
+`cargo-licenses.csv`, read back into the generator's rows, first reproduced all three
+committed tables byte for byte, and `render()` then wrote them with only this scope's
+changes: windows, windows-core, windows-collections, windows-future, windows-numerics,
+windows-threading, windows-implement, windows-interface, windows-result,
+windows-strings (Windows) and syn 2.0.119 gain the `thumbnail-video` scope, and
+`midnight-thumbnail-video` is listed as declaring windows, windows-core and libc. No row
+lost the scope, no record or licence changed, and the totals stay 665 records, 546 names
+and 70 direct records. The other 44 capture pairs were not retaken, so a full
+`--check` was not run. Every package of the platform helpers is MIT OR Apache-2.0 except
+unicode-ident 1.0.27, (MIT OR Apache-2.0) AND Unicode-3.0; on Linux the `system` feature
+adds only libc. `scripts/thumbnail-notices.py`, run on WSL with the released worker SDK,
+put each of them, with its license files, into the video package's 46-record notices.
 
 Also on 21 November 2026 `midnight-platform-windows` added the windows 0.62.2
 feature `Win32_UI_Controls` for the Shell's system image lists (`IImageList`
@@ -962,6 +984,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Cargo tree failed' }
 python -B scripts/dependency-inventory.py --metadata-dir $captures
 ```
 
+For `thumbnail-video`, append `--features system,playback-worker` to both Cargo
+commands: video packages ship the bundled helpers (the default `bundled` feature) and
+the platform helpers (`system`, `playback-worker`) together, as the package notices
+(`scripts/thumbnail-notices.py`) record them. Without these features Cargo resolves none
+of the platform helpers' crates (windows 0.62.2 and its crates on Windows, libc on Linux),
+so a capture with default features misses them.
 For `renderer-tests`, append `--no-default-features --features wgpu` to both
 Cargo commands. Its independent lockfile and development edges are part of the
 capture.

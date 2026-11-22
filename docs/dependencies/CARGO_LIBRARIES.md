@@ -550,7 +550,7 @@ captures and does not prove that old captures match today's source files.
 | [svgtypes](https://crates.io/crates/svgtypes/0.16.1) | 0.16.1 | Apache-2.0 OR MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [swash](https://crates.io/crates/swash/0.2.10) | 0.2.10 | Apache-2.0 OR MIT | app, renderer-tests | Linux, Windows | yes |
 | [syn](https://crates.io/crates/syn/2.0.117) | 2.0.117 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
-| [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | api, app, basic, conformance, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image | Linux, Windows | — |
+| [syn](https://crates.io/crates/syn/2.0.119) | 2.0.119 | MIT OR Apache-2.0 | api, app, basic, conformance, image-decoder, image-viewer, markdown, pdf-viewer, source, thumbnail-image, thumbnail-video | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.10) | 3.0.10 | MIT OR Apache-2.0 | html-viewer | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.4) | 3.0.4 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [syn](https://crates.io/crates/syn/3.0.9) | 3.0.9 | MIT OR Apache-2.0 | api, app, image-decoder, image-viewer, pdf-viewer, thumbnail-image, thumbnail-video | Linux, Windows | — |
@@ -656,20 +656,20 @@ captures and does not prove that old captures match today's source files.
 | [wgpu-hal](https://crates.io/crates/wgpu-hal/30.0.1) | 30.0.1 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [wgpu-naga-bridge](https://crates.io/crates/wgpu-naga-bridge/30.0.1) | 30.0.1 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [wgpu-types](https://crates.io/crates/wgpu-types/30.0.1) | 30.0.1 | MIT OR Apache-2.0 | app, renderer-tests | Linux, Windows | — |
-| [windows](https://crates.io/crates/windows/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | yes |
-| [windows-collections](https://crates.io/crates/windows-collections/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-core](https://crates.io/crates/windows-core/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | yes |
-| [windows-future](https://crates.io/crates/windows-future/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-implement](https://crates.io/crates/windows-implement/0.60.2) | 0.60.2 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-interface](https://crates.io/crates/windows-interface/0.59.3) | 0.59.3 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
+| [windows](https://crates.io/crates/windows/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | yes |
+| [windows-collections](https://crates.io/crates/windows-collections/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
+| [windows-core](https://crates.io/crates/windows-core/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | yes |
+| [windows-future](https://crates.io/crates/windows-future/0.3.2) | 0.3.2 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
+| [windows-implement](https://crates.io/crates/windows-implement/0.60.2) | 0.60.2 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
+| [windows-interface](https://crates.io/crates/windows-interface/0.59.3) | 0.59.3 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
 | [windows-link](https://crates.io/crates/windows-link/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-viewer, image-viewer-api, native-windows, network, pdf-viewer, renderer-tests, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | — |
-| [windows-numerics](https://crates.io/crates/windows-numerics/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-result](https://crates.io/crates/windows-result/0.4.1) | 0.4.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-strings](https://crates.io/crates/windows-strings/0.5.1) | 0.5.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
+| [windows-numerics](https://crates.io/crates/windows-numerics/0.3.1) | 0.3.1 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
+| [windows-result](https://crates.io/crates/windows-result/0.4.1) | 0.4.1 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
+| [windows-strings](https://crates.io/crates/windows-strings/0.5.1) | 0.5.1 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
 | [windows-sys](https://crates.io/crates/windows-sys/0.52.0) | 0.52.0 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | api, app, archive, html-viewer, image-viewer, image-viewer-api, native-windows, network, pdf-viewer, thumbnail-api, thumbnail-image, thumbnail-video, worker-api | Windows | yes |
 | [windows-targets](https://crates.io/crates/windows-targets/0.52.6) | 0.52.6 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
-| [windows-threading](https://crates.io/crates/windows-threading/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
+| [windows-threading](https://crates.io/crates/windows-threading/0.2.1) | 0.2.1 | MIT OR Apache-2.0 | app, renderer-tests, thumbnail-video | Windows | — |
 | [windows_x86_64_msvc](https://crates.io/crates/windows_x86_64_msvc/0.52.6) | 0.52.6 | MIT OR Apache-2.0 | app, renderer-tests | Windows | — |
 | [winit](https://crates.io/crates/winit/0.30.13) | 0.30.13 | Apache-2.0 | app, renderer-tests | Linux, Windows | — |
 | [winnow](https://crates.io/crates/winnow/0.7.15) | 0.7.15 | MIT | api, app | Linux, Windows | — |

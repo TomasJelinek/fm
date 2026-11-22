@@ -476,26 +476,51 @@ sh scripts/setup-linux.sh --install --dry-run
 
 Only explicit `--install` runs the package manager, using `sudo` when needed.
 `--dry-run` keeps it plan-only even with `--install`. This package helper does not
-install Rust; native `build.sh` can bootstrap it when needed. Alternatively,
-install the packages manually. For Ubuntu/Mint:
+install Rust; native `build.sh` can bootstrap it when needed. After the build packages
+it installs the runtime libraries: the application's desktop libraries, Vulkan and
+`xdg-utils`, and every shared library that the HTML viewer's Chromium (CEF) needs
+(NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, D-Bus, DRM/GBM, Expat, GLib, Pango/Cairo, X11/XCB and
+its extensions). When one of those is missing, the HTML viewer names the missing
+libraries and the command that installs them instead of showing the page.
+Alternatively, install the packages manually. For Ubuntu 24.04 / Mint 22 (the `t64`
+package names of those releases):
 
 ```sh
 sudo apt update
 sudo apt install build-essential python3 pkg-config curl ca-certificates gnupg xz-utils perl libclang-dev cmake ninja-build \
     libfontconfig1-dev libfreetype6-dev \
     libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libxcb1-dev libwayland-dev libudev-dev
+sudo apt install libfontconfig1 libfreetype6 libxkbcommon0 libxkbcommon-x11-0 libx11-6 libxcursor1 \
+    libxi6 libxrandr2 libxcb1 libwayland-client0 libudev1 libvulkan1 xdg-utils \
+    libnss3 libnspr4 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
+    libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0t64 libpango-1.0-0 \
+    libcairo2 libxcomposite1 libxdamage1 libxext6 libxfixes3
 ```
 
-Fedora 44+ (maintained desktop release, x86-64):
+Fedora 44+ (maintained desktop release, x86-64) installs the runtime libraries by
+soname, a package capability that names no package:
 
 ```sh
 sudo dnf install gcc gcc-c++ make python3 pkgconf-pkg-config fontconfig-devel freetype-devel \
     curl ca-certificates gnupg2 xz perl clang-libs clang-devel cmake ninja-build \
     libxkbcommon-devel libxkbcommon-x11-devel libX11-devel libXcursor-devel \
     libxcb-devel wayland-devel systemd-devel xdg-utils
+sudo dnf install 'libfontconfig.so.1()(64bit)' 'libfreetype.so.6()(64bit)' \
+    'libxkbcommon.so.0()(64bit)' 'libxkbcommon-x11.so.0()(64bit)' 'libX11.so.6()(64bit)' \
+    'libXcursor.so.1()(64bit)' 'libXi.so.6()(64bit)' 'libXrandr.so.2()(64bit)' \
+    'libxcb.so.1()(64bit)' 'libwayland-client.so.0()(64bit)' 'libudev.so.1()(64bit)' \
+    'libvulkan.so.1()(64bit)' 'libnss3.so()(64bit)' 'libnssutil3.so()(64bit)' \
+    'libsmime3.so()(64bit)' 'libnspr4.so()(64bit)' 'libplc4.so()(64bit)' 'libplds4.so()(64bit)' \
+    'libasound.so.2()(64bit)' 'libatk-1.0.so.0()(64bit)' 'libatk-bridge-2.0.so.0()(64bit)' \
+    'libatspi.so.0()(64bit)' 'libcups.so.2()(64bit)' 'libdbus-1.so.3()(64bit)' \
+    'libdrm.so.2()(64bit)' 'libexpat.so.1()(64bit)' 'libgbm.so.1()(64bit)' \
+    'libglib-2.0.so.0()(64bit)' 'libgobject-2.0.so.0()(64bit)' 'libgio-2.0.so.0()(64bit)' \
+    'libpango-1.0.so.0()(64bit)' 'libcairo.so.2()(64bit)' 'libXcomposite.so.1()(64bit)' \
+    'libXdamage.so.1()(64bit)' 'libXext.so.6()(64bit)' 'libXfixes.so.3()(64bit)'
 ```
 
-openSUSE Leap 16.x / Tumbleweed (x86-64):
+openSUSE Leap 16.x / Tumbleweed (x86-64); then install the same runtime libraries as
+for Fedora, with `sudo zypper install` and the same quoted capabilities:
 
 ```sh
 sudo zypper install gcc gcc-c++ make python3 pkg-config xdg-utils \

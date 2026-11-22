@@ -70,7 +70,7 @@ windows-core = { version = "=0.62.2", optional = true }
 windows = { version = "=0.62.2", features = ["Win32_System_LibraryLoader", "Win32_System_ProcessStatus"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = { version = "0.2", optional = true }
+libc = { version = "=0.2.191", default-features = false, features = ["std"], optional = true }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

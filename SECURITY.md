@@ -30,6 +30,16 @@ transmitted by scripts. Local paths, shell execution, downloads and permission
 prompts are unavailable to web content. The backend owns private session state,
 resource containment, process-tree budgets and cleanup. See the
 [interactive viewer contract](docs/developer/WEB_VIEWER_API.md).
+When the dynamic loader stops the Linux browser before its first message (exit status
+127: a shared library it needs is missing), the viewer names the missing libraries
+instead of a stopped transport. The host finds them by reading, never executing, the
+ELF dynamic sections of the viewer executable and of the libraries it needs, looked up as
+glibc's loader looks them up (DT_RPATH/DT_RUNPATH, `/etc/ld.so.cache`, the default
+folders): no `ldd` or loader runs, only regular files are opened (without blocking on a
+FIFO), every read is bounded and at most 1,024 objects are read. A library name from
+those files appears in the message only as letters, digits and `._+-` (anything else is
+masked) and in the suggested install command only when it consists of them. The check
+runs only after such a failure, so it can never keep a working browser from starting.
 On Linux systems where AppArmor restricts unprivileged user namespaces, the optional
 `midnight-explorer-html-viewer` profile grants only `userns` to one installation's
 viewer executable and confines nothing else; there is one such profile per machine, so

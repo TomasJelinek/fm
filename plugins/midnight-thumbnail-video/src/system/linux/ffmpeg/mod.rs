@@ -12,6 +12,8 @@ mod layouts;
 mod video;
 
 pub(super) use audio::{Audio, Opened as AudioOpened};
+#[cfg(all(test, not(feature = "bundled")))]
+pub(super) use input::FORMATS;
 pub(super) use input::{Input, Selected};
 pub(super) use video::{Thumbnail, Video};
 

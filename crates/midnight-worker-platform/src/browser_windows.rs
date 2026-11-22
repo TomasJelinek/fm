@@ -45,6 +45,12 @@ impl Process {
         wait_job_empty(&self.job, Instant::now() + TREE_EXIT)?;
         Ok(code == 0)
     }
+
+    /// Why a browser that ended before its first message could not start. Windows names
+    /// no cause here: a missing DLL ends the broker like any other startup failure.
+    pub fn startup_failure(&mut self) -> Option<io::Error> {
+        None
+    }
 }
 
 impl Drop for Process {

@@ -42,8 +42,11 @@ of that machine, not product results:
   names them), so `midnight-viewer-html` exits at load (status 127) and every HTML case
   reports "Chromium transport stopped: failed to fill whole buffer" (`viewers_files`
   4 cases, `viewers_scroll`, `viewers_presentation`). `scripts/setup-linux.sh --install`
-  does not install them. The run used a delegated systemd user scope, so the browser's
-  cgroup-v2 delegation was available; AppArmor is off in WSL.
+  did not install them then. Since 22 November it installs every library of the HTML
+  viewer's Chromium, and the viewer names missing libraries and the command that
+  installs them instead of that transport error (unit-tested; no acceptance run since).
+  The run used a delegated systemd user scope, so the browser's cgroup-v2 delegation was
+  available; AppArmor is off in WSL.
 - **No `zstd`, `7z` or `zip`.** `viewers_archives` skipped the formats made with them.
 
 Every `viewers_*` scenario ran again at full scale in run `20261121-171419` (with the

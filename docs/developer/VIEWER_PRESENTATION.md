@@ -399,7 +399,8 @@ decoder for a video (MMV2 failure cause 5, with the codec's number and the decod
 tried), the viewer starts the platform helper on the same capture: on Windows the
 Media Foundation helper, which decodes H.264, HEVC, AV1, MPEG-2/4, VC-1/WMV and Motion
 JPEG with AAC, MP3 or Windows Media Audio, the usual content of `.mp4` and `.wmv`
-files; on Linux the helper that loads the distribution's FFmpeg, else GStreamer. A
+files; on Linux the helper that loads the distribution's FFmpeg, else GStreamer, which
+read `.wmv` and `.asf` (ASF) files too since 22 November. A
 codec that neither has is named with what provides it, for example "This video uses
 HEVC; Windows has no decoder for it installed (HEVC Video Extensions)", on Windows N
 "... (Media Feature Pack)", or on Linux the distribution's packages ("This video uses

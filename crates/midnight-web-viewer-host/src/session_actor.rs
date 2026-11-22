@@ -28,6 +28,12 @@ pub(super) trait BrowserProcess: Send {
     /// Wait until the browser and every process of its tree exited. `Ok(false)` reports
     /// a failed exit status.
     fn wait(&mut self) -> io::Result<bool>;
+    /// Once `wait` returned for a browser that stopped before it reported Ready: why it
+    /// could not start, when the platform can tell (Linux: shared libraries the system
+    /// lacks). `None` otherwise.
+    fn startup_failure(&mut self) -> Option<io::Error> {
+        None
+    }
 }
 
 impl BrowserProcess for midnight_worker_platform::browser::Process {
@@ -36,6 +42,9 @@ impl BrowserProcess for midnight_worker_platform::browser::Process {
     }
     fn wait(&mut self) -> io::Result<bool> {
         midnight_worker_platform::browser::Process::wait(self)
+    }
+    fn startup_failure(&mut self) -> Option<io::Error> {
+        midnight_worker_platform::browser::Process::startup_failure(self)
     }
 }
 
@@ -252,6 +261,11 @@ impl Signal {
         if first {
             self.watchdog.notify_one();
         }
+    }
+
+    /// Whether the browser reported Ready at least once.
+    fn was_ready(&self) -> bool {
+        self.lock().ready
     }
 }
 
@@ -511,20 +525,26 @@ pub(super) fn launch_failed(shared: &Shared, error: &io::Error) -> String {
 }
 
 /// A sandbox the system denies is reported with its own message, which names the one-time
-/// fix, and its typed refusal for a consumer that offers that fix; any other launch failure
-/// keeps the generic prefix and has no refusal.
+/// fix, and its typed refusal for a consumer that offers that fix; missing system libraries
+/// with their own message, which names them and how to install them; any other launch
+/// failure keeps the generic prefix and has no refusal.
 fn startup_error(error: &io::Error) -> (String, Option<crate::SandboxRefusal>) {
-    match error.get_ref().and_then(|inner| {
-        inner.downcast_ref::<midnight_worker_platform::browser::SandboxUnavailable>()
-    }) {
-        Some(unavailable) => (unavailable.to_string(), Some(unavailable.refusal().clone())),
-        None => (format!("Chromium startup: {error}"), None),
+    use midnight_worker_platform::browser::{LibrariesMissing, SandboxUnavailable};
+    let inner = error.get_ref();
+    if let Some(unavailable) = inner.and_then(|inner| inner.downcast_ref::<SandboxUnavailable>()) {
+        return (unavailable.to_string(), Some(unavailable.refusal().clone()));
     }
+    if let Some(missing) = inner.and_then(|inner| inner.downcast_ref::<LibrariesMissing>()) {
+        return (missing.to_string(), None);
+    }
+    (format!("Chromium startup: {error}"), None)
 }
 
 /// Run the session over `transport`: the actor on this thread, the reader of the browser's
 /// output and the watchdog on scoped threads. Returns once all three ended, after the
-/// watchdog killed and waited for the browser's process tree.
+/// watchdog killed and waited for the browser's process tree. A browser that failed before
+/// it reported Ready may never have started: the platform's reason, when it has one,
+/// replaces the stopped transport's message (see `BrowserProcess::startup_failure`).
 pub(super) fn run_with(
     transport: Transport,
     owner: SourceOwner,
@@ -548,7 +568,7 @@ pub(super) fn run_with(
         signal,
         limit: limits.busy,
     };
-    std::thread::scope(|scope| {
+    let result = std::thread::scope(|scope| {
         let stop = Stop(signal);
         let watchdog = scope.spawn(|| watch(signal, closed, limits, &mut *process));
         let reader = scope.spawn(move || read(signal, closed, output));
@@ -570,7 +590,14 @@ pub(super) fn run_with(
             Ok(store) => store.finish().and(result),
             Err(_) => result,
         }
-    })
+    });
+    // The watchdog waited for the process tree, so its exit status is known here.
+    match result {
+        Err(message) if !signal.was_ready() && !closed.load(Ordering::Acquire) => Err(process
+            .startup_failure()
+            .map_or(message, |error| launch_failed(shared, &error))),
+        result => result,
+    }
 }
 
 /// The actor: open the document, then forward commands and handle the browser's output

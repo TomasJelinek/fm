@@ -27,9 +27,19 @@ fn ffmpeg() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// Four one-second colours (red, lime, blue, white) at 25 fps with a sine track, as H.264/AAC
-/// in MP4; or, with `codec_tag`, MPEG-4 Part 2 in AVI with its tag replaced by an unknown one.
-fn fixture(name: &str, unknown_tag: bool) -> Option<Vec<u8>> {
+/// The codecs of a fixture.
+#[derive(Clone, Copy, PartialEq)]
+enum Codecs {
+    /// H.264 and AAC in MP4.
+    H264,
+    /// Windows Media Video 8 and Windows Media Audio 2 in ASF, as `.wmv` files hold them.
+    WindowsMedia,
+    /// MPEG-4 Part 2 in AVI with its tag replaced by an unknown one.
+    UnknownTag,
+}
+
+/// Four one-second colours (red, lime, blue, white) at 25 fps with a sine track, in `codecs`.
+fn fixture(name: &str, codecs: Codecs) -> Option<Vec<u8>> {
     let ffmpeg = ffmpeg()?;
     let folder =
         std::env::temp_dir().join(format!("midnight-system-helpers-{}", std::process::id()));
@@ -51,27 +61,33 @@ fn fixture(name: &str, unknown_tag: bool) -> Option<Vec<u8>> {
         ])
         .arg("sine=frequency=440:sample_rate=44100:duration=4")
         .args(["-filter_complex", colours, "-map", "[v]", "-map", "0:a"]);
-    if unknown_tag {
-        command.args(["-c:v", "mpeg4", "-c:a", "libmp3lame"]);
-    } else {
-        command.args([
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            "25",
-            "-c:a",
-            "aac",
-            "-movflags",
-            "+faststart",
-        ]);
+    match codecs {
+        Codecs::UnknownTag => {
+            command.args(["-c:v", "mpeg4", "-c:a", "libmp3lame"]);
+        }
+        Codecs::WindowsMedia => {
+            command.args(["-c:v", "wmv2", "-g", "25", "-c:a", "wmav2", "-f", "asf"]);
+        }
+        Codecs::H264 => {
+            command.args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-g",
+                "25",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+            ]);
+        }
     }
     if !command.arg(&output).status().ok()?.success() {
         return None;
     }
     let mut bytes = std::fs::read(&output).ok()?;
-    if unknown_tag {
+    if codecs == Codecs::UnknownTag {
         for tag in [*b"FMP4", *b"fmp4"] {
             while let Some(at) = bytes.windows(4).position(|window| window == tag) {
                 bytes[at..at + 4].copy_from_slice(b"ZQ9X");
@@ -184,7 +200,7 @@ fn centre(width: u32, height: u32, rgba: &[u8]) -> [u8; 3] {
 
 #[test]
 fn the_thumbnail_helper_decodes_h264_inside_its_sandbox() {
-    let Some(bytes) = fixture("h264-aac.mp4", false) else {
+    let Some(bytes) = fixture("h264-aac.mp4", Codecs::H264) else {
         eprintln!("skipped: no ffmpeg command to encode the fixture");
         return;
     };
@@ -202,9 +218,49 @@ fn the_thumbnail_helper_decodes_h264_inside_its_sandbox() {
     assert!(b > 180 && r < 90 && g < 90, "{r} {g} {b}");
 }
 
+/// `.wmv` and `.asf` files, which the host routes to these helpers: Windows Media Video and
+/// Audio in ASF through the distribution's FFmpeg (or GStreamer's ASF demuxer and gst-libav).
+#[test]
+fn the_helpers_decode_windows_media_inside_their_sandbox() {
+    let Some(bytes) = fixture("wmv2-wmav2.wmv", Codecs::WindowsMedia) else {
+        eprintln!("skipped: no ffmpeg command with Windows Media encoders");
+        return;
+    };
+    let (reply, ready) = thumbnail(&bytes, 3);
+    eprintln!("thumbnail helper {ready}");
+    let Message::Frame(frame) = reply else {
+        panic!("expected a frame, got another reply (is a system FFmpeg installed?)");
+    };
+    assert_eq!((frame.width, frame.height), (64, 48));
+    let [r, g, b] = centre(frame.width, frame.height, &frame.rgba);
+    assert!(b > 180 && r < 90 && g < 90, "{r} {g} {b}");
+    let (mut helper, _) = open_player(&bytes);
+    let (kind, opened) = next(&mut helper, &bytes);
+    assert_eq!(kind, 0x81, "expected Opened, got {kind:#x} {opened:?}");
+    let duration = u64_at(&opened, 8);
+    assert!(
+        (3_900_000..=4_200_000).contains(&duration),
+        "duration {duration}"
+    );
+    assert_eq!((u32_at(&opened, 16), u32_at(&opened, 20)), (320, 240));
+    assert_eq!(opened[24], 1, "the Windows Media Audio track is qualified");
+    let (frames, samples, completion) = pull(&mut helper, &bytes, 1, 9, 4, 4800);
+    assert_eq!(completion, 0);
+    assert_eq!(samples, 4800);
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame.1[0] > 180 && frame.1[1] < 90),
+        "{frames:?}"
+    );
+    send(&mut helper.input, 4, &2u64.to_le_bytes());
+    let status = helper.child.wait().unwrap();
+    assert!(status.success(), "{status:?}");
+}
+
 #[test]
 fn the_thumbnail_helper_fails_an_unknown_codec() {
-    let Some(bytes) = fixture("unknown.avi", true) else {
+    let Some(bytes) = fixture("unknown.avi", Codecs::UnknownTag) else {
         return;
     };
     let (reply, _) = thumbnail(&bytes, 0);
@@ -317,7 +373,7 @@ fn pull(
 
 #[test]
 fn the_playback_helper_serves_frames_audio_and_seeks_inside_its_sandbox() {
-    let Some(bytes) = fixture("h264-aac.mp4", false) else {
+    let Some(bytes) = fixture("h264-aac.mp4", Codecs::H264) else {
         eprintln!("skipped: no ffmpeg command to encode the fixture");
         return;
     };
@@ -367,7 +423,7 @@ fn the_playback_helper_serves_frames_audio_and_seeks_inside_its_sandbox() {
 
 #[test]
 fn the_playback_helper_reports_a_missing_decoder_as_cause_five() {
-    let Some(bytes) = fixture("unknown.avi", true) else {
+    let Some(bytes) = fixture("unknown.avi", Codecs::UnknownTag) else {
         return;
     };
     let (mut helper, _) = open_player(&bytes);
@@ -479,7 +535,7 @@ fn the_system_helpers_link_no_ffmpeg_or_gstreamer_and_have_no_library_path() {
 
 #[test]
 fn startup_within_the_host_deadlines() {
-    let Some(bytes) = fixture("h264-aac.mp4", false) else {
+    let Some(bytes) = fixture("h264-aac.mp4", Codecs::H264) else {
         return;
     };
     let started = Instant::now();

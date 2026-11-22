@@ -83,9 +83,21 @@ not establish worst-case consumption or a Linux/macOS result.
 Normal builds and distributions include all six viewers (basic, source, Markdown,
 image, PDF and Chromium HTML), the platform's native/network filesystem providers,
 the archive worker and both thumbnailers. Keep the complete module directories
-beside the executable. The HTML module includes the pinned CEF runtime; Linux
-also needs its system NSS/NSPR and ALSA libraries. CMake and Ninja are build tools,
-not application runtime requirements. Browser sandbox policy remains required.
+beside the executable. The HTML module includes the pinned CEF runtime. On Linux its
+Chromium also loads the system's NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, D-Bus, DRM/GBM,
+Expat, GLib, Pango/Cairo and X11/XCB libraries, which desktop installations normally
+have; on Ubuntu 24.04 / Mint 22 they come from `libnss3 libnspr4 libasound2t64
+libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libdbus-1-3 libdrm2
+libexpat1 libgbm1 libglib2.0-0t64 libpango-1.0-0 libcairo2 libx11-6 libxcb1 libxkbcommon0
+libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2`, and in a source checkout
+`scripts/setup-linux.sh --install` installs them (on Fedora and openSUSE by soname). When
+one is missing, the dynamic loader stops the viewer's browser before it starts; the
+viewer then names the missing libraries in the page's place, with the command that
+installs them on Debian/Ubuntu, Fedora or openSUSE (and, in a source checkout, the setup
+script), instead of a stopped transport. It finds them by reading the ELF dynamic
+sections of the viewer's executable and of the libraries it needs, as the loader looks
+them up; nothing is executed. CMake and Ninja are build tools, not application runtime
+requirements. Browser sandbox policy remains required.
 
 On Ubuntu 23.10 and later (including 24.04 and Linux Mint 22), AppArmor denies
 unprivileged user namespaces to programs without a profile that grants them
@@ -161,12 +173,12 @@ FFmpeg libraries (libavcodec 58 to 63, that is FFmpeg 4 to 9, with libavformat,
 libavutil, libswscale and libswresample of the same release), then GStreamer 1.x and
 its plugins. Neither is required: without them, only the bundled profile's codecs play,
 and the viewer names the codec and the packages that add it. Optional packages, and
-what they add for MP4/M4V/MOV/3GP, Matroska, AVI and Ogg files:
+what they add for MP4/M4V/MOV/3GP, Matroska, AVI, Ogg and ASF (`.wmv`, `.asf`) files:
 
 | Distribution | Packages | Adds |
 | --- | --- | --- |
 | Debian, Ubuntu and derivatives | `ffmpeg` (pulls `libavcodecNN`, `libavformatNN`, `libswscaleNN`, `libswresampleNN`) | H.264, HEVC, MPEG-4 Part 2, MPEG-1/2, AV1, VC-1/Windows Media, MJPEG, H.263, ProRes video; AAC, MP3, AC-3, E-AC-3, DTS, Vorbis, FLAC, Windows Media audio |
-| | or `gstreamer1.0-libav` with `gstreamer1.0-plugins-base`, `-good` and `-bad` | The same through GStreamer (used when the FFmpeg libraries are absent); `-bad` adds OpenH264 and libde265 |
+| | or `gstreamer1.0-libav` with `gstreamer1.0-plugins-base`, `-good` and `-bad` (and `-ugly` for ASF/WMV files) | The same through GStreamer (used when the FFmpeg libraries are absent); `-bad` adds OpenH264 and libde265, `-ugly` the ASF demuxer |
 | Fedora, RHEL family | `ffmpeg-libs` from RPM Fusion (the full FFmpeg) | As above; Fedora's own `ffmpeg-free` omits some of these decoders, such as HEVC |
 | | `gstreamer1-plugin-openh264` (Fedora's Cisco OpenH264 repository), `gstreamer1-plugin-libav` | H.264 through OpenH264; others through GStreamer's FFmpeg plugin |
 | openSUSE | `ffmpeg` and `gstreamer-plugins-libav` from Packman | As for Debian; openSUSE's own FFmpeg omits patent-encumbered decoders |
@@ -174,9 +186,13 @@ what they add for MP4/M4V/MOV/3GP, Matroska, AVI and Ogg files:
 
 The table names what these packages provide; tested so far on Ubuntu 24.04 (FFmpeg
 6.1, GStreamer 1.24): H.264, HEVC and MPEG-4 Part 2 video with AAC and MP3 audio, see
-the [Linux system decoders record](verification/2026-11-21-linux-system-video-decoders.md).
-GStreamer also needs `gst-plugins-base` (typefinding and converters) and
-`gst-plugins-good` (the MP4, Matroska and AVI demuxers). Hardware decoders (VA-API,
+the [Linux system decoders record](verification/2026-11-21-linux-system-video-decoders.md),
+and Windows Media Video 7 and 8 with Windows Media Audio 1 and 2 in ASF (`.wmv`, `.asf`)
+through FFmpeg ([record](verification/2026-11-22-linux-html-libraries-and-asf.md); WMV 9
+and VC-1, which FFmpeg decodes but cannot encode, were not tested). GStreamer also needs
+`gst-plugins-base` (typefinding and converters), `gst-plugins-good` (the MP4, Matroska
+and AVI demuxers) and, for ASF/WMV files, `gst-plugins-ugly` (the ASF demuxer); its
+Windows Media decoders come from gst-libav only. Hardware decoders (VA-API,
 V4L2, NVDEC) are not used: the helpers decode in software inside their sandbox. The
 distribution's packages and their licenses are the user's; the application installs
 nothing.

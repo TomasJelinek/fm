@@ -25,10 +25,12 @@ that only root can change. The permission serves one installation at a time:
 installing it for another installation moves it there, and the HTML viewer of the
 previous one stops working until it is installed for that one again.
 The HTML viewer's Chromium (CEF) runtime also loads common desktop libraries
-(NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, GBM/DRM, Pango/Cairo and X11 extensions).
-Minimal systems may additionally need:
-  sudo apt install libnss3 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 \
-    libcups2t64 libgbm1 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2
+(NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, D-Bus, GBM/DRM, Expat, GLib, Pango/Cairo, X11/XCB
+and X11 extensions). When one is missing, the HTML viewer names the missing libraries
+and the command that installs them. Minimal systems may additionally need:
+  sudo apt install libnss3 libnspr4 libasound2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+    libatspi2.0-0t64 libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0t64 \
+    libpango-1.0-0 libcairo2 libxcomposite1 libxdamage1 libxext6 libxfixes3
 
 Local network discovery and mounted SMB share browsing additionally need:
   sudo apt install gvfs-backends gvfs-fuse wsdd

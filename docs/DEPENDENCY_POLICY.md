@@ -101,9 +101,12 @@ codec of its own, so its packages stay royalty-free and carry no FFmpeg or GStre
 code for this path. They keep their distributions' licenses: FFmpeg LGPL-2.1-or-later,
 or GPL-2.0-or-later where the distribution enables GPL components (Debian's and
 Ubuntu's builds do); GStreamer core and base/good/bad/libav plugins LGPL-2.1-or-later;
-some listed plugins GPL-2.0-or-later (faad, dtsdec, a52dec) and some BSD (OpenH264,
-AOM, dav1d), with OpenH264 binaries under Cisco's binary license where Cisco's build
-is installed. They are combined with the helper only in its process on the user's
+gst-plugins-ugly's ASF demuxer plugin (`asf`, listed since 22 November 2026 for `.wmv`
+and `.asf` files) LGPL-2.0-or-later (its sources' GNU Library General Public License,
+version 2 or later, checked in `gstasf.c` and `gstasfdemux.c` of GStreamer's main
+branch); some listed plugins GPL-2.0-or-later (faad, dtsdec, a52dec) and some BSD
+(OpenH264, AOM, dav1d), with OpenH264 binaries under Cisco's binary license where
+Cisco's build is installed. They are combined with the helper only in its process on the user's
 machine, which those licenses permit without conditions on the application's own
 distribution; nothing of them is conveyed with it. Codec patent licensing for these
 decoders lies with the distribution and the user, as for any application using system

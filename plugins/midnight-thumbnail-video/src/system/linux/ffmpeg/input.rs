@@ -17,8 +17,10 @@ use std::{
 const BUFFER: usize = 64 * 1024;
 /// Largest single brokered read.
 const MAX_READ: usize = 256 * 1024;
-/// Containers of the extensions the video helpers are registered for.
-const FORMATS: &std::ffi::CStr = c"mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,ogg";
+/// Containers of the extensions the video helpers are registered for (`thumbnailer.json`):
+/// MP4/MOV, Matroska/WebM, AVI, Ogg and ASF (`.wmv`, `.asf`).
+pub(in super::super) const FORMATS: &std::ffi::CStr =
+    c"mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi,ogg,asf";
 
 struct Bridge<'s> {
     source: Box<dyn ReadSeek + 's>,
