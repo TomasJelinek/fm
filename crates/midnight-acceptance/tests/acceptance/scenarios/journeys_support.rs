@@ -237,6 +237,19 @@ pub fn marked(app: &App, pane: PaneId) -> BTreeSet<String> {
     files::selected_names(app, pane).into_iter().collect()
 }
 
+/// Mark exactly `names` in `pane`: Ctrl+D, then Insert on each.
+pub fn mark(app: &mut App, pane: PaneId, names: &[&str]) -> Result<(), String> {
+    panel::focus_list(app, pane)?;
+    input::chord(app.slint(), &[Key::Control], "d");
+    app.settle();
+    for name in names {
+        panel::select_row(app, pane, name)?;
+        input::key(app.slint(), Key::Insert);
+        app.settle();
+    }
+    same(&marked(app, pane), names)
+}
+
 /// Wait until `pane` lists exactly `wanted` (top level, without `..`) and is not loading.
 pub fn wait_shown(
     app: &mut App,

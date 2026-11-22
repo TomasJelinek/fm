@@ -164,7 +164,7 @@ are superseded.
 | `journeys_options_restart` | journeys | PASS (staged) | `20261121-144422` |
 | `journeys_links_readonly` | journeys | SKIP: Linux link and mode semantics (see below; the reason before the Links choice) | `20261121-144422` |
 | `journeys_keyboard_only` | journeys | PASS (Ctrl+U swaps the panels' places, each keeping its folder) | `20261121-144422` |
-| `journeys_pointer_only` | journeys | PENDING: only the quick drop could not be tested (the synthetic drag was released after 612 ms; the pending check needs a drop within 400 ms); WIN-6 resolved: the drag's Move ends Completed | `20261121-144422` |
+| `journeys_pointer_only` | journeys | PENDING: only the quick drop could not be tested (the synthetic drag was released after 612 ms; the pending check needs a drop within 400 ms); WIN-6 resolved: the drag's Move ends Completed; strict since 22 November and PASS, see "Journeys on 22 November" | `20261121-144422` |
 
 Totals of the whole-suite run `20261121-144422`: 94 passed, 1 warned, 3 pending, 3 skipped,
 6 failed of 107 in 6,966 s. With the reruns: 96 PASS, 2 WARN, 3 FAIL (WIN-8, WIN-10,
@@ -172,6 +172,31 @@ WIN-11), 3 PENDING, 3 SKIP. Durations of the reruns: `20261121-164408` 733 s (on
 scenario), `20261121-170053` 3,154 s (six), `20261121-173345` 352 s (one),
 `20261121-192806` 102 s (three: 2 PASS, 1 PENDING); `20261121-175553` 4,713 s (22
 scenarios at full scale: 18 PASS, 2 WARN, 1 PENDING, 1 FAIL).
+
+
+### Journeys on 22 November
+
+The journeys and `harness_checks` on this machine on 22 November (smoke scale, debug test
+builds, the release plugin packages of 60e08043, run folders on D:, an NTFS volume with
+8.3 short-name creation disabled; run ids in UTC). Increment 2 ran on a901e438 with WP1's
+harness changes; wave 2 on 41adbb86 with the keyboard, archive and Options journeys
+extended (J2, J4, J5).
+
+| Scenario | Status | Runs |
+| --- | --- | --- |
+| `harness_checks` | PASS | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `journeys_find_to_checksums` | PASS. It failed once in increment 2's `20261122-073649`: Find's search inside `bundle.zip` ended Incomplete (3 found, 7 examined) and left out its member; the rerun passed, and since wave 2 the journey names Find's details when that happens | increment 2 `20261122-090231`; wave 2 `20261122-141148` |
+| `journeys_archive_roundtrip` | PASS. Wave 2 adds the password round trip: F5 of an encrypted member asks first, a wrong password is refused, the right one copies it out, F3 on another member asks nothing; after Escape the copy goes on, takes the plain member and skips the protected one | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `journeys_filtered_conflicts`, `journeys_concurrent_jobs` | PASS | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `journeys_options_restart` | PASS. Wave 2 adds the default palette after the restart (since f153478c documents, text and Markdown blue, source cyan) and the Options pages' order | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `journeys_links_readonly` | SKIP: Linux link and mode semantics | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `journeys_keyboard_only` | PASS. Wave 2 adds conflicts answered by keys, Jobs and Resolve by keys, and the Links choice by keys on a directory junction | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `journeys_pointer_only` | PASS: on the held Slint clock a drop 250 ms after the press is cancelled with "Drag cancelled: released within 0.4 s" and one 450 ms after it moves the folder; a wheel of 1.5 rows rests on a whole row (44.0 px with 22 px rows) | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+
+The red runs of the new checks failed as each red case was meant to: `20261122-090108`
+(harness checks and the quick drop), `20261122-121748` (J2's conflicts and Links, J4's
+refusal and F3, J5's palette and page order), `20261122-122433` (J4's copy after Escape,
+J1's wheel) and `20261122-141533` (J5's palette after f153478c).
 
 ## Findings
 

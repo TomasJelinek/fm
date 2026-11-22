@@ -476,8 +476,7 @@ pub struct App {
     /// (`Event::TransferLinksInspected`), in arrival order: a step waits for one more.
     pub links_inspected: Vec<TransferLinksResult>,
     /// Every answer to an archive password (`Event::ArchiveUnlocked`), in arrival order:
-    /// the outcome, or the error's text.
-    #[allow(dead_code)] // Read by the archive password scenarios.
+    /// the outcome, or the error's text (`journeys_archive_roundtrip` waits for them).
     pub archive_unlocks: Vec<Result<ArchiveUnlock, String>>,
     /// The settings reads applied (`Event::PreferencesLoaded`, read or failed).
     pub settings_reads: usize,

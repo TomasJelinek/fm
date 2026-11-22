@@ -6,7 +6,10 @@
 //! 2. At once: the panels are light; `report.log` is red; F5 no longer opens Copy,
 //!    Ctrl+Alt+Y does, and the dialog is light; Enter copies, and the copy is red in
 //!    the other panel too; F3 opens a light viewer.
-//! 3. After a restart on the saved settings: the same theme, colours, keys and viewer.
+//! 3. After a restart on the saved settings: the same theme, colours, keys and viewer;
+//!    Options lists its pages in their order of use; a Markdown text, a plain text and a
+//!    Word document share the palette's document colour and a source file has the source
+//!    colour, each the one it had before the restart.
 use super::journeys_support::{self as journey, Journey, wait};
 use crate::{
     Context,
@@ -36,12 +39,17 @@ const NEW_KEY: &str = "Ctrl+Alt+Y";
 const ALIASES: &str = "Shortcuts for selected command";
 const CAPTURE: &str = "Press shortcut keys";
 const NOTES: &str = "Notes for the viewer, in the saved theme.";
+/// A source file: the default palette's source colour (`default_filename_colors`).
+const SOURCE: &str = "main.rs";
+/// A Markdown text, a plain text and a Word document: the default palette gives them one
+/// colour of their own, not the source colour (f153478c).
+const DOCUMENTS: [&str; 3] = ["readme.md", "notes.txt", "plan.docx"];
 
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_options_restart",
         area: "journeys",
-        summary: "One Options session sets the Light theme, a *.log colour rule and Copy on Ctrl+Alt+Y; at once and after a restart: light panels and dialogs, red rows in both panels, F5 inert, Ctrl+Alt+Y copies, F3 opens a light viewer (installed plugins).",
+        summary: "One Options session sets the Light theme, a *.log colour rule and Copy on Ctrl+Alt+Y; at once and after a restart: light panels and dialogs, red rows in both panels, F5 inert, Ctrl+Alt+Y copies, F3 opens a light viewer (installed plugins); a Markdown text, a plain text and a Word document share the palette's document colour and a source file has another, both kept after the restart, and Options lists its pages in their order of use.",
         run: options_restart,
         timeout: TIMEOUT,
     }
@@ -67,10 +75,19 @@ impl Setup {
     }
 }
 
-/// What the default (dark) appearance looks like, for comparison.
+/// What the default (dark) appearance looks like, for comparison, and the palette's
+/// colours with the saved choices before the restart.
 struct Baseline {
     panel: f32,
     dialog: f32,
+    palette: Option<Palette>,
+}
+
+/// The colours the default palette gives [`SOURCE`] and [`DOCUMENTS`] in a panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Palette {
+    source: (u8, u8, u8),
+    documents: (u8, u8, u8),
 }
 
 fn run(context: &mut Context) -> Result<(), String> {
@@ -79,6 +96,9 @@ fn run(context: &mut Context) -> Result<(), String> {
     journey::write(&folder.join("report.log"), "log line\n")?;
     journey::write(&folder.join("notes.txt"), format!("{NOTES}\n"))?;
     journey::write(&folder.join("data.bin"), [0_u8, 1, 2, 3])?;
+    journey::write(&folder.join("main.rs"), "fn main() {}\n")?;
+    journey::write(&folder.join("readme.md"), "# Readme\n")?;
+    journey::write(&folder.join("plan.docx"), "")?;
     let setup = Setup {
         folder,
         target,
@@ -99,6 +119,71 @@ fn run(context: &mut Context) -> Result<(), String> {
         after.and(app.shutdown())
     });
     journey.finish(context, ended)
+}
+
+/// The palette's colours of [`SOURCE`] and [`DOCUMENTS`] in `pane`: each a colour of
+/// its own, not the theme's text colour that `data.bin` keeps; the documents all in one,
+/// the source in another.
+fn palette(app: &App, pane: PaneId) -> Result<Palette, String> {
+    let rows = app.rows(pane);
+    let shown = |name: &str| {
+        rows.iter().find(|row| row.name == name).map(|row| {
+            (
+                row.custom_foreground,
+                (
+                    row.foreground.red(),
+                    row.foreground.green(),
+                    row.foreground.blue(),
+                ),
+            )
+        })
+    };
+    let plain = shown("data.bin").ok_or("data.bin is not listed")?;
+    let source = shown(SOURCE);
+    let documents: Vec<_> = DOCUMENTS.iter().map(|name| (*name, shown(name))).collect();
+    match (source, documents[0].1) {
+        (Some(source), Some(first))
+            if source.0
+                && first.0
+                && source.1 != plain.1
+                && first.1 != plain.1
+                && source.1 != first.1
+                && documents.iter().all(|(_, colour)| *colour == Some(first)) =>
+        {
+            Ok(Palette {
+                source: source.1,
+                documents: first.1,
+            })
+        }
+        _ => Err(format!(
+            "{SOURCE} {source:?}; documents {documents:?}; data.bin {plain:?}"
+        )),
+    }
+}
+
+/// Open Options: its page buttons from the top in the order of [`options::PAGES`]
+/// (order of use); Cancel closes it again.
+fn page_order(app: &mut App) -> Result<(), String> {
+    options::open(app)?;
+    let mut shown: Vec<(f32, String)> = inspect::controls(app.slint(), AccessibleRole::Button)
+        .into_iter()
+        .filter(|(label, _)| {
+            options::PAGES
+                .iter()
+                .any(|(page, _)| label.as_str() == *page)
+        })
+        .map(|(label, item)| (inspect::rect(&item).1, label))
+        .collect();
+    shown.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let order: Vec<&str> = shown.iter().map(|(_, label)| label.as_str()).collect();
+    let wanted: Vec<&str> = options::PAGES.iter().map(|(page, _)| *page).collect();
+    let result = if order == wanted {
+        Ok(())
+    } else {
+        Err(format!("the pages from the top: {order:?}"))
+    };
+    options::cancel(app)?;
+    result
 }
 
 /// The red foreground of `name` in `pane`, if the rule coloured it.
@@ -255,7 +340,11 @@ fn before_restart(
     let panel = Frame::of(app).luma(options::list_area(app, LEFT));
     let dialog =
         opens_copy(app, &[], Key::F5, false, true)?.ok_or("F5 does not open Copy by default")?;
-    let baseline = Baseline { panel, dialog };
+    let mut baseline = Baseline {
+        panel,
+        dialog,
+        palette: None,
+    };
     journey.check(
         "report.log is not red before the rule",
         if red(app, LEFT, "report.log") {
@@ -287,6 +376,13 @@ fn before_restart(
 
     // 2. At once.
     check_effects(app, context, journey, &baseline, "at once")?;
+    let colours = palette(app, LEFT);
+    baseline.palette = colours.as_ref().ok().copied();
+    journey.check(
+        "at once: a Markdown text, a plain text and a Word document share one colour, and a \
+         source file has another",
+        colours.map(|_| ()),
+    );
     let start = app.copies.len();
     match opens_copy(app, &[Key::Control, Key::Alt], "y", true, true)? {
         None => journey.check("Ctrl+Alt+Y opens Copy", Err("no dialog".into())),
@@ -420,7 +516,21 @@ fn after_restart(
             red(app, RIGHT, "report.log")
         }),
     );
+    journey.check(
+        "after a restart the source and the documents keep the colours they had before it",
+        palette(app, LEFT).and_then(|colours| match baseline.palette {
+            Some(before) if before == colours => Ok(()),
+            before => Err(format!("{colours:?} after, {before:?} before")),
+        }),
+    );
+    journey.check(
+        "after a restart Options lists its pages in their order of use",
+        page_order(app),
+    );
     app.screenshot(context, "restarted", "The saved choices after a restart");
-    journey.step("after a restart: the same theme, colours, keys and viewer");
+    journey.step(
+        "after a restart: the same theme, colours, keys and viewer; the palette's source \
+         and document colours kept; the Options pages in their order",
+    );
     Ok(())
 }

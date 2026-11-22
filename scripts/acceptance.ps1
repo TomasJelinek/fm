@@ -13,11 +13,15 @@ private installation: a new folder below the user profile that only this account
 SYSTEM and Administrators can change, because the plugin host loads a plugin only when
 no other account can change it or any folder above it. The folder holds a copy of the
 test executable (a rebuild cannot replace the running one; staged scenarios start it
-again) and the plugin packages the viewer scenarios stage; it is removed afterwards.
+again) and the plugin packages the viewer scenarios stage; it is removed afterwards. Its
+marker names the run's process, so that the next run removes an installation that a
+killed run left behind; one without a marker is left alone and named.
 Run in-process instead (`& scripts\acceptance.ps1`), it restores the session's working
 directory and the environment variables it sets when it ends, however it ends.
-Exit codes: 0 every scenario passed or warned, 1 a failure, 2 invalid arguments or run
-folders on a volume that is not qualified for Copy and Move, 127 cargo is missing.
+Exit codes: 0 every scenario passed or warned, 1 a failure, 2 invalid arguments, run
+folders on a volume that is not qualified for Copy and Move, packages newer than this
+checkout or a lease that MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE requires and that this run does
+not hold, 127 cargo is missing.
 #>
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -37,7 +41,9 @@ the run folders (default _build\acceptance). --stress runs the opt-in stress siz
 _REMOVABLE_DIR, _NETWORK_DIR, _OTHER_EXT_DIR, _NO_TMPFILE_DIR, _WIN_SYMLINKS) name
 absolute folders; the suite and its staged children get them as they are. A run stops
 (exit 2) when the run folders' volume is not qualified for Copy and Move: NTFS with 8.3
-short-name creation disabled (docs\developer\TEST_EXECUTION.md).
+short-name creation disabled (docs\developer\TEST_EXECUTION.md); when the filesystem
+packages are newer than this build; and, with MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE naming a
+lease's lock file, when that lock names neither this run nor a process that started it.
 Results: _build\acceptance\<run>\index.html; exit 0 pass, 1 failure, 2 usage, 127 no cargo.
 '@
 
@@ -67,6 +73,89 @@ function Stop-Usage([string]$Message) {
     if ($Message) { [Console]::Error.WriteLine("acceptance.ps1: $Message") }
     [Console]::Error.WriteLine($usage)
     exit 2
+}
+
+# Why the lease whose lock file `Lock` names was not taken for this run, or $null when it
+# was: the lock ("<owner> <process id> [<start ticks>] <time>") must name this process or
+# one that started it (with its start time, when the lock records it, so that a reused
+# process id does not count). A wrapper that runs this script under a machine-wide lease
+# sets MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE to its lock file, so that a wrapper whose lease
+# failed cannot run beside another one.
+function Test-RunLease([string]$Lock) {
+    if (-not (Test-Path -LiteralPath $Lock -PathType Leaf)) { return 'it is not held' }
+    $holder = ([string](Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)).Trim()
+    $parts = @($holder -split '\s+')
+    $holderId = 0
+    if ($parts.Count -lt 2 -or -not [int]::TryParse($parts[1], [ref]$holderId)) {
+        return "it names no process (`"$holder`")"
+    }
+    $id = $PID
+    for ($depth = 0; $depth -lt 32 -and $id -gt 0; $depth++) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue
+        if (-not $process) { break }
+        if ($id -eq $holderId) {
+            $ticks = 0L
+            if ($parts.Count -ge 3 -and [long]::TryParse($parts[2], [ref]$ticks) -and $process.CreationDate) {
+                # CIM rounds the creation time to microseconds; the lease records .NET ticks.
+                if ([math]::Abs($process.CreationDate.ToUniversalTime().Ticks - $ticks) -gt 10000) {
+                    return "its process $holderId is another process now (`"$holder`")"
+                }
+            }
+            return $null
+        }
+        $id = [int]$process.ParentProcessId
+    }
+    return "it is held by `"$holder`", not by this run or a process that started it"
+}
+
+# A run that is killed leaves its private installation (about 600 MB) below the profile.
+# Each installation holds this marker, "<process id> <start ticks> <time>", naming the
+# process that runs it; a later run removes every installation whose process has ended
+# (or whose id another process has taken since). An installation without a readable
+# marker is never removed: its age would not prove that no run uses it.
+$installationMarker = '.acceptance-installation'
+
+# The marker's text for this process.
+function Get-InstallationMarker {
+    $self = Get-Process -Id $PID
+    return ('{0} {1} {2:o}' -f $PID, $self.StartTime.ToUniversalTime().Ticks, [DateTime]::UtcNow)
+}
+
+# The other private installations below the profile: Stale (their run has ended) and
+# Unmarked (no readable marker, so left alone).
+function Get-LeftInstallations([string]$Current) {
+    $found = @{ Stale = New-Object Collections.Generic.List[string]; Unmarked = New-Object Collections.Generic.List[string] }
+    if (-not $env:USERPROFILE -or -not (Test-Path -LiteralPath $env:USERPROFILE -PathType Container)) { return $found }
+    foreach ($folder in Get-ChildItem -LiteralPath $env:USERPROFILE -Directory -Filter 'MidnightAcceptance-*' -ErrorAction SilentlyContinue) {
+        if ($folder.FullName -eq $Current) { continue }
+        $text = $null
+        try { $text = [IO.File]::ReadAllText((Join-Path $folder.FullName $installationMarker)) } catch { }
+        $parts = @(([string]$text).Trim() -split '\s+')
+        $id = 0
+        $ticks = 0L
+        if ($parts.Count -lt 2 -or -not [int]::TryParse($parts[0], [ref]$id) -or -not [long]::TryParse($parts[1], [ref]$ticks)) {
+            $found.Unmarked.Add($folder.FullName)
+            continue
+        }
+        $process = Get-Process -Id $id -ErrorAction SilentlyContinue
+        $ended = $null -eq $process
+        if (-not $ended) {
+            # A process whose start time cannot be read counts as the run itself.
+            try { $ended = [math]::Abs($process.StartTime.ToUniversalTime().Ticks - $ticks) -gt 10000 } catch { $ended = $false }
+        }
+        if ($ended) { $found.Stale.Add($folder.FullName) }
+    }
+    return $found
+}
+
+# Remove a private installation; whether it is gone. A staged child that is still exiting
+# can hold a file for a moment.
+function Remove-Installation([string]$Path) {
+    for ($attempt = 0; $attempt -lt 10 -and (Test-Path -LiteralPath $Path); $attempt++) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $Path) { Start-Sleep -Milliseconds 500 }
+    }
+    return -not (Test-Path -LiteralPath $Path)
 }
 
 # Whether the volume of `Folder` (or of its nearest existing parent) is qualified for Copy
@@ -296,6 +385,38 @@ try {
         else { Join-Path $root '_build\acceptance' }
     $copyVolume = if ($dryRun -or -not $listOnly) { Get-CopyVolume $runFolders }
 
+    # What stops a run before anything runs (--list runs no scenario and is not stopped):
+    # packages newer than this checkout (the native filesystem host refuses a package whose
+    # minimum_host_minor exceeds its ABI_MINOR, midnight-native-filesystem-host's
+    # discovery.rs, so every staged scenario would miss its filesystem plugin), and a lease
+    # that MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE requires and that was not taken for this run.
+    $runStops = New-Object Collections.Generic.List[string]
+    $abiFile = Join-Path $root 'filesystem-api\midnight-filesystem-plugin-api\src\abi.rs'
+    $abiMatch = if (Test-Path -LiteralPath $abiFile) {
+        [regex]::Match([IO.File]::ReadAllText($abiFile), '(?m)^pub const ABI_MINOR: u16 = (\d+);')
+    }
+    if ($abiMatch -and $abiMatch.Success) {
+        $abiMinor = [int]$abiMatch.Groups[1].Value
+        foreach ($source in $packageSources) {
+            if ($source[0] -ne 'filesystems' -or -not (Test-Path -LiteralPath $source[1] -PathType Container)) { continue }
+            foreach ($package in Get-ChildItem -LiteralPath $source[1] -Directory) {
+                $manifest = Join-Path $package.FullName 'plugin.toml'
+                if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { continue }
+                $wanted = [regex]::Match([IO.File]::ReadAllText($manifest), '(?m)^minimum_host_minor\s*=\s*(\d+)')
+                if ($wanted.Success -and [int]$wanted.Groups[1].Value -gt $abiMinor) {
+                    $runStops.Add(("packages newer than this build: {0} needs filesystem host ABI minor {1} and this checkout has {2}; build the packages from this checkout or name matching ones with --plugins" -f $package.FullName, $wanted.Groups[1].Value, $abiMinor))
+                }
+            }
+        }
+    }
+    # A run under a machine-wide lease (Test-RunLease).
+    if ($env:MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE) {
+        $leaseProblem = Test-RunLease $env:MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE
+        if ($leaseProblem) {
+            $runStops.Add("the lease $($env:MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE) (MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE) was not taken for this run: $leaseProblem")
+        }
+    }
+
     if ($dryRun) {
         Write-Line "Working directory: $root"
         Write-Line "Build profile: $profileName (the suite uses the debug test profile)"
@@ -303,9 +424,13 @@ try {
         else { Write-Line ('Build: [cargo] ' + (($cargoArguments | ForEach-Object { "[$_]" }) -join ' ')) }
         foreach ($source in $packageSources) { Write-Line ("Plugin packages: {0} <- {1}" -f $source[0], $source[1]) }
         Write-Line "Private installation: $installation (owner, SYSTEM and Administrators only; removed afterwards)"
+        $left = Get-LeftInstallations $installation
+        foreach ($path in $left.Stale) { Write-Line "Left by a run that has ended: $path (a run removes it)" }
+        foreach ($path in $left.Unmarked) { Write-Line "Left without a run marker: $path (a run leaves it alone)" }
         if ($runDirectory) { Write-Line "Run folders: $runDirectory" }
         $verdict = if ($copyVolume.Qualified) { '' } else { '; a run there stops' }
         Write-Line "Run folder volume: $($copyVolume.Root) ($($copyVolume.Reason))$verdict"
+        foreach ($problem in $runStops) { Write-Line "A run stops: $problem" }
         if ($stress) { Write-Line 'Stress sizes: on (MIDNIGHT_ACCEPTANCE_STRESS=1)' }
         foreach ($variable in $gated.Keys) { Write-Line "Gated folder: $variable = $($gated[$variable])" }
         Write-Line ('Command: [<installation>\bin\acceptance.exe] ' + (($runner | ForEach-Object { "[$_]" }) -join ' '))
@@ -319,6 +444,10 @@ try {
             "(docs/developer/TEST_EXECUTION.md, `"Windows Copy/Move qualification volume`").") -f
             $runFolders, $copyVolume.Root, $copyVolume.Reason
         [Console]::Error.WriteLine($refusal)
+        exit 2
+    }
+    if (-not $listOnly -and $runStops.Count -gt 0) {
+        foreach ($problem in $runStops) { [Console]::Error.WriteLine("acceptance.ps1: $problem") }
         exit 2
     }
 
@@ -368,8 +497,20 @@ try {
         exit $LASTEXITCODE
     }
 
+    # Installations that killed runs left behind (Get-LeftInstallations).
+    $left = Get-LeftInstallations $installation
+    foreach ($path in $left.Stale) {
+        if (Remove-Installation $path) { Write-Line "Removed the private installation of a run that has ended: $path" }
+        else { [Console]::Error.WriteLine("Could not remove the private installation of a run that has ended: $path") }
+    }
+    foreach ($path in $left.Unmarked) {
+        Write-Line "Left alone: $path names no run (no $installationMarker); remove it by hand once no run uses it"
+    }
+
     $exitCode = 1
     New-Item -ItemType Directory -Path $installation | Out-Null
+    # The marker first, so that even a run killed while it copies is removed later.
+    [IO.File]::WriteAllText((Join-Path $installation $installationMarker), (Get-InstallationMarker))
     try {
         # Owner, SYSTEM and Administrators only, not inherited: the plugin host's trust check
         # (as scripts\validate.ps1 and CI's private test installation do).
@@ -449,12 +590,7 @@ try {
         $exitCode = $LASTEXITCODE
     } finally {
         Set-Location -LiteralPath $root
-        # A staged child that is still exiting can hold a file for a moment.
-        for ($attempt = 0; $attempt -lt 10 -and (Test-Path -LiteralPath $installation); $attempt++) {
-            Remove-Item -LiteralPath $installation -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $installation) { Start-Sleep -Milliseconds 500 }
-        }
-        if (Test-Path -LiteralPath $installation) {
+        if (-not (Remove-Installation $installation)) {
             [Console]::Error.WriteLine("Could not remove the private installation $installation")
         }
     }

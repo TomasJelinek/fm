@@ -151,19 +151,6 @@ fn compare(app: &mut App, what: &str, wanted: i32) -> Result<(), String> {
     closed
 }
 
-/// Mark exactly `names` in `pane` with Insert.
-fn mark(app: &mut App, pane: PaneId, names: &[&str]) -> Result<(), String> {
-    panel::focus_list(app, pane)?;
-    input::chord(app.slint(), &[Key::Control], "d");
-    app.settle();
-    for name in names {
-        panel::select_row(app, pane, name)?;
-        input::key(app.slint(), Key::Insert);
-        app.settle();
-    }
-    journey::same(&journey::marked(app, pane), names)
-}
-
 fn steps(
     app: &mut App,
     context: &mut Context,
@@ -184,7 +171,7 @@ fn steps(
         },
     )?;
     let found = find::relative(&rows, project);
-    journey::same(
+    if let Err(error) = journey::same(
         &found,
         &[
             "alpha.txt",
@@ -192,8 +179,20 @@ fn steps(
             "docs/gamma.txt",
             "bundle.zip/inside/epsilon.txt",
         ],
-    )
-    .map_err(|error| format!("Find needle in *.txt inside archives: {error} ({status})"))?;
+    ) {
+        // An incomplete search says why on the details page its status line opens.
+        let why = if status.starts_with("Incomplete") {
+            match find::details(app, &window) {
+                Ok(texts) => format!("; details: {}", texts.join(" | ")),
+                Err(error) => format!("; details: {error}"),
+            }
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "Find needle in *.txt inside archives: {error} ({status}){why}"
+        ));
+    }
     journey.check(
         "the search completes",
         if status.starts_with("Completed") {
@@ -341,7 +340,7 @@ fn steps(
         compare(app, "docs/gamma.txt with its copy", IDENTICAL),
     );
     panel::leave(app, LEFT)?;
-    mark(app, RIGHT, &["alpha.txt", "omega.txt"])?;
+    journey::mark(app, RIGHT, &["alpha.txt", "omega.txt"])?;
     journey.check(
         "two different copies compare as different",
         compare(app, "alpha.txt with omega.txt", DIFFERENT),
@@ -351,7 +350,7 @@ fn steps(
     journey.step("Ctrl+Shift+C: alpha and gamma identical to their copies; alpha ≠ omega");
 
     // 6. Checksums of the copies.
-    mark(app, RIGHT, &["alpha.txt", "omega.txt", "gamma.txt"])?;
+    journey::mark(app, RIGHT, &["alpha.txt", "omega.txt", "gamma.txt"])?;
     let window = tools::open_tool(
         app,
         "the Checksums window",

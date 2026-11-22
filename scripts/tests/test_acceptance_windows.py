@@ -14,6 +14,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -95,6 +96,9 @@ record = {
     "fat_dir": os.environ.get("MIDNIGHT_ACCEPTANCE_FAT_DIR"),
     "temp": os.environ.get("TEMP"),
     "bin": sorted(p.name for p in (root / "bin").iterdir()),
+    # The run's marker in its installation (None: there is none).
+    "marker": (root / ".acceptance-installation").read_text(encoding="utf-8")
+              if (root / ".acceptance-installation").is_file() else None,
     "arguments": sys.argv[1:],
     # None: the kind's folder does not exist.
     "installed": {kind: sorted(p.name for p in (packages / kind).iterdir())
@@ -246,6 +250,77 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertFalse(runs.exists())
         self.assertEqual(list(profile.glob("MidnightAcceptance-*")), [])
 
+    @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
+    def test_a_run_that_requires_a_lease_runs_only_under_it(self):
+        # A wrapper names its lease's lock in MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE: the lock must
+        # name the runner or a process that started it, or the run stops before anything runs.
+        lock = self.root / "desktop.lock"
+        profile = self.private_profile()
+        recorder = self.root / "recorder.py"
+        recorder.write_text(RECORDER, encoding="utf-8")
+        record = self.root / "record.json"
+
+        def run(holder):
+            if holder is None:
+                lock.unlink(missing_ok=True)
+            else:
+                lock.write_text(holder, encoding="utf-8")
+            record.unlink(missing_ok=True)
+            result = self.run_script("--test-binary", LAUNCHER, "--run-dir", str(self.root / "runs"),
+                                     "--only", str(recorder),
+                                     environment={"RECORD": str(record), "USERPROFILE": str(profile),
+                                                  "MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE": str(lock),
+                                                  **QUALIFIED})
+            return result, record.exists()
+
+        # This test process started the runner, so its lease counts.
+        result, ran = run(f"test {os.getpid()} 2026-11-22T10:00:00")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(ran)
+        for holder, reason in (("other 4 1 2026-11-22T10:00:00",
+                                'it is held by "other 4 1 2026-11-22T10:00:00", not by this run'),
+                               (None, "it is not held")):
+            with self.subTest(holder=holder):
+                result, ran = run(holder)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(f"the lease {lock} (MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE) was not taken "
+                              f"for this run: {reason}", result.stderr)
+                self.assertFalse(ran)
+        self.assertEqual(list(profile.glob("MidnightAcceptance-*")), [])
+
+    @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
+    def test_packages_newer_than_the_checkout_stop_the_run(self):
+        # The native filesystem host refuses a package whose minimum_host_minor exceeds its
+        # ABI_MINOR: every staged scenario would then miss its filesystem plugin.
+        abi = (ROOT / "filesystem-api/midnight-filesystem-plugin-api/src/abi.rs").read_text(
+            encoding="utf-8")
+        minor = int(re.search(r"^pub const ABI_MINOR: u16 = (\d+);", abi, re.M).group(1))
+        plugins = self.root / "plugins"
+        package = plugins / "filesystems" / "native.windows"
+        package.mkdir(parents=True)
+        profile = self.private_profile()
+        for wanted, refused in ((minor + 1, True), (minor, False)):
+            with self.subTest(minimum_host_minor=wanted):
+                (package / "plugin.toml").write_text(
+                    f"abi_major = 1\nminimum_host_minor = {wanted}\n", encoding="utf-8")
+                problem = (f"packages newer than this build: {package} needs filesystem host "
+                           f"ABI minor {wanted} and this checkout has {minor}")
+                plan = self.run_script("--dry-run", "--plugins", str(plugins))
+                self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+                self.assertEqual(any(line.startswith(f"A run stops: {problem}")
+                                     for line in plan.stdout.splitlines()), refused, plan.stdout)
+                recorder = self.root / "recorder.py"
+                recorder.write_text(RECORDER, encoding="utf-8")
+                record = self.root / f"record-{wanted}.json"
+                result = self.run_script("--test-binary", LAUNCHER, "--plugins", str(plugins),
+                                         "--run-dir", str(self.root / "runs"), "--only", str(recorder),
+                                         environment={"RECORD": str(record), "USERPROFILE": str(profile),
+                                                      **QUALIFIED})
+                self.assertEqual(result.returncode, 2 if refused else 0, result.stdout + result.stderr)
+                self.assertEqual(problem in result.stderr, refused, result.stderr)
+                self.assertEqual(record.exists(), not refused)
+                self.assertEqual(list(profile.glob("MidnightAcceptance-*")), [])
+
     def test_a_relative_gated_folder_stops_with_usage(self):
         for variable in ("MIDNIGHT_ACCEPTANCE_FAT_DIR", "MIDNIGHT_ACCEPTANCE_WIN_SYMLINKS"):
             for value in ("relative", "C:relative"):
@@ -320,6 +395,74 @@ class AcceptanceRunnerTests(unittest.TestCase):
                       result.stdout.splitlines())
         # A copy loses explicit entries: the runner grants the workers' AppContainer again.
         self.assert_worker_grants(seen["file_acls"])
+        # The installation names the process that ran it: "<process id> <start ticks> <time>".
+        self.assertRegex(seen["marker"] or "", r"^\d+ \d+ \S+$")
+
+    @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
+    def test_the_next_run_removes_installations_whose_run_has_ended(self):
+        # A run that is killed leaves its private installation behind. Its marker names the
+        # run's process; the next run removes it once that process has ended or its id
+        # belongs to another process. One without a marker is named and left alone however
+        # old it is, as is one whose run still runs; nothing else in the profile is touched.
+        plugins = self.stub_plugins()
+        profile = self.private_profile()
+        ended = int(subprocess.run([LAUNCHER, "-c", "import os; print(os.getpid())"],
+                                   capture_output=True, text=True, check=True).stdout)
+        alive = os.getpid()
+        ticks = int(subprocess.run(
+            [PWSH, "-NoLogo", "-NoProfile", "-Command",
+             f"(Get-Process -Id {alive}).StartTime.ToUniversalTime().Ticks"],
+            capture_output=True, text=True, check=True).stdout)
+        markers = {"ended": f"{ended} 638990000000000000 2026-11-22T00:00:00.0000000Z",
+                   "reused": f"{alive} {ticks - 10_000_000} 2026-11-22T00:00:00.0000000Z",
+                   "running": f"{alive} {ticks} 2026-11-22T00:00:00.0000000Z",
+                   "unmarked": None}
+        folders = {}
+        for name, marker in markers.items():
+            folder = profile / f"MidnightAcceptance-{name}"
+            (folder / "bin").mkdir(parents=True)
+            (folder / "bin" / "acceptance.exe").write_text("stub\n", encoding="utf-8")
+            if marker is not None:
+                (folder / ".acceptance-installation").write_text(marker, encoding="utf-8")
+            folders[name] = folder
+        # Twenty years old: age alone never removes an installation.
+        os.utime(folders["unmarked"], (946684800, 946684800))
+        other = profile / "Other folder"
+        other.mkdir()
+        environment = {"USERPROFILE": str(profile), **QUALIFIED}
+
+        plan = self.run_script("--dry-run", "--plugins", str(plugins), environment=environment)
+        self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
+        lines = plan.stdout.splitlines()
+        for name in ("ended", "reused"):
+            self.assertIn(f"Left by a run that has ended: {folders[name]} (a run removes it)", lines)
+        self.assertIn(f"Left without a run marker: {folders['unmarked']} (a run leaves it alone)", lines)
+        self.assertFalse(any(str(folders["running"]) in line for line in lines), plan.stdout)
+        self.assertTrue(all(folder.is_dir() for folder in folders.values()), "the dry run removed something")
+
+        recorder = self.root / "recorder.py"
+        recorder.write_text(RECORDER, encoding="utf-8")
+        record = self.root / "record.json"
+        runs = self.root / "runs"
+        runs.mkdir()
+        result = self.run_script("--test-binary", LAUNCHER, "--plugins", str(plugins),
+                                 "--run-dir", str(runs), "--only", str(recorder),
+                                 environment={"RECORD": str(record), **environment})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        for name in ("ended", "reused"):
+            self.assertIn(f"Removed the private installation of a run that has ended: {folders[name]}", lines)
+            self.assertFalse(folders[name].exists(), name)
+        self.assertIn(f"Left alone: {folders['unmarked']} names no run (no .acceptance-installation); "
+                      "remove it by hand once no run uses it", lines)
+        for name in ("running", "unmarked"):
+            self.assertTrue((folders[name] / "bin" / "acceptance.exe").is_file(), name)
+        self.assertTrue(other.is_dir())
+        # The run's own installation went as usual: only the two kept ones are left.
+        seen = json.loads(record.read_text(encoding="utf-8"))
+        self.assertFalse(Path(seen["root"]).exists())
+        self.assertEqual(sorted(p.name for p in profile.glob("MidnightAcceptance-*")),
+                         ["MidnightAcceptance-running", "MidnightAcceptance-unmarked"])
 
     @unittest.skipUnless(LAUNCHER, "the py launcher stands in for the test executable")
     def test_without_packages_no_package_folder_is_made(self):

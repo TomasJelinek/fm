@@ -286,6 +286,123 @@ class LinuxBuildSetupTests(unittest.TestCase):
                 if stage_root is not None:
                     self.assertTrue(Path(stage_root).is_dir())
 
+    def staged_packages(self, minimum_host_minor):
+        """A package folder outside the checkout with one native filesystem package that
+        needs `minimum_host_minor`; the checkout's filesystem host has ABI minor 4."""
+        abi = self.root / "filesystem-api/midnight-filesystem-plugin-api/src/abi.rs"
+        abi.parent.mkdir(parents=True, exist_ok=True)
+        abi.write_text("pub const ABI_MAJOR: u16 = 1;\npub const ABI_MINOR: u16 = 4;\n",
+                       encoding="utf-8")
+        packages = self.root.parent / "packages" / "debug"
+        package = packages / "filesystems" / "native.linux"
+        package.mkdir(parents=True, exist_ok=True)
+        (package / "plugin.toml").write_text(
+            f"abi_major = 1\nminimum_host_minor = {minimum_host_minor}\n", encoding="utf-8")
+        return packages
+
+    def require_private_ancestors(self, folder):
+        """Skip when a folder above `folder` would make the plugin host refuse staged
+        packages anyway (another owner, or writable by others without the sticky bit):
+        the cases that must pass need a test folder that the account alone controls."""
+        for ancestor in folder.parents:
+            status = ancestor.lstat()
+            if (status.st_uid not in (0, os.getuid())
+                    or (status.st_mode & 0o022 and not status.st_mode & 0o1000)):
+                self.skipTest(f"{ancestor} is shared with other accounts")
+
+    def run_acceptance(self, *arguments, environment):
+        shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
+        return subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), *arguments],
+                              cwd=self.root.parent, env=environment, text=True,
+                              capture_output=True, timeout=20)
+
+    def test_acceptance_script_stops_on_packages_newer_than_the_checkout(self):
+        # The native filesystem host refuses a package whose minimum_host_minor exceeds its
+        # ABI_MINOR: every staged scenario would then miss its filesystem plugin.
+        stages = self.root.parent / "stages"
+        stages.mkdir(mode=0o700)
+        self.require_private_ancestors(stages)
+        for minor, refused in ((5, True), (4, False)):
+            with self.subTest(minimum_host_minor=minor):
+                self.log.unlink(missing_ok=True)
+                packages = self.staged_packages(minor)
+                environment = dict(self.environment, MIDNIGHT_ACCEPTANCE_PLUGINS=str(packages),
+                                   MIDNIGHT_ACCEPTANCE_STAGE_ROOT=str(stages))
+                plan = self.run_acceptance("--dry-run", environment=environment)
+                run = self.run_acceptance("--only", "startup", environment=environment)
+                listing = self.run_acceptance("--list", environment=environment)
+                wanted = (f"packages newer than this build: {packages}/filesystems/native.linux "
+                          f"needs filesystem host ABI minor {minor} and this checkout has 4")
+                self.assertEqual(plan.returncode, 0, plan.stderr)
+                self.assertEqual(f"A run stops: {wanted}" in plan.stdout, refused, plan.stdout)
+                self.assertEqual(run.returncode, 2 if refused else 0, run.stdout + run.stderr)
+                self.assertEqual(wanted in run.stderr, refused, run.stderr)
+                # --list stages nothing, so it runs either way.
+                self.assertEqual(listing.returncode, 0, listing.stderr)
+                self.assertEqual(len(self.calls().splitlines()), 1 if refused else 2, self.calls())
+
+    def test_acceptance_script_stops_when_stages_would_be_writable_by_others(self):
+        # A checkout copied from /mnt/c keeps drvfs's mode 0777, and the plugin host refuses
+        # packages staged below a folder that other accounts can change.
+        packages = self.staged_packages(4)
+        stages = self.root.parent / "open stages"
+        stages.mkdir()
+        self.require_private_ancestors(stages)
+        environment = dict(self.environment, MIDNIGHT_ACCEPTANCE_PLUGINS=str(packages),
+                           MIDNIGHT_ACCEPTANCE_STAGE_ROOT=str(stages))
+        try:
+            for mode, refused in ((0o777, True), (0o775, True), (0o1777, False), (0o755, False)):
+                with self.subTest(mode=oct(mode)):
+                    stages.chmod(mode)
+                    result = self.run_acceptance("--only", "startup", environment=environment)
+                    self.assertEqual(result.returncode, 2 if refused else 0,
+                                     result.stdout + result.stderr)
+                    self.assertEqual(
+                        f"{stages} is writable by other accounts (mode {mode:o})" in result.stderr,
+                        refused, result.stderr)
+        finally:
+            stages.chmod(0o755)
+
+    def test_acceptance_script_runs_only_under_a_required_lease(self):
+        # A wrapper names its lease's lock in MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE: without that
+        # lock, or with another owner's, the run stops before anything runs.
+        lock = self.root.parent / "wsl.lock"
+        environment = dict(self.environment, MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE=str(lock),
+                           MIDNIGHT_ACCEPTANCE_LEASE_OWNER="wp1")
+        for holder, reason in ((None, "it is not held"),
+                               ("wp2 4242 639309000000000000 2026-11-22T10:00:00",
+                                "it is held by wp2, not wp1"),
+                               ("wp1 4242 639309000000000000 2026-11-22T10:00:00", None)):
+            with self.subTest(holder=holder):
+                self.log.unlink(missing_ok=True)
+                if holder is None:
+                    lock.unlink(missing_ok=True)
+                else:
+                    lock.write_text(holder, encoding="utf-8")
+                result = self.run_acceptance("--only", "startup", environment=environment)
+                if reason is None:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(len(self.calls().splitlines()), 1, self.calls())
+                else:
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn(f"the lease {lock} (MIDNIGHT_ACCEPTANCE_REQUIRE_LEASE) was not "
+                                  f"taken for this run: {reason}", result.stderr)
+                    self.assertEqual(self.calls(), "")
+
+    def test_acceptance_script_warns_of_a_target_outside_the_checkout(self):
+        # A target shared with checkouts of other commits can link their workspace code.
+        checkout = self.root.resolve()
+        for target, warned in ((self.root.parent / "shared target", True),
+                               (checkout / "_build" / "target", False), (None, False)):
+            with self.subTest(target=target):
+                environment = dict(self.environment)
+                if target is not None:
+                    environment["CARGO_TARGET_DIR"] = str(target)
+                result = self.run_acceptance("--dry-run", environment=environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(f"CARGO_TARGET_DIR {target} is outside this checkout" in result.stderr,
+                                 warned, result.stderr)
+
     def test_invalid_or_conflicting_arguments_stop_before_any_tool(self):
         for arguments in (("release", "debug"), ("clean", "--install-deps"),
                           ("clean", "--validate"), ("--validate", "--validate"),
