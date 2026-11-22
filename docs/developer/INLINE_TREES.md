@@ -1,17 +1,18 @@
 # Inline provider branches
 
 `midnight-engine::providers::tree` supplies the backend branch model for TREE-01.
-The production Engine now routes `Command::Tree` and `Event::Tree` through bounded
-per-pane workers. Production native/archive panels now integrate disclosure,
+The production Engine routes `Command::Tree` and `Event::Tree` through bounded
+per-pane workers. Native and archive panels integrate disclosure,
 projection/selection adoption and typed directory navigation. Persistent filters,
 prefix/quick search and sibling sorting use acknowledged backend reprojection.
 Viewers accept immutable root-file aliases from expanded panels and prepare their
 visible file order on the viewer worker; folder descendants grant no file authority.
 Copy/Move, Delete, Rename, metadata, external editor, checksums, custom commands,
 directory sizes, dragging and native Copy/Cut clipboard publication consume exact
-captured occurrences; archive/mixed clipboard exports remain unsupported.
-Remaining native workflow qualification stays open; this is not full TREE-01.
-See the [panel contract and dated evidence](TREE_PANEL.md).
+captured occurrences; archive/mixed clipboard exports remain unsupported. The
+remaining native workflow qualification of TREE-01 is tracked in the
+[backlog](../IMPLEMENTATION_BACKLOG.md). See the
+[panel contract and dated evidence](TREE_PANEL.md).
 
 ## Identity and work ownership
 
@@ -131,9 +132,8 @@ Depth is a row's tree depth, as `TreeProjection::MAX_DEPTH` counts it: the shown
 folder's own entries are depth 0 and the folders inside them depth 1, so a
 folder shows 64 levels of subfolders. A folder at depth 64 is still listed: an
 empty one expands, and a listing that would add depth 65 fails on that folder
-with "Subfolders here are more than 64 levels deep and are not shown." Until 22
-November 2026 the tree refused to list a folder at depth 63, one level short of
-the projection's bound. Depth costs nothing else: every occurrence is charged
+with "Subfolders here are more than 64 levels deep and are not shown." Depth
+costs nothing else: every occurrence is charged
 once for its own entry, never for its path, and a listing returns its permit
 when its result is applied, so a 64-level chain holds one occurrence per level
 and no permit between levels.
@@ -165,14 +165,13 @@ provider tables therefore hold the live references plus at most one threshold
 and the listings since the last settled completion (one listing, or one
 unpublished recursive batch of at most 128 listings), regardless of uptime.
 
-A pass runs on the pane's model worker before that completion's publication.
-In an optimized test build (release opt-level without fat LTO) on the
-development machine, applying a root completion that triggered a pass took
-1.4-2.0 ms longer with 1,103 live rows (6.6-8.9 ms without a pass) and
-8.6-10.6 ms longer with 6,603 live rows (54-65 ms without), 7-22% in these runs.
-One isolated pass over both tables took 6-10 ms from 25,000 records to 10,001
-and 27-63 ms from 99,000 records, near the caps. The ignored
-`tree_reference_churn_harness` and `reclamation_cost_harness` tests measure this.
+A pass runs on the pane's model worker before that completion's publication. The
+ignored `tree_reference_churn_harness` and `reclamation_cost_harness` tests measure
+its cost: in an optimized test build (release opt-level without fat LTO), applying a
+root completion that triggered a pass took 1.4-2.0 ms longer with 1,103 live rows
+(6.6-8.9 ms without a pass) and 8.6-10.6 ms longer with 6,603 live rows (54-65 ms
+without). One isolated pass over both tables took 6-10 ms from 25,000 records to
+10,001 and 27-63 ms from 99,000 records, near the caps.
 
 Without reclamation a long-lived churning mount would reach the 100,000-reference
 caps. A listing that then meets a new name fails as resource-limited. The root is
@@ -181,21 +180,15 @@ churning root every later sweep would stop at the root, leaving the whole tree
 stale behind an explicit refresh error until navigation.
 
 Recursive expansion batches at most 128 returned results or 50 ms per
-publication. The historical cap16 candidate failed its
-[debug controller gate](../ACTIVE_WORK.md#tree-scaling-candidate-gate); the later
-integrated [cap128 increment](../ACTIVE_WORK.md#recursive-tree-cap128-gate) passed
-its single debug synthetic aggregate. These opt-level 0 synthetic-provider
-fixtures measure no filesystem I/O or UI paint, and retained model bounds do not
-establish fast large-tree expansion. See
+publication (`tree_recursive.rs`). Retained model bounds do not establish fast
+large-tree expansion: the synthetic-provider fixtures measure no filesystem I/O or
+UI paint. See
 [recursive expansion](TREE_PANEL.md#retry-diagnostics-and-recursive-expansion).
 
 A budget that stops the walk does not undo its batch: the listings it made
 within the budgets are published, and the folder it stopped at shows its
 failure. Only a display projection that cannot hold the batch rolls it back to
-the last publication. Until 22 November 2026 every stop rolled the batch back,
-so a 66-level chain showed only what the batches before the refused depth-63
-listing had published: down to depth 48 in the reported runs, whose first
-50 ms batch listed the clicked folder and depths 1 to 47. A folder refused by
+the last publication. A folder refused by
 the depth budget stays local to its row, like a denied folder, and the walk
 goes on with the others. The walk's final `TreeEvent::Rejected` for its request
 names the row where it stopped and says why: the first folder the depth budget
@@ -222,7 +215,7 @@ alone would not satisfy that requirement.
 
 ### Selection and publication prerequisite
 
-The backend `tree_actor::Session` now owns an occurrence-based selection through
+The backend `tree_actor::Session` owns an occurrence-based selection through
 `tree_selection::Selection`. `publication()` returns the exact projection and its
 selection together. A successful reprojection rebases selected occurrence IDs
 before either object becomes visible; collapsed, filtered-out and context-only
@@ -256,12 +249,10 @@ Native, archive and Network navigation cancel the previous tree generation. A
 pending or current Network generation cannot admit an earlier native/archive
 root. Accepted archive navigation targets retain their registration independently
 of later pane replacement. See the [controller contract](../../crates/midnight-engine/TREE_CONTROLLER.md)
-for queue, payload, shutdown and retirement limits. Presenter browsing is integrated;
-filter/sort routing has 9 November Windows debug Engine/Slint evidence in
-[TREE_PANEL.md](TREE_PANEL.md#filter-and-sort-evidence). Prefix integration and its
-current qualification scope are recorded in the
-[10 November report](../verification/2026-11-10-tree-prefix-search.md).
-Installed native workflow qualification remains separate work.
+for queue, payload, shutdown and retirement limits. Presenter browsing is integrated.
+Dated evidence: filter/sort routing in
+[TREE_PANEL.md](TREE_PANEL.md#filter-and-sort-evidence) and prefix integration in the
+[prefix search record](../verification/2026-11-10-tree-prefix-search.md).
 
 ### Completed roots and typed action admission
 
@@ -303,7 +294,7 @@ Production selection uses occurrence identities and exact acknowledged projectio
 and selection snapshots. [Directory sizes](TREE_PANEL.md#directory-sizes) and the
 operation consumers listed above consume captured native/archive targets.
 Do not weaken native mutation's immediate-parent and captured-snapshot checks to accept arbitrary
-descendants. The adapters now provide complete typed native/archive ancestry;
+descendants. The adapters provide complete typed native/archive ancestry;
 the production actor must consume it instead of reconstructing a display path.
 
 Preserve provider locale enrichment, native-plugin content capture, raw path

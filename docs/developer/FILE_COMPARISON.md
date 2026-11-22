@@ -3,36 +3,17 @@
 `Ctrl+Shift+C`, F10's Compare files and the shared toolbar invoke the same comparator.
 The action remains available without a file target: it can ask for both inputs.
 
-## Planned comparator settings
+## Comparator settings
 
-Configurable comparator associations remain **in development**. The
+Options › Comparators holds an ordered list of rules that choose, by both basenames,
+how a pair is compared: Automatic, the built-in text or image comparison, or a trusted
+external program. A comparison session pins the accepted rules when it opens and keeps
+them (`routing::select` in `midnight-compare-engine/src/routing.rs`, through the
+engine's comparator policy source in `midnight-explorer/src/comparator_external.rs`);
+later edits apply to new sessions. Design records: the
 [design](../superpowers/specs/2026-11-13-comparator-associations-design.md),
 [UI wireframes](../superpowers/specs/2026-11-13-comparator-associations-ui.md) and
-[implementation plan](../superpowers/plans/2026-11-13-comparator-associations.md)
-cover ordered BOTH-basename routing to existing built-ins or a trusted external
-program. Configured backend routing now has a targeted **77 passed / 0 failed /
-2 ignored** gate, with strict Clippy/format0, empty source drift and unchanged app.
-It consumes the 27-file freeze with 30 newly authored tests and overlaps earlier
-comparison checks. The canonical P3 packet is promoted (104 sources/159 source-derived selections).
-The selected 39 integration cases are 38 passed/1 Options-init-focus failure.
-P3 units initially20/1; the corrected draft exact selector now passes once, with
-the other 20 not rerun. Native comparator4/0 is scoped below; no full159/native
-input or ReadAt acceptance follows. See the [current checkpoint](../ACTIVE_WORK.md#current-checkpoint).
-
-The corrected faithful native comparator fixture ran **4 actual Windows cases /
-0 failures** (`comparator-d6ce28b8eb`): raw parent/argv/cwd, NotStarted cleanup,
-preworker cancellation/two session credits/no child, and non-Unicode Automatic
-fallback. Components were unchanged and every case left remainingOwned[]. This
-closes the old fixture settings-timeout for those cases; historical failures remain
-recorded. Fixture 16 blocking/6 resident/10 transient-holder qualification does not
-implement the production-pool repair or supply native ReadAt counts.
-
-The current pairing and ownership behavior below remains implemented.
-
-## Comparators in Options (in development)
-
-This help describes the new source workflow. Use it after the coordinated UI and
-application gates pass; it is not yet a qualified feature of the running app.
+[implementation plan](../superpowers/plans/2026-11-13-comparator-associations.md).
 
 1. Open **Options → Comparators**. Add a rule and set **Enable this rule**.
    Disabled rules stay saved and are skipped during matching. Move a rule up or
@@ -270,42 +251,13 @@ between bounded steps. The retained text is one string and a `u32` line end per 
 each file, and 12 bytes per aligned row (`text_align.rs`, tests in `text_align_tests.rs`
 and `text_tests.rs`).
 
-Measured on 2026-11-20 with synthetic logs of numbered 70-byte lines (a standalone
-build of this alignment code and of the previous `similar::TextDiff` pipeline) on a
-shared 32-CPU build machine with a load average of 7 to 13. Times cover the alignment
-and the retained rows after reading; memory is the peak beyond the two texts.
-
-| Per file | Lines | Changed lines | Previous, optimized | Current, optimized | Current, debug | Memory, previous → current |
-| --- | --- | --- | --- | --- | --- | --- |
-| 16 MiB | 238,828 | 2 | 198 ms | 72 ms | 420 ms | +65 → +16 MiB |
-| 32 MiB | 477,686 | 2 | 473–523 ms | 169 ms | 855 ms | +131 → +32 MiB |
-| 64 MiB | 955,305 | 2 | 996 ms | 453 ms | not run | +282 → +64 MiB |
-| 4 MiB | 59,706 | 10% (5,392 groups) | 520 ms | 516 ms | 886 ms | +4 MiB |
-| 32 MiB | 477,686 | 1% (4,793 groups) | 919–958 ms, out of time: 2,397–3,596 groups | 688 ms, all groups | not run | +131 → +32 MiB |
-| 16 MiB | 238,828 | 10% (21,324 groups) | 833 ms, one changed block | 865 ms, all groups | 1,347 ms | +65 → +16 MiB |
-| 32 MiB | 477,686 | 10% (42,846 groups) | 967 ms, one changed block | 1,012 ms, all groups | 1,895 ms | +131 → +32 MiB |
-| 64 MiB | 955,305 | 10% (85,850 groups) | 1,098 ms, one changed block | 1,329 ms, all groups | not run | +284 → +64 MiB |
-| 32 MiB | 477,686 | unrelated files | 956 ms, one block | 1,066 ms, one block | 2,270 ms | +131 → +82 MiB |
-| 64 MiB | 955,305 | unrelated files | 1,468 ms, one block | 1,442 ms, one block | not run | +282 → +164 MiB |
-
-These measurements predate the development profile's optimization level 2 for `similar`
-and this crate (`Cargo.toml`); the debug app (`_build/debug`) now runs them optimized.
-Reading, UTF-8 validation and the control check add to these times (they are linear;
-the control check reads eight bytes at a time). 32 MiB and 1,000,000 lines per file keep
-the worst case near one second (two in a debug build) and the peak memory near two and a
-half times the texts; 64 MiB pairs would still align in under 1.5 seconds, but at twice
-the memory. Larger pairs, which a text view would not make readable, are compared as
-bytes with bounded memory.
-
-The table predates the collection and compaction described above. They were measured
-on 2026-11-20 in the project's Linux build container (test profile, which builds this
-crate and `similar` at optimization level 2) on the same shared machine, with a case
-from review: File A of 250,000 blocks `U<i>`, an empty line and `X<i>`, and File B the
-same with `Y<i>` and one more empty line (1,750,000 lines in all). Myers gives up, and
-the anchored pass emits about a million operations. It aligns in 1.0 s
-(`many_changes_between_anchors_align_in_bounded_time`). The previous code, which merged
-those operations through `similar`'s `Compact` with a vector insertion or removal each,
-took 290 s, and a cancellation requested after 30 s did not stop it.
+The limits of 32 MiB and 1,000,000 lines per file keep the worst case near one second
+in an optimized build (two in a debug build) and the peak memory near two and a half
+times the texts, as measured with synthetic logs of numbered 70-byte lines. Larger
+pairs, which a text view would not make readable, are compared as bytes with bounded
+memory. A pathological pair (1,750,000 lines in all, where Myers gives up and the
+anchored pass emits about a million operations) aligns in about a second
+(`many_changes_between_anchors_align_in_bounded_time`).
 
 ## Presentation and tests
 
@@ -355,36 +307,18 @@ the previous composition stays visible until the new result is ready. Fit/zoom
 and divider/opacity controls occupy the next row; Close and content focus remain
 reachable in compact windows and at large font sizes.
 
-Five selected headless UI/theme checks plus visual review and scoped quality
-checks passed in the 17 November branch handoff. They cover pointer selections,
-requested/acknowledged mode separation and adjacent layouts; they do not qualify
-the entire ui_polish target or a new application. A prominent green identical
-result still requires an input-bound whole-input typed backend verdict; neither
-status text nor equal image dimensions/pixels is a substitute. A separate work-branch selection recorded 38 passes and one Options initial-focus failure.
-The diagnostic handoff records OK focused while the expected pattern is visible.
-The corrected draft exact selector passed once after initial 20/1; the other 20
-were not rerun. Prior 55 unit passes retain their own frozen source, and no full159
-or native input qualification follows. See the
-[current checkpoint](../ACTIVE_WORK.md#current-checkpoint) for exact receipts.
+A prominent green identical result requires an input-bound, whole-input typed backend
+verdict; neither status text nor equal image dimensions or pixels is a substitute.
 
-The corrected faithful native comparator fixture ran **4 actual Windows cases /
-0 failures** (`comparator-d6ce28b8eb`): raw parent/argv/cwd, NotStarted cleanup,
-preworker cancellation/two session credits/no child, and non-Unicode Automatic
-fallback. Components were unchanged and every case left remainingOwned[]. This
-closes the old fixture settings-timeout for those cases; historical failures remain
-recorded. Fixture 16 blocking/6 resident/10 transient-holder qualification does not
-implement the production-pool repair or supply native ReadAt counts.
-
-The work-branch appearance handoff defines the contract for Viewer and Compare.
-Merged paint and native input validation remain open. Application UI font is separate
-from document font. Frontend apply_appearance consumes actual applied/preview Theme,
-density and UI font scalars for existing/new windows; backend restore_palette accepts
-foreground/background/selection/accent only. Accepted revision is not painted/native
-acknowledgement. Bounded latest requests, A→B→A, rollback and frame-generation fences
-must preserve source/layout/position without recapture, relaunch or source I/O.
-Source/Markdown semantic roles must recolor active/cached content, gutters and raster;
-Office/author HTML CSS and original image/PDF pixels remain content-owned. Reuse
-supported UI controls and preserve input/accessibility; no SDK expansion is selected.
+Viewer and comparator windows follow the application appearance. `apply_appearance`
+(`midnight-compare-ui/src/appearance.rs`) applies the current or previewed theme,
+density and UI font to open windows and primes windows opened later; the UI font does
+not change a window's document font. `Session::restore_palette` hands the worker only
+the document colours (text, page, selection, selection text and accent) and returns
+the accepted palette revision, which `Session::palette_revision` still reports after
+close or disconnect; the worker stamps each completed frame with the palette it used,
+so a revision is an acceptance, not a paint acknowledgement. Office and author HTML
+styles and original image and PDF pixels keep their own colours.
 
 Tests cover existing automatic Unicode/raw-native pairing, partial physical order,
 empty/ambiguous/pending panel inputs, repeated invalid paths and retry, unchanged
@@ -393,17 +327,10 @@ presentation, real Slint field input, busy-state duplicate prevention and compac
 rendering. See `midnight-compare-engine/src/file_choice_tests.rs` and
 `midnight-compare-ui/tests/file_choice.rs`.
 
-Salamander reference: `src/plugins/filecomp/dialogs.cpp` (`CCompareFilesDialog`) and
-`src/plugins/filecomp/lang/lang.rc` (`IDD_COMPAREFILES`). The two-path/Browse behavior
-is adopted; no C++ implementation, artwork or MAX_PATH restriction is copied.
+The File A / File B form follows Salamander's Compare Files dialog (two paths, each
+with Browse); no implementation, artwork or MAX_PATH restriction is copied.
 
-The accepted opening-palette amendment adds host `Session::palette_revision()`
-and `WindowSession::palette_revision()` getters of the current accepted revision.
-They remain readable after close/disconnect, perform no admission or mutation and
-are not paint acknowledgements. Frontends merge the four actual app colors before
-open, then seed opening fences from the real getter before publishing/consuming
-the session; `restore_palette` is for later changes. Preserve document fonts and
-typed terminal ExternalStarted/Unknown outputs. Do not hardcode a universal initial
-revision: current Viewer and Compare conventions differ. This is accepted private
-implementation in progress, without Core DTO/public plugin SDK changes or passing
-integration evidence.
+Before a window opens, the frontend merges the application document colours and seeds its
+opening fences from the session's real `palette_revision()` before it publishes or
+consumes the session; `restore_palette` serves later changes. Viewer and comparator
+revision conventions differ, so no universal initial revision is assumed.

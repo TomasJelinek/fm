@@ -1,6 +1,9 @@
 # ABI and lifecycle contract
 
-This page describes native ABI 1.0 and public SDK 0.1.0. Read the
+This page describes native ABI 1.0 (`ABI_MAJOR` 1, `ABI_MINOR` 0) and the public
+API/SDK 0.2.0 (`api/Cargo.toml`), which is 0.1.0 plus the optional source-preparation
+request; plugins built against SDK 0.1.0 (the basic and Markdown viewers, the
+conformance fixture) load unchanged. Read the
 [architecture and trust model](README.md) before implementing a native consumer.
 The [generated C header](../../api/midnight-plugin-api/include/midnight_plugin_v1.h)
 is the cross-language layout reference. Rust names below come from
@@ -79,9 +82,12 @@ whether arbitrary addresses are mapped or trustworthy.
    revision, requested mode, session and generation, and emits `Output::opened`.
    `Opened` is ordinary output; finish the open request with a terminal too.
 3. Submit `REQUEST_VIEWPORT`, `REQUEST_SEARCH` or the optional `REQUEST_LOCATE`
-   ([source positions](../../api/SOURCE_POSITION.md)) as needed. Each request has
-   its own nonzero ID and the session/generation identity in the ABI envelope. Use
-   bounded reads and continuations to generate zero or more data events.
+   ([source positions](../../api/SOURCE_POSITION.md)) and, from 0.2.0, the optional
+   `REQUEST_PREPARE_SOURCE` ([source preparation](VIEWER_PROTOCOL.md#optional-source-preparation-02-source-contract))
+   as needed; a plugin that does not implement an optional request returns
+   `UNSUPPORTED`. Each request has its own nonzero ID and the session/generation
+   identity in the ABI envelope. Use bounded reads and continuations to generate zero
+   or more data events.
 4. End each accepted request exactly once with Completed, Cancelled or Failed.
    Rejected admission owns no accepted request and produces no terminal event.
 5. `REQUEST_CLOSE` is the public logical session-close request, with an empty
@@ -131,8 +137,8 @@ type ReadContinuation =
 // is_cancelled(&self) -> bool
 ```
 
-`Output::{opened, text, binary, document, search_match, progress, text_position}`
-validate models before encoding. `binary` additionally takes owned `Box<[u8]>` and
+`Output::{opened, text, binary, document, search_match, progress, text_position,
+source_prepared}` validate models before encoding. `binary` additionally takes owned `Box<[u8]>` and
 verifies its length equals `source.length`. Complete in the send continuation,
 after delivery queue admission, rather than immediately after scheduling a send.
 Dropping the last unfinished context produces failure; dropping a finished context

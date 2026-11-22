@@ -258,10 +258,8 @@ cleanup. A prepared child cannot be recycled for another source after consumptio
 The independent image/document API, SDK, MIV1 messages, sandbox and resource-policy
 contracts remain unchanged.
 
-**Implemented additive host lifecycle contract (V4):** source-integrated on
-466+13. Combined library, selected native and normal-profile deployment
-qualification passed on Windows; platform/manual limits are recorded below.
-`prepare_owned` / `open_owned` accept a `Box<dyn Send>` ownership token. Clone
+**Host lifecycle contract.** `prepare_owned` / `open_owned` accept a
+`Box<dyn Send>` ownership token. Clone
 the same `ChildPermit` reservation into the host before opaque process
 creation, so unclear spawn/reap outcomes retain actual child capacity. Use
 `close_checked` and `cleanup_status` / `CleanupStatus` to observe cleanup;
@@ -279,27 +277,16 @@ image viewer's user content is a viewer capture, which accepts a change-time-onl
 drift under its own policy (see
 [change-time drift](CONTENT_READS.md#change-time-drift-view-05)). This worker-code proof
 is distinct from own-EXE SHA default-OFF selection. These additions belong to the
-Rust host API, not the plugin SDK, ABI or MIV1 protocol.
-
-Qualification: the original native07 failure and fresh protected **17.02 s**
-ChangeTime-only reproduction remain RED evidence, proving neither equal bytes
-nor a mutator. The aged-fixture **8.96 s** diagnostic pass gave no formal credit
-or behavior-fix proof. Backend plugin-host tests passed **97/0/6** and scoped
-format/Clippy checks had zero warnings. The **26 new Viewer test definitions**
-are included in passing host/engine library suites **33/0/4 + 256/0/4**. Fresh
-first-use native07 passed; the remaining selected native cases passed across the
-seven-case Viewer run and four-case thumbnail-fixture/deferred continuation.
-Warm host, runtime inventory/validator and normal-profile deployment passed. Three Linux-specific
-cases and UNC/manual paths remain unrun; desktop10 lacks a qualified observer.
-This worker-proof contract is independent of own-EXE default-OFF selection.
+Rust host API, not the plugin SDK, ABI or MIV1 protocol. Its native tests run on
+Windows; the Linux-specific cases and UNC paths are not covered.
 
 ## Source ranges and archive memory
 
 Archive streaming, private disk spooling and the small-content RAM budget (ARCH-01)
-are implemented for the protocol-2/3 archive worker; qualification of the integrated
-application with the matching package is still pending (see the
-[implementation backlog](../IMPLEMENTATION_BACKLOG.md)). The experimental JPEG-only
-adapter remains reverted; all raster formats use the shared image-rs decoder path.
+are implemented for archive workers of protocol 2 and later; the remaining application
+qualification is tracked as ARCH-01 in the
+[implementation backlog](../IMPLEMENTATION_BACKLOG.md). All raster formats use the
+shared image-rs decoder path.
 
 Broker `Read { offset, length }` requests allow a decoder to request only part of
 the encoded file; they do not guarantee that the decoder itself streams. In the
@@ -307,9 +294,9 @@ pinned `image 0.25.10`, `JpegDecoder::new` calls `read_to_end` into its own `Vec
 This happens for both native and archive JPEGs, so the image worker holds the
 complete encoded JPEG during decoding, in addition to decoded pixels; that input is
 dropped after decode. A future format-specific decoder could read only an embedded
-preview. PSD is not a currently supported codec. The current raster plugin retains
+preview. PSD is not supported. The raster plugin retains
 the complete decoded still image, within its pixel budget.
-Broker source reads are currently available during Open, not arbitrary later
+Broker source reads are available during Open only, not in later
 render calls; deferred layer/content loading would need a separately qualified
 protocol extension.
 
@@ -337,8 +324,8 @@ streaming decoder behavior; disk spooling cannot remove that allocation.
 The accepted
 [ARCH-01 design](../superpowers/specs/2026-11-09-archive-streaming-design.md) keeps
 small content under an aggregate RAM budget and spills only larger content to
-private disk. Since 20 November the host does so with the 16 MiB stage limit and
-the 128 MiB process-wide budget above; a stage that outgrows either moves its bytes
+private disk. The host does so with the 16 MiB stage limit and the 128 MiB
+process-wide budget above; a stage that outgrows either moves its bytes
 to a spool file. The design's other requirements remain: no
 fixed archive or member byte-size ceiling, bounded working memory, cancellation,
 integrity verification and explicit out-of-space errors (the host stops staging
@@ -509,15 +496,10 @@ publication.
 
 ### Prewarming checks
 
-The R2 Windows headless controls pass **5/0/0** with candidate host code and
-the unchanged private `269f3419` worker package. One same-candidate authored 2x1 BMP pair records cold Open to exact
-CPU pixels **253.919 ms** and ready Open **139.410 ms**, including **71.182 ms**
-claim validation. Preparation is a separate **204.803 ms** interval with zero
-source validations/reads; ready Open records zero process creations. Source drift
-is zero, all 1,382 runtime file hashes are unchanged and owned cleanup completes.
-The pair calls host startup directly; engine manager/refill and application UI
-are not timed. These are single host-control observations; other images,
-scrolling/smoothness, Ready idle memory/CPU and complete-run peak resources retain
-separate qualification. R3's final fixture/lint gate passes without rerunning or
-relabeling the R2 native controls. See the
-[current source and receipts](../ACTIVE_WORK.md#image-prewarming-source-and-evidence).
+Headless host tests on Windows cover prewarming: a prepared spare opens with no
+process creation and no source validation or read during preparation, and owned
+cleanup completes. In one recorded run on a 2x1 BMP, cold Open to exact CPU pixels
+took about 254 ms and Open of a ready spare about 139 ms, preparation being a
+separate interval of about 205 ms; engine refill and the application UI were not
+timed, and other images, scrolling, idle memory and peak resources are not measured
+([evidence](../ACTIVE_WORK.md#image-prewarming-source-and-evidence)).

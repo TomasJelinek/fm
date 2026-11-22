@@ -129,10 +129,11 @@ arbitrary native handles, command text, credentials or network access. It must
 not reconstruct paths from display labels. Native source identity remains
 host-owned. The host validates identity, length and change/write timestamps
 before and after operations, and before/after each broker read. A change time that
-alone moved is not a change (VIEW-05, since 21 November for archive files):
-endpoint protection moves it, for example by adding an alternate data stream to an
-archive hours after it was written, and the host then reopens the file's reader and
-reads on. A detected change invalidates the operation; consumers must not combine
+alone moved is not a change (VIEW-05, see
+[content reads](CONTENT_READS.md#change-time-drift-view-05)): endpoint protection
+moves it, for example by adding an alternate data stream to an archive hours after it
+was written, and the host then reopens the file's reader and reads on. A detected
+change invalidates the operation; consumers must not combine
 different revisions.
 A change that a reopened reader confirms is lasting, and fails as `InvalidData`:
 that mount is not expected to read the archive again, so Copy offers no Retry
@@ -156,7 +157,7 @@ separate from lossy UTF-8 display labels.
 | --- | --- | --- |
 | `Open` | `Opened` or `Failed` | One source and one immutable mount per worker |
 | `List { directory, after }` | `Entries` or `Failed` | `after` is the exclusive last node ID; continue while `more` is true |
-| `Read { entry, offset, length }` | `ContentReady` (v2/v3), `Content` (v1) or `Failed` | Checked `u64` byte offsets, requested length 1–256 KiB |
+| `Read { entry, offset, length }` | `ContentReady` (v2 to v4), `Content` (v1) or `Failed` | Checked `u64` byte offsets, requested length 1–256 KiB (`MAX_READ`) |
 | `SourceRead` | `SourceData` or failure/closure | Nested worker-to-host read within the current request |
 | `Close` | Worker exit | No terminal protocol reply required |
 
@@ -165,10 +166,12 @@ StageSeal/Sealed, SpoolRead/Data, and ContentReady naming a checked sealed range
 StageProgress/Ack reports strictly increasing actual decoded work while validating
 discarded solid siblings. Every exchange retains its active request ID; member
 stages cannot escape their request/member authority. Scratch stages can be reused
-within the mount after complete verification. The codec helpers require explicit
-`Protocol::V2` or `Protocol::V3` (same staging messages, plus cooperative member
-cancellation); default helpers retain exact protocol-1 bytes. See the wire reference
-for all fields. No native path or file handle crosses this interface.
+within the mount after complete verification. The codec helpers require an explicit
+`Protocol::V2`, `V3` or `V4` (the same staging messages; protocol 3 adds cooperative
+member cancellation, protocol 4 member encryption, unreadability reasons and
+`Unlock`; `Protocol::supports_staging`, `cancels_members`, `supports_passwords`);
+default helpers retain exact protocol-1 bytes. See the wire reference for all fields.
+No native path or file handle crosses this interface.
 
 Root ID is `1`; member IDs start at `2` and are opaque within that mount. Listing
 IDs strictly increase, each node's parent matches the requested directory, no node
@@ -442,7 +445,7 @@ toolchain on PATH, a Windows example is:
 
 ```powershell
 ./plugins/midnight-fs-archive/scripts/build.ps1 `
-  -SdkConfig D:/release/worker-sdk/.cargo/registry.toml `
+  -SdkConfig <sdk-dir>/.cargo/registry.toml `
   -BuildRoot <work-dir>/_build/archive-worker `
   -OutputDirectory <work-dir>/_build/install/filesystems/archive `
   -Test -Offline
@@ -463,8 +466,8 @@ SDK bundle described in [worker SDK packaging](WORKER_SDK.md). Their archive byt
 and checksums differ: never substitute one bundle for another while retaining the
 wrong public package checksums in a lockfile. Released viewer bundles are separate.
 
-The updated plugin has passed 16 archive fixture tests with
-`--locked --offline` from outside the host checkout, using packaged APIs only.
+The plugin's archive fixture tests run with `--locked --offline` from outside the
+host checkout, using packaged APIs only (the `archive-filesystem` CI job).
 Fixtures cover real ZIP/GZIP/XZ/BZIP2/Zstandard/TAR/7z, duplicate solid members, invalid names,
 Unicode, long names, links, CRC/trailer errors, malformed/truncated input and
 resource bounds. Host integration additionally exercises discovery, source

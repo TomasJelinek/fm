@@ -21,7 +21,7 @@ native work can retain its own protected owner afterward; this acknowledgement i
 a promise that a cancellation-ignoring native call has returned. No UI or executor
 destructor joins the cleanup thread. The application shutdown grace remains bounded.
 During a normal shutdown the Copy/Move and mutation actors are drained, for at most
-five seconds, before the remaining engine tasks are aborted: each job then releases
+five seconds (`ACTOR_SHUTDOWN`), before the remaining engine tasks are aborted: each job then releases
 its native and captured owners through its checked retirement instead of being
 dropped by an abort. The same drain waits for the clipboard worker, which runs on one
 of the engine's resident worker threads outside Tokio's blocking pool: stopped by the
@@ -31,9 +31,9 @@ only after that close or the five-second bound. The drain is prompt when the eve
 consumer either keeps receiving or closes its receiver; the explorer closes it before
 sending `Shutdown`, so a blocked event send fails at once. A receiver that stays open
 without being drained delays the run by up to those five seconds, after which the
-remaining actors are aborted as before. The explorer's 2.5-second exit grace can
-expire first; the dropped run then transfers its owners to the cleanup thread as
-described above.
+remaining actors are aborted. The explorer's 2.5-second exit grace (`EXIT_GRACE` in
+`midnight-explorer/src/main.rs`) can expire first; the dropped run then transfers its
+owners to the cleanup thread as described above.
 
 ## One-time service configuration
 
@@ -45,21 +45,19 @@ Installation cannot fail, displace the original owner or reuse the consumed toke
 Dropping an unused token leaves the field vacant. An unavailable network provider
 simply skips installation; there is no owner-taking clear/replacement operation.
 
-The former consuming `with_*` setters were removed because field replacement bypassed
-the guarded bundle's destructor and could destroy a last provider owner on the caller.
-This internal Rust API migration does not change plugin ABIs, service traits, startup
-capacity or runtime behavior. Existing application composition installs each service
-once. Configuration is finished before `run` consumes the engine. Native provider and
-comparator builders are separate APIs and are unchanged by this migration.
+No setter replaces an installed service: replacing a field would bypass the guarded
+bundle's destructor and could destroy a last provider owner on the caller. The
+application installs each service once (`midnight-explorer/src/main.rs`), and
+configuration is finished before `run` consumes the engine. Native provider and
+comparator builders are separate APIs.
 
 ## Capacity and ownership
 
-One engine reserves a shared retirement domain with eight reusable waiter tokens.
-Pre-merge main accounted for 329 payload slots. The work branch accounted for
-330, including one comparator policy store and two accepted comparison pins.
-The merge source accounts for **332 payload slots**. It retains the two queued
-archive reservations from main and the three comparator policy owners from the
-work branch. The source accounting and runtime qualification are separate:
+One engine reserves a shared retirement domain (`RetirementDomain::try_start` in
+`EngineLifetime::new`) with eight reusable waiter tokens (`DOMAIN_WAITERS`) and
+**332 payload slots** (`DOMAIN_CAPACITY` in `midnight-engine/src/engine_lifetime.rs`).
+The test `lifetime_document_states_the_domain_capacity_and_its_breakdown` reads this
+document and fails unless the total and the table below match the code:
 
 | Owners | Slots |
 | --- | ---: |
@@ -195,8 +193,8 @@ only from a file publication until another owner empties it (WM_DESTROYCLIPBOARD
 meanwhile the worker waits in `wait_pending` (`MsgWaitForMultipleObjectsEx` on the
 session's event and its owner thread's messages). A queued request or Controller
 drop ends that wait through the session's waker; its five-second safety timeout is
-not needed for correctness. Measured on Windows over two idle seconds after a
-clipboard command: 120 worker wakeups before, none after. A Linux session waits in
+not needed for correctness. Over two idle seconds after a clipboard command the worker
+does not wake (`measure_idle_wakeups_of_the_real_windows_session`). A Linux session waits in
 `poll()` on its eventfd (the waker) and, once it has an X11 owner connection, on
 that connection, after serving the events x11rb already queued. It owns CLIPBOARD
 (never PRIMARY) from a file publication until a `SelectionClear` from a newer owner
@@ -205,7 +203,7 @@ arboard, which serves it on its own connection, so the session cannot see that
 text's `SelectionClear`: it counts the text as owned until its own file publication
 replaces it, so after a text copy the session stays open, idle in that wait.
 Measured on Linux (Xvfb) over two idle seconds after a read, a file copy and a text
-copy alike: 196 worker wakeups before, none after. The drag/drop workers do not
+copy alike, the worker does not wake. The drag/drop workers do not
 poll while idle either. The preparation worker sleeps until queued work, a retired
 owner or shutdown signals it, and the hover forwarder until a drag event, a changed
 hover or refusal report, or shutdown. The native drag actor waits in its open
@@ -218,17 +216,15 @@ through the session's waker, so they need no five-second safety timeout. The act
 closes the session on a detach, a new host attach or shutdown, and on Linux also
 when the host window's `DestroyNotify` cancels the host lifetime. A lifetime
 cancelled without a detach ends no wait (the UI detaches after cancelling): such a
-session, on Windows even one whose window was destroyed, refuses drops and now
-closes within that safety timeout instead of within 10 ms. While an incoming X11
+session, on Windows even one whose window was destroyed, refuses drops and closes
+within that safety timeout. While an incoming X11
 drop's destination is shown or its file list is awaited, the Linux session rechecks
 them every 10 ms, because no event marks the UI changing its drop targets. Without a
 session (a native Wayland window, or no platform drag service) the actor sleeps
-until the controller signals it. Measured over five idle seconds with an open session
-(`measure_idle_wakeups_of_an_open_session` of the platform crates), the former 10 ms
-pump woke 60 (Windows) and 98 (Linux) times per second and the session wait not at
-all, so the actor now wakes only at its safety timeout. Without a session: 63
-(Windows) and 98 (Linux) actor wakeups per second before, none after. A task of the
-operations actor that
+until the controller signals it. Over five idle seconds with an open session the
+session wait does not wake (`measure_idle_wakeups_of_an_open_session` of the
+platform crates), so the actor wakes only at its safety timeout, and without a
+session it does not wake at all. A task of the operations actor that
 panics or is aborted fails its own job, so the registry entry cannot hold one of
 the 32 slots (and actor exit) indefinitely.
 
@@ -440,80 +436,38 @@ mailbox drain. Queued native branch closures also retain admission through runti
 shutdown and close their native owners on the blocking worker. These are tested
 positive controls, not reasons to add redundant completion guards.
 
-## Qualification boundary
+## Resident worker threads
 
-This protects the outer run, command inbox, Copy/Move/mutation handoffs, shared snapshots,
-drag-owned captures and the migrated actor paths above. It is not a blanket guarantee
-for every independently spawned engine task. Other actors still require individual
-lifetime audits. Repeated builder replacement is now prevented by one-time service
-admission before ownership; see the [configuration qualification](../verification/2026-11-12-engine-service-configuration.md).
-The desktop/watch/clipboard follow-up is described in the
-[native-service plan](../superpowers/plans/2026-11-12-native-service-retirement.md);
-[remaining native results](../superpowers/plans/2026-11-12-remaining-native-results.md)
-covers File List, dynamic network discovery and subsequent service hooks, with
-[qualified results](../verification/2026-11-12-remaining-native-results.md). See the historical
-[ownership review](../verification/2026-11-12-engine-lifetime-review.md) and the current
-[child-task plan](../superpowers/plans/2026-11-12-engine-task-ownership.md).
-[Archive and mailbox qualification](../verification/2026-11-12-native-mailboxes.md)
-records the next ownership boundaries.
-[LIFE-01](../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november) remains open.
-The plugin ABI, operation authority, confirmation and checksum policy are unchanged.
+Long-lived jobs that need a stable physical thread run on fixed resident worker sets
+(`midnight_work_budget::resident`), separate from Tokio's runtime:
 
-## Accepted private resident-worker follow-up
+- the engine starts 13 resident threads in `EngineLifetime::new`: two each for the
+  model, presence, archive and watch lanes, two for drag and drop, one for the
+  clipboard and two report readers;
+- the viewer starts `midnight_viewer_engine::RESIDENT_WORKERS` (5) and comparison 2
+  (`ContentWorkers::start` in `midnight-explorer/src/main.rs`);
+- the application's Tokio runtime has 2 async worker threads and at most 16 blocking
+  threads.
 
-The accepted private resident-worker design is **13 Engine /5 Viewer /2 Compare**
-resident threads, keeping 2 async/16 transient blocking. These are planned domains,
-not implemented threads, process measurements or new payload/waiter capacities.
-Preserve worker affinity, distinct external ownership, checked retirement and current
-window/session credits. The later old-scheduler run `production-pool-7e458befac` is genuine production RED.
-With the original 2 async/16 blocking threads,13-resident readiness and four windows,
-the prepared-save callback had not entered and the second Compare was incomplete
-at the original 20,000ms pressure boundary. Closing two Viewers recovered the same
-prepared save (exactly one callback, coherent raw publication) and the same Compare.
-Strict cleanup and exclusive capture-reader reopen checks completed before the
-intended progress-failure assertion; no owned processes/monitor errors remained.
-All 3,941 guarded identities were unchanged; the unconsumed 4917→F5 test-fixture
-exception is separately recorded. Raw test time was 23.02s. This establishes the
-old-source failure and same-work recovery, not migration GREEN, an unrecoverable
-deadlock or a performance result. The earlier missing-plugin setup failure remains
-historical and distinct. The old-source production-pool attempt `production-pool-27587e6553` reached real
-watch/report and 13-nonwindow readiness, then failed Viewer setup because no compatible
-Basic Viewer plugin was installed beside the test executable. The raw test ended in
-0.23s before four-window pressure, the 20-second pressure deadline, pre-rescue counters
-or recovery. Cleanup/exclusive-open checks preceded the failed outcome assertion;
-remainingOwned[] and source/harness identities were unchanged. This is a setup
-failure, not a production-starvation reproduction or a progress pass. Production
-implementation promotion stays held.
-The catalog-only host constructor is canonical; the old scheduler and dependency
-pins are unchanged. Its six selected catalog/startup checks actually recorded
-**5 passes /1 fixture-precondition failure**: constructing a dot alias had already
-normalized the path, so the test failed before the product validator. The exact
-raw-OsString test-only repair is canonical `f5d09b3b…`; replay is pending. Root's
-44,433-byte `eb391200…` consumer remains canonical with unchanged registration
-parent `e3a869…`. The later genuine pressure RED exercised qualified catalogs through this constructor;
-the exact F5 alias test replay and migrated-consumer acceptance remain open. The
-prior missing-plugin setup failure is a separate historical attempt.
+Each set has a fixed number of threads and adds no payload or waiter capacity to the
+retirement domain. At shutdown the engine first stops and aborts its
+actors and drains the resident tickets, then shuts down the tree roots, and only
+then observes the resident pool's exit for at most 200 ms; expiry leaves the
+retirement unconfirmed and grants no cleanup or resource credit. That wait stays
+inside the explorer's absolute 2.5-second exit grace and cannot extend it. Viewer and
+comparison workers are sealed together after the engine and image-spare waits and
+get a 2.5-second grace of their own.
 
-Archived private common-worker round-two QA passed **13 default-feature-off tests**
-and **24 resident-feature-on tests**. The latter follows exactly three unit-channel
-type annotations (18 test-only bytes); production `resident.rs` remains
-`60908d11119f…`. Retain the original feature-on test-build E0282 failure separately.
-These are isolated immutable round-two snapshots, not final round-four, migrated
-consumer, native, performance or production qualification. In particular, the
-known repeated-panic-retention finding is not closed by these passes.
-The faithful native fixture 4/0 is separate and cannot qualify this production repair.
+## Scope of these guarantees
 
-The newer immutable resident common round-four checkpoint `6c04f591…` passed
-**29 tests /0 failures**, with 13 default tests filtered out rather than rerun.
-Production source is `31178fbd…`, tests `fb306359…`; raw runtime was 0.20s and
-compilation completed in 4.05s with no warnings. This is separate from archived
-round-two13/24 evidence. It does not qualify Engine/Viewer/Compare integration,
-native cleanup, performance or the full resident migration.
-
-The Architect accepted the Engine's additional 200ms pool-exit observation only
-after existing stop/abort controls and actual resident-ticket drain, followed by
-tree-root shutdown. It stays inside Explorer's original shared absolute2,500ms
-deadline and cannot reset/extend it or shorten actor observation. Expiry means
-unconfirmed retirement and detaches the checked waiter; it grants no cleanup or
-resource credit. The original supplied transient runtime stays time-enabled and
-driven. This is an accepted private contract, not integration/runtime evidence.
+This protects the outer run, command inbox, Copy/Move/mutation handoffs, shared
+snapshots, drag-owned captures and the actor paths above. It is not a blanket
+guarantee for every independently spawned engine task; other actors still need
+individual lifetime audits (LIFE-01 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november)).
+One-time service admission before ownership prevents builder replacement
+([configuration record](../verification/2026-11-12-engine-service-configuration.md));
+[archive and mailbox ownership](../verification/2026-11-12-native-mailboxes.md) and
+the [ownership review](../verification/2026-11-12-engine-lifetime-review.md) are the
+dated evidence. The plugin ABI, operation authority, confirmation and checksum policy
+are unaffected.
