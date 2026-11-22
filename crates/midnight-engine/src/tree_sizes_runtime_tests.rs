@@ -60,11 +60,7 @@ impl DirectoryService for Files {
             && (!self.partial_root || path.file_name() == Some(std::ffi::OsStr::new("pending")))
         {
             self.entered.send(()).unwrap();
-            self.release
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap();
+            self.release.lock().unwrap().recv_timeout(GUARD).unwrap();
         }
         emit(Entry::new(EntryId(55), path.join("leaf"), EntryKind::File));
         Ok(())
@@ -153,6 +149,9 @@ fn capture(session: &mut Session, request: u64, row: TreeRowId) -> CapturedSelec
 }
 /// Publication pacing for cases that do not measure the 250 ms production pacing.
 const TEST_INTERVAL: Duration = Duration::from_millis(5);
+/// A hang guard only: the waits it bounds end in milliseconds, so it is generous enough
+/// that a loaded machine never fails a correct run (2-3 s guards timed out under load).
+const GUARD: Duration = Duration::from_secs(60);
 
 fn paced_state(files: Arc<Files>) -> (State, Arc<Notify>) {
     let wake = Arc::new(Notify::new());
@@ -169,7 +168,7 @@ async fn until(
     stamp: TreeViewStamp,
     mut accept: impl FnMut(&[TreeSizeEvent]) -> bool,
 ) -> Vec<TreeSizeEvent> {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(GUARD, async {
         loop {
             let events = state.tick(Some(stamp));
             if accept(&events) {
@@ -300,7 +299,7 @@ async fn cancelled_partial_scan(fail_metadata: bool) {
     state.enqueue(TreeRequestId(1), captured, &Cancellation::default());
     let first = state.tick(Some(stamp));
     acknowledge(&mut state, &first);
-    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered.recv_timeout(GUARD).unwrap();
     let before = until(&mut state, &wake, stamp, |events| {
         events.iter().any(|event| {
             matches!(event, TreeSizeEvent::Snapshot { sizes }
@@ -479,7 +478,7 @@ async fn cancel_and_reset_keep_blocked_scan_capacity_until_real_return() {
         &Cancellation::default(),
     );
     state.tick(Some(stamp));
-    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered.recv_timeout(GUARD).unwrap();
     state.cancel(stamp, TreeRequestId(1));
     state.reset();
     state.enqueue(
@@ -527,7 +526,7 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
     );
     let first = state.tick(Some(stamp));
     acknowledge(&mut state, &first);
-    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered.recv_timeout(GUARD).unwrap();
     state.enqueue(
         TreeRequestId(2),
         capture(&mut f.session, 2, row),
@@ -546,7 +545,7 @@ async fn overlapping_queued_root_keeps_running_after_first_finishes() {
         })
     })
     .await;
-    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered.recv_timeout(GUARD).unwrap();
     let running = if first_finished
         .iter()
         .any(|event| matches!(event, TreeSizeEvent::Snapshot { sizes } if sizes.running(row)))
@@ -646,7 +645,7 @@ async fn repeated_fast_scans_respect_one_map_per_quarter_second() {
             }
         }
         acknowledge(&mut state, &events);
-        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(start.elapsed() < GUARD, "the scans did not finish");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     for pair in publications.windows(2) {
