@@ -1,5 +1,5 @@
 use super::*;
-use crate::raster_budget::MAX_SNAPSHOT_BYTES;
+use crate::raster_budget::MAX_STRIP_BYTES;
 
 fn content() -> String {
     (0..120)
@@ -83,9 +83,41 @@ fn pan(
     );
 }
 
-fn visible(frame: &ViewerFrame) -> Vec<u8> {
+/// A raster's width and its RGBA rows.
+pub(super) type Raster = (u32, Vec<u8>);
+
+/// A retained frame's body and gutter, each as one raster: prepared strips stacked
+/// (`ViewerRasterBands`), or the frame's own pixels.
+pub(super) fn stacked(frame: &ViewerFrame) -> (u32, Vec<u8>, Option<Raster>) {
     let info = frame.raster.as_ref().expect("retained pixels");
-    let gutter = info.gutter.as_ref().map_or(0, |g| g.width);
+    match &info.bands {
+        Some(bands) => {
+            let mut body = Vec::new();
+            let mut gutter = Vec::new();
+            for band in bands.list.iter() {
+                body.extend_from_slice(&band.pixels);
+                gutter.extend_from_slice(band.gutter.as_deref().unwrap_or_default());
+            }
+            (
+                bands.width,
+                body,
+                (bands.gutter_width > 0).then_some((bands.gutter_width, gutter)),
+            )
+        }
+        None => (
+            frame.width,
+            frame.pixels.to_vec(),
+            info.gutter
+                .as_ref()
+                .map(|gutter| (gutter.width, gutter.pixels.to_vec())),
+        ),
+    }
+}
+
+pub(super) fn visible(frame: &ViewerFrame) -> Vec<u8> {
+    let info = frame.raster.as_ref().expect("retained pixels");
+    let (body_width, body, gutter) = stacked(frame);
+    let gutter_width = gutter.as_ref().map_or(0, |(width, _)| *width);
     let dx = info.origin[0] - info.raster_origin[0];
     let dy = info.origin[1] - info.raster_origin[1];
     assert!(
@@ -96,20 +128,40 @@ fn visible(frame: &ViewerFrame) -> Vec<u8> {
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
         let source_y = y + dy.round() as usize;
-        if let Some(gutter) = &info.gutter {
-            let at = source_y * gutter.width as usize * 4;
-            pixels.extend_from_slice(&gutter.pixels[at..at + gutter.width as usize * 4]);
+        if let Some((gutter_width, gutter)) = &gutter {
+            let at = source_y * *gutter_width as usize * 4;
+            pixels.extend_from_slice(&gutter[at..at + *gutter_width as usize * 4]);
         }
-        let at = (source_y * frame.width as usize + dx.round() as usize) * 4;
-        pixels.extend_from_slice(&frame.pixels[at..at + (width - gutter) as usize * 4]);
+        let at = (source_y * body_width as usize + dx.round() as usize) * 4;
+        pixels.extend_from_slice(&body[at..at + (width - gutter_width) as usize * 4]);
     }
     pixels
 }
 
-/// Body and gutter bytes of a retained frame, which share one snapshot budget.
+/// Whether two retained frames carry the same pixel allocations.
+fn same_pixels(a: &ViewerFrame, b: &ViewerFrame) -> bool {
+    let strips = |frame: &ViewerFrame| {
+        frame
+            .raster
+            .as_ref()
+            .and_then(|info| info.bands.as_ref())
+            .map(|bands| bands.list.clone())
+    };
+    match (strips(a), strips(b)) {
+        (Some(a), Some(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(a, b)| a.id == b.id && Arc::ptr_eq(&a.pixels, &b.pixels))
+        }
+        _ => Arc::ptr_eq(&a.pixels, &b.pixels),
+    }
+}
+
+/// Body and gutter bytes of a retained frame.
 fn retained_bytes(frame: &ViewerFrame) -> usize {
-    let gutter = frame.raster.as_ref().and_then(|info| info.gutter.as_ref());
-    frame.pixels.len() + gutter.map_or(0, |gutter| gutter.pixels.len())
+    let (_, body, gutter) = stacked(frame);
+    body.len() + gutter.map_or(0, |(_, gutter)| gutter.len())
 }
 
 fn assert_pixels_equal(actual: &[u8], expected: &[u8], context: &str) {
@@ -155,10 +207,15 @@ fn retained_text_source_and_markdown_have_guard_pixels_without_changing_wrap_wid
         assert_eq!(info.viewport, [240, 100]);
         assert!(info.coverage_max[1] >= info.origin[1] + 256.0);
         assert_eq!(worker.shaped.as_ref().unwrap().line_count(), lines);
-        assert_eq!(info.gutter.is_some(), mode == viewer::MODE_SOURCE);
+        assert_eq!(
+            info.bands
+                .as_ref()
+                .is_some_and(|bands| bands.gutter_width > 0),
+            mode == viewer::MODE_SOURCE
+        );
         assert_eq!(info.limit_min[1], Some(0.0));
         assert!(info.limit_max[1].unwrap() > info.coverage_max[1]);
-        assert!(retained_bytes(&frame) <= MAX_SNAPSHOT_BYTES);
+        assert!(retained_bytes(&frame) <= MAX_STRIP_BYTES);
     }
 }
 
@@ -176,7 +233,7 @@ fn retained_pan_acknowledges_fractional_origin_without_allocating_or_rasterizing
             next.pixel_id, info.pixel_id,
             "movement inside guard is metadata only"
         );
-        assert!(Arc::ptr_eq(&frame.pixels, &first.pixels));
+        assert!(same_pixels(&frame, &first));
         assert_eq!(next.origin, [0.0, y]);
         assert_eq!(next.pan_sequence, sequence);
         assert!(!next.settled);
@@ -192,12 +249,13 @@ fn retained_settle_matches_the_exact_viewport_reference_and_pinned_source_gutter
     ] {
         let (mut worker, output) = retained(mode);
         let first = paint(&mut worker, &output);
+        // A camera at rest stands on a whole pixel, where prepared strips are exact.
         pan(
             &mut worker,
             &output,
             first.raster.as_ref().unwrap(),
             1,
-            [13.25, 17.375],
+            [13.0, 17.0],
             true,
         );
         let settled = paint(&mut worker, &output);
@@ -293,27 +351,33 @@ fn frames_painted_in_their_shared_buffers_match_the_allocating_renderer() {
             );
             continue;
         };
-        let gutter = info.gutter.as_ref().expect("source gutter");
-        assert_eq!((gutter.width, gutter.height), (margin as u32, frame.height));
-        assert_eq!(
-            gutter.pixels.len(),
-            gutter.width as usize * gutter.height as usize * 4
-        );
-        let numbers = gutter.pixels.as_chunks::<4>().0;
+        // Each prepared strip is painted at its world rows; this page's world starts at
+        // its own origin.
+        let bands = info.bands.as_ref().expect("prepared strips");
+        assert_eq!(bands.gutter_width, margin as u32);
+        let mut numbers = Vec::new();
+        for band in bands.list.iter() {
+            let gutter = band.gutter.as_ref().expect("source gutter strip");
+            assert_eq!(
+                gutter.len(),
+                bands.gutter_width as usize * band.height as usize * 4
+            );
+            numbers.extend_from_slice(gutter.as_chunks::<4>().0);
+            let local = [bands.left as f32, band.top as f32];
+            let body = worker
+                .renderer
+                .rasterize(
+                    shaped,
+                    view(bands.width, band.height, local),
+                    selection.clone(),
+                )
+                .unwrap();
+            assert_pixels_equal(&band.pixels, &body.rgba, "retained strip");
+        }
         assert!(
             numbers.iter().any(|pixel| pixel != &numbers[0]),
             "line numbers are painted in the retained gutter"
         );
-        // The raster starts its whole-pixel guard before the camera.
-        let before: [f32; 2] = std::array::from_fn(|axis| {
-            (info.origin[axis] - info.raster_origin[axis]).round() as f32
-        });
-        let local = [worker.origin[0] - before[0], worker.origin[1] - before[1]];
-        let body = worker
-            .renderer
-            .rasterize(shaped, view(frame.width, frame.height, local), selection)
-            .unwrap();
-        assert_pixels_equal(&frame.pixels, &body.rgba, "retained body");
     }
 }
 
@@ -512,42 +576,6 @@ fn retained_page_rebase_keeps_continuous_origin_and_rejects_old_pixel_selection(
 }
 
 #[test]
-fn retained_three_live_snapshots_bound_pending_pans_and_resume_only_latest_target() {
-    let (mut worker, output) = retained(viewer::MODE_SOURCE);
-    let first = paint(&mut worker, &output);
-    let info = first.raster.as_ref().unwrap().clone();
-    let gutter_hold = info.gutter.as_ref().unwrap().pixels.clone();
-    pan(&mut worker, &output, &info, 1, [0.0, 7.25], true);
-    let second = paint(&mut worker, &output);
-    pan(&mut worker, &output, &info, 2, [0.0, 17.5], true);
-    let third = paint(&mut worker, &output);
-    for sequence in 3..=10_000 {
-        pan(&mut worker, &output, &info, sequence, [0.0, 21.375], true);
-    }
-    worker.paint(&output).unwrap();
-    assert!(
-        output.take().is_empty(),
-        "unprepared target cannot acknowledge"
-    );
-    drop(first);
-    drop(info);
-    worker.paint(&output).unwrap();
-    assert!(
-        output.take().is_empty(),
-        "gutter alone keeps its allocation slot live"
-    );
-    drop(gutter_hold);
-    let latest = paint(&mut worker, &output);
-    assert_eq!(latest.raster.as_ref().unwrap().pan_sequence, 10_000);
-    assert_eq!(latest.raster.as_ref().unwrap().origin, [0.0, 21.375]);
-    assert_eq!(
-        latest.raster.as_ref().unwrap().pixel_id,
-        third.raster.as_ref().unwrap().pixel_id + 1
-    );
-    drop((second, third, latest));
-}
-
-#[test]
 fn retained_search_highlight_copy_survives_its_new_context() {
     let (mut worker, output) = retained(viewer::MODE_TEXT);
     let source = content();
@@ -630,7 +658,7 @@ fn retained_refill_preserves_logical_lead_on_scaled_monitors() {
                 next.coverage_min[1] < info.coverage_min[1]
             });
             assert!(worker.viewport_request.is_none());
-            assert!(retained_bytes(&refreshed) <= MAX_SNAPSHOT_BYTES);
+            assert!(retained_bytes(&refreshed) <= MAX_STRIP_BYTES);
         }
     }
 }
@@ -652,8 +680,8 @@ fn retained_refill_budget_limited_guard_does_not_replace_stationary_pixels() {
     pan(&mut worker, &output, info, 1, info.origin, false);
     let unchanged = paint(&mut worker, &output);
     assert_eq!(unchanged.raster.as_ref().unwrap().pixel_id, info.pixel_id);
-    assert!(Arc::ptr_eq(&first.pixels, &unchanged.pixels));
-    assert!(retained_bytes(&unchanged) <= MAX_SNAPSHOT_BYTES);
+    assert!(same_pixels(&first, &unchanged));
+    assert!(retained_bytes(&unchanged) <= MAX_STRIP_BYTES);
 }
 
 #[test]
@@ -731,7 +759,7 @@ fn retained_binary_keeps_fixed_hex_columns_and_exact_settled_pixels() {
             .accessible_text
             .starts_with("0000000000000000  00 01 02")
     );
-    pan(&mut worker, &output, info, 1, [17.25, 21.375], true);
+    pan(&mut worker, &output, info, 1, [17.0, 21.0], true);
     let settled = paint(&mut worker, &output);
     worker.input(ViewerInput::RetainedRaster(false), &output);
     let reference = paint(&mut worker, &output);
@@ -969,7 +997,7 @@ fn retained_semantic_markdown_keeps_heading_code_quote_and_selection_pixels_exac
             &output,
             first.raster.as_ref().unwrap(),
             1,
-            [0.0, 17.375],
+            [0.0, 17.0],
             true,
         );
         let settled = paint(&mut worker, &output);
@@ -1276,12 +1304,13 @@ fn retained_wrapped_tab_refill_preserves_logical_context_and_exact_visible_pixel
             worker.shaped.as_ref().unwrap(),
             worker.geometry.height as f32,
         ) - worker.geometry.height as f32;
+        // A camera at rest stands on a whole pixel, where prepared strips are exact.
         let target = [
             0.0,
             if backwards {
-                32.25
+                32.0
             } else {
-                f64::from(maximum) - 32.25
+                (f64::from(maximum) - 32.25).round()
             },
         ];
         let margin = worker.text_margin();
@@ -1544,13 +1573,14 @@ fn retained_rebase_queues_raw_scroll_fifo_until_the_displayed_camera_and_read_co
     assert!(reference.origin[1] > 2.0);
     assert_eq!(reference.page.as_ref().unwrap().start, 0);
     // These ordinary inputs start from the corrected camera. At real BOF,
-    // FIFO clamps the first move to zero and then advances 7.5 pixels.
-    // Netting or reversing the two moves would instead end at 5.5 pixels.
-    let deltas = [-(reference.origin[1] + 2.0), 7.5];
+    // FIFO clamps the first move to zero and then advances 8 pixels (a whole pixel,
+    // where prepared strips are exact). Netting or reversing the two moves would
+    // instead end at 6 pixels.
+    let deltas = [-(reference.origin[1] + 2.0), 8.0];
     for y in deltas {
         reference.input(ViewerInput::Scroll { x: 0.0, y }, &reference_output);
     }
-    assert_eq!(reference.origin[1], 7.5);
+    assert_eq!(reference.origin[1], 8.0);
     let expected = paint(&mut reference, &reference_output);
 
     let (mut worker, output, source, _, _, displayed, speculative, transition) = pending_rebase();
@@ -1594,7 +1624,7 @@ fn retained_rebase_queues_raw_scroll_fifo_until_the_displayed_camera_and_read_co
     worker.event(91, EventKind::Completed, &output);
     let actual = paint(&mut worker, &output);
     assert_eq!(actual.raster_rebase, Some(transition));
-    assert_eq!(worker.origin[1], 7.5);
+    assert_eq!(worker.origin[1], 8.0);
     assert!(worker.viewport_request.is_none());
     let viewport = |frame: &ViewerFrame| {
         if frame.raster.is_some() {

@@ -7,7 +7,9 @@ use i_slint_core::{
     lengths::{LogicalPoint, LogicalRect, LogicalSize},
     window::{WindowInner, WindowKind},
 };
-use midnight_ui_input::{CommandStrip, NativeScroll, PressState};
+use midnight_ui_input::{
+    CommandStrip, LINE_PIXELS, NativeScroll, PressState, WheelSetting, notch_pixels_for,
+};
 #[cfg(test)]
 use slint::winit_030::winit::event::DeviceId;
 use slint::{
@@ -30,7 +32,16 @@ struct InputState {
     wheel_position: Option<slint::LogicalPosition>,
     wheel: WheelMotion,
     target: Option<WheelTarget>,
+    /// Row (band) height of the list under the pointer; 0 where unknown.
     line_height: f32,
+    /// That list's content-y: a whole notch lands on one of its row boundaries.
+    content_y: f32,
+    /// That list's visible size: one screen per notch moves it.
+    page: [f32; 2],
+    /// The system asks for less motion: wheel input moves the list at once.
+    reduce_motion: bool,
+    /// The system's wheel setting (lines or one screen per notch).
+    wheel_setting: WheelSetting,
 }
 
 #[derive(PartialEq)]
@@ -97,6 +108,45 @@ impl InputState {
         self.pressed.active() || self.wheel.active()
     }
 
+    /// Forget input ownership; the system's settings stay.
+    fn reset(&mut self) {
+        *self = Self {
+            reduce_motion: self.reduce_motion,
+            wheel_setting: self.wheel_setting,
+            ..Self::default()
+        };
+    }
+
+    /// Vertical distance of `lines` wheel lines over the list. A notch moves the
+    /// viewers' distance (`notch_pixels_for`: the shared line distance scaled by the
+    /// system's wheel setting, or one screen). A whole notch moves the rows nearest
+    /// to it (at least one; one thumbnail band) and lands on a row boundary, so the
+    /// idle row alignment has nothing left to move after it. Fractional lines
+    /// (precision touchpads, high-resolution wheels) move their share of it.
+    fn wheel_distance(&self, lines: f32) -> f32 {
+        let notch = notch_pixels_for(self.wheel_setting, self.page[1]);
+        let row = self.line_height;
+        if lines == 0.0
+            || lines.fract() != 0.0
+            || !row.is_finite()
+            || row <= 0.0
+            || !self.content_y.is_finite()
+        {
+            return lines * notch;
+        }
+        let rows = (notch / row).round().max(1.0);
+        // WheelMotion::push drops the remainder of a reversed glide.
+        let pending = self.wheel.pending()[1] as f32;
+        let base = self.content_y
+            + if pending != 0.0 && pending.signum() == lines.signum() {
+                pending
+            } else {
+                0.0
+            };
+        let landing = ((base + lines * rows * row) / row).round() * row;
+        landing - base
+    }
+
     #[cfg(test)]
     fn observe(&mut self, event: &WindowEvent, scale: f32, now: Duration) -> bool {
         self.observe_source(event, scale, now, false)
@@ -131,14 +181,18 @@ impl InputState {
                 let cursor = cursor.to_logical::<f32>(f64::from(scale));
                 self.wheel_position = Some(slint::LogicalPosition::new(cursor.x, cursor.y));
                 if touchpad {
-                    // Finger motion follows the finger; Slint's line distance.
-                    return self.wheel.push_direct(x * 60.0, y * 60.0, now);
+                    // Finger motion follows the finger at the shared line distance,
+                    // as the window's kinetic tracker measures it.
+                    return self
+                        .wheel
+                        .push_direct(x * LINE_PIXELS, y * LINE_PIXELS, now);
                 }
-                // Match Winit's normal line distance for text rows. Use at
-                // least one band per notch in the taller thumbnail view.
-                return self
-                    .wheel
-                    .push(x * 60.0, y * self.line_height.max(60.0), now);
+                let x = x * notch_pixels_for(self.wheel_setting, self.page[0]);
+                let y = self.wheel_distance(*y);
+                if self.reduce_motion {
+                    return self.wheel.push_direct(x, y, now);
+                }
+                return self.wheel.push(x, y, now);
             }
             WindowEvent::CursorLeft { .. }
             | WindowEvent::Focused(false)
@@ -279,13 +333,25 @@ fn observe(
         if target.is_none() || state.target != target {
             state.wheel.cancel();
         }
-        state.line_height = target.as_ref().map_or(60.0, |target| {
-            if target.pane == 0 {
-                window.get_left_view_row_height()
-            } else {
-                window.get_right_view_row_height()
-            }
-        });
+        (state.line_height, state.content_y, state.page) =
+            target.as_ref().map_or((0.0, 0.0, [0.0; 2]), |target| {
+                if target.pane == 0 {
+                    (
+                        window.get_left_view_row_height(),
+                        window.get_left_list_content_y(),
+                        [window.get_left_list_width(), window.get_left_list_height()],
+                    )
+                } else {
+                    (
+                        window.get_right_view_row_height(),
+                        window.get_right_list_content_y(),
+                        [
+                            window.get_right_list_width(),
+                            window.get_right_list_height(),
+                        ],
+                    )
+                }
+            });
         state.target = target;
         let replaced = state.observe_source(event, scale, now(window), touchpad);
         if state.target.is_none() {
@@ -355,14 +421,32 @@ pub(crate) fn install(window: &MainWindow) {
     });
     let mut shortcuts = crate::native_shortcuts::ShortcutState::default();
     let mut kinetic_shown = false;
+    let mut settings_read = false;
     window.window().on_winit_window_event(move |_, event| {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;
         };
+        // The system's motion and wheel settings, as the viewers read them: with the
+        // first native event and whenever the window gains the focus (the user
+        // changes them in another window), never per notch.
+        if !settings_read || matches!(event, WindowEvent::Focused(true)) {
+            settings_read = true;
+            let reduce_motion = !crate::motion_preference::animations_enabled();
+            let wheel_setting = crate::wheel_setting::system_wheel_setting();
+            {
+                let mut state = state.borrow_mut();
+                state.reduce_motion = reduce_motion;
+                state.wheel_setting = wheel_setting;
+            }
+            auxiliary_scroll
+                .borrow_mut()
+                .set_wheel_setting(wheel_setting);
+            window.set_reduce_motion(reduce_motion);
+        }
         if crate::dialog_host::dialog_input_blocked(window.window()) {
             timer.stop();
             auxiliary_scroll.borrow_mut().reset();
-            *state.borrow_mut() = InputState::default();
+            state.borrow_mut().reset();
             shortcuts = crate::native_shortcuts::ShortcutState::default();
             if is_dialog_input(event) {
                 return EventResult::PreventDefault;
@@ -377,7 +461,7 @@ pub(crate) fn install(window: &MainWindow) {
             // Keep native delivery available to the popup's editors/IME and
             // scrollbars while retiring background panel input ownership.
             timer.stop();
-            *state.borrow_mut() = InputState::default();
+            state.borrow_mut().reset();
             window.set_scroll_interaction_active(false);
             false
         } else {
@@ -640,6 +724,8 @@ mod tests {
             .filter_map(|millis| state.wheel.tick(Duration::from_millis(millis)))
             .map(|(_, y)| y)
             .sum();
-        assert!((total + 60.0).abs() < 0.001);
+        // One notch at the default wheel setting, away from any panel.
+        let notch = notch_pixels_for(WheelSetting::default(), 0.0);
+        assert!((total + notch).abs() < 0.001);
     }
 }

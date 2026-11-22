@@ -74,6 +74,7 @@ fn shown(source: &str, start: usize, end: usize, first: u64) -> (Worker, Mailbox
     worker.length = source.len() as u64;
     worker.geometry = geometry();
     worker.raster.enabled = true;
+    worker.raster.legacy_pages = true;
     let mut page = super::text_position::edge_page(source, start, end);
     page.has_after = end < source.len();
     assert!(worker.set_page(Page::text(page, &worker.appearance), &output));

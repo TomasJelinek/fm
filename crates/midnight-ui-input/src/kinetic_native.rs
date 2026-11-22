@@ -17,8 +17,12 @@ use slint::winit_030::winit::{
 };
 use std::time::Duration;
 
-/// Slint's own conversion of one line to logical pixels.
-pub(crate) const LINE_PIXELS: f32 = 60.0;
+/// Logical pixels of one wheel line (one notch) at the system's default three lines
+/// per notch, shared by every host that scales wheel lines itself (the file panels,
+/// the viewers, the comparator). Chromium's distance (100/3 px per line); it was
+/// Slint's own 60 px until the user asked for faster scrolling. `notch_pixels_for`
+/// scales it by the system's wheel setting, which each host supplies.
+pub const LINE_PIXELS: f32 = 100.0;
 /// A whole-line delta right after fractional ones belongs to the same touchpad stream.
 const TOUCHPAD_STREAM: Duration = Duration::from_millis(150);
 /// Moving the pointer this far during momentum states a new intent.

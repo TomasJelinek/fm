@@ -2,6 +2,11 @@
 use super::*;
 use crate::viewport::GUARD;
 
+#[path = "worker_bands.rs"]
+mod bands;
+/// Rows of one prepared strip (`worker_bands.rs`).
+#[cfg(test)]
+pub(super) const BAND_ROWS: u32 = bands::BAND;
 #[path = "worker_raster_rebase.rs"]
 mod rebase;
 
@@ -46,6 +51,12 @@ pub(super) struct Retained {
     pub continuing: Option<[f64; 2]>,
     refill_attempt: Option<(u64, u64, u64, bool)>,
     cache: Option<Snapshot>,
+    /// Prepared strips of the shown surface (`worker_bands.rs`).
+    bands: bands::Bands,
+    /// Tests of the page mechanics (joins, overlaps, cuts) keep the former pages: the
+    /// window and its 256-pixel guards.
+    #[cfg(test)]
+    pub legacy_pages: bool,
     invalid: bool,
     selected_source: Option<[u64; 2]>,
     selected_text: Option<String>,
@@ -59,6 +70,9 @@ pub(super) struct Snapshot {
     pub height: u32,
     pub pixels: Arc<[u8]>,
     pub info: ViewerRasterInfo,
+    /// The published strips' IDs. The kept snapshot holds no strip pixels: evicted strips
+    /// must give their budget back.
+    strip_ids: Vec<u64>,
 }
 
 impl Retained {
@@ -81,6 +95,7 @@ impl Retained {
         self.continuing = None;
         self.refill_attempt = None;
         self.cache = None;
+        self.bands.clear();
         self.invalid = true;
         self.selected_source = None;
         self.selected_text = None;
@@ -90,9 +105,30 @@ impl Retained {
         self.invalid = true;
     }
 
+    /// Pixels a page holds beyond the window: the prepared screens (`worker_bands.rs`).
+    pub(super) fn page_extension(&self, geometry: ViewerGeometry) -> u32 {
+        #[cfg(test)]
+        if self.legacy_pages {
+            return guard(geometry, false)[1] * 2;
+        }
+        (geometry.height as f32 * self.bands.page_screens()).ceil() as u32
+    }
+
+    /// Strips beyond the window remain to be prepared.
+    pub(super) fn strips_pending(&self) -> bool {
+        self.enabled && self.bands.pending
+    }
+
+    /// The newest prepared strip's ID: strips with larger IDs were painted later.
+    #[cfg(test)]
+    pub(super) fn last_strip_id(&self) -> u64 {
+        self.bands.last_id()
+    }
+
     /// Colors invalidate pixels only: camera, gesture, selection and surface stay exact.
     pub(super) fn palette_changed(&mut self) {
         self.cache = None;
+        self.bands.palette_changed();
         self.invalid = true;
     }
 
@@ -252,6 +288,9 @@ impl Worker {
                 self.interrupt_find();
                 self.raster.rebase_ack = None;
                 self.raster.sequence = sequence;
+                self.raster
+                    .bands
+                    .travel(origin[1], f64::from(self.geometry.height));
                 self.raster.target = origin;
                 self.raster.exact = settled;
                 self.apply_raster_target(output);
@@ -464,9 +503,15 @@ impl Worker {
             local[1] = local[1].min(maximum[1]);
         }
         self.raster.target = self.raster.camera(local);
-        let guard_y = (guard(self.geometry, maximum[0] > 0.0)[1] as f32).min(maximum[1] / 2.0);
-        let backwards = local[1] < guard_y && page.before;
-        let forwards = local[1] + guard_y > maximum[1] && page.after;
+        // A refill starts while less than a screen is prepared in the direction of travel
+        // (`worker_bands.rs`), and keeps a screen against it: refills are rare and the
+        // window moves over prepared rows meanwhile.
+        let view = self.geometry.height as f32;
+        let (above, below) = self.raster.bands.refill_thresholds();
+        let threshold = |screens: f32| (screens * view).min(maximum[1] / 2.0);
+        let backwards = local[1] < threshold(above) && page.before;
+        let forwards = local[1] + threshold(below) > maximum[1] && page.after;
+        let guard_y = (self.raster.bands.refill_keeps() * view).min(maximum[1] / 2.0);
         let covered = local[1] >= 0.0 && local[1] <= maximum[1];
         let backwards = backwards && (!forwards || local[1] < self.origin[1]);
         let refill = |guard: f32| {
@@ -533,11 +578,43 @@ impl Worker {
         }
     }
 
+    /// The viewport a retained raster of `width` × `height` paints at page-local `origin`.
+    pub(super) fn retained_viewport(&self, width: u32, height: u32, origin: [f32; 2]) -> Viewport {
+        Viewport {
+            width,
+            height,
+            origin,
+            background: self.appearance.background,
+            selection_color: self.appearance.selection,
+            selection_text: self.appearance.selection_text,
+        }
+    }
+
+    /// The published retained pixels: the prepared strips around the camera
+    /// (`worker_bands.rs`). The strips under the window are painted now when missing; the
+    /// rest are prepared between inputs (`prepare_strips`).
     pub(super) fn retained_pixels(&mut self) -> Result<Option<Snapshot>, String> {
-        let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
-            return Ok(None);
+        let (maximum, before, after, range, shaped_height) = {
+            let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
+                return Ok(None);
+            };
+            (
+                [
+                    (shaped.width() - self.text_width()).max(0.0),
+                    self.camera_span(page, shaped).span,
+                ],
+                page.before,
+                page.after,
+                (page.start, page.end),
+                shaped.height(),
+            )
         };
+        // The backend's camera keeps its exact position (a scrollbar target, a restored
+        // row); the window rests on whole pixels, where strips are exact, and asks for them.
         let origin = self.raster.camera(self.origin);
+        let local_min = self.raster.base;
+        let local_max: [f64; 2] =
+            std::array::from_fn(|axis| self.raster.base[axis] + f64::from(maximum[axis]));
         // Reset contexts also include legacy keyboard/scrollbar and final reflow clamps.
         if self.raster.sequence == 0 && self.raster.continuing.is_none() {
             self.raster.target = origin;
@@ -545,146 +622,84 @@ impl Worker {
         if (0..2).any(|axis| (origin[axis] - self.raster.target[axis]).abs() > 1e-4) {
             return Ok(None);
         }
-        let maximum = [
-            (shaped.width() - self.text_width()).max(0.0),
-            self.camera_span(page, shaped).span,
-        ];
-        let local_min = self.raster.base;
-        let local_max: [f64; 2] =
-            std::array::from_fn(|axis| self.raster.base[axis] + f64::from(maximum[axis]));
-        let limits_min = [Some(local_min[0]), (!page.before).then_some(local_min[1])];
-        let limits_max = [Some(local_max[0]), (!page.after).then_some(local_max[1])];
-        let guards = guard(self.geometry, maximum[0] > 0.0);
-        let reusable = self.raster.cache.as_ref().is_some_and(|cache| {
-            let inside = inside(origin, cache.info.coverage_min, cache.info.coverage_max);
-            let near_edge = (0..2).any(|axis| {
-                // Keep refill time constant in logical coordinates too. A budget-limited
-                // guard must still retain enough center coverage to avoid repaint loops.
-                let lead =
-                    (64.0 * f64::from(self.geometry.scale)).min(f64::from(guards[axis]) / 2.0);
-                (origin[axis] - cache.info.coverage_min[axis] < lead
-                    && cache.info.coverage_min[axis] > local_min[axis] + 1.0)
-                    || (cache.info.coverage_max[axis] - origin[axis] < lead
-                        && cache.info.coverage_max[axis] < local_max[axis] - 1.0)
-            });
-            inside
-                && !near_edge
-                && (!self.raster.exact || same_phase(origin, cache.info.raster_origin))
-        });
-        if self.raster.invalid || !reusable {
-            let Some(reservation) = self.raster_budget.reserve_for(self.raster_owner) else {
-                self.dirty = true;
-                return Ok(None);
-            };
-            let margin = self.text_margin();
-            let gutter_width = if self.mode == viewer::MODE_SOURCE && self.preferences.line_numbers
-            {
-                margin as u32
-            } else {
-                0
-            };
-            // Integer padding preserves exact phase at the acknowledged camera, even near BOF.
-            let before: [u32; 2] = std::array::from_fn(|axis| {
-                guards[axis].min(self.origin[axis].max(0.0).ceil() as u32)
-            });
-            let after: [u32; 2] = std::array::from_fn(|axis| {
-                guards[axis].min((maximum[axis] - self.origin[axis]).max(0.0).ceil() as u32)
-            });
-            let size = [
-                self.geometry.width - gutter_width + before[0] + after[0],
-                self.geometry.height + before[1] + after[1],
-            ];
-            let pixels = u64::from(size[0] + gutter_width) * u64::from(size[1]);
-            if pixels > MAX_PIXELS {
-                return Err("Retained raster exceeds pixel budget.".into());
-            }
-            let local_raster: [f32; 2] =
-                std::array::from_fn(|axis| self.origin[axis] - before[axis] as f32);
-            let raster_origin = self.raster.camera(local_raster);
-            let mut pixels = shared_pixels(size[0], size[1])?;
-            self.renderer
-                .rasterize_into(
-                    shaped,
-                    Viewport {
-                        width: size[0],
-                        height: size[1],
-                        origin: [
-                            local_raster[0] - if gutter_width == 0 { margin } else { 0.0 },
-                            local_raster[1],
-                        ],
-                        background: self.appearance.background,
-                        selection_color: self.appearance.selection,
-                        selection_text: self.appearance.selection_text,
-                    },
-                    self.selection.map(|(a, b)| a.min(b)..a.max(b)),
-                    unique(&mut pixels)?,
-                )
-                .map_err(|e| format!("Cannot render retained page: {e:?}"))?;
-            let gutter = if gutter_width != 0 {
-                let mut gutter_pixels = shared_pixels(gutter_width, size[1])?;
-                let mut raster = midnight_viewer_render::RasterMut::new(
-                    gutter_width,
-                    size[1],
-                    unique(&mut gutter_pixels)?,
-                )
-                .map_err(|e| format!("Cannot render retained gutter: {e:?}"))?;
-                text::paint_gutter(
-                    &mut self.renderer,
-                    &mut self.text,
-                    &self.appearance,
-                    self.geometry,
-                    local_raster,
-                    margin,
-                    &mut raster,
-                )?;
-                Some(ViewerRasterGutter {
-                    width: gutter_width,
-                    height: size[1],
-                    pixels: gutter_pixels,
-                })
-            } else {
-                None
-            };
-            reservation
-                .commit(&pixels, gutter.as_ref().map(|gutter| &gutter.pixels))
-                .map_err(str::to_owned)?;
-            self.raster.pixel = self
-                .raster
-                .pixel
-                .checked_add(1)
-                .ok_or("Raster pixel identity exhausted.")?;
-            let coverage_min = std::array::from_fn(|axis| raster_origin[axis].max(local_min[axis]));
-            let coverage_max = [
-                (raster_origin[0] + f64::from(before[0] + after[0])).min(local_max[0]),
-                (raster_origin[1] + f64::from(before[1] + after[1])).min(local_max[1]),
-            ];
-            self.raster.cache = Some(Snapshot {
-                layout: self.raster.layout,
-                width: size[0],
-                height: size[1],
-                pixels,
-                info: ViewerRasterInfo {
-                    surface: ViewerSurfaceId(self.raster.surface),
-                    pixel_id: self.raster.pixel,
-                    origin,
-                    raster_origin,
-                    viewport: [self.geometry.width, self.geometry.height],
-                    coverage_min,
-                    coverage_max,
-                    limit_min: limits_min,
-                    limit_max: limits_max,
-                    pan_sequence: self.raster.sequence,
-                    scroll_per_pixel: [0.0; 2],
-                    scroll_map: self
-                        .scroll_map
-                        .as_ref()
-                        .map(|map| map.translated(self.raster.base[1])),
-                    settled: true,
-                    gutter,
-                },
-            });
-            self.raster.invalid = false;
+        let limits_min = [Some(local_min[0]), (!before).then_some(local_min[1])];
+        let limits_max = [Some(local_max[0]), (!after).then_some(local_max[1])];
+        let column = self.strip_column(origin, maximum);
+        if !self.prepare_window_strips(origin, column)? {
+            // The strip budget is full of pixels that frames still hold: try again.
+            self.dirty = true;
+            return Ok(None);
         }
+        let Some((first, last, list)) = self.strip_run(origin[1]) else {
+            return Ok(None);
+        };
+        let band = f64::from(bands::BAND);
+        let top = first as f64 * band;
+        let bottom = (last + 1) as f64 * band;
+        let view = [
+            f64::from(self.geometry.width.saturating_sub(column.gutter)),
+            f64::from(self.geometry.height),
+        ];
+        let ids: Vec<u64> = list.iter().map(|strip| strip.id).collect();
+        let published = self.raster.cache.as_ref().and_then(|cache| {
+            (cache.info.surface.0 == self.raster.surface
+                && cache.layout == self.raster.layout
+                && cache.strip_ids == ids)
+                .then_some(cache.info.pixel_id)
+        });
+        let pixel_id = match published {
+            Some(id) => id,
+            None => {
+                self.raster.pixel = self
+                    .raster
+                    .pixel
+                    .checked_add(1)
+                    .ok_or("Raster pixel identity exhausted.")?;
+                self.raster.pixel
+            }
+        };
+        let height = ((last - first + 1) as u32)
+            .checked_mul(bands::BAND)
+            .ok_or("Prepared text strips exceed their bounds.")?;
+        self.raster.cache = Some(Snapshot {
+            layout: self.raster.layout,
+            width: column.width,
+            height,
+            pixels: Arc::from([]),
+            strip_ids: ids,
+            info: ViewerRasterInfo {
+                surface: ViewerSurfaceId(self.raster.surface),
+                pixel_id,
+                origin,
+                raster_origin: [column.left, top],
+                viewport: [self.geometry.width, self.geometry.height],
+                coverage_min: [column.left.max(local_min[0]), top.max(local_min[1])],
+                coverage_max: [
+                    (column.left + f64::from(column.width) - view[0])
+                        .min(local_max[0])
+                        .max(column.left.max(local_min[0])),
+                    (bottom - view[1])
+                        .min(local_max[1])
+                        .max(top.max(local_min[1])),
+                ],
+                limit_min: limits_min,
+                limit_max: limits_max,
+                pan_sequence: self.raster.sequence,
+                scroll_per_pixel: [0.0; 2],
+                scroll_map: self
+                    .scroll_map
+                    .as_ref()
+                    .map(|map| map.translated(self.raster.base[1])),
+                settled: true,
+                gutter: None,
+                bands: Some(ViewerRasterBands {
+                    width: column.width,
+                    left: column.left,
+                    gutter_width: column.gutter,
+                    list: Arc::from([]),
+                }),
+            },
+        });
         let cache = self
             .raster
             .cache
@@ -695,13 +710,13 @@ impl Worker {
         cache.info.limit_min = limits_min;
         cache.info.limit_max = limits_max;
         cache.info.settled = same_phase(origin, cache.info.raster_origin);
-        let (start, end) = if !page.before && !page.after {
+        let (start, end) = if !before && !after {
             (0, self.length)
         } else {
-            (page.start, page.end)
+            range
         };
         let bytes = end.saturating_sub(start) as f64;
-        let shaped_height = f64::from(shaped.height().max(1.0));
+        let shaped_height = f64::from(shaped_height.max(1.0));
         let visible_bytes = bytes * (f64::from(self.geometry.height) / shaped_height).min(1.0);
         cache.info.scroll_per_pixel = [
             if maximum[0] > 0.0 {
@@ -715,6 +730,11 @@ impl Worker {
                 0.0
             },
         ];
-        Ok(Some(cache.clone()))
+        // The frame carries the strips; the kept snapshot only their IDs.
+        let mut snapshot = cache.clone();
+        if let Some(bands) = &mut snapshot.info.bands {
+            bands.list = list;
+        }
+        Ok(Some(snapshot))
     }
 }

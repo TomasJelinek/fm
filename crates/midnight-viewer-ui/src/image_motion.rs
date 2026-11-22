@@ -11,6 +11,23 @@ pub(super) struct Native {
     cursor: Option<[f64; 2]>,
     control: bool,
     presses: midnight_ui_input::PressState,
+    /// The system's wheel setting, read when the window gains the focus.
+    wheel: midnight_ui_input::WheelSetting,
+}
+
+pub(super) fn wheel_setting(open: &OpenWindow) -> midnight_ui_input::WheelSetting {
+    open.image_native.borrow().wheel
+}
+
+/// Logical pixels of one wheel notch over the content (`notch_pixels_for`): the shared
+/// distance, scaled by the system's wheel setting.
+pub(super) fn notch_pixels(open: &OpenWindow, horizontal: bool) -> f32 {
+    let page = if horizontal {
+        open.window.get_content_width()
+    } else {
+        open.window.get_content_height()
+    };
+    midnight_ui_input::notch_pixels_for(wheel_setting(open), page)
 }
 
 pub(super) fn now(open: &OpenWindow) -> Duration {
@@ -200,6 +217,11 @@ pub(super) fn fallback(open: &OpenWindow) {
 pub(super) fn bookkeeping(open: &OpenWindow, event: &WindowEvent) {
     {
         let mut native = open.image_native.borrow_mut();
+        // The system's wheel setting: read with the first native event and whenever the
+        // window gains the focus (the user changes it in another window), never per notch.
+        if !native.active || matches!(event, WindowEvent::Focused(true)) {
+            native.wheel = crate::wheel_setting::system_wheel_setting();
+        }
         native.active = true;
         native.presses.observe(event);
         if matches!(
@@ -276,10 +298,13 @@ pub(super) fn route(open: &OpenWindow, event: &WindowEvent, touchpad: bool) -> b
     if touchpad || open.image_native.borrow().presses.active() {
         return false;
     }
+    // The shared notch distance and the system's wheel setting (`notch_pixels`).
+    let x = -x * notch_pixels(open, true);
+    let y = -y * notch_pixels(open, false);
     if open.window.get_tiled() {
-        push(open, -x * 60.0, -y * 60.0, false)
+        push(open, x, y, false)
     } else {
-        raster_motion::push(open, -x * 60.0, -y * 60.0)
+        raster_motion::push(open, x, y)
     }
 }
 

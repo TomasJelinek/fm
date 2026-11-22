@@ -33,6 +33,8 @@ mod long_rows;
 mod nearest_edge;
 #[path = "worker_overlap_tests.rs"]
 mod overlap;
+#[path = "worker_prepared_tests.rs"]
+mod prepared;
 #[path = "worker_seam_tests.rs"]
 mod seam;
 #[path = "worker_syntax_tests.rs"]

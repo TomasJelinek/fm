@@ -780,13 +780,36 @@ fn scrollbar_no_map_fallback_keeps_the_loaded_visual_camera_without_a_read() {
     assert!(worker.viewport_request.is_none());
 }
 
-// The raster test module's crop helper is private to that sibling module.
-// Compose the actual visible body and pinned gutter, preserving pixel phase.
+/// The window rests on whole pixels, where prepared strips are exact, and asks the worker
+/// for that camera: settle `frame`'s camera there as the window would.
+fn settle_whole(worker: &mut Worker, output: &Mailbox, frame: ViewerFrame) -> ViewerFrame {
+    let info = frame.raster.as_ref().expect("retained frame");
+    let whole = info.origin.map(f64::round);
+    if whole == info.origin {
+        return frame;
+    }
+    worker.input(
+        ViewerInput::Raster {
+            surface: info.surface,
+            input: ViewerRasterInput::PanTo {
+                sequence: info.pan_sequence + 1,
+                origin: whole,
+                settled: true,
+            },
+        },
+        output,
+    );
+    rendered(worker, output)
+}
+
+/// The actual visible body and pinned gutter of a settled retained Source frame, composed
+/// from its prepared strips (`raster::stacked`).
 fn corrected_source_visible_pixels(frame: &ViewerFrame) -> Vec<u8> {
     let info = frame.raster.as_ref().expect("actual retained Source frame");
     assert!(info.settled, "the corrected Source camera must be settled");
-    let gutter = info.gutter.as_ref().expect("pinned Source line numbers");
-    assert!(gutter.width > 0 && gutter.width < info.viewport[0]);
+    let (body_width, body, gutter) = super::raster::stacked(frame);
+    let (gutter_width, gutter) = gutter.expect("pinned Source line numbers");
+    assert!(gutter_width > 0 && gutter_width < info.viewport[0]);
     let dx = info.origin[0] - info.raster_origin[0];
     let dy = info.origin[1] - info.raster_origin[1];
     assert!(
@@ -797,12 +820,10 @@ fn corrected_source_visible_pixels(frame: &ViewerFrame) -> Vec<u8> {
     let mut visible = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height as usize {
         let source_y = y + dy.round() as usize;
-        let gutter_at = source_y * gutter.width as usize * 4;
-        visible.extend_from_slice(&gutter.pixels[gutter_at..gutter_at + gutter.width as usize * 4]);
-        let body_at = (source_y * frame.width as usize + dx.round() as usize) * 4;
-        visible.extend_from_slice(
-            &frame.pixels[body_at..body_at + (width - gutter.width) as usize * 4],
-        );
+        let gutter_at = source_y * gutter_width as usize * 4;
+        visible.extend_from_slice(&gutter[gutter_at..gutter_at + gutter_width as usize * 4]);
+        let body_at = (source_y * body_width as usize + dx.round() as usize) * 4;
+        visible.extend_from_slice(&body[body_at..body_at + (width - gutter_width) as usize * 4]);
     }
     visible
 }
@@ -873,9 +894,13 @@ fn scrollbar_source_correction_retains_actual_pixels_and_exact_numbered_gutter()
         coordinate.column,
         Some(prefix.rsplit('\n').next().unwrap().len() as u64 + 1)
     );
+    // The exact corrected camera maps to the target; the window then rests on the nearest
+    // whole pixel, where the strips' pixels are exact.
+    let corrected = frame.raster.clone().unwrap();
+    let frame = settle_whole(&mut worker, &output, frame);
     let visible = corrected_source_visible_pixels(&frame);
     let info = frame.raster.as_ref().unwrap();
-    let mapped_position = info
+    let mapped_position = corrected
         .scroll_map
         .as_ref()
         .expect("retained Source map")
@@ -887,7 +912,7 @@ fn scrollbar_source_correction_retains_actual_pixels_and_exact_numbered_gutter()
         visible != first_visible,
         "the correction must replace the initial pixels"
     );
-    let gutter_bytes = info.gutter.as_ref().unwrap().width as usize * 4;
+    let gutter_bytes = info.bands.as_ref().unwrap().gutter_width as usize * 4;
     assert!(
         visible
             .chunks_exact(worker.geometry.width as usize * 4)
@@ -2153,12 +2178,16 @@ fn recovery_v2_retained_completion(stale_wheel: bool) {
     assert_eq!(worker.text.coordinate.unwrap().line, 2001);
     assert!(worker.positions.source.is_none());
     assert!(!worker.positions.has_pending() && worker.viewport_request.is_none());
+    // The exact recovered camera maps to the target; the window then rests on the nearest
+    // whole pixel, where the strips' pixels are exact.
+    let recovered = completed.raster.clone().unwrap();
+    let completed = settle_whole(&mut worker, &output, completed);
     let visible = corrected_source_visible_pixels(&completed);
     assert!(
         visible != first_visible,
         "the recovered camera must replace the missed camera"
     );
-    let info = completed.raster.as_ref().unwrap();
+    let info = &recovered;
     assert_eq!(
         info.viewport,
         [worker.geometry.width, worker.geometry.height]
@@ -2171,7 +2200,7 @@ fn recovery_v2_retained_completion(stale_wheel: bool) {
         .unwrap()
         .0;
     assert_eq!(mapped as f32, target as f32);
-    let gutter_bytes = info.gutter.as_ref().unwrap().width as usize * 4;
+    let gutter_bytes = info.bands.as_ref().unwrap().gutter_width as usize * 4;
     assert!(
         visible
             .chunks_exact(worker.geometry.width as usize * 4)
@@ -2191,7 +2220,8 @@ fn recovery_v2_retained_completion(stale_wheel: bool) {
     assert!(reference.raster.is_none());
     assert_eq!(reference.generation, first.generation);
     assert_eq!(reference.position_sequence, [4, 0]);
-    assert_eq!(reference.position as f32, target as f32);
+    // The reference shows the camera the window settled on (`settle_whole`).
+    assert_eq!(reference.position, completed.position);
     assert_eq!(visible.len(), reference.pixels.len());
     if let Some(at) = visible
         .iter()

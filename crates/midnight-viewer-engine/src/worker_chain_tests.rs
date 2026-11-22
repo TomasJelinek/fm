@@ -69,6 +69,8 @@ fn text_worker(source: &str) -> (Worker, Mailbox) {
     worker.mode = viewer::MODE_TEXT;
     worker.wrap = false;
     worker.raster.enabled = true;
+    // Joins are checked on the former pages: the window and its 256-pixel guards.
+    worker.raster.legacy_pages = true;
     worker.length = source.len() as u64;
     worker.geometry = ViewerGeometry {
         width: 1312,

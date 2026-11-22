@@ -273,9 +273,9 @@ fn require(condition: bool, message: &str) -> Result<()> {
 }
 
 fn pixels(window: &ViewerWindow) -> Result<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
-    if window.get_tiled() {
-        // Image panning retains independent textures rather than a single
-        // raster. Verify the actual composed native window in that mode.
+    if window.get_tiled() || window.get_raster_bands().row_count() > 0 {
+        // Image panning and prepared text strips retain independent textures rather
+        // than a single raster. Verify the actual composed native window then.
         return Ok(window.window().take_snapshot()?);
     }
     window

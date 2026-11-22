@@ -281,6 +281,8 @@ pub struct NativeScroll {
     kinetic_sink: Option<KineticSink>,
     kinetic_surface: Option<KineticSurface>,
     glide_region: Option<GlideRegion>,
+    /// The system's wheel setting, which the host reads and keeps current.
+    wheel_setting: crate::WheelSetting,
 }
 
 impl NativeScroll {
@@ -306,7 +308,14 @@ impl NativeScroll {
             kinetic_sink: None,
             kinetic_surface: None,
             glide_region: None,
+            wheel_setting: crate::WheelSetting::default(),
         }
+    }
+
+    /// The system's wheel setting for the notches this observer glides
+    /// (`notch_pixels_for`); the default until the host supplies its own.
+    pub fn set_wheel_setting(&mut self, setting: crate::WheelSetting) {
+        self.wheel_setting = setting;
     }
 
     /// Glide wheel notches over this region of the window too, not only over
@@ -616,7 +625,8 @@ impl NativeScroll {
                 }
                 self.target = Some(target);
                 self.position = Some(point);
-                if self.motion.push(x * LINE_PIXELS, y * LINE_PIXELS, now) {
+                let notch = crate::notch_pixels_for(self.wheel_setting, 0.0);
+                if self.motion.push(x * notch, y * notch, now) {
                     if !self.timer.running() {
                         self.timer.restart();
                     }

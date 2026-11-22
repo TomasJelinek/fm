@@ -80,22 +80,23 @@ backend messages and bounded coalescing; no Salamander code is copied.
 
 ## Retained text pixels and delivery
 
-Text, source, Markdown and binary/hex can retain a bounded body raster and a
-separate source gutter. Their surface identity names a layout/camera context;
-immutable pixel identities distinguish new allocations from metadata updates.
-The frontend moves covered pixels without waiting for a new backend raster and
-keeps the gutter horizontally fixed. Each guard targets 256 logical pixels per
-side, converted using the effective raster scale, including the initial parent
-DPI. The combined body and gutter still fit the 24 MiB snapshot cap, so guards
-shrink when necessary. The engine and the UI's frame check take that cap from one
-`midnight-core` constant (`VIEWER_RETAINED_RASTER_PIXELS`). Guard refills retain
-the existing request ceilings: 12 KiB for text and source, 64 KiB for Markdown
-and 4 KiB for binary, at most 512 lines; a higher DPI does not enlarge those
-source budgets. An uncovered
-frontier pauses displayed motion until usable pixels arrive; it is not an inferred
-end of file. Settling can request exact fractional glyph phase.
+Text, source, Markdown and binary/hex retain prepared strips (`ViewerRasterBands`):
+the body and the source gutter, 256 rows each, several screens around the window
+(the [prepared text window](SCROLLING.md#prepared-text-window)). Their surface
+identity names a layout/camera context; a strip's ID names its immutable pixels, and a
+frame's pixel identity changes when its set of strips does. The frontend moves over
+the strips without waiting for the backend and keeps the gutter horizontally fixed;
+each strip becomes one image when it first arrives. Strips of one viewer hold at most
+64 MiB and those of all viewers 256 MiB; the engine's budget and the UI's frame check
+take these from `midnight-core` (`VIEWER_PREPARED_TEXT_BYTES`,
+`VIEWER_PREPARED_TEXT_TOTAL_BYTES`). Refills keep the request ceilings: 12 KiB for
+text and source, 64 KiB for Markdown and 4 KiB for binary, at most 512 lines; the
+prepared screens and a higher DPI do not enlarge those source budgets. An uncovered
+frontier pauses displayed motion until usable pixels arrive; it is not an inferred end
+of file. A camera at rest stands on a whole raster pixel, where strips are exact.
 The [retained-raster contract](../superpowers/plans/2026-11-11-retained-viewer-raster.md)
-defines coverage, continuation and snapshot budgets.
+defined coverage and continuation; strips replaced its single snapshot and its 256-pixel
+guards on 21 November 2026.
 
 A refill paints only the lines, Markdown blocks, table cells and glyphs whose ink
 can reach the raster. That reach is a conservative bound, not a font guarantee:
@@ -105,8 +106,9 @@ strikethrough. It covers the glyphs of real text fonts; a malformed or unusual
 font whose ink extends further can lose that ink at raster edges. The engine
 allocates each body, gutter and viewport-only frame buffer once, as the shared
 `Arc<[u8]>` the frame carries, and paints it while it is still unique
-(`rasterize_into`, `paint_over_into`). Delivering a refill therefore costs no
-second allocation or full-surface copy.
+(`rasterize_into`, `paint_over_into`). Delivering a strip therefore costs no
+second allocation or full-surface copy; the UI's preparation worker converts each
+strip once and reuses the conversion while later frames still carry it.
 
 Raster pixel coordinates map through the frame's retained logical viewport,
 not through the current clipping canvas. Source/Markdown controls appearing with

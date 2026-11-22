@@ -15,6 +15,11 @@ use midnight_ui::{
 use midnight_ui_input as native_scroll;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
+/// One wheel notch of a `NativeScroll` glide at the default wheel setting.
+fn notch() -> f32 {
+    native_scroll::notch_pixels_for(native_scroll::WheelSetting::default(), 0.0)
+}
+
 fn jobs_window() -> Result<JobsWindow, slint::PlatformError> {
     let window = JobsWindow::new()?;
     window.global::<JobsView>().on_find(|rows, identity| {
@@ -195,7 +200,7 @@ fn find_scrollbar_wheel_uses_the_same_animation_as_result_content() {
     h.advance(16);
     let first = offset(&viewport);
     assert!(
-        first < initial && first > initial - 12.0,
+        first < initial && first > initial - notch() / 5.0,
         "first scrollbar wheel frame must move only part of the notch: {initial} -> {first}"
     );
     for _ in 0..14 {
@@ -203,7 +208,7 @@ fn find_scrollbar_wheel_uses_the_same_animation_as_result_content() {
     }
     near(
         offset(&viewport),
-        initial - 60.0,
+        initial - notch(),
         "scrollbar wheel retains exact distance",
     );
 }
@@ -329,7 +334,7 @@ fn find_horizontal_scrollbar_is_detected_at_nonzero_window_coordinates() {
     }
     near(
         x(),
-        initial - 60.0,
+        initial - notch(),
         "horizontal scrollbar receives the complete notch",
     );
     near(
@@ -357,7 +362,7 @@ fn command_strip_smooths_line_remapping_without_treating_hidden_bars_as_visible(
             h.window.get_command_path_height(),
         ),
     );
-    assert!(h.window.get_command_path_content_width() > area.width() + 60.0);
+    assert!(h.window.get_command_path_content_width() > area.width() + notch());
     let point = LogicalPoint::new(area.center().x, area.max_y() - 3.0);
     h.install_native_scroll();
     assert!(
@@ -382,12 +387,12 @@ fn command_strip_smooths_line_remapping_without_treating_hidden_bars_as_visible(
     for _ in 0..15 {
         h.advance(16);
         let current = h.window.get_command_path_text_left();
-        assert!(current >= previous - 0.03 && current - previous < 12.0);
+        assert!(current >= previous - 0.03 && current - previous < notch() / 5.0);
         previous = current;
     }
     near(
         previous,
-        initial + 60.0,
+        initial + notch(),
         "command strip retains remapped distance",
     );
     h.pixels(point, 3.25);
@@ -443,7 +448,7 @@ fn native_scrollbar_hit_testing_uses_logical_coordinates_at_high_dpi() {
     }
     near(
         offset(&viewport),
-        -60.0,
+        -notch(),
         "physical input must retain the same logical wheel distance",
     );
 }
@@ -489,7 +494,7 @@ fn standard_options_combo_popup_uses_its_own_scrollbar_hook() {
     }
     near(
         offset(&viewport),
-        initial - 60.0,
+        initial - notch(),
         "SDK popup scrollbar receives full animated distance",
     );
     assert_eq!(
@@ -526,7 +531,7 @@ fn scrollbar_wheel_releases_find_cursor_following_without_retargeting_selection(
     }
     near(
         offset(&viewport),
-        initial + 60.0,
+        initial + notch(),
         "scrollbar motion must release Find cursor-following",
     );
     assert_eq!(

@@ -235,13 +235,18 @@ fn raster_native_wheel_delivers_fractional_frames_between_notches() {
             "mode {mode}: only {} movement frames",
             steps.len()
         );
-        assert!(steps.iter().all(|step| step[1] > 0.0 && step[1] < 10.0));
+        // One notch's distance (`image_motion::notch_pixels`), eased: no 8 ms frame
+        // moves more than a sixth of it.
+        let notch = image_motion::notch_pixels(&open, false);
+        let notch = notch * scale as f32;
+        assert!(
+            steps
+                .iter()
+                .all(|step| step[1] > 0.0 && step[1] < notch / 6.0)
+        );
         assert!(steps.iter().any(|step| step[1].fract() != 0.0));
         let total: f32 = steps.iter().map(|step| step[1]).sum();
-        assert!(
-            (total - 60.0 * scale as f32).abs() < 0.001,
-            "lost distance: {total}"
-        );
+        assert!((total - notch).abs() < 0.001, "lost distance: {total}");
         image_presentation_tests::advance_time(Duration::from_millis(500));
     }
     manager.close_all();
@@ -364,10 +369,15 @@ fn raster_wheel_retries_a_full_queue_without_losing_its_last_pixels() {
     raster_ticks(&open, 40);
     let steps = submitted.borrow();
     assert!(steps.len() >= 10);
-    assert!(steps.iter().all(|step| step[1] > 0.0 && step[1] < 10.0));
+    let notch = image_motion::notch_pixels(&open, false);
+    assert!(
+        steps
+            .iter()
+            .all(|step| step[1] > 0.0 && step[1] < notch / 6.0)
+    );
     let total: f32 = steps.iter().map(|step| step[1]).sum();
     assert!(
-        (total - 60.0).abs() < 0.001,
+        (total - notch).abs() < 0.001,
         "queue backpressure lost wheel distance: {total}"
     );
     manager.close_all();
@@ -685,6 +695,7 @@ fn source_opening_frame(revision: u64, geometry: ViewerGeometry, retained: bool)
             height: geometry.height,
             pixels: pixels(gutter_width, true),
         }),
+        bands: None,
     });
     if !retained {
         let gutter = frame.raster.take().unwrap().gutter.unwrap();

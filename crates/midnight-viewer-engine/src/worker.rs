@@ -57,6 +57,8 @@ mod layout;
 mod palette;
 #[path = "worker_position.rs"]
 mod position;
+#[path = "prepare_counters.rs"]
+mod prepare_counters;
 #[path = "worker_raster.rs"]
 mod raster;
 #[path = "worker_sandbox.rs"]
@@ -525,6 +527,8 @@ pub(crate) fn run(
                 worker.error(error, output);
             }
         }
+        // Prepared text: strips beyond the window, between inputs (`worker_bands.rs`).
+        worker.prepare_strips();
         // Optional indexing starts only after content has been published. It
         // never participates in a viewport or scrollbar acknowledgement.
         worker.prepare_source(output);
@@ -964,7 +968,8 @@ impl Worker {
             });
         let mut requested_geometry = self.geometry;
         if self.raster.enabled {
-            requested_geometry.height += raster::guard(self.geometry, false)[1] * 2;
+            // The page holds the prepared screens around the window (`worker_bands.rs`).
+            requested_geometry.height += self.raster.page_extension(self.geometry);
         }
         let max_lines = crate::viewport::request_line_budget(
             requested_geometry,
@@ -1791,6 +1796,7 @@ impl Worker {
             line_height: self.line_height(),
             ..TextOptions::default()
         };
+        prepare_counters::layout(page.text.len());
         page.layout(
             &mut self.renderer,
             &options,
@@ -2033,6 +2039,7 @@ impl Worker {
             )
         } else {
             let (width, height) = (self.geometry.width, self.geometry.height);
+            prepare_counters::raster(u64::from(width) * u64::from(height));
             // Painted in place and moved into the frame without another copy.
             let mut pixels = raster::shared_pixels(width, height)?;
             let rgba = raster::unique(&mut pixels)?;

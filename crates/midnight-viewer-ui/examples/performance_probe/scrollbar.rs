@@ -770,7 +770,7 @@ fn validate_native_point(
 // Bounded CPU-only evidence outside gesture timing. Optional --gpu-proof runs
 // separately; this crop never proves native rendering or GPU readback.
 fn visible_crop(window: &ViewerWindow) -> Option<(u64, bool)> {
-    let image = window.get_surface().to_rgba8_premultiplied()?;
+    let image = super::retained_surface(window)?;
     let [width, height] = [image.width() as usize, image.height() as usize];
     if width == 0 || height == 0 {
         return None;

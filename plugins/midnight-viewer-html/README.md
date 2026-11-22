@@ -130,7 +130,8 @@ punctuation never acts as Delete, arrow or page commands. Mouse Back/Forward but
 focus loss ends a held button's capture. Chromium runs with `disable-smooth-scrolling`:
 the host glides wheel notches and coasts touchpad flicks itself, one delta per frame, so
 Chromium applies each wheel event at once instead of easing it again over about 170 ms.
-The host's deltas are the distance to scroll, 60 px per notch as in the text viewer.
+The host's deltas are the distance to scroll, a notch as far as in the text viewer: 100 px
+at three lines since 21 November 2026, 60 px when the figures below were measured.
 Chromium scrolls whole pixels of whole units. On Linux CEF reads a delta as pixels, so
 a unit is a pixel. On Windows CEF reads it as `WHEEL_DELTA` units (120 per notch) and
 Chromium scrolls the system's wheel lines (characters across) of 100/3 px each, computed

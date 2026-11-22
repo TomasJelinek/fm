@@ -7,6 +7,7 @@ use slint::winit_030::{CustomApplicationHandler, EventResult, winit};
 use slint::{ComponentHandle, Model, winit_030::WinitWindowAccessor};
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
@@ -23,6 +24,14 @@ unsafe extern "system" {
 
 type Frames = Rc<RefCell<Vec<(f64, f32, bool, f64, f64)>>>;
 
+/// Thumbnail target ranges seen on captured frames: changes and the largest range.
+#[derive(Default)]
+struct TargetRanges {
+    last: Option<(i32, i32)>,
+    changes: usize,
+    largest: i32,
+}
+
 struct ProbeEvents {
     window: Rc<RefCell<Option<slint::Weak<MainWindow>>>>,
     list: Rc<RefCell<Option<ItemRc>>>,
@@ -30,6 +39,7 @@ struct ProbeEvents {
     capturing: Rc<Cell<bool>>,
     started: Instant,
     pending: Option<(Instant, f64)>,
+    targets: Rc<RefCell<TargetRanges>>,
 }
 
 impl ProbeEvents {
@@ -47,6 +57,16 @@ impl ProbeEvents {
                 before.elapsed().as_secs_f64() * 1000.0,
                 measurements::thread_cpu_ms() - cpu_before,
             ));
+            let range = (
+                window.get_left_thumbnail_row_start(),
+                window.get_left_thumbnail_row_end(),
+            );
+            let mut targets = self.targets.borrow_mut();
+            if targets.last != Some(range) {
+                targets.changes += usize::from(targets.last.is_some());
+                targets.last = Some(range);
+                targets.largest = targets.largest.max(range.1 - range.0);
+            }
         }
     }
 }
@@ -101,14 +121,42 @@ fn find_list(item: ItemRc, x: f32, y: f32) -> Option<ItemRc> {
     None
 }
 
-fn row_background(window: &MainWindow, color: slint::Color) -> bool {
+/// Whether the left panel's second row paints the background its model state calls
+/// for: the selection fill wins over the cursor fill, then the stripe of its parity
+/// (`file-entry.slint` `row-color`). The second row lies at 1.5 rows below the list
+/// top once the list shows its first row; 8 px in, past the caret stroke.
+fn row_background(window: &MainWindow, phase: &str) -> bool {
     let snapshot = window.window().take_snapshot().unwrap();
     let scale = window.window().scale_factor();
+    let theme = window.global::<Theme>();
     let x = ((window.get_left_list_left() + 8.0) * scale) as usize;
-    let y = ((window.get_left_list_top() + 1.5 * window.global::<Theme>().get_row_height()) * scale)
-        as usize;
+    let y = ((window.get_left_list_top() + 1.5 * theme.get_row_height()) * scale) as usize;
     let pixel = snapshot.as_slice()[y * snapshot.width() as usize + x];
-    (pixel.r, pixel.g, pixel.b) == (color.red(), color.green(), color.blue())
+    let row = window.get_left_rows().row_data(1).unwrap_or_default();
+    let expected = if row.selected {
+        theme.get_selected_background()
+    } else if row.cursor && window.get_active_pane() == 0 {
+        theme.get_cursor_background()
+    } else if row.cursor {
+        theme.get_inactive_cursor()
+    } else {
+        theme.get_alternate_row()
+    };
+    let rgb = |color: slint::Color| (color.red(), color.green(), color.blue());
+    eprintln!(
+        "native row {phase}: pixel {:?} expected {:?} (row 1 selected={} cursor={} offset={}; \
+         alternate {:?}, pane {:?}, cursor {:?}, selected {:?})",
+        (pixel.r, pixel.g, pixel.b),
+        rgb(expected),
+        row.selected,
+        row.cursor,
+        window.get_left_list_content_y(),
+        rgb(theme.get_alternate_row()),
+        rgb(theme.get_pane_background()),
+        rgb(theme.get_cursor_background()),
+        rgb(theme.get_selected_background()),
+    );
+    (pixel.r, pixel.g, pixel.b) == rgb(expected)
 }
 
 fn seed_capture_icons(presenter: &Rc<RefCell<Presenter>>) {
@@ -205,6 +253,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
     let sustained = arguments.iter().any(|argument| argument == "--sustained");
+    // Three flicks of a Windows precision touchpad: finger reports then the system's
+    // decaying momentum, as fractional WM_MOUSEWHEEL deltas 8 ms apart.
+    let fling = arguments.iter().any(|argument| argument == "--fling");
+    let entry_count = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--entries="))
+        .map_or(Ok(10_000), str::parse::<u64>)?;
+    if fling && (sustained || arguments.iter().any(|argument| argument == "--check")) {
+        return Err("--fling replaces the notch schedule; omit --sustained and --check".into());
+    }
     let scrollbar_wheel = arguments
         .iter()
         .any(|argument| argument == "--scrollbar-wheel");
@@ -219,7 +277,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find_map(|argument| argument.strip_prefix("--capture-pixels="))
         .map(std::path::PathBuf::from);
     let path = real_path.clone().unwrap_or(std::env::current_dir()?);
-    let entries = measurements::load_entries(path.clone(), real_path.is_some())?;
+    let entries = measurements::load_entries(path.clone(), real_path.is_some(), entry_count)?;
     eprintln!(
         "fixture path={path:?} source={} entries={} app_renderer={app_renderer} scrollbar_wheel={scrollbar_wheel} timed_fixture_icons={timed_fixture_icons}",
         if real_path.is_some() {
@@ -234,6 +292,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let list = Rc::new(RefCell::new(None::<ItemRc>));
     let samples: Frames = Default::default();
     let capturing = Rc::new(Cell::new(false));
+    let targets = Rc::new(RefCell::new(TargetRanges::default()));
     let selector = slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("femtovg-wgpu".into())
@@ -244,6 +303,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             capturing: capturing.clone(),
             started,
             pending: None,
+            targets: targets.clone(),
         });
     selector.select()?;
     let window = MainWindow::new()?;
@@ -322,6 +382,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let timer = slint::Timer::default();
     let weak = window.as_weak();
     let mut step = 0;
+    // Step-timer ticks spent waiting for the list to rest before the row checks.
+    let mut rest_wait = 0;
     let mut injections = Vec::new();
     let capture_injections = Rc::new(RefCell::new(Vec::new()));
     let store_injections = capture_injections.clone();
@@ -334,6 +396,37 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let wants_pixels = pixel_directory.is_some();
     let view_capture = Rc::new(RefCell::new(None));
     let capture_view = view_capture.clone();
+    // Wheel deltas (WHEEL_DELTA units) still to post, one per 8 ms tick.
+    let fling_queue: Rc<RefCell<VecDeque<i16>>> = Rc::default();
+    let fling_target = Rc::new(Cell::new((
+        std::ptr::null_mut::<std::ffi::c_void>(),
+        0u32,
+        0u32,
+    )));
+    let fling_timer = slint::Timer::default();
+    {
+        let queue = fling_queue.clone();
+        let target = fling_target.clone();
+        fling_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(8),
+            move || {
+                let Some(delta) = queue.borrow_mut().pop_front() else {
+                    return;
+                };
+                let (hwnd, x, y) = target.get();
+                // SAFETY: the handle was checked when the flick began; the posted
+                // messages carry only integer coordinates and wheel data.
+                unsafe {
+                    assert_ne!(PostMessageW(hwnd, 0x0200, 0, (x | y << 16) as isize), 0);
+                    assert_ne!(
+                        PostMessageW(hwnd, 0x020A, (delta as u16 as usize) << 16, 0),
+                        0
+                    );
+                }
+            },
+        );
+    }
     timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(200),
@@ -364,7 +457,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 assert!(list.borrow().is_some());
                 capturing.set(true);
             }
-            if if sustained { (9..=29).contains(&step) } else { [9, 16, 23, 30].contains(&step) } {
+            let flick = fling && [9, 19, 29].contains(&step);
+            if flick
+                || (!fling
+                    && if sustained {
+                        (9..=29).contains(&step)
+                    } else {
+                        [9, 16, 23, 30].contains(&step)
+                    })
+            {
                 let title = format!(
                     "Midnight Explorer native scroll probe {}",
                     std::process::id()
@@ -388,17 +489,44 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 unsafe {
                     let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
                     assert!(!hwnd.is_null());
-                    assert_ne!(PostMessageW(hwnd, 0x0200, 0, (x | y << 16) as isize), 0);
-                    assert_ne!(
-                        PostMessageW(hwnd, 0x020A, (-120i16 as u16 as usize) << 16, 0),
-                        0
-                    );
+                    if flick {
+                        fling_target.set((hwnd, x, y));
+                    } else {
+                        assert_ne!(PostMessageW(hwnd, 0x0200, 0, (x | y << 16) as isize), 0);
+                        assert_ne!(
+                            PostMessageW(hwnd, 0x020A, (-120i16 as u16 as usize) << 16, 0),
+                            0
+                        );
+                    }
+                }
+                if flick {
+                    // 12 finger reports of 0.8 line, then 80 momentum reports
+                    // decaying by 5 % each: about 25 lines in all.
+                    let mut queue = fling_queue.borrow_mut();
+                    queue.extend(std::iter::repeat_n(-96i16, 12));
+                    queue.extend((0..80).filter_map(|k| {
+                        let units = (96.0 * 0.95f64.powi(k)).round() as i16;
+                        (units > 0).then_some(-units)
+                    }));
                 }
                 injections.push(started.elapsed().as_secs_f64() * 1000.0);
             }
             if step == 37 {
-                *store_injections.borrow_mut() = injections.clone();
-                capturing.set(false);
+                if capturing.get() {
+                    *store_injections.borrow_mut() = injections.clone();
+                    capturing.set(false);
+                    // Timing ends here. The 8 ms report timer fires at most once
+                    // per frame, so with slow frames the last flick still has
+                    // reports to post: drop them, or they would scroll the list
+                    // under the row checks below.
+                    fling_queue.borrow_mut().clear();
+                }
+                if window.get_scroll_interaction_active() {
+                    // The glide of the reports already delivered is still running.
+                    rest_wait += 1;
+                    assert!(rest_wait < 50, "the list did not come to rest within 10 s");
+                    return;
+                }
                 window.invoke_view_mode(0, 0);
                 window.set_left_cursor(0);
                 window.invoke_reveal_left();
@@ -408,28 +536,25 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     *capture_pixels.borrow_mut() = measurements::capture_pixel_proof(&window);
                     window.invoke_reveal_left();
                 }
-                let theme = window.global::<Theme>();
-                validation_capture.borrow_mut().push((
-                    "ordinary row",
-                    row_background(&window, theme.get_alternate_row()),
-                ));
+                validation_capture
+                    .borrow_mut()
+                    .push(("ordinary row", row_background(&window, "ordinary row")));
                 window.invoke_activate(0);
                 window.invoke_row_click(0, 1, true, false);
             }
             if step == 39 {
-                let theme = window.global::<Theme>();
+                // Ctrl+click toggles the row's selection: a selected row paints the
+                // selection fill, not the cursor fill.
                 validation_capture.borrow_mut().push((
                     "selected cursor row",
-                    row_background(&window, theme.get_cursor_background()),
+                    row_background(&window, "selected cursor row"),
                 ));
-                theme.set_scheme(2);
+                window.global::<Theme>().set_scheme(2);
             }
             if step == 40 {
-                let theme = window.global::<Theme>();
-                validation_capture.borrow_mut().push((
-                    "changed theme",
-                    row_background(&window, theme.get_cursor_background()),
-                ));
+                validation_capture
+                    .borrow_mut()
+                    .push(("changed theme", row_background(&window, "changed theme")));
             }
             if step == 41 && capture {
                 seed_capture_icons(&capture_presenter);
@@ -462,6 +587,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("{elapsed:.3},{offset:.4},{active},{render:.3},{cpu:.3}");
     }
     measurements::report(&capture_injections.borrow(), &samples.borrow(), row_height);
+    {
+        let targets = targets.borrow();
+        eprintln!(
+            "thumbnail_targets changes={} largest_range={} view_mode={requested_mode} entries={}",
+            targets.changes,
+            targets.largest,
+            entries.len()
+        );
+    }
     if let Some(directory) = pixel_directory {
         let captures = std::mem::take(&mut *pixel_captures.borrow_mut());
         std::thread::spawn(move || measurements::write_pixel_proof(&directory, captures))

@@ -143,6 +143,7 @@ impl Worker {
             scroll_map: None,
             settled,
             gutter: None,
+            bands: None,
         });
         ViewerOutput::Frame(frame)
     }

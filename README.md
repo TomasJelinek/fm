@@ -921,9 +921,15 @@ editor scope and shortcuts reserved for later stages.
   [Custom Commands contract](docs/developer/USER_COMMANDS.md) records platform
   and workload limits. See the [settings verification](docs/verification/2026-11-07-custom-command-settings.md)
   for Windows/Linux input, scrolling and persistence checks.
-- Panel scrolling animates discrete wheel input in pixels and gently settles on
-  a row after input and inertia stop. Windows and macOS keep their own touchpad
-  momentum; on Linux, which reports none after the lift, a touchpad flick keeps
+- Panel scrolling moves in pixels and draws the rows cut by the panel's edges, so
+  it never leaves an empty band below the column header. A wheel notch glides
+  the whole rows nearest to the text viewer's notch (which follows the system's
+  lines per notch) and stops on a row; touchpad scrolling and its momentum glide
+  like the text viewer's, after which the Details and Brief lists settle gently
+  on the nearest row (the thumbnail grid keeps its position). With Windows
+  animation effects turned off, wheel scrolling and the settling happen at once.
+  Windows and macOS keep their own touchpad momentum; on Linux, which reports
+  none after the lift, a touchpad flick keeps
   scrolling panels, viewers and the comparator with momentum that slows down and
   stops at once on a click, key or new wheel or touchpad movement (see
   [kinetic scrolling](docs/developer/SCROLLING.md#touchpad-momentum-kinetic-scrolling)).

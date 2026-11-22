@@ -7,6 +7,156 @@ pub(super) struct State {
     pixels: Option<(ViewerSurfaceId, u64)>,
     positions: [f64; 2],
     uploads: u64,
+    strips: Strips,
+}
+
+/// Rows count `y` from a base within this many screens of every strip they show, so an
+/// `f32` row stays precise to a small fraction of a pixel; further travel rewrites them.
+const STRIP_BASE_SCREENS: f64 = 32.0;
+
+/// What strip rows' images and sizes belong to: generation, surface, viewport, strip width
+/// and gutter width.
+type StripOwner = (u64, ViewerSurfaceId, [u32; 2], u32, u32);
+
+/// The shown prepared text strips. A strip keeps its image and its Slint row while it stays
+/// shown, so its texture is uploaded once however far the camera moves over it: the
+/// renderer uploads a row's texture again whenever that row changes, and every row's when
+/// the model is replaced. Rows are therefore only appended and removed, with `y` from a
+/// base that moves rarely; the window's `raster-bands-origin` places that base.
+#[derive(Default)]
+struct Strips {
+    /// Strip IDs in the row order of the body and the gutter models.
+    body_rows: Vec<u64>,
+    gutter_rows: Vec<u64>,
+    /// Images of the shown strips by ID (body, gutter).
+    images: std::collections::HashMap<u64, (slint::Image, Option<slint::Image>)>,
+    body: Rc<slint::VecModel<ViewerRasterTile>>,
+    gutter: Rc<slint::VecModel<ViewerRasterTile>>,
+    /// The world y that rows count from, and what their images and sizes belong to.
+    base: Option<(f64, StripOwner)>,
+    /// The window shows these models.
+    installed: bool,
+}
+
+impl Strips {
+    fn is_empty(&self) -> bool {
+        self.images.is_empty() && self.body_rows.is_empty() && self.gutter_rows.is_empty()
+    }
+
+    /// Show no strips; the window keeps the (now empty) models.
+    fn clear(&mut self) {
+        self.body_rows.clear();
+        self.gutter_rows.clear();
+        self.images.clear();
+        self.base = None;
+        self.body.set_vec(Vec::new());
+        self.gutter.set_vec(Vec::new());
+    }
+
+    /// Show `bands`, whose converted pixels are `prepared`: strips that stay keep their
+    /// rows, strips that left lose theirs and new strips are appended. Returns how many
+    /// strips became new images.
+    fn show(
+        &mut self,
+        open: &OpenWindow,
+        frame: &ViewerFrame,
+        info: &ViewerRasterInfo,
+        bands: &ViewerRasterBands,
+        prepared: &[pixel_preparation::PreparedStrip],
+    ) -> u64 {
+        if !self.installed {
+            open.window
+                .set_raster_bands(slint::ModelRc::from(self.body.clone()));
+            open.window
+                .set_raster_gutter_bands(slint::ModelRc::from(self.gutter.clone()));
+            self.installed = true;
+        }
+        let owner = (
+            frame.generation,
+            info.surface,
+            info.viewport,
+            bands.width,
+            bands.gutter_width,
+        );
+        let reach = STRIP_BASE_SCREENS * f64::from(info.viewport[1]);
+        let rebase = self.base.is_none_or(|(base, old)| {
+            old != owner
+                || bands
+                    .list
+                    .iter()
+                    .any(|band| (band.top - base).abs() > reach)
+        });
+        if rebase {
+            // Every row's `y` changes: rows are written again. Other content may number its
+            // strips again, so images are kept only for the same content and sizes.
+            if self.base.is_some_and(|(_, old)| old != owner) {
+                self.images.clear();
+            }
+            self.body_rows.clear();
+            self.gutter_rows.clear();
+            self.body.set_vec(Vec::new());
+            self.gutter.set_vec(Vec::new());
+            let base = bands
+                .list
+                .first()
+                .map_or(info.raster_origin[1], |band| band.top);
+            self.base = Some((base, owner));
+        }
+        let base = self.base.map_or(0.0, |(base, _)| base);
+        let shown: std::collections::HashSet<u64> = bands.list.iter().map(|band| band.id).collect();
+        for (rows, model) in [
+            (&mut self.body_rows, &self.body),
+            (&mut self.gutter_rows, &self.gutter),
+        ] {
+            for index in (0..rows.len()).rev() {
+                if !shown.contains(&rows[index]) {
+                    rows.remove(index);
+                    model.remove(index);
+                }
+            }
+        }
+        let mut images = std::mem::take(&mut self.images);
+        let mut created = 0;
+        let viewport = info.viewport.map(|extent| extent as f32);
+        for (band, pixels) in bands.list.iter().zip(prepared) {
+            let (image, gutter) = images.remove(&band.id).unwrap_or_else(|| {
+                created += 1;
+                (
+                    slint::Image::from_rgba8_premultiplied(pixels.body.clone()),
+                    pixels
+                        .gutter
+                        .clone()
+                        .map(slint::Image::from_rgba8_premultiplied),
+                )
+            });
+            let y = ((band.top - base) / f64::from(info.viewport[1])) as f32;
+            let height = band.height as f32 / viewport[1];
+            if !self.body_rows.contains(&band.id) {
+                self.body_rows.push(band.id);
+                self.body.push(ViewerRasterTile {
+                    image: image.clone(),
+                    x: 0.0,
+                    y,
+                    width: bands.width as f32 / viewport[0],
+                    height,
+                });
+            }
+            if let Some(gutter) = &gutter
+                && !self.gutter_rows.contains(&band.id)
+            {
+                self.gutter_rows.push(band.id);
+                self.gutter.push(ViewerRasterTile {
+                    image: gutter.clone(),
+                    x: 0.0,
+                    y,
+                    width: bands.gutter_width as f32 / viewport[0],
+                    height,
+                });
+            }
+            self.images.insert(band.id, (image, gutter));
+        }
+        created
+    }
 }
 
 pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
@@ -18,6 +168,9 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
     let Some(info) = &frame.raster else {
         return false;
     };
+    if let Some(bands) = &info.bands {
+        return receive_strips(open, frame, info, bands);
+    }
     let body_len = pixel_bytes(frame.width, frame.height);
     let gutter_len = info
         .gutter
@@ -42,6 +195,9 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
         return false;
     }
     let mut state = open.retained_raster.borrow_mut();
+    if !state.strips.is_empty() {
+        state.strips.clear();
+    }
     let key = (info.surface, info.pixel_id);
     let prepared = if state.pixels != Some(key) {
         match pixel_delivery::pixels(open, frame) {
@@ -106,6 +262,99 @@ pub(super) fn receive(open: &OpenWindow, frame: &ViewerFrame) -> bool {
     );
     open.window.set_retained_raster(true);
     true
+}
+
+/// A frame of prepared text strips (`ViewerRasterBands`): the camera moves over them, and
+/// only strips it has not shown before become new images.
+fn receive_strips(
+    open: &OpenWindow,
+    frame: &ViewerFrame,
+    info: &ViewerRasterInfo,
+    bands: &ViewerRasterBands,
+) -> bool {
+    if bands.gutter_width >= info.viewport[0]
+        || bands.validate(pixel_preparation::PREPARED_BYTES).is_err()
+    {
+        open.window
+            .set_status("Invalid retained viewer surface.".into());
+        return false;
+    }
+    let mut state = open.retained_raster.borrow_mut();
+    let key = (info.surface, info.pixel_id);
+    let prepared = if state.pixels != Some(key) {
+        match pixel_delivery::pixels(open, frame) {
+            Ok(pixels) if pixels.strips.len() == bands.list.len() => Some(pixels),
+            Ok(_) => {
+                open.window
+                    .set_status("Prepared viewer pixels do not match the current frame.".into());
+                return false;
+            }
+            Err(error) => {
+                open.window.set_status(error.into());
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+    let same_surface = state
+        .pixels
+        .is_some_and(|(surface, _)| surface == info.surface);
+    // As for one body raster: the opening's viewport-only frame hands its extent over.
+    let inherited_viewport = !open.window.get_retained_raster()
+        && !open.window.get_image_mode()
+        && frame.generation == open.frame_generation.get()
+        && open.raster_size.get() == (info.viewport[0], info.viewport[1]);
+    let viewport = if same_surface || inherited_viewport {
+        [
+            open.window.get_raster_viewport_width(),
+            open.window.get_raster_viewport_height(),
+        ]
+        .map(|extent| extent.max(1.0))
+    } else {
+        logical_viewport(open, info.viewport)
+    };
+    let scale =
+        std::array::from_fn(|axis| f64::from(info.viewport[axis]) / f64::from(viewport[axis]));
+    if !state.camera.receive(info, scale) {
+        if state.camera.active() && !open.raster_redraw.running() {
+            open.raster_redraw.restart();
+        }
+        return false;
+    }
+    open.window.set_raster_viewport_width(viewport[0]);
+    open.window.set_raster_viewport_height(viewport[1]);
+    state.positions = [frame.horizontal_position, frame.position];
+    if let Some(pixels) = prepared {
+        let created = state.strips.show(open, frame, info, bands, &pixels.strips);
+        open.window.set_surface(slint::Image::default());
+        open.window.set_raster_gutter(slint::Image::default());
+        state.pixels = Some(key);
+        state.uploads = state.uploads.saturating_add(created);
+        open.window
+            .set_raster_upload_count(state.uploads.min(i32::MAX as u64) as i32);
+    }
+    // The page origin moves with every refill; the rows stay and only their base moves.
+    if let Some((base, _)) = state.strips.base {
+        open.window.set_raster_bands_origin(
+            ((base - info.raster_origin[1]) / f64::from(info.viewport[1])) as f32,
+        );
+    }
+    open.window
+        .set_raster_width(frame.width as f32 / info.viewport[0] as f32);
+    open.window
+        .set_raster_height(frame.height as f32 / info.viewport[1] as f32);
+    open.window
+        .set_raster_gutter_width(bands.gutter_width as f32 / info.viewport[0] as f32);
+    open.window.set_retained_raster(true);
+    true
+}
+
+fn clear_strips(open: &OpenWindow) {
+    open.window
+        .set_raster_bands(slint::ModelRc::new(slint::VecModel::default()));
+    open.window
+        .set_raster_gutter_bands(slint::ModelRc::new(slint::VecModel::default()));
 }
 
 /// Logical extent onto which a new raster viewport of `pixels` is mapped. A raster
@@ -342,4 +591,5 @@ pub(super) fn clear(open: &OpenWindow) {
     *open.retained_raster.borrow_mut() = State::default();
     open.window.set_retained_raster(false);
     open.window.set_raster_gutter(slint::Image::default());
+    clear_strips(open);
 }

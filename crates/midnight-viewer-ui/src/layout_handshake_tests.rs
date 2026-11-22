@@ -634,6 +634,7 @@ fn retained_frame(generation: u64, revision: u64, surface: u64) -> ViewerOutput 
         scroll_map: None,
         settled: true,
         gutter: None,
+        bands: None,
     });
     ViewerOutput::Frame(value)
 }

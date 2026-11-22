@@ -148,6 +148,35 @@ fn active(window: &ViewerWindow, path: &std::path::Path) -> bool {
                 )
             }))
 }
+/// The retained body as one image: the single surface, or the prepared text strips
+/// (`raster-bands`, whose rows are in no particular order) stacked top to bottom, as the
+/// window places them.
+fn retained_surface(window: &ViewerWindow) -> Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> {
+    let bands = window.get_raster_bands();
+    if bands.row_count() == 0 {
+        return window.get_surface().to_rgba8_premultiplied();
+    }
+    let mut rows: Vec<_> = bands.iter().collect();
+    rows.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let images: Vec<_> = rows
+        .iter()
+        .map(|band| band.image.to_rgba8_premultiplied())
+        .collect::<Option<_>>()?;
+    let width = images.first()?.width();
+    let height = images.iter().map(|image| image.height()).sum();
+    let mut stacked = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
+    let mut row = 0;
+    for image in &images {
+        if image.width() != width {
+            return None;
+        }
+        let rows = (row * width) as usize..((row + image.height()) * width) as usize;
+        stacked.make_mut_slice()[rows].copy_from_slice(image.as_slice());
+        row += image.height();
+    }
+    Some(stacked)
+}
+
 fn presentation(window: &ViewerWindow) -> &'static str {
     if window.get_retained_raster() {
         "retained-raster"
@@ -365,11 +394,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }))
         .map_err(|e| e.to_string())
     });
-    let service = midnight_viewer_engine::Service::with_native_capture(
-        runtime.handle().clone(),
-        runtime.spawner(),
-        capture,
-    );
+    // An isolated QA runtime: viewers staged beside this executable, discovered through
+    // the explicit-application route, without the installed-runtime registration.
+    let service = if std::env::var_os("MIDNIGHT_VIEWER_PROBE_EXPLICIT_RUNTIME").is_some() {
+        let application = std::env::current_exe()?.canonicalize()?;
+        let catalogs = runtime.block_on(runtime.spawn_blocking(move || {
+            midnight_viewer_engine::PreparedCatalogs::discover(&application)
+        }))??;
+        midnight_viewer_engine::Service::with_prepared_catalogs(
+            runtime.handle().clone(),
+            runtime.spawner(),
+            capture,
+            catalogs,
+        )
+    } else {
+        midnight_viewer_engine::Service::with_native_capture(
+            runtime.handle().clone(),
+            runtime.spawner(),
+            capture,
+        )
+    };
     runtime.track_spare(&service);
     let manager = Rc::new(ViewerWindows::new(service));
     manager.set_preferences_listener(Rc::new(|change| {

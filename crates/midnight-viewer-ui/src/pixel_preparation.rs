@@ -196,6 +196,8 @@ mod opening_trace {
 /// Retained body plus gutter bytes, from the budget the engine produces within;
 /// larger frames are refused.
 pub(super) const RETAINED_BYTES: u64 = midnight_core::VIEWER_RETAINED_RASTER_PIXELS as u64 * 4;
+/// Prepared text strips one frame may carry (`ViewerRasterBands`).
+pub(super) const PREPARED_BYTES: u64 = midnight_core::VIEWER_PREPARED_TEXT_BYTES as u64;
 const LEGACY_BYTES: u64 = 16 * 1024 * 1024 * 4;
 const WAKE_RETRY: Duration = Duration::from_millis(50);
 type Notify = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -203,6 +205,16 @@ type Notify = Arc<dyn Fn() -> bool + Send + Sync>;
 #[derive(Clone)]
 pub(super) struct PreparedPixels {
     pub frame_revision: u64,
+    pub body: SharedPixelBuffer<Rgba8Pixel>,
+    pub gutter: Option<SharedPixelBuffer<Rgba8Pixel>>,
+    /// A frame of prepared text strips: each strip converted once, in the frame's order.
+    pub strips: Arc<[PreparedStrip]>,
+}
+
+/// One prepared text strip (`ViewerRasterBand`) in presentation buffers.
+#[derive(Clone)]
+pub(super) struct PreparedStrip {
+    pub id: u64,
     pub body: SharedPixelBuffer<Rgba8Pixel>,
     pub gutter: Option<SharedPixelBuffer<Rgba8Pixel>>,
 }
@@ -437,14 +449,33 @@ struct Key {
 #[derive(Default)]
 struct Cache {
     retained: Option<(Key, PreparedPixels)>,
+    /// Converted strips of the shown surface, by strip ID: a later frame that keeps a
+    /// strip reuses its buffers, so moving over prepared text copies nothing.
+    strips: Option<(StripKey, std::collections::HashMap<u64, PreparedStrip>)>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct StripKey {
+    generation: u64,
+    surface: u64,
+    width: u32,
+    gutter: u32,
 }
 
 impl Cache {
     fn prepare(&mut self, frame: &ViewerFrame) -> Result<Option<PreparedPixels>, String> {
         if frame.tiles.is_some() {
             self.retained = None;
+            self.strips = None;
             return Ok(None);
         }
+        if let Some(info) = &frame.raster
+            && let Some(bands) = &info.bands
+        {
+            self.retained = None;
+            return self.prepare_strips(frame, info, bands).map(Some);
+        }
+        self.strips = None;
         validate(frame)?;
         let key = frame.raster.as_ref().map(|info| Key {
             generation: frame.generation,
@@ -467,6 +498,7 @@ impl Cache {
         }
         let pixels = PreparedPixels {
             frame_revision: frame.revision,
+            strips: Arc::from([]),
             body: SharedPixelBuffer::clone_from_slice(&frame.pixels, frame.width, frame.height),
             gutter: frame
                 .raster
@@ -480,6 +512,65 @@ impl Cache {
         // backend's bounded retained-raster reservation after that frame retired.
         self.retained = key.map(|key| (key, pixels.clone()));
         Ok(Some(pixels))
+    }
+
+    /// Convert the strips this frame brings new; keep the converted ones it still shows.
+    fn prepare_strips(
+        &mut self,
+        frame: &ViewerFrame,
+        info: &midnight_core::ViewerRasterInfo,
+        bands: &midnight_core::ViewerRasterBands,
+    ) -> Result<PreparedPixels, String> {
+        if info.surface.0 == 0 || info.pixel_id == 0 || info.viewport.contains(&0) {
+            return Err("Invalid retained viewer surface.".into());
+        }
+        if bands.gutter_width >= info.viewport[0] {
+            return Err("Invalid retained viewer gutter.".into());
+        }
+        bands.validate(PREPARED_BYTES)?;
+        let key = StripKey {
+            generation: frame.generation,
+            surface: info.surface.0,
+            width: bands.width,
+            gutter: bands.gutter_width,
+        };
+        let mut cache = match self.strips.take() {
+            Some((old, cache)) if old == key => cache,
+            _ => std::collections::HashMap::new(),
+        };
+        let strips: Arc<[PreparedStrip]> = bands
+            .list
+            .iter()
+            .map(|band| {
+                cache
+                    .get(&band.id)
+                    .cloned()
+                    .unwrap_or_else(|| PreparedStrip {
+                        id: band.id,
+                        body: SharedPixelBuffer::clone_from_slice(
+                            &band.pixels,
+                            bands.width,
+                            band.height,
+                        ),
+                        gutter: band.gutter.as_ref().map(|gutter| {
+                            SharedPixelBuffer::clone_from_slice(
+                                gutter,
+                                bands.gutter_width,
+                                band.height,
+                            )
+                        }),
+                    })
+            })
+            .collect();
+        cache.clear();
+        cache.extend(strips.iter().map(|strip| (strip.id, strip.clone())));
+        self.strips = Some((key, cache));
+        Ok(PreparedPixels {
+            frame_revision: frame.revision,
+            body: SharedPixelBuffer::new(1, 1),
+            gutter: None,
+            strips,
+        })
     }
 }
 

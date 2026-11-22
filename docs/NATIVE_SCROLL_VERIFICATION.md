@@ -910,3 +910,94 @@ retained body/gutter arrangement. This distinction is part of the qualification.
 Artifacts use `viewer-exact5-{json,xml}-{gpu,software}-{wheel,scrollbar}` with raw
 traces, stdout/stderr and foreground/process metadata. `viewer-exact5-summary.json`
 collects the small comparison table. The baseline4 artifacts remain intact.
+
+## Panel flings and partly visible rows — 21 November 2026
+
+The panels now draw the rows cut by their edges and settle Details and Brief on the
+nearest row only after the wheel glide, the touchpad's fingers and momentum and any
+held button have ended ([file panels](developer/SCROLLING.md#file-panels)). The
+probe's `--check` again expects each isolated notch to rest on a row, and a notch
+now moves the whole rows nearest to the viewers' notch distance.
+
+Two probe options exercise a Windows precision-touchpad fling instead of notches:
+`--fling` posts three flicks two seconds apart, each 12 finger reports of 0.8 line
+(96 `WHEEL_DELTA` units, 8 ms apart) followed by 80 system-momentum reports decaying
+by 5 % each (about 2,500 px per flick at 100 px per line);
+`--entries=<count>` sets
+the synthetic fixture's size (default 10,000). The run also prints how often the
+left panel's thumbnail target range changed and its largest range
+(`thumbnail_targets`). For example, after building the example:
+
+```powershell
+native_scroll.exe --app-renderer --fling --entries=50000 --mode=0 --maximized --zoomed
+native_scroll.exe --app-renderer --fling --entries=50000 --mode=2 --maximized --zoomed
+```
+
+`--fling` cannot be combined with `--check` or `--sustained`.
+
+Eight desktop runs on 21 and 22 November 2026 compare the product before this change with
+it, two each of Details (`--mode=0`) and Thumbnails (`--mode=2`), interleaved: a
+maximized 3840×2241 window at scale 2.25 on a 60 Hz display, the panel zoomed,
+50,000 entries, the app renderer. "Before" is `06ff3e92`, whose `midnight-ui`,
+`midnight-ui-bindings` and `midnight-ui-input` sources equal `2b901122`'s; "after"
+adds this change and the text viewer's shared wheel distance in `midnight-ui-input`
+(the same product sources as the change). Both executables are release builds with
+fat LTO off and 16 codegen units (`CARGO_PROFILE_RELEASE_LTO=false`,
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`, to fit the build machine's memory), SHA-256
+`86D848C05621B229DC692CA19C734AA4BBFD483F6AD4D795EA9417AF8834D3B8` (before) and
+`AC909C359D9D8282B373FACFE03C171EBFBF432DD79DF330DD273DE2FC439A74` (after).
+
+The frames are the redraws captured while scroll interaction was active during the
+three flicks. Interval is the time between them; redraw runs from the
+`RedrawRequested` dispatch to submission (not presentation); CPU is the UI thread's
+time during redraws, from `GetThreadTimes`, whose 15.625 ms ticks make only the run
+total meaningful, shown here per frame. The last column counts how often the left
+panel's thumbnail target range differed between captured frames, and its largest
+size in entries.
+
+| Build | View | Run | Frames | Interval p50 / p95 / max (ms) | Redraw p50 / p95 / max (ms) | CPU per frame (ms) | Target range changes / largest |
+| --- | --- | --- | ---: | --- | --- | ---: | --- |
+| before | Details | 1 | 181 | 32.1 / 39.2 / 234.4 | 12.4 / 16.4 / 211.5 | 13.4 | 125 / 36 |
+| before | Details | 2 | 157 | 36.8 / 43.6 / 328.9 | 13.8 / 19.6 / 303.9 | 14.0 | 120 / 36 |
+| after | Details | 1 | 204 | 26.4 / 39.6 / 230.6 | 11.1 / 17.5 / 209.7 | 11.6 | 179 / 36 |
+| after | Details | 2 | 190 | 29.9 / 38.9 / 174.3 | 11.8 / 18.2 / 154.2 | 12.0 | 153 / 36 |
+| before | Thumbnails | 1 | 150 | 35.5 / 58.7 / 279.8 | 16.2 / 37.9 / 497.7 | 22.0 | 67 / 80 |
+| before | Thumbnails | 2 | 196 | 27.2 / 45.0 / 191.4 | 13.0 / 29.7 / 272.5 | 14.7 | 80 / 80 |
+| after | Thumbnails | 1 | 180 | 29.1 / 45.7 / 245.6 | 14.7 / 27.6 / 369.8 | 16.5 | 52 / 80 |
+| after | Thumbnails | 2 | 198 | 27.4 / 44.8 / 132.2 | 13.0 / 29.6 / 201.1 | 14.5 | 58 / 80 |
+
+No regression was measured: in both views the change's frame intervals, redraw times
+and UI-thread CPU per frame lie within the old product's run-to-run spread or below
+it, although it moves 100 px per line of touchpad input instead of 60 px, so its
+lists travelled farther in the same time. In Thumbnails the target range spanned at
+most 80 entries in both builds (the pane's half of the request budget is 128): no
+request bursts. Neither build reaches 60 Hz on this window (26 to 37 ms median intervals);
+the maxima come from the first flick of each run, the only one with intervals above
+80 ms (one to four per run, in both builds). Two runs per case are few, and the
+desktop was not isolated from other work.
+
+The probe posts its reports from an 8 ms Slint timer, which fires at most once per
+event-loop pass. At these frame times each flick's 92 reports took over 2 s instead
+of 0.74 s, so consecutive flicks ran together and the frame rate set the input rate,
+alike in both builds.
+
+Every run then failed a post-timing row check, before and after alike: "ordinary
+row" in four runs and "selected cursor row" in the other four (the probe stops at
+the first failed check). Both were probe defects:
+
+- Timing ended while the third flick was still being posted. The list still moved
+  at 49 to 2,722 px/s with interaction active in all eight runs, so the reports left
+  after the reveal to the top scrolled an unpredictable row under the sampled pixel:
+  an odd row matched the expected stripe and an even row did not.
+- Since 12 November (`bcc05b1b`) a selected row paints the selection fill over the
+  cursor fill. The probe's Ctrl+click selects the row, but the probe still expected
+  the cursor fill; "changed theme" had the same expectation.
+
+The probe now drops the reports still queued when timing ends, so the measured
+window is unchanged. It then waits until scroll interaction has ended, and compares
+each pixel with the fill that the row's model state calls for, logging both. The
+software-rendered `rows_tests::rows_paint_their_model_state_after_flings` repeats the
+flick, reveal, Ctrl+click and theme change and passes; with the fill order from
+before 12 November restored, it fails. A desktop run of the corrected probe is
+pending. Local artifacts:
+`_build/qa/panel-native/fling-{before,after}-mode{0,2}-run{1,2}.{csv,log}`.

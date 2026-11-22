@@ -138,9 +138,17 @@ fn visible_overlap_restyles_and_copies_the_full_selection_with_both_endpoints_mi
         worker.event(62, EventKind::TextPage(incoming), &output);
         worker.event(62, EventKind::Completed, &output);
         let second = painted(&mut worker, &output);
+        // Retained frames carry their pixels as prepared strips.
+        let shown = |frame: &ViewerFrame| {
+            if frame.raster.is_some() {
+                super::super::raster::stacked(frame).1
+            } else {
+                frame.pixels.to_vec()
+            }
+        };
         assert_ne!(
-            second.pixels.as_ref(),
-            first.pixels.as_ref(),
+            shown(second.as_ref()),
+            shown(first.as_ref()),
             "styles must reach visible pixels even during a long selection"
         );
         assert_eq!(

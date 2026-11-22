@@ -5,39 +5,68 @@ import { ScrollView } from "scroll-view.slint";
 // Match the SDK ListView shell and export an alias to retain that optimization.
 component ListView inherits ScrollView {
     in property <length> row-height;
-    // Also draw the bands the viewport cuts at its edges. The thumbnail grid's
-    // bands are too tall to leave blank; list views show whole rows only.
-    in property <bool> partial-bands;
+    // Input that is still moving or holding the list: a native wheel glide,
+    // touchpad fingers or momentum, a held button or touch. Rows settle only
+    // after it ends.
+    in property <bool> interaction-active;
+    // Settle on the nearest row once a user scroll has come to rest. The tall
+    // bands of the thumbnail grid keep their pixel position instead: rounding
+    // them would undo a small gesture.
+    in property <bool> settle-rows: true;
+    // The system asks for less motion (Windows: animation effects off): the
+    // alignment then moves at once.
+    in property <bool> reduce-motion;
     callback user-scrolled();
 
-    private property <int> first-complete-band: ceil(-root.content-y / root.row-height);
-    private property <int> past-complete-band: floor((root.visible-height - root.content-y) / root.row-height);
-    private property <int> first-partial-band: floor(-root.content-y / root.row-height);
-    private property <int> past-partial-band: ceil((root.visible-height - root.content-y) / root.row-height);
-
-    private property <bool> align-single-band: !root.partial-bands
-        && root.visible-height >= root.row-height
-        && root.visible-height < 2 * root.row-height;
-    // The band at the viewport midpoint is already materialized. It includes
-    // the first and last bands at the native scroll bounds and retains a fully
-    // revealed cursor band when one fits.
-    private property <int> compact-band: floor((root.visible-height / 2 - root.content-y) / root.row-height);
-    out property <length> row-content-y: root.align-single-band
-        ? -root.compact-band * root.row-height : root.content-y;
-    out property <length> row-y-shift: root.row-content-y - root.content-y;
+    // Every band the viewport intersects is drawn, also one cut by an edge, so
+    // no offset leaves a blank band (docs/developer/SCROLLING.md).
+    private property <int> first-band: floor(-root.content-y / root.row-height);
+    private property <int> past-band: ceil((root.visible-height - root.content-y) / root.row-height);
 
     pure public function band-visible(band: int) -> bool {
-        if root.align-single-band { return band == root.compact-band; }
-        if root.partial-bands {
-            return band >= root.first-partial-band && band < root.past-partial-band;
-        }
-        // Use the native clip if even one row is taller than the pane.
-        return root.visible-height < root.row-height
-            || (band >= root.first-complete-band && band < root.past-complete-band);
+        return band >= root.first-band && band < root.past-band;
     }
 
-    // Explicit navigation can supersede in-flight native wheel or touch motion.
+    // A user scroll leaves the list unsettled until it rests on a row boundary.
+    private property <bool> unsettled;
+    private property <bool> settling;
+    private property <length> settle-from;
+    private property <length> settle-target;
+    private property <duration> settle-start;
+    // The position at the latest idle check, and whether input scrolled since.
+    private property <length> resting-y;
+    private property <bool> scrolled-since-check;
+    private property <length> lowest: min(0px, root.visible-height - root.content-height);
+
+    pure function nearest-row() -> length {
+        let position = clamp(root.content-y, root.lowest, 0px);
+        // The exact bottom stays: its last row ends at the bottom edge, and the
+        // row cut at the top is drawn.
+        return position <= root.lowest ? root.lowest
+            : clamp(round(position / root.row-height) * root.row-height, root.lowest, 0px);
+    }
+
+    // Stop a running alignment where it is; the idle check aligns afresh.
+    function interrupt-settle() {
+        if root.settling {
+            root.settling = false;
+            root.resting-y = root.content-y;
+        }
+    }
+
+    // The virtualized list refines its content height whenever its rows change;
+    // only a change that moves the target restarts the alignment.
+    function reconsider-settle() {
+        if root.settling && abs(root.nearest-row() - root.settle-target) >= 0.01px {
+            root.interrupt-settle();
+        }
+    }
+
+    // Explicit navigation supersedes in-flight native wheel or touch motion and
+    // any pending or running row alignment.
     public function stop-scroll-motion() {
+        root.unsettled = false;
+        root.settling = false;
         let position = root.content-y;
         root.content-y = position;
     }
@@ -47,7 +76,73 @@ component ListView inherits ScrollView {
     // their own physics animations.
     animate content-y { duration: 0ms; }
 
-    scrolled => { root.user-scrolled(); }
+    scrolled => {
+        root.user-scrolled();
+        // New input ends a running alignment where it is.
+        root.settling = false;
+        root.unsettled = root.settle-rows && root.row-height > 0px;
+        root.scrolled-since-check = true;
+    }
+    changed interaction-active => {
+        if root.interaction-active {
+            root.interrupt-settle();
+        } else {
+            // The input that held the list ended: its idle interval starts now.
+            root.scrolled-since-check = false;
+            root.resting-y = root.content-y;
+        }
+    }
+    changed row-height => { root.reconsider-settle(); }
+    changed visible-height => { root.reconsider-settle(); }
+    changed content-height => { root.reconsider-settle(); }
+    changed settle-rows => {
+        if !root.settle-rows { root.interrupt-settle(); root.unsettled = false; }
+    }
+
+    idle := Timer {
+        interval: 100ms;
+        running: root.unsettled && !root.settling && !root.interaction-active;
+        triggered => {
+            // A whole interval without input or motion: Slint's own wheel easing
+            // or fling may still move the list.
+            if root.scrolled-since-check || abs(root.content-y - root.resting-y) >= 0.01px {
+                root.scrolled-since-check = false;
+                root.resting-y = root.content-y;
+                return;
+            }
+            let target = root.nearest-row();
+            if abs(target - root.content-y) < 0.01px || root.reduce-motion {
+                root.unsettled = false;
+                root.content-y = target;
+                return;
+            }
+            root.settle-from = root.content-y;
+            root.settle-target = target;
+            root.settle-start = animation-tick();
+            root.settling = true;
+        }
+    }
+    // The alignment's frames: the wheel glide's 200 ms ease-out, written on every
+    // tick, so a layout pass of the virtualized list that writes the viewport (it
+    // would end a property animation) cannot stop it halfway.
+    glide := Timer {
+        interval: 8ms;
+        running: root.settling;
+        triggered => {
+            // Input in this event-loop turn already ended the alignment.
+            if !root.settling || root.interaction-active { return; }
+            let progress = min(1, (animation-tick() - root.settle-start) / 200ms);
+            if progress >= 1 {
+                root.settling = false;
+                root.unsettled = false;
+                root.content-y = root.settle-target;
+                return;
+            }
+            root.content-y = root.settle-from
+                + (root.settle-target - root.settle-from) * (1 - (1 - progress) * (1 - progress));
+        }
+    }
+
     accessible-role: list;
     accessible-orientation: vertical;
     @children

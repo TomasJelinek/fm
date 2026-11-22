@@ -318,8 +318,9 @@ impl NativeProof {
         let captured_at = Instant::now();
         let surface = window.get_surface().size();
         let viewport = [window.get_content_width(), window.get_content_height()];
-        let content_ready = surface.width > 0
-            && surface.height > 0
+        // Prepared text strips show content without the single surface image.
+        let strips = slint::Model::row_count(&window.get_raster_bands());
+        let content_ready = ((surface.width > 0 && surface.height > 0) || strips > 0)
             && !window.get_accessible_text().is_empty()
             && viewport
                 .iter()

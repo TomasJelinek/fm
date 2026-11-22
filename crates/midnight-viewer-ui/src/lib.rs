@@ -40,6 +40,8 @@ mod raster_rebase;
 mod raster_rebase_tests;
 #[cfg(test)]
 mod raster_render_tests;
+#[cfg(test)]
+mod raster_strip_tests;
 mod sandbox_notice;
 #[cfg(test)]
 mod sandbox_notice_tests;
@@ -56,6 +58,7 @@ mod web_input_tests;
 mod web_popup_tests;
 #[cfg(test)]
 mod web_wheel_tests;
+mod wheel_setting;
 mod zoom_entry;
 #[cfg(test)]
 mod zoom_entry_ui_tests;
@@ -1420,6 +1423,7 @@ fn observe_native_content(
     // runs first: the ancillary observer delivers touchpad reports to the content
     // itself, and a new gesture must cancel older motion before its first report.
     image_motion::bookkeeping(open, event);
+    ancillary.set_wheel_setting(image_motion::wheel_setting(open));
     let ancillary_consumed = ancillary.observe(open.window.window(), event, None);
     // Touchpad lines (X11) reach the content's pixel path without wheel easing.
     let touchpad = ancillary.source() == midnight_ui_input::WheelSource::Touchpad;

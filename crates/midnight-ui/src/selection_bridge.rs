@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn clipped_row_fragment_is_a_pane_background_drop_target() {
+    fn a_row_cut_by_the_list_top_is_its_own_drop_target() {
         let h = listed(100);
         let w = &h.window;
         let x = w.get_left_list_left() + 20.0;
@@ -558,9 +558,11 @@ mod tests {
         assert_eq!(w.get_left_list_content_y(), -row_height / 2.0);
         let presenter = h.presenter.borrow();
 
+        // The list top cuts the first row in half; its visible half is drawn and
+        // takes drops like the rest of the row.
         assert_eq!(
             drop_row_at(w, &presenter, PaneId::Left, (x, top + 1.0)),
-            Some(None)
+            Some(Some(0))
         );
         assert_eq!(
             drop_row_at(w, &presenter, PaneId::Left, (x, top + row_height)),

@@ -152,6 +152,13 @@ for byte/heap measurements, native versus archive preparation, and timing limits
 
 ### Refill reads and the retained frontier
 
+The measurements in this section were taken with pages of the window and its 256-pixel
+guards. Since 21 November 2026 a page holds the [prepared text
+window](SCROLLING.md#prepared-text-window) (the window, one screen against the direction
+of travel and two or three along it) and two more screens along the travel, and a
+refill comes about every two screens of travel, so a gesture reads fewer, larger pages;
+the joins, cuts and limits below are unchanged.
+
 The basic and Source plugins answer a Text or Source viewport with at most about 8 KiB.
 One anchor per character and the wire item budget limit a reply to about 13,000
 characters, so larger plugin pages are not possible within the current API. The engine

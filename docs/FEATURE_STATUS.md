@@ -1317,7 +1317,19 @@ lands on a row; fractional lines (Windows precision touchpads with their system
 momentum, high-resolution wheels) move their share of it, as in the text viewer.
 With Windows animation effects off, panel wheel motion and the alignment are
 immediate. Panel momentum and glide use the shared `midnight-ui-input` model
-and values ([file panels](developer/SCROLLING.md#file-panels)).
+and values ([file panels](developer/SCROLLING.md#file-panels)). Verified on Windows
+with software-window tests built from `2b901122` plus these changes: 173
+`midnight-ui` unit tests (scroll input with the panels' row and kinetic tests,
+selection) and 110 integration tests (panel scroll and scroll costs, selection,
+drag, list scroll, compact layout, thumbnail grid rows) pass. Reverting the fixes
+fails them: whole rows with the old notch distance fail 13 (among them the reported
+state, a blank band of 21.23 px below the column header), no idle alignment with
+the reduced-motion request ignored fails 10, and a list that ignores held input
+fails 2. In eight release runs of a native fling probe through 50,000 entries in
+Details and Thumbnails (3840×2241 at scale 2.25) the change showed no frame-time or
+UI-thread CPU regression and no thumbnail request bursts
+([native scroll verification](NATIVE_SCROLL_VERIFICATION.md)). Not verified: the
+feel on a physical touchpad or wheel.
 
 The 21 November selection-color fix answers a user report: a Markdown table selected
 in Slate Teal showed light gray text on a bright teal fill. Every theme now has a calm
@@ -1332,6 +1344,26 @@ at exactly 4.5:1 ([syntax colors](THEME_PROVENANCE.md#syntax-colors)). Not cover
 standard Slint fields that are not themed keep Fluent's selection, the HTML viewer
 keeps Chromium's, and PDF pages have no text selection. Colors, rules and test names:
 [text selection](THEME_PROVENANCE.md#text-selection).
+
+The 21 November text-viewer scrolling update keeps the Text, Source, Markdown and hex
+views prepared several screens around the window, as 256-row strips painted once off
+the UI thread and reused while their rows stay the same: one screen against the
+direction of travel, two along it and three when scrolling fast, at most 64 MiB per
+viewer and 256 MiB in all. The window keeps each strip's image and row while it is
+shown, so moving over prepared text uploads nothing. A wheel notch moves 100 logical
+px instead of 60 at Windows' default of three lines, in proportion to the system's
+setting, with the same glide and momentum ([wheel distance](developer/SCROLLING.md#wheel-distance),
+[prepared text window](developer/SCROLLING.md#prepared-text-window)). In a release
+co-simulation of the worker and the window at 60 Hz with the old notch, a 40-notch
+spin over a 100 MB file stalled 13 frames before and none after at 1x (31 and none at
+2x), and the worker's time fell from 664 to 29 ms. In the native probe (96 notches
+50 ms apart, one run each under build load), frames later than 25 ms within a notch
+fell from 54 to 6 (Text, 1x), from 68 to 3 (Text, 2x) and from 98 to 4 (Source, 2x).
+Source at 1x measured 15 before and 25 after, with one 422 ms pause, and is
+unresolved. Unwrapped rows wider than the window (2400 bytes) still stall about as
+before, and a scrollbar drag in Source paints more than before
+([record](verification/2026-11-21-prepared-text-window.md)). Not verified: a physical
+wheel or touchpad, the full application, Linux and macOS, and a quiet machine.
 
 The 12 November follow-up adds XML-family syntax highlighting, previous-file
 navigation (Backspace/Alt+Left), selected-item panel navigation (Alt+Up/Down),

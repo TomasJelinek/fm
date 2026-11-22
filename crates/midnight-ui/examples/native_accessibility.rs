@@ -68,7 +68,6 @@ slint::slint! {
                     for row[index] in root.rows: Rectangle {
                         height: 24px;
                         Rectangle {
-                            y: list.row-y-shift;
                             width: parent.width; height: parent.height;
                             visible: list.band-visible(index);
                             background: mod(row, 2) == 0 ? #eeeeee : #dddddd;

@@ -65,6 +65,7 @@ fn frame(revision: u64) -> Box<ViewerFrame> {
             height: BODY[1],
             pixels: pixels(GUTTER, BODY[1], true),
         }),
+        bands: None,
     });
     frame
 }

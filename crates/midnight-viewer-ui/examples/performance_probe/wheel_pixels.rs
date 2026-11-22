@@ -27,7 +27,7 @@ impl Stripe {
     // Diagnostic-only visible crop of retained pixels. Sampling follows the displayed
     // texture translation; normalized byte-position estimates are deliberately unused.
     pub(super) fn capture_retained(window: &ViewerWindow) -> Option<Self> {
-        let image = window.get_surface().to_rgba8_premultiplied()?;
+        let image = super::super::retained_surface(window)?;
         let width = image.width() as usize;
         let height = image.height() as usize;
         let scale_x = width as f64

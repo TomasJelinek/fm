@@ -110,6 +110,12 @@ export component ViewerWindow inherits Window {
     in property <float> raster-offset-x;
     in property <float> raster-offset-y;
     in property <int> raster-upload-count;
+    // Prepared text: strips of the body and of the pinned gutter, each at its height below
+    // a base that `raster-bands-origin` places below the frame's raster origin, moved
+    // together by the raster offsets. Rows stay while their strips are shown.
+    in property <[ViewerRasterTile]> raster-bands;
+    in property <[ViewerRasterTile]> raster-gutter-bands;
+    in property <float> raster-bands-origin;
     // Frame dimensions are physical pixels; the canvas is in logical pixels.
     in property <float> image-viewport-width;
     in property <float> image-viewport-height;
@@ -410,6 +416,23 @@ export component ViewerWindow inherits Window {
                             height: root.raster-height * root.raster-viewport-height;
                             image-fit: fill;
                         }
+                        for band in root.raster-bands: Image {
+                            source: band.image;
+                            x: root.raster-offset-x * root.raster-viewport-width;
+                            y: (root.raster-offset-y + root.raster-bands-origin + band.y) * root.raster-viewport-height - root.canvas-phase-y;
+                            width: band.width * root.raster-viewport-width;
+                            height: band.height * root.raster-viewport-height;
+                            image-fit: fill;
+                        }
+                    }
+                    for band in root.raster-gutter-bands: Image {
+                        visible: root.retained-raster;
+                        source: band.image;
+                        x: -root.canvas-phase-x;
+                        y: (root.raster-offset-y + root.raster-bands-origin + band.y) * root.raster-viewport-height - root.canvas-phase-y;
+                        width: band.width * root.raster-viewport-width;
+                        height: band.height * root.raster-viewport-height;
+                        image-fit: fill;
                     }
                     if root.retained-raster && root.raster-gutter-width > 0: Image {
                         source: root.raster-gutter;

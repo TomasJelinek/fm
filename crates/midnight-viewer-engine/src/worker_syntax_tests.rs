@@ -184,9 +184,17 @@ fn successful_restyle_preserves_selection_origin_and_navigation_acknowledgements
             })
             .unwrap();
         assert_eq!(second.accessible_text, first.accessible_text);
+        // Retained frames carry their pixels as prepared strips.
+        let shown = |frame: &ViewerFrame| {
+            if frame.raster.is_some() {
+                super::raster::stacked(frame).1
+            } else {
+                frame.pixels.to_vec()
+            }
+        };
         assert_ne!(
-            second.pixels.as_ref(),
-            first.pixels.as_ref(),
+            shown(second.as_ref()),
+            shown(first.as_ref()),
             "new styles must reach pixels"
         );
         assert_eq!(second.position_sequence, first.position_sequence);

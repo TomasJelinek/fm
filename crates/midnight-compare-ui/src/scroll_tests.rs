@@ -148,7 +148,10 @@ fn comparison_wheel_notch_glides_in_small_steps_with_the_exact_total() {
         "{steps:?}"
     );
     let total: f32 = steps.iter().sum();
-    assert!((total + 60.0).abs() < 0.01, "{total}");
+    assert!(
+        (total + midnight_ui_input::LINE_PIXELS).abs() < 0.01,
+        "{total}"
+    );
 }
 
 #[test]
@@ -241,13 +244,13 @@ fn x11_momentum_reaches_a_host_sink_in_lines() {
             phase: TouchPhase::Moved,
         }));
     }
-    // Finger reports reach the content directly, in Slint's 60 px per line.
+    // Finger reports reach the content directly, at the shared line distance.
     let finger = fixture.take();
     assert_eq!(finger.len(), 6);
     assert!(
         finger
             .iter()
-            .all(|&step| (step - FINGER_LINE * 60.0).abs() < 0.01)
+            .all(|&step| (step - FINGER_LINE * midnight_ui_input::LINE_PIXELS).abs() < 0.01)
     );
     for _ in 0..10 {
         assert!(fixture.frame(true).is_empty(), "the sink took the momentum");

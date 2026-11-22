@@ -511,6 +511,23 @@ feature/license CSV is left as captured. The scalable (SVG) icon-theme
 artwork that the Linux provider now renders uses `midnight-platform-linux`'s
 existing resvg 0.48.1 dependency with its features unchanged.
 
+On 21 November 2026 `midnight-viewer-ui` added a Windows-only dependency on
+windows-sys 0.61.2 with the feature `Win32_UI_WindowsAndMessaging`, to read Windows'
+lines per wheel notch (`SystemParametersInfoW`, `SPI_GETWHEELSCROLLLINES`,
+`wheel_setting_windows.rs`). `midnight-platform-windows` and `midnight-elevation`
+already enable that feature of that version, so the application's feature union,
+compiled dependencies, versions, licences and notices are unchanged; `Cargo.lock`
+gains only the edge from `midnight-viewer-ui` to `windows-sys 0.61.2`. No inventory
+row changes.
+
+On 21 November 2026 `midnight-ui` added the windows-sys 0.61.2 feature
+`Win32_UI_WindowsAndMessaging` to read Windows' animation-effects and wheel
+settings (`SystemParametersInfoW` with `SPI_GETCLIENTAREAANIMATION` and
+`SPI_GETWHEELSCROLLLINES`). `midnight-platform-windows`
+and `midnight-elevation` already enable it, so the application's feature union, its
+compiled dependencies, versions, licences and notices are unchanged, and
+`Cargo.lock` does not change. No inventory row changes.
+
 The Linux clipboard's eventfd wait and the Linux access-ACL reads use the `event`
 and `fs` features that `midnight-platform-linux` already declared (and the native
 Linux plugin's existing libc `std`), so no feature changed. Fresh `--locked --offline`

@@ -36,17 +36,78 @@ in for CPU timing, and a successful startup does not prove every font/glyph case
 - Nested lists and open menus own their input. An animation must stop when its
   original list, tab, directory, document or popup is replaced.
 
-File panels use a floating-point viewport offset during the entire gesture.
-Nearest-row alignment is an idle finishing animation only. It must not run
-while a finger, mouse drag or wheel coast is active. One thumbnail-wheel notch
-must travel at least one thumbnail band so settling cannot undo the gesture.
-Other lists and document viewers do not acquire panel row snapping.
+### File panels
 
-Details and Brief views draw whole rows only. The Thumbnails view draws every row
-the viewport intersects, so a row cut by the panel edge shows its tiles, and it
+File panels use a floating-point viewport offset during the entire gesture, and
+every view (Details, Brief, Thumbnails) draws every row the viewport intersects:
+a row cut by the panel's top or bottom edge shows its visible part, so no offset
+leaves a blank band (`panel-list.slint` `band-visible`). The Thumbnails view also
 requests thumbnails for one extra row beyond each edge while that range fits the
-panel's share of the thumbnail request budget (`panel-list.slint` `partial-bands`,
-`file-pane.slint`).
+panel's share of the thumbnail request budget (`file-pane.slint`).
+
+Details and Brief rows settle on a row boundary once a user scroll has come to
+rest: after the wheel glide, the touchpad's fingers and momentum (the system's on
+Windows and macOS, the app's on Linux), a held button or touch, and Slint's own
+wheel easing or fling have all ended and the list has not moved for 100 ms, it
+glides to the nearest row over 200 ms on the wheel glide's ease-out curve. That is
+at most half a row; the exact bottom bound stays (its top row may be cut and is
+drawn). The window's `scroll-interaction-active` (wheel glide, held buttons,
+touches and phased touchpad gestures, momentum) holds the alignment; new input,
+a press, a cursor reveal or any programmatic position stops it at once. Windows
+reports no touchpad phases, so fingers resting on the pad for longer than the
+glide and the idle interval (about 300 ms) count as a rest there; Wayland's phased
+gestures hold the alignment until the fingers lift. The thumbnail grid keeps its
+pixel position: rounding its tall bands would undo a small gesture. Other lists
+and document viewers do not acquire panel row alignment.
+
+A notch over a panel moves the viewers' notch distance: `midnight_ui_input::
+notch_pixels_for`, the shared line distance (`LINE_PIXELS`) at Windows' default
+three lines per notch, in proportion to other line counts, or one screen (the
+list's visible height). A whole notch moves the rows nearest to that distance, at
+least one (one thumbnail band), on the text viewer's 200 ms glide, and lands on a
+row boundary even from a cut position, so no alignment follows it (`scroll_input.rs`
+`wheel_distance`). Fractional lines, such as a Windows precision touchpad's and its
+system momentum or a high-resolution wheel's steps, move their share of the notch
+distance with the same glide, as in the text viewer; their rest then settles as
+above.
+
+The panels read Windows' lines per notch (`SPI_GETWHEELSCROLLLINES`,
+`wheel_setting.rs`, as the viewer does) and its animation effects
+(`SPI_GETCLIENTAREAANIMATION`, `motion_preference.rs`) with the window's first
+native event and whenever it regains the focus. With animation effects off, panel
+wheel input moves at once and the row alignment is immediate. Other systems keep
+three lines per notch, and their reduced-motion settings are not read yet; viewers
+do not honour the animation setting.
+
+From 19 to 21 November 2026 the Details and Brief views drew whole rows only and
+nothing aligned the rest position, so every fractional rest (a notch of 60 px over
+22 px rows, any touchpad scroll, a cursor revealed at the bottom edge) left a
+blank band of up to one row below the column header or at the list's bottom, and
+rows popped in and out at both edges while scrolling.
+
+## Wheel distance
+
+One wheel notch (one winit line) moves content by `midnight_ui_input::notch_pixels_for`:
+the shared line distance `LINE_PIXELS`, 100 logical px (Chromium's 100/3 px per line),
+at Windows' default of three lines per notch, in proportion to other settings (1 to 100
+lines), or one screen (the content's visible height) when Windows scrolls one screen at
+a time. It was Slint's own 60 px until 21 November 2026, when the user asked for faster
+scrolling with the same feel: the glide's 200 ms ease-out and the momentum decay are
+unchanged, so a notch travels 5/3 as far on the same curve. A Windows precision
+touchpad reports its finger motion and its system momentum as wheel lines, so its
+travel grows by the same factor.
+
+Each host reads the system setting and supplies it; nothing queries it per notch. The
+viewer reads `SPI_GETWHEELSCROLLLINES` (`midnight-viewer-ui/src/wheel_setting.rs`)
+with the window's first native event and whenever the window gains the focus; the
+panels do the same (above). A `NativeScroll` glides notches with the setting its host
+gives it (`set_wheel_setting`; three lines until then). Linux and macOS have no such
+setting and keep three lines. Touchpad pixels and X11 finger lines are not notches:
+they follow the finger, lines at `LINE_PIXELS`.
+
+Tests: `midnight-ui-input` `wheel_lines::tests` (the default, proportions, bounds, one
+screen per notch); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
+(a notch glides `image_motion::notch_pixels` in the text and HTML viewers).
 
 ## Touchpad momentum (kinetic scrolling)
 
@@ -100,7 +161,8 @@ install. Feeding it is `kinetic_native.rs`:
   ordinary wheel: `PointerScrolled` (applied without Slint's own wheel easing) or,
   for the browser surface, a synthetic native wheel through the host's sink, in
   the finger stream's units (pixels, or lines for X11, which the HTML viewer
-  converts with the text viewer's 60 px line, as it does the finger's lines).
+  converts with the shared line distance, `LINE_PIXELS`, as it does the finger's
+  lines).
   Backend-driven viewers therefore see one scroll request per frame.
 - Content edges: an axis whose content position (Flickable content offset or the
   surface's reported position) has not moved for 120 ms while momentum pushes it
@@ -112,7 +174,7 @@ install. Feeding it is `kinetic_native.rs`:
 
 The file panels report momentum as scroll interaction, so nearest-row alignment
 waits until it ends. X11 touchpad lines over a panel are delivered directly
-(Slint's 60 px per line) instead of being eased like a notch. The comparator
+(`LINE_PIXELS` per line) instead of being eased like a notch. The comparator
 content also glides wheel notches through `NativeScroll::glide_content`, since it
 takes pixel deltas without easing of its own; a notch with Ctrl, Alt or Super held
 is not glided, because image comparisons zoom once per such wheel event.
@@ -130,7 +192,21 @@ including a button release and modifiers, platform default);
 `midnight-ui`
 `scroll_input::pane_tests::kinetic_tests` (real panels with Slint receiving
 unconsumed reports with their phases: single fling without Slint's own, X11 line
-stream, high-resolution detent, click, top edge, no momentum outside lists);
+stream, high-resolution detent, click, top edge, no momentum outside lists; the
+text viewer's test flick frame for frame against the shared decay, a Windows
+touchpad stream frame for frame against the viewer's wheel glide, the notch's
+curve and row landing, the thumbnail grid's band notch and kept touchpad position,
+a modifier, click or notch stopping momentum with only the alignment after it,
+reduced motion) and `rows_tests` (the reported mid-folder rest in both panels,
+rows covering the list at fractional offsets in each view at three scales and
+font sizes, keyboard reveals, refreshes and sorting while scrolled, rows painting
+their model state after a flick);
+`tests/panel_scroll.rs` (partly visible rows drawn and clickable, band coverage
+over offsets, row heights and viewport heights, the idle alignment and what holds,
+interrupts or bounds it); `tests/panel_scroll_costs.rs` (a 3000 px/s fling of the
+shared model through 50,000 entries in Details and Thumbnails reads each row once
+as it enters the view, and the grid's thumbnail target range stays within the
+pane's half of the request budget);
 `midnight-viewer-ui` `kinetic_tests` (text viewer through the native hook to
 backend scroll requests, X11 lines, toolbar) and `web_wheel_tests` (HTML page:
 momentum stops where the page stops painting); `midnight-compare-ui` `scroll_tests`
@@ -150,8 +226,9 @@ Chromium scrolls the page and reports no scroll position, so the viewer's web in
 the page one frame at a time:
 
 - A wheel notch over the page glides through the shared `WheelMotion` exactly as in
-  the text viewer: 60 logical px per line over 200 ms, only undelivered distance
-  adding up, a reversal dropping the old remainder. Each native redraw (8 ms wakes)
+  the text viewer: the viewer's notch distance (`image_motion::notch_pixels`, see
+  [Wheel distance](#wheel-distance)) over 200 ms, only undelivered distance adding
+  up, a reversal dropping the old remainder. Each native redraw (8 ms wakes)
   sends that frame's share as one physical-pixel `Wheel` command, so the page travels
   as far, at the same scale, over the same time. A command the backend queue refuses
   goes out again on the next frame before the glide's clock moves on.
@@ -160,9 +237,9 @@ the page one frame at a time:
   170 ms (one 120 px event painted as 2, 7, 16, … 120 px over 12 frames); every
   per-frame delta would be eased again. Keyboard scrolling now jumps at once too, like
   the text viewer's.
-- Touchpad pixels and X11 finger lines (at 60 px per line, as in the text viewer)
-  reach the page at once, one command per report; Linux momentum arrives through the
-  shared kinetic scroller's sink, one command per frame.
+- Touchpad pixels and X11 finger lines (at `LINE_PIXELS` per line, as in the text
+  viewer) reach the page at once, one command per report; Linux momentum arrives
+  through the shared kinetic scroller's sink, one command per frame.
 - A wheel with Ctrl, Alt or Super acts once: unglided, with the previous 40 px line,
   so Chromium's own Ctrl+wheel zoom (120 units per step) keeps its rate. Shift+wheel
   glides and Chromium scrolls it horizontally.
@@ -181,7 +258,9 @@ Measured on Linux X11 (CEF 156 debug provider with `diagnostic-timing`, driven o
 MWV1 without the host, 640 × 400 CSS px of a 30,000 px page, notches 24 ms apart,
 medians of four fresh pages; the text viewer's distances come from the real viewer
 UI under a test clock, and the new HTML commands were checked equal to them frame by
-frame):
+frame). These runs predate the faster notch of 21 November 2026 (60 → 100 px at the
+system's default, [Wheel distance](#wheel-distance)); the page follows the text viewer's
+distance, and its timing was not measured again:
 
 | Scale, notches | Text viewer | HTML before: travel, done | HTML after: travel, done | Page behind text viewer (median) |
 | --- | --- | --- | --- | --- |
@@ -322,17 +401,24 @@ after explicit cursor reveal, preserving the panel's idle row alignment.
 ## Retained text and document presentation
 
 The native viewer opts into `ViewerFrame.raster` for text, source, binary and
-Markdown. The backend paints a viewport plus guards of up to 256 raster pixels;
-the frontend translates those immutable pixels at native redraw cadence. Line
-numbers have a separate image pinned to the left edge, with the same vertical
-camera as the body. Text/image mode, search and typography remain independent.
+Markdown. The backend keeps the text prepared several screens around the window, as
+immutable strips (`ViewerRasterBands`), and the frontend moves them at native redraw
+cadence: moving over prepared strips needs no backend reply, no new pixels and no new
+texture. Line numbers are separate strips pinned to the left edge, with the same
+vertical camera as the body. Text/image mode, search and typography remain
+independent. See [the prepared text window](#prepared-text-window) below.
 
 Coordinates use the effective bounded raster viewport, not necessarily the full
 physical window: the existing geometry cap can reduce large high-DPI viewports.
-The frontend maps each axis using `info.viewport / content_size`. It reuses the
-uploaded body and gutter while their pixel identity is unchanged. A matching
-latest settled acknowledgement restores the backend's exact fractional glyph
-phase; old replies cannot pull a newer gesture backward.
+The frontend maps each axis using `info.viewport / content_size`. Each strip becomes
+one image when it first arrives, and it keeps that image and its row in the window's
+strip model while later frames still show it (`raster_presentation.rs`). Rows are only
+appended and removed, at heights below a base that moves at most every 32 screens;
+`raster-bands-origin` places the base below the page origin. The renderer uploads a
+row's texture again whenever that row changes, and every row's when the model is
+replaced: replacing the model for each new strip list re-uploaded all shown strips
+several times a second. A camera at rest stands on a whole raster pixel, where strips
+are exact; old replies cannot pull a newer gesture backward.
 
 Absolute camera requests coalesce without crossing selection or context changes.
 The frontend prefetches ahead, pauses at actual retained coverage, and preserves
@@ -353,27 +439,70 @@ corrective read failure releases the wait without claiming success. Within the
 eight-event mailbox, one slot is reserved for the latest frame and one for raster
 control, so ordinary event pressure cannot strand either side of this exchange.
 
-A failed guard load leaves the current picture visible and stops its pending
+A failed refill leaves the current picture visible and stops its pending
 motion, while allowing later navigation to recover.
 
-Body and gutter together are capped at 6 Mi pixels (24 MiB RGBA) per snapshot.
-Shared admission permits at most three snapshots per worker and twelve across a
-Service, including closed workers awaiting retirement. This caps retained CPU
-raster storage at 288 MiB, separately from UI/GPU images and layout caches; each
-snapshot is painted in its shared allocation, so building one adds no second
-snapshot-sized buffer. Dead weak allocation owners are reaped off the UI
-thread. A text request asks for 12 KiB (4 KiB for binary) and the rows of the
-viewport and its guards, at most 512 lines; guards do not widen word wrapping or
-permit whole-file loading. A provider can stop earlier at a byte budget of its own:
-the basic and source viewers send at most about 8 KiB, which for rows of a few
-hundred bytes is no taller than the viewport. The engine then reads the contiguous
+### Prepared text window
+
+A strip is 256 rows of the surface's world in effective raster pixels, starting at a
+multiple of 256 (`worker_bands.rs`), as wide as the window's body, or with horizontal
+guards of 256 logical pixels on each side while unwrapped lines are wider than the
+window. The worker keeps strips one screen against the direction of travel and two
+screens along it, three while one camera request moves more than a sixteenth of a
+screen (about four screens a second at 60 Hz). It drops strips only a further screen
+beyond that window, so turning back finds them. A frame publishes the contiguous run
+of strips around the camera; that run is the camera's coverage, within the page's
+known limits.
+
+The strips under the window and one beyond each of its edges are painted before a
+frame is published; the rest are painted between inputs, at most 4 ms per worker
+turn, nearest first along the direction of travel and then against it. A page holds
+the prepared screens and two more along the travel: its request's line budget covers
+them, still at most 512 lines and the byte budgets below. A refill starts while the
+page holds fewer screens than the strips want along the direction of travel (a quarter
+of a screen against it) and keeps a screen against it, so it comes every two screens
+of travel and the window moves over prepared rows meanwhile. A refill, a restyle or a
+new selection keeps every strip whose rows it shows the same way: each strip keeps a
+hash of the source text, line starts and world positions of the rows whose ink can
+reach it (8 em around it), their colours, typography, roles, document blocks, the
+selection over them and the gutter's numbers, and keeps its pixels when the new page
+reproduces that hash. A strip that a page did not hold completely (one at a page's
+edge) and a page with tables are painted again. Text is laid out once per page: rows
+are shaped again only when a refill joins them into its new page, or when the width,
+font or zoom changes.
+
+Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`) and those of
+all viewers 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`), body and gutter together,
+counted until the last owner of their pixels drops them (`raster_budget.rs`). The
+window keeps one converted copy of the strips it shows. When a viewer's budget is
+full, strips beyond the window go first and the window stops growing; the strips
+under the window are painted when the budget allows. A text request asks for 12 KiB
+(4 KiB for binary) and the rows of the window and its prepared screens, at most 512
+lines; the prepared screens do not widen word wrapping or permit whole-file loading. A
+provider can stop earlier at a byte budget of its own: the basic and source viewers
+send at most about 8 KiB, which for rows of a few hundred bytes is no taller than the
+viewport. The engine then reads the contiguous
 next range (backwards, the previous one) and joins the replies into one page, up to
-the request's line budget and at most 64 KiB (`worker_chain.rs`), so such rows scroll
-with full guards like short ones. A joined backward page whose first row may be cut
+the request's line budget and at most 120 KiB (`PAGE_BYTES`, `worker_chain.rs`), so
+such rows scroll like short ones. A joined backward page whose first row may be cut
 drops that row: a row's tail never shows as a line of its own. An incomplete
 byte-limited fragment that is still shorter than a viewport (a row longer than that
 bound) temporarily retains the existing viewport renderer rather than inventing
 continuous coverage or EOF.
+
+Measured on 21 November 2026, single runs on a loaded machine
+([record](../verification/2026-11-21-prepared-text-window.md)). In the timed
+co-simulation (`worker_prepared_tests.rs`, release) with the former 60 px notch, a
+40-notch wheel spin over a 100 MB file stalled 13 frames before and none after at 1x,
+and 31 and none at 2x. The worker's time for the gesture fell from 664 to 29 ms, and
+from 908 to 58 ms at 2x. Prepared strips held at most 35 MiB at 1x and 62 MiB at 2x
+(the budget is 64 MiB). With the 100 px notch the same spin, about five screens a
+second, stalls 3 frames at 1x and 4 at 2x. Unwrapped rows wider than the window still
+stall as before (88 of 103 frames for 2400-byte rows, 93 of 109 before): a page of at
+most 120 KiB holds too few of them to prepare screens ahead. In the native probe,
+frames later than 25 ms within a wheel notch fell from 54 to 6 for Text at 1x, from 68
+to 3 at 2x, and from 98 to 4 for Source at 2x. Source at 1x is unresolved: one run
+under build load had 25 late frames, against 15 before.
 
 Native GPU allocation stalls are addressed separately by the pinned FemtoVG
 [upload cache](../../vendor/README.md). In-flight buffers become reusable only

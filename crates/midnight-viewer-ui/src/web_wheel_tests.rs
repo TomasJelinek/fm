@@ -57,6 +57,12 @@ fn sum(deltas: &[[f64; 2]]) -> [f64; 2] {
     })
 }
 
+/// One notch's logical distance along each axis, as the text viewer scrolls it
+/// (`image_motion::notch_pixels`).
+fn notch_distance(open: &OpenWindow) -> [f64; 2] {
+    [true, false].map(|horizontal| f64::from(image_motion::notch_pixels(open, horizontal)))
+}
+
 impl Fixture {
     fn new(scale: f32) -> (TestRuntime, TestWindows, Self) {
         let (runtime, manager, open, service) = image_presentation_tests::open();
@@ -311,9 +317,10 @@ fn same_travel_as_the_text_viewer(scale: f32) {
                     total[1] - f64::from(notch.lines.1),
                 ]
             });
+            let notch = notch_distance(&fixture.open);
             for axis in 0..2 {
                 assert!(
-                    (total[axis] - lines[axis] * 60.0 * scale).abs() < 1e-3 * scale,
+                    (total[axis] - lines[axis] * notch[axis] * scale).abs() < 1e-3 * scale,
                     "{name}: {total:?} for {lines:?} lines at {scale}x"
                 );
             }
@@ -344,7 +351,8 @@ fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
         moving.extend(fixture.frame(true));
     }
     assert_eq!(moving.len(), 25, "200 ms of 8 ms frames");
-    assert!((sum(&moving)[1] - 60.0 * scale).abs() < 1e-3);
+    let notch_y = notch_distance(&fixture.open)[1];
+    assert!((sum(&moving)[1] - notch_y * scale).abs() < 1e-3);
     // The page moves for four frames and reaches its bottom while more notches arrive:
     // the glide ends 120 ms after its last new frame instead of sending the rest of its
     // deltas until 200 ms after the last notch (36 frames).
@@ -366,7 +374,7 @@ fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
         waiting.extend(fixture.frame(false));
     }
     assert_eq!(waiting.len(), 25);
-    assert!((sum(&waiting)[1] - 60.0 * scale).abs() < 1e-3);
+    assert!((sum(&waiting)[1] - notch_y * scale).abs() < 1e-3);
     // A page already at its edge never paints: a burst of 40 notches ends one second
     // after it began instead of 200 ms after its last notch (142 frames).
     fixture.native(notch(-1.0));
@@ -471,14 +479,15 @@ fn touchpad_lines_and_acting_wheels_reach_the_page_at_once() {
     let (_runtime, manager, mut fixture) = Fixture::new(2.0);
     fixture.web();
     let scale = fixture.scale();
-    // X11 finger lines: one delta per report at the text viewer's 60 px line.
+    // X11 finger lines: one delta per report at the shared line distance.
     for _ in 0..4 {
         advance_time(Duration::from_millis(10));
         assert!(fixture.native(notch(-0.2633)));
         let wheels = fixture.wheels();
         assert_eq!(wheels.len(), 1);
+        let line = f64::from(midnight_ui_input::LINE_PIXELS);
         assert!(
-            (wheels[0].delta_y + 0.2633 * 60.0 * scale).abs() < 1e-3,
+            (wheels[0].delta_y + 0.2633 * line * scale).abs() < 1e-3,
             "{}",
             wheels[0].delta_y
         );

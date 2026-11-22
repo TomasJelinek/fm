@@ -29,6 +29,10 @@ export component FilePane inherits Rectangle {
     in property <bool> can-compare-directories;
     in property <bool> can-target-selection;
     in property <bool> touch-contact;
+    // Native input still moving or holding the panels, and the system's request
+    // for less motion: the list settles on a row only after such input ends.
+    in property <bool> scroll-interaction-active;
+    in property <bool> reduce-motion;
     in property <bool> drop-highlight;
     in property <int> drop-row: -1;
     in property <string> drag-label;
@@ -252,7 +256,7 @@ export component FilePane inherits Rectangle {
         root.controls-press-cancelled = false;
         root.tree-press = { active: false, cancelled: false };
         let local-x = x - list.absolute-position.x - list.content-x;
-        let local-y = y - list.absolute-position.y - list.row-content-y;
+        let local-y = y - list.absolute-position.y - list.content-y;
         if x >= list.absolute-position.x && x < list.absolute-position.x + list.visible-width
             && y >= list.absolute-position.y && y < list.absolute-position.y + list.visible-height
             && local-x >= 0px && local-x < root.list-grid-width && root.row-height > 0px {
@@ -283,9 +287,9 @@ export component FilePane inherits Rectangle {
     out property <length> list-width: list.width;
     out property <length> list-content-y: list.content-y;
     out property <length> list-content-x: list.content-x;
-    out property <length> list-row-offset-y: list.row-content-y;
+    out property <length> list-row-offset-y: list.content-y;
     pure public function row-band-visible-at(y: length) -> bool {
-        return list.band-visible(floor((y - list.row-content-y) / root.row-height));
+        return list.band-visible(floor((y - list.content-y) / root.row-height));
     }
     // The pinned Fluent scrollbar is 14 logical px. Keep a separate 10px
     // background gutter available even when Details rows fill the viewport.
@@ -747,7 +751,9 @@ export component FilePane inherits Rectangle {
             }
             list := PanelList {
                 row-height: root.row-height;
-                partial-bands: root.thumbnail-grid;
+                interaction-active: root.scroll-interaction-active;
+                settle-rows: !root.thumbnail-grid;
+                reduce-motion: root.reduce-motion;
                 user-scrolled => {
                     if root.directory-link-tooltip.row != "" && root.directory-link-tooltip.pane == root.pane-id {
                         root.retire-directory-link-hover();
@@ -761,7 +767,7 @@ export component FilePane inherits Rectangle {
                     height: root.row-height;
                     for column in root.repeated-columns : FileEntry {
                         private property <int> row-index: root.source-row(band, column);
-                        x: column * self.width; y: list.row-y-shift;
+                        x: column * self.width; y: 0px;
                         width: parent.width / root.view-columns; height: parent.height;
                         visible: list.band-visible(band) && self.row-index < root.rows.length;
                         item: root.rows[self.row-index]; source-index: self.row-index;
@@ -829,7 +835,7 @@ export component FilePane inherits Rectangle {
             // without matches, said below `..` so that the row stays clear and still
             // goes up. A text takes neither the focus nor keys or clicks.
             if root.empty-message != "" && !root.loading : Text {
-                x: 12px; y: list.row-content-y + root.band-count * root.row-height + 12px;
+                x: 12px; y: list.content-y + root.band-count * root.row-height + 12px;
                 width: max(0px, list.visible-width - 24px); height: self.preferred-height;
                 text: root.empty-message; wrap: word-wrap;
                 color: Theme.muted-text; font-size: Theme.font-size + 1px; horizontal-alignment: center;

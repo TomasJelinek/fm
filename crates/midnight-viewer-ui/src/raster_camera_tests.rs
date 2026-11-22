@@ -16,6 +16,7 @@ fn info() -> ViewerRasterInfo {
         scroll_per_pixel: [0.0005, 0.00001],
         scroll_map: None,
         gutter: None,
+        bands: None,
     }
 }
 

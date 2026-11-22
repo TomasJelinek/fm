@@ -182,10 +182,10 @@ without publishing a partial or empty clipboard replacement. A later smaller
 selection remains copyable.
 
 Wheel input scrolls a page as far and as fast as a text document. The viewer glides a
-wheel notch through the shared wheel motion (60 logical px per line over 200 ms) and
-sends one physical-pixel `Wheel` per presented frame; touchpad pixels, X11 finger
-lines (60 px per line) and Linux momentum go through at once, one `Wheel` per report
-or frame. The provider starts Chromium with `disable-smooth-scrolling`, so it applies
+wheel notch through the shared wheel motion (the text viewer's notch distance, 100
+logical px at Windows' default three lines, over 200 ms) and sends one physical-pixel
+`Wheel` per presented frame; touchpad pixels, X11 finger lines (`LINE_PIXELS`, 100 px
+per line) and Linux momentum go through at once, one `Wheel` per report or frame. The provider starts Chromium with `disable-smooth-scrolling`, so it applies
 each wheel event at once instead of animating it again (CEF's windowless wheel events
 are not precise deltas, which Chromium otherwise eases over about 170 ms); keyboard
 scrolling jumps at once too. Chromium reports no scroll position: once the page has

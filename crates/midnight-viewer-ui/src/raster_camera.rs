@@ -23,6 +23,10 @@ pub(super) struct Camera {
     /// shown camera (a page refilled or restyled around the request): ask again for the
     /// shown camera itself, without lookahead, so that its pixels cover the camera.
     uncovered: bool,
+    /// Over prepared strips a camera at rest stands on a whole pixel; the fraction that
+    /// direct (touchpad, key) input left is carried to its next delta, so slow fingers
+    /// still move the content.
+    residual: [f64; 2],
 }
 
 impl Camera {
@@ -73,6 +77,12 @@ impl Camera {
             return false;
         }
         self.uncovered = false;
+        // Prepared strips are exact at whole pixels: a camera at rest stands on one.
+        let origin = if changed && info.bands.is_some() {
+            whole(info, origin)
+        } else {
+            origin
+        };
         if changed {
             self.cancel();
             self.last_request = Some((origin, info.settled));
@@ -103,6 +113,9 @@ impl Camera {
         let mut metadata = info.clone();
         // Pixel ownership stays with frame retirement and the Slint images.
         metadata.gutter = None;
+        if let Some(bands) = &mut metadata.bands {
+            bands.list = std::sync::Arc::from([]);
+        }
         self.info = Some(metadata);
         true
     }
@@ -160,6 +173,12 @@ impl Camera {
         {
             return false;
         }
+        // Over prepared strips a covered drag position stands on a whole pixel too.
+        let target = if info.bands.is_some() && covered(info, target) {
+            whole(info, target)
+        } else {
+            target
+        };
         let target_covered = covered(info, target);
         self.motion.cancel();
         self.resume = false;
@@ -206,8 +225,13 @@ impl Camera {
         self.seeking = false;
         self.resume = false;
         if direct {
+            let carried = std::mem::take(&mut self.residual);
+            let [x, y] = [x, y].map(f64::from);
+            let x = (x + carried[0] / self.scale[0].max(f64::MIN_POSITIVE)) as f32;
+            let y = (y + carried[1] / self.scale[1].max(f64::MIN_POSITIVE)) as f32;
             self.motion.push_direct(x, y, now)
         } else {
+            self.residual = [0.0; 2];
             self.motion.push(x, y, now)
         }
     }
@@ -263,6 +287,21 @@ impl Camera {
                 self.motion.discard_axis(axis);
             }
         }
+        // Prepared strips are exact at whole pixels: a finished glide or key rests on one.
+        // Direct input carries the fraction to its next delta.
+        if !self.motion.active() && info.bands.is_some() {
+            let snapped = whole(info, self.origin);
+            if self.direct {
+                for (residual, (origin, snapped)) in self
+                    .residual
+                    .iter_mut()
+                    .zip(self.origin.iter().zip(snapped))
+                {
+                    *residual += origin - snapped;
+                }
+            }
+            self.origin = snapped;
+        }
         self.origin != old
     }
 
@@ -302,6 +341,7 @@ impl Camera {
     }
     pub fn cancel(&mut self) {
         self.motion.cancel();
+        self.residual = [0.0; 2];
         self.pending_seek = None;
         self.seeking = false;
         self.retry_pending =
@@ -333,6 +373,20 @@ fn seek_bounds(info: &ViewerRasterInfo, axis: usize) -> (f64, f64) {
             info.coverage_max[axis].min(info.limit_max[axis].unwrap_or(f64::INFINITY)),
         ),
     }
+}
+
+/// The nearest whole-pixel camera to `origin` within the covered and known bounds; an
+/// axis without one inside them keeps its position.
+fn whole(info: &ViewerRasterInfo, origin: [f64; 2]) -> [f64; 2] {
+    std::array::from_fn(|axis| {
+        let low = info.coverage_min[axis].max(info.limit_min[axis].unwrap_or(f64::NEG_INFINITY));
+        let high = info.coverage_max[axis].min(info.limit_max[axis].unwrap_or(f64::INFINITY));
+        let value = origin[axis];
+        [value.round(), value.floor(), value.ceil()]
+            .into_iter()
+            .find(|candidate| (low..=high).contains(candidate))
+            .unwrap_or(value)
+    })
 }
 
 fn covered(info: &ViewerRasterInfo, origin: [f64; 2]) -> bool {

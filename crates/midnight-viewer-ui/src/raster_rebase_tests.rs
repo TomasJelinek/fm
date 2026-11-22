@@ -32,6 +32,7 @@ fn frame(open: &OpenWindow, revision: u64, surface: u64, ack: Option<u64>) -> Vi
             scroll_map: None,
             settled: true,
             gutter: None,
+            bands: None,
         });
     }
     ViewerOutput::Frame(frame)

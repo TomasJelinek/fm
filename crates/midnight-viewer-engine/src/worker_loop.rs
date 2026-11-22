@@ -4,7 +4,7 @@ use super::*;
 impl Worker {
     /// `None` blocks until a wake or input arrives. Otherwise retry after the delay.
     pub(super) fn retry_delay(&self) -> Option<Duration> {
-        if self.web_backlog {
+        if self.web_backlog || self.raster.strips_pending() {
             return Some(Duration::ZERO);
         }
         // A pending opening needs no retry: a closing plugin session signals the end of its

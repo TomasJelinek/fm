@@ -72,10 +72,10 @@ pub(super) fn thread_cpu_ms() -> f64 {
     (ticks(kernel) + ticks(user)) / 10_000.0
 }
 
-pub(super) fn load_entries(path: PathBuf, real: bool) -> io::Result<Arc<[Entry]>> {
+pub(super) fn load_entries(path: PathBuf, real: bool, count: u64) -> io::Result<Arc<[Entry]>> {
     std::thread::spawn(move || {
         if !real {
-            return Ok((0..10_000)
+            return Ok((0..count)
                 .map(|id| {
                     Entry::new(
                         EntryId(id),

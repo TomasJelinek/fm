@@ -407,3 +407,91 @@ fn cache_pressure_after_reversal_before_the_next_target_report() {
     // Evicting the returned row is an observation, not a required policy outcome.
     // This model readback does not prove that an already painted row visibly blinked.
 }
+
+/// One touchpad fling of the shared momentum model (3000 px/s, 0.8 s time
+/// constant, 16 ms frames) through a 50,000-entry folder: each frame reads only
+/// the rows entering the view, and the grid's thumbnail target range stays within
+/// the panel's half of the request budget, changing only as band boundaries pass.
+fn fling_costs(mode: PanelViewMode) {
+    let mut h = Harness::new(50_000, mode);
+    let real = h.ui.window.get_left_rows();
+    let counter = Rc::new(CountedRows::new(real.clone()));
+    h.ui.window.set_left_rows(counter.clone().into());
+    h.draw();
+    counter.take();
+    let window = &h.ui.window;
+    let row = f64::from(window.get_left_view_row_height());
+    let columns = window.get_left_view_columns().max(1) as usize;
+    let decay = (-0.016f64 / 0.8).exp();
+    let mut velocity = 3000.0f64;
+    let (mut frames, mut reads, mut most, mut distinct) = (0usize, 0usize, 0usize, 0usize);
+    let mut range = (
+        window.get_left_thumbnail_row_start(),
+        window.get_left_thumbnail_row_end(),
+    );
+    let (mut changes, mut largest) = (0usize, range.1 - range.0);
+    let start = f64::from(window.get_left_list_content_y());
+    let timer = std::time::Instant::now();
+    while velocity >= 12.0 {
+        let delta = velocity * 0.8 * (1.0 - decay);
+        velocity *= decay;
+        h.ui.window.invoke_scroll_selection(0, -delta as f32);
+        h.ui.draw();
+        let counts = counter.take();
+        // The rows that can enter this frame, and the band cut at each edge.
+        let entering = ((delta / row).ceil() as usize + 2) * columns;
+        assert!(
+            counts.reads <= 2 * entering + 8,
+            "{mode:?} frame {frames}: {counts:?} for {delta:.1} px"
+        );
+        reads += counts.reads;
+        distinct += counts.distinct;
+        most = most.max(counts.reads);
+        let now = (
+            h.ui.window.get_left_thumbnail_row_start(),
+            h.ui.window.get_left_thumbnail_row_end(),
+        );
+        if now != range {
+            changes += 1;
+            range = now;
+            largest = largest.max(now.1 - now.0);
+        }
+        frames += 1;
+    }
+    let travelled = start - f64::from(h.ui.window.get_left_list_content_y());
+    let bands = (travelled / row).ceil() as usize;
+    println!(
+        "panel-fling-costs {}",
+        json!({"mode": format!("{mode:?}"), "entries": 50_000, "frames": frames,
+            "travel_px": travelled, "bands_crossed": bands, "columns": columns,
+            "row_data_calls": reads, "row_data_calls_max_frame": most,
+            "distinct_rows_summed": distinct, "thumbnail_range_changes": changes,
+            "largest_thumbnail_range": largest,
+            "software_frames_ms": timer.elapsed().as_secs_f64() * 1000.0})
+    );
+    assert!(
+        (travelled - 2400.0).abs() < 20.0,
+        "{mode:?}: travel {travelled}"
+    );
+    assert!(
+        reads <= 2 * (bands + 2) * columns * 2 + 8 * frames,
+        "{mode:?}: {reads} reads over {bands} bands"
+    );
+    assert!(largest <= 128, "{mode:?}: {largest} thumbnail targets");
+    // A band boundary passes the top edge and then the bottom edge.
+    assert!(
+        changes <= 2 * bands + 2,
+        "{mode:?}: {changes} range changes over {bands} bands"
+    );
+    h.ui.window.set_left_rows(real);
+}
+
+#[test]
+fn detailed_fling_through_50000_entries_reads_only_entering_rows() {
+    fling_costs(PanelViewMode::Detailed);
+}
+
+#[test]
+fn thumbnail_fling_through_50000_entries_keeps_the_target_budget() {
+    fling_costs(PanelViewMode::Thumbnails);
+}

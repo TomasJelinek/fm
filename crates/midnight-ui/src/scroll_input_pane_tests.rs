@@ -9,8 +9,12 @@ use slint::platform::{
 };
 use std::{cell::Cell, path::PathBuf, sync::Arc};
 
+#[path = "scroll_input_fling_measure.rs"]
+mod fling_measure;
 #[path = "scroll_input_kinetic_tests.rs"]
 mod kinetic_tests;
+#[path = "scroll_input_rows_tests.rs"]
+mod rows_tests;
 #[path = "scroll_input_toolbar_tests.rs"]
 mod toolbar_tests;
 
@@ -68,7 +72,9 @@ impl Harness {
 
     /// Bound the virtual frames needed for wheel motion to end and offsets to stabilize.
     fn settle(&self, max: usize) {
-        const STABLE_FRAMES: usize = 7;
+        // Longer than the panel list's idle interval (100 ms) before its row
+        // alignment, so a settled offset has also finished aligning.
+        const STABLE_FRAMES: usize = 12;
         let mut previous = (self.offset(0), self.offset(1));
         let mut stable = 0;
         for _ in 0..max {
@@ -167,6 +173,17 @@ impl Harness {
     }
 }
 
+/// The viewers' notch distance at the default wheel setting (three lines per notch).
+fn line_pixels() -> f32 {
+    notch_pixels_for(WheelSetting::default(), 0.0)
+}
+
+/// What one notch moves in a list of `row` px rows: the whole rows nearest to the
+/// viewers' notch distance, at least one.
+fn notch(row: f32) -> f32 {
+    (line_pixels() / row).round().max(1.0) * row
+}
+
 /// The panels in a 1340×820 window whose frames are software-rendered.
 fn harness() -> Harness {
     harness_with(true)
@@ -179,6 +196,22 @@ fn layout_harness() -> Harness {
 }
 
 fn harness_with(render: bool) -> Harness {
+    harness_entries(render, true, || {
+        (0..1000)
+            .map(|id| {
+                Entry::new(
+                    EntryId(id),
+                    PathBuf::from(format!("file-{id:04}.txt")),
+                    EntryKind::File,
+                )
+            })
+            .collect()
+    })
+}
+
+/// Both panels list `entries`. `momentum` selects the Linux policy (the app adds
+/// touchpad momentum) or the Windows and macOS one (the system delivers it).
+fn harness_entries(render: bool, momentum: bool, entries: impl Fn() -> Arc<[Entry]>) -> Harness {
     let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
     let time = Rc::new(Cell::new(Duration::ZERO));
     slint::platform::set_platform(Box::new(TestPlatform(native.clone(), time.clone()))).unwrap();
@@ -189,15 +222,7 @@ fn harness_with(render: bool) -> Harness {
     )));
     crate::install(&window, presenter.clone(), Rc::new(|_| true));
     for pane in [PaneId::Left, PaneId::Right] {
-        let entries: Arc<[Entry]> = (0..1000)
-            .map(|id| {
-                Entry::new(
-                    EntryId(id),
-                    PathBuf::from(format!("file-{id:04}.txt")),
-                    EntryKind::File,
-                )
-            })
-            .collect();
+        let entries = entries();
         let index = Arc::new(DirectoryIndex::from_entries(&entries));
         presenter.borrow_mut().apply(Event::ListingFinished {
             pane,
@@ -216,7 +241,7 @@ fn harness_with(render: bool) -> Harness {
         });
     let state = Rc::new(RefCell::new(InputState::default()));
     let timer = wheel_timer(&window, &state);
-    let auxiliary = RefCell::new(NativeScroll::new(&window).synthesize_momentum(true));
+    let auxiliary = RefCell::new(NativeScroll::new(&window).synthesize_momentum(momentum));
     let h = Harness {
         window,
         native,
@@ -284,15 +309,17 @@ fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
         }
     }
     h.advance(6);
+    // A notch moves the rows nearest to the line distance and lands on a row.
+    let row = h.window.global::<Theme>().get_row_height();
     assert!(
-        (h.offset(0) + 60.0).abs() < 0.01,
+        (h.offset(0) + notch(row)).abs() < 0.01,
         "all wheel pixels delivered once"
     );
     assert!(!h.window.get_scroll_interaction_active());
     h.settle(40);
     assert!(
-        (h.offset(0) + 60.0).abs() < 0.01,
-        "the resting position preserves all pixels: {}",
+        (h.offset(0) + notch(row)).abs() < 0.01,
+        "the notch rests on its row: {}",
         h.offset(0)
     );
     assert!(!h.timer.running(), "no perpetual animation timer");
@@ -304,7 +331,7 @@ fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
         "cross-pane movement cancels before the next frame"
     );
     h.advance(1);
-    assert!((h.offset(0) + 60.0).abs() < 0.01);
+    assert!((h.offset(0) + notch(row)).abs() < 0.01);
     assert_eq!(
         h.offset(1),
         0.0,
@@ -392,6 +419,7 @@ fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_po
         h.advance(4);
         let initial = h.offset(side);
         let other = h.offset(1 - side);
+        let row = h.window.global::<Theme>().get_row_height();
         assert!(
             initial < -1000.0,
             "fixture must explicitly reveal the final row"
@@ -405,8 +433,10 @@ fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_po
         for _ in 0..13 {
             h.advance(1);
             let current = h.offset(side);
+            // A notch lands on a row: from the cut bottom bound, its rows and
+            // up to half a row more, a sixth of that at most per 16 ms frame.
             assert!(
-                current > previous && current < previous + 12.0,
+                current > previous && current < previous + (notch(row) + row / 2.0) / 6.0,
                 "scrollbar frame was lost to cursor-following or jumped: {previous} -> {current}"
             );
             assert_eq!(
@@ -416,9 +446,11 @@ fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_po
             );
             previous = current;
         }
+        let landed = h.offset(side);
         assert!(
-            (h.offset(side) - initial - 60.0).abs() < 0.02,
-            "panel notch retains all pixels"
+            (landed - initial - notch(row)).abs() <= row / 2.0 + 0.02
+                && ((landed / row).round() * row - landed).abs() < 0.02,
+            "a panel notch moves its rows and lands on a row: {initial} -> {landed}"
         );
         let selected = if side == 0 {
             h.window.get_left_cursor()
@@ -431,7 +463,7 @@ fn file_panel_scrollbar_wheel_releases_explicit_cursor_reveal_and_keeps_panel_po
         );
         h.settle(40);
         assert!(
-            (h.offset(side) - initial - 60.0).abs() < 0.02,
+            (h.offset(side) - landed).abs() < 0.02,
             "the scrollbar preserves the final pixel position"
         );
     }

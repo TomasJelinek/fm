@@ -188,7 +188,10 @@ fn text_viewer_click_stops_momentum_and_x11_lines_skip_wheel_easing() {
     let finger = fixture.take();
     assert_eq!(finger.len(), 6, "one backend scroll per report: {finger:?}");
     for step in finger {
-        assert!((step / scale - 0.2633 * 60.0).abs() < 0.01, "{step}");
+        assert!(
+            (step / scale - 0.2633 * midnight_ui_input::LINE_PIXELS).abs() < 0.01,
+            "{step}"
+        );
     }
     assert!(fixture.scroll.kinetic_active());
     // The stream ends after a short gap and momentum takes over.

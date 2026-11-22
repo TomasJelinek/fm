@@ -215,8 +215,13 @@ fn web_consumed_release_does_not_leave_auxiliary_scrollbars_pressed() {
         image_presentation_tests::advance_time(Duration::from_millis(16));
         observe_native_content(&open, &WindowEvent::RedrawRequested, true, &mut ancillary);
     }
+    // One notch of the shared observer's glide (`notch_pixels_for`, no known page).
+    let notch = f64::from(midnight_ui_input::notch_pixels_for(
+        image_motion::wheel_setting(&open),
+        0.0,
+    ));
     assert!(
-        (offset(&viewport) - initial + 60.0).abs() < 0.05,
+        (f64::from(offset(&viewport)) - f64::from(initial) + notch).abs() < 0.05,
         "release consumed by Chromium left the popup scrollbar pressed: {} -> {}",
         initial,
         offset(&viewport)

@@ -393,6 +393,8 @@ export component MainWindow inherits Window {
     in property <string> left-bookmark-name;
     in property <string> right-bookmark-name;
     in property <bool> scroll-interaction-active;
+    // The system asks for less motion (Windows: animation effects off).
+    in property <bool> reduce-motion;
     in-out property <int> theme-index <=> Theme.scheme;
     in-out property <int> left-view-mode;
     in-out property <int> right-view-mode;
@@ -973,6 +975,7 @@ export component MainWindow inherits Window {
                 retry-directory-elevated => { root.retry-directory-elevated(0); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(0, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
+                scroll-interaction-active: root.scroll-interaction-active; reduce-motion: root.reduce-motion;
                 drop-highlight: root.drag-hover-pane == 0; drag-label: root.drag-label;
                 drop-row: root.drag-hover-pane == 0 ? root.drag-hover-row : -1;
                 drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }
@@ -1062,6 +1065,7 @@ export component MainWindow inherits Window {
                 retry-directory-elevated => { root.retry-directory-elevated(1); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(1, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
+                scroll-interaction-active: root.scroll-interaction-active; reduce-motion: root.reduce-motion;
                 drop-highlight: root.drag-hover-pane == 1; drag-label: root.drag-label;
                 drop-row: root.drag-hover-pane == 1 ? root.drag-hover-row : -1;
                 drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }

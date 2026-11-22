@@ -30,6 +30,7 @@ fn frame(revision: u64) -> ViewerOutput {
             height: 600,
             pixels: Arc::from(vec![128; 20 * 600 * 4]),
         }),
+        bands: None,
     });
     ViewerOutput::Frame(frame)
 }

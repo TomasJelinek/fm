@@ -1,53 +1,68 @@
-//! Shared admission for retained CPU raster allocations, independent of worker lifetimes.
+//! Shared admission for retained text pixels (prepared strips), independent of worker
+//! lifetimes.
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicU64, Ordering},
 };
 
-pub(crate) const MAX_SNAPSHOTS: usize = 12;
-pub(crate) const MAX_SNAPSHOT_BYTES: usize = midnight_core::VIEWER_RETAINED_RASTER_PIXELS * 4;
-const MAX_PER_OWNER: usize = 3;
+/// Prepared text strips: bytes per viewer and for all viewers together.
+pub(crate) const MAX_STRIP_BYTES: usize = midnight_core::VIEWER_PREPARED_TEXT_BYTES;
+pub(crate) const MAX_TOTAL_STRIP_BYTES: usize = midnight_core::VIEWER_PREPARED_TEXT_TOTAL_BYTES;
 
 /// Shared by every worker opened through a Service, including replaced/closed windows.
-/// This is the only weak-pixel registry: Weak<[u8]> itself retains the slice allocation.
+/// A strip's bytes stay charged until its last pixel owner (a worker's cache, a frame, a
+/// window's delivery) is dropped; `Weak<[u8]>` itself retains no pixels.
 pub(crate) struct Budget {
-    slots: Mutex<[Slot; MAX_SNAPSHOTS]>,
+    strips: Mutex<Vec<Strip>>,
     next_owner: AtomicU64,
+    next_ticket: AtomicU64,
 }
 
-enum Slot {
-    Vacant,
-    Reserved(u64),
+enum Strip {
+    Reserved {
+        owner: u64,
+        bytes: usize,
+        ticket: u64,
+    },
     Live {
         owner: u64,
+        bytes: usize,
         body: Weak<[u8]>,
         gutter: Option<Weak<[u8]>>,
     },
 }
 
-impl Slot {
-    fn owner(&self) -> Option<u64> {
+impl Strip {
+    fn charge(&self) -> (u64, usize) {
         match self {
-            Self::Vacant => None,
-            Self::Reserved(owner) | Self::Live { owner, .. } => Some(*owner),
+            Self::Reserved { owner, bytes, .. } | Self::Live { owner, bytes, .. } => {
+                (*owner, *bytes)
+            }
         }
     }
+
+    fn released(&self) -> bool {
+        matches!(self, Self::Live { body, gutter, .. }
+            if body.strong_count() == 0
+                && gutter.as_ref().is_none_or(|pixels| pixels.strong_count() == 0))
+    }
+}
+
+/// A strip's bytes, held until its pixels are committed or the reservation is dropped.
+pub(crate) struct StripReservation {
+    budget: Arc<Budget>,
+    ticket: u64,
+    committed: bool,
 }
 
 impl Default for Budget {
     fn default() -> Self {
         Self {
-            slots: Mutex::new(std::array::from_fn(|_| Slot::Vacant)),
+            strips: Mutex::new(Vec::new()),
             next_owner: AtomicU64::new(0),
+            next_ticket: AtomicU64::new(0),
         }
     }
-}
-
-pub(crate) struct Reservation {
-    budget: Arc<Budget>,
-    index: usize,
-    owner: u64,
-    committed: bool,
 }
 
 impl Budget {
@@ -61,99 +76,103 @@ impl Budget {
             + 1
     }
 
-    /// Reject saturated capacity without waiting for a pixel owner to release it.
-    pub(crate) fn reserve_for(self: &Arc<Self>, owner: u64) -> Option<Reservation> {
-        (owner != 0).then(|| self.admit(owner)).flatten()
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Strip>> {
+        self.strips
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
-    #[cfg(test)]
-    fn reserve(self: &Arc<Self>) -> Option<Reservation> {
-        self.admit(0)
-    }
-
-    /// Release expired Arc slice allocations when retirement finishes, even with no later open.
+    /// Forget strips whose pixels every owner dropped, when retirement finishes, even with
+    /// no later open.
     pub(crate) fn reap(&self) {
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-        Self::prune(&mut slots);
+        self.lock().retain(|strip| !strip.released());
     }
 
-    fn prune(slots: &mut [Slot; MAX_SNAPSHOTS]) {
-        for slot in slots.iter_mut() {
-            if let Slot::Live { body, gutter, .. } = slot
-                && body.strong_count() == 0
-                && gutter
-                    .as_ref()
-                    .is_none_or(|pixels| pixels.strong_count() == 0)
-            {
-                // Drop both weak references before making the allocation slot reusable.
-                *slot = Slot::Vacant;
-            }
-        }
-    }
-
-    fn admit(self: &Arc<Self>, owner: u64) -> Option<Reservation> {
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-        Self::prune(&mut slots);
-        if owner != 0
-            && slots
-                .iter()
-                .filter(|slot| slot.owner() == Some(owner))
-                .count()
-                >= MAX_PER_OWNER
-        {
+    /// Reserve `bytes` of prepared text strips for `owner`, unless that viewer's or all
+    /// viewers' strips would exceed their budget. Strips whose pixels every owner dropped
+    /// no longer count. Rejects saturated capacity without waiting for an owner.
+    pub(crate) fn reserve_strip(
+        self: &Arc<Self>,
+        owner: u64,
+        bytes: usize,
+    ) -> Option<StripReservation> {
+        let mut strips = self.lock();
+        strips.retain(|strip| !strip.released());
+        let (mine, all) = strips.iter().fold((0, 0), |(mine, all), strip| {
+            let (charged, size) = strip.charge();
+            (mine + if charged == owner { size } else { 0 }, all + size)
+        });
+        if owner == 0 || mine + bytes > MAX_STRIP_BYTES || all + bytes > MAX_TOTAL_STRIP_BYTES {
             return None;
         }
-        let index = slots.iter().position(|slot| matches!(slot, Slot::Vacant))?;
-        slots[index] = Slot::Reserved(owner);
-        Some(Reservation {
-            budget: self.clone(),
-            index,
+        let ticket = self.next_ticket.fetch_add(1, Ordering::Relaxed);
+        strips.push(Strip::Reserved {
             owner,
+            bytes,
+            ticket,
+        });
+        Some(StripReservation {
+            budget: self.clone(),
+            ticket,
             committed: false,
         })
     }
+
+    /// Bytes of prepared text strips `owner`'s pixels still hold.
+    #[cfg(test)]
+    pub(crate) fn strip_bytes(&self, owner: u64) -> usize {
+        let mut strips = self.lock();
+        strips.retain(|strip| !strip.released());
+        strips
+            .iter()
+            .filter(|strip| strip.charge().0 == owner)
+            .map(|strip| strip.charge().1)
+            .sum()
+    }
 }
 
-impl Reservation {
-    /// Retain the slot until both independently cloned pixel allocations are reclaimed.
-    /// Callers also size-check geometry before allocation; this catches accounting mistakes.
+impl StripReservation {
+    /// Charge the reserved bytes to these pixels until both are dropped. Callers size the
+    /// strip before allocating it; this catches accounting mistakes.
     pub(crate) fn commit(
         mut self,
         body: &Arc<[u8]>,
         gutter: Option<&Arc<[u8]>>,
     ) -> Result<(), &'static str> {
-        body.len()
-            .checked_add(gutter.map_or(0, |pixels| pixels.len()))
-            .filter(|bytes| *bytes <= MAX_SNAPSHOT_BYTES)
-            .ok_or("Retained body and gutter exceed the raster snapshot budget.")?;
-        let mut slots = self
-            .budget
-            .slots
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        debug_assert!(matches!(slots[self.index], Slot::Reserved(owner) if owner == self.owner));
-        slots[self.index] = Slot::Live {
-            owner: self.owner,
+        let mut strips = self.budget.lock();
+        let index =
+            Self::find(&strips, self.ticket).ok_or("Prepared text strip reservation lost.")?;
+        let (owner, bytes) = strips[index].charge();
+        if body.len() + gutter.map_or(0, |pixels| pixels.len()) > bytes {
+            return Err("Prepared text strip exceeds its reservation.");
+        }
+        strips[index] = Strip::Live {
+            owner,
+            bytes,
             body: Arc::downgrade(body),
             gutter: gutter.map(Arc::downgrade),
         };
         self.committed = true;
         Ok(())
     }
+
+    /// Entries move when released ones are removed: find this reservation by its ticket.
+    fn find(strips: &[Strip], ticket: u64) -> Option<usize> {
+        strips.iter().position(
+            |strip| matches!(strip, Strip::Reserved { ticket: held, .. } if *held == ticket),
+        )
+    }
 }
 
-impl Drop for Reservation {
+impl Drop for StripReservation {
     fn drop(&mut self) {
         if self.committed {
             return;
         }
-        let mut slots = self
-            .budget
-            .slots
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        debug_assert!(matches!(slots[self.index], Slot::Reserved(owner) if owner == self.owner));
-        slots[self.index] = Slot::Vacant;
+        let mut strips = self.budget.lock();
+        if let Some(index) = Self::find(&strips, self.ticket) {
+            strips.remove(index);
+        }
     }
 }
 

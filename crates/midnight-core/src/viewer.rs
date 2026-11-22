@@ -161,6 +161,12 @@ pub const VIEWER_MODE_HTML: u16 = 6;
 /// Pixels of one retained text raster, body and source gutter together
 /// (24 MiB of premultiplied RGBA).
 pub const VIEWER_RETAINED_RASTER_PIXELS: usize = 6 * 1024 * 1024;
+/// Bytes of prepared text strips one viewer keeps (body and gutter, premultiplied RGBA):
+/// the screens around the camera that scroll without new pixels. The window keeps a copy
+/// of the same strips for presentation.
+pub const VIEWER_PREPARED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+/// Bytes of prepared text strips all viewers of one application keep together.
+pub const VIEWER_PREPARED_TEXT_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 /// Bytes of image and PDF tiles that the backend tile cache and the UI texture
 /// cache each keep for reuse.
 pub const VIEWER_TILE_CACHE_BYTES: usize = 32 * 1024 * 1024;

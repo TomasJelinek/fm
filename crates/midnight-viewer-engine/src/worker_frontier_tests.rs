@@ -181,9 +181,14 @@ pub(super) struct Engine {
     /// The window presents every `ui_period` frames; meanwhile the worker's outputs wait
     /// in its mailbox, which keeps only the newest frame (`Mailbox::put`).
     pub ui_period: u32,
-    outbox: Vec<(ViewerOutput, Option<f64>)>,
+    pub(super) outbox: Vec<(ViewerOutput, Option<f64>)>,
     /// Frames syntax preparation and its refresh take, when not `delay`.
     pub prepare_delay: Option<u32>,
+    /// Wall time the worker itself spent in inputs, plugin events, painting and
+    /// preparation: the plugin and window simulations are not counted.
+    pub cost: std::time::Duration,
+    /// Colours the simulated plugin adds to its pages, as a Source viewer highlights.
+    pub highlight_replies: Option<fn(&mut viewer::TextPage)>,
 }
 
 const FIRST_REQUEST: u64 = 1 << 20;
@@ -219,6 +224,8 @@ impl Engine {
             ui_period: 1,
             outbox: Vec::new(),
             prepare_delay: None,
+            cost: std::time::Duration::ZERO,
+            highlight_replies: None,
         };
         engine.worker.request_page(0, false, &engine.output);
         engine.collect();
@@ -255,7 +262,13 @@ impl Engine {
 
     /// Admit syntax preparation and its refresh as the worker loop does after painting
     /// (`prepare_source`), with the IDs a session would give them.
-    fn prepare_source(&mut self) {
+    pub(super) fn prepare_source(&mut self) {
+        let started = std::time::Instant::now();
+        self.prepare_source_timed();
+        self.cost += started.elapsed();
+    }
+
+    fn prepare_source_timed(&mut self) {
         let worker = &mut self.worker;
         if !self.highlight || !worker.source_preparation_admissible() {
             return;
@@ -293,9 +306,11 @@ impl Engine {
         self.inbox.push(input);
     }
 
-    fn apply_inputs(&mut self) {
+    pub(super) fn apply_inputs(&mut self) {
         for input in std::mem::take(&mut self.inbox) {
+            let started = std::time::Instant::now();
             self.worker.input(input, &self.output);
+            self.cost += started.elapsed();
             self.collect();
         }
     }
@@ -330,11 +345,14 @@ impl Engine {
                     if self.worker.source_refresh_request() == Some(id) {
                         self.refreshes += 1;
                     }
-                    let page = if self.worker.mode == viewer::MODE_SOURCE {
+                    let mut page = if self.worker.mode == viewer::MODE_SOURCE {
                         source_reply(&self.source, viewport)
                     } else {
                         basic_reply(&self.source, viewport)
                     };
+                    if let Some(highlight) = self.highlight_replies {
+                        highlight(&mut page);
+                    }
                     self.bytes += page.text.len();
                     vec![EventKind::TextPage(page)]
                 }
@@ -345,6 +363,7 @@ impl Engine {
                 })],
             };
             let generation = self.worker.generation;
+            let started = std::time::Instant::now();
             self.worker.session_events(
                 events
                     .into_iter()
@@ -358,6 +377,7 @@ impl Engine {
                     .collect(),
                 &self.output,
             );
+            self.cost += started.elapsed();
             self.collect();
         }
     }
@@ -365,6 +385,7 @@ impl Engine {
     pub fn busy(&self) -> bool {
         !self.inbox.is_empty()
             || !self.outbox.is_empty()
+            || self.worker.raster.strips_pending()
             || self
                 .queue
                 .iter()
@@ -373,10 +394,14 @@ impl Engine {
 
     /// Paint as the worker loop does, then hand the outputs to the window.
     pub fn paint(&mut self) -> Vec<(ViewerOutput, Option<f64>)> {
+        let started = std::time::Instant::now();
         if self.worker.dirty {
             self.worker.dirty = false;
             self.worker.paint(&self.output).unwrap();
         }
+        // The worker loop prepares strips beyond the window after painting.
+        self.worker.prepare_strips();
+        self.cost += started.elapsed();
         // Every page the worker shows holds the file's text at its source range.
         if let Some(page) = &self.worker.page {
             let range = page.start as usize..page.end as usize;
@@ -692,7 +717,11 @@ impl Window {
                             (frame.position, frame.position_sequence[0]);
                     }
                     Some(mut info) => {
+                        // As the window's camera: no pixels outlive their frame.
                         info.gutter = None;
+                        if let Some(bands) = &mut info.bands {
+                            bands.list = Arc::from([]);
+                        }
                         let changed = self
                             .info
                             .as_ref()
@@ -1017,8 +1046,8 @@ fn a_burst_over_a_page_restyled_for_its_lookahead_keeps_its_whole_travel() {
             window.refused
         );
     }
-    assert!(
-        window.refused > 0,
-        "the restyled page's pixels were refused"
-    );
+    // With prepared strips a restyled page's frame covers the shown camera (the strips
+    // under the window are painted before publishing), so no frame needs refusing here;
+    // the window's refusal path keeps its own test
+    // (`raster_frontier_tests::a_page_restyled_around_the_lookahead_does_not_stop_a_burst`).
 }

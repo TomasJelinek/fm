@@ -9,9 +9,10 @@ use slint::winit_030::winit::{
     platform::modifier_supplement::KeyEventExtModifierSupplement,
 };
 
-/// Logical pixels per wheel line, as the text viewer scrolls (`image_motion::route`)
-/// and as Slint converts touchpad lines.
-const LINE: f32 = 60.0;
+/// Logical pixels per touchpad line (X11 finger motion), as the shared scroller
+/// converts them. A notch glides by the text viewer's distance instead
+/// (`image_motion::notch_pixels`).
+const LINE: f32 = midnight_ui_input::LINE_PIXELS;
 /// A wheel event with Ctrl, Alt or Super acts once instead of scrolling: Chromium
 /// zooms with Ctrl, counting 120 units as one step. It keeps the browser's previous
 /// 40 px line, so Ctrl+wheel zooms as fast as before.
@@ -234,7 +235,10 @@ fn glide(open: &OpenWindow, native: &mut Native, target: [f64; 2], lines: (f32, 
         glide.began = Began::now(open);
         glide.painted = glide.began.frame;
     }
-    let (x, y) = (lines.0 * LINE, lines.1 * LINE);
+    let (x, y) = (
+        lines.0 * image_motion::notch_pixels(open, true),
+        lines.1 * image_motion::notch_pixels(open, false),
+    );
     if !glide.motion.push(x, y, image_motion::now(open)) {
         return;
     }

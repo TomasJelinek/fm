@@ -279,6 +279,7 @@ mod tests {
             scroll_map: None,
             settled: true,
             gutter: None,
+            bands: None,
         });
         frame
     }

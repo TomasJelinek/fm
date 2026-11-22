@@ -47,7 +47,13 @@ fn painted(worker: &mut Worker, output: &Mailbox) -> (u64, u64, u64, Arc<[u8]>) 
     assert!(ack_index < index);
     assert_eq!(generation, frame.generation);
     assert_eq!(floor, frame.revision);
-    (revision, generation, floor, frame.pixels.clone())
+    // A retained frame's pixels are its prepared strips, stacked.
+    let pixels: Arc<[u8]> = if frame.raster.is_some() {
+        super::raster::stacked(frame).1.into()
+    } else {
+        frame.pixels.clone()
+    };
+    (revision, generation, floor, pixels)
 }
 
 #[test]
@@ -155,7 +161,13 @@ fn rollback_discards_a_prepared_b_retained_raster_without_changing_generation() 
     worker.palette_state.restore(&b, || Ok(())).unwrap();
     worker.sync_palette(&output);
     let prepared_b = worker.retained_pixels().unwrap().unwrap();
-    assert_ne!(prepared_b.pixels, original_pixels);
+    let bands = prepared_b.info.bands.as_ref().expect("prepared strips");
+    let prepared_b_pixels: Vec<u8> = bands
+        .list
+        .iter()
+        .flat_map(|band| band.pixels.iter().copied())
+        .collect();
+    assert_ne!(*prepared_b_pixels, *original_pixels);
     worker.palette_state.restore(&a, || Ok(())).unwrap();
     worker.sync_palette(&output);
     let (revision, current_generation, _, pixels) = painted(&mut worker, &output);

@@ -53,6 +53,7 @@ fn retained(revision: u64) -> ViewerFrame {
             height: 3,
             pixels: Arc::from([7; 12]),
         }),
+        bands: None,
     });
     frame
 }
