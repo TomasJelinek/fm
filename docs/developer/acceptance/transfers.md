@@ -28,6 +28,14 @@ Reports: `_build/acceptance-linux/<run>/`. Statuses without a run name are from
 RUN** (the check exists but has not run since its last rework) and **NOT VERIFIED** (the
 scenario stopped before reporting it).
 
+The Links choice (b29220bb), acceptance phase: the Linux run `20261122-024836` (WSL 2,
+Ubuntu 24.04 on ext4, smoke scale, commit 60e08043 with this record's suite; no plugin
+packages) of `files_copy_options`, `files_links`, `files_transfer_errors`,
+`files_conflicts`, `files_transfer_jobs` and `journeys_links_readonly` (all PASS), its red
+runs `20261122-025521` (the default, note and reason expectations reversed: seven failures)
+and `20261122-025746` (the Links keys swapped: each choice refused), and the Windows runs
+`20261122-024919` and `20261122-025708` (Windows 11, NTFS, smoke scale, no plugin packages).
+
 ## Copy/Move dialog
 
 | ID | Behavior | Scenario | Check | Status |
@@ -40,8 +48,8 @@ scenario stopped before reporting it).
 | T-D06 | An empty destination cannot be confirmed | `files_copy_options` | Enter starts nothing | PASS |
 | T-D07 | Escape copies nothing | `files_copy_options` | target folder empty | PASS |
 | T-D08 | Exact modified time: offered for files, not for folders; kept to the nanosecond | `files_copy_options`, `files_copy_kinds` | check box state; times equal | PASS (both scenarios) |
-| T-D09 | "Follow links" (Linux Copy) shown checked; cleared keeps links as links; checked follows | `files_copy_options`, `files_links` | check box; link targets and trees | PASS (both scenarios) |
-| T-D10 | Move has no link option; its policy line names renames | `files_copy_options` | no "Follow links"; policy text | PASS |
+| T-D09 | Copy offers one **Links** choice; on a fixed local folder it shows "Keep links as links", of exactly "Copy the files links point to" and "Keep links as links", with no reason or warning line (none read by a screen reader either); the former "Follow links" check boxes are gone | `files_copy_options` | the Links box's entries, value and description once the folder's link facts arrived; no former check box | PASS (Linux `20261122-024836`, Windows `20261122-024919`) |
+| T-D10 | Move offers the same Links choice (same default on a fixed local folder); its policy line names renames | `files_copy_options` | as T-D09 for F6; policy text | PASS (Linux `20261122-024836`, Windows `20261122-024919`) |
 | T-D11 | "Wait for other operations to finish" shown, unchecked | `files_copy_options`, `files_transfer_jobs` | check box state | PASS |
 | T-D12 | Full SHA-256 verification (default) reads every byte back | `files_copy_options` | `verified_bytes` equals the size; policy text | PASS (2,097,152 of 2,097,152 bytes read back; at full scale 25,165,824 of 25,165,824) |
 | T-D13 | Size-and-samples verification from Options › General | `files_copy_options` | policy text; at most three 64 KiB samples read back; bytes equal | PASS (196,608 bytes read back) |
@@ -65,6 +73,21 @@ scenario stopped before reporting it).
 | T-C13 | An archive as a target is refused; F6 of a member is refused | `files_archive_transfers` | archive bytes unchanged; refusal reported; F6 notice | PASS |
 | T-C14 | Inline tree rows as a source, marked at different depths of two branches | `files_copy_options`, `files_tree_ops` (P), `files_trash` | each marked row copied as its own folder; nested row trashed | PASS (copy of marked tree rows and the nested row's Trash, T-R08) |
 
+## Links
+
+The Links choice of Copy and Move (`files_links`; its default and wording on other kinds
+of destination in `files_links_volumes`). Linux uses the fixture's symbolic links
+(`links/to-folder`, `to-file`, `dangling`, `to-self`, all relative); Windows uses
+directory junctions to a folder, to a missing folder and to their own folder (file
+symbolic links need Developer Mode or administrator rights).
+
+| ID | Behavior | Scenario | Check | Status |
+| --- | --- | --- | --- | --- |
+| T-L01 | Keep links as links (the default on a fixed local folder) recreates each link with the same target: Linux symbolic links with the same text, Windows junctions to the same folder; the job details name each kept link whose relative target leads outside the copied items | `files_links` | `read_link` of each copy; the notes ("… which leads outside the copied items") for `../` targets only | PASS (Linux `20261122-024836`, Windows `20261122-024919`) |
+| T-L02 | Copy the files links point to: a folder link arrives as the folder's tree, a file link as the file; a dangling link stays a link with its reason in the job details; a selected link to its own folder is followed once and the links met again inside that copy stay links, each with its reason (Linux and Windows alike); a folder holding only a link to itself copies once | `files_links` | trees, bytes, `read_link`, notes ("its target does not exist", "contains it") | PASS on Linux (`20261122-024836`). Windows (`20261122-024919`): the folder and dangling junctions PASS; the junction to its own folder was followed once, against the check's expectation, which was wrong (the product does so on Linux too, and its engine test asserts it); the corrected check has not run on Windows yet |
+| T-L03 | The Links choice by keyboard (Tab to it, Up or Down, Enter from the box), by pointer (a click on the entry) and with the open list's keys (Enter in the list chooses the entry and never confirms the dialog) | `files_links` (each pass uses one way) | the dialog stays open with no job until confirmed; the choice shown when confirmed | PASS (Linux `20261122-024836`: keyboard, pointer and the list's keys; Windows `20261122-024919`: keyboard and pointer) |
+| T-L04 | F6 with the offered choice (keep links) moves each link itself, the folder it points to unchanged | `files_links` | the moved link's target; source gone | PASS (Linux `20261122-024836`, Windows `20261122-024919`: all three junctions) |
+
 ## Conflicts
 
 | ID | Behavior | Scenario | Check | Status |
@@ -87,18 +110,18 @@ scenario stopped before reporting it).
 | T-E02 | Skip all this error type: one question for three files | `files_transfer_errors` | skipped 3, nothing written | PASS |
 | T-E03 | Cancel job at an error | `files_transfer_errors` | Cancelled, nothing written | PASS |
 | T-E04 | An unreadable file: Retry once it is readable | `files_transfer_errors` | file copied | PASS |
-| T-E05 | An unreadable folder in a tree: Skip and continue | `files_transfer_errors` | rest of the tree copied | PASS (its pending mark passes: remove it) |
+| T-E05 | An unreadable folder in a tree: Skip and continue | `files_transfer_errors` | rest of the tree copied | PASS |
 | T-E06 | A Move out of a mode-0555 folder asks Retry/Skip/Skip all this error type/Cancel job; Retry once the folder is writable moves the file | `files_transfer_errors` | buttons; file moved, no further question (finding ACC-ERR-01 otherwise) | PENDING (also in `20261121-164146`): a Move out of a mode-0555 folder ends Failed without a question; the Retry part (ACC-ERR-01) waits for the question |
 | T-E07 | The job window shows the error itself, no following dialog | `files_transfer_errors` | window text, no notice | PASS |
 | T-E08 | Details shows more | `files_transfer_errors` | more texts after Details | PASS |
 | T-E09 | An outcome lists only items with errors and counts notes (a skipped unreadable child folder, a link copied as a link) | `files_transfer_errors` | error path listed, no per-note sentence | PASS: "1 skipped item was not copied." and "1 link was copied as a link; Details says why." |
-| T-E10 | An unreadable selected folder fails while the transfer is prepared; Skip leaves it out and copies the rest of the selection | `files_transfer_errors` | Skip offered; the other file copied | PASS in `20261121-164146` (its pending mark passes: remove it). In `20261121-144246` the check read the question's buttons before sizing its window, saw only Decide later and answered Cancel job (harness defect, fixed by the Linux harness patch) |
+| T-E10 | An unreadable selected folder fails while the transfer is prepared; Skip leaves it out and copies the rest of the selection | `files_transfer_errors` | Skip offered; the other file copied | PASS in `20261121-164146`. In `20261121-144246` the check read the question's buttons before sizing its window, saw only Decide later and answered Cancel job (harness defect, fixed by the Linux harness patch) |
 
 ## Jobs and their windows
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| T-J01 | Wait off: a second job runs at once beside a paused one | `files_transfer_jobs` | job 2 completes while job 1 stays paused | PASS (its pending mark passes: remove it) |
+| T-J01 | Wait off: a second job runs at once beside a paused one | `files_transfer_jobs` | job 2 completes while job 1 stays paused | PASS on Linux (also `20261122-024836`). **FAIL on Windows** (`20261122-024919`, `20261122-025708`), finding ACC-JOB-02: job 2 (`small/` to another folder) stays Preparing, waiting for SameFolders, for 20 s while job 1 (`many/` of the same folder) is paused; it passed at 3f6fff8a (Windows `20261121-192806`) |
 | T-J02 | Wait on: a third job waits for the paused one and runs after it | `files_transfer_jobs` | `EarlierTransfers`, "Queued — waiting for earlier transfers", copies only after job 1 ends | PASS (job 1's 400 files completed 2.1 s after Resume) |
 | T-J03 | The Jobs window lists waiting, completed and paused jobs | `files_transfer_jobs`, `tools_jobs_copy` | row states | PASS |
 | T-J04 | Jobs' Cancel job stops a job at once, without the question | `files_transfer_jobs` | Cancelled; no "Cancel this operation?" | PASS |
@@ -113,7 +136,7 @@ scenario stopped before reporting it).
 | T-J13 | Copied/moved/deleted wording, never "published" | `files_transfer_jobs` | no "publish" in any job window, Jobs window or notice seen | PASS |
 | T-J14 | A clean completion closes its window | `files_transfer_jobs`, `tools_jobs_copy` | window gone | PASS |
 | T-J16 | Jobs: Clear finished without errors keeps a job with an error; Clear all finished empties the list | `files_transfer_jobs` | rows before and after each button | PASS (the copy with an error ended CompletedWithErrors and was kept) |
-| T-J15 | No internal × in a framed window's header (the title bar closes it) | `files_transfer_jobs`, `files_transfer_errors` | no button in the header's right corner of the progress, Jobs and decision windows | PASS for progress, Jobs and decision windows (the decision window's pending mark passes: remove it) |
+| T-J15 | No internal × in a framed window's header (the title bar closes it) | `files_transfer_jobs`, `files_transfer_errors` | no button in the header's right corner of the progress, Jobs and decision windows | PASS for progress, Jobs and decision windows |
 
 ## Clipboard and drag and drop
 
@@ -140,10 +163,10 @@ scenario stopped before reporting it).
 | T-R07 | The Trash folders are private (0700) | `files_trash` | modes | PASS |
 | T-R08 | F8 of a nested tree row | `files_trash` | tree in the Trash; row gone | PASS (the t-run6 hang did not recur) |
 | T-R09 | Shift+F8 of every kind, links (targets kept), a 0444 file, a multi-selection, a 12-level tree | `files_delete` | entries gone | PASS (61 entries one at a time, 4 links with their targets intact, a Ctrl+A multi-selection and the 12-level tree) |
-| T-R10 | A mode-0555 folder with contents (the deleted tree) is deleted, to the Trash and permanently | `files_trash`, `files_delete` | gone without a question | PASS in both (the `files_trash` pending mark passes: remove it) |
-| T-R11 | A file of a mode-0555 folder asks Retry/Skip/Skip all/Cancel; Retry works once writable | `files_trash` | question; file in the Trash | PASS (its pending mark passes: remove it). The question offers Retry, Skip, Skip all errors, Cancel job and Decide later |
-| T-R12 | Two such files: Skip all keeps both and ends the job | `files_trash` | both kept | PASS in `20261121-164146` (its pending mark passes: remove it). In `20261121-144246` the check looked for "Skip all" or "Skip all this error type", not the Delete question's "Skip all errors", and stayed PENDING (harness defect, fixed by the Linux harness patch) |
-| T-R13 | Shift+F8 of a tree holding a mode-0555 folder deletes it whole | `files_trash` | tree gone | PASS (its pending mark passes: remove it) |
+| T-R10 | A mode-0555 folder with contents (the deleted tree) is deleted, to the Trash and permanently | `files_trash`, `files_delete` | gone without a question | PASS in both |
+| T-R11 | A file of a mode-0555 folder asks Retry/Skip/Skip all/Cancel; Retry works once writable | `files_trash` | question; file in the Trash | PASS. The question offers Retry, Skip, Skip all errors, Cancel job and Decide later |
+| T-R12 | Two such files: Skip all keeps both and ends the job | `files_trash` | both kept | PASS in `20261121-164146`. In `20261121-144246` the check looked for "Skip all" or "Skip all this error type", not the Delete question's "Skip all errors", and stayed PENDING (harness defect, fixed by the Linux harness patch) |
+| T-R13 | Shift+F8 of a tree holding a mode-0555 folder deletes it whole | `files_trash` | tree gone | PASS |
 | T-R14 | The account's own Trash is neither used nor read | `files_delete`, `files_trash` | private `XDG_DATA_HOME` | PASS (staged private `XDG_DATA_HOME`) |
 
 Not observed at smoke scale: in `files_trash` the permanent delete of `bulk/` completed

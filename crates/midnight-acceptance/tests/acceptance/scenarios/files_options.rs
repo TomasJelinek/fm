@@ -1,8 +1,9 @@
-//! The Copy/Move dialog itself: what F5 and F6 show, a destination typed as a missing
-//! folder, a relative path or nothing (refused in the dialog, nothing copied), Escape,
-//! "Preserve exact modified time" offered for files only, the verification chosen in
-//! Options › General (full SHA-256, or size and samples) and what the job then
-//! verifies, and many small files in one job.
+//! The Copy/Move dialog itself: what F5 and F6 show (the Links choice on a fixed local
+//! folder: "Keep links as links" of its two entries, no reason or warning), a destination
+//! typed as a missing folder, a relative path or nothing (refused in the dialog, nothing
+//! copied), Escape, "Preserve exact modified time" offered for files only, the
+//! verification chosen in Options › General (full SHA-256, or size and samples) and what
+//! the job then verifies, and many small files in one job.
 use crate::{
     Context,
     app::{App, Config},
@@ -23,6 +24,8 @@ const FULL: &str = "Verification: full SHA-256.";
 const QUICK: &str = "Quick verification: size + first/middle/last 64 KiB";
 const MOVE_POLICY: &str = "Same-volume items are renamed without reading file contents.";
 const MISSING: &str = "Enter the full path of an existing destination folder.";
+/// What the dialog says under an empty destination field when Enter is pressed.
+const TYPE_FIRST: &str = "Type the destination folder first.";
 const VERIFY_OPTION: &str = "Verify entire copied file with SHA-256 (recommended)";
 const PRESERVE: &str = "Preserve exact modified time";
 
@@ -47,17 +50,53 @@ fn checkbox(app: &App, label: &str) -> Option<(bool, bool)> {
         .map(|item| (tools::checked(&item), tools::enabled(&item)))
 }
 
+/// The open dialog's Links choice on a fixed local folder, once the folder's link facts
+/// arrived (after the trace `before`): "Keep links as links" of exactly its two entries,
+/// labelled "Links:", without a reason or a warning (shown or read).
+fn check_links(app: &mut App, before: &[String], what: &str, failures: &mut Vec<String>) {
+    if !support::wait_link_facts(app, before) {
+        failures.push(format!(
+            "{what}: the destination's link facts did not arrive within 10 s"
+        ));
+        return;
+    }
+    let Some(view) = support::link_view(app) else {
+        failures.push(format!("{what} offers no Links choice"));
+        return;
+    };
+    let mut differences = view.plain_default();
+    if !inspect::visible_texts(app.slint())
+        .iter()
+        .any(|text| text == "Links:")
+    {
+        differences.push("its label \"Links:\" is not shown".into());
+    }
+    if !differences.is_empty() {
+        failures.push(format!(
+            "{what}'s Links choice on a fixed local folder: {}",
+            differences.join("; ")
+        ));
+    }
+}
+
 /// Type `destination` and press Enter: the dialog must refuse it and stay open.
 fn refused(app: &mut App, destination: &str, start: usize) -> Result<(), String> {
     input::fill(app.slint(), "Destination folder", destination)?;
     app.settle();
     input::key(app.slint(), Key::Return);
-    app.settle();
-    // An admitted job reports within a moment; the dialog has closed by then.
-    let deadline = Instant::now() + std::time::Duration::from_millis(500);
-    while app.copies.len() == start && Instant::now() < deadline {
-        app.idle(std::time::Duration::from_millis(20));
+    // An empty field confirms nothing; anything else is refused with its reason (a typed
+    // folder once the backend checked it), or admitted as a job, which closes the dialog.
+    if !destination.is_empty() {
+        app.until(
+            "the dialog to refuse or admit the destination",
+            move |app| {
+                !app.window.get_copy_draft_error().is_empty()
+                    || app.window.get_copy_draft_token().is_empty()
+                    || app.copies.len() > start
+            },
+        );
     }
+    app.settle();
     let open = !app.window.get_copy_draft_token().is_empty();
     let error = app.window.get_copy_draft_error().to_string();
     if !open || app.copies.len() != start {
@@ -71,6 +110,17 @@ fn refused(app: &mut App, destination: &str, start: usize) -> Result<(), String>
     if !destination.is_empty() && error != MISSING {
         return Err(format!(
             "the destination {destination:?} shows {error:?} instead of {MISSING:?}"
+        ));
+    }
+    // Enter with an empty field says, under the field, what is missing.
+    if destination.is_empty()
+        && !inspect::visible_texts(app.slint())
+            .iter()
+            .any(|text| text == TYPE_FIRST)
+    {
+        return Err(format!(
+            "Enter with an empty destination does not say {TYPE_FIRST:?}: {:?}",
+            inspect::visible_texts(app.slint())
         ));
     }
     Ok(())
@@ -103,6 +153,7 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
 
     // F5 on a file: the dialog's summary, destination, options and policy.
     panel::select_row(&mut app, LEFT, "a.txt")?;
+    let trace = app.recent_events();
     open_dialog(&mut app, Key::F5);
     let body = app.window.get_copy_draft_body().to_string();
     let policy = app.window.get_copy_draft_policy().to_string();
@@ -129,21 +180,13 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
     if wait != Some((false, true)) {
         failures.push(format!("{:?} is {wait:?}", support::WAIT_OPTION));
     }
-    #[cfg(target_os = "linux")]
-    if checkbox(&app, "Follow links") != Some((true, true)) {
-        failures.push(format!(
-            "Copy's \"Follow links\" is {:?}, not shown checked",
-            checkbox(&app, "Follow links")
-        ));
+    // The Links choice replaced the former link check boxes: none of them is left.
+    for former in ["Follow links", "Follow directory links"] {
+        if checkbox(&app, former).is_some() {
+            failures.push(format!("the Copy dialog still offers {former:?}"));
+        }
     }
-    // Windows keeps its directory-link option, followed by default at Copy.
-    #[cfg(windows)]
-    if checkbox(&app, "Follow directory links") != Some((true, true)) {
-        failures.push(format!(
-            "Copy's \"Follow directory links\" is {:?}, not shown checked",
-            checkbox(&app, "Follow directory links")
-        ));
-    }
+    check_links(&mut app, &trace, "Copy", &mut failures);
     app.screenshot(context, "copy-dialog", "F5 of one file");
 
     // Destinations the dialog refuses: a relative path, nothing, then a missing folder.
@@ -196,7 +239,7 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
         ));
     }
 
-    // A folder cannot keep exact times; Move has no link option and renames.
+    // A folder cannot keep exact times; Move offers the same Links choice and renames.
     panel::select_row(&mut app, LEFT, "dir")?;
     open_dialog(&mut app, Key::F5);
     let preserve = checkbox(&app, PRESERVE);
@@ -207,20 +250,18 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
     }
     close_dialog(&mut app);
     panel::select_row(&mut app, LEFT, "a.txt")?;
+    let trace = app.recent_events();
     open_dialog(&mut app, Key::F6);
     let policy = app.window.get_copy_draft_policy().to_string();
     if !policy.contains(MOVE_POLICY) {
         failures.push(format!("the Move dialog's policy line is {policy:?}"));
     }
-    #[cfg(target_os = "linux")]
-    if checkbox(&app, "Follow links").is_some() {
-        failures.push("the Move dialog offers \"Follow links\"".into());
+    for former in ["Follow links", "Follow directory links"] {
+        if checkbox(&app, former).is_some() {
+            failures.push(format!("the Move dialog still offers {former:?}"));
+        }
     }
-    #[cfg(windows)]
-    context.note(format!(
-        "the Move dialog's \"Follow directory links\" (shown, checked): {:?}",
-        checkbox(&app, "Follow directory links")
-    ));
+    check_links(&mut app, &trace, "Move", &mut failures);
     app.screenshot(context, "move-dialog", "F6 of one file");
     close_dialog(&mut app);
 

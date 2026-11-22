@@ -8,7 +8,9 @@
 use crate::{
     Context,
     app::{self, App, Config},
-    files_support::{self as support, Choice, Pending, TransferSpec, facts, io_error, tree_facts},
+    files_support::{
+        self as support, Choice, LinkChoice, Pending, TransferSpec, facts, io_error, tree_facts,
+    },
     input, inspect, panel,
     tools_support::{self as tools, Tool},
 };
@@ -707,7 +709,7 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
         context,
         TransferSpec {
             destination: Some(mixed_dest.as_path()),
-            follow_links: Some(true),
+            links: Some(LinkChoice::CopyFiles),
             ..TransferSpec::copy()
         },
     )?;

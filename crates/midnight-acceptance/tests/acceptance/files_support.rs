@@ -1,6 +1,8 @@
 //! Helpers of the file-operation and panel scenarios (`scenarios/files_*.rs`): the
-//! Copy/Move, Delete, Rename, New file/folder dialogs and the decision window driven
-//! by real keys and clicks, and the on-disk facts the scenarios compare.
+//! Copy/Move dialog (its Links choice by pointer, by the open list's keys or by keyboard,
+//! and the confirmations it holds), Delete, Rename, New file/folder dialogs and the
+//! decision window driven by real keys and clicks, and the on-disk facts the scenarios
+//! compare.
 use crate::{
     Context,
     app::{self, App},
@@ -335,6 +337,194 @@ pub struct TransferRun {
     /// The job's distinct states (with wait reason and phase) and when they were
     /// first seen, in ms after the confirming key.
     pub timeline: Vec<String>,
+    /// The Links choice as the dialog showed it when it was confirmed; None when the
+    /// dialog offered none (archive members).
+    pub links: Option<LinkView>,
+    /// What the dialog said when it held the first confirmation ([`TransferSpec::hold`]).
+    pub hold: Option<Hold>,
+}
+
+/// The dialog held a confirmation: it explained something and stayed open, and the next
+/// confirmation started the transfer.
+#[derive(Clone, Debug)]
+pub struct Hold {
+    /// The dialog's message (`copy-draft-error`).
+    pub text: String,
+    /// Whether the dialog drew the message (its warning text), not only reported it.
+    pub shown: bool,
+    /// The Links choice while the dialog held.
+    pub links: Option<LinkView>,
+}
+
+/// The Copy/Move dialog's Links choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkChoice {
+    /// "Copy the files links point to", the first entry.
+    CopyFiles,
+    /// "Keep links as links", the second entry.
+    Keep,
+}
+
+impl LinkChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CopyFiles => COPY_LINKED_FILES,
+            Self::Keep => KEEP_LINKS,
+        }
+    }
+
+    /// The entry's index in the Links list.
+    pub fn index(self) -> i32 {
+        match self {
+            Self::CopyFiles => 0,
+            Self::Keep => 1,
+        }
+    }
+}
+
+/// How a scenario makes the Links choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LinkInput {
+    /// Open the list with a click, move to the entry with an arrow key and press Enter in
+    /// the open list (which must choose the entry, not confirm the dialog).
+    #[default]
+    ListKeys,
+    /// Open the list with a click and click the entry.
+    Pointer,
+    /// Tab to the Links box and press Up or Down with the list closed; the dialog is then
+    /// confirmed with Enter from the box itself.
+    Keyboard,
+}
+
+/// What the Copy/Move dialog shows about links (`OperationPresentation`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkView {
+    /// The entry shown ("" when the index names none).
+    pub choice: String,
+    pub index: i32,
+    /// The entries, in order.
+    pub choices: Vec<String>,
+    /// Why copying the files is the default here; empty where keeping links is.
+    pub reason: String,
+    /// What keeping links does here, while that is the choice and cannot work.
+    pub warning: String,
+    /// The Links box as a screen reader reads it: its value and its description.
+    pub value: Option<String>,
+    pub description: Option<String>,
+    /// Which of the reason and the warning the dialog draws.
+    pub reason_shown: bool,
+    pub warning_shown: bool,
+}
+
+impl LinkView {
+    /// The choice shown, when it is one of the two entries.
+    pub fn chosen(&self) -> Option<LinkChoice> {
+        [LinkChoice::CopyFiles, LinkChoice::Keep]
+            .into_iter()
+            .find(|choice| choice.index() == self.index && choice.label() == self.choice)
+    }
+
+    /// Differences from the default view of a fixed local folder: "Keep links as links"
+    /// of exactly the two entries, without a reason or a warning.
+    pub fn plain_default(&self) -> Vec<String> {
+        let mut differences = Vec::new();
+        if self.choices != [COPY_LINKED_FILES, KEEP_LINKS] {
+            differences.push(format!("the entries are {:?}", self.choices));
+        }
+        if self.chosen() != Some(LinkChoice::Keep) || self.value.as_deref() != Some(KEEP_LINKS) {
+            differences.push(format!(
+                "it shows {:?} (index {}, read as {:?}), not {KEEP_LINKS:?}",
+                self.choice, self.index, self.value
+            ));
+        }
+        if !self.reason.is_empty()
+            || !self.warning.is_empty()
+            || self.reason_shown
+            || self.warning_shown
+        {
+            differences.push(format!(
+                "it gives the reason {:?} and the warning {:?}",
+                self.reason, self.warning
+            ));
+        }
+        if self
+            .description
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+        {
+            differences.push(format!(
+                "a screen reader hears the description {:?}",
+                self.description
+            ));
+        }
+        differences
+    }
+}
+
+/// The open Copy/Move dialog's Links choice; None when the dialog is closed or offers
+/// none.
+pub fn link_view(app: &App) -> Option<LinkView> {
+    use i_slint_core::accessibility::AccessibleStringProperty;
+    use slint::Model;
+    let form = operation_form(app);
+    if app.window.get_copy_draft_token().is_empty() || !form.get_links_visible() {
+        return None;
+    }
+    let choices: Vec<String> = form
+        .get_link_choices()
+        .iter()
+        .map(|choice| choice.to_string())
+        .collect();
+    let index = form.get_link_choice();
+    let combo = inspect::find(app.slint(), AccessibleRole::Combobox, LINKS_LABEL);
+    let property = |property| {
+        combo
+            .as_ref()
+            .and_then(|item| item.accessible_string_property(property))
+            .map(|value| value.to_string())
+    };
+    let reason = form.get_link_reason().to_string();
+    let warning = form.get_link_warning().to_string();
+    let drawn = inspect::visible_texts(app.slint());
+    Some(LinkView {
+        choice: usize::try_from(index)
+            .ok()
+            .and_then(|index| choices.get(index).cloned())
+            .unwrap_or_default(),
+        index,
+        choices,
+        reason_shown: !reason.is_empty() && drawn.contains(&reason),
+        warning_shown: !warning.is_empty() && drawn.contains(&warning),
+        reason,
+        warning,
+        value: property(AccessibleStringProperty::Value),
+        description: property(AccessibleStringProperty::Description),
+    })
+}
+
+/// Whether the backend answered, after the trace `before` was taken, what a dialog's
+/// destination does with links (`Event::TransferLinksInspected`). Read from the app's
+/// event trace until the harness counts these events (audit H4).
+pub fn link_facts_arrived(app: &App, before: &[String]) -> bool {
+    app.recent_events()
+        .iter()
+        .any(|line| line.starts_with("TransferLinksInspected(") && !before.contains(line))
+}
+
+/// Wait (hang guard 10 s) until the open dialog's destination link facts arrived after
+/// the trace `before` was taken; false when they were not seen.
+pub fn wait_link_facts(app: &mut App, before: &[String]) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        app.settle();
+        if link_facts_arrived(app, before) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        app.idle(Duration::from_millis(10));
+    }
 }
 
 /// Pump events until `condition` holds (or panic after `limit` with the app's
@@ -410,8 +600,18 @@ pub struct TransferSpec<'a> {
     /// Replace the suggested destination (the other panel's folder).
     pub destination: Option<&'a Path>,
     pub preserve_time: bool,
-    /// Set the link option ("Follow links" on Linux) when it is shown.
+    /// Make this Links choice ([`Self::link_input`] says how) once the destination's link
+    /// facts arrived. The dialog must offer it: a choice it does not show fails.
+    pub links: Option<LinkChoice>,
+    pub link_input: LinkInput,
+    /// The former link option: true chooses "Copy the files links point to", false "Keep
+    /// links as links" (as [`Self::links`] does). Kept for ui_states.rs until it moves
+    /// to `links`.
     pub follow_links: Option<bool>,
+    /// The first confirmation must hold (the dialog explains and stays open, as for links
+    /// kept where none can be stored or a typed folder whose link default differs) and
+    /// the second start the transfer. Without it a held confirmation is a refusal.
+    pub hold: bool,
     /// Set "Wait for other operations to finish".
     pub wait: Option<bool>,
     pub choices: Vec<Choice>,
@@ -429,13 +629,27 @@ impl TransferSpec<'_> {
             key: Key::F5,
             destination: None,
             preserve_time: false,
+            links: None,
+            link_input: LinkInput::default(),
             follow_links: None,
+            hold: false,
             wait: None,
             choices: Vec::new(),
             shot: None,
             decision_shot: None,
             limit: None,
         }
+    }
+
+    /// The Links choice this run makes, from `links` or the former `follow_links`.
+    pub fn link_choice(&self) -> Option<LinkChoice> {
+        self.links.or(self.follow_links.map(|follow| {
+            if follow {
+                LinkChoice::CopyFiles
+            } else {
+                LinkChoice::Keep
+            }
+        }))
     }
 
     pub fn moving() -> Self {
@@ -475,39 +689,139 @@ pub const WAIT_OPTION: &str = "Wait for other operations to finish";
 /// second keeps links as links.
 pub const COPY_LINKED_FILES: &str = "Copy the files links point to";
 pub const KEEP_LINKS: &str = "Keep links as links";
+/// The accessible label of the dialog's Links box.
+pub const LINKS_LABEL: &str = "Links";
 
-/// Choose the dialog's link handling as a user does: open the Links list with a click,
-/// move to the wanted entry and confirm with Enter.
-fn choose_links(app: &mut App, wanted: &str) -> Result<(), String> {
-    const LABEL: &str = "Links";
-    if accessible_value(app.slint(), AccessibleRole::Combobox, LABEL).as_deref() != Some(wanted) {
-        click_scrolled(app.slint(), AccessibleRole::Combobox, LABEL)?;
-        app.settle();
-        let step = if wanted == COPY_LINKED_FILES {
-            Key::UpArrow
-        } else {
-            Key::DownArrow
-        };
-        input::key(app.slint(), step);
-        input::key(app.slint(), Key::Return);
-        app.settle();
+/// Whether the keyboard focus of `window` lies inside the visible control `role`/`label`.
+fn focus_inside(window: &slint::Window, role: AccessibleRole, label: &str) -> bool {
+    let focused = i_slint_core::window::WindowInner::from_pub(window)
+        .focus_item
+        .borrow()
+        .upgrade();
+    let (Some(item), Some(area)) = (focused, inspect::find(window, role, label)) else {
+        return false;
+    };
+    let (x, y, w, h) = inspect::rect(&area);
+    let center = inspect::center(&item);
+    center.x >= x && center.x <= x + w && center.y >= y && center.y <= y + h
+}
+
+/// Choose the open dialog's link handling as a user does, by `input`
+/// ([`LinkInput`]). The dialog must stay open and admit nothing until it is confirmed:
+/// Enter in the open list chooses the entry, it does not confirm the dialog.
+pub fn choose_links(app: &mut App, wanted: LinkChoice, input: LinkInput) -> Result<(), String> {
+    let jobs = app.copies.len();
+    let token = app.window.get_copy_draft_token();
+    if link_view(app).is_none() {
+        return Err(format!(
+            "{:?} was asked for, but the dialog offers no Links choice",
+            wanted.label()
+        ));
     }
-    match accessible_value(app.slint(), AccessibleRole::Combobox, LABEL) {
-        Some(value) if value == wanted => Ok(()),
-        other => Err(format!("Links shows {other:?}, not {wanted:?}")),
+    let step = if wanted == LinkChoice::CopyFiles {
+        Key::UpArrow
+    } else {
+        Key::DownArrow
+    };
+    match input {
+        LinkInput::ListKeys | LinkInput::Pointer => {
+            let roots = inspect::roots(app.slint()).len();
+            click_scrolled(app.slint(), AccessibleRole::Combobox, LINKS_LABEL)?;
+            app.settle();
+            if inspect::roots(app.slint()).len() <= roots {
+                return Err("clicking the Links box opened no list".into());
+            }
+            if input == LinkInput::ListKeys {
+                input::key(app.slint(), step);
+                input::key(app.slint(), Key::Return);
+            } else {
+                let list = inspect::roots(app.slint()).pop().expect("the Links list");
+                let mut entry = None;
+                let mut offered = Vec::new();
+                inspect::walk(&list, &mut |item| {
+                    if item.accessible_role() == AccessibleRole::ListItem
+                        && let Some(label) = inspect::label(item)
+                    {
+                        if label == wanted.label() && entry.is_none() {
+                            entry = Some(item.clone());
+                        }
+                        offered.push(label);
+                    }
+                });
+                let Some(entry) = entry else {
+                    input::key(app.slint(), Key::Escape);
+                    app.settle();
+                    return Err(format!(
+                        "the Links list offers {offered:?}, not {:?}",
+                        wanted.label()
+                    ));
+                };
+                input::click_at(app.slint(), inspect::center(&entry));
+            }
+            app.settle();
+            if inspect::roots(app.slint()).len() > roots {
+                return Err(format!(
+                    "the Links list stayed open after choosing {:?}",
+                    wanted.label()
+                ));
+            }
+        }
+        LinkInput::Keyboard => {
+            for _ in 0..8 {
+                if focus_inside(app.slint(), AccessibleRole::Combobox, LINKS_LABEL) {
+                    break;
+                }
+                input::key(app.slint(), Key::Tab);
+                app.settle();
+            }
+            if !focus_inside(app.slint(), AccessibleRole::Combobox, LINKS_LABEL) {
+                return Err("Tab never reached the Links box".into());
+            }
+            input::key(app.slint(), step);
+            app.settle();
+        }
+    }
+    if app.window.get_copy_draft_token() != token || app.copies.len() != jobs {
+        return Err(format!(
+            "choosing {:?} ({input:?}) confirmed the dialog",
+            wanted.label()
+        ));
+    }
+    match link_view(app) {
+        Some(view)
+            if view.chosen() == Some(wanted) && view.value.as_deref() == Some(wanted.label()) =>
+        {
+            Ok(())
+        }
+        other => Err(format!(
+            "after choosing {:?} ({input:?}) Links shows {other:?}",
+            wanted.label()
+        )),
     }
 }
 
+/// A confirmed dialog: where its job's reports start, when it was confirmed, its Links
+/// choice and what it said when it held.
+struct Confirmed {
+    start: usize,
+    confirmed: Instant,
+    links: Option<LinkView>,
+    hold: Option<Hold>,
+}
+
 /// Press F5/F6 on the focused panel, set the dialog up from `spec` and confirm with
-/// Enter. Returns the index of the job's first report in `app.copies` and when it was
-/// confirmed; the dialog's own refusal is an `Err`.
+/// Enter, once more when the dialog holds and `spec.hold` expects it. Returns once the
+/// dialog closed (a job was admitted, or a notice says why not). The dialog's own
+/// refusal, and a hold that was not expected (or one expected that did not come), is
+/// an `Err`.
 fn confirm_dialog(
     app: &mut App,
     context: &mut Context,
     spec: &TransferSpec<'_>,
-) -> Result<(usize, Instant), String> {
+) -> Result<Confirmed, String> {
     panel::wait_input(app);
     let start = app.copies.len();
+    let trace = app.recent_events();
     input::key(app.slint(), spec.key);
     app.until("the Copy/Move dialog", |app| {
         !app.window.get_copy_draft_token().is_empty()
@@ -529,17 +843,6 @@ fn confirm_dialog(
             operation_form(app).get_option_checked()
         })?;
     }
-    // The Links choice: following links copies the files they point to.
-    if let Some(follow) = spec.follow_links
-        && operation_form(app).get_links_visible()
-    {
-        let wanted = if follow {
-            COPY_LINKED_FILES
-        } else {
-            KEEP_LINKS
-        };
-        choose_links(app, wanted)?;
-    }
     if let Some(wait) = spec.wait {
         set_check(app, WAIT_OPTION, wait, |app| {
             inspect::find(app.slint(), AccessibleRole::Checkbox, WAIT_OPTION)
@@ -551,6 +854,21 @@ fn confirm_dialog(
                 .is_some_and(|value| value == "true")
         })?;
     }
+    // The Links choice, made once the destination's link facts are in (they decide
+    // the default and whether keeping links holds), and last, so that Enter by
+    // keyboard confirms from the Links box.
+    let choice = spec.link_choice();
+    if (choice.is_some() || spec.hold)
+        && link_view(app).is_some()
+        && !wait_link_facts(app, &trace)
+        && spec.hold
+    {
+        return Err("the destination's link facts did not arrive within 10 s".into());
+    }
+    if let Some(choice) = choice {
+        choose_links(app, choice, spec.link_input)?;
+    }
+    let links = link_view(app);
     if let Some(name) = spec.shot {
         app.screenshot(
             context,
@@ -559,14 +877,48 @@ fn confirm_dialog(
         );
     }
     let confirmed = Instant::now();
-    // Enter confirms from the destination field, the check boxes and the primary button.
-    input::key(app.slint(), Key::Return);
-    app.settle();
-    let error = app.window.get_copy_draft_error().to_string();
-    if !error.is_empty() && !app.window.get_copy_draft_token().is_empty() {
-        return Err(format!("the dialog refused the transfer: {error}"));
+    let mut hold = None;
+    loop {
+        // Enter confirms from the destination field, the check boxes, the Links box
+        // and the primary button.
+        input::key(app.slint(), Key::Return);
+        // Until the dialog closes (a job was admitted, or a notice says why not) or
+        // says why it does not start: a typed folder is checked by the backend first.
+        app.until("the Copy/Move dialog to start or explain", move |app| {
+            app.window.get_copy_draft_token().is_empty()
+                || !app.window.get_copy_draft_error().is_empty()
+                || !operation_form(app).get_warning().is_empty()
+                || app.copies.len() > start
+        });
+        // The presenter's message, or the window's own ("The transfer was not admitted").
+        let error = Some(app.window.get_copy_draft_error().to_string())
+            .filter(|error| !error.is_empty())
+            .unwrap_or_else(|| operation_form(app).get_warning().to_string());
+        if app.window.get_copy_draft_token().is_empty() || error.is_empty() {
+            break;
+        }
+        if !spec.hold || hold.is_some() {
+            return Err(format!("the dialog refused the transfer: {error}"));
+        }
+        hold = Some(Hold {
+            shown: inspect::visible_texts(app.slint())
+                .iter()
+                .any(|text| text.contains(&error)),
+            text: error,
+            links: link_view(app),
+        });
     }
-    Ok((start, confirmed))
+    if spec.hold && hold.is_none() {
+        return Err(format!(
+            "the first confirmation started the transfer instead of holding (Links {links:?})"
+        ));
+    }
+    Ok(Confirmed {
+        start,
+        confirmed,
+        links,
+        hold,
+    })
 }
 
 /// Confirm a Copy/Move (as [`transfer`] does) without waiting for it: returns the index
@@ -576,7 +928,7 @@ pub fn start_transfer(
     context: &mut Context,
     spec: TransferSpec<'_>,
 ) -> Result<usize, String> {
-    let (start, _) = confirm_dialog(app, context, &spec)?;
+    let start = confirm_dialog(app, context, &spec)?.start;
     app.until("the job to be admitted", move |app| {
         app.copies.len() > start || shown_notice(app).is_some()
     });
@@ -622,7 +974,12 @@ pub fn transfer(
     context: &mut Context,
     spec: TransferSpec<'_>,
 ) -> Result<TransferRun, String> {
-    let (start, confirmed) = confirm_dialog(app, context, &spec)?;
+    let Confirmed {
+        start,
+        confirmed,
+        links,
+        hold,
+    } = confirm_dialog(app, context, &spec)?;
     let mut decisions = Vec::new();
     let mut timeline = Vec::new();
     let mut choices = spec.choices.into_iter();
@@ -698,6 +1055,8 @@ pub fn transfer(
                 finished,
                 notice,
                 timeline,
+                links,
+                hold,
             });
         }
         let error = app.window.get_copy_draft_error().to_string();

@@ -1,25 +1,30 @@
-//! Symbolic links under F5 and F6: a link to a folder, to a file, a dangling link and a
-//! link to its own folder (a cycle).
+//! Links under F5 and F6 through the dialog's Links choice: a link to a folder, to a
+//! file, a dangling link and a link to its own folder (a cycle).
 //!
-//! F5 with the link option cleared recreates every link as a link with exactly the same
-//! target text. With it checked (as offered), the folder link is followed, the file link
-//! is copied as the file's content, and a link that cannot be followed (the dangling one,
-//! and the self link met again inside the followed folder) is recreated as a link with a
-//! note in the job details. A folder holding only a link to itself copies once, keeping
-//! the link. F6 moves each link itself. Sources and link targets never change.
+//! On a fixed local folder the dialog proposes "Keep links as links": every link is
+//! recreated as a link with exactly the same target text, and the job details name each
+//! link whose relative target leads outside the copied items. "Copy the files links point
+//! to" follows the folder link (its tree arrives), copies the file link as the file's
+//! content and keeps a link that cannot be followed (the dangling one, and the self link
+//! met again inside the followed folder) as a link with a note in the job details. A
+//! folder holding only a link to itself copies once, keeping the link. F6 keeping links
+//! moves each link itself. Sources and link targets never change. The choice is made by
+//! keyboard (Tab to Links, Up or Down, Enter), by pointer (a click on the entry) and with
+//! the list's own keys (Enter in the open list chooses, it does not confirm).
 //!
-//! Windows copies do not recreate links (docs/developer/TRANSFERS.md) and file symbolic
-//! links need a privilege or Developer Mode, so there the scenario uses directory
-//! junctions, which need neither, against the Windows contract of the link option
-//! ("Follow directory links"): cleared, each junction arrives as an empty folder;
-//! checked, a junction to a folder arrives as that folder's tree; F6 on one volume moves
-//! the junction itself. Following a dangling junction or one to its own folder is
-//! recorded, not judged (the source refuses unqualified targets and cycles), except that
-//! no copy may create a link.
+//! Windows uses directory junctions, which need no privilege (file symbolic links need
+//! Developer Mode or administrator rights: `files_links_volumes`): kept as links, all
+//! three are recreated as junctions with the same target; copying the files, the junction
+//! to a folder arrives as that folder's tree, the dangling junction stays a junction with
+//! a note, and the one to its own folder is followed once, as on Linux (the junctions met
+//! again inside that copy stay junctions, each with a note); F6 moves all three.
 use crate::{
     Context,
     app::{App, Config},
-    files_support::{self as support, Choice, Content, TransferRun, TransferSpec, tree_facts},
+    files_support::{
+        self as support, Choice, Content, LinkChoice, LinkInput, TransferRun, TransferSpec,
+        tree_facts,
+    },
     panel,
 };
 use midnight_core::PaneId;
@@ -51,8 +56,21 @@ fn outcome(run: &Result<TransferRun, String>) -> String {
     match run {
         Err(error) => format!("refused: {error}"),
         Ok(run) => format!(
-            "{:?}{}{}{}",
+            "{:?}{}{}{}{}{}",
             run.progress.state,
+            run.links
+                .as_ref()
+                .map(|links| format!(" with {:?}", links.choice))
+                .unwrap_or_default(),
+            run.hold
+                .as_ref()
+                .map(|hold| format!(
+                    ", held first ({:?}, shown {}, Links then {:?})",
+                    hold.text,
+                    hold.shown,
+                    hold.links.as_ref().map(|links| &links.choice)
+                ))
+                .unwrap_or_default(),
             run.decisions
                 .first()
                 .map(|text| format!(", asked: {text}"))
@@ -70,17 +88,30 @@ fn outcome(run: &Result<TransferRun, String>) -> String {
     }
 }
 
-/// The run completed without a question, a notice, a skip or a failure.
-fn clean(run: &Result<TransferRun, String>, what: &str, failures: &mut Vec<String>) -> bool {
+/// The run completed without a question, a notice, a skip or a failure, with the Links
+/// choice `links` shown when it was confirmed.
+fn clean(
+    run: &Result<TransferRun, String>,
+    what: &str,
+    links: LinkChoice,
+    failures: &mut Vec<String>,
+) -> bool {
     match run {
         Err(error) => failures.push(format!("[AF-3] {what}: {error}")),
         Ok(run) => {
+            let shown = run.links.as_ref().and_then(support::LinkView::chosen);
             if let Err(error) = support::completed(run, what) {
                 failures.push(format!("[AF-3] {error}"));
             } else if !run.decisions.is_empty() || run.notice.is_some() {
                 failures.push(format!(
                     "[AF-3] {what} asked {:?} or noticed {:?}",
                     run.decisions, run.notice
+                ));
+            } else if shown != Some(links) {
+                failures.push(format!(
+                    "{what} was confirmed with Links {:?}, not {:?}",
+                    run.links,
+                    links.label()
                 ));
             } else {
                 return true;
@@ -107,14 +138,20 @@ fn same_tree(original: &Path, copy: &Path) -> bool {
     matches!((shape(original), shape(copy)), (Ok(left), Ok(right)) if left == right)
 }
 
-#[cfg(unix)]
-fn has_note(run: &Result<TransferRun, String>, name: &str) -> bool {
-    run.as_ref().is_ok_and(|run| {
+/// The job's notes that name `name` and say `words`.
+fn notes_about(run: &Result<TransferRun, String>, name: &str, words: &str) -> usize {
+    run.as_ref().map_or(0, |run| {
         run.progress
             .notes
             .iter()
-            .any(|note| note.contains(name) && note.contains("copied as a link"))
+            .filter(|note| note.contains(name) && note.contains(words))
+            .count()
     })
+}
+
+/// A note that the link `name` was kept as a link because it could not be followed.
+fn kept_note(run: &Result<TransferRun, String>, name: &str) -> bool {
+    notes_about(run, name, "copied as a link because") == 1
 }
 
 pub fn links(context: &mut Context) -> Result<(), String> {
@@ -123,6 +160,10 @@ pub fn links(context: &mut Context) -> Result<(), String> {
     #[cfg(windows)]
     return junctions(context);
 }
+
+/// The note of a kept link whose relative target `text` climbs out of what was copied.
+#[cfg(unix)]
+const LEADS_OUTSIDE: &str = "which leads outside the copied items";
 
 #[cfg(unix)]
 fn symbolic(context: &mut Context) -> Result<(), String> {
@@ -137,49 +178,68 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
         .collect::<Result<_, _>>()
         .map_err(|error| format!("links: {error}"))?;
 
-    // Link option cleared: every link is recreated as a link with the same target.
-    let target = support::scratch(context, "copy follow cleared")?;
+    // Keep links as links: the default on a fixed local folder (to-self takes it as
+    // offered), chosen by keyboard for the others. Every link arrives as a link with the
+    // same target; each relative target that climbs out of the copied link is noted.
+    let target = support::scratch(context, "copy keep")?;
     let mut app = App::start(Config::new(source.join("links"), &target));
     for (name, link) in LINKS.iter().zip(&targets) {
         panel::select_row(&mut app, PaneId::Left, name)?;
+        let offered = *name == "to-self";
         let run = support::transfer(
             &mut app,
             context,
             TransferSpec {
-                follow_links: Some(false),
+                links: (!offered).then_some(LinkChoice::Keep),
+                link_input: LinkInput::Keyboard,
                 choices: vec![Choice::CancelJob],
+                shot: (*name == "to-folder").then_some("copy-link-dialog-keep"),
                 ..TransferSpec::copy()
             },
         );
         let copied = target.join(name);
         outcomes.push(format!(
-            "F5 {name} (follow cleared): {}; {}",
+            "F5 {name} (keep links{}): {}; {}",
+            if offered {
+                ", as offered"
+            } else {
+                ", by keyboard"
+            },
             describe(&copied),
             outcome(&run)
         ));
-        if clean(
-            &run,
-            &format!("F5 of links/{name} (follow cleared)"),
-            &mut failures,
-        ) && !is_link_to(&copied, link)
-        {
-            failures.push(format!(
-                "[AF-3] F5 of links/{name} (follow cleared) gave {}, not a link to {}",
-                describe(&copied),
-                link.display()
-            ));
+        let what = format!("F5 of links/{name} keeping links");
+        if clean(&run, &what, LinkChoice::Keep, &mut failures) {
+            if !is_link_to(&copied, link) {
+                failures.push(format!(
+                    "[AF-3] {what} gave {}, not a link to {}",
+                    describe(&copied),
+                    link.display()
+                ));
+            }
+            // "." stays inside; the others climb out of the selected link's folder.
+            let noted = notes_about(&run, name, LEADS_OUTSIDE);
+            let wanted = usize::from(*name != "to-self");
+            if noted != wanted {
+                failures.push(format!(
+                    "{what}: {noted} note(s) that its relative target leads outside the \
+                     copied items, not {wanted}: {:?}",
+                    run.as_ref().map(|run| &run.progress.notes)
+                ));
+            }
         }
         support::dismiss_all(&mut app);
     }
     app.screenshot(
         context,
-        "links-copied-no-follow",
+        "links-copied-keep",
         "Target after copying the four links as links",
     );
     app.shutdown()?;
 
-    // Link option checked (as offered): links are followed where they can be.
-    let target = support::scratch(context, "copy follow checked")?;
+    // Copy the files links point to, chosen by pointer: links are followed where they
+    // can be.
+    let target = support::scratch(context, "copy files")?;
     let mut app = App::start(Config::new(source.join("links"), &target));
     let mut runs = Vec::new();
     for name in LINKS {
@@ -188,20 +248,22 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
             &mut app,
             context,
             TransferSpec {
-                follow_links: Some(true),
+                links: Some(LinkChoice::CopyFiles),
+                link_input: LinkInput::Pointer,
                 choices: vec![Choice::CancelJob],
                 shot: (name == "to-folder").then_some("copy-link-dialog"),
                 ..TransferSpec::copy()
             },
         );
         outcomes.push(format!(
-            "F5 {name} (follow checked): {}; {}",
+            "F5 {name} (copy the files): {}; {}",
             describe(&target.join(name)),
             outcome(&run)
         ));
         clean(
             &run,
-            &format!("F5 of links/{name} (follow checked)"),
+            &format!("F5 of links/{name} copying the files"),
+            LinkChoice::CopyFiles,
             &mut failures,
         );
         runs.push(run);
@@ -222,8 +284,10 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
         ),
         (
             "dangling",
-            is_link_to(&target.join("dangling"), &targets[0]) && has_note(&runs[0], "dangling"),
-            "the same link, with a note",
+            is_link_to(&target.join("dangling"), &targets[0])
+                && kept_note(&runs[0], "dangling")
+                && notes_about(&runs[0], "dangling", "its target does not exist") == 1,
+            "the same link, with a note that its target does not exist",
         ),
         (
             "to-self",
@@ -234,14 +298,17 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
                     &source.join("deep/level-01"),
                     &target.join("to-self/to-folder"),
                 )
-                && has_note(&runs[3], "to-self"),
+                // Inside the followed folder: the self link and the dangling link stay
+                // links, each with its reason.
+                && notes_about(&runs[3], "to-self/to-self", "contains it") == 1
+                && notes_about(&runs[3], "to-self/dangling", "its target does not exist") == 1,
             "the folder copied once, its own self link kept as a link, with a note",
         ),
     ];
     for (name, ok, expected) in followed {
         if !ok {
             failures.push(format!(
-                "[AF-3] F5 of links/{name} (follow checked) gave {}, not {expected}",
+                "[AF-3] F5 of links/{name} copying the files gave {}, not {expected}",
                 describe(&target.join(name))
             ));
         }
@@ -249,7 +316,7 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
     app.screenshot(
         context,
         "links-copied-follow",
-        "Target after copying the four links with Follow links",
+        "Target after copying the four links with Copy the files links point to",
     );
     app.shutdown()?;
     // The sources, including what the links point to, are unchanged.
@@ -260,8 +327,8 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
         ));
     }
 
-    // A folder whose only entry links to the folder itself: following it copies the
-    // folder once and keeps the link as a link.
+    // A folder whose only entry links to the folder itself: copying the files copies the
+    // folder once and keeps the link as a link (chosen with the open list's keys).
     let cycle = support::scratch(context, "cycle-source")?.join("cycle-only");
     fs::create_dir(&cycle).map_err(|error| support::io_error(&cycle, error))?;
     std::os::unix::fs::symlink(".", cycle.join("loop"))
@@ -274,22 +341,27 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
         &mut app,
         context,
         TransferSpec {
-            follow_links: Some(true),
+            links: Some(LinkChoice::CopyFiles),
+            link_input: LinkInput::ListKeys,
             choices: vec![Choice::CancelJob],
             ..TransferSpec::copy()
         },
     );
     let copied = target.join("cycle-only");
     outcomes.push(format!(
-        "F5 of a folder holding only a self link (follow checked): {} ms, {}; {}",
+        "F5 of a folder holding only a self link (copy the files): {} ms, {}; {}",
         started.elapsed().as_millis(),
         describe(&copied),
         outcome(&run)
     ));
-    if clean(&run, "F5 of cycle-only (follow checked)", &mut failures)
-        && (tree_facts(&copied).map(|tree| tree.len()).ok() != Some(1)
-            || !is_link_to(&copied.join("loop"), Path::new("."))
-            || !has_note(&run, "loop"))
+    if clean(
+        &run,
+        "F5 of cycle-only copying the files",
+        LinkChoice::CopyFiles,
+        &mut failures,
+    ) && (tree_facts(&copied).map(|tree| tree.len()).ok() != Some(1)
+        || !is_link_to(&copied.join("loop"), Path::new("."))
+        || !kept_note(&run, "loop"))
     {
         failures.push(format!(
             "[AF-3] following a self link gave {} instead of the folder with its link kept",
@@ -307,7 +379,7 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
     );
     app.shutdown()?;
 
-    // F6 moves the link itself.
+    // F6 with the offered Links choice (keep links) moves the link itself.
     let target = support::scratch(context, "moved")?;
     let mut app = App::start(Config::new(source.join("links"), &target));
     for (name, link) in LINKS.iter().zip(&targets) {
@@ -327,7 +399,12 @@ fn symbolic(context: &mut Context) -> Result<(), String> {
             outcome(&run)
         ));
         let still_there = fs::symlink_metadata(source.join("links").join(name)).is_ok();
-        if clean(&run, &format!("F6 of links/{name}"), &mut failures) {
+        if clean(
+            &run,
+            &format!("F6 of links/{name}"),
+            LinkChoice::Keep,
+            &mut failures,
+        ) {
             if !is_link_to(&moved, link) || still_there {
                 failures.push(format!(
                     "[AF-3] F6 of links/{name} gave {}, not the moved link (source still there: {still_there})",
@@ -376,28 +453,24 @@ fn junctions(context: &mut Context) -> Result<(), String> {
     for (name, target) in &junctions {
         junction(&links.join(name), target)?;
     }
-    context.note(
-        "file links not covered: creating a file symbolic link needs administrator rights or \
-         Developer Mode, and Windows copies never recreate links",
-    );
     let before = tree_facts(&source)?;
     let mut outcomes = Vec::new();
     let mut failures = Vec::new();
-    let is_empty_folder = |path: &Path| {
-        fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
-            && fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none())
-    };
 
-    // "Follow directory links" cleared: every junction arrives as an empty folder.
-    let target = support::scratch(context, "copy follow cleared")?;
+    // Keep links as links (the default on a fixed local folder; to-self takes it as
+    // offered, the others choose it by keyboard): each junction is recreated as a
+    // junction to the same folder, without a note.
+    let target = support::scratch(context, "copy keep")?;
     let mut app = App::start(Config::new(&links, &target));
-    for (name, _) in &junctions {
+    for (name, link) in &junctions {
         panel::select_row(&mut app, PaneId::Left, name)?;
+        let offered = *name == "to-self";
         let run = support::transfer(
             &mut app,
             context,
             TransferSpec {
-                follow_links: Some(false),
+                links: (!offered).then_some(LinkChoice::Keep),
+                link_input: LinkInput::Keyboard,
                 choices: vec![Choice::CancelJob],
                 shot: (*name == "to-folder").then_some("copy-junction-dialog"),
                 ..TransferSpec::copy()
@@ -405,67 +478,105 @@ fn junctions(context: &mut Context) -> Result<(), String> {
         );
         let copied = target.join(name);
         outcomes.push(format!(
-            "F5 {name} (follow cleared): {}; {}",
+            "F5 {name} (keep links{}): {}; {}",
+            if offered {
+                ", as offered"
+            } else {
+                ", by keyboard"
+            },
             describe(&copied),
             outcome(&run)
         ));
-        if clean(
-            &run,
-            &format!("F5 of the junction {name} (follow cleared)"),
-            &mut failures,
-        ) && !is_empty_folder(&copied)
-        {
-            failures.push(format!(
-                "[AF-3] F5 of the junction {name} (follow cleared) gave {}, not an empty folder",
-                describe(&copied)
-            ));
+        let what = format!("F5 of the junction {name} keeping links");
+        if clean(&run, &what, LinkChoice::Keep, &mut failures) {
+            if !is_link_to(&copied, link) {
+                failures.push(format!(
+                    "[AF-3] {what} gave {}, not a junction to {}",
+                    describe(&copied),
+                    link.display()
+                ));
+            }
+            if let Ok(run) = &run
+                && !run.progress.notes.is_empty()
+            {
+                failures.push(format!("{what} left notes: {:?}", run.progress.notes));
+            }
         }
         support::dismiss_all(&mut app);
     }
     app.screenshot(
         context,
-        "junctions-copied-no-follow",
-        "Target after copying three junctions without following them",
+        "junctions-copied-keep",
+        "Target after copying three junctions as links",
     );
     app.shutdown()?;
 
-    // Checked: the junction to a folder arrives as the folder's tree; the dangling one
-    // and the one to its own folder are recorded. None arrives as a link.
-    let target = support::scratch(context, "copy follow checked")?;
+    // Copy the files links point to (by pointer): the junction to a folder arrives as the
+    // folder's tree; the dangling one and the one to its own folder cannot be followed
+    // and stay junctions, each with a note.
+    let target = support::scratch(context, "copy files")?;
     let mut app = App::start(Config::new(&links, &target));
-    for (name, _) in &junctions {
+    for (name, link) in &junctions {
         panel::select_row(&mut app, PaneId::Left, name)?;
         let run = support::transfer(
             &mut app,
             context,
             TransferSpec {
-                follow_links: Some(true),
+                links: Some(LinkChoice::CopyFiles),
+                link_input: LinkInput::Pointer,
                 choices: vec![Choice::CancelJob],
                 ..TransferSpec::copy()
             },
         );
         let copied = target.join(name);
         outcomes.push(format!(
-            "F5 {name} (follow checked): {}; {}",
+            "F5 {name} (copy the files): {}; {}",
             describe(&copied),
             outcome(&run)
         ));
-        if *name == "to-folder" {
-            if clean(
-                &run,
-                "F5 of the junction to-folder (follow checked)",
-                &mut failures,
-            ) && !same_tree(&source.join("deep").join("level-01"), &copied)
-            {
-                failures.push(format!(
-                    "[AF-3] F5 of the junction to-folder (follow checked) gave {}, not the \
-                     linked folder's tree",
-                    describe(&copied)
-                ));
+        let what = format!("F5 of the junction {name} copying the files");
+        if !clean(&run, &what, LinkChoice::CopyFiles, &mut failures) {
+            support::dismiss_all(&mut app);
+            continue;
+        }
+        let (ok, expected) = match *name {
+            "to-folder" => (
+                same_tree(&source.join("deep").join("level-01"), &copied)
+                    && !fs::symlink_metadata(&copied).is_ok_and(|meta| meta.is_symlink()),
+                "the linked folder's tree",
+            ),
+            "dangling" => (
+                is_link_to(&copied, link)
+                    && kept_note(&run, name)
+                    && notes_about(&run, name, "its target does not exist") == 1,
+                "the same junction, with a note that its target does not exist",
+            ),
+            // As on Linux: the selected junction to its own folder is followed once; met
+            // again inside that copy, it and the dangling junction stay junctions, each
+            // with its reason.
+            _ => {
+                let inner = |child: &str| format!("to-self{}{child}", std::path::MAIN_SEPARATOR);
+                (
+                    fs::symlink_metadata(&copied)
+                        .is_ok_and(|meta| meta.is_dir() && !meta.is_symlink())
+                        && is_link_to(&copied.join("to-self"), link)
+                        && is_link_to(&copied.join("dangling"), &junctions[0].1)
+                        && same_tree(
+                            &source.join("deep").join("level-01"),
+                            &copied.join("to-folder"),
+                        )
+                        && notes_about(&run, &inner("to-self"), "contains it") == 1
+                        && notes_about(&run, &inner("dangling"), "its target does not exist") == 1,
+                    "its folder copied once, the junctions met again inside kept as junctions, \
+                     each with its reason",
+                )
             }
-        } else if fs::symlink_metadata(&copied).is_ok_and(|metadata| metadata.is_symlink()) {
+        };
+        if !ok {
             failures.push(format!(
-                "F5 of the junction {name} (follow checked) created a link at the destination"
+                "[AF-3] {what} gave {} (notes {:?}), not {expected}",
+                describe(&copied),
+                run.as_ref().map(|run| &run.progress.notes)
             ));
         }
         support::dismiss_all(&mut app);
@@ -473,7 +584,7 @@ fn junctions(context: &mut Context) -> Result<(), String> {
     app.screenshot(
         context,
         "junctions-copied-follow",
-        "Target after copying three junctions with Follow directory links",
+        "Target after copying three junctions with Copy the files links point to",
     );
     app.shutdown()?;
     let differences = support::compare_trees(&before, &tree_facts(&source)?, true);
@@ -483,7 +594,7 @@ fn junctions(context: &mut Context) -> Result<(), String> {
         ));
     }
 
-    // F6 on one volume moves the junction to a folder itself; the others are recorded.
+    // F6 with the offered Links choice (keep links) moves each junction itself.
     let target = support::scratch(context, "moved")?;
     let mut app = App::start(Config::new(&links, &target));
     for (name, link) in &junctions {
@@ -503,23 +614,21 @@ fn junctions(context: &mut Context) -> Result<(), String> {
             outcome(&run)
         ));
         let still_there = fs::symlink_metadata(links.join(name)).is_ok();
-        if *name == "to-folder" {
-            if clean(&run, "F6 of the junction to-folder", &mut failures) {
-                if !is_link_to(&moved, link) || still_there {
-                    failures.push(format!(
-                        "[AF-3] F6 of the junction to-folder gave {}, not the moved junction \
-                         (source still there: {still_there})",
-                        describe(&moved)
-                    ));
-                } else {
-                    support::wait_row(&mut app, PaneId::Right, name, true);
-                }
+        if clean(
+            &run,
+            &format!("F6 of the junction {name}"),
+            LinkChoice::Keep,
+            &mut failures,
+        ) {
+            if !is_link_to(&moved, link) || still_there {
+                failures.push(format!(
+                    "[AF-3] F6 of the junction {name} gave {}, not the moved junction \
+                     (source still there: {still_there})",
+                    describe(&moved)
+                ));
+            } else {
+                support::wait_row(&mut app, PaneId::Right, name, true);
             }
-        } else if !still_there && !is_link_to(&moved, link) {
-            failures.push(format!(
-                "F6 of the junction {name} removed it but left {}",
-                describe(&moved)
-            ));
         }
         support::dismiss_all(&mut app);
     }
@@ -531,7 +640,7 @@ fn junctions(context: &mut Context) -> Result<(), String> {
                 .strip_prefix(&level)
                 .ok()
                 .filter(|relative| !relative.as_os_str().is_empty())
-                .map(|relative| (relative.to_string_lossy().into_owned(), facts.clone()))
+                .map(|relative| (support::slashed(relative), facts.clone()))
         })
         .collect();
     if tree_facts(&source.join(&level)).ok().as_ref() != Some(&level_before) {

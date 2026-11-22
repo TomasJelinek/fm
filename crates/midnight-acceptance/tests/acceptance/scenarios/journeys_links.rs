@@ -1,29 +1,31 @@
-//! Journey: a deep tree with links and write-protected folders, copied twice (Follow
-//! links cleared and checked), measured, and both copies deleted permanently; the
-//! originals and everything the links point to stay as they were.
+//! Journey: a deep tree with links and write-protected folders, copied twice (Links: keep
+//! links as links, then copy the files links point to), measured, and both copies deleted
+//! permanently; the originals and everything the links point to stay as they were.
 //!
-//! 1. F5 with "Follow links" cleared: the tree arrives whole, every link a link with
-//!    the same target text, the protected folders still protected.
-//! 2. F5 with "Follow links" checked: the folder link arrives as the folder's tree, the
-//!    file link as the file, the dangling link and the link to an enclosing folder stay
-//!    links, each with a note.
+//! 1. F5 keeping links as links: the tree arrives whole, every link a link with the same
+//!    target text, the protected folders still protected.
+//! 2. F5 copying the files links point to: the folder link arrives as the folder's tree,
+//!    the file link as the file, the dangling link and the link to an enclosing folder
+//!    stay links, each with a note.
 //! 3. Ctrl+Shift+S: each copy's size is its bytes on disk, and the followed copy is
 //!    larger by exactly what the two followed links point to.
 //! 4. Shift+F8 of each copy: deleted whole without a question (Delete clears owner write
 //!    protection inside the deleted tree), gone from the panel.
 //! 5. The original tree (content, modes, times) and the link targets are unchanged.
 //!
-//! Not on Windows (`SKIP`): its checks are Linux link and mode semantics. Windows copies
-//! never recreate links (docs/developer/TRANSFERS.md), file links need a privilege or
-//! Developer Mode, and a folder is protected by its ACL, not a mode. `files_links` covers
-//! junctions there.
+//! Not on Windows (`SKIP`): its checks are Linux relative symbolic links and permission
+//! modes. Windows symbolic links need Developer Mode or administrator rights and a folder
+//! is protected by its ACL, not a mode; `files_links` covers junctions there, kept and
+//! followed.
 // The journey's helpers are Unix-only; on Windows only the SKIP remains.
 #![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 use super::journeys_support::{self as journey, Journey, wait};
 use crate::{
     Context,
     app::{App, Config},
-    files_support::{self as files, Content, DeleteEnd, TransferSpec, compare_trees, tree_facts},
+    files_support::{
+        self as files, Content, DeleteEnd, LinkChoice, TransferSpec, compare_trees, tree_facts,
+    },
     input, panel,
 };
 use midnight_core::{CopyOperationState, PaneId};
@@ -50,7 +52,7 @@ pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_links_readonly",
         area: "journeys",
-        summary: "A deep tree with folder, file, dangling and enclosing links and write-protected folders copied with Follow links cleared and checked, measured with Ctrl+Shift+S, and both copies deleted with Shift+F8 without a question; originals and link targets unchanged.",
+        summary: "A deep tree with folder, file, dangling and enclosing links and write-protected folders copied keeping links as links and copying the files they point to, measured with Ctrl+Shift+S, and both copies deleted with Shift+F8 without a question; originals and link targets unchanged.",
         run: links_readonly,
         timeout: Duration::from_secs(8 * 60),
     }
@@ -61,9 +63,9 @@ pub fn links_readonly(context: &mut Context) -> Result<(), String> {
     {
         let _ = context;
         Err(
-            "SKIP: the journey checks Linux link and mode semantics: Windows copies never \
-             recreate links, file links need a privilege or Developer Mode, and folders are \
-             protected by ACLs (files_links covers junctions)"
+            "SKIP: the journey checks Linux relative symbolic links and permission modes: \
+             Windows symbolic links need Developer Mode or administrator rights and folders \
+             are protected by ACLs (files_links covers junctions, kept and followed)"
                 .into(),
         )
     }
@@ -119,7 +121,8 @@ fn prepare(context: &Context) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     Ok((source, outside, target))
 }
 
-/// F5 of `tree` into `destination` with the link option set to `follow`.
+/// F5 of `tree` into `destination`, copying the files links point to when `follow`,
+/// keeping links as links otherwise.
 fn copy_tree(
     app: &mut App,
     context: &mut Context,
@@ -132,7 +135,11 @@ fn copy_tree(
         context,
         TransferSpec {
             destination: Some(destination),
-            follow_links: Some(follow),
+            links: Some(if follow {
+                LinkChoice::CopyFiles
+            } else {
+                LinkChoice::Keep
+            }),
             ..TransferSpec::copy()
         },
     )
@@ -209,10 +216,10 @@ fn steps(
     let original = source_facts(source)?;
     let outside_before = tree_facts(outside)?;
 
-    // 1. Follow links cleared.
+    // 1. Keep links as links.
     let plain = copy_tree(app, context, &target.join("plain"), false)?;
     journey.check(
-        "F5 with Follow links cleared completes without a question or notice",
+        "F5 keeping links as links completes without a question or notice",
         files::completed(&plain, "the copy with links kept").and_then(|()| {
             if plain.decisions.is_empty() && plain.notice.is_none() {
                 Ok(())
@@ -243,15 +250,32 @@ fn steps(
             Err(format!("it has mode {protection:o}"))
         },
     );
+    // The two links whose relative targets climb out of the copied tree are named.
+    let notes = &plain.progress.notes;
+    journey.check(
+        "a note for each kept link whose relative target leads outside the copied tree",
+        if plain.progress.note_count == 2
+            && ["dir-link", "file-link"].iter().all(|name| {
+                notes.iter().any(|note| {
+                    note.contains(name) && note.contains("which leads outside the copied items")
+                })
+            })
+        {
+            Ok(())
+        } else {
+            Err(format!("{} notes: {notes:?}", plain.progress.note_count))
+        },
+    );
     journey.step(format!(
-        "F5 (Follow links cleared): {} entries, links kept, ro/ copied as mode {protection:o}",
+        "F5 (keep links as links): {} entries, links kept, two noted, ro/ copied as mode \
+         {protection:o}",
         wanted.len()
     ));
 
-    // 2. Follow links checked.
+    // 2. Copy the files links point to.
     let followed = copy_tree(app, context, &target.join("followed"), true)?;
     journey.check(
-        "F5 with Follow links checked completes without a question or notice",
+        "F5 copying the files links point to completes without a question or notice",
         files::completed(&followed, "the copy with links followed").and_then(|()| {
             if followed.decisions.is_empty() && followed.notice.is_none() {
                 Ok(())
@@ -288,7 +312,8 @@ fn steps(
             Err(format!("{} notes: {notes:?}", followed.progress.note_count))
         },
     );
-    journey.step("F5 (Follow links checked): linked folder and file copied, two links noted");
+    journey
+        .step("F5 (copy the files links point to): linked folder and file copied, two links noted");
 
     // 3. Folder sizes.
     panel::focus_list(app, RIGHT)?;
