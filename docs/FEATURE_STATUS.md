@@ -207,18 +207,27 @@ How to read it:
   viewer. Alt+F3 forces text. Viewers search (Ctrl+F), wrap, select and copy the loaded
   page, zoom images and PDFs, and step through the panel's files with Space and
   Backspace. Viewer choices persist. Options › Plugins assigns file types to viewers.
+- **Links:** Markdown and HTML documents follow a link when it is clicked: a fragment
+  scrolls to its heading, a file that a viewer shows opens in the same window, a folder
+  or any other file is shown in the active panel, and web and mail links open with the
+  system's default handler; other schemes are refused. Alt+Shift+Left and
+  Alt+Shift+Right, or the mouse's Back and Forward buttons, go back and forth through
+  the documents opened from links.
 - **Video decoding:** a bundled FFmpeg profile decodes VP8, VP9, Theora, FFV1 and raw
   video; other codecs use Media Foundation on Windows and the distribution's FFmpeg or
   GStreamer on Linux.
 - **Open:** documented bounds such as loaded-page copy, the first frame of animated
-  images and Markdown checkpoint limits (VIEW-01); the PDF zoom and some other choices
-  are not restored after a restart, which no check covers (VIEW-03); on Windows the
-  HTML provider wakes about 64 times per second while a document is open (VIEW-04);
-  some readers still treat a change of the change time alone as a change (VIEW-05);
-  image decode notes and failure kinds need image viewer API 0.4.0 (VIEW-06); text
+  images and Markdown checkpoint limits (VIEW-01); in a document opened from an
+  archive, links to files above its folder, to folders and to members that no viewer
+  shows only say so on the status line (VIEW-07); a stored PDF zoom is not restored
+  (each PDF opens in Fit), and no check restarts the application to compare viewer
+  choices (VIEW-03); on Windows the HTML provider wakes about 64 times per second while
+  a document is open (VIEW-04); some readers still treat a change of the change time
+  alone as a change (VIEW-05); image decode notes and failure kinds need image viewer
+  API 0.4.0 (VIEW-06); each HTML document starts its own browser, about 0.9 s
+  (VIEW-08); HTML wheel glides can end early on a loaded machine (VIEW-09); text
   scrolling pacing is not measured on Linux or with a physical wheel, and rows longer
-  than one layout show in pieces (VIEW-PERF-01, SCROLL-02); each HTML document starts
-  its own browser, about 0.9 s (VIEW-07).
+  than one layout show in pieces (VIEW-PERF-01, SCROLL-02).
 - **Documents:** [viewer presentation](developer/VIEWER_PRESENTATION.md),
   [viewer preferences](developer/VIEWER_PREFERENCES.md),
   [viewer scrolling](developer/VIEWER_SCROLLING.md),
@@ -368,8 +377,8 @@ How to read it:
 
 ## Drive information
 
-- **Windows and Linux:** Ctrl+F1 shows a volume's filesystem, root, label, capacity,
-  storage kind and reported properties, queried in the background.
+- **Windows and Linux:** Ctrl+F1 or Ctrl+L shows a volume's filesystem, root, label,
+  capacity, storage kind and reported properties, queried in the background.
 - **Documents:** [drive information](DRIVE_INFORMATION.md).
 - **Verified:** `tools_help_drive_info`; statuses in the
   [tools record](developer/acceptance/tools.md).
@@ -378,7 +387,7 @@ How to read it:
 
 - **Implemented:** the viewer C ABI 1.0 with plugin API and SDK 0.2.0; the archive
   worker API 0.5.0; the native filesystem plugin ABI 1.4 with API and SDK 0.2.0; the
-  image viewer API 0.3.0 with SDK 0.4.0; the web viewer API and SDK 0.2.0; the
+  image viewer API 0.3.0 with SDK 0.4.0; the web viewer API and SDK 0.3.0; the
   thumbnail API 0.1.0 with SDK 0.2.0; the worker SDK 0.2.0. The text, source and
   Markdown viewers and the native and Network Neighborhood filesystems load as native
   libraries; the image and PDF viewers, thumbnailers, video playback and the archive

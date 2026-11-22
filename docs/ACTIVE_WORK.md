@@ -32,12 +32,6 @@ made the current documents true to that source.
 These changes are being made now. The documents named describe the current behaviour
 until they land.
 
-- **Links in the HTML and Markdown viewers:** following links, Alt+Shift+Left and
-  Alt+Shift+Right, and the mouse Back and Forward buttons
-  ([web viewer API](developer/WEB_VIEWER_API.md),
-  [viewer protocol](developer/VIEWER_PROTOCOL.md),
-  [viewer presentation](developer/VIEWER_PRESENTATION.md),
-  [keyboard shortcuts](KEYBOARD_SHORTCUTS.md); backlog VIEW-01).
 - **Archives:** faster copy and extraction, a limit on open archive mounts with an
   offer to close one, and Cancel in the password question without a notice
   ([archive formats](ARCHIVE_FORMATS.md), [archive API](developer/FILESYSTEM_API.md),

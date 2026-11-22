@@ -1,67 +1,80 @@
-# Agent responsibilities and integration
+# Agent workflow
 
-The Orchestrator coordinates seven specialist chats, the task queue, file
-ownership, build leases, reviews and integration. The role chats below are
-persistent points of contact; creating a chat does not authorize it to start
-unrelated backlog work.
+Development is split among agent roles that an Orchestrator coordinates. This page
+describes the working agreement as it is practised; [AGENTS.md](../../AGENTS.md) holds
+the binding rules, and [test execution](TEST_EXECUTION.md) the commands.
+
+## Roles
 
 | Role | Responsibility |
 | --- | --- |
-| Orchestrator | Task queue, acceptance criteria, exclusive file ownership, build/test leases and Git integration; independent critic and reviewer. |
-| Architect | Interface and architecture decisions, threading/ownership contracts, cross-platform boundaries and design reviews. |
+| Orchestrator | Task queue, acceptance criteria, exclusive file ownership, build slots and leases, and Git integration; independent critic and reviewer. |
+| Architect | Interface and architecture decisions, threading and ownership contracts, cross-platform boundaries and cross-role design reviews. |
 | Backend agent | Engine services, filesystem operations, native platform adapters and filesystem plugins, with their tests. |
-| Viewer agent | Viewer plugins and their private dependencies/tests, viewport loading, decoding and rendering performance. |
-| UI agent | Slint presentation, dialogs, themes, keyboard/pointer interactions and frontend integration with implemented backend APIs. |
-| GitHub build system and build tools developer | Build/test tooling, CI diagnosis, coordinated test runs, packaging and authorized publishing. |
-| Perf agent | Independent performance critic reviewing changes for latency, CPU, memory, I/O, contention, algorithm/data structure suitability and hotspots. |
-| Documentation guru | Current design/API/user documentation, implementation status, licenses and verified test evidence from all roles. |
+| Viewer agent | Viewer plugins with their private dependencies and tests, viewport loading, decoding and rendering performance. |
+| UI agent | Slint presentation, dialogs, themes, keyboard and pointer interaction, and frontend integration with implemented backend APIs. |
+| GitHub build system and build tools developer | Build and test tooling, CI diagnosis, coordinated test runs, packaging and authorized publishing. |
+| Perf agent | Independent review of latency, CPU, memory, I/O, contention, algorithms, data structures and hotspots, backed by measurements. |
+| Documentation guru | Current design, API and user documentation, feature status, dependency and licence records, and verified test evidence. |
 
-## Working agreement
+A role works only on assignments that name their acceptance criteria and the files it
+owns; having a role does not authorize other backlog work. Shared API or UI changes are
+agreed before editing, the Architect settles cross-role design questions, and existing
+user requirements take precedence.
 
-1. The orchestrator assigns concrete work with acceptance criteria and exclusive
-   file ownership. Shared API or shared UI changes are agreed before editing;
-   agents do not overwrite another role's changes.
-2. The Architect resolves cross-role design questions. Existing user requirements
-   take precedence; routine implementation decisions need no extra confirmation.
-3. Backend operations remain asynchronous from the UI. Platform implementations
-   stay in separate files. Plugins depend only on the public API and own their
-   tests; a plugin task cannot edit the host without a separately assigned change.
-4. Use targeted tests during implementation. Compile a compatible group once and
-   run independent headless tests concurrently with bounded resource use. Desktop
-   input tests are serial. One owner holds each Cargo target-directory build lease.
-   Run the agreed full validation after integration; report exactly what ran.
-   Perf supports findings with profiling and before/after measurements coordinated
-   through Build leases. Implementation roles own fixes; the Architect owns
-   architecture decisions.
-5. This checkout is shared unless an isolated checkout is explicitly arranged.
-   No role switches branches, merges, stages another role's files, or starts a
-   competing build. The orchestrator coordinates the Git checkpoint and merge;
-   the build role handles publishing when authorized.
-6. Reports state changed files, behavior, test commands/results, remaining risks
-   and unresolved work. Documentation records implemented behavior separately
-   from plans and does not infer success from the presence of a test or CI job.
-   The Orchestrator independently reviews correctness, security, concurrency,
-   performance, UX and test evidence; challenges unnecessary complexity and weak
-   proposals; requests owner fixes before integration; and verifies reported
-   outcomes against source and actual results.
-7. Generated files belong under `_build/`, tool caches under `.tools/`. Follow
-   repository security, Unicode, source-size and free-dependency requirements.
-8. Later accepted user refinements supersede conflicting older stage plans.
-   Source establishes the current implementation boundary; dated results establish
-   only their recorded source/environment. A green subset or checked plan does
-   not close a requirement's remaining failure, native or platform acceptance.
+## Isolated exports and integration
 
-Role domains are not blanket file ownership. The Orchestrator records exact file
-reservations and coordinates Cargo and native-input leases across shared and
-explicitly arranged isolated checkouts.
+- Each assignment starts from an export of the current main: `git archive <base>`
+  extracted into a folder outside the repository, with the base commit recorded beside
+  it. Larger work may use its own clone or worktree, arranged by the Orchestrator.
+- An agent edits only the files it owns. It never edits, stages, commits, stashes or
+  switches branches in the shared checkout, and it does not commit; the Orchestrator
+  integrates.
+- Work is handed in in increments. After a hand-in the agent continues in a copy of its
+  export, so the handed-in export stays unchanged while it is integrated.
+- When the Orchestrator announces a new main, the agent merges its work onto it file
+  by file (`git merge-file`) before the next hand-in.
+- The Orchestrator reviews each increment for correctness, security, concurrency,
+  performance, UX and test evidence, asks the owner for fixes, checks the reported
+  results against the source, and then commits it.
 
-Each handoff records its exact source/build identity, changed files, behavior,
-commands and test counts including failures/ignores, environment, native versus
-substituted boundaries, artifacts under `_build/`, unresolved failures and
-remaining acceptance. Documentation-only checks do not qualify the application.
-Commit, merge and push remain coordinated through the Orchestrator.
+## Build slots
 
-Current assignments, integration checkpoints, receipts and open requirements live
-in the canonical [Active work checkpoint](../ACTIVE_WORK.md#current-checkpoint)
-and its surrounding ledger. Update that ledger when evidence changes; keep this
-document focused on responsibilities and the working agreement.
+- Every Cargo build, Clippy run and test build goes through the machine-wide build-slot
+  queue: a waiter takes a ticket, and the oldest live ticket gets the next free slot
+  (first in, first out). Slots are few because memory is the limit; a slot whose
+  process has died is reclaimed.
+- Each agent uses its own Cargo target directory and builds with `--locked --offline`.
+  It compiles compatible test groups once (`--no-run`) and runs the printed test
+  executables outside the slot, with bounded parallelism.
+- The Orchestrator's integration checks have their own lane, taken only while memory
+  allows.
+
+## Desktop and WSL leases
+
+- Runs that use the Windows desktop (the acceptance suite, desktop input tests and
+  performance measurements) are serial machine-wide under the desktop lease. Linux runs
+  in WSL take the WSL lease, one at a time per machine.
+- The long-lived process that runs the work takes the lease and releases it when it
+  ends, also on failure. A lease is never held while editing or while building on
+  Windows. The Orchestrator removes a lease whose process is gone and whose resource is
+  idle.
+- In WSL each agent works in its own clone, copied from its export without repository
+  refs, with the offline toolchain, and deletes the clone's build output when it pauses
+  for long.
+- Agents never touch processes they did not start, including a running copy of the
+  application.
+
+## Hand-ins
+
+Each hand-in states:
+
+- the base commit, the export, the changed files and a patch;
+- what changed in behaviour or documentation, and why;
+- the exact commands with their results: pass, fail, skip and ignore counts, run ids,
+  platform and scale, including the red runs that showed a new check can fail;
+- product defects found, with a reproduction, and the remaining gaps and risks.
+
+Documentation records only verified evidence and separates implemented behaviour from
+plans: a test or CI job that exists is not evidence that it passed. Dated records are
+not edited after the fact, and current documents name no local paths or user names.

@@ -2,10 +2,12 @@
 
 Midnight Explorer loads independent native viewer plugins through C ABI 1.0.
 The public Rust packages are `midnight-plugin-api` and `midnight-plugin-sdk`,
-currently version `0.1.0`. The application loader, content broker, viewer window,
-and Basic, Source and Markdown plugins are implemented. Windows x64 and Linux
-x64 have native integration coverage. This guide describes that implementation;
-the versioned draft API has not yet made a long-term compatibility commitment.
+currently version `0.2.0`; plugins built on SDK 0.1.0 load unchanged. The
+application loader, content broker, viewer window, and Basic, Source and Markdown
+plugins are implemented. Windows x64 and Linux x64 have native integration coverage.
+This guide describes that implementation; the versioned draft API has not yet made a
+long-term compatibility commitment. The [document index](#document-index) below lists
+every developer document.
 
 Start with [building and installing a plugin](QUICK_START.md), then read the
 [ABI and lifecycle contract](ABI_AND_LIFECYCLE.md) and the
@@ -69,6 +71,59 @@ The [Custom Commands contract](USER_COMMANDS.md) covers native argv/templates,
 captured configuration, previews, process ownership and cancellation. These
 application services remain separate from independently developed plugin APIs.
 
+## Document index
+
+| Document | Purpose |
+| --- | --- |
+| **Plugin APIs and SDKs** | |
+| [Quick start](QUICK_START.md) | Build, test and install an independent viewer plugin; its example is in [examples/tiny-viewer](examples/tiny-viewer/Cargo.toml). |
+| [ABI and lifecycle](ABI_AND_LIFECYCLE.md) | The viewer C ABI 1.0: exported table, instance lifecycle and threading. |
+| [Viewer protocol](VIEWER_PROTOCOL.md) | Viewer requests, replies, schemas and source mappings. |
+| [SDK contract](../../api/midnight-plugin-sdk/README.md) | The author-facing summary packaged with `midnight-plugin-sdk`. |
+| [Runtime discovery](RUNTIME_DISCOVERY.md) | How the application resolves and trusts its installed plugin runtime. |
+| [Archive worker API](FILESYSTEM_API.md) | The read-only archive worker API, its protocols, limits and identities. |
+| [Native filesystem plugins](NATIVE_FILESYSTEM_API.md) | The native filesystem plugin C ABI for browsing, reading, volumes and prepared Rename. |
+| [Network Neighborhood](NETWORK_FILESYSTEM.md) | The network discovery plugin, share activation and saved locations. |
+| [Worker SDK](WORKER_SDK.md) | Startup and containment of restricted worker processes, and the thumbnail protocol. |
+| [Image and PDF viewer API](IMAGE_VIEWER_API.md) | The restricted image and paginated document viewer API and SDK. |
+| [HTML viewer](WEB_VIEWER_API.md) | The interactive HTML viewer's process protocol, permissions and resources. |
+| **Application internals** | |
+| [Engine lifetime](ENGINE_LIFETIME.md) | Engine ownership, retirement and cleanup capacity. |
+| [Provider registry](PROVIDER_REGISTRY.md) | The internal filesystem provider registry, mounts and content adapters. |
+| [Filesystem migration](FILESYSTEM_MIGRATION.md) | Which consumers reach files through providers and which still use platform services. |
+| [Content reads](CONTENT_READS.md) | Host content reads, revision checks and change-time drift. |
+| [Transfers](TRANSFERS.md) | The native transfer service: verified Copy, Move, links, conflicts and limits. |
+| [Transfer options](TRANSFER_OPTIONS.md) | The Copy and Move dialog options. |
+| [Operation progress](OPERATION_PROGRESS.md) | Progress windows, Jobs, pause, cancellation and admission. |
+| [Disk operations](DISK_OPERATIONS.md) | The disk-I/O concurrency contract. |
+| [Real operation QA](OPERATIONS_REAL_QA.md) | The real Windows operation tests (`operations_real_windows`). |
+| [Tree panel](TREE_PANEL.md) | Inline branches in the panel: actions, watches, filters and sorting. |
+| [Inline trees](INLINE_TREES.md) | The backend branch model and its budgets. |
+| [Selection](SELECTION.md) | Rectangle selection in the panels. |
+| [Parent navigation](PARENT_NAVIGATION.md) | Returning to a parent folder with the cursor on the folder left. |
+| [Path paste](PATH_PASTE.md) | Pasting folder paths into the path editor. |
+| [Panel diagnostics](PANEL_DIAGNOSTICS.md) | The panels' diagnostic icons and their details. |
+| [Metadata filters](METADATA_FILTERS.md) | Panel metadata expressions: syntax and limits. |
+| [Filename colours](FILENAME_COLOR_OPTIONS.md) | Filename colour rules and their priority editor. |
+| [Native icons](NATIVE_ICONS.md) | How icons are drawn at device-pixel sizes on Windows and Linux. |
+| [Pixel scrolling](SCROLLING.md) | Pixel scrolling of panels and text views, and the prepared text window. |
+| [Viewer scrolling](VIEWER_SCROLLING.md) | Viewer pointer feedback, position queues and latency measurement. |
+| [Viewer presentation](VIEWER_PRESENTATION.md) | Source and Markdown presentation: line numbers, fonts, Find and refills. |
+| [Viewer preferences](VIEWER_PREFERENCES.md) | Viewer choices and how they are saved and restored. |
+| [File comparison](FILE_COMPARISON.md) | File comparison: pairing, File A and File B choice, byte comparison. |
+| [Compare directories](COMPARE_DIRECTORIES.md) | Directory comparison: criteria, content reads and limits. |
+| [Find](FIND.md) | The recursive Find service and its windows. |
+| [Checksums](CHECKSUMS.md) | Checksum calculation, verification and export. |
+| [Make File List](MAKE_FILE_LIST.md) | The Make File List services. |
+| [Custom Commands](USER_COMMANDS.md) | The Custom Commands backend: arguments, templates and processes. |
+| [Custom Command settings](USER_COMMAND_SETTINGS.md) | The Custom Commands page of Options. |
+| [Dialog ergonomics](DIALOG_ERGONOMICS.md) | Dialogs, settings forms and their keyboard handling. |
+| **Testing and workflow** | |
+| [Test execution](TEST_EXECUTION.md) | Validation scripts, CI jobs and parallel targeted tests. |
+| [Acceptance suite](ACCEPTANCE.md) | The opt-in end-to-end acceptance suite: running it, fixtures and scenarios. |
+| Acceptance records: [panels](acceptance/panels.md), [transfers](acceptance/transfers.md), [Find](acceptance/find.md), [viewers](acceptance/viewers.md), [Options and keyboard](acceptance/options-tools.md), [tools](acceptance/tools.md), [journeys](acceptance/journeys.md), [UI polish](acceptance/ui-polish.md), [Windows run](acceptance/windows.md) | Each check of an area, its scenario and its latest recorded status. |
+| [Agent workflow](AGENT_WORKFLOW.md) | Roles and the working agreement for coordinated development. |
+
 ## Architecture and ownership
 
 This diagram and the ownership paragraph below describe the semantic native viewer
@@ -111,7 +166,7 @@ One Git repository contains **separate Cargo workspaces**:
 | `plugins/midnight-filesystem-network/` | Network Neighborhood discovery and share activation | Public filesystem plugin API/SDK path packages plus Windows WNet (windows-sys) or Linux GIO loaded at runtime through libloading |
 | `plugins/midnight-viewer-image/`, `plugins/midnight-viewer-pdf/` | Restricted image decoding and PDF rendering | Released raster/worker SDKs, the shared image decoder (images) and plugin-owned tests/codecs |
 | `plugins/image-decoder/` | Shared bounded image codecs | Path dependency of the image viewer and image thumbnail workers; not a public API |
-| `plugins/midnight-viewer-html/` | Optional Chromium (CEF) HTML provider | Released web viewer API 0.2.0 and pinned CEF bindings |
+| `plugins/midnight-viewer-html/` | Optional Chromium (CEF) HTML provider | Released web viewer API 0.3.0 and pinned CEF bindings |
 | `plugins/midnight-viewer-basic/` | Text/Binary decoding and search | Released public SDK plus plugin-owned dependencies |
 | `plugins/midnight-viewer-source/` | 25 lexical profiles, including XML/XAML/MSBuild, CSS, Makefiles and CSV/TSV; bounded scanning and styles | Its own workspace, lockfile, dependencies and [syntax/viewport tests](../../plugins/midnight-viewer-source/README.md) |
 | `plugins/midnight-viewer-markdown/` | Semantic Markdown | Its own workspace, lockfile, dependencies and tests |
@@ -225,8 +280,8 @@ listed boundaries are exact. See [source mappings](VIEWER_PROTOCOL.md#source-map
 ## Filesystem/provider API status
 
 The [archive worker API](FILESYSTEM_API.md) is the separate
-[`midnight-filesystem-api` package `0.4.0`](../../filesystem-api/midnight-filesystem-api/Cargo.toml),
-with [wire protocols 1, 2 and 3](../../filesystem-api/PROTOCOL.md). Independent
+[`midnight-filesystem-api` package `0.5.0`](../../filesystem-api/midnight-filesystem-api/Cargo.toml),
+with [wire protocols 1, 2, 3 and 4](../../filesystem-api/PROTOCOL.md). Independent
 archive workers use the [worker SDK](WORKER_SDK.md) and bounded source/list/read
 messages through pipes. Browse/Read, pane navigation, persistent tabs, F3 content
 leases and verified F5 copy-out are implemented. Host-side extraction/copy-out
