@@ -930,7 +930,9 @@ async fn archive_copy_pause_and_cancel_latency() {
 }
 
 /// The job's private staging folders (`.midnight-stage-*`) directly in `folder`, none
-/// while `folder` does not exist yet.
+/// while `folder` does not exist yet. Only Windows stages in such a folder; Linux keeps
+/// staging beside the destination (`TransferDirectory::stage_job_file`'s default).
+#[cfg(windows)]
 fn staging_folders(folder: &Path) -> Vec<std::path::PathBuf> {
     fs::read_dir(folder)
         .into_iter()
@@ -947,6 +949,7 @@ fn staging_folders(folder: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// The staging folder of the job copying into `folder`, once there is one.
+#[cfg(windows)]
 async fn staging_in(folder: &Path) -> std::path::PathBuf {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
@@ -965,6 +968,7 @@ async fn staging_in(folder: &Path) -> std::path::PathBuf {
 /// WIN-8: a Copy that reads the folder another copy stages in waits for that copy as a
 /// whole, as before its stages moved into a staging folder there, and then copies what it
 /// published: never the staging folder.
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_reading_the_folder_an_archive_copy_stages_in_waits_for_the_whole_copy() {
     let temp = fixture();
@@ -1020,6 +1024,7 @@ async fn a_copy_reading_the_folder_an_archive_copy_stages_in_waits_for_the_whole
 
 /// WIN-8: a paused copy keeps its staging folder, and once resumed it stages its other
 /// files in that same folder; the folder goes when the copy ends.
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_paused_archive_copy_keeps_its_staging_folder_and_resumes_in_it() {
     let temp = fixture();
@@ -1075,6 +1080,7 @@ async fn a_paused_archive_copy_keeps_its_staging_folder_and_resumes_in_it() {
 
 /// WIN-8: Cancel removes the unpublished stage and then the empty staging folder; the
 /// files copied before it stay.
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_archive_copy_leaves_neither_stages_nor_its_staging_folder() {
     let temp = fixture();
@@ -1109,6 +1115,7 @@ async fn a_cancelled_archive_copy_leaves_neither_stages_nor_its_staging_folder()
 
 /// WIN-8: each copied folder has a staging folder of its own while its files are staged,
 /// removed once the folder is copied; the destination keeps its own until the job's end.
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn copied_folders_stage_in_folders_of_their_own_removed_with_each_folder() {
     let temp = fixture();
