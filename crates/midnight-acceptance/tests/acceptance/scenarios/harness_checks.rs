@@ -20,6 +20,10 @@
 //!    command line's terminal is recorded, not started; a Custom Command in terminal
 //!    mode goes to the recording launcher of `Config::user_commands`, never the
 //!    platform's terminal.
+//! 9. No browser ever starts: a web link a viewer followed (`App::open_url`, as
+//!    `Command::OpenUrl`) is refused with the reason without the desktop stand-in and
+//!    launches nothing; with it the address is recorded (`Launch::OpenUrl`) and the
+//!    viewer would say it opened.
 use crate::{
     Context,
     app::{self, App, Config},
@@ -47,12 +51,14 @@ pub const TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SETTINGS_PENDING: &str = "Settings are still loading; defaults are shown.";
 /// What the command line submits in the terminal checks.
 const COMMAND: &str = "echo midnight-acceptance";
+/// A web link a viewer followed; no browser ever gets it.
+const LINK: &str = "https://example.com/midnight-acceptance";
 
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "harness_checks",
         area: "harness",
-        summary: "The harness itself: a held Slint clock stands still and fires a timer exactly when advanced to it; pump settles frame by frame; a closed tool window is left alone; the Copy dialog's link question is counted; no terminal ever starts (refused without the desktop stand-in, recorded with it and for a terminal-mode Custom Command); gated volumes report SKIP when unset; a settings read slower than the 10 s startup deadline shows the defaults first; pruning keeps runs still going.",
+        summary: "The harness itself: a held Slint clock stands still and fires a timer exactly when advanced to it; pump settles frame by frame; a closed tool window is left alone; the Copy dialog's link question is counted; no terminal ever starts (refused without the desktop stand-in, recorded with it and for a terminal-mode Custom Command); no browser ever starts (a followed web link refused without the stand-in, recorded with it); gated volumes report SKIP when unset; a settings read slower than the 10 s startup deadline shows the defaults first; pruning keeps runs still going.",
         run: checks,
         timeout: TIMEOUT,
     }
@@ -71,6 +77,7 @@ fn checks(context: &mut Context) -> Result<(), String> {
             ("a closed tool window", closed_window(&mut app, context)),
             ("the Copy dialog's link question", links_counted(&mut app)),
             ("the command line without a desktop", no_terminal(&mut app)),
+            ("a followed link without a desktop", no_url(&mut app)),
         ] {
             if let Err(error) = result {
                 failures.push(format!("{what}: {error}"));
@@ -84,6 +91,11 @@ fn checks(context: &mut Context) -> Result<(), String> {
     if let Err(error) = desktop_terminal(&root, &other) {
         failures.push(format!(
             "the command line with the desktop stand-in: {error}"
+        ));
+    }
+    if let Err(error) = desktop_url(&root, &other) {
+        failures.push(format!(
+            "a followed link with the desktop stand-in: {error}"
         ));
     }
     if let Err(error) = user_command_terminal(context, &other) {
@@ -302,6 +314,50 @@ fn no_terminal(app: &mut App) -> Result<(), String> {
         return Err(format!("notice {notice:?}, launches {launched:?}"));
     }
     Ok(())
+}
+
+/// Without the desktop stand-in the Engine has no desktop service: a followed web link is
+/// refused with the reason, and nothing is launched.
+fn no_url(app: &mut App) -> Result<(), String> {
+    let before = app.launches.all().len();
+    let answer = app.open_url(LINK)?;
+    let launched = app.launches.all();
+    match &answer {
+        Err(status)
+            if status.starts_with(&format!("Could not open {LINK}: "))
+                && launched.len() == before =>
+        {
+            Ok(())
+        }
+        _ => Err(format!(
+            "the viewer would say {answer:?}; launches {launched:?}"
+        )),
+    }
+}
+
+/// With the desktop stand-in a followed web link is recorded as the address the system's
+/// handler would get, and taken as a handler takes it (the viewer would say it opened);
+/// no browser starts.
+fn desktop_url(root: &Path, other: &Path) -> Result<(), String> {
+    let mut app = App::start(Config {
+        desktop: true,
+        ..Config::new(root, other)
+    });
+    let result = app.open_url(LINK).and_then(|answer| {
+        let launched = app.launches.all();
+        match (&answer, launched.as_slice()) {
+            (Ok(status), [Launch::OpenUrl(url)])
+                if url == LINK && *status == format!("Opened in your browser: {LINK}") =>
+            {
+                Ok(())
+            }
+            _ => Err(format!(
+                "the viewer would say {answer:?}; launches {launched:?}"
+            )),
+        }
+    });
+    files::dismiss_all(&mut app);
+    result.and(app.shutdown())
 }
 
 /// With the desktop stand-in the command line's terminal is recorded with the command,

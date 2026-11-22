@@ -1,5 +1,6 @@
 //! Stand-ins for what would start programs on the desktop: a Custom Command's terminal,
-//! the command line's terminal, a file's association and a system location. Each launch
+//! the command line's terminal, a file's association, a system location and a web or mail
+//! link a viewer followed. Each launch
 //! is recorded in [`Launches`] for the scenario to check, and none starts a process:
 //! the Engine gets one that has already ended successfully. Only a Custom Command's
 //! program runs, as configured; the scenarios configure harmless programs that write into
@@ -34,6 +35,9 @@ pub enum Launch {
     Open(PathBuf),
     /// A system location such as the Recycle Bin (`Config::desktop`). Never opened.
     SystemLocation(SystemLocation),
+    /// A web or mail link a viewer followed (`OpenService::open_url`, `Config::desktop`),
+    /// as the address the system's handler would get. No browser or mail program starts.
+    OpenUrl(String),
 }
 
 /// Every launch the application asked for, in order.
@@ -225,6 +229,13 @@ impl OpenService for Desktop {
         location: SystemLocation,
     ) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
         self.launches.push(Launch::SystemLocation(location));
+        Ok(None)
+    }
+
+    /// The link is recorded and taken, as a handler that accepted it would answer; the
+    /// trait's own default would refuse it, and the platform's would start a browser.
+    fn open_url(&self, url: &ExternalUrl) -> Result<Option<Box<dyn TerminalProcess>>, FsError> {
+        self.launches.push(Launch::OpenUrl(url.as_str().to_owned()));
         Ok(None)
     }
 

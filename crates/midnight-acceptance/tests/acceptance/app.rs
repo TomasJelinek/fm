@@ -983,6 +983,41 @@ impl App {
         }
     }
 
+    /// Hand `url` to the system's handler as a viewer hands a link the user followed
+    /// (`Presenter::open_external_url`, `Command::OpenUrl`); settle until the backend
+    /// answered (30 s at most) and return the status text the viewer would show: `Ok`
+    /// once the handler took the link, `Err` with the reason otherwise. With
+    /// `Config::desktop` the stand-in records it (`Launch::OpenUrl`) and nothing starts;
+    /// without it the Engine has no desktop service and refuses.
+    pub fn open_url(&mut self, url: &str) -> Result<Result<String, String>, String> {
+        let url = ExternalUrl::parse(url).map_err(|refusal| format!("{url}: {refusal:?}"))?;
+        let answer: Rc<RefCell<Option<Result<String, String>>>> = Rc::default();
+        let done = answer.clone();
+        with_owned_commands(
+            &self.presenter,
+            &self.begin_owned,
+            move |presenter, send| {
+                presenter.open_external_url(
+                    url,
+                    send,
+                    Box::new(move |result| *done.borrow_mut() = Some(result)),
+                );
+            },
+        )
+        .ok_or("no command scope for the link")?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            self.settle();
+            if let Some(result) = answer.borrow_mut().take() {
+                return Ok(result);
+            }
+            if Instant::now() >= deadline {
+                return Err("the link got no answer within 30 s".into());
+            }
+            self.sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Wait without taking events or holding a claim, then settle once: timers and
     /// animations advance in one jump. Not a synchronisation: wait for what should
     /// happen with [`App::until`], or let time pass in frames with [`App::pump`].

@@ -459,16 +459,20 @@ Deliberate differences from the application, to keep runs hermetic and headless:
   `PathPickerService` (`app::ScriptedPicker`) stands in: it returns answers a scenario
   queued with `app.picker.answer(..)`, otherwise the suggested name in the suggested
   folder, as a user pressing Save does, and records every request.
-- No terminal is ever started, and no file association or system location is ever
-  opened (`tests/acceptance/launches.rs`). By default no desktop service is installed:
-  the command line reports "Terminal unavailable" and opening a file is unavailable.
-  `Config::desktop` installs a stand-in instead: the platform's read-only parts
-  (locations, icons, property details, link targets, the shell's flavour), with the
-  command line's and the terminal button's terminals (standard or elevated), files
-  opened with their association and system locations (the Recycle Bin) recorded in
-  `app.launches` (`Launch::Terminal`, `Launch::Open`, `Launch::SystemLocation`) and
-  never started; the Engine gets a process that has already ended successfully, with
-  id 0; Properties shows the application's own summary, never the system's dialog. The
+- No terminal is ever started, and no file association, system location, browser or
+  mail program is ever opened (`tests/acceptance/launches.rs`). By default no desktop
+  service is installed: the command line reports "Terminal unavailable", opening a file
+  is unavailable, and a web or mail link a viewer follows (`Command::OpenUrl`) is refused
+  ("Opening web and mail links is unavailable."). `Config::desktop` installs a stand-in
+  instead: the platform's read-only parts (locations, icons, property details, link
+  targets, the shell's flavour), with the command line's and the terminal button's
+  terminals (standard or elevated), files opened with their association, system
+  locations (the Recycle Bin) and followed web and mail links recorded in `app.launches`
+  (`Launch::Terminal`, `Launch::Open`, `Launch::SystemLocation`, `Launch::OpenUrl` with
+  the address) and never started; the Engine gets a process that has already ended
+  successfully, with id 0, and a link is taken as a handler takes it. `App::open_url`
+  hands a link to the presenter as a viewer does and returns the viewer's status text;
+  Properties shows the application's own summary, never the system's dialog. The
   desktop drag-and-drop hand-off is not installed either. Drag and drop between the two
   panels needs none of it: the application's internal drag path runs as in production,
   driven by real pointer events (`panel::drag_row`).
@@ -501,7 +505,7 @@ Help, Drive information, About, Jobs and notices), [journeys](acceptance/journey
 | Scenario | Area | What it proves |
 | --- | --- | --- |
 | `startup` | panels | Both panels open on the fixture root and list every top-level folder. |
-| `harness_checks` | harness | The harness itself: the held clock stands still while real time passes, a 400 ms timer started on it fires when it is advanced 400 ms and not after 390, and it runs on from there when resumed; a 20 ms timer fires again and again in 300 ms of `pump` and at most twice in 300 ms of `idle`; a closed F1 help window counts as not shown, `layout_tool` and `render` leave it alone and `screenshot_window` notes it; F5's Copy dialog asks how links fare at the other panel's folder (`links_inspected`); no terminal starts: without the desktop stand-in the command line's Enter reports "Terminal unavailable" and launches nothing, with `Config::desktop` it is recorded (`Launch::Terminal` with the command, the panel's folder and the standard mode) and no notice follows, and a terminal-mode Custom Command handed to the `Config::user_commands` launcher is recorded with its environment and ends at once with success (process id 0), never reaching the platform's terminal; a gated variable that is not set gives `SKIP: <variable> not set` and an unknown one an error; with settings that answer after 13 s the start shows the defaults (Blue) with "Settings are still loading; defaults are shown." and the read then applies (Dark); pruning a folder of run folders keeps the four newest finished runs besides the new one, a run still going, a run folder without the marker and another folder, and deletes older finished and old unfinished runs. |
+| `harness_checks` | harness | The harness itself: the held clock stands still while real time passes, a 400 ms timer started on it fires when it is advanced 400 ms and not after 390, and it runs on from there when resumed; a 20 ms timer fires again and again in 300 ms of `pump` and at most twice in 300 ms of `idle`; a closed F1 help window counts as not shown, `layout_tool` and `render` leave it alone and `screenshot_window` notes it; F5's Copy dialog asks how links fare at the other panel's folder (`links_inspected`); no terminal starts: without the desktop stand-in the command line's Enter reports "Terminal unavailable" and launches nothing, with `Config::desktop` it is recorded (`Launch::Terminal` with the command, the panel's folder and the standard mode) and no notice follows, and a terminal-mode Custom Command handed to the `Config::user_commands` launcher is recorded with its environment and ends at once with success (process id 0), never reaching the platform's terminal; no browser starts: a followed web link (`App::open_url`) is refused with the reason ("Could not open …") and launches nothing without the desktop stand-in, and with it is recorded as `Launch::OpenUrl` with its address while the viewer would say "Opened in your browser: …"; a gated variable that is not set gives `SKIP: <variable> not set` and an unknown one an error; with settings that answer after 13 s the start shows the defaults (Blue) with "Settings are still loading; defaults are shown." and the read then applies (Dark); pruning a folder of run folders keeps the four newest finished runs besides the new one, a run still going, a run folder without the marker and another folder, and deletes older finished and old unfinished runs. |
 | `startup_paths` | panels | Starts as production does with `--left` and `--right`, with only one of them and with neither, against the application's own settings store (preferences read asynchronously from `$XDG_CONFIG_HOME/midnight-explorer/preferences.json`) in the private profile of a staged process (`viewers_stage::run_private`), seeded each time with a saved tab session (two tabs on the left, one on the right). Each start must be ready (settings applied, both listings done) within production's 10 s settings deadline; a panel given a path shows only that path, the other restores its saved tabs and active tab, and the saved tabs of a panel without a path are still in the profile afterwards. |
 | `navigation` | panels | Enter/Backspace into every fixture folder (and a level deeper, and the 12-level chain); each listing equals the folder on disk; Backspace returns the cursor to the folder left. |
 | `copy_move_delete` | transfers | F5 and F6 of a single file and a folder with awkward names, Shift+F8 of a file and a folder, confirmed in the real dialogs; bytes, trees and panel rows verified. |
