@@ -34,7 +34,7 @@ listed as skipped:
 | not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix), `html-viewer` (`--no-default-features`, without native CEF) |
 | `archive-filesystem`, `filesystem-libraries` | `archive` (tests, release package, fixture export), `filesystem-api`, `filesystem-native` and `filesystem-network` (tests, release package) |
 | `scripts-and-lint` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5` |
-| `check` | `workspace-tests`, `trash-qualification`, `bad-descriptor`, the nine ignored qualification steps, `x11-dnd`, `x11-clipboard` |
+| `check` | `workspace-tests`, `trash-qualification`, `bad-descriptor`, the ten ignored qualification steps, `x11-dnd`, `x11-clipboard` |
 | `release` | `host-build` and `smoke-test` for the selected profile |
 
 CI runs the `public-sdk` and `public-worker-sdk` jobs on ubuntu-24.04 only; its

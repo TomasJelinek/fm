@@ -655,6 +655,8 @@ jobs:
         run: python -B scripts/ci-workspace-tests.py run midnight-viewer-engine lib --ignored --nocapture --skip office_preview::native_tests
       - name: Installed native filesystem browse, read, volumes and absence checks
         run: python -B scripts/ci-workspace-tests.py run midnight-native-filesystem-host test:native --ignored --test-threads=1
+      - name: Installed native provider names the folder of a typed file path
+        run: python -B scripts/ci-workspace-tests.py run midnight-engine test:integration navigation_not_a_folder:: --ignored
       - name: Installed network metadata boundary without LAN discovery
         shell: pwsh
         run: |

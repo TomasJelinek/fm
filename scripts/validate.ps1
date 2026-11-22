@@ -657,6 +657,9 @@ try {
     Add-Step @{ Id = 'native-fs-ignored'; Job = 'check'; Title = 'Installed native filesystem browse and reads'
         Needs = @('test-install', 'filesystem-native'); Body = $ignoredBody
         Variables = @{ Selection = @('midnight-native-filesystem-host', 'test:native', '--ignored', '--test-threads=1') } }
+    Add-Step @{ Id = 'engine-native-ignored'; Job = 'check'; Title = 'Installed native provider and typed file paths'
+        Needs = @('test-install', 'filesystem-native'); Body = $ignoredBody
+        Variables = @{ Selection = @('midnight-engine', 'test:integration', 'navigation_not_a_folder::', '--ignored') } }
     Add-Step @{ Id = 'network-metadata-ignored'; Job = 'check'; Title = 'Installed network metadata boundary'
         Needs = @('test-install', 'filesystem-network'); Body = {
         $env:MIDNIGHT_NETWORK_TEST_INSTALLATION = $env:MIDNIGHT_NATIVE_TEST_INSTALLATION
