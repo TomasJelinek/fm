@@ -1091,3 +1091,68 @@ fn a_burst_over_a_page_restyled_for_its_lookahead_keeps_its_whole_travel() {
     // the window's refusal path keeps its own test
     // (`raster_frontier_tests::a_page_restyled_around_the_lookahead_does_not_stop_a_burst`).
 }
+
+/// The acceptance scenario's table: rows of 100 to 260 bytes (`viewers_fixtures::table`).
+fn table(rows: usize) -> String {
+    let mut text = String::from("id,component,license,version,size,notes,flag\n");
+    for row in 0..rows {
+        let width = 100 + row * 37 % 161;
+        let mut line = format!(
+            "r{row:05},component-{},MIT,{},",
+            row % 89,
+            row * 7919 % 100_000
+        );
+        while line.len() < width - 1 {
+            line.push(if line.len() % 7 == 0 { ' ' } else { 'w' });
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text
+}
+
+/// The acceptance run once saw one notch up after a scrollbar drag and a notch down move
+/// 15 to 42 px of 100 (VIEW-NOTCH-UP). The page a scrollbar position reads starts inside a
+/// row, and the first page read above it (the notch up wants screens above) shows that
+/// row whole: the worker hands the camera over to a corrected surface (`RasterRebase`).
+/// Across that handoff the window keeps the whole travel, also for the burst after it.
+/// That the seam's frames go on for the glide after the handoff is the window's test
+/// (`acceptance_seams_tests::a_notch_up_across_a_corrected_surface_*`).
+#[test]
+fn a_notch_up_after_a_scrollbar_position_keeps_its_travel_across_a_corrected_surface() {
+    for mode in [viewer::MODE_TEXT, viewer::MODE_SOURCE] {
+        let mut engine = Engine::open(table(1500), mode, geometry(1312, 720, 1.0), 1);
+        let mut window = Window::default();
+        rest(&mut engine, &mut window);
+        window.seek(&mut engine, 0.4);
+        rest(&mut engine, &mut window);
+        assert!(
+            engine
+                .worker
+                .page
+                .as_ref()
+                .is_some_and(|page| page.partial_line),
+            "mode {mode}: the scrollbar's page starts inside a row"
+        );
+        let notch = 100.0;
+        let down = try_gesture(&mut engine, &mut window, &[(notch, false)], true);
+        assert_eq!(
+            window.rebases, 0,
+            "mode {mode}: a notch down keeps its surface"
+        );
+        let up = try_gesture(&mut engine, &mut window, &[(-notch, false)], true);
+        assert_eq!(
+            window.rebases, 1,
+            "mode {mode}: the notch up crossed no handoff"
+        );
+        let burst = try_gesture(&mut engine, &mut window, &[(notch, false); 5], true);
+        let near = |moved: Option<f64>, expected: f64| {
+            moved.is_some_and(|moved| (moved - expected).abs() < 0.01)
+        };
+        assert!(
+            near(down, notch) && near(up, -notch) && near(burst, 5.0 * notch),
+            "mode {mode}: down {down:?}, up {up:?}, five down {burst:?}; dropped {:?}",
+            window.dropped
+        );
+    }
+}

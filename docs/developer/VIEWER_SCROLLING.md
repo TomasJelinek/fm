@@ -284,6 +284,18 @@ invalid buffers and cancellation. Renderer tests compare culled painting with
 unculled painting, including far decorations and ink above table cells.
 Generated fixtures and logs belong under `_build/`.
 
+A scrollbar position's page starts inside a row, and the first page read above it shows
+that row whole, so the first notch up after a scrollbar drag (it wants screens above the
+window) hands the camera over to a corrected surface (`RasterRebase`): the glide waits
+for that surface and goes on with the rest of its distance. The engine co-simulation
+(`worker_frontier_tests::a_notch_up_after_a_scrollbar_position_keeps_its_travel_across_a_corrected_surface`,
+Text and Source) and the window with winit's frames and with the acceptance seam's
+(`acceptance_seams_tests::a_notch_up_across_a_corrected_surface_*`) keep the whole travel
+of a notch down, the notch up and five notches after it. Until 22 November 2026 the
+acceptance seam ended its frames while such a glide waited, so the rest of the notch got
+none: the acceptance run measured 15 to 42 px of 100 (see
+[Wheel distance](SCROLLING.md#wheel-distance)).
+
 For native measurements, build the `midnight-viewer-ui` example
 `performance_probe` in debug and stage it beside trusted viewer packages in the
 isolated QA runtime. Run it with an owned fixture directory and report path:

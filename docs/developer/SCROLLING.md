@@ -131,8 +131,19 @@ reaches this path through `midnight_viewer_ui::acceptance_seams` (feature
 hand the window's own native observer the events winit would deliver, the wheel frames
 follow by themselves while the window moves, and `override_settings` replaces the lines
 per notch and the reduced-motion setting for the test process until its guard drops.
-The panels' seam in `midnight-ui` behaves the same way. Tests: `acceptance_seams_tests`
-(a seam notch moves the text as a native notch does, frame for frame).
+A viewer's frame pump runs until its window closes, sending frames while the window moves
+and none while it rests, as winit gives a frame for every redraw the window asks for:
+also when a glide goes on without new input after waiting for the viewer's backend (a
+corrected surface, `RasterRebase`, which the first notch up after a scrollbar drag
+meets). Until
+22 November 2026 the pump stopped 250 ms after the last seam input once nothing moved,
+also during such a wait, and the rest of that glide never got a frame (acceptance
+VIEW-NOTCH-UP: one notch up moved 15 to 42 px of 100 and did not move on).
+The panels' seam in `midnight-ui` drives the panels the same way; its frames end with the
+panels' scroll interaction, since panel motion waits for no backend. Tests:
+`acceptance_seams_tests` (a seam notch moves the text as a native notch
+does, frame for frame; a notch up across a corrected surface keeps its whole travel with
+winit's frames and with the seam's, and so do a notch down before it and five after it).
 
 ## Touchpad momentum (kinetic scrolling)
 

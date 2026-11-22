@@ -500,7 +500,9 @@ at most four megapixels and 4,096 pixels a side, so in a larger viewer it shows 
 reduced detail; 1:1 keeps the physical size. PDF pages are always rendered at the
 exact zoom shown, one pixel per screen pixel.
 
-The zoom percentage in the footer (images and PDF documents) and in the HTML row is
+The zoom percentage in the footer (images and PDF documents, with one decimal) and in
+the HTML row (whole percentages) is shown in the user's number format (`62,5%` in a
+decimal-comma locale), as the field opens with it. It is
 also a field: click it or press Ctrl+Y, type a value and press Enter. The value is a
 percentage, with or without `%` (`150`, `150%`), and may have decimals in the user's
 number format (`62,5` in a decimal-comma locale, `62.5` otherwise; a dot also works in

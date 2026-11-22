@@ -677,6 +677,10 @@ fn apply_mode(open: &OpenWindow, mode: u16, image_mode: bool, reset_policy: bool
         window.invoke_focus_content();
     }
     window.set_web_mode(web_mode);
+    if web_changed {
+        // HTML shows whole percentages, images and documents a decimal.
+        present_zoom_text(open);
+    }
     window.set_whole_words_available(!image_mode && !web_mode && mode != 3);
     window.set_source_mode(mode == 2 && !image_mode);
     window.set_markdown_mode(mode == 4 && !image_mode);
@@ -1269,7 +1273,8 @@ fn present_controlled_outputs(
                         .map_or(0, |image| image.page_count as i32),
                 );
                 if !web_mode {
-                    window.set_zoom_percent(
+                    show_zoom(
+                        open,
                         frame
                             .image
                             .as_ref()
@@ -1415,7 +1420,7 @@ fn present_controlled_outputs(
                 {
                     window.set_web_policy_change_allowed(*policy_change_allowed);
                     web_input::present_policy(open, *policy);
-                    window.set_zoom_percent((zoom * 100.0) as f32);
+                    show_zoom(open, (zoom * 100.0) as f32);
                 }
             }
             ViewerOutput::Closed => close(open),
@@ -1774,7 +1779,7 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
                 }
                 .clamp(0.1, 10.0);
                 if web_input::send(open, viewer_web::CommandKind::Zoom(zoom)) {
-                    open.window.set_zoom_percent((zoom * 100.0) as f32);
+                    show_zoom(open, (zoom * 100.0) as f32);
                     return true;
                 }
                 return false;
@@ -2100,6 +2105,29 @@ fn bind_image(open: &Rc<OpenWindow>) {
     });
 }
 
+/// Show `percent` as the zoom in force, and its text (`present_zoom_text`).
+fn show_zoom(open: &OpenWindow, percent: f32) {
+    open.window.set_zoom_percent(percent);
+    present_zoom_text(open);
+}
+
+/// The zoom in force as the footer and the HTML row show it: the number the zoom field
+/// opens with, in the user's number format (`zoom_entry::format`), and a percent sign.
+fn present_zoom_text(open: &OpenWindow) {
+    let number = zoom_entry::format(
+        f64::from(open.window.get_zoom_percent()),
+        zoom_decimals(open),
+        &zoom_entry::locale(),
+    );
+    open.window.set_zoom_text(format!("{number}%").into());
+}
+
+/// Decimals of a shown or typed zoom: whole percentages for HTML, one decimal for images
+/// and documents.
+fn zoom_decimals(open: &OpenWindow) -> usize {
+    if open.window.get_web_mode() { 0 } else { 1 }
+}
+
 /// Open the zoom field with the shown percentage selected (a click on the percentage or
 /// `viewer.zoom-to`), for images, PDF documents and HTML.
 fn begin_zoom_edit(open: &OpenWindow) -> bool {
@@ -2110,10 +2138,9 @@ fn begin_zoom_edit(open: &OpenWindow) -> bool {
     {
         return false;
     }
-    let decimals = if web { 0 } else { 1 };
     let shown = zoom_entry::format(
         f64::from(open.window.get_zoom_percent()),
-        decimals,
+        zoom_decimals(open),
         &zoom_entry::locale(),
     );
     open.window.set_zoom_entry(shown.into());
@@ -2153,7 +2180,7 @@ fn enter_zoom(open: &OpenWindow, text: &str) {
     let applied = if web {
         let sent = web_input::send(open, viewer_web::CommandKind::Zoom(percent / 100.0));
         if sent {
-            open.window.set_zoom_percent(percent as f32);
+            show_zoom(open, percent as f32);
         }
         sent
     } else {

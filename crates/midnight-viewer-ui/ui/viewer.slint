@@ -190,6 +190,9 @@ export component ViewerWindow inherits Window {
     in-out property <int> markdown-preset;
     in property <bool> narrow-typography: root.compact;
     in property <float> zoom-percent: 100;
+    // The zoom as the footer and the HTML row show it: the typed field's number in the
+    // user's number format ("62,5%" with a decimal comma), set with `zoom-percent`.
+    in property <string> zoom-text: "100%";
     // The typed zoom (`ZoomField`): open while editing, its text, and the hint that says
     // why a value was refused or limited.
     in-out property <bool> zoom-editing;
@@ -354,7 +357,7 @@ export component ViewerWindow inherits Window {
                     TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "−"; min-width: 36px; max-width: 36px;
                         accessible-label: "Zoom HTML out"; tip: "Zoom HTML out (Ctrl+-)";
                         clicked => { root.image-command(3); content-focus.focus(); } }
-                    ZoomField { shown: "\{round(root.zoom-percent)}%"; label: "HTML zoom percentage";
+                    ZoomField { shown: root.zoom-text; label: "HTML zoom percentage";
                         font-size: root.effective-ui-size; control-height: root.control-height;
                         min-width: 52px; max-width: 64px;
                         editing: root.zoom-editing; entry <=> root.zoom-entry; hint: root.zoom-hint;
@@ -707,7 +710,7 @@ export component ViewerWindow inherits Window {
                                 clicked => { root.image-command(3); content-focus.focus(); }
                             }
                             ZoomField {
-                                shown: "\{round(root.zoom-percent * 10) / 10}%";
+                                shown: root.zoom-text;
                                 label: "Image zoom percentage";
                                 font-size: root.effective-ui-size; control-height: root.control-height;
                                 editing: root.zoom-editing; entry <=> root.zoom-entry; hint: root.zoom-hint;

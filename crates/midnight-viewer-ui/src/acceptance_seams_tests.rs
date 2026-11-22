@@ -86,10 +86,15 @@ fn a_seam_notch_moves_the_text_as_a_native_notch_frame_for_frame() {
         Step::Notch => assert_eq!(wheel(&manager, &window, at, DOWN), Some(true)),
         Step::Frame => slint::platform::update_timers_and_animations(),
     });
-    // The seam's frames end once the window rests; the wheel's speed starts over.
+    // The seam sends no frames once the window rests; the wheel's speed starts over.
     advance_time(Duration::from_secs(2));
     slint::platform::update_timers_and_animations();
-    assert!(!open.seam.frames.running(), "frames continue at rest");
+    let sent = open.seam.sent.get();
+    for _ in 0..FRAMES {
+        advance_time(midnight_ui_input::WHEEL_FRAME);
+        slint::platform::update_timers_and_animations();
+    }
+    assert_eq!(open.seam.sent.get(), sent, "frames continue at rest");
     let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
     bind_kinetic(&open, &mut scroll);
     let scale = f64::from(open.window.window().scale_factor());
@@ -126,6 +131,220 @@ fn a_seam_notch_moves_the_text_as_a_native_notch_frame_for_frame() {
         "the notch moved {distance} of {expected}"
     );
     manager.close_all();
+}
+
+/// A retained text frame of `surface` with the camera at world y `origin` and pixels for
+/// 600 rows above and below it; `rebase` acknowledges a corrected surface.
+fn retained_frame(
+    open: &OpenWindow,
+    revision: u64,
+    surface: u64,
+    origin: f64,
+    rebase: Option<u64>,
+) -> ViewerOutput {
+    let viewport = [
+        open.window.get_content_width().round() as u32,
+        open.window.get_content_height().round() as u32,
+    ];
+    let height = 1200 + viewport[1];
+    let ViewerOutput::Frame(mut frame) = text_frame(revision, 0, 0.5) else {
+        unreachable!()
+    };
+    frame.width = viewport[0];
+    frame.height = height;
+    frame.pixels = vec![255; viewport[0] as usize * height as usize * 4].into();
+    frame.raster_rebase = rebase;
+    frame.raster = Some(ViewerRasterInfo {
+        surface: ViewerSurfaceId(surface),
+        pixel_id: revision,
+        origin: [0.0, origin],
+        raster_origin: [0.0, origin - 600.0],
+        viewport,
+        coverage_min: [0.0, origin - 600.0],
+        coverage_max: [0.0, origin + 600.0],
+        limit_min: [Some(0.0), None],
+        limit_max: [Some(0.0), None],
+        pan_sequence: 0,
+        scroll_per_pixel: [0.0, 1e-6],
+        scroll_map: None,
+        settled: true,
+        gutter: None,
+        bands: None,
+    });
+    ViewerOutput::Frame(frame)
+}
+
+/// The shown camera's world y.
+fn camera(open: &OpenWindow) -> f64 {
+    open.retained_raster.borrow().camera.origin[1]
+}
+
+/// What reaches the window as winit would deliver it: wheel notches and the frames
+/// (`RedrawRequested`) on which their glide steps.
+enum Driver {
+    /// The seam's `wheel`, and the frames the seam then sends by itself.
+    Seam(Rc<OpenWindow>),
+    /// The native events straight to the window's observer, with a frame every wheel frame:
+    /// winit's, which give one for each redraw a moving window asks for.
+    Winit(Rc<OpenWindow>, Box<midnight_ui_input::NativeScroll>),
+}
+
+impl Driver {
+    fn open(&self) -> &Rc<OpenWindow> {
+        match self {
+            Driver::Seam(open) | Driver::Winit(open, _) => open,
+        }
+    }
+
+    /// `lines` of one wheel report in winit's units: a positive `y` scrolls up.
+    fn wheel(&mut self, manager: &ViewerWindows, lines: f32) {
+        let at = middle(self.open());
+        match self {
+            Driver::Seam(open) => {
+                let window = open.window.clone_strong();
+                let wheel = NativeWheel::Lines { x: 0.0, y: lines };
+                assert_eq!(super::wheel(manager, &window, at, wheel), Some(true));
+            }
+            Driver::Winit(open, scroll) => {
+                let scale = f64::from(open.window.window().scale_factor());
+                for event in [
+                    WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: PhysicalPosition::new(
+                            f64::from(at.x) * scale,
+                            f64::from(at.y) * scale,
+                        ),
+                    },
+                    WindowEvent::MouseWheel {
+                        device_id: DeviceId::dummy(),
+                        delta: MouseScrollDelta::LineDelta(0.0, lines),
+                        phase: TouchPhase::Moved,
+                    },
+                ] {
+                    observe_native_content(open, &event, true, scroll);
+                }
+            }
+        }
+    }
+
+    /// Let `duration` pass in wheel frames while Slint's timers run (the seam's too).
+    fn run(&mut self, duration: Duration) {
+        for _ in 0..duration.as_millis() / midnight_ui_input::WHEEL_FRAME.as_millis() {
+            advance_time(midnight_ui_input::WHEEL_FRAME);
+            slint::platform::update_timers_and_animations();
+            if let Driver::Winit(open, scroll) = self {
+                observe_native_content(open, &WindowEvent::RedrawRequested, true, scroll);
+            }
+        }
+    }
+}
+
+/// After a notch down and a rest, a notch up whose glide waits for a corrected surface
+/// (`RasterRebase`: the first page read above a scrollbar position started inside a row)
+/// longer than the seam's settling time moves its whole distance once the surface comes,
+/// and a burst after it moves all its notches.
+fn notch_up_across_a_corrected_surface(seam: bool) {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let capture = inputs.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        capture.borrow_mut().push(input);
+        true
+    });
+    let _settings = override_settings(SystemSettings {
+        wheel: Some(WheelSetting::Lines(3)),
+        reduce_motion: Some(false),
+    });
+    let present = |outputs| image_presentation_tests::present(&open, &service, &|_| {}, outputs);
+    present(vec![retained_frame(&open, 10, 70, 4000.0, None)]);
+    assert!(open.window.get_retained_raster());
+    let mut driver = if seam {
+        Driver::Seam(open.clone())
+    } else {
+        let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
+        bind_kinetic(&open, &mut scroll);
+        Driver::Winit(open.clone(), Box::new(scroll))
+    };
+    let scale = f64::from(open.window.window().scale_factor());
+    let notch = f64::from(midnight_ui_input::notch_pixels_for(
+        WheelSetting::Lines(3),
+        0.0,
+    )) * scale;
+    // One notch down, then a rest.
+    let start = camera(&open);
+    driver.wheel(&manager, -1.0);
+    driver.run(Duration::from_secs(1));
+    let down = camera(&open) - start;
+    assert!((down - notch).abs() < 0.5, "a notch down moved {down:.1}");
+    // One notch up: two frames of its glide, then the worker corrects its page and the
+    // window hands it the camera it shows.
+    let start = camera(&open);
+    driver.wheel(&manager, 1.0);
+    driver.run(2 * midnight_ui_input::WHEEL_FRAME);
+    let shown = camera(&open);
+    assert!(shown < start, "the glide did not start");
+    inputs.borrow_mut().clear();
+    present(vec![ViewerOutput::RasterRebase {
+        surface: ViewerSurfaceId(70),
+        transition: 1,
+    }]);
+    let handed = inputs.borrow().iter().find_map(|input| match input {
+        ViewerInput::RasterRebase {
+            transition: 1,
+            origin,
+        } => Some(origin[1]),
+        _ => None,
+    });
+    assert_eq!(
+        handed,
+        Some(shown),
+        "the window hands over the camera it shows"
+    );
+    // The corrected surface comes later than the seam's settling time after the notch.
+    driver.run(Duration::from_millis(400));
+    present(vec![retained_frame(&open, 11, 71, shown, Some(1))]);
+    driver.run(Duration::from_secs(1));
+    let up = camera(&open) - start;
+    assert!(
+        (up + notch).abs() < 0.5,
+        "a notch up moved {up:.1} of {:.1}",
+        -notch
+    );
+    // Five notches down after it, at once.
+    let start = camera(&open);
+    for _ in 0..5 {
+        driver.wheel(&manager, -1.0);
+    }
+    driver.run(Duration::from_secs(1));
+    let burst = camera(&open) - start;
+    assert!(
+        (burst - 5.0 * notch).abs() < 0.5,
+        "five notches moved {burst:.1}"
+    );
+    if seam {
+        // At rest the seam sends no frames.
+        let sent = open.seam.sent.get();
+        driver.run(Duration::from_millis(500));
+        assert_eq!(open.seam.sent.get(), sent, "frames continue at rest");
+    }
+    drop(driver);
+    manager.close_all();
+}
+
+/// The window keeps the whole travel when winit gives it its frames: it asks for them
+/// again when the corrected surface comes.
+#[test]
+fn a_notch_up_across_a_corrected_surface_moves_its_whole_distance_with_winits_frames() {
+    notch_up_across_a_corrected_surface(false);
+}
+
+/// The seam too. It ended its frames while the glide waited for the corrected surface, as
+/// if the window rested, so the rest of the glide got none: the view stayed 15 to 42 px up
+/// and did not move on (acceptance VIEW-NOTCH-UP).
+#[test]
+fn a_notch_up_across_a_corrected_surface_moves_its_whole_distance_with_the_seams_frames() {
+    notch_up_across_a_corrected_surface(true);
 }
 
 /// Overridden settings apply when the window next gains the focus, as the system's do, and

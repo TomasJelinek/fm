@@ -175,7 +175,12 @@ The zoom percentage is also a field for a typed value: see
 [keyboard shortcuts](../KEYBOARD_SHORTCUTS.md) (Ctrl+Y). A typed zoom is one zoom
 command anchored at the view's centre and saved like the zoom buttons' commands. The
 user's decimal separator comes from the application's number format
-(`ViewerWindows::set_number_locale`).
+(`ViewerWindows::set_number_locale`), for the typed value and for the shown percentage
+alike: the footer and the HTML row show the number the field opens with
+(`zoom_entry::format`, one decimal for images and documents, none for HTML), set together
+with the zoom (`show_zoom`), never Slint's own float formatting
+(`zoom_entry_ui_tests::the_shown_zoom_uses_the_users_decimal_separator`). The number
+format is read when the zoom changes; the application loads it once at startup.
 
 ## Preference updates
 

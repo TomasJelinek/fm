@@ -621,6 +621,8 @@ fn compact_pdf_keeps_large_page_counter_and_zoom_actions_clickable() {
         window.set_document_page(page);
         window.set_document_pages(pages);
         window.set_zoom_percent(zoom);
+        // The application sets the shown text with the zoom (`show_zoom`).
+        window.set_zoom_text(format!("{zoom}%").into());
         window.set_status(format!("Page {page} / {pages} · {zoom}%").into());
         for light in [false, true] {
             window.invoke_apply_palette(light);
@@ -781,6 +783,7 @@ fn pdf_layout_buttons_keep_published_selection_focus_and_bounds_at_compact_size_
     window.set_document_page(i32::MAX - 1);
     window.set_document_pages(i32::MAX);
     window.set_zoom_percent(1599.9);
+    window.set_zoom_text("1599.9%".into());
     let layouts = Rc::new(RefCell::new(Vec::new()));
     let capture = layouts.clone();
     window.on_change_document_layout(move |layout| capture.borrow_mut().push(layout));
@@ -883,6 +886,7 @@ fn image_and_document_footer_resizes_across_stacking_threshold_without_overlap()
     let window = ViewerWindow::new().unwrap();
     window.set_image_mode(true);
     window.set_zoom_percent(1600.0);
+    window.set_zoom_text("1600%".into());
     let commands = Rc::new(RefCell::new(Vec::new()));
     let capture = commands.clone();
     window.on_image_command(move |command| capture.borrow_mut().push(command));
@@ -1385,6 +1389,7 @@ fn app_touch_theme_keeps_compact_image_and_document_footer_inside_and_disjoint()
     window.set_compact(true);
     window.set_image_mode(true);
     window.set_zoom_percent(1600.0);
+    window.set_zoom_text("1600%".into());
     window.invoke_apply_tool_theme(2, 1, "Segoe UI".into(), 12, 32);
     let fits = Rc::new(std::cell::Cell::new(0));
     let counted = fits.clone();

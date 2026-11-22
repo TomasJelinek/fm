@@ -8,8 +8,9 @@
 //! [`wheel`] and [`focus`] hand that same closure the events winit would deliver and give
 //! Slint what the observer leaves alone, as winit's backend does. The frames on which wheel
 //! motion and touchpad momentum step (winit's `RedrawRequested`) follow by themselves while
-//! the window moves. [`override_settings`] replaces the system settings the viewer reads,
-//! for this process. The panels' seam in `midnight-ui` behaves the same way.
+//! the window moves, also when it moves on after waiting for the backend.
+//! [`override_settings`] replaces the system settings the viewer reads, for this process.
+//! The panels' seam in `midnight-ui` drives the panels the same way.
 use super::*;
 use i_slint_core::{
     input::{BackendMouseEvent, TouchPhase as SlintPhase},
@@ -119,8 +120,12 @@ pub(crate) struct Seam {
     observer: RefCell<Option<NativeObserver>>,
     /// The observer's wheel and touchpad state: its momentum wants frames.
     scroll: RefCell<Option<Rc<RefCell<midnight_ui_input::NativeScroll>>>>,
+    /// The frame pump (`frames`).
     frames: Timer,
     last_input: Cell<Duration>,
+    /// The frames the pump sent.
+    #[cfg(test)]
+    sent: Cell<u64>,
 }
 
 /// Keep `open`'s native observer and its wheel state (`bind`).
@@ -159,7 +164,7 @@ fn deliver(observer: &NativeObserver, event: &WindowEvent) -> bool {
 }
 
 /// Whether `open` still moves: its wheel glides, camera or touchpad momentum, which step
-/// on each frame.
+/// on each frame. A glide that waits for the backend does not move meanwhile (`frames`).
 fn moving(open: &OpenWindow) -> bool {
     open.raster_redraw.running()
         || open.image_redraw.running()
@@ -172,7 +177,13 @@ fn moving(open: &OpenWindow) -> bool {
 }
 
 /// A seam input reached `open`: winit's frames (`RedrawRequested`, every wheel frame) follow
-/// while it moves and for a while after the input.
+/// for a while after the input and whenever the window moves. Winit gives a frame for each
+/// redraw the window asks for, which it does while it moves; a glide that waits for the
+/// backend asks for none meanwhile and goes on without new input when the reply comes (a
+/// glide handed over to a corrected surface, `raster_rebase`). So the pump runs until the
+/// window closes and sends nothing while the window rests. It used to stop at rest, also
+/// while such a glide waited, and the rest of that glide never got a frame: one notch up
+/// after a scrollbar drag moved 15 to 42 px of 100 (acceptance VIEW-NOTCH-UP).
 fn frames(open: &Rc<OpenWindow>) {
     open.seam.last_input.set(image_motion::now(open));
     if open.seam.frames.running() {
@@ -187,20 +198,20 @@ fn frames(open: &Rc<OpenWindow>) {
                 return;
             };
             let observer = open.seam.observer.borrow().clone();
-            if open.closed.get() || observer.is_none() {
+            let Some(observer) = observer.filter(|_| !open.closed.get()) else {
                 open.seam.frames.stop();
                 return;
+            };
+            let settling =
+                image_motion::now(&open).saturating_sub(open.seam.last_input.get()) < SETTLE;
+            if !settling && !moving(&open) {
+                return;
             }
-            if let Some(observer) = observer
-                && !deliver(&observer, &WindowEvent::RedrawRequested)
-            {
+            #[cfg(test)]
+            open.seam.sent.set(open.seam.sent.get() + 1);
+            if !deliver(&observer, &WindowEvent::RedrawRequested) {
                 // What winit's backend then does: draw the window.
                 open.window.window().request_redraw();
-            }
-            let settled =
-                image_motion::now(&open).saturating_sub(open.seam.last_input.get()) >= SETTLE;
-            if settled && !moving(&open) {
-                open.seam.frames.stop();
             }
         },
     );
