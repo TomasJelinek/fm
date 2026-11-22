@@ -132,7 +132,8 @@ component ScrollBar {
 
 // The SDK ScrollView's interface, including its deprecated viewport aliases.
 // VScrollView and HScrollView below, ScrollStrip (scroll-strip.slint) and the two
-// ListViews repeat its Flickable and bar bindings: change them together.
+// ListViews repeat its Flickable and bar bindings: change them together. Only
+// VScrollView keeps its content clear of its bar.
 export component ScrollView {
     in property <bool> enabled: true;
     out property <length> visible-width <=> flickable.width;
@@ -195,9 +196,14 @@ export component ScrollView {
 // ScrollView without its horizontal bar, for sites that would set that bar's
 // policy to always-off: a hidden bar is still an instance with its items and
 // bindings at every use.
+// Content keeps clear of the bar: the visible width ends at the bar's column wherever
+// the bar can show, and so do a content width the site leaves unset and a list's rows.
+// Nothing lies under the bar, and a bar that appears or goes moves nothing. The
+// Flickable still spans the column: the bar stays over its right edge, where
+// native_scroll.rs looks for it (see the top of this file).
 export component VScrollView {
     in property <bool> enabled: true;
-    out property <length> visible-width <=> flickable.width;
+    out property <length> visible-width: flickable.width - root.bar-column;
     out property <length> visible-height <=> flickable.height;
     in-out property <length> content-width <=> flickable.content-width;
     in-out property <length> content-height <=> flickable.content-height;
@@ -217,12 +223,16 @@ export component VScrollView {
     vertical-stretch: 1;
     preferred-height: 100%;
     preferred-width: 100%;
+    // The bar's column: none where the bar never shows.
+    private property <length> bar-column: vertical-bar.policy == ScrollBarPolicy.always-off ? 0px : vertical-bar.width;
     flickable := Flickable {
         mouse-drag-pan-enabled: false;
         // Explicit position: see the Flickable of ScrollView.
         x: 0px; y: 0px;
         width: parent.width;
         height: parent.height;
+        // Content beside the column where the site sets no width of its own.
+        content-width: root.visible-width;
         @children
     }
     vertical-bar := ScrollBar {

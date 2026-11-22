@@ -850,8 +850,9 @@ editor scope and shortcuts reserved for later stages.
 - Ctrl+R / toolbar Refresh: reload the current directory.
 - F10 opens the main menu with file operations, selection, panel navigation/view
   controls, Find, comparisons, checksums, Hot Paths, Options and Jobs. Choose a
-  category to narrow the list; entries show configured keys and unavailable
-  operations remain visible but disabled.
+  category to narrow the list; each entry shows every key assigned to its command,
+  as Options › Keyboard lists them (under the label when the row is too narrow for
+  both), and unavailable operations remain visible but disabled.
 - Ctrl+Shift+S: calculate selected folder sizes, or all folders when none are selected;
   press again to cancel. Partial/running values are marked; links are skipped.
 - Ctrl+[ / Ctrl+]: insert the left/right path at the caret or replace the selection.

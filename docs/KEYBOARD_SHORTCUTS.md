@@ -195,7 +195,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+P in files or command editor | Insert the active pane path, ending in a native path separator, at the command selection |
 | Ctrl+[ / Ctrl+] (also with Shift) | Insert the left / right pane path, ending in a native path separator, at the command selection |
 | Ctrl+Space | Available to the input method (IME); Ctrl+P inserts the path |
-| Ctrl+click on the terminal button, or Ctrl+Enter / Ctrl+Space while it has keyboard focus | Open the selected shell elevated in the active pane's folder: as administrator after Windows asks for consent (UAC), or a root shell through sudo on Linux. The same command, **Open terminal as administrator** (Linux: **Open root terminal (sudo)**), has no default key and can be assigned in Options › Keyboard |
+| Ctrl+click on the terminal button, or Ctrl+Enter / Ctrl+Space while it has keyboard focus | Open the selected shell elevated in the active pane's folder: as administrator after Windows asks for consent (UAC), or a root shell through sudo on Linux. The same command, **Open terminal as administrator** (Linux: **Open root terminal (sudo)**), has no default key, can be assigned in Options › Keyboard and is in the F10 menu under Tools |
 | Enter in command editor | Explicitly submit the command to the selected system terminal |
 | Alt+↑ / Alt+↓ in command editor | Rotate to older / newer stored commands, wrapping; terminal type stays unchanged |
 | Escape / Ctrl+Tab in command editor | Return to the active file list |

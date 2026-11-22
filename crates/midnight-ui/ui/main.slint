@@ -1571,6 +1571,7 @@ export component MainWindow inherits Window {
                 can-target-selection: root.active-pane == 0 ? root.left-can-target-selection : root.right-can-target-selection;
                 native-filesystem: root.active-pane == 0 ? root.left-native-filesystem : root.right-native-filesystem;
                 network-available: root.network-available;
+                terminal-ready: root.terminal-ready;
                 moved(dx, dy) => { main-menu-frame.move-by(dx, dy); }
                 dismissed => { main-menu.close(); root.focus-files(); }
                 action(action) => { main-menu.close(); root.function-action(action, root.active-pane); }

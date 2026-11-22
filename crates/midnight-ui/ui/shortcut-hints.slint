@@ -5,6 +5,7 @@ import { FunctionSlot } from "function-models.slint";
 export global ShortcutHints {
     in-out property <string> revision;
     pure callback lookup(string, bool) -> string;
+    pure callback lookup-chords(string) -> [string];
     pure callback lookup-help() -> string;
     pure callback lookup-function(int, int, bool) -> FunctionSlot;
     pure public function function-key(index: int, modifiers: int, searching: bool) -> FunctionSlot {
@@ -17,8 +18,13 @@ export global ShortcutHints {
     pure public function key(action: string) -> string {
         return ShortcutHints.revision == "" ? "" : ShortcutHints.lookup(action, false);
     }
+    // Every chord bound to the action, joined by " / " as Options › Keyboard lists them.
     pure public function keys(action: string) -> string {
         return ShortcutHints.revision == "" ? "" : ShortcutHints.lookup(action, true);
+    }
+    // The same chords one by one, for a layout that places them itself.
+    pure public function chords(action: string) -> [string] {
+        return ShortcutHints.revision == "" ? [] : ShortcutHints.lookup-chords(action);
     }
     pure public function hint(label: string, action: string) -> string {
         let keys = ShortcutHints.keys(action);

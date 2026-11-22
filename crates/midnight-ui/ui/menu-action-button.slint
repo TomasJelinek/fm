@@ -3,14 +3,29 @@ import { NativeActionImage } from "action-icons.slint";
 import { Theme } from "theme.slint";
 
 // Keep standard button focus, pointer and accessibility behavior with menu columns.
+// The shortcut column lists every chord bound to the action, as Options › Keyboard
+// does, and never cuts one: when the label and the chords do not fit one line, the
+// chords move under the label, on one line if it holds them, else one per line, and
+// the row grows. The label elides only when it alone is too wide for the row.
 export component MenuActionButton inherits Rectangle {
     in property <string> label;
+    // Every chord bound to the action, joined by " / " as Options › Keyboard shows them.
     in property <string> shortcut;
+    // The same chords one by one.
+    in property <[string]> chords;
     in property <image> row-native-icon;
     in property <image> row-fallback-icon;
     in property <bool> enabled: true;
     in property <string> hint;
+    // The height the row needs: one line, or the label's line and the chords under it.
+    out property <length> needed-height: root.inline ? Theme.control-height
+        : Theme.control-height + under.preferred-height + 4px;
     callback clicked();
+    private property <length> text-x: Theme.icon-size + 16px;
+    private property <bool> inline: root.shortcut == ""
+        || root.text-x + label-metrics.preferred-width + 16px + key-metrics.preferred-width + 8px <= root.width;
+    private property <bool> joined: key-metrics.preferred-width + 16px <= root.width;
+    private property <brush> key-color: root.enabled ? Theme.secondary-text : Theme.muted-text;
     accessible-role: button; accessible-label: root.label;
     accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
@@ -21,25 +36,42 @@ export component MenuActionButton inherits Rectangle {
         enabled: root.enabled; hint: root.hint;
         clicked => { if root.enabled { root.clicked(); } }
     }
+    label-metrics := Text { visible: false; text: root.label; font-size: Theme.font-size; }
     key-metrics := Text { visible: false; text: root.shortcut; font-size: Theme.small-font; }
     NativeActionImage {
-        x: 8px; y: (root.height - self.height) / 2;
+        x: 8px; y: (Theme.control-height - self.height) / 2;
         width: Theme.icon-size; height: self.width;
         native-icon: root.row-native-icon; fallback-icon: root.row-fallback-icon; glyph: true;
         action-enabled: root.enabled;
     }
     Text {
-        x: Theme.icon-size + 16px; y: 0px;
-        width: max(0px, keys.x - self.x - 8px); height: root.height;
+        x: root.text-x; y: 0px;
+        width: max(0px, root.width - self.x - (root.inline && root.shortcut != "" ? key-metrics.preferred-width + 16px : 8px));
+        height: Theme.control-height;
         text: root.label; font-size: Theme.font-size;
         color: root.enabled ? Theme.text : Theme.muted-text;
         vertical-alignment: center; overflow: elide;
     }
-    keys := Text {
+    if root.inline && root.shortcut != "" : Text {
         x: root.width - self.width - 8px; y: 0px;
-        width: min(key-metrics.preferred-width, root.width * 0.35); height: root.height;
-        text: root.shortcut; font-size: Theme.small-font;
-        color: root.enabled ? Theme.secondary-text : Theme.muted-text;
-        horizontal-alignment: right; vertical-alignment: center; overflow: elide;
+        width: key-metrics.preferred-width; height: Theme.control-height;
+        text: root.shortcut; font-size: Theme.small-font; color: root.key-color;
+        horizontal-alignment: right; vertical-alignment: center;
+    }
+    // Under the label, right-aligned like the column of the rows that hold their chords.
+    under := VerticalLayout {
+        x: 8px; y: Theme.control-height;
+        width: max(0px, root.width - 16px); height: self.preferred-height;
+        if !root.inline && root.joined : Text {
+            text: root.shortcut; font-size: Theme.small-font; color: root.key-color;
+            horizontal-alignment: right;
+        }
+        if !root.inline && !root.joined : VerticalLayout {
+            for chord in root.chords : Text {
+                // Only a chord wider than the whole row wraps, between characters.
+                text: chord; font-size: Theme.small-font; color: root.key-color;
+                horizontal-alignment: right; wrap: char-wrap;
+            }
+        }
     }
 }

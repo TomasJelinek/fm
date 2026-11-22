@@ -23,6 +23,8 @@ export component MainMenuBody inherits Rectangle {
     in property <bool> can-target-cursor;
     in property <bool> can-target-selection;
     in property <bool> network-available;
+    // The terminal button's readiness, which the elevated terminal shares.
+    in property <bool> terminal-ready;
     private property <int> category;
     private property <[string]> categories: ["All actions", "Files", "Selection", "Panels and navigation", "Tools", "Application"];
     callback action(string);
@@ -32,7 +34,8 @@ export component MainMenuBody inherits Rectangle {
     // The host shows a new popup instance each time; it starts reset.
     init => { root.reset(); }
     pure function enabled-action(action: string) -> bool {
-        return ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
+        return (action != "command.open-terminal-elevated" || root.terminal-ready)
+            && ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
             root.can-target-selection, root.network-available, root.can-measure-folders);
     }
     // Fixed positions preserve a held pointer when host icons or key hints arrive.
@@ -94,6 +97,11 @@ export component MainMenuBody inherits Rectangle {
         { action: "panel.folder-sizes", label: "Calculate / cancel folder sizes", category: 4, native-icon: root.icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes },
         { action: "panel.drive-info", label: "Drive information", category: 4, fallback-icon: FallbackIcons.drive },
         { action: "command.focus", label: "Command line", category: 4, native-icon: root.icons.terminal, fallback-icon: FallbackIcons.terminal },
+        // The terminal button's Ctrl+click: the selected shell, elevated. Named as the
+        // shortcut catalogue names it on this platform.
+        { action: "command.open-terminal-elevated",
+            label: Platform.os == OperatingSystemType.windows ? "Open terminal as administrator" : "Open root terminal (sudo)",
+            category: 4, native-icon: root.icons.terminal, fallback-icon: FallbackIcons.terminal },
         { action: "app.custom-commands", label: "Configure Custom Commands…", category: 4, native-icon: root.icons.user-menu, fallback-icon: FallbackIcons.user-menu },
         { action: "network.connect", label: "Connect network drive…", category: 4, native-icon: root.icons.network, fallback-icon: FallbackIcons.network },
         { action: "network.disconnect", label: "Disconnect network drive…", category: 4, native-icon: root.icons.network, fallback-icon: FallbackIcons.network },
@@ -138,7 +146,7 @@ export component MainMenuBody inherits Rectangle {
                         private property <bool> heading: root.category == 0 && (index == 0 || root.entries[index - 1].category != self.entry.category);
                         private property <length> heading-height: self.heading ? Theme.font-size + 16px : 0px;
                         visible: self.included;
-                        height: self.included ? self.heading-height + Theme.control-height + 4px : 0px;
+                        height: self.included ? self.heading-height + item.needed-height + 4px : 0px;
                         min-width: 0px;
                         if self.heading : Text {
                             x: 4px; y: 0px; width: max(0px, parent.width - 8px);
@@ -146,11 +154,13 @@ export component MainMenuBody inherits Rectangle {
                             font-size: Theme.font-size; font-weight: 600;
                             height: parent.heading-height; vertical-alignment: center;
                         }
-                        MenuActionButton {
-                            y: parent.heading-height; width: parent.width; height: Theme.control-height;
+                        item := MenuActionButton {
+                            y: parent.heading-height; width: parent.width; height: self.needed-height;
                             min-width: 0px;
                             row-native-icon: parent.entry.native-icon; row-fallback-icon: parent.entry.fallback-icon;
-                            label: parent.entry.label; shortcut: ShortcutHints.key(parent.entry.action);
+                            // Every chord in force for the action, as Options › Keyboard lists them.
+                            label: parent.entry.label; shortcut: ShortcutHints.keys(parent.entry.action);
+                            chords: ShortcutHints.chords(parent.entry.action);
                             enabled: root.enabled-action(parent.entry.action);
                             hint: ShortcutHints.hint(parent.entry.label, parent.entry.action)
                                 + (self.enabled ? "" : "\nUnavailable for the current location or selection.");

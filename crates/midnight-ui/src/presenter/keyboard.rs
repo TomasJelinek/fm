@@ -14,6 +14,8 @@ pub(crate) struct KeyboardBindings {
     overrides: Vec<ShortcutBinding>,
     commands: std::sync::Weak<Vec<UserCommand>>,
     hints: HashMap<String, (SharedString, SharedString)>,
+    // Every chord of an action one by one, as `hints` joins them.
+    chords: HashMap<String, Vec<SharedString>>,
     function_files: [[crate::FunctionSlot; 12]; 16],
     function_search: [[crate::FunctionSlot; 12]; 16],
 }
@@ -26,6 +28,7 @@ impl KeyboardBindings {
     ) -> Result<Self, String> {
         let map = ShortcutMap::with_user_commands(overrides, commands)?;
         let mut hints = HashMap::new();
+        let mut chords = HashMap::new();
         let mut help = String::new();
         for action in map.definitions() {
             let keys = map.bindings(&action.id).expect("catalog action");
@@ -41,7 +44,8 @@ impl KeyboardBindings {
                 })
                 .or_else(|| keys.first());
             let primary = primary.map(display_key).unwrap_or_default();
-            let aliases = keys.iter().map(display_key).collect::<Vec<_>>().join(" / ");
+            let displayed = keys.iter().map(display_key).collect::<Vec<_>>();
+            let aliases = displayed.join(" / ");
             let scope = match keys.first() {
                 Some(first)
                     if keys
@@ -69,6 +73,10 @@ impl KeyboardBindings {
                 scope
             ));
             hints.insert(action.id.clone(), (primary.into(), aliases.into()));
+            chords.insert(
+                action.id.clone(),
+                displayed.into_iter().map(SharedString::from).collect(),
+            );
         }
         Ok(Self {
             function_files: function_slots::build(&map, ShortcutContext::Files),
@@ -80,6 +88,7 @@ impl KeyboardBindings {
             overrides: overrides.to_vec(),
             commands: Arc::downgrade(commands),
             hints,
+            chords,
         })
     }
 
@@ -87,6 +96,12 @@ impl KeyboardBindings {
         self.hints
             .get(action)
             .map_or("", |(primary, aliases)| if all { aliases } else { primary })
+    }
+
+    /// Every chord bound to `action`, displayed one by one in the order in which
+    /// `hint(action, true)` joins them.
+    pub(crate) fn chords(&self, action: &str) -> &[SharedString] {
+        self.chords.get(action).map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn hint_owned(&self, action: &str, all: bool) -> SharedString {

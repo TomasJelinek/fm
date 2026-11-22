@@ -3,7 +3,6 @@ import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-input
 import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { ListHeader } from "list-header.slint";
-import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
 export struct LiteralArgumentInsertion {
     label: string,
@@ -155,7 +154,7 @@ export component ArgumentEditor inherits VerticalLayout {
                     accessible-action-default => { root.select-row(index); }
                     Text {
                         x: 8px;
-                        width: max(0px, parent.width - 16px - (rows.content-height > rows.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                        width: max(0px, parent.width - 16px);
                         text: (index + 1) + ". " + (value == "" ? "\"\" (empty string)" : value);
                         color: parent.selected ? Theme.selected-text : Theme.text;
                         font-size: Theme.font-size; vertical-alignment: center; overflow: elide;

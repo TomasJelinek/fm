@@ -75,7 +75,8 @@ export component OperationDialog inherits Rectangle {
         return is-compact || root.wait-visible ? 8px : 16px;
     }
     // The width DialogText draws the summary at: inside the form padding on both
-    // sides, the scrollbar overlay the form reserves and DialogText's 16px text inset.
+    // sides, the scroll bar's column, which the form's scroll view leaves free, and
+    // DialogText's 16px: its own bar's column and 2px.
     pure function summary-width(is-compact: bool) -> length {
         return max(1px, root.width - 2 * root.form-padding(is-compact) - FluentScrollMetrics.overlay-size - 16px);
     }
@@ -267,7 +268,6 @@ export component OperationDialog inherits Rectangle {
                 changed content-height => { root.reveal-focused(); }
                 form := VerticalLayout {
                     height: middle.content-height;
-                    padding-right: FluentScrollMetrics.overlay-size;
                     spacing: root.row-spacing; alignment: start;
                     if root.warning != "" && !root.compact : Text {
                         text: root.warning; color: Theme.error-text; font-weight: 600;

@@ -79,9 +79,6 @@ component AboutTab inherits Rectangle {
 // double-click do. Up, Down, Page Up, Page Down, Home and End move the selection.
 // A short tab scrolls as a whole instead of squeezing the list below three rows.
 component LicenseList inherits Rectangle {
-    // The dialog is short: the tab may scroll, and its content keeps clear of the
-    // scroll bar.
-    in property <bool> short;
     private property <length> row-height: Theme.column-height;
     private property <int> count: AboutView.rows.length;
     private property <bool> selected: AboutView.current >= 0 && AboutView.current < root.count;
@@ -129,7 +126,6 @@ component LicenseList inherits Rectangle {
             x: 0px; y: 0px; width: tab-scroll.visible-width;
             height: max(tab-scroll.visible-height, self.min-height);
             spacing: 6px;
-            padding-right: root.short ? FluentScrollMetrics.overlay-size : 0px;
             HorizontalLayout {
                 spacing: 8px;
                 HintedLineEdit {
@@ -623,7 +619,6 @@ export component AboutDialog inherits Rectangle {
                     }
                     if !AboutView.detail-open && root.tab == 1 : LicenseList {
                         width: parent.width; height: parent.height;
-                        short: root.short;
                     }
                     // Slint's Text has no line height, so lines that must stay apart
                     // are separate Texts: the license and its users, and every author.
@@ -637,7 +632,6 @@ export component AboutDialog inherits Rectangle {
                             x: 0px; y: 0px; width: detail-scroll.visible-width;
                             height: max(detail-scroll.visible-height, self.min-height);
                             spacing: 10px;
-                            padding-right: root.short ? FluentScrollMetrics.overlay-size : 0px;
                             VerticalLayout {
                                 spacing: 6px;
                                 Text { text: AboutView.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }

@@ -3,7 +3,6 @@ import { FilenameColorPresentation } from "filename-colors.slint";
 import { HintedLineEdit, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { ListView } from "vlist-view.slint";
 import { ErrorNotice } from "error-notice.slint";
-import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { Tip } from "controls.slint";
 import { ListHeader } from "list-header.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
@@ -89,8 +88,7 @@ component ColorPriorityList inherits Rectangle {
                 accessible-action-default => { root.select-rule(index); }
                 Text {
                     x: 8px;
-                    width: max(0px, parent.width - 16px
-                        - (rules.content-height > rules.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                    width: max(0px, parent.width - 16px);
                     text: label; font-size: Theme.font-size; overflow: elide;
                     color: parent.selected ? Theme.selected-text : Theme.text;
                     vertical-alignment: center;

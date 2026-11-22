@@ -2,6 +2,7 @@ import { VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 
 // Explicit content geometry keeps long descriptions scrollable from their first line.
+// The text ends 2 px before the scroll bar's column: 16 px before the right edge.
 export component DialogText inherits VScrollView {
     in property <string> text;
     in property <color> foreground: Theme.text;
@@ -9,7 +10,7 @@ export component DialogText inherits VScrollView {
     content-height: max(root.visible-height, description.preferred-height);
     description := Text {
         x: 0px; y: 0px;
-        width: max(0px, root.visible-width - 16px);
+        width: max(0px, root.visible-width - 2px);
         height: self.preferred-height;
         text: root.text; wrap: word-wrap;
         horizontal-alignment: left; vertical-alignment: top;

@@ -306,9 +306,6 @@ export component OptionsBody inherits Rectangle {
             // Keep the wrapper unconditional; the page itself remains conditional.
             VerticalLayout {
               spacing: 0px; min-width: 0px;
-              // Fluent scrollbars overlay the reported visible width. Keep
-              // rightmost actions out of their pointer/input region.
-              padding-right: FluentScrollMetrics.overlay-size;
               padding-bottom: root.topic-index == 10 || root.topic-index == 9 || root.topic-index == 4 || root.topic-index == 7 || root.topic-index == 8 ? Theme.control-height + FluentScrollMetrics.overlay-size : 0px;
               if root.topic-index == 10 : ComparatorOptions {
                 private property <bool> focus-after-show: root.comparator-focus-after-show;
@@ -335,7 +332,7 @@ export component OptionsBody inherits Rectangle {
               if root.topic-index == 9 : UserCommandOptions {
                 narrow: root.narrow;
                 viewport-left: content.absolute-position.x; viewport-top: content.absolute-position.y;
-                viewport-width: max(0px, content.visible-width - FluentScrollMetrics.overlay-size);
+                viewport-width: content.visible-width;
                 viewport-height: max(0px, content.visible-height - (root.narrow && content.content-width > content.visible-width ? FluentScrollMetrics.overlay-size : 0px));
                 // Preview remains in the form without opening another popup.
               }

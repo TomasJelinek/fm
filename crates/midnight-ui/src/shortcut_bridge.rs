@@ -120,6 +120,12 @@ fn install_routing(window: &MainWindow, bindings: Bindings) {
     let state = bindings.clone();
     hints.on_lookup(move |action, all| state.borrow().hint_owned(action.as_str(), all));
     let state = bindings.clone();
+    hints.on_lookup_chords(move |action| {
+        slint::ModelRc::new(slint::VecModel::from(
+            state.borrow().chords(action.as_str()).to_vec(),
+        ))
+    });
+    let state = bindings.clone();
     hints.on_lookup_help(move || state.borrow().help.clone());
     let state = bindings.clone();
     hints.on_lookup_function(move |index, modifiers, searching| {

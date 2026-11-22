@@ -441,6 +441,8 @@ component DateField inherits HorizontalLayout {
                 }
                 days := VScrollView {
                     x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    // The popup is a bar wider only while the calendar scrolls.
+                    vertical-scrollbar-policy: root.scrolls ? ScrollBarPolicy.as-needed : ScrollBarPolicy.always-off;
                     viewport-width: self.visible-width; viewport-height: root.content-height;
                     // The wheel turns the month while the calendar fits the window (up goes
                     // back), one month per notch of 60 px; a calendar that scrolls scrolls.

@@ -1,14 +1,25 @@
-//! F10 exposes commands through the same callbacks as toolbar and keyboard actions.
+//! F10 exposes commands through the same callbacks as toolbar and keyboard actions, and
+//! shows every chord in force for each command, never cut and never under the scroll bar.
 #[path = "support/render.rs"]
 mod render;
 #[path = "support/shortcut_editor.rs"]
 mod shortcut_editor;
 use crate::support::ui;
 
-use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+use i_slint_core::{
+    accessibility::AccessibleStringProperty,
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    items::{AccessibleRole, ComplexText, Flickable, Item, SimpleText, TextWrap},
+    layout::Orientation,
+    lengths::LogicalRect,
+    window::{WindowInner, WindowKind},
+};
 use shortcut_editor::Shortcuts;
-use slint::platform::Key;
-use std::{cell::RefCell, rc::Rc};
+use slint::{ComponentHandle, platform::Key};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 #[test]
 fn main_menu_exposes_file_actions_and_dispatches_to_the_active_panel() {
@@ -299,18 +310,14 @@ fn menu_suppresses_a_new_default_key_reassigned_to_another_action_and_restores_i
 }
 
 #[test]
-fn menu_shows_the_primary_alias_and_its_hover_hint_lists_every_alias() {
-    use i_slint_core::{
-        item_tree::ItemRc,
-        window::{WindowInner, WindowKind},
-    };
-    use slint::{ComponentHandle, platform::WindowEvent};
+fn menu_and_its_hover_hint_list_every_alias() {
+    use slint::platform::WindowEvent;
     let (test, clock) = ui::TestUi::with_virtual_clock();
     let (mut test, _) = shortcut_menu_on(test, &[("files.rename", &["Ctrl+Alt+R", "F2"])]);
     assert_eq!(
         menu_shortcut(&test, "Rename…"),
-        ["F2"],
-        "the menu column uses the preferred function key, not all aliases"
+        ["Ctrl+Alt+R / F2"],
+        "the menu lists every alias, in the order Options › Keyboard does"
     );
     let rename = ui::popup_item(&test.window, "Rename…", AccessibleRole::Button);
     let rect = rename.geometry();
@@ -564,4 +571,361 @@ fn panel_view_and_sort_dropdowns_show_live_shortcuts_without_changing_labels() {
             .any(|value| value.contains("Alt+") || value.contains("Ctrl+"))
     );
     render::snapshot(&test, "panel-view-dropdown-shortcuts");
+}
+
+#[test]
+fn menu_lists_every_default_chord_of_an_action() {
+    let (mut test, _) = shortcut_menu(&[]);
+    // In the order and with the " / " that Options › Keyboard lists them. Each row is
+    // read in its category, which shows it without scrolling.
+    for (index, label, chords) in [
+        (
+            4,
+            "Calculate / cancel folder sizes",
+            "Ctrl+Shift+S / Ctrl+Shift+F10",
+        ),
+        (1, "Delete permanently…", "Shift+Delete / Shift+F8"),
+        (1, "System properties", "Alt+Enter / Ctrl+Alt+Enter"),
+        (1, "Rename…", "F2"),
+    ] {
+        category(&mut test, index);
+        assert_eq!(menu_shortcut(&test, label), [chords], "{label}");
+        ui::key(&test.window, Key::Escape);
+        open_menu(&mut test);
+    }
+    category(&mut test, 4);
+    render::snapshot(&test, "main-menu-every-chord");
+    ui::key(&test.window, Key::Escape);
+}
+
+#[test]
+fn a_rebinding_of_several_chords_shows_in_the_menu() {
+    let (mut test, shortcuts) = shortcut_menu(&[]);
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["F2"]);
+    ui::key(&test.window, Key::Escape);
+    // Options › Keyboard gives Rename two chords; the menu lists both, in that order.
+    shortcuts.assign(&test.window, "files.rename", &["Ctrl+Alt+T", "Ctrl+Alt+Y"]);
+    open_menu(&mut test);
+    assert_eq!(menu_shortcut(&test, "Rename…"), ["Ctrl+Alt+T / Ctrl+Alt+Y"]);
+    // Removing them while the menu is open empties the row at once.
+    shortcuts.unassign(&test.window, "files.rename");
+    test.draw();
+    assert!(ui::has_popup(&test.window));
+    assert!(menu_shortcut(&test, "Rename…").is_empty());
+    ui::key(&test.window, Key::Escape);
+}
+
+/// An item's bounds in window coordinates.
+fn bounds(item: &ItemRc) -> LogicalRect {
+    let rect = item.geometry();
+    LogicalRect::new(item.map_to_native_window(rect.origin), rect.size)
+}
+
+/// Calls `f` for `item` and every item inside it.
+fn visit(item: &ItemRc, f: &mut impl FnMut(&ItemRc)) {
+    f(item);
+    let mut child = item.first_child();
+    while let Some(next) = child {
+        visit(&next, f);
+        child = next.next_sibling();
+    }
+}
+
+/// The open menu's command rows: every button but the header's close button.
+fn menu_rows(test: &ui::TestUi) -> Vec<(String, ItemRc)> {
+    let inner = WindowInner::from_pub(test.window.window());
+    let popups = inner.active_popups();
+    let popup = popups
+        .iter()
+        .rev()
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .expect("the open menu");
+    let mut rows = Vec::new();
+    visit(&ItemRc::new_root(popup.component.clone()), &mut |item| {
+        if item.accessible_role() == AccessibleRole::Button
+            && let Some(label) = item.accessible_string_property(AccessibleStringProperty::Label)
+            && label != "Close menu"
+        {
+            rows.push((label.to_string(), item.clone()));
+        }
+    });
+    rows
+}
+
+/// The bounds of the vertical scroll bar beside `row`: the sibling of the scroll
+/// view's Flickable.
+fn scroll_bar(row: &ItemRc) -> LogicalRect {
+    let mut parent = row.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(item) = parent {
+        if item.downcast::<Flickable>().is_some() {
+            return bounds(&item.next_sibling().expect("the scroll view's bar"));
+        }
+        parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    panic!("the menu rows are not in a scroll view")
+}
+
+/// Whether `item` shows in `row`: no clip between them hides it (`visible: false` is a
+/// clip of no size). The rows that the menu has scrolled out of view count too.
+fn shown_in(item: &ItemRc, row: &ItemRc) -> bool {
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor == *row {
+            return true;
+        }
+        if ancestor.borrow().as_ref().clips_children() && ancestor.geometry().is_empty() {
+            return false;
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    false
+}
+
+/// The texts a row shows, each with whether it wraps, whether the menu shows that row
+/// at the moment or not.
+fn shown_texts(row: &ItemRc) -> Vec<(String, bool, ItemRc)> {
+    let mut texts = Vec::new();
+    visit(row, &mut |item| {
+        if !shown_in(item, row) {
+            return;
+        }
+        if let Some(text) = item.downcast::<SimpleText>() {
+            texts.push((text.as_pin_ref().text().to_string(), false, item.clone()));
+        } else if let Some(text) = item.downcast::<ComplexText>() {
+            let text = text.as_pin_ref();
+            let wraps = text.wrap() != TextWrap::NoWrap;
+            texts.push((text.text().to_string(), wraps, item.clone()));
+        }
+    });
+    texts.retain(|(text, _, _)| !text.is_empty());
+    texts
+}
+
+/// A text's preferred extent along `orientation`, given `cross` across it (-1: any).
+fn preferred(item: &ItemRc, orientation: Orientation, cross: f32) -> f32 {
+    let adapter = item.window_adapter().expect("a shown text");
+    match item.downcast::<SimpleText>() {
+        Some(text) => {
+            let text = text.as_pin_ref();
+            text.layout_info(orientation, cross, &adapter, item)
+                .preferred
+        }
+        None => {
+            let text = item.downcast::<ComplexText>().expect("a text");
+            let text = text.as_pin_ref();
+            text.layout_info(orientation, cross, &adapter, item)
+                .preferred
+        }
+    }
+}
+
+#[test]
+fn no_menu_row_lies_under_the_scroll_bar_and_no_chord_is_cut() {
+    let (mut test, _) = shortcut_menu(&[]);
+    let mut problems = Vec::new();
+    // Window, density and desktop and touch font sizes: the smallest window with each
+    // density's default fonts, and the largest font Options accepts (32 px).
+    for (width, height, density, desktop, touch) in [
+        (1340, 820, 0, 12, 15),
+        (320, 200, 0, 12, 15),
+        (320, 200, 1, 12, 15),
+        (320, 200, 0, 32, 32),
+        (1340, 820, 1, 32, 32),
+    ] {
+        ui::key(&test.window, Key::Escape);
+        assert!(!ui::has_popup(&test.window));
+        test.window.set_density_index(density);
+        test.window.invoke_apply_fonts("".into(), desktop, touch);
+        test.resize(width, height);
+        open_menu(&mut test);
+        test.draw();
+        let case = format!("{width}x{height}, density {density}, fonts {desktop}/{touch}");
+        render::snapshot(
+            &test,
+            &format!("main-menu-keys-{width}x{height}-density-{density}-font-{desktop}"),
+        );
+        let rows = menu_rows(&test);
+        if rows.len() < 60 {
+            problems.push(format!("{case}: only {} rows", rows.len()));
+            continue;
+        }
+        let bar = scroll_bar(&rows[0].1);
+        for (label, row) in &rows {
+            let area = bounds(row);
+            if area.max_x() > bar.min_x() + 0.5 {
+                problems.push(format!(
+                    "{case}: {label:?} {area:?} reaches under the bar {bar:?}"
+                ));
+            }
+            for (text, wraps, item) in shown_texts(row) {
+                let shown = bounds(&item);
+                if shown.max_x() > bar.min_x() + 0.5 {
+                    problems.push(format!(
+                        "{case}: {text:?} {shown:?} lies under the bar {bar:?}"
+                    ));
+                }
+                // The label may elide; a chord is never cut.
+                if text == *label {
+                    continue;
+                }
+                let (needs, has) = if wraps {
+                    let needs = preferred(&item, Orientation::Vertical, shown.width());
+                    (needs, shown.height())
+                } else {
+                    (
+                        preferred(&item, Orientation::Horizontal, -1.0),
+                        shown.width(),
+                    )
+                };
+                if needs > has + 0.5 {
+                    problems.push(format!(
+                        "{case}: {text:?} needs {needs:.1} px, has {has:.1}"
+                    ));
+                }
+                if shown.min_x() < area.min_x() - 0.5
+                    || shown.max_x() > area.max_x() + 0.5
+                    || shown.max_y() > area.max_y() + 0.5
+                {
+                    problems.push(format!(
+                        "{case}: {text:?} {shown:?} leaves its row {area:?}"
+                    ));
+                }
+            }
+        }
+    }
+    ui::key(&test.window, Key::Escape);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// Scrolls the open menu until `row` is at its top, as the wheel does.
+fn reveal(test: &mut ui::TestUi, row: &ItemRc) {
+    let mut parent = row.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(item) = parent {
+        if item.downcast::<Flickable>().is_some() {
+            let view = bounds(&item);
+            let offset = bounds(row).min_y() - view.min_y();
+            test.window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(view.min_x() + 20.0, view.min_y() + 4.0),
+                    delta_x: 0.0,
+                    delta_y: -offset,
+                });
+            test.draw();
+            return;
+        }
+        parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    panic!("the menu rows are not in a scroll view")
+}
+
+#[test]
+fn a_row_too_narrow_for_its_label_and_chords_lists_them_whole_under_the_label() {
+    let (mut test, _) = shortcut_menu(&[]);
+    const LABEL: &str = "Calculate / cancel folder sizes";
+    // Fonts: one line of chords fits under the label; with 32 px fonts one chord a line.
+    for (desktop, touch, lines) in [
+        (12, 15, &["Ctrl+Shift+S / Ctrl+Shift+F10"][..]),
+        (32, 32, &["Ctrl+Shift+S", "Ctrl+Shift+F10"][..]),
+    ] {
+        ui::key(&test.window, Key::Escape);
+        test.window.invoke_apply_fonts("".into(), desktop, touch);
+        test.resize(320, 200);
+        open_menu(&mut test);
+        category(&mut test, 4);
+        let row = ui::popup_item(&test.window, LABEL, AccessibleRole::Button);
+        let texts = shown_texts(&row);
+        let label = texts
+            .iter()
+            .find(|(text, ..)| text == LABEL)
+            .map(|(.., item)| bounds(item))
+            .expect("the label");
+        let shown: Vec<&str> = texts
+            .iter()
+            .filter(|(text, ..)| text != LABEL)
+            .map(|(text, ..)| text.as_str())
+            .collect();
+        assert_eq!(shown, lines, "fonts {desktop}");
+        for (text, _, item) in texts.iter().filter(|(text, ..)| text != LABEL) {
+            let area = bounds(item);
+            assert!(
+                area.min_y() >= label.max_y() - 0.5,
+                "fonts {desktop}: {text:?} {area:?} is under the label {label:?}"
+            );
+            assert!(
+                preferred(item, Orientation::Horizontal, -1.0) <= area.width() + 0.5,
+                "fonts {desktop}: {text:?} is whole in {area:?}"
+            );
+        }
+        reveal(&mut test, &row);
+        render::snapshot(
+            &test,
+            &format!("main-menu-chords-under-the-label-320-font-{desktop}"),
+        );
+    }
+    ui::key(&test.window, Key::Escape);
+}
+
+/// The elevated terminal's label in the menu: the shortcut catalogue's on this platform.
+const ELEVATED_TERMINAL: &str = if cfg!(windows) {
+    "Open terminal as administrator"
+} else {
+    "Open root terminal (sudo)"
+};
+
+#[test]
+fn the_elevated_terminal_entry_follows_the_command_line_and_opens_the_shell_elevated() {
+    let mut test = ui::TestUi::new();
+    let normal = Rc::new(Cell::new(0));
+    let elevated = Rc::new(Cell::new(0));
+    let count = normal.clone();
+    test.window
+        .on_open_terminal(move || count.set(count.get() + 1));
+    let count = elevated.clone();
+    test.window
+        .on_open_terminal_elevated(move || count.set(count.get() + 1));
+    test.window.set_terminal_available(true);
+    // Like the terminal button, the entry waits for the terminal to be ready.
+    test.window.set_terminal_ready(false);
+    open_menu(&mut test);
+    let labels: Vec<String> = menu_rows(&test)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    let line = labels
+        .iter()
+        .position(|label| label == "Command line")
+        .expect("the command line entry");
+    assert_eq!(
+        labels.get(line + 1).map(String::as_str),
+        Some(ELEVATED_TERMINAL),
+        "the entry follows the command line: {labels:?}"
+    );
+    assert!(!enabled(&test, ELEVATED_TERMINAL));
+    category(&mut test, 4);
+    ui::click_popup(&test.window, ELEVATED_TERMINAL, AccessibleRole::Button);
+    test.draw();
+    assert_eq!((normal.get(), elevated.get()), (0, 0), "not while unready");
+    ui::key(&test.window, Key::Escape);
+    test.window.set_terminal_ready(true);
+    open_menu(&mut test);
+    category(&mut test, 4);
+    assert!(enabled(&test, ELEVATED_TERMINAL));
+    render::snapshot(&test, "main-menu-elevated-terminal");
+    ui::click_popup(&test.window, ELEVATED_TERMINAL, AccessibleRole::Button);
+    test.draw();
+    assert!(!ui::has_popup(&test.window), "choosing it closes the menu");
+    assert_eq!(
+        (normal.get(), elevated.get()),
+        (0, 1),
+        "one elevated request, no plain one"
+    );
+}
+
+#[test]
+fn a_chord_bound_to_the_elevated_terminal_shows_in_the_menu() {
+    let (mut test, _) = shortcut_menu(&[("command.open-terminal-elevated", &["Ctrl+Alt+T"])]);
+    category(&mut test, 4);
+    assert_eq!(menu_shortcut(&test, ELEVATED_TERMINAL), ["Ctrl+Alt+T"]);
+    ui::key(&test.window, Key::Escape);
 }

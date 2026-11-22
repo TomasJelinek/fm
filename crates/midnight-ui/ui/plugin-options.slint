@@ -4,7 +4,6 @@ import { LineEdit } from "std-widgets.slint";
 import { VScrollView } from "scroll-view.slint";
 import { ListView } from "vlist-view.slint";
 import { TipBody } from "controls.slint";
-import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
@@ -137,8 +136,7 @@ component PluginCatalogList inherits Rectangle {
                 }
                 Text {
                     x: root.viewer-controls ? Theme.control-height + 10px : 8px;
-                    width: max(0px, parent.width - self.x - 8px
-                        - (list.content-height > list.visible-height ? FluentScrollMetrics.overlay-size : 0px));
+                    width: max(0px, parent.width - self.x - 8px);
                     height: parent.height; vertical-alignment: center;
                     text: parent.label; font-size: Theme.font-size; overflow: elide;
                     color: parent.selected ? Theme.selected-text : Theme.text;
@@ -284,7 +282,6 @@ export component PluginOptions inherits Rectangle {
         content-width: self.visible-width;
         VerticalLayout {
             spacing: 8px; alignment: start;
-            padding-right: FluentScrollMetrics.overlay-size;
     if !root.compact-tabs : DialogTabs { labels: ["Viewers", "Filesystems", "Archives", "Thumbnailers"]; current-index <=> root.section; }
     if root.compact-tabs : HintedComboBox {
         accessible-label: "Plugin type"; model: ["Viewers", "Filesystems", "Archives", "Thumbnailers"];
