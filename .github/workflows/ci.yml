@@ -756,6 +756,14 @@ jobs:
       - uses: ./.github/actions/plugin-packages
         with:
           runner-label: ${{ matrix.os }}
+      - name: Release packaging accepts this run's filesystem packages
+        shell: pwsh
+        run: |
+          # The checks deploy-build.ps1 and release packaging apply (a worker protocol
+          # the packager did not know once stopped every deployment).
+          $target = if ($IsWindows) { 'x86_64-pc-windows-msvc' } else { 'x86_64-unknown-linux-gnu' }
+          python -B scripts/package-release.py validate-filesystems --source _build/filesystem-packages --target $target
+          if ($LASTEXITCODE -ne 0) { throw 'Release packaging refuses the filesystem packages' }
       - name: Release filesystem smoke test
         shell: pwsh
         run: |

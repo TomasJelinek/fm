@@ -113,6 +113,14 @@ class WorkflowTests(unittest.TestCase):
                 for step in ("image-decoder/native", "fmt", "test", "clippy", "-D", "warnings", "build", "--release"):
                     self.assertIn(step, text)
 
+    def test_release_job_validates_the_filesystem_packages_as_packaging_does(self):
+        job = self.jobs["release"]
+        packages = job.index("uses: ./.github/actions/plugin-packages")
+        validation = job.index("scripts/package-release.py validate-filesystems --source _build/filesystem-packages")
+        self.assertLess(packages, validation)
+        self.assertIn("'x86_64-pc-windows-msvc'", job)
+        self.assertIn("'x86_64-unknown-linux-gnu'", job)
+
     def test_clippy_receives_the_sdk_configuration(self):
         # Cargo does not pass options given before the subcommand to an external
         # subcommand: `cargo --config X clippy` resolves without X (the video platform

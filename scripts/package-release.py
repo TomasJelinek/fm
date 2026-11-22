@@ -758,6 +758,19 @@ def copy_authorization_helper(stage, binary, target):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "validate-filesystems":
+        # CI's release job: the filesystem packages this run built must pass the same
+        # checks as release packaging and deployment (manifest kind, target, protocol).
+        parser = argparse.ArgumentParser(description="Validate native, network and archive packages")
+        parser.add_argument("--source", required=True, type=Path)
+        parser.add_argument("--target", required=True)
+        args = parser.parse_args(sys.argv[2:])
+        stage = args.source.resolve().parent / "filesystem-validation-stage"
+        packages = copy_filesystem_packages(stage, args.source, args.target, require_native=True,
+                                            require_network=True, require_archive=True,
+                                            validate_only=True)
+        print(json.dumps({"filesystems": len(packages)}))
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "validate-runtime":
         parser = argparse.ArgumentParser(description="Validate every required runtime module")
         parser.add_argument("--source", required=True, type=Path)
