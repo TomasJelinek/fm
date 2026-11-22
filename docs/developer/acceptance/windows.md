@@ -184,7 +184,7 @@ extended (J2, J4, J5).
 
 | Scenario | Status | Runs |
 | --- | --- | --- |
-| `harness_checks` | PASS | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
+| `harness_checks` | PASS; the open-URL check 9 also on Linux (`20261122-210218`), red `20261122-200330` failed its two red cases | increment 2 `20261122-073649`; wave 2 `20261122-141148`; open-URL check `20261122-200230` |
 | `journeys_find_to_checksums` | PASS. It failed once in increment 2's `20261122-073649`: Find's search inside `bundle.zip` ended Incomplete (3 found, 7 examined) and left out its member; the rerun passed, and since wave 2 the journey names Find's details when that happens | increment 2 `20261122-090231`; wave 2 `20261122-141148` |
 | `journeys_archive_roundtrip` | PASS. Wave 2 adds the password round trip: F5 of an encrypted member asks first, a wrong password is refused, the right one copies it out, F3 on another member asks nothing; after Escape the copy goes on, takes the plain member and skips the protected one | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
 | `journeys_filtered_conflicts`, `journeys_concurrent_jobs` | PASS | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
