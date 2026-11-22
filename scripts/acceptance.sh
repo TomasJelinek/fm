@@ -150,7 +150,9 @@ if compgen -G "$plugins/viewers/*/" >/dev/null || compgen -G "$plugins/filesyste
     fi
     folder=$stages
     while [ ! -e "$folder" ] && [ "$folder" != / ]; do folder=$(dirname -- "$folder"); done
-    user=$(id -u)
+    # The account this run's processes have, as the plugin host compares it (geteuid):
+    # bash's own EUID, not an `id` found on PATH, which a wrapper or a test may replace.
+    user=$EUID
     while :; do
         mode=$(stat -c %a -- "$folder" 2>/dev/null || printf 0)
         owner=$(stat -c %u -- "$folder" 2>/dev/null || printf 0)

@@ -312,6 +312,10 @@ class LinuxBuildSetupTests(unittest.TestCase):
 
     def run_acceptance(self, *arguments, environment):
         shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
+        # The fixture's `id` answers 1000 for the build-setup tests. The stage check must not
+        # ask it: here it names another account than the one running the test, as it did on
+        # GitHub's runner (whose account is not uid 1000), and the check must still pass.
+        self.command("id", f'printf "{os.getuid() + 1}\\n"\n')
         return subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), *arguments],
                               cwd=self.root.parent, env=environment, text=True,
                               capture_output=True, timeout=20)
