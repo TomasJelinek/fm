@@ -407,9 +407,15 @@ Deliberate differences from the application, to keep runs hermetic and headless:
 | `tools_user_menu` | tools | F9 with seeded Custom Commands: the items in order (built-in actions, the commands with the separator as a rule and the disabled command disabled, Close); Command line, Bookmarks and Hot Paths, Properties, folder sizes, Checksums and Close each do what they say; Tab then Enter runs the first item, Escape and a click outside close it; the grouped and the per-item command run on three marked files and on a folder shown only in an expanded tree branch, verified on disk; the disabled command runs nothing; without commands the empty state's Set up opens Options › Custom Commands. |
 | `tools_notices_jobs` | tools | Notices: entering an unreadable folder shows "Cannot open folder" with the folder; Details expands the diagnostic details and Hide details collapses them; Copy details sends the message to the in-process clipboard ("Copied to clipboard"), starting with the notice's title, reason and folder; Close, Escape and the header's close button each close it and no other notice follows within a second; a 1,500-character folder path keeps Close in view and its box scrolls to the end. Jobs: create, rename, delete and a failed create listed with their states and count; a click and Up/Down select; Open and Enter show the job's window; Copy details; Cancel job disabled for finished jobs; Clear finished without errors keeps the failed job, Clear all finished leaves "No background operations"; Close and Escape close it. |
 
+Registered, not written yet (each reports `SKIP: not written yet`): `panels_scrolling`,
+`files_links_volumes`, `tools_checksum_unlimited`, `viewers_passwords`, `viewers_office`,
+`options_settings_file` and `options_palette`.
+
 `scripts/acceptance.sh --list` prints the current list. The Find scenarios' coverage
 record, item by item with its status, is [acceptance/find.md](acceptance/find.md); the
-Options, keyboard and tools record is [acceptance/options-tools.md](acceptance/options-tools.md).
+Options and keyboard record is [acceptance/options-tools.md](acceptance/options-tools.md),
+and the tools record (menus, Checksums, Help, Drive information, About, Jobs and
+notices) is [acceptance/tools.md](acceptance/tools.md).
 
 ### UI review checks
 
@@ -660,7 +666,10 @@ after a passing run like the fixture.
 5. Verify the outcome on disk and in the UI, add `app.screenshot(context, name,
    caption)` where a picture helps a reviewer, and call `app.shutdown()`.
 6. Register it in `scenarios::all()` with an area, a one-line summary and a timeout,
-   and add it to the table above.
+   and add it to the table above. A module listed in `scenarios::OWNED` registers its
+   own scenarios instead (`pub fn scenarios() -> Vec<Scenario>`), so its owner changes
+   them without touching `scenarios/mod.rs`; names must be unique (the runner refuses
+   to start otherwise, exit status 2).
 
 Scenarios run one at a time, each on its own thread (Slint platforms and windows are
 per thread); a scenario that exceeds its timeout stops the run (its staged child, if

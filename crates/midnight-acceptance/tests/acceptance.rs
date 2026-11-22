@@ -237,6 +237,15 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
+    // Modules register scenarios of their own: each name names one work folder.
+    let mut names = std::collections::HashSet::new();
+    if let Some(twice) = scenarios::all()
+        .iter()
+        .find(|scenario| !names.insert(scenario.name))
+    {
+        eprintln!("two scenarios are named {}", twice.name);
+        return std::process::ExitCode::from(2);
+    }
     let selected: Vec<&Scenario> = scenarios::all()
         .iter()
         .filter(|scenario| {

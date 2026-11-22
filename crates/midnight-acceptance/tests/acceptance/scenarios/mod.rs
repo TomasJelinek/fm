@@ -1,5 +1,7 @@
 //! The scenario registry. Add a scenario by writing `fn(&mut Context) -> Result<(), String>`
-//! in a module here and listing it in [`all`] (docs/developer/ACCEPTANCE.md).
+//! in a module here and listing it in [`all`] (docs/developer/ACCEPTANCE.md). A module
+//! listed in [`OWNED`] registers its own scenarios (`pub fn scenarios() -> Vec<Scenario>`),
+//! so they change without an edit here.
 pub mod about_box;
 pub mod checksums;
 pub mod create_rename;
@@ -14,6 +16,7 @@ pub mod files_errors;
 pub mod files_filter_search;
 pub mod files_jobs;
 pub mod files_links;
+pub mod files_links_volumes;
 pub mod files_options;
 pub mod files_panels;
 pub mod files_rename;
@@ -51,7 +54,9 @@ pub mod options_editors;
 pub mod options_general;
 pub mod options_hot_paths;
 pub mod options_keyboard;
+pub mod options_palette;
 pub mod options_previews;
+pub mod options_settings_file;
 pub mod options_themes;
 pub mod options_visual;
 pub mod panels_busy_ops;
@@ -61,6 +66,7 @@ pub mod panels_hot_digits;
 pub mod panels_notices;
 pub mod panels_paths;
 pub mod panels_root_keys;
+pub mod panels_scrolling;
 pub mod panels_search_filter;
 pub mod panels_selection_more;
 pub mod panels_support;
@@ -71,6 +77,7 @@ pub mod panels_view_sort;
 pub mod shortcuts_catalog;
 pub mod shortcuts_hints;
 pub mod startup_paths;
+pub mod tools_checksum_unlimited;
 pub mod tools_checksums;
 pub mod tools_compare;
 pub mod tools_find;
@@ -91,6 +98,8 @@ pub mod viewers_combos;
 pub mod viewers_compare;
 pub mod viewers_controls;
 pub mod viewers_files;
+pub mod viewers_office;
+pub mod viewers_passwords;
 pub mod viewers_presentation;
 pub mod viewers_scroll;
 pub mod viewers_selection;
@@ -105,10 +114,22 @@ fn minutes(minutes: u64) -> Duration {
     Duration::from_secs(minutes * 60)
 }
 
+/// Modules that register their own scenarios; they run after those listed in [`all`], in
+/// this order.
+const OWNED: [fn() -> Vec<Scenario>; 7] = [
+    panels_scrolling::scenarios,
+    files_links_volumes::scenarios,
+    tools_checksum_unlimited::scenarios,
+    viewers_passwords::scenarios,
+    viewers_office::scenarios,
+    options_settings_file::scenarios,
+    options_palette::scenarios,
+];
+
 pub fn all() -> &'static [Scenario] {
     static ALL: std::sync::OnceLock<Vec<Scenario>> = std::sync::OnceLock::new();
     ALL.get_or_init(|| {
-        vec![
+        let mut all = vec![
             Scenario {
                 name: "startup",
                 area: "panels",
@@ -781,7 +802,11 @@ pub fn all() -> &'static [Scenario] {
             journeys_links::scenario(),
             journeys_keyboard::scenario(),
             journeys_pointer::scenario(),
-        ]
+        ];
+        for scenarios in OWNED {
+            all.extend(scenarios());
+        }
+        all
     })
 }
 

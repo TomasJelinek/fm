@@ -1,7 +1,8 @@
 # Acceptance coverage: cross-feature journeys
 
 The area records ([panels](panels.md), [transfers](transfers.md), [Find](find.md),
-[viewers](viewers.md), [Options and tools](options-tools.md), [UI polish](ui-polish.md))
+[viewers](viewers.md), [Options and keyboard](options-tools.md), [tools](tools.md),
+[UI polish](ui-polish.md))
 check each feature on its own. A journey checks the seams between them: a realistic
 sequence of steps from different areas, through the real windows (keys, pointer and
 wheel, never presenter calls), with the outcome checked on disk and on screen after
@@ -52,7 +53,7 @@ names where the parts are checked on their own.
 | A copied-out tree in the inline tree, renamed inside the tree, moved back by F6 | panels B-08, transfers T-C06 | `journeys_archive_roundtrip` |
 | Folder sizes equal the member sizes the archive listing showed | panels Z-01 | `journeys_archive_roundtrip` |
 | A panel filter, hidden files and a mask selection decide what F5 copies | panels F-01, H-02, S-05 | `journeys_filtered_conflicts` |
-| Three different conflict answers in one job; its outcome text; Jobs history | transfers T-K01–K03, O-J01 | `journeys_filtered_conflicts` |
+| Three different conflict answers in one job; its outcome text; Jobs history | transfers T-K01–K03, tools O-J01 | `journeys_filtered_conflicts` |
 | The recovery folder a Replace creates follows Show hidden files | transfers T-K01, panels H-01 | `journeys_filtered_conflicts` |
 | Completed roots deselected, skipped ones kept, under a filter and hidden files | panels S-15 | `journeys_filtered_conflicts` |
 | A permanent delete while a copy is paused and another copy runs | transfers T-J01, T-R09 | `journeys_concurrent_jobs` |
