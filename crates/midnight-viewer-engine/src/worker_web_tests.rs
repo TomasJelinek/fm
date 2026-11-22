@@ -1029,10 +1029,159 @@ fn every_search_asks_chromium_to_activate_a_match_and_the_status_counts_in_good_
     ] {
         browser.reply(matches, active);
         worker.poll_web(&output);
+        // After the page's state, as each frame's status shows it.
         assert_eq!(
             statuses(&output),
-            [status],
+            [format!("Offline · JavaScript off · {status}")],
             "{matches} matches, active {active}"
         );
     }
+}
+
+/// A running Office preview: the fixed offline policy, and the output queued for it.
+#[derive(Clone, Default)]
+struct OfficePreview(std::sync::Arc<std::sync::Mutex<Vec<api::Event>>>);
+
+impl Browser for OfficePreview {
+    fn send(&self, _: api::CommandKind) -> bool {
+        true
+    }
+    fn drain(&self, maximum: usize) -> Vec<api::Event> {
+        let mut events = self.0.lock().unwrap();
+        let count = maximum.min(events.len());
+        events.drain(..count).collect()
+    }
+    fn close(&self) {}
+    fn finished(&self) -> bool {
+        false
+    }
+    fn policy_change_allowed(&self) -> bool {
+        false
+    }
+    fn release_on_worker(self: Box<Self>) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The status line after these outputs: the last status, from a status or a frame.
+fn shown_status(output: &Mailbox) -> Option<String> {
+    output
+        .take()
+        .into_iter()
+        .rev()
+        .find_map(|output| match output {
+            ViewerOutput::Status(status) => Some(status),
+            ViewerOutput::Frame(frame) => Some(frame.status),
+            _ => None,
+        })
+}
+
+/// Chromium's reply to Find may come before or after the page's next frame, whatever the
+/// document. Either way the status line names the preview, as for each format.
+#[test]
+fn office_find_status_names_the_preview_for_every_format_whatever_paints_last() {
+    for document in ["padded.docx", "padded.pptx", "padded.xlsx"] {
+        for frame_first in [true, false] {
+            let preview = OfficePreview::default();
+            let (mut worker, output) = web_worker(Box::new(preview.clone()));
+            output.finish_open(Ok(()));
+            worker.caption = format!("{document} — Midnight Explorer");
+            worker.input(search(), &output);
+            let (width, height) = (worker.geometry.width, worker.geometry.height);
+            let frame = event(api::EventKind::Frame(api::Frame {
+                viewport_revision: 1,
+                acknowledged_input: 0,
+                width,
+                height,
+                rgba: vec![0; width as usize * height as usize * 4],
+            }));
+            let found = event(api::EventKind::FindResult(api::FindResult {
+                request_sequence: 1,
+                matches: 1,
+                active: 1,
+                complete: true,
+            }));
+            *preview.0.lock().unwrap() = if frame_first {
+                vec![frame, found]
+            } else {
+                vec![found, frame]
+            };
+            worker.poll_web(&output);
+            assert_eq!(
+                shown_status(&output).as_deref(),
+                Some("Office preview · Offline · JavaScript off · Match 1 of 1"),
+                "{document}, frame first: {frame_first}"
+            );
+        }
+    }
+}
+
+const OLDER_FORMAT: &str = "This presentation is password-protected or saved in the older \
+                            binary Office format (.doc, .xls or .ppt), which the preview \
+                            cannot open.";
+
+/// The notices among `outputs`.
+fn notices(output: &Mailbox) -> Vec<Option<ViewerSandboxNotice>> {
+    output
+        .take()
+        .into_iter()
+        .filter_map(|output| match output {
+            ViewerOutput::SandboxNotice(notice) => Some(notice),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A worker showing the file at `path`, of these bytes.
+fn showing(path: &std::path::Path, bytes: &[u8]) -> (Worker, Mailbox) {
+    std::fs::write(path, bytes).unwrap();
+    let (mut worker, output) = crate::worker::tests::worker();
+    worker.files = Arc::from([path.to_path_buf()]);
+    (worker, output)
+}
+
+/// An Office refusal with diagnostic details: the caller puts its message on the status
+/// line, and the details stay available in the page's place until another document opens.
+#[test]
+fn an_office_refusal_offers_its_details_in_the_pages_place_until_another_document_opens() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("protected.pptx");
+    let mut compound = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    compound.resize(4096, 0);
+    let (mut worker, output) = showing(&path, &compound);
+    let file = midnight_plugin_host::CapturedFile::capture(&path).unwrap();
+    let Err(message) = worker.prepare_office(file, &output) else {
+        panic!("a compound file prepared as a presentation");
+    };
+    assert_eq!(message, OLDER_FORMAT);
+    assert_eq!(
+        notices(&output),
+        [Some(ViewerSandboxNotice {
+            message: OLDER_FORMAT.into(),
+            installable: false,
+            installing: false,
+            details: Some(
+                "Unsupported Office content: is password-protected or saved in the older \
+                 binary Office format (.doc, .xls or .ppt), which the preview cannot open"
+                    .into()
+            ),
+        })]
+    );
+    worker.open(&output);
+    assert_eq!(notices(&output), [None]);
+}
+
+/// A failure without diagnostic details stays on the status line alone.
+#[test]
+fn an_office_failure_without_details_shows_no_notice() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("closing.pptx");
+    let (mut worker, output) = showing(&path, b"PK");
+    let file = midnight_plugin_host::CapturedFile::capture(&path).unwrap();
+    // The window closed before the preview started.
+    worker
+        .window_closed
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(worker.prepare_office(file, &output).is_err());
+    assert!(notices(&output).is_empty());
 }

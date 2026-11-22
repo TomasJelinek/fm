@@ -1,7 +1,8 @@
 import { Button, Palette } from "std-widgets.slint";
 import { Theme } from "../../midnight-ui/ui/theme.slint";
-import { ActionButton } from "../../midnight-ui/ui/action-icons.slint";
+import { ActionButton, FallbackIcons } from "../../midnight-ui/ui/action-icons.slint";
 import { HintedActionButton } from "../../midnight-ui/ui/hinted-inputs.slint";
+import { VScrollView } from "../../midnight-ui/ui/scroll-view.slint";
 import { WrappingCheckBox } from "../../midnight-ui/ui/wrapping-check-box.slint";
 import { CompactPicker } from "../../midnight-ui/ui/controls.slint";
 import { ThemedLineEdit, ThemedSpinBox } from "../../midnight-ui/ui/content-controls.slint";
@@ -168,12 +169,15 @@ export component ViewerWindow inherits Window {
     in-out property <bool> web-scripts;
     in property <bool> web-policy-change-allowed: false;
     // Shown in the page's place when the system refused the HTML viewer's browser its
-    // sandbox. The backend decides the text and whether Install… is offered.
+    // sandbox, or a document failed with diagnostic details. The backend decides the text
+    // and whether Install… is offered; Copy details copies `sandbox-details` when set.
     in property <bool> sandbox-notice-visible;
     in property <string> sandbox-notice;
     in property <bool> sandbox-installable;
     in property <bool> sandbox-installing;
+    in property <string> sandbox-details;
     callback install-sandbox-permission();
+    callback copy-sandbox-details();
     in property <bool> source-mode;
     in property <bool> markdown-mode;
     in property <bool> font-available: true;
@@ -488,35 +492,62 @@ export component ViewerWindow inherits Window {
                             reject
                         }
                     }
-                    // In the page's place. Tab from the content reaches Install…, which
-                    // follows the content in the focus order; Return activates it.
-                    if root.sandbox-notice-visible: Rectangle {
+                    // In the page's place: a refused sandbox, or a failure with diagnostic
+                    // details. Tab from the content reaches its buttons, which follow the
+                    // content in the focus order; Return or Space activates them. They keep
+                    // their row at the bottom: a message too long for the space above them
+                    // scrolls, and in a short window the insets shrink first.
+                    if root.sandbox-notice-visible: notice := Rectangle {
+                        property <length> room: max(0px, canvas.height - 16px);
+                        property <length> actions-height: notice-actions.preferred-height;
+                        // Two lines of the message fit before the insets shrink.
+                        property <length> inset: max(4px, min(14px,
+                            (self.room - self.actions-height - root.effective-ui-size * 2.6) / 3));
+                        property <length> gap: self.actions-height > 0px ? self.inset : 0px;
                         width: max(0px, min(canvas.width - 16px, max(260px, root.effective-ui-size * 34)));
-                        height: max(0px, min(canvas.height - 16px, notice-text.height + 28px
-                            + (root.sandbox-installable ? root.control-height + 12px : 0px)));
+                        height: min(self.room,
+                            notice-text.height + 2 * self.inset + self.gap + self.actions-height);
                         x: (canvas.width - self.width) / 2;
                         y: max(8px, (canvas.height - self.height) / 3);
                         clip: true;
                         background: Theme.surface;
                         border-width: 1px; border-color: Theme.frame; border-radius: 6px;
-                        notice-text := Text {
-                            x: 14px; y: 14px;
-                            width: max(0px, parent.width - 28px);
-                            height: self.preferred-height;
-                            text: root.sandbox-notice; wrap: word-wrap;
-                            color: Theme.text; font-size: root.effective-ui-size;
+                        // As in DialogText: the text keeps clear of the overlaid scroll bar.
+                        notice-message := VScrollView {
+                            x: 14px; y: notice.inset;
+                            width: max(0px, notice.width - 28px);
+                            height: max(0px, notice.height - 2 * notice.inset - notice.gap - notice.actions-height);
+                            content-width: self.visible-width;
+                            content-height: max(self.visible-height, notice-text.height);
+                            notice-text := Text {
+                                x: 0px; y: 0px;
+                                width: max(0px, notice-message.visible-width - 16px);
+                                height: self.preferred-height;
+                                text: root.sandbox-notice; wrap: word-wrap;
+                                color: Theme.text; font-size: root.effective-ui-size;
+                            }
                         }
-                        if root.sandbox-installable: HorizontalLayout {
-                            x: 14px; y: notice-text.y + notice-text.height + 12px;
-                            width: max(0px, parent.width - 28px); height: root.control-height;
-                            alignment: start;
-                            HintedActionButton {
+                        notice-actions := HorizontalLayout {
+                            x: 14px; y: notice.height - notice.inset - self.height;
+                            width: max(0px, notice.width - 28px); height: notice.actions-height;
+                            spacing: 8px; alignment: start;
+                            if root.sandbox-installable: HintedActionButton {
                                 font-size: root.effective-ui-size; control-height: root.control-height;
                                 compact: root.compact; primary: true;
                                 text: "Install…"; enabled: !root.sandbox-installing;
                                 accessible-description: "Install the HTML viewer's AppArmor profile with administrator authorization";
                                 hint: "Asks for administrator authorization, then installs the AppArmor profile that lets this installation's HTML viewer use Chromium's sandbox, and opens the page again.";
                                 clicked => { root.install-sandbox-permission(); }
+                            }
+                            // The notice dialog's Copy details: its caption, glyph and hint.
+                            if root.sandbox-details != "": HintedActionButton {
+                                font-size: root.effective-ui-size; control-height: root.control-height;
+                                compact: root.compact;
+                                text: "Copy details"; accessible-label: "Copy details";
+                                fallback-icon: FallbackIcons.copy;
+                                accessible-description: "Copy the message and its diagnostic details to the clipboard";
+                                hint: "Copy the complete message and diagnostic report to the clipboard.";
+                                clicked => { root.copy-sandbox-details(); }
                             }
                         }
                     }

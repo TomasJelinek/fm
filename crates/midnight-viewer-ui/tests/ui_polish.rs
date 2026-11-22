@@ -1834,3 +1834,119 @@ fn rows_above_the_text_give_way_to_find_in_short_windows_and_come_back() {
     }
     window.hide().unwrap();
 }
+
+/// The window-space bounds of `item`, cut to those of each item that contains it: what a
+/// clipping ancestor (the content, the notice, a scrolled area) can leave of it.
+fn visible_bounds(item: &ItemRc) -> (f32, f32, f32, f32) {
+    use i_slint_core::item_tree::ParentItemTraversalMode::StopAtPopups;
+    let bounds = |item: &ItemRc| {
+        let rect = item.geometry();
+        let origin = item.map_to_native_window(rect.origin);
+        (
+            origin.x,
+            origin.y,
+            origin.x + rect.size.width,
+            origin.y + rect.size.height,
+        )
+    };
+    let mut visible = bounds(item);
+    let mut parent = item.parent_item(StopAtPopups);
+    while let Some(ancestor) = parent {
+        let outer = bounds(&ancestor);
+        visible = (
+            visible.0.max(outer.0),
+            visible.1.max(outer.1),
+            visible.2.min(outer.2),
+            visible.3.min(outer.3),
+        );
+        parent = ancestor.parent_item(StopAtPopups);
+    }
+    visible
+}
+
+/// A notice in the page's place, at the viewer's minimum size and with the largest UI
+/// font: a document that failed with diagnostic details offers Copy details, a refused
+/// browser sandbox Install…. The button stays whole inside the notice and the content,
+/// and at least a line of the message stays visible above it (the rest scrolls).
+#[test]
+fn page_notice_keeps_its_button_whole_at_minimum_size_and_largest_font() {
+    const MESSAGE: &str = "This presentation is password-protected or saved in the older \
+                           binary Office format (.doc, .xls or .ppt), which the preview \
+                           cannot open.";
+    let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(native.clone()))).unwrap();
+    let window = ViewerWindow::new().unwrap();
+    // An Office document opens through the HTML viewer, whose row above the content stays.
+    window.set_web_mode(true);
+    window.set_sandbox_notice(MESSAGE.into());
+    window.set_sandbox_notice_visible(true);
+    window.show().unwrap();
+    let details = format!("{MESSAGE}\n\nUnsupported Office content");
+    for (label, other, details, installable) in [
+        ("Copy details", "Install…", details.as_str(), false),
+        ("Install…", "Copy details", "", true),
+    ] {
+        window.set_sandbox_details(details.into());
+        window.set_sandbox_installable(installable);
+        for (width, height, font) in [(320, 200, 12.0), (320, 200, 32.0), (1100, 740, 32.0)] {
+            let case = format!("{label}, {width}x{height}, font {font}");
+            lay_out(&window, width, height);
+            window.set_ui_font_size(font);
+            draw(
+                &native,
+                &window,
+                width,
+                height,
+                &format!("page-notice-{}-font{font}", label.len()),
+            );
+            assert!(!shown(&window, other), "{other} at {case}");
+            let button = control(&window, label, width as f32, height as f32);
+            let rect = button.geometry();
+            let origin = button.map_to_native_window(rect.origin);
+            let whole = (
+                origin.x,
+                origin.y,
+                origin.x + rect.size.width,
+                origin.y + rect.size.height,
+            );
+            let visible = visible_bounds(&button);
+            assert!(
+                (visible.0 - whole.0).abs() < 0.5
+                    && (visible.1 - whole.1).abs() < 0.5
+                    && (visible.2 - whole.2).abs() < 0.5
+                    && (visible.3 - whole.3).abs() < 0.5,
+                "{label} is cut to {visible:?} of {whole:?} at {case}"
+            );
+            let content = (
+                window.get_content_left(),
+                window.get_content_top(),
+                window.get_content_left() + window.get_content_width(),
+                window.get_content_top() + window.get_content_height(),
+            );
+            assert!(
+                whole.0 >= content.0 - 0.5
+                    && whole.1 >= content.1 - 0.5
+                    && whole.2 <= content.2 + 0.5
+                    && whole.3 <= content.3 + 0.5,
+                "{label} {whole:?} outside the content {content:?} at {case}"
+            );
+            let text = find(
+                ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+                MESSAGE,
+            )
+            .unwrap_or_else(|| panic!("the notice shows the message at {case}"));
+            let message = visible_bounds(&text);
+            // The viewer's compact layout keeps its UI font at 12 px.
+            let line = if width < 500 { font.min(12.0) } else { font };
+            assert!(
+                message.3 - message.1 >= line && message.2 - message.0 >= line,
+                "less than a line of the message is visible at {case}: {message:?}"
+            );
+            assert!(
+                message.3 <= whole.1 + 0.5,
+                "the message {message:?} reaches into {label} {whole:?} at {case}"
+            );
+        }
+    }
+    window.hide().unwrap();
+}

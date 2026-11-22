@@ -87,6 +87,27 @@ starts at the new page's top; dimensions smaller than the viewport are centered.
 It does not change the saved zoom preference. This policy belongs to the viewer
 backend; the independent PDF plugin renders the supplied page and viewport.
 
+## Failure notices
+
+A viewer failure that carries diagnostic details shows a notice in the page's place,
+laid out like the HTML viewer's sandbox notice: the message and one Copy details button
+with the notice dialog's caption, copy icon and hint ("Copy the complete message and
+diagnostic report to the clipboard."), and no shortcut. Copy details copies the
+message, a blank line and the details, unchanged, through the viewer's copy, which
+sends the engine's clipboard command. The status line keeps showing the message, and a
+failure without details stays on the status line only. The details never quote file
+content or name a path the message does not show. Office refusals are the only
+failures with details so far (`ViewerSandboxNotice::details`, see
+[refusals](#office-packages-what-opens-and-what-is-refused)); other viewers leave them
+empty.
+
+The notice never takes the focus, so the viewer's keys keep working while the content
+has it: Tab from the content reaches Copy details, and Return or Space activates it.
+Copy details keeps its row at the bottom of the notice; a message too long for the
+space above it scrolls, and the insets shrink first, so the button stays whole at the
+viewer's minimum size and with the largest UI font. Another document removes the
+notice.
+
 ## PDF layouts (in development)
 
 Use **Paged** to view one PDF page at a time, with the previous/next page buttons
@@ -331,9 +352,12 @@ read; other writers' markup is skipped whole and never shown as document text.
   `ods` and `odp`.
 
 **Refusals.** The status line shows `OfficeError::message(format)`, which names the
-kind of document and a reason in plain words; `OfficeError::details()` keeps the
-internal reason for Copy details and diagnostics. The viewer window has no Copy
-details action yet, so the details are not shown in the application.
+kind of document and a reason in plain words. `OfficeError::details()`, the internal
+reason, becomes the failure's details, so a document that fails to open also shows its
+message in the page's place with Copy details ([failure notices](#failure-notices)),
+for example "Encrypted Office package" or "Malformed Office package: central record
+bounds" after the message. A cancelled preview has no details. A page that fails while
+the user navigates within an open preview stays on the status line.
 
 | Case | Status line (for a presentation) |
 | --- | --- |

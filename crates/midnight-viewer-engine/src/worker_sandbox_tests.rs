@@ -170,6 +170,7 @@ fn notice(message: String, installable: bool, installing: bool) -> Option<Viewer
         message,
         installable,
         installing,
+        details: None,
     })
 }
 

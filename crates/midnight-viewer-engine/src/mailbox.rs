@@ -425,6 +425,7 @@ fn a_sandbox_notice_survives_full_event_pressure_and_the_latest_replaces_it() {
             message: message.into(),
             installable: true,
             installing: false,
+            details: None,
         }))
     };
     let mailbox = Mailbox::default();

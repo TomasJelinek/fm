@@ -402,9 +402,10 @@ pub enum ViewerInput {
     Close,
 }
 
-/// Shown instead of an HTML page whose browser the system refused Chromium's sandbox
-/// (Linux: AppArmor restricts unprivileged user namespaces): why, or how the latest
-/// installation of the one-time permission that allows it ended.
+/// Shown instead of the page. For an HTML page whose browser the system refused Chromium's
+/// sandbox (Linux: AppArmor restricts unprivileged user namespaces): why, or how the latest
+/// installation of the one-time permission that allows it ended. For a document that
+/// failed with diagnostic details: its message, with Copy details.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewerSandboxNotice {
     pub message: String,
@@ -412,6 +413,9 @@ pub struct ViewerSandboxNotice {
     pub installable: bool,
     /// An installation waits for authorization or runs; Install… is unavailable meanwhile.
     pub installing: bool,
+    /// A failure's diagnostic details, which Copy details puts after the message. Never
+    /// file content, nor a path the message does not show. None for the sandbox.
+    pub details: Option<String>,
 }
 
 #[derive(Clone, Debug)]

@@ -134,7 +134,7 @@ struct GenerationState {
     initial_calls: AtomicUsize,
     initial: Mutex<OfficeTarget>,
     rendered: Mutex<Vec<OfficeTarget>>,
-    render_error: Mutex<Option<String>>,
+    render_error: Mutex<Option<PreviewError>>,
     sequence: AtomicU64,
     size: AtomicUsize,
     action: Mutex<Option<RenderAction>>,
@@ -176,7 +176,7 @@ impl ExternalGeneration for ControlledGeneration {
         &mut self,
         target: OfficeTarget,
         cancel: &Cancellation,
-    ) -> Result<ImmutableHtml, String> {
+    ) -> Result<ImmutableHtml, PreviewError> {
         if cancel.is_cancelled() {
             return Err("generation cancelled before work".into());
         }
@@ -253,7 +253,7 @@ impl Fixture {
     fn prepare(&self) -> Prepared {
         self.prepare_with(Cancellation::default()).unwrap()
     }
-    fn prepare_with(&self, lifetime: Cancellation) -> Result<Prepared, String> {
+    fn prepare_with(&self, lifetime: Cancellation) -> Result<Prepared, PreviewError> {
         prepare_external(
             self.capture(),
             lifetime,
@@ -897,8 +897,11 @@ fn office_initial_content_render_error_surfaces_without_catalog_fallback() {
     for target in initial_content_targets() {
         let fixture = Fixture::new();
         *fixture.generation.initial.lock().unwrap() = target;
-        *fixture.generation.render_error.lock().unwrap() =
-            Some("controlled first-content failure".into());
+        let failure = PreviewError {
+            message: "controlled first-content failure".into(),
+            details: Some("controlled first-content details".into()),
+        };
+        *fixture.generation.render_error.lock().unwrap() = Some(failure.clone());
         let error = match fixture.prepare_with(Cancellation::default()) {
             Err(error) => error,
             Ok(prepared) => {
@@ -906,7 +909,7 @@ fn office_initial_content_render_error_surfaces_without_catalog_fallback() {
                 panic!("failed initial content must not become successful catalog output");
             }
         };
-        assert_eq!(error, "controlled first-content failure");
+        assert_eq!(error, failure, "the message and its details");
         assert_eq!(fixture.generation.initial_calls.load(Ordering::Acquire), 1);
         assert_eq!(fixture.generation.calls.load(Ordering::Acquire), 1);
         assert_eq!(*fixture.generation.paths.lock().unwrap(), [target.path()]);
@@ -988,24 +991,104 @@ fn office_family_suffixes_select_their_format() {
     }
 }
 
-#[test]
-fn office_open_refusal_status_names_the_document_and_a_plain_reason() {
+/// What `prepare` reports for a file named `name` of these bytes, which it must refuse.
+fn refusal(name: &str, bytes: &[u8]) -> PreviewError {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("protected.pptx");
-    let mut bytes = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
-    bytes.resize(4096, 0);
+    let path = directory.path().join(name);
     std::fs::write(&path, bytes).unwrap();
     let parent = CapturedFile::capture(&path).unwrap();
-    let error = match prepare(parent, format(&path), Cancellation::default()) {
+    match prepare(parent, format(&path), Cancellation::default()) {
         Err(error) => error,
         Ok(prepared) => {
             release(prepared);
-            panic!("a compound file prepared as a presentation");
+            panic!("{name} prepared");
         }
-    };
+    }
+}
+
+/// A one-part ZIP package whose part is encrypted (general purpose flag bit 0), as ZIP
+/// password protection stores it; the stored bytes stand for the ciphertext.
+fn encrypted_package() -> Vec<u8> {
+    const NAME: &[u8] = b"[Content_Types].xml";
+    const DATA: &[u8] = b"ciphertext";
+    // Version 2.0 needed, encrypted, stored, no time or CRC (never checked before the
+    // flag), both sizes and the name's length.
+    let mut common = vec![20, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for size in [DATA.len() as u32; 2] {
+        common.extend_from_slice(&size.to_le_bytes());
+    }
+    common.extend_from_slice(&(NAME.len() as u16).to_le_bytes());
+    let mut zip = b"PK\x03\x04".to_vec();
+    zip.extend_from_slice(&common);
+    zip.extend_from_slice(&[0; 2]);
+    zip.extend_from_slice(NAME);
+    zip.extend_from_slice(DATA);
+    let central = zip.len() as u32;
+    // Made by 2.0; no extra field or comment, disk 0, no attributes, local header at 0.
+    zip.extend_from_slice(b"PK\x01\x02\x14\x00");
+    zip.extend_from_slice(&common);
+    zip.extend_from_slice(&[0; 16]);
+    zip.extend_from_slice(NAME);
+    let size = zip.len() as u32 - central;
+    // Disk 0 holds the one entry; the directory's size and offset; no comment.
+    zip.extend_from_slice(b"PK\x05\x06\x00\x00\x00\x00\x01\x00\x01\x00");
+    zip.extend_from_slice(&size.to_le_bytes());
+    zip.extend_from_slice(&central.to_le_bytes());
+    zip.extend_from_slice(&[0; 2]);
+    zip
+}
+
+/// The status line gets the plain sentence (`OfficeError::message`); the notice's Copy
+/// details gets the service's reason (`OfficeError::details`).
+#[test]
+fn office_open_refusal_names_the_document_and_keeps_the_service_reason_as_details() {
+    let mut compound = vec![0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    compound.resize(4096, 0);
     assert_eq!(
-        error,
-        "This presentation is password-protected or saved in the older binary Office format \
-         (.doc, .xls or .ppt), which the preview cannot open."
+        refusal("protected.pptx", &compound),
+        PreviewError {
+            message: "This presentation is password-protected or saved in the older binary \
+                      Office format (.doc, .xls or .ppt), which the preview cannot open."
+                .into(),
+            details: Some(
+                "Unsupported Office content: is password-protected or saved in the older \
+                 binary Office format (.doc, .xls or .ppt), which the preview cannot open"
+                    .into()
+            ),
+        },
+        "older binary format"
+    );
+    assert_eq!(
+        refusal("protected.docx", &encrypted_package()),
+        PreviewError {
+            message: "This document is password-protected, so the preview cannot open it.".into(),
+            details: Some("Encrypted Office package".into()),
+        },
+        "password-protected package"
+    );
+}
+
+#[test]
+fn office_refusal_details_name_the_service_reason_but_not_for_a_cancelled_preview() {
+    let damaged = PreviewError::office(
+        &midnight_office_preview::OfficeError::Malformed("central record bounds"),
+        OfficeFormat::Xlsx,
+    );
+    assert_eq!(
+        damaged.message,
+        "This workbook is damaged or is not a valid Excel (.xlsx) file, so the preview \
+         cannot show it."
+    );
+    assert_eq!(
+        damaged.details.as_deref(),
+        Some("Malformed Office package: central record bounds")
+    );
+    let cancelled = PreviewError::office(
+        &midnight_office_preview::OfficeError::Cancelled,
+        OfficeFormat::Xlsx,
+    );
+    assert_eq!(
+        cancelled.details, None,
+        "nobody waits for a cancelled preview"
     );
 }

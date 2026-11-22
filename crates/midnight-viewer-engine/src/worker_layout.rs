@@ -230,7 +230,7 @@ impl Worker {
                     })
                     .ok_or("Office HTML renderer is no longer available.")?
                     .clone();
-                self.open_office(provider, file)?;
+                self.open_office(provider, file, output)?;
                 None
             }
             crate::routing::Route::Process { index }

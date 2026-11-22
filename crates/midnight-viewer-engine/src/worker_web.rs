@@ -286,24 +286,44 @@ impl Worker {
         &mut self,
         provider: midnight_web_viewer_host::Provider,
         file: midnight_plugin_host::CapturedFile,
+        output: &Mailbox,
     ) -> Result<(), String> {
-        let path = self
-            .files
-            .get(self.current)
-            .ok_or("Original Office file is unavailable")?;
-        let format = crate::office_preview::format(path);
-        self.length = file.length();
-        let prepared = crate::office_preview::prepare(
-            file,
-            format,
-            Cancellation::observing(self.window_closed.clone()),
-        )?;
+        let prepared = self.prepare_office(file, output)?;
         self.start_web(
             provider,
             prepared.main,
             Some(prepared.resources),
             midnight_web_viewer_host::PolicyCeiling::OfflineOnly,
         )
+    }
+
+    /// Generates the document's first page before a browser starts. The caller reports a
+    /// failure on the status line (`Worker::error`); one with diagnostic details also
+    /// takes the page's place with Copy details until another document opens.
+    pub(super) fn prepare_office(
+        &mut self,
+        file: midnight_plugin_host::CapturedFile,
+        output: &Mailbox,
+    ) -> Result<crate::office_preview::Prepared, String> {
+        let path = self
+            .files
+            .get(self.current)
+            .ok_or("Original Office file is unavailable")?;
+        let format = crate::office_preview::format(path);
+        self.length = file.length();
+        match crate::office_preview::prepare(
+            file,
+            format,
+            Cancellation::observing(self.window_closed.clone()),
+        ) {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => {
+                if let Some(details) = error.details {
+                    self.show_failure_notice(error.message.clone(), details, output);
+                }
+                Err(error.message)
+            }
+        }
     }
 
     fn start_web(
@@ -620,11 +640,13 @@ impl Worker {
                         });
                     }
                 }
+                // The status a frame shows: the page's state, then the Find result. A
+                // frame that came before this reply must not leave the bare count.
                 api::EventKind::FindResult(result) => {
                     let message = find_status(&result);
-                    let status = if let Some(web) = self.web.as_mut() {
-                        web.find_result = Some(message.clone());
-                        if web.source_change.reported || web.action_notice.text().is_some() {
+                    let status = match self.web.as_mut() {
+                        Some(web) => {
+                            web.find_result = Some(message);
                             web_presentation_status(
                                 web.policy,
                                 web.session.policy_change_allowed(),
@@ -632,11 +654,8 @@ impl Worker {
                                 web.source_change.reported,
                                 web.action_notice.text(),
                             )
-                        } else {
-                            message
                         }
-                    } else {
-                        message
+                        None => message,
                     };
                     self.status(status, output);
                 }

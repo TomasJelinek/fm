@@ -170,8 +170,11 @@ Viewer controls reuse Escape, Ctrl+F, Find next/previous and zoom. Every search 
 to Chromium as a follow-up (`Find.find_next`): a new native session only highlights
 the matches and reports none active, while a follow-up, also with another query or
 case, activates the nearest match on from the active one, as the text viewer searches
-on from where it stands. The status line reads "Match 2 of 3", "1 match" or
-"3 matches" while no match is active, or "No matches". Pointer, keyboard
+on from where it stands. From Chromium's reply on, the status line follows the
+page's state with "Match 2 of 3", "1 match" or "3 matches" while no match is active,
+or "No matches" ("Offline · JavaScript off · Match 2 of 3", or for an Office preview
+"Office preview · Offline · JavaScript off · Match 2 of 3"), whether the page's next
+frame comes before or after the reply. Pointer, keyboard
 and IME input target the displayed content generation. Space, Backspace and
 Alt+Left/Right are arbitrated inside Chromium using its actual editable focus, so
 typing into an HTML input does not change the viewed file. Clipboard text returns through the host's explicit

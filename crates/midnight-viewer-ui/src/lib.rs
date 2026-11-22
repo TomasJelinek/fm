@@ -536,6 +536,7 @@ impl ViewerWindows {
             seam: Default::default(),
         });
         bind(&open);
+        sandbox_notice::bind_copy(&open, copy.clone());
         preferences::present(&open);
         image_motion::install(&open);
         raster_motion::install(&open);

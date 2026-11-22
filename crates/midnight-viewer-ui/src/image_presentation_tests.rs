@@ -253,6 +253,13 @@ pub(super) fn opening_appearance() -> ViewerAppearance {
 }
 
 pub(super) fn open() -> (TestRuntime, TestWindows, Rc<OpenWindow>, Service) {
+    open_with_copy(Rc::new(|_| {}))
+}
+
+/// `open`, with the viewer's copy (to the engine's clipboard command) as given.
+pub(super) fn open_with_copy(
+    copy: Rc<dyn Fn(String)>,
+) -> (TestRuntime, TestWindows, Rc<OpenWindow>, Service) {
     slint::platform::set_platform(Box::new(TestPlatform)).unwrap();
     let mut runtime = TestRuntime::new();
     let (capture_entered, capture_ready) = std::sync::mpsc::sync_channel(1);
@@ -297,7 +304,7 @@ pub(super) fn open() -> (TestRuntime, TestWindows, Rc<OpenWindow>, Service) {
             opening_appearance(),
             slint::LogicalSize::new(900.0, 600.0),
             Rc::new(|_, _| None),
-            Rc::new(|_| {}),
+            copy,
         )
         .unwrap();
     let open = manager.windows.borrow()[0].clone();

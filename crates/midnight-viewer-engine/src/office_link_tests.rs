@@ -145,7 +145,11 @@ impl ExternalGeneration for LinkGeneration {
         .find(|target| target.path() == path)
         .ok_or_else(|| "unknown controlled link target".into())
     }
-    fn render(&mut self, target: OfficeTarget, _: &Cancellation) -> Result<ImmutableHtml, String> {
+    fn render(
+        &mut self,
+        target: OfficeTarget,
+        _: &Cancellation,
+    ) -> Result<ImmutableHtml, PreviewError> {
         self.sequence += 1;
         Ok(ImmutableHtml {
             bytes: self.bytes.lock().unwrap().clone(),

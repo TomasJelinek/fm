@@ -1,7 +1,7 @@
 //! Backend-only Office service adapter. Generated HTML never inherits directory authority.
 use midnight_core::Cancellation;
 use midnight_office_preview::{
-    ImmutableHtml, OfficeFormat, OfficeSession, OfficeSource, OfficeTarget,
+    ImmutableHtml, OfficeError, OfficeFormat, OfficeSession, OfficeSource, OfficeTarget,
 };
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};
 use midnight_web_viewer_host::{ResourceCancellation, ResourcePathPolicy, Resources};
@@ -22,6 +22,54 @@ const RESOURCE_READ: u32 = 256 * 1024;
 pub(crate) struct Prepared {
     pub main: CapturedFile,
     pub resources: Arc<dyn Resources>,
+}
+
+/// Why the preview cannot show a document: the status line's sentence and, when the
+/// Office service refused it, the internal reason for Copy details
+/// (`OfficeError::details`), which quotes no document content and names no path the
+/// sentence does not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreviewError {
+    pub message: String,
+    pub details: Option<String>,
+}
+
+impl PreviewError {
+    fn office(error: &OfficeError, format: OfficeFormat) -> Self {
+        Self {
+            message: error.message(format),
+            // Nobody waits for a cancelled preview.
+            details: (!matches!(error, OfficeError::Cancelled)).then(|| error.details()),
+        }
+    }
+
+    /// A failed release after the failure, which the status line reports with it.
+    fn with_cleanup(mut self, cleanup: Result<(), String>) -> Self {
+        self.message = with_cleanup(self.message, cleanup);
+        self
+    }
+}
+
+impl From<String> for PreviewError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            details: None,
+        }
+    }
+}
+
+impl From<&str> for PreviewError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+/// The failure as the status line and the browser's resource errors report it.
+impl From<PreviewError> for String {
+    fn from(error: PreviewError) -> Self {
+        error.message
+    }
 }
 
 /// Template, macro-enabled and show suffixes select their family, for files a user
@@ -49,24 +97,21 @@ pub(crate) fn prepare(
     file: CapturedFile,
     format: OfficeFormat,
     lifetime: Cancellation,
-) -> Result<Prepared, String> {
+) -> Result<Prepared, PreviewError> {
     let mut parent = Retained::new(Arc::new(Parent::new(file, lifetime.clone())));
     let opened = (|| {
         parent.get().validate(&lifetime).map_err(text)?;
         let source = Arc::new(CapturedReader(parent.get().clone()));
         // The status line names the document and a plain reason; details() keeps
         // the internal one.
-        let opened =
-            OfficeSession::open(source, format, &lifetime).map_err(|error| error.message(format));
+        let opened = OfficeSession::open(source, format, &lifetime)
+            .map_err(|error| PreviewError::office(&error, format));
         parent.get().validate(&lifetime).map_err(text)?;
         opened
     })();
     match opened {
         Ok(session) => prepare_owned(parent.take(), Box::new(session), &lifetime),
-        Err(error) => Err(with_cleanup(
-            error,
-            parent.take().release_on_worker().map_err(text),
-        )),
+        Err(error) => Err(error.with_cleanup(parent.take().release_on_worker().map_err(text))),
     }
 }
 
@@ -79,7 +124,7 @@ trait ExternalGeneration: Send {
         &mut self,
         target: OfficeTarget,
         cancel: &Cancellation,
-    ) -> Result<ImmutableHtml, String>;
+    ) -> Result<ImmutableHtml, PreviewError>;
 }
 
 impl ExternalGeneration for OfficeSession {
@@ -93,9 +138,10 @@ impl ExternalGeneration for OfficeSession {
         &mut self,
         target: OfficeTarget,
         cancel: &Cancellation,
-    ) -> Result<ImmutableHtml, String> {
+    ) -> Result<ImmutableHtml, PreviewError> {
         let format = self.catalog().format;
-        OfficeSession::render(self, target, cancel).map_err(|error| error.message(format))
+        OfficeSession::render(self, target, cancel)
+            .map_err(|error| PreviewError::office(&error, format))
     }
 }
 
@@ -104,7 +150,7 @@ fn prepare_external(
     file: CapturedFile,
     lifetime: Cancellation,
     generation: Box<dyn ExternalGeneration>,
-) -> Result<Prepared, String> {
+) -> Result<Prepared, PreviewError> {
     prepare_owned(
         Arc::new(Parent::new(file, lifetime.clone())),
         generation,
@@ -116,7 +162,7 @@ fn prepare_owned(
     parent: Arc<Parent>,
     generation: Box<dyn ExternalGeneration>,
     lifetime: &Cancellation,
-) -> Result<Prepared, String> {
+) -> Result<Prepared, PreviewError> {
     let mut scope = Retained::new(Arc::new(Scope {
         parent: Some(parent),
         generation: Mutex::new(Some(Generation {
@@ -147,7 +193,7 @@ fn prepare_owned(
             main,
             resources: scope.take(),
         }),
-        Err(error) => Err(with_cleanup(error, scope.take().release_on_worker())),
+        Err(error) => Err(error.with_cleanup(scope.take().release_on_worker())),
     }
 }
 
@@ -414,7 +460,7 @@ impl Scope {
         path: &str,
         cancel: &Cancellation,
         context: RenderContext,
-    ) -> Result<CapturedFile, String> {
+    ) -> Result<CapturedFile, PreviewError> {
         let parent = self
             .parent
             .as_ref()
@@ -461,14 +507,13 @@ impl Scope {
         match capture {
             Ok(capture) => {
                 if let Err(error) = release {
-                    return Err(with_cleanup(
-                        error,
-                        capture.release_on_worker().map_err(text),
-                    ));
+                    return Err(
+                        with_cleanup(error, capture.release_on_worker().map_err(text)).into(),
+                    );
                 }
                 Ok(capture)
             }
-            Err(error) => Err(with_cleanup(error, release)),
+            Err(error) => Err(with_cleanup(error, release).into()),
         }
     }
 }
@@ -480,6 +525,7 @@ impl Resources for Scope {
             &Cancellation::default(),
             RenderContext::Resource,
         )
+        .map_err(String::from)
     }
 
     fn capture_with_cancellation(
@@ -493,6 +539,7 @@ impl Resources for Scope {
             &cancellation,
             RenderContext::Resource,
         )
+        .map_err(String::from)
     }
 
     fn path_policy(&self) -> ResourcePathPolicy {

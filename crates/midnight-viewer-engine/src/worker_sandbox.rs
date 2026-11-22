@@ -272,6 +272,7 @@ impl Worker {
                 message,
                 installable,
                 installing,
+                details: None,
             },
             output,
         );
@@ -287,8 +288,27 @@ impl Worker {
             message: format!("{} {outcome}", refused.cause),
             installable: refused.offered.is_some(),
             installing: false,
+            details: None,
         };
         self.show_notice(notice, output);
+    }
+
+    /// A document that failed with diagnostic details: its message in the page's place with
+    /// Copy details, until another document opens. The caller reports the failure on the
+    /// status line (`Worker::error`), as for one without details, which shows no notice.
+    pub(super) fn show_failure_notice(
+        &mut self,
+        message: String,
+        details: String,
+        output: &Mailbox,
+    ) {
+        self.sandbox.shown = true;
+        output.put(ViewerOutput::SandboxNotice(Some(ViewerSandboxNotice {
+            message,
+            installable: false,
+            installing: false,
+            details: Some(details),
+        })));
     }
 
     fn show_notice(&mut self, notice: ViewerSandboxNotice, output: &Mailbox) {
