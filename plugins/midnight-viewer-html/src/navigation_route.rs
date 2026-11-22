@@ -30,6 +30,12 @@ pub(crate) struct BrowseFacts<'a> {
     pub bootstrap_unused: bool,
     pub same_document_fragment: bool,
     pub redirect: bool,
+    /// Chromium's client-redirect transition flag: a navigation the page started itself,
+    /// such as a `<meta http-equiv="refresh">`. Blink may give it the user's gesture after
+    /// a recent click or key press, so the gesture alone does not make it a followed link.
+    pub client_redirect: bool,
+    /// Chromium's form-submit transition: a form sent with GET or POST.
+    pub form_submit: bool,
     pub direct_load: bool,
     /// Chromium's user-gesture flag of the navigation.
     pub user_gesture: bool,
@@ -97,7 +103,11 @@ fn route_link(policy: &DocumentPolicy, facts: &BrowseFacts<'_>) -> BrowseRoute {
     if current_private && facts.same_document_fragment && !facts.direct_load {
         return BrowseRoute::Original;
     }
-    if !facts.user_gesture || facts.redirect || facts.direct_load {
+    // Forms are not submitted, by the user (GET or POST) or by the page itself.
+    if facts.form_submit {
+        return BrowseRoute::Deny(crate::links::FORM);
+    }
+    if !facts.user_gesture || facts.redirect || facts.client_redirect || facts.direct_load {
         return BrowseRoute::Deny(crate::links::BY_ITSELF);
     }
     if !facts.get_no_post {

@@ -104,19 +104,24 @@ impl ActionNotice {
     }
 
     fn user_action(&mut self, command: &api::CommandKind) -> bool {
-        let genuine = match command {
-            api::CommandKind::Pointer(pointer) => pointer.kind == api::PointerKind::Down,
-            api::CommandKind::Key(key) => key.pressed,
-            api::CommandKind::Text(text) => !text.is_empty(),
-            api::CommandKind::Wheel(wheel) => wheel.delta_x != 0.0 || wheel.delta_y != 0.0,
-            api::CommandKind::Ime(_)
-            | api::CommandKind::Copy
-            | api::CommandKind::Find(_)
-            | api::CommandKind::Zoom(_)
-            | api::CommandKind::Policy(_) => true,
-            _ => false,
-        };
-        genuine && self.0.take().is_some()
+        user_action(command) && self.0.take().is_some()
+    }
+}
+
+/// Whether `command` is something the user did: a press, typed text, a scroll or a
+/// command; not a pointer move, leave or release, a key-up or a focus change.
+pub(super) fn user_action(command: &api::CommandKind) -> bool {
+    match command {
+        api::CommandKind::Pointer(pointer) => pointer.kind == api::PointerKind::Down,
+        api::CommandKind::Key(key) => key.pressed,
+        api::CommandKind::Text(text) => !text.is_empty(),
+        api::CommandKind::Wheel(wheel) => wheel.delta_x != 0.0 || wheel.delta_y != 0.0,
+        api::CommandKind::Ime(_)
+        | api::CommandKind::Copy
+        | api::CommandKind::Find(_)
+        | api::CommandKind::Zoom(_)
+        | api::CommandKind::Policy(_) => true,
+        _ => false,
     }
 }
 

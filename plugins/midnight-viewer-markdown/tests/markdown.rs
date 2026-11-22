@@ -106,6 +106,21 @@ fn relative_file_and_other_link_targets_reach_the_host_unchanged() {
     );
 }
 
+/// An email autolink's destination is the bare address; its target is a mail link, not a
+/// file next to the document.
+#[test]
+fn email_autolinks_become_mail_links() {
+    let page = page("Write <someone@example.com> or see <https://example.org/x>.\n");
+    assert_eq!(
+        targets(&page),
+        ["mailto:someone@example.com", "https://example.org/x"]
+    );
+    assert_eq!(
+        page.blocks[0].text.text,
+        "Write someone@example.com or see https://example.org/x."
+    );
+}
+
 #[test]
 fn a_target_the_protocol_cannot_carry_drops_only_that_link() {
     let input = format!(

@@ -207,6 +207,8 @@ fn ordinary_network_return_cancels_latest_but_preserves_allowed_before_io_claim(
         bootstrap_unused: false,
         same_document_fragment: false,
         redirect: true,
+        client_redirect: true,
+        form_submit: false,
         direct_load: true,
         user_gesture: false,
         links: false,

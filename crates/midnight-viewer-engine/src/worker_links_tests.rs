@@ -302,6 +302,81 @@ fn hovering_a_link_names_where_it_leads_and_leaving_it_clears_the_status() {
     assert_eq!(hover(&mut worker, &output, info, [f64::NAN, 0.0]), None);
 }
 
+/// The focus ring paints a frame just inside its rectangle, clipped to the raster, and
+/// looks only at the pixels it paints: a link line far larger than a band costs no more
+/// than the band's part of its edges.
+#[test]
+fn the_focus_ring_paints_only_its_edges_within_the_band() {
+    let (width, height, ring, color) = (64_u32, 16_u32, 2, [1, 2, 3, 255]);
+    let size = width as usize * height as usize * 4;
+    for edges in [
+        [4, 2, 30, 12],
+        [-10, 5, 40, 100],
+        [10, 3, 12, 5],
+        [20, -1, 23, 30],
+        [-10, -10, 100, 100],
+        [-3000, -3000, 3000, 3000],
+        [70, 0, 90, 10],
+    ] {
+        let mut pixels = vec![0; size];
+        let visited = paint_ring(&mut pixels, [width, height], edges, ring, color);
+        let [left, top, right, bottom] = edges;
+        let mut expected = vec![0; size];
+        for y in 0..i64::from(height) {
+            for x in 0..i64::from(width) {
+                let inside = x >= left && x < right && y >= top && y < bottom;
+                let hole =
+                    x >= left + ring && x < right - ring && y >= top + ring && y < bottom - ring;
+                if inside && !hole {
+                    let at = (y * i64::from(width) + x) as usize * 4;
+                    expected[at..at + 4].copy_from_slice(&color);
+                }
+            }
+        }
+        assert!(pixels == expected, "{edges:?}");
+        let painted = expected.chunks(4).filter(|pixel| pixel[3] != 0).count();
+        assert_eq!(
+            visited, painted,
+            "{edges:?}: only painted pixels are looked at"
+        );
+    }
+}
+
+/// The window asks its next hover question only after an answer, so a hover that no shown
+/// text reads is answered with no link, and the next one is read again.
+#[test]
+fn a_hover_no_shown_text_reads_is_answered_with_no_link() {
+    let folder = tempfile::tempdir().unwrap();
+    let (mut worker, output) = shown(folder.path(), links_page());
+    let frame = paint(&mut worker, &output);
+    let info = frame.raster.as_ref().unwrap();
+    let guide = center(&worker, 0);
+    let link = Some("Link to https://example.com/guide".to_owned());
+    // While the layout handshake waits for the window.
+    worker.layout = crate::layout_handshake::Handshake::new(true);
+    worker.layout.select(viewer::MODE_DOCUMENT, 1).unwrap();
+    assert_eq!(hover(&mut worker, &output, info, guide), None);
+    worker.layout.invalidate();
+    assert_eq!(hover(&mut worker, &output, info, guide), link);
+    // While an image or a video is shown.
+    worker.image = Some(crate::image_view::ImageView::new(
+        crate::image_worker::ImageWorker::opened_for_test(
+            vec![midnight_image_viewer_host::Metadata {
+                width: 40,
+                height: 60,
+            }],
+            false,
+        ),
+        worker.image_ids.clone(),
+    ));
+    assert_eq!(hover(&mut worker, &output, info, guide), None);
+    worker.image = None;
+    worker.mode = VIEWER_MODE_VIDEO;
+    assert_eq!(hover(&mut worker, &output, info, guide), None);
+    worker.mode = viewer::MODE_DOCUMENT;
+    assert_eq!(hover(&mut worker, &output, info, guide), link);
+}
+
 #[test]
 fn a_click_follows_a_link_and_a_drag_from_it_only_selects() {
     let folder = tempfile::tempdir().unwrap();
@@ -434,6 +509,25 @@ fn a_fragment_scrolls_to_its_github_heading_on_the_shown_page() {
     );
 }
 
+/// A fragment's percent-decoded controls do not reach the status line: they show as the
+/// hover text shows them.
+#[test]
+fn decoded_controls_of_a_fragment_do_not_reach_the_status_line() {
+    let folder = tempfile::tempdir().unwrap();
+    let (mut worker, output) = shown(folder.path(), links_page());
+    worker.follow_link("#a%0Ab%1B%E2%80%AEc", &output);
+    assert_eq!(
+        worker.status,
+        "This document has no heading #a\u{fffd}b\u{fffd}\\u202Ec."
+    );
+    worker.mode = viewer::MODE_TEXT;
+    worker.follow_link("#x%0Dy", &output);
+    assert_eq!(
+        worker.status,
+        "This view has no headings, so #x\u{fffd}y is not shown."
+    );
+}
+
 #[test]
 fn a_heading_beyond_the_shown_page_is_found_by_a_bounded_scan_that_shows_progress() {
     let folder = tempfile::tempdir().unwrap();
@@ -517,6 +611,57 @@ fn a_heading_beyond_the_shown_page_is_found_by_a_bounded_scan_that_shows_progres
     crate::worker::unsent::admit_from(None);
 }
 
+/// A heading near the end of a large document (`#the-end` about 290 KB into a Markdown
+/// file) is found by the scan: each page request is one the plugin protocol carries, and
+/// the view goes to the heading.
+#[test]
+fn a_heading_near_the_end_of_a_large_document_is_found_and_shown() {
+    const LENGTH: u64 = 295_000;
+    const HEADING: u64 = 290_000;
+    let folder = tempfile::tempdir().unwrap();
+    let mut first = links_page();
+    first.has_after = true;
+    let (mut worker, output) = shown(folder.path(), first);
+    worker.length = LENGTH;
+    crate::worker::unsent::take();
+    crate::worker::unsent::take_admitted();
+    crate::worker::unsent::admit_from(Some(70));
+    worker.follow_link("#the-end", &output);
+    let mut pages = 0;
+    while worker.links.scan.is_some() {
+        let [(id, viewport)] = &crate::worker::unsent::take_admitted()[..] else {
+            panic!("one admitted page request: {}", worker.status);
+        };
+        assert!(worker.links.scanning(*id));
+        pages += 1;
+        let from = viewport.source_anchor;
+        let length = u64::from(viewport.max_bytes).min(LENGTH - from);
+        let end = from + length;
+        let block = if (from..end).contains(&HEADING) {
+            block(document::BLOCK_HEADING, 2, HEADING, "The end", &[])
+        } else {
+            block(document::BLOCK_PARAGRAPH, 0, from, "Text.", &[])
+        };
+        crate::worker::unsent::take();
+        worker.scanned_page(document(vec![block], from, length, end < LENGTH), &output);
+    }
+    assert!(
+        !worker.status.starts_with("Cannot look for"),
+        "{}",
+        worker.status
+    );
+    assert!((2..=SCAN_PAGES).contains(&pages), "{pages} pages");
+    assert_eq!(
+        crate::worker::unsent::take()
+            .iter()
+            .map(|viewport| viewport.source_anchor)
+            .collect::<Vec<_>>(),
+        [HEADING],
+        "the heading's source goes to the top of the view"
+    );
+    crate::worker::unsent::admit_from(None);
+}
+
 /// Follow `target` and wait for the look at the file system.
 fn follow_local(worker: &mut Worker, output: &Mailbox, target: &str) {
     worker.follow_link(target, output);
@@ -526,6 +671,66 @@ fn follow_local(worker: &mut Worker, output: &Mailbox, target: &str) {
         std::thread::sleep(Duration::from_millis(2));
         worker.poll_links(output);
     }
+}
+
+/// An HTML page's pointer moves, the key-up of the Enter that followed a link and focus
+/// changes are not actions that replace a pending look at a local target; a press is.
+#[test]
+fn only_what_the_user_does_ends_a_pending_look_at_a_local_target() {
+    use midnight_core::viewer_web as api;
+    let folder = tempfile::tempdir().unwrap();
+    let (mut worker, output) = shown(folder.path(), links_page());
+    let pointer = |kind| {
+        api::CommandKind::Pointer(api::Pointer {
+            kind,
+            button: api::PointerButton::None,
+            x: 5.0,
+            y: 5.0,
+            modifiers: Default::default(),
+            click_count: 0,
+        })
+    };
+    let enter = |pressed| {
+        api::CommandKind::Key(api::Key {
+            key: "Enter".into(),
+            code: "Enter".into(),
+            pressed,
+            repeat: false,
+            modifiers: Default::default(),
+        })
+    };
+    let pending = Arc::new(Mutex::new(None));
+    worker.links.resolving = Some(pending.clone());
+    for input in [
+        pointer(api::PointerKind::Move),
+        pointer(api::PointerKind::Leave),
+        enter(false),
+        api::CommandKind::Focus(false),
+    ] {
+        let name = format!("{input:?}");
+        worker.input(ViewerInput::Web { frame: 1, input }, &output);
+        assert!(worker.links.resolving.is_some(), "{name}");
+    }
+    worker.input(
+        ViewerInput::Web {
+            frame: 1,
+            input: enter(true),
+        },
+        &output,
+    );
+    assert!(worker.links.resolving.is_none(), "a key press is an action");
+    worker.links.resolving = Some(pending);
+    worker.input(
+        ViewerInput::Web {
+            frame: 1,
+            input: pointer(api::PointerKind::Down),
+        },
+        &output,
+    );
+    assert!(
+        worker.links.resolving.is_none(),
+        "a pointer press is an action"
+    );
 }
 
 #[test]

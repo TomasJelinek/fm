@@ -559,11 +559,11 @@ pub fn local_link_action(
         LocalTargetKind::File { viewable: false } => LinkAction::Reveal(path),
         LocalTargetKind::Missing => LinkAction::Refuse(format!(
             "{} does not exist.",
-            shown(&path.to_string_lossy())
+            link_status_text(&path.to_string_lossy())
         )),
         LocalTargetKind::Other => LinkAction::Refuse(format!(
             "{} is not a file or folder, so the link is not followed.",
-            shown(&path.to_string_lossy())
+            link_status_text(&path.to_string_lossy())
         )),
     }
 }
@@ -574,14 +574,23 @@ pub fn local_link_action(
 pub fn describe_link(target: &str, folder: Option<&Path>) -> String {
     let described = match classify_link(target) {
         LinkTarget::Fragment(name) if name.is_empty() => "Link to the top of this document".into(),
-        LinkTarget::Fragment(name) => format!("Link to #{} in this document", shown(&name)),
+        LinkTarget::Fragment(name) => {
+            format!("Link to #{} in this document", link_status_text(&name))
+        }
         LinkTarget::Local(link) => match folder {
-            Some(folder) => format!("Link to {}", shown(&link.resolve(folder).to_string_lossy())),
-            None => format!("Link to {}", shown(target)),
+            Some(folder) => format!(
+                "Link to {}",
+                link_status_text(&link.resolve(folder).to_string_lossy())
+            ),
+            None => format!("Link to {}", link_status_text(target)),
         },
         LinkTarget::External(url) => format!("Link to {}", url.as_str()),
         LinkTarget::Refused(refusal) => {
-            format!("Link to {} · {}", shown(target), refusal.message())
+            format!(
+                "Link to {} · {}",
+                link_status_text(target),
+                refusal.message()
+            )
         }
     };
     bounded(described)
@@ -597,8 +606,9 @@ fn bounded(text: String) -> String {
     cut
 }
 
-/// Text for the status line: bidirectional controls escaped, other controls replaced.
-fn shown(text: &str) -> String {
+/// Text of a link for the status line: bidirectional controls escaped, other controls,
+/// such as percent-decoded ones, replaced.
+pub fn link_status_text(text: &str) -> String {
     visible_name(text)
         .chars()
         .map(|c| if c.is_control() { '\u{fffd}' } else { c })

@@ -1291,3 +1291,33 @@ fn html_links_take_the_host_link_policy_and_refusals_stay_through_frames() {
         "the notice outlives a repaint"
     );
 }
+
+/// The window asks its next hover question only after an answer: a raster hover that
+/// reaches an HTML page (sent before the page replaced the text) is answered with no link.
+#[test]
+fn a_raster_hover_over_an_html_page_is_answered_with_no_link() {
+    let (mut worker, output) = web_worker(Box::new(Recording::default()));
+    output.finish_open(Ok(()));
+    output.take();
+    worker.input(
+        ViewerInput::Raster {
+            surface: ViewerSurfaceId(1),
+            input: ViewerRasterInput::Hover {
+                pixel_id: 1,
+                origin: [0.0, 0.0],
+                x: 10.0,
+                y: 10.0,
+            },
+        },
+        &output,
+    );
+    let answers: Vec<_> = output
+        .take()
+        .into_iter()
+        .filter_map(|output| match output {
+            ViewerOutput::LinkHover(status) => Some(status),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, [None]);
+}

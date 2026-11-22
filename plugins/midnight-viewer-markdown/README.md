@@ -17,8 +17,9 @@ list shows its number on a line of its own and an unordered one shows no bullet.
 HTML is literal inert text. Images are alt text only. No HTML renderer, browser,
 JavaScript, network request, image/font/style fetch or automatic link launch
 exists. Link metadata carries every target of 1 to 8192 bytes without control
-characters, in its source range; the host's single link policy decides on an
-explicit user action what a target does, and names what it refuses
+characters, in its source range; an email autolink (`<someone@example.com>`) gets a
+`mailto:` target. The host's single link policy decides on an explicit user action
+what a target does, and names what it refuses
 ([viewer links](../../docs/developer/VIEWER_PREFERENCES.md#links)).
 GitHub-style pipe tables, task checkboxes and strikethrough are enabled. Tables
 carry per-cell left/center/right alignment, header metadata, inline styles and

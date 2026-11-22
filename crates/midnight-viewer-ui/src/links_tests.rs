@@ -115,8 +115,11 @@ fn one_hover_question_waits_at_a_time_and_its_answer_sets_the_cursor_and_status(
     present_outputs(&open, &service, &|_| {}, vec![answer(None)]);
     assert!(!open.window.get_link_hover());
     assert_eq!(open.window.get_link_status(), "");
-    // Leaving the text clears it, and a late answer cannot bring it back.
+    // An answer of no link (also the worker's answer to a hover no shown text reads)
+    // lets the next hover through.
     open.window.invoke_hover_point(13.0, 20.0);
+    assert_eq!(hovers(&inputs)[2..], [(13.0 * scale[0], 20.0 * scale[1])]);
+    // Leaving the text clears it, and a late answer cannot bring it back.
     open.window.invoke_hover_exit();
     present_outputs(&open, &service, &|_| {}, vec![answer(Some("Link to late"))]);
     assert!(!open.window.get_link_hover());

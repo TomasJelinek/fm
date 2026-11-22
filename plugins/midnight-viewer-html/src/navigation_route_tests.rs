@@ -28,6 +28,8 @@ fn network_return() -> BrowseFacts<'static> {
         bootstrap_unused: false,
         same_document_fragment: false,
         redirect: false,
+        client_redirect: false,
+        form_submit: false,
         direct_load: false,
         user_gesture: false,
         links: false,
@@ -162,9 +164,37 @@ fn link(target: &str) -> BrowseFacts<'_> {
         bootstrap_unused: false,
         same_document_fragment: false,
         redirect: false,
+        client_redirect: false,
+        form_submit: false,
         direct_load: false,
         user_gesture: true,
         links: true,
+    }
+}
+
+#[test]
+fn host_link_routing_refuses_every_form_submission_with_the_form_notice() {
+    // A GET form the user submits by click or Enter is no followed link either, whatever
+    // its method, gesture or target.
+    let main = main_url();
+    for target in [
+        resolved(main, "search.html?q=x"),
+        "https://example.org/search?q=x".into(),
+        "mailto:someone@example.org?subject=x".into(),
+    ] {
+        for policy in [offline(), online()] {
+            for (gesture, get_no_post) in [(true, true), (false, true), (true, false)] {
+                let mut facts = link(&target);
+                facts.form_submit = true;
+                facts.user_gesture = gesture;
+                facts.get_no_post = get_no_post;
+                assert_eq!(
+                    classify(&policy, &facts),
+                    BrowseRoute::Deny(FORM),
+                    "{target} gesture {gesture} GET {get_no_post}"
+                );
+            }
+        }
     }
 }
 
@@ -210,6 +240,51 @@ fn host_link_routing_refuses_what_the_page_starts_by_itself_with_a_notice() {
     let mut facts = link("https://example.org/");
     facts.user_gesture = false;
     assert_eq!(classify(&online(), &facts), BrowseRoute::Deny(BY_ITSELF));
+}
+
+#[test]
+fn host_link_routing_refuses_a_refresh_or_script_redirect_even_with_a_recent_gesture() {
+    // `<meta http-equiv="refresh" content="3;url=...">` after the user clicked or pressed
+    // a key: Blink marks it with the gesture, CEF reports no (server) redirect, and only
+    // the client-redirect transition flag tells it from a followed link.
+    let main = main_url();
+    for target in [
+        resolved(main, "next.html"),
+        resolved(main, "../README.md"),
+        "https://attacker.example/".into(),
+        "mailto:someone@example.org".into(),
+        "file:///C:/elsewhere.html".into(),
+    ] {
+        for policy in [offline(), online()] {
+            for gesture in [true, false] {
+                let mut facts = link(&target);
+                facts.client_redirect = true;
+                facts.user_gesture = gesture;
+                assert_eq!(
+                    classify(&policy, &facts),
+                    BrowseRoute::Deny(BY_ITSELF),
+                    "{target} gesture {gesture}"
+                );
+            }
+        }
+    }
+    // A form the page submits by itself is refused before it would count as a form.
+    let target = resolved(main, "next.html");
+    let mut facts = link(&target);
+    facts.client_redirect = true;
+    facts.get_no_post = false;
+    assert_eq!(classify(&offline(), &facts), BrowseRoute::Deny(BY_ITSELF));
+    // The first load and fragments within the document are not affected by the flag.
+    let mut facts = link(main);
+    facts.current_main_url = None;
+    facts.bootstrap_unused = true;
+    facts.client_redirect = true;
+    assert_eq!(classify(&offline(), &facts), BrowseRoute::Bootstrap);
+    let part = format!("{main}#part");
+    let mut facts = link(&part);
+    facts.same_document_fragment = true;
+    facts.client_redirect = true;
+    assert_eq!(classify(&offline(), &facts), BrowseRoute::Original);
 }
 
 #[test]

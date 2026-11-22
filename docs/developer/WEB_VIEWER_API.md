@@ -282,15 +282,21 @@ document and decides in CEF's callbacks:
   `LinkHover`. A link whose target cannot be expressed clears the hover target and sends
   a `Denied` notice.
 - With Chromium's user-gesture flag, `OnBeforeBrowse` (a click or Enter on a focused
-  link), `OnOpenURLFromTab` (a middle, Ctrl or Shift click) and `OnBeforePopup`
-  (`target=_blank`, `window.open`) become `LinkActivated`. One activation is sent per
-  500 ms, so a double click or a script repeating one gesture's navigation reaches the
-  host once.
+  link, neither a redirect nor a client redirect), `OnOpenURLFromTab` (a middle, Ctrl or
+  Shift click) and `OnBeforePopup` (`target=_blank`, `window.open`) become
+  `LinkActivated`. One activation is sent per 500 ms, so a double click or a script
+  repeating one gesture's navigation reaches the host once.
 - The browser's first load of the document, reloads (F5, Ctrl+R) and fragment
   navigations within the current document stay inside the browser.
-- Navigations without a user gesture (redirects, meta refresh, scripts), form
-  submissions, popups without a gesture and links whose target cannot be expressed are
-  refused with an `Error { code: Denied }` notice, at most one per second.
+- Navigations without a user gesture (scripts), server redirects, client redirects
+  (Chromium's `TT_CLIENT_REDIRECT_FLAG`: a `<meta http-equiv="refresh">` or a script
+  redirect, which Chromium may give the gesture of a recent click or key press), form
+  submissions (`TT_FORM_SUBMIT`, GET or POST, also when the user sends the form), popups
+  without a gesture and links whose target cannot be expressed are refused with an
+  `Error { code: Denied }` notice, at most one per second.
+- Limit: with scripts enabled, a navigation a script starts inside a click or key
+  handler carries that gesture. Unless Chromium marks it as a client redirect, the
+  provider cannot tell it from a followed link, and it becomes `LinkActivated`.
 
 A target outside the private origin is the absolute URL exactly as Chromium resolved
 it (it starts with a scheme, whatever the scheme). A target on the private origin is a

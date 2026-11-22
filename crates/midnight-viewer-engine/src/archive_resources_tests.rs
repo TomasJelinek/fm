@@ -118,3 +118,25 @@ fn archive_assets_deny_duplicate_raw_names_links_escapes_and_closed_leases() {
             .is_err()
     );
 }
+
+/// A member opened from a link brings its own folder's resources: a linked HTML or
+/// Markdown member keeps its styles and images and can follow its own links.
+#[test]
+fn a_member_opened_through_the_resources_reaches_its_own_folder() {
+    let main = asset_main(
+        Arc::new(Assets::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let linked = main
+        .resources()
+        .unwrap()
+        .capture(&["styles".into(), "文档.css".into()])
+        .unwrap();
+    let resources = linked
+        .resources()
+        .expect("a linked member must provide its own folder");
+    let sibling = resources.capture(&["文档.css".into()]).unwrap();
+    assert_eq!(sibling.read_at(0, 6).unwrap(), b"body{}");
+    // Its scope is its own folder: the main member's siblings are not below it.
+    assert!(resources.capture(&["styles".into()]).is_err());
+}

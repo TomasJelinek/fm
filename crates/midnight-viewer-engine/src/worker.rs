@@ -113,6 +113,8 @@ mod unsent {
     }
     /// The ID of `viewport`, just recorded, when a simulated provider admits it.
     pub(super) fn admitted(viewport: &super::messages::Viewport) -> Option<u64> {
+        // A session refuses a request the protocol cannot carry.
+        midnight_plugin_host::api::codec::Model::validate(viewport).ok()?;
         let id = next_id()?;
         ADMITTED.with_borrow_mut(|admitted| admitted.push((id, viewport.clone())));
         Some(id)
@@ -1036,6 +1038,9 @@ impl Worker {
             {
                 self.error(error, output);
             }
+            return;
+        }
+        if self.hover_without_text(&input, output) {
             return;
         }
         if self.layout.waiting() {

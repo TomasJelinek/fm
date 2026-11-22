@@ -176,6 +176,7 @@ pub(super) fn before_browse(
         .as_ref()
         .and(frame.as_deref())
         .map(|frame| CefString::from(&frame.url()).to_string());
+    let transition = request.transition_type().get_raw();
     let facts = BrowseFacts {
         unmarked: true,
         target: &url,
@@ -187,9 +188,10 @@ pub(super) fn before_browse(
             .as_deref()
             .is_some_and(|current| same_document_fragment(current, &url)),
         redirect: is_redirect != 0,
-        direct_load: request.transition_type().get_raw()
-            & TransitionType::DIRECT_LOAD_FLAG.get_raw()
-            != 0,
+        client_redirect: transition & TransitionType::CLIENT_REDIRECT_FLAG.get_raw() != 0,
+        form_submit: transition & TransitionType::SOURCE_MASK.get_raw()
+            == TransitionType::FORM_SUBMIT.get_raw(),
+        direct_load: transition & TransitionType::DIRECT_LOAD_FLAG.get_raw() != 0,
         user_gesture: user_gesture != 0,
         links: doc.links.is_some(),
     };

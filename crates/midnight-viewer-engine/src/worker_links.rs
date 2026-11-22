@@ -38,6 +38,10 @@ mod tests;
 const HISTORY: usize = 64;
 /// The heading scan reads at most this many pages of a document.
 const SCAN_PAGES: u32 = 256;
+/// One scanned page's bytes and lines, within what the plugin protocol carries in a
+/// viewport request (at most `MAX_PAGE_BYTES` and 4096 lines).
+const SCAN_PAGE_BYTES: u32 = 64 * 1024;
+const SCAN_PAGE_LINES: u32 = 4096;
 /// A heading scan taking longer than this shows its progress.
 const SCAN_PROGRESS: Duration = Duration::from_millis(300);
 /// A file no viewer claims opens as text only when its first bytes hold no NUL.
@@ -162,6 +166,26 @@ impl Worker {
         self.links.hovered = link;
         let status = link.and_then(|index| self.page_link_status(index));
         output.put(ViewerOutput::LinkHover(status));
+    }
+
+    /// Answers a hover that no shown text reads, while the layout handshake waits or a
+    /// video, an image or an HTML page is shown, with no link: the window asks its next
+    /// hover question only after an answer. True when `input` was such a hover.
+    pub(super) fn hover_without_text(&self, input: &ViewerInput, output: &Mailbox) -> bool {
+        let unread = matches!(
+            input,
+            ViewerInput::Raster {
+                input: ViewerRasterInput::Hover { .. },
+                ..
+            }
+        ) && (self.layout.waiting()
+            || self.mode == VIEWER_MODE_VIDEO
+            || self.web.is_some()
+            || self.image.is_some());
+        if unread {
+            output.put(ViewerOutput::LinkHover(None));
+        }
+        unread
     }
 
     /// The shown page's link whose painted text holds `point`.
@@ -348,28 +372,23 @@ impl Worker {
         else {
             return;
         };
-        let color = self.appearance.accent;
+        let [red, green, blue, _] = self.appearance.accent;
         let ring = (2.0 * self.geometry.scale).round().max(1.0) as i64;
+        let [x, y] = origin.map(f64::from);
         for rect in rects {
-            let left = (rect.x0 - f64::from(origin[0])).floor() as i64 - ring;
-            let top = (rect.y0 - f64::from(origin[1])).floor() as i64 - ring;
-            let right = (rect.x1 - f64::from(origin[0])).ceil() as i64 + ring;
-            let bottom = (rect.y1 - f64::from(origin[1])).ceil() as i64 + ring;
-            for y in top..bottom {
-                for x in left..right {
-                    let edge = x < left + ring
-                        || x >= right - ring
-                        || y < top + ring
-                        || y >= bottom - ring;
-                    if !edge || x < 0 || y < 0 || x >= i64::from(width) || y >= i64::from(height) {
-                        continue;
-                    }
-                    let at = (y as usize * width as usize + x as usize) * 4;
-                    if let Some(pixel) = pixels.get_mut(at..at + 4) {
-                        pixel.copy_from_slice(&[color[0], color[1], color[2], 255]);
-                    }
-                }
-            }
+            let edges = [
+                ((rect.x0 - x).floor() as i64).saturating_sub(ring),
+                ((rect.y0 - y).floor() as i64).saturating_sub(ring),
+                ((rect.x1 - x).ceil() as i64).saturating_add(ring),
+                ((rect.y1 - y).ceil() as i64).saturating_add(ring),
+            ];
+            paint_ring(
+                pixels,
+                [width, height],
+                edges,
+                ring,
+                [red, green, blue, 255],
+            );
         }
     }
 
@@ -527,7 +546,7 @@ impl Worker {
                 self.link_notice(
                     format!(
                         "Opening {} in the active panel.",
-                        midnight_core::visible_name(&path.to_string_lossy())
+                        midnight_core::link_status_text(&path.to_string_lossy())
                     ),
                     output,
                 );
@@ -539,7 +558,7 @@ impl Worker {
                 self.link_notice(
                     format!(
                         "No viewer shows {}; it is shown in the active panel.",
-                        midnight_core::visible_name(&path.to_string_lossy())
+                        midnight_core::link_status_text(&path.to_string_lossy())
                     ),
                     output,
                 );
@@ -596,7 +615,7 @@ impl Worker {
                 format!(
                     "No viewer shows {}, and files inside an archive cannot be shown in the \
                      panel from here yet.",
-                    midnight_core::visible_name(&name)
+                    midnight_core::link_status_text(&name)
                 ),
                 output,
             );
@@ -702,7 +721,7 @@ impl Worker {
             self.link_notice(
                 format!(
                     "This view has no headings, so #{} is not shown.",
-                    midnight_core::visible_name(&fragment)
+                    midnight_core::link_status_text(&fragment)
                 ),
                 output,
             );
@@ -747,7 +766,7 @@ impl Worker {
             self.link_notice(
                 format!(
                     "This document has no heading #{}.",
-                    midnight_core::visible_name(fragment)
+                    midnight_core::link_status_text(fragment)
                 ),
                 output,
             );
@@ -760,7 +779,7 @@ impl Worker {
             self.link_notice(
                 format!(
                     "#{} was not found in the first {SCAN_PAGES} pages of this document.",
-                    midnight_core::visible_name(&scan.fragment)
+                    midnight_core::link_status_text(&scan.fragment)
                 ),
                 output,
             );
@@ -769,8 +788,8 @@ impl Worker {
         let viewport = messages::Viewport {
             source_anchor: from,
             backwards: false,
-            max_bytes: 64 * 1024,
-            max_lines: 8192,
+            max_bytes: SCAN_PAGE_BYTES,
+            max_lines: SCAN_PAGE_LINES,
         };
         let requested = match &self.session {
             Some(session) => session
@@ -794,7 +813,7 @@ impl Worker {
             Err(error) => self.link_notice(
                 format!(
                     "Cannot look for #{}: {error}",
-                    midnight_core::visible_name(&scan.fragment)
+                    midnight_core::link_status_text(&scan.fragment)
                 ),
                 output,
             ),
@@ -825,7 +844,7 @@ impl Worker {
             self.status(
                 format!(
                     "Looking for #{} in the document… {percent}%",
-                    midnight_core::visible_name(&scan.fragment)
+                    midnight_core::link_status_text(&scan.fragment)
                 ),
                 output,
             );
@@ -839,7 +858,7 @@ impl Worker {
             self.link_notice(
                 format!(
                     "Cannot look for #{}: {message}",
-                    midnight_core::visible_name(&scan.fragment)
+                    midnight_core::link_status_text(&scan.fragment)
                 ),
                 output,
             );
@@ -860,19 +879,63 @@ impl Worker {
     /// Anything the user does other than pointing and resizing ends a heading scan and a
     /// pending look at a local target.
     pub(super) fn end_link_work_on(&mut self, input: &ViewerInput) {
-        let pointing = matches!(
-            input,
+        let pointing = match input {
             ViewerInput::Raster {
                 input: ViewerRasterInput::Hover { .. } | ViewerRasterInput::Release { .. },
                 ..
-            } | ViewerInput::Resize(_)
-                | ViewerInput::RetainedRaster(_)
-                | ViewerInput::LinkOutcome(_)
-        );
+            }
+            | ViewerInput::Resize(_)
+            | ViewerInput::RetainedRaster(_)
+            | ViewerInput::LinkOutcome(_) => true,
+            // An HTML page's pointer moves and releases, key-ups (of the Enter that
+            // followed the link) and focus changes, as its refusal notice counts them.
+            ViewerInput::Web { input, .. } => !super::web::user_action(input),
+            _ => false,
+        };
         if !pointing && (self.links.scan.is_some() || self.links.resolving.is_some()) {
             self.cancel_link_work();
         }
     }
+}
+
+/// Paint a frame `ring` pixels wide just inside `[left, top, right, bottom)` in `color`
+/// into a `size` premultiplied RGBA raster, clipped to it. Only the frame's pixels inside
+/// the raster are looked at, however large the rectangle; returns how many it painted.
+fn paint_ring(
+    pixels: &mut [u8],
+    [width, height]: [u32; 2],
+    [left, top, right, bottom]: [i64; 4],
+    ring: i64,
+    color: [u8; 4],
+) -> usize {
+    // The full-width top and bottom rows, then the left and right columns between them.
+    let inner_top = top.saturating_add(ring).min(bottom);
+    let inner_bottom = bottom.saturating_sub(ring).max(inner_top);
+    let inner_left = left.saturating_add(ring).min(right);
+    let inner_right = right.saturating_sub(ring).max(inner_left);
+    let strips = [
+        [left, top, right, inner_top],
+        [left, inner_bottom, right, bottom],
+        [left, inner_top, inner_left, inner_bottom],
+        [inner_right, inner_top, right, inner_bottom],
+    ];
+    let stride = width as usize * 4;
+    let mut painted = 0;
+    for [x0, y0, x1, y1] in strips {
+        let (x0, x1) = (x0.max(0), x1.min(i64::from(width)));
+        let (y0, y1) = (y0.max(0), y1.min(i64::from(height)));
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        let (start, end) = (x0 as usize * 4, x1 as usize * 4);
+        for y in y0 as usize..y1 as usize {
+            if let Some(row) = pixels.get_mut(y * stride + start..y * stride + end) {
+                row.as_chunks_mut::<4>().0.fill(color);
+                painted += (x1 - x0) as usize;
+            }
+        }
+    }
+    painted
 }
 
 fn push_bounded(history: &mut Vec<Visit>, visit: Visit) {

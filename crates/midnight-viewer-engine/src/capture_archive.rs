@@ -85,7 +85,9 @@ impl ContentResources for Resources {
                     ));
                 }
                 self.main.validate()?;
-                return CapturedFile::from_source(Arc::new(Member {
+                // With its own folder's resources: a member opened from a link keeps its
+                // styles and images and can follow its own links.
+                return capture_member(Arc::new(Member {
                     mount: self.main.mount.clone(),
                     entry: node.id.entry,
                     parent: directory,

@@ -5,7 +5,7 @@ use crate::{
     markdown::link_target,
 };
 use midnight_plugin_sdk::api::{document::*, viewer::*};
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
 
 /// Parser events of one top-level unit before that unit is shown literally.
@@ -422,11 +422,24 @@ impl<'a> Builder<'a> {
             Tag::Emphasis => self.emphasis = self.emphasis.saturating_add(1),
             Tag::Strikethrough => self.strike = self.strike.saturating_add(1),
             Tag::Image { .. } => self.images = self.images.saturating_add(1),
-            Tag::Link { dest_url, .. } if self.images == 0 && link_target(&dest_url) => {
-                // The block that receives the link's text exists first: an ordered item's
-                // first block starts with its number, which the link must not cover.
-                let at = self.current()?.text.text.len() as u32;
-                self.pending_link = Some((at, dest_url.into_string()));
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } if self.images == 0 => {
+                // An email autolink's destination is the bare address.
+                let target = if link_type == LinkType::Email {
+                    format!("mailto:{dest_url}")
+                } else {
+                    dest_url.into_string()
+                };
+                if link_target(&target) {
+                    // The block that receives the link's text exists first: an ordered
+                    // item's first block starts with its number, which the link must not
+                    // cover.
+                    let at = self.current()?.text.text.len() as u32;
+                    self.pending_link = Some((at, target));
+                }
             }
             _ => {}
         }
