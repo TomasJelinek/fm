@@ -41,7 +41,10 @@ Copy/Move jobs start at once and run concurrently on every storage class; the
 configured disk-I/O limit ([Disk operations](DISK_OPERATIONS.md); Automatic is four)
 interleaves their native steps. Where their native namespace footprints overlap,
 only the overlapping item waits for the job that already holds it; a job that would
-read what another job changes, or whose footprint is unknown, waits as a whole. Each
+read what another job changes waits as a whole. A job whose footprint is unknown
+(the opaque lane) runs alone: it waits for the other jobs and they wait for it, saying
+"Waiting for another job: jobs whose folders cannot be confirmed run alone" rather than
+that they use the same folders. Each
 job performs one native call at a time and holds its disk slot only while it
 executes native steps; see
 [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). More
@@ -837,7 +840,11 @@ The Windows adapter reports exact lookup keys only on NTFS volumes whose
 persistent 8.3-name creation is disabled, for ASCII names in case-insensitive
 directories and any names in case-sensitive directories. Every other binding is
 `Unknown`, which sends that turn to the host's opaque lane and its full refresh of
-the job's pins. Original pins (selected sources and destination entries or
+the job's pins. Such a job runs alone (on the system drive, which usually still
+creates 8.3 names, every Copy into it and every Move from or into it), and a job that
+waits for it shows `UnconfirmedFolders`, not `SameFolders`. A source that a Copy only
+reads stays unclaimed instead, so it does not make the Copy run alone.
+Original pins (selected sources and destination entries or
 subtrees) and their directory anchor handles are retained for the job's lifetime;
 an external change to one of their bindings is a job namespace error. Private pins
 witness the stages a job creates and then their published outputs; once every native
@@ -993,7 +1000,8 @@ network filesystems and FUSE mounts, whose server or daemon decides how names co
 and where others change names unseen, and any filesystem that does not answer
 `FS_IOC_GETFLAGS`. As on Windows, an `Unknown` binding sends the turn to the host's
 opaque lane with its full refresh of the job's pins: transfers there exclude each other
-instead of running side by side, and Copy and Move still work.
+instead of running side by side (the waiting one shows `UnconfirmedFolders`), and Copy
+and Move still work.
 
 A key lists the identity and mount of its folder and of each ancestor up to the
 mount's root, read with one `statx` per level. The engine refreshes the pins that one

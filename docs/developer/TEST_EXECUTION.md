@@ -472,9 +472,15 @@ On Windows, the engine's Copy/Move qualification tests (for example
 File List output tests) need exact native lookup keys for the temporary folders they
 create. The platform reports those keys only on an NTFS volume whose persistent 8.3
 short-name creation is disabled ([Windows namespace pins](TRANSFERS.md#windows-namespace-pins)).
-Elsewhere these tests fail; each failing `copy_planning_tests` case then reports first
-that its fixture "requires a supported local lookup domain". The application itself is
-unaffected: Copy/Move on such a volume takes the opaque lane with full pin refreshes.
+Elsewhere these tests fail; each failing `copy_planning_tests` case (and each scheduler
+test that runs two jobs side by side) then reports first that its fixture "requires a
+supported local lookup domain". The application itself is unaffected: Copy/Move on such
+a volume takes the opaque lane with full pin refreshes, and so runs alone: another job
+waits for it, even beside a paused one, and says so ("Waiting for another job: jobs
+whose folders cannot be confirmed run alone", `UnconfirmedFolders`). Tests that expect
+`SameFolders` see that reason there instead.
+Acceptance scenarios that check jobs side by side (`files_transfer_jobs` T-J01,
+`journeys_concurrent_jobs`) therefore need their `--run-dir` on a qualified volume too.
 
 The tests create their folders in `TEMP`/`TMP`. `scripts/cargo.ps1`, the targeted runner
 (`scripts/run-targeted-tests.py`) and CI put those below the checkout's `_build`, so

@@ -80,12 +80,30 @@ impl State {
     }
 }
 /// A grant attempt's outcome, decided at once. `Conflict`: the job cannot start beside the
-/// granted jobs (an unknown footprint, a source that another job changes, or an older
-/// waiting job that uses the same items) until a claim is granted, removed or quarantined.
+/// granted jobs until a claim is granted, removed or quarantined; `Hold` says why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Grant {
     Granted,
-    Conflict(Seen),
+    Conflict(Seen, Hold),
+}
+/// Why a job waits as a whole for other jobs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// Its own footprint, or that of a granted job or an older waiting one, is unknown
+    /// (opaque or latched): such a job runs alone, whatever items the other one uses.
+    Unknown,
+    /// It would read what a granted job changes, or an older waiting job uses one of its
+    /// items.
+    Overlap,
+}
+impl Hold {
+    /// What the waiting job tells the user.
+    pub(crate) fn wait_reason(self) -> midnight_core::TransferWaitReason {
+        match self {
+            Self::Unknown => midnight_core::TransferWaitReason::UnconfirmedFolders,
+            Self::Overlap => midnight_core::TransferWaitReason::SameFolders,
+        }
+    }
 }
 /// Why a granted job's namespace change was refused (see `take_peer_refusal`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,12 +124,24 @@ struct Blocker {
     revision: u64,
     /// A latched peer stays opaque until its claim is removed.
     latched: bool,
+    /// The peer's footprint was unknown (latched or opaque) at the refusal, so it refused
+    /// the change whatever items the change touches.
+    unknown: bool,
 }
 impl Blockers {
     /// Whether a blocker can clear without being removed, so periodic revalidation of
     /// external changes can help. A peer latched opaque only clears by its removal.
     pub(crate) fn can_clear_in_place(&self) -> bool {
         self.0.is_empty() || self.0.iter().any(|blocker| !blocker.latched)
+    }
+    /// Why the change waits: `Unknown` only when every refusing peer's footprint was
+    /// unknown; a peer that uses the same items makes it `Overlap`.
+    pub(crate) fn hold(&self) -> Hold {
+        if !self.0.is_empty() && self.0.iter().all(|blocker| blocker.unknown) {
+            Hold::Unknown
+        } else {
+            Hold::Overlap
+        }
     }
 }
 thread_local! {
@@ -954,9 +984,10 @@ impl CandidateRoot {
 }
 
 /// Whether a candidate starts beside the granted jobs, and which of its selected roots it
-/// defers because a granted job claims or reserves an overlapping item. None: it waits as
-/// a whole, for an unknown footprint (its own or a granted job's), for a granted job that
-/// changes what it would read, or behind an older waiting job that shares an item with it.
+/// defers because a granted job claims or reserves an overlapping item. Otherwise it waits
+/// as a whole: for an unknown footprint (its own, a granted job's or an older waiting
+/// job's), for a granted job that changes what it would read, or behind an older waiting
+/// job that shares an item with it.
 /// Pure metadata under the registry lock; each comparison walks the candidate's side.
 fn verdict(
     state: &State,
@@ -965,21 +996,16 @@ fn verdict(
     facts: &Facts,
     roots: &[CandidateRoot],
     reads: &[bool],
-) -> Option<Vec<usize>> {
+) -> Result<Vec<usize>, Hold> {
     for (other, peer) in &state.records {
-        if *other == sequence {
+        if *other == sequence || !(peer.granted || (peer.planned && *other < sequence)) {
             continue;
         }
-        let peer_opaque = peer.opaque_latched || peer.facts.is_opaque();
-        if peer.granted {
-            if opaque || peer_opaque {
-                return None;
-            }
-        } else if peer.planned
-            && *other < sequence
-            && (opaque || peer_opaque || facts.conflicts(&peer.facts))
-        {
-            return None;
+        if opaque || peer.opaque_latched || peer.facts.is_opaque() {
+            return Err(Hold::Unknown);
+        }
+        if !peer.granted && facts.conflicts(&peer.facts) {
+            return Err(Hold::Overlap);
         }
     }
     let mut deferred = Vec::new();
@@ -994,7 +1020,7 @@ fn verdict(
             for claim in std::iter::once(&peer.facts).chain(&peer.reserved) {
                 // Reading what another job changes is never interleaved item by item.
                 if source && root.reads.conflicts(claim) {
-                    return None;
+                    return Err(Hold::Overlap);
                 }
                 held |= root.facts.conflicts(claim);
             }
@@ -1003,7 +1029,7 @@ fn verdict(
             deferred.push(root.index);
         }
     }
-    Some(deferred)
+    Ok(deferred)
 }
 
 impl Claim {
@@ -1257,20 +1283,23 @@ impl Claim {
         } else {
             FactsState::Stable
         };
-        let Some(deferred) = verdict(&state, sequence, opaque, &facts, &roots, &reads) else {
-            // While it waits, younger candidates compare with this fresh footprint.
-            let record = state
-                .records
-                .get_mut(&sequence)
-                .expect("candidate remains registered");
-            record.state = state_after;
-            let retired = std::mem::replace(&mut record.facts, Arc::new(facts));
-            Inner::bump(&mut state, sequence)?;
-            let seen = state.seen();
-            registry.signal();
-            drop(state);
-            drop(retired);
-            return Ok(Grant::Conflict(seen));
+        let deferred = match verdict(&state, sequence, opaque, &facts, &roots, &reads) {
+            Ok(deferred) => deferred,
+            Err(hold) => {
+                // While it waits, younger candidates compare with this fresh footprint.
+                let record = state
+                    .records
+                    .get_mut(&sequence)
+                    .expect("candidate remains registered");
+                record.state = state_after;
+                let retired = std::mem::replace(&mut record.facts, Arc::new(facts));
+                Inner::bump(&mut state, sequence)?;
+                let seen = state.seen();
+                registry.signal();
+                drop(state);
+                drop(retired);
+                return Ok(Grant::Conflict(seen, hold));
+            }
         };
         let (reserved_pins, claimed): (Vec<_>, Vec<_>) = pins
             .into_iter()
@@ -2015,6 +2044,8 @@ impl TransferNamespaceChange for Transaction {
                                     sequence: *sequence,
                                     revision: record.revision,
                                     latched: record.opaque_latched,
+                                    // Decided below, for a peer that refuses the change.
+                                    unknown: false,
                                 },
                                 record.facts.clone(),
                                 // Items a job deferred bind only the jobs granted after it.
@@ -2045,7 +2076,16 @@ impl TransferNamespaceChange for Transaction {
                                 .as_ref()
                                 .is_some_and(|reserved| candidate.conflicts(reserved))
                     })
-                    .map(|(blocker, _, _, state)| (*blocker, *state))
+                    .map(|(blocker, facts, _, state)| {
+                        let unknown = blocker.latched || facts.is_opaque();
+                        (
+                            Blocker {
+                                unknown,
+                                ..*blocker
+                            },
+                            *state,
+                        )
+                    })
                     .collect();
                 let conflicts = !blockers.is_empty();
                 let mapping = if unsupported || conflicts {

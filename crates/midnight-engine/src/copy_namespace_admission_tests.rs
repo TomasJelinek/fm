@@ -71,9 +71,70 @@ fn unknown_read_root_is_unprotected_but_an_unknown_written_root_excludes_all() {
     assert!(other.grant(), "an unknown read scope holds nothing");
     let (_, known) = pin(vec![entry(parent(5, &[5, 0]), b"else", Some(51), true)]);
     let writer = planned(&registry, 3, vec![(Read, Some(known)), (Write, None)]);
-    let Grant::Conflict(_) = writer.claim().admit(&Cancellation::default()).unwrap() else {
+    let Grant::Conflict(_, Hold::Unknown) = writer.claim().admit(&Cancellation::default()).unwrap()
+    else {
         panic!("an unknown written footprint must exclude the granted jobs");
     };
+}
+
+/// A job that waits as a whole says why: a footprint is unknown (its own, a granted
+/// job's or an older waiting job's), so that job runs alone whatever the others use, or
+/// it uses items that another job uses. Only the second is about the same folders, and
+/// the reason follows the jobs that hold it.
+#[test]
+fn a_whole_job_wait_tells_an_unknown_footprint_from_shared_items() {
+    let registry = registry();
+    let hold = |job: &Job| match job.claim().admit(&Cancellation::default()).unwrap() {
+        Grant::Granted => None,
+        Grant::Conflict(_, hold) => Some(hold),
+    };
+    let item = |folder: u64, key: &[u8], object: Option<u64>| {
+        pin(vec![entry(parent(folder, &[folder, 0]), key, object, true)]).1
+    };
+    let mut writer = transfer(
+        &registry,
+        1,
+        vec![(item(1, b"a", Some(11)), item(2, b"photos", Some(21)))],
+    );
+    assert!(writer.grant());
+    // Reading what the granted job writes.
+    let reader = transfer(
+        &registry,
+        2,
+        vec![(item(2, b"photos", Some(21)), item(4, b"photos", None))],
+    );
+    assert_eq!(hold(&reader), Some(Hold::Overlap));
+    // Writing what the older waiting reader will write.
+    let behind = transfer(
+        &registry,
+        3,
+        vec![(item(5, b"b", Some(51)), item(4, b"photos", None))],
+    );
+    assert_eq!(hold(&behind), Some(Hold::Overlap));
+    // Writing somewhere of unknown geometry: this job runs alone.
+    let alone = planned(
+        &registry,
+        4,
+        vec![(Read, Some(item(6, b"c", Some(61)))), (Write, None)],
+    );
+    assert_eq!(hold(&alone), Some(Hold::Unknown));
+    // Disjoint from every job, but younger than the waiting job that runs alone.
+    let disjoint = transfer(
+        &registry,
+        5,
+        vec![(item(7, b"d", Some(71)), item(8, b"d", None))],
+    );
+    assert_eq!(hold(&disjoint), Some(Hold::Unknown));
+    // The granted job's footprint latched unknown, as by a failed check: the reader now
+    // waits for a job that runs alone.
+    registry.latch_opaque_for_test(1);
+    assert_eq!(hold(&reader), Some(Hold::Unknown));
+    writer.close();
+    assert_eq!(
+        hold(&reader),
+        None,
+        "granted once the job that held it is gone"
+    );
 }
 
 fn deferred(registry: &Registry, sequence: u64) -> Vec<usize> {
@@ -379,7 +440,9 @@ fn reading_what_another_job_writes_waits_as_a_whole() {
     let (_, read) = pin(vec![entry(destination, b"photos", Some(21), true)]);
     let (_, elsewhere) = pin(vec![entry(parent(4, &[4, 0]), b"photos", None, true)]);
     let reader = transfer(&registry, 2, vec![(read, elsewhere)]);
-    let Grant::Conflict(seen) = reader.claim().admit(&Cancellation::default()).unwrap() else {
+    let Grant::Conflict(seen, Hold::Overlap) =
+        reader.claim().admit(&Cancellation::default()).unwrap()
+    else {
         panic!("a reader of another job's output must wait for it");
     };
     let watch = reader.claim().watch();

@@ -1372,6 +1372,11 @@ fn each_transfer_wait_says_why_the_job_waits() {
             TransferWaitReason::SameFolders,
             "Waiting for another job in the same folders to finish",
         ),
+        // Not "the same folders": a job that cannot confirm its folders runs alone.
+        (
+            TransferWaitReason::UnconfirmedFolders,
+            "Waiting for another job: jobs whose folders cannot be confirmed run alone",
+        ),
         (
             TransferWaitReason::OtherOperation,
             "Waiting for another file operation",

@@ -1059,12 +1059,13 @@ async fn execute_input(
         if let Some(blockers) = busy {
             // Granted peers refused this change: only this item waits (holding no disk
             // slot) until one of them changes, then the step repeats instead of asking.
-            // This job's own turns never end the wait.
+            // This job's own turns never end the wait. Peers whose footprint became
+            // unknown refuse it whatever it touches; the others use the same items.
             io.release();
             set_resource_wait(
                 &status,
                 Some(throughput),
-                Some(TransferWaitReason::SameFolders),
+                Some(blockers.hold().wait_reason()),
             );
             match &watch {
                 Some(watch) => wait_for_peers(watch, &blockers, &cancel, outbox).await,

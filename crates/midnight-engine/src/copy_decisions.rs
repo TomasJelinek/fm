@@ -118,7 +118,7 @@ impl NamespacePlan {
         claim.admit(cancel)
     }
 }
-use crate::copy_namespace::Grant;
+use crate::copy_namespace::{Grant, Hold};
 
 enum PreparationStep {
     Waiting(Owned<preparation::Preparation>, NamespacePlan, Grant),
@@ -237,9 +237,14 @@ pub(super) async fn prepare_job(
                     preparation = returned;
                     plan = retained_plan;
                     revalidate = false;
-                    // Refused as a whole: it would read what another job changes, a
-                    // footprint is unknown, or an older waiting job shares an item.
-                    let reason = Some(TransferWaitReason::SameFolders);
+                    // Refused as a whole: a footprint is unknown (so one job runs alone),
+                    // it would read what another job changes, or an older waiting job
+                    // shares an item.
+                    let (since, hold) = match refused {
+                        Grant::Conflict(seen, hold) => (Some(seen), hold),
+                        Grant::Granted => (None, Hold::Overlap),
+                    };
+                    let reason = Some(hold.wait_reason());
                     if snapshot(waiter.status).wait_reason != reason {
                         set_resource_wait(waiter.status, Some(waiter.throughput), reason);
                         publish(waiter.outbox, snapshot(waiter.status)).await;
@@ -251,10 +256,6 @@ pub(super) async fn prepare_job(
                         .resources_mut()
                         .namespace()
                         .map(crate::copy_namespace::Claim::watch);
-                    let since = match refused {
-                        Grant::Conflict(seen) => Some(seen),
-                        Grant::Granted => None,
-                    };
                     match (watch, since) {
                         (Some(watch), Some(since)) => {
                             wait_for_namespace(&watch, since, waiter.cancel, waiter.outbox).await;

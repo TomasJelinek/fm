@@ -263,12 +263,12 @@ fn a_long_waiting_label_stays_inside_the_speed_chart_with_wider_fonts() {
     h.apply(Event::Copy(CopyEvent::Progress(Arc::new(copy(
         1,
         CopyOperationState::Running,
-        |p| p.wait_reason = Some(TransferWaitReason::SameFolders),
+        |p| p.wait_reason = Some(TransferWaitReason::UnconfirmedFolders),
     )))));
     let job = row(&h, "copy-job:1");
     let label = job.activity_label.to_string();
     assert_eq!(
-        label, "Waiting for another job in the same folders to finish",
+        label, "Waiting for another job: jobs whose folders cannot be confirmed run alone",
         "the longest waiting label"
     );
     let window = progress_window(&job, false);

@@ -275,7 +275,9 @@ async fn running_transfer_yields_its_slot_to_queued_exclusive_and_later_shared_r
 
 /// A job refused a namespace grant keeps its share and planned record but returns its
 /// disk slot between attempts: a call-scoped request is admitted although the granted
-/// peer holds the only other slot for as long as its native call blocks.
+/// peer holds the only other slot for as long as its native call blocks. The fixture has
+/// no read-only destination probe, so both jobs take the opaque lane and the second says
+/// that their folders cannot be confirmed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn namespace_grant_wait_returns_the_disk_slot() {
     let temp = fixture();
@@ -300,7 +302,7 @@ async fn namespace_grant_wait_returns_the_disk_slot() {
         loop {
             if let CopyEvent::Progress(progress) = h.next().await
                 && progress.id == OperationId(2)
-                && progress.wait_reason == Some(TransferWaitReason::SameFolders)
+                && progress.wait_reason == Some(TransferWaitReason::UnconfirmedFolders)
                 && progress.state == CopyOperationState::Preparing
             {
                 break;

@@ -196,7 +196,8 @@ async fn partial_disk_full_write_pauses_and_retries_without_corrupting_or_recopy
 }
 
 /// This fixture forwards no namespace geometry, so both jobs take the opaque exclusive
-/// lane: the second waits for the first job's namespace (not its released disk slot).
+/// lane: the second waits for the first job's namespace (not its released disk slot),
+/// and says that their folders cannot be confirmed, not that they are the same.
 #[tokio::test]
 async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     let temp = fixture();
@@ -219,7 +220,7 @@ async fn cancel_partial_write_cleans_stage_and_releases_the_next_queued_job() {
     let waiting = h
         .wait_status(2, |progress| {
             progress.state == CopyOperationState::Preparing
-                && progress.wait_reason == Some(TransferWaitReason::SameFolders)
+                && progress.wait_reason == Some(TransferWaitReason::UnconfirmedFolders)
         })
         .await;
     assert_eq!(waiting.files_completed, 0);

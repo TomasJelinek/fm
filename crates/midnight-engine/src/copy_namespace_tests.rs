@@ -1163,6 +1163,11 @@ fn refused_job_own_turns_never_end_its_wait_for_the_refusing_peer() {
         !blockers.can_clear_in_place(),
         "a latched peer clears only by its removal"
     );
+    assert_eq!(
+        blockers.hold(),
+        Hold::Unknown,
+        "it refuses whatever is touched"
+    );
     let watch = second.claim().watch();
     let cleared = watch.blockers_changed(&blockers);
     tokio::pin!(cleared);
@@ -1210,6 +1215,7 @@ fn intersecting_peer_refusal_waits_for_that_peers_next_change() {
         panic!("the intersecting peer's refusal must be recorded");
     };
     assert!(blockers.can_clear_in_place());
+    assert_eq!(blockers.hold(), Hold::Overlap);
     let watch = second.claim().watch();
     let cleared = watch.blockers_changed(&blockers);
     tokio::pin!(cleared);
@@ -1233,7 +1239,9 @@ fn refused_grant_waits_only_for_a_structural_change() {
     );
     assert!(first.grant());
     let second = one(&registry, 2, Write, entry(shared, b"one", None, false));
-    let Grant::Conflict(seen) = second.claim().admit(&Cancellation::default()).unwrap() else {
+    let Grant::Conflict(seen, Hold::Overlap) =
+        second.claim().admit(&Cancellation::default()).unwrap()
+    else {
         panic!("an intersecting candidate must be refused");
     };
     let watch = second.claim().watch();

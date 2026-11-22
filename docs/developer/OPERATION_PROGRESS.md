@@ -305,12 +305,15 @@ verified success. Later ready jobs may bypass waiters and unfilled handoffs.
 why the job cannot proceed right now: `DiskCapacity` (every configured disk slot
 is busy for longer than another job's step), `SameFolders` (another job uses the
 same files or folders: one item waits, or the whole job when it would read what
-that job changes or a footprint is unknown) and `OtherOperation` (a Delete,
+that job changes), `UnconfirmedFolders` (this job or the other has an unknown
+footprint, so that one runs alone in the opaque lane, whichever folders they use)
+and `OtherOperation` (a Delete,
 Rename, new folder or saved list holds or queues for the whole namespace).
 `Resources` remains a generic capacity wait. Selecting a policy alone is not a
 current wait. While waiting, a Copy/Move shows Queued, Queued — waiting for
 earlier transfers, Waiting for disk capacity, Waiting for another job in the same
-folders to finish, or Waiting for another file operation. It shows Discovering only while
+folders to finish, Waiting for another job: jobs whose folders cannot be confirmed
+run alone, or Waiting for another file operation. It shows Discovering only while
 its discovery is actually scanning, and Time remaining: Calculating... only while its
 totals are known and it runs without an estimate yet (see ETA under
 [Verification and charts](#verification-and-charts)). Clear wait reasons on
@@ -357,10 +360,13 @@ peer has published. A selected root that a granted job claims or has deferred is
 deferred too, not refused: the job starts, and that item is claimed by its first
 change that no earlier-granted job refuses (later jobs never hold an earlier one
 back, so these waits cannot form a cycle). A job is refused as a whole only when a
-footprint is unknown (opaque), when one of its sources overlaps what a granted job
+footprint is unknown (opaque: its own, a granted job's or an older waiting job's),
+when one of its sources overlaps what a granted job
 changes (its in-progress output may be visible), or behind an older waiting job that
 shares an item; it then waits for a grant, completion or quarantine and revalidates
-at least once per second, holding no disk slot. What it prepared and keeps meanwhile
+at least once per second, holding no disk slot. The admission says which: an unknown
+footprint waits with `UnconfirmedFolders`, the two overlaps with `SameFolders`
+(`copy_namespace::Hold`). What it prepared and keeps meanwhile
 must not refuse the granted jobs' changes: on Windows a prepared Copy item holds no
 handle of its own before its first use, and transfers hold folders with write sharing,
 so the busy job can still publish into a folder the waiting job will read (a prepared
@@ -374,7 +380,9 @@ jobs are serialized by one registry turn, which spans the native call. A change 
 a running job that granted peers refuse (opaque, latched or intersecting) mutated
 nothing; the job records those peers and repeats the refused step, without a prompt,
 once one of them changes (its turn, a re-probe, removal or quarantine), holding no disk
-slot. Its own turns never end that wait. A peer latched opaque clears only by its
+slot. It waits with `UnconfirmedFolders` when every refusing peer's footprint is
+unknown (opaque or latched), otherwise with `SameFolders`. Its own turns never end
+that wait. A peer latched opaque clears only by its
 removal; while any refusing peer is not latched, the step is also revalidated once per
 second for external changes the registry cannot see. This covers stage creation,
 publication, directory creation, and a Move's source capture (repeated from the

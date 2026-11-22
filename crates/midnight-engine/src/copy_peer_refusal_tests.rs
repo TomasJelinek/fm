@@ -607,8 +607,9 @@ async fn peer_refused_move_source_capture_retries_without_a_prompt() {
         "the Move must reach its source capture beside the granted peer",
     )
     .await;
+    // The disjoint peer refuses because its footprint is no longer known.
     h.wait_status(2, |progress| {
-        progress.wait_reason == Some(TransferWaitReason::SameFolders)
+        progress.wait_reason == Some(TransferWaitReason::UnconfirmedFolders)
     })
     .await;
     assert_eq!(captures.load(Ordering::SeqCst), 1, "it waits for the peer");
@@ -1002,8 +1003,9 @@ async fn persistently_opaque_peer_refusal_waits_without_rerunning_the_step() {
     assert_eq!(granted.len(), 2, "{granted:?}");
     h.controller.namespace().latch_opaque_for_test(granted[0]);
     probe_released.store(true, Ordering::Release);
+    // Disjoint jobs: the latched peer refuses because its footprint is no longer known.
     h.wait_status(2, |progress| {
-        progress.wait_reason == Some(TransferWaitReason::SameFolders)
+        progress.wait_reason == Some(TransferWaitReason::UnconfirmedFolders)
     })
     .await;
     let refused = attempts.load(Ordering::SeqCst);

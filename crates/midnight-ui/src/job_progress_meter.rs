@@ -40,6 +40,11 @@ pub(super) fn copy_waiting_label(p: &CopyProgress) -> Option<&'static str> {
         Some(Reason::Resources) => Some("Waiting for available capacity"),
         Some(Reason::DiskCapacity) => Some("Waiting for disk capacity"),
         Some(Reason::SameFolders) => Some("Waiting for another job in the same folders to finish"),
+        // This job or the other cannot confirm which folders it uses (a volume with 8.3
+        // short names, for example), so that one runs alone, whichever folders they use.
+        Some(Reason::UnconfirmedFolders) => {
+            Some("Waiting for another job: jobs whose folders cannot be confirmed run alone")
+        }
         Some(Reason::OtherOperation) => Some("Waiting for another file operation"),
         None if p.state == CopyOperationState::Queued => Some("Queued"),
         None => None,

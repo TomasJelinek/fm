@@ -40,6 +40,7 @@ impl Busy {
         }
         let single = root.join("single.bin");
         fs::write(&single, vec![0x5a; 70_001]).unwrap();
+        require_exact_lookup(&tree);
         Self {
             _temp: temp,
             root,
@@ -74,6 +75,27 @@ impl Busy {
         })
         .await;
     }
+}
+
+/// Jobs run side by side only where the platform reports exact lookup keys for their
+/// folders. Elsewhere (on Windows, a volume that still creates 8.3 short names, such as
+/// the system drive) every Copy takes the opaque lane and the others wait for it, by
+/// design: these tests then fail at once with that reason instead of timing out.
+fn require_exact_lookup(folder: &Path) {
+    let cancel = Cancellation::default();
+    let source = midnight_platform::LocalFileSystem::new(None)
+        .prepare_transfer_source(folder, &cancel)
+        .unwrap();
+    let probe = source
+        .native_namespace_scope(&cancel)
+        .unwrap()
+        .map(|pin| pin.refresh(&cancel).unwrap());
+    assert!(
+        matches!(&probe, Some(TransferNamespaceProbe::Known(scopes)) if !scopes.is_empty()),
+        "this scheduler fixture requires a supported local lookup domain: on Windows, TEMP \
+         and TMP on an NTFS volume with persistent 8.3 short-name creation disabled \
+         (docs/developer/TEST_EXECUTION.md); elsewhere every Copy takes the opaque lane"
+    );
 }
 
 fn status(h: &Harness, id: u64) -> Option<CopyProgress> {
@@ -365,31 +387,39 @@ async fn reading_the_busy_output_waits(case: &Busy, mut h: Harness) {
     h.close().await;
 }
 
-/// A Copy as the dialog submits it by default, following links: Linux follows every
-/// link (`FollowLinks`); Windows, which does not recreate links yet and so refuses that
-/// policy, follows directory links and junctions (`FollowDirectoryContents`).
-fn followed(id: u64, sources: &[PathBuf], destination: &Path) -> CopyOptionsRequest {
+/// A Copy as the dialog submits it with the link handling `links`.
+fn submitted(
+    id: u64,
+    sources: &[PathBuf],
+    destination: &Path,
+    links: CopyLinkPolicy,
+) -> CopyOptionsRequest {
     CopyOptionsRequest {
         input: CopyOptionsInput::Native(MetadataTransferRequest {
             input: MetadataTransferInput::Paths(request(id, sources, destination)),
             intent: TransferIntent::Copy,
             metadata: TransferMetadataPolicy::ContentOnly,
         }),
-        links: if cfg!(windows) {
-            CopyLinkPolicy::FollowDirectoryContents
-        } else {
-            CopyLinkPolicy::FollowLinks
-        },
+        links,
     }
 }
 
-/// Start the busy copy of `many` into the destination, following links, and pause it.
-async fn start_paused_followed(case: &Busy, h: &mut Harness) {
+/// A Copy following directory links and junctions, as Windows' dialog did before its
+/// Links choice (Linux: following every link).
+const FOLLOWED: CopyLinkPolicy = if cfg!(windows) {
+    CopyLinkPolicy::FollowDirectoryContents
+} else {
+    CopyLinkPolicy::FollowLinks
+};
+
+/// Start the busy copy of `many` into the destination with `links`, and pause it.
+async fn start_paused(case: &Busy, h: &mut Harness, links: CopyLinkPolicy) {
     h.controller
-        .enqueue_options(followed(
+        .enqueue_options(submitted(
             1,
             std::slice::from_ref(&case.tree),
             &case.destination,
+            links,
         ))
         .await;
     until(h, 1, Duration::from_secs(60), |p| {
@@ -400,27 +430,32 @@ async fn start_paused_followed(case: &Busy, h: &mut Harness) {
     until(h, 1, STARTS_WITHIN, |p| p.paused).await;
 }
 
-/// A paused copy of one folder (following links, the default) holds nothing that stops
-/// a copy of a sibling folder into another folder: that job starts and completes at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn paused_followed_copy_does_not_hold_back_a_sibling_folder_copy() {
+/// A paused copy of one folder holds nothing that stops a copy of a sibling folder into
+/// another folder, whatever the Links choice of both: that job starts and completes at
+/// once.
+async fn paused_copy_does_not_hold_back_a_sibling_folder_copy(links: CopyLinkPolicy) {
     let case = Busy::new();
     let mut h = case.harness(4);
-    start_paused_followed(&case, &mut h).await;
+    start_paused(&case, &mut h, links).await;
     let small = case.folder("small");
     fs::write(small.join("a.bin"), [1; 4096]).unwrap();
     fs::write(small.join("b.bin"), [2; 4096]).unwrap();
     let t2 = case.folder("t2");
-    let submitted = std::time::Instant::now();
+    let submitted_at = std::time::Instant::now();
     h.controller
-        .enqueue_options(followed(2, std::slice::from_ref(&small), &t2))
+        .enqueue_options(submitted(2, std::slice::from_ref(&small), &t2, links))
         .await;
     let done = tokio::time::timeout(COMPLETES_WITHIN, h.terminal(2))
         .await
-        .expect("the sibling copy completes while the other copy is paused");
+        .unwrap_or_else(|_| {
+            panic!(
+                "{links:?}: the sibling copy completes while the other copy is paused: {:?}",
+                status(&h, 2)
+            )
+        });
     eprintln!(
-        "sibling copy finished {:?} after it was submitted",
-        submitted.elapsed()
+        "{links:?}: sibling copy finished {:?} after it was submitted",
+        submitted_at.elapsed()
     );
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
     assert_eq!(done.files_completed, 2);
@@ -431,6 +466,23 @@ async fn paused_followed_copy_does_not_hold_back_a_sibling_folder_copy() {
     finish(h, &[1]).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paused_followed_copy_does_not_hold_back_a_sibling_folder_copy() {
+    paused_copy_does_not_hold_back_a_sibling_folder_copy(FOLLOWED).await;
+}
+
+/// "Keep links as links", the dialog's default on a fixed local drive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paused_copy_keeping_links_does_not_hold_back_a_sibling_folder_copy() {
+    paused_copy_does_not_hold_back_a_sibling_folder_copy(CopyLinkPolicy::Preserve).await;
+}
+
+/// "Copy the files links point to".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paused_copy_of_the_files_links_point_to_does_not_hold_back_a_sibling_folder_copy() {
+    paused_copy_does_not_hold_back_a_sibling_folder_copy(CopyLinkPolicy::FollowLinks).await;
+}
+
 /// Following links does not give up the selected folder's own claim: a second job that
 /// writes into that folder starts, but its write there waits, with its reason, while the
 /// first job (here paused) still holds the folder.
@@ -438,7 +490,7 @@ async fn paused_followed_copy_does_not_hold_back_a_sibling_folder_copy() {
 async fn followed_source_folder_still_holds_back_a_write_into_it() {
     let case = Busy::new();
     let mut h = case.harness(4);
-    start_paused_followed(&case, &mut h).await;
+    start_paused(&case, &mut h, FOLLOWED).await;
     h.controller
         .enqueue(request(2, std::slice::from_ref(&case.single), &case.tree))
         .await;
@@ -453,6 +505,110 @@ async fn followed_source_folder_still_holds_back_a_write_into_it() {
     assert!(!case.tree.join("single.bin").exists());
     still_busy(&h);
     finish(h, &[2, 1]).await;
+}
+
+/// Why the paused copy holds back a second copy as a whole.
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    /// The second copy reads what the paused copy wrote: the same folders.
+    ReadsItsOutput,
+    /// The paused copy writes into a folder that cannot confirm its names (as a Windows
+    /// volume that still creates 8.3 short names), so it runs alone.
+    PausedUnconfirmed,
+    /// The paused copy's names were latched unconfirmed, as by a failed check.
+    PausedLatched,
+    /// The second copy writes into a folder that cannot confirm its names.
+    OwnUnconfirmed,
+}
+
+/// A copy held back by the paused copy waits as a whole and says why: the same folders
+/// only when it uses what that copy uses; otherwise one of the two cannot confirm its
+/// folders, so that one runs alone, whichever folders they use. It still starts once the
+/// paused copy is gone.
+async fn held_back_by_the_paused_copy(held: Held) {
+    let case = Busy::new();
+    let t2 = case.folder("t2");
+    let unconfirmed = match held {
+        Held::PausedUnconfirmed => Some(case.destination.clone()),
+        Held::OwnUnconfirmed => Some(t2.clone()),
+        Held::ReadsItsOutput | Held::PausedLatched => None,
+    };
+    let mut h = match unconfirmed {
+        Some(folder) => Harness::with_slots(
+            Some(Arc::new(Unconfirmed {
+                paced: Paced(midnight_platform::LocalFileSystem::new(None)),
+                folder,
+            })),
+            4,
+        ),
+        None => case.harness(4),
+    };
+    start_paused(&case, &mut h, CopyLinkPolicy::Preserve).await;
+    if let Held::PausedLatched = held {
+        let granted = h.controller.namespace().granted_for_test();
+        assert_eq!(granted.len(), 1, "{granted:?}");
+        h.controller.namespace().latch_opaque_for_test(granted[0]);
+    }
+    let (source, expected) = if let Held::ReadsItsOutput = held {
+        let output = case.destination.join("many");
+        (output, TransferWaitReason::SameFolders)
+    } else {
+        let small = case.folder("small");
+        fs::write(small.join("a.bin"), [1; 4096]).unwrap();
+        (small, TransferWaitReason::UnconfirmedFolders)
+    };
+    h.controller
+        .enqueue(request(2, std::slice::from_ref(&source), &t2))
+        .await;
+    let waiting = until(&mut h, 2, STARTS_WITHIN, |p| {
+        matches!(
+            p.wait_reason,
+            Some(TransferWaitReason::SameFolders | TransferWaitReason::UnconfirmedFolders)
+        )
+    })
+    .await;
+    assert_eq!(waiting.wait_reason, Some(expected), "{held:?}: {waiting:?}");
+    assert_ne!(
+        waiting.state,
+        CopyOperationState::Running,
+        "{held:?}: {waiting:?}"
+    );
+    tokio::time::sleep(STILL_WAITING).await;
+    let still = until(&mut h, 2, STARTS_WITHIN, |_| true).await;
+    assert_eq!(still.wait_reason, Some(expected), "{held:?}: {still:?}");
+    assert_eq!(still.files_completed, 0, "{held:?}: {still:?}");
+    assert!(still_busy(&h).paused);
+    h.controller.cancel(OperationId(1));
+    assert_eq!(h.terminal(1).await.state, CopyOperationState::Cancelled);
+    let done = h.terminal(2).await;
+    assert_eq!(
+        done.state,
+        CopyOperationState::Completed,
+        "{held:?}: {done:?}"
+    );
+    assert!(done.files_completed > 0, "{held:?}: {done:?}");
+    h.close().await;
+}
+
+/// A real overlap still says that the jobs use the same folders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reading_a_paused_copys_output_says_it_waits_for_the_same_folders() {
+    held_back_by_the_paused_copy(Held::ReadsItsOutput).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paused_copy_into_unconfirmed_folders_holds_back_a_sibling_and_says_why() {
+    held_back_by_the_paused_copy(Held::PausedUnconfirmed).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paused_copy_latched_unconfirmed_holds_back_a_sibling_and_says_why() {
+    held_back_by_the_paused_copy(Held::PausedLatched).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_into_unconfirmed_folders_waits_for_a_paused_sibling_and_says_why() {
+    held_back_by_the_paused_copy(Held::OwnUnconfirmed).await;
 }
 
 /// The native provider, with `PACE` before each staged file. Everything else, including
@@ -492,6 +648,51 @@ impl TransferService for Paced {
         self.0
             .prepare_transfer_destination(path, cancel)
             .map(PacedDirectory::wrap)
+    }
+}
+
+/// `Paced`, except that `folder` cannot confirm the names written into it: it reports no
+/// lookup keys for them, as a Windows volume that still creates 8.3 short names does.
+/// A job that writes there has an unknown footprint, so it runs alone.
+struct Unconfirmed {
+    paced: Paced,
+    folder: PathBuf,
+}
+// Every native owner below is the local provider's own, destroyed synchronously.
+impl midnight_core::AuditedSynchronousTransferService for Unconfirmed {}
+impl TransferService for Unconfirmed {
+    /// The destination a job plans its claims with (its read-only probe).
+    fn prepare_checksum_directory(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        let directory = self.paced.prepare_checksum_directory(path, cancel)?;
+        Ok(PacedDirectory::wrap_as(directory, path == self.folder))
+    }
+    fn prepare_transfer_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.paced.prepare_transfer_source(path, cancel)
+    }
+    fn prepare_transfer_source_with_links(
+        &self,
+        path: &Path,
+        links: CopyLinkPolicy,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TransferSource>, FsError> {
+        self.paced
+            .prepare_transfer_source_with_links(path, links, cancel)
+    }
+    fn prepare_transfer_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+        let directory = self.paced.0.prepare_transfer_destination(path, cancel)?;
+        Ok(PacedDirectory::wrap_as(directory, path == self.folder))
     }
 }
 
@@ -555,10 +756,15 @@ impl TransferService for PublishedMeanwhile {
     }
 }
 
-struct PacedDirectory(Arc<dyn TransferDirectory>);
+/// A paced folder; an unconfirmed one (`.1`), and every folder created in it, reports no
+/// lookup keys for the names written into it.
+struct PacedDirectory(Arc<dyn TransferDirectory>, bool);
 impl PacedDirectory {
     fn wrap(inner: Arc<dyn TransferDirectory>) -> Arc<dyn TransferDirectory> {
-        Arc::new(Self(inner))
+        Self::wrap_as(inner, false)
+    }
+    fn wrap_as(inner: Arc<dyn TransferDirectory>, unconfirmed: bool) -> Arc<dyn TransferDirectory> {
+        Arc::new(Self(inner, unconfirmed))
     }
 }
 impl TransferDirectory for PacedDirectory {
@@ -568,6 +774,9 @@ impl TransferDirectory for PacedDirectory {
         kind: EntryKind,
         cancel: &Cancellation,
     ) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
+        if self.1 {
+            return Ok(None);
+        }
         self.0.native_child_namespace_scope(name, kind, cancel)
     }
     fn admit_link(
@@ -629,7 +838,8 @@ impl TransferDirectory for PacedDirectory {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        self.0.create_directory(name, cancel).map(Self::wrap)
+        let directory = self.0.create_directory(name, cancel)?;
+        Ok(Self::wrap_as(directory, self.1))
     }
     fn open_merge_directory(
         &self,
@@ -637,9 +847,8 @@ impl TransferDirectory for PacedDirectory {
         expected: &TransferEntry,
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError> {
-        self.0
-            .open_merge_directory(name, expected, cancel)
-            .map(Self::wrap)
+        let directory = self.0.open_merge_directory(name, expected, cancel)?;
+        Ok(Self::wrap_as(directory, self.1))
     }
     fn open_read_child(
         &self,

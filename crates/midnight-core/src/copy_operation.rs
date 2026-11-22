@@ -23,9 +23,15 @@ pub enum TransferWaitReason {
     /// by step, so this is brief unless other work keeps the disk busy.
     DiskCapacity,
     /// Another transfer is using the same files or folders: only the overlapping item
-    /// waits, or, when this job would read what that one changes (or a footprint is
-    /// unknown), the job waits for it to finish.
+    /// waits, or, when this job would read what that one changes, the job waits for it to
+    /// finish.
     SameFolders,
+    /// This transfer or another one cannot confirm exactly which files and folders it
+    /// uses, so that one runs alone and the other waits for it to finish, whichever
+    /// folders they use: an unknown namespace footprint, such as names on a Windows
+    /// volume that still creates 8.3 short names or on a Linux network filesystem, or
+    /// names that a failed check left unconfirmed.
+    UnconfirmedFolders,
     /// A file operation that needs every folder to itself (Delete, Rename, a new folder,
     /// a saved file list or checksum file) is running or was started earlier.
     OtherOperation,
