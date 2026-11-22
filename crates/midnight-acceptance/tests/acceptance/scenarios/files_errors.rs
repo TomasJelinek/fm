@@ -47,7 +47,7 @@ const MOVE_DENIED: &str = if cfg!(windows) {
      belongs to another user who does not allow it. It stays there; copy it instead."
 };
 /// The outcome's line when Skip left out the only selected item.
-const SKIPPED_ONE: &str = "1 entries or subtrees skipped; source data retained.";
+const SKIPPED_ONE: &str = "1 entry or subtree skipped; source data retained.";
 
 /// Set `path`'s permission bits; on Windows their equivalent (`tools::set_mode`).
 fn chmod(path: &Path, mode: u32) -> Result<(), String> {

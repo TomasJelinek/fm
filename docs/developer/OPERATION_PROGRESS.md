@@ -161,7 +161,7 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
     copied. This holds for a single selected item too: Skip
     leaves it where it is and, nothing being left to do, the job ends at once
     (`Preparation::is_last_root`), Failed as a job that completed nothing ends, with
-    the item's error and "1 entries or subtrees skipped; source data retained." A job
+    the item's error and "1 entry or subtree skipped; source data retained." A job
     that requires the exact modified time offers no such Skip: its preflight refuses
     folders, links and virtual roots without a downgrade (`MetadataTransferRequest`),
     so leaving one out would turn that refusal into a partial transfer. A preparation

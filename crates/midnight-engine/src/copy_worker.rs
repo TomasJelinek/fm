@@ -2195,10 +2195,7 @@ fn terminal_progress(mut progress: CopyProgress, cancel: &Cancellation) -> CopyP
         ));
     }
     if progress.skipped > 0 {
-        lines.push(format!(
-            "{} entries or subtrees skipped; source data retained.",
-            progress.skipped
-        ));
+        lines.push(super::decisions::skipped_line(progress.skipped));
     }
     match progress.links_left_out {
         0 => {}

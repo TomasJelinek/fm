@@ -123,7 +123,7 @@ const MENU: [(&str, &[&str]); 5] = [
             "Copy to clipboard",
             "Cut to clipboard",
             "Paste files",
-            "Attributes, time and case…",
+            "Attributes, times and case…",
             "Change name case…",
             "System properties",
         ],
@@ -546,7 +546,7 @@ pub fn main_menu(context: &mut Context) -> Result<(), String> {
         menu(&mut app, label)?;
         log.push(observe(&mut app, label)?);
     }
-    menu(&mut app, "Attributes, time and case…")?;
+    menu(&mut app, "Attributes, times and case…")?;
     wait(&mut app, "the Attributes dialog", |app| {
         !app.window.get_metadata_token().is_empty()
     })?;

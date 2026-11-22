@@ -500,7 +500,7 @@ fn build() -> Vec<ShortcutDefinition> {
     );
     add(
         "files.move-to",
-        "Move selected files to folder with recovery",
+        "Move selected files to folder",
         FilesAny,
         &["F6"],
     );

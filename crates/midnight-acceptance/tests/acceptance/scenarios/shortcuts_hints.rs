@@ -47,7 +47,7 @@ const MENU: [(&str, &str); 65] = [
     ("Copy to clipboard", "files.copy"),
     ("Cut to clipboard", "files.cut"),
     ("Paste files", "files.paste"),
-    ("Attributes, time and case…", "files.attributes"),
+    ("Attributes, times and case…", "files.attributes"),
     ("Change name case…", "files.case"),
     ("System properties", "files.properties"),
     ("Select files and folders", "selection.all"),

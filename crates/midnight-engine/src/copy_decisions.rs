@@ -388,12 +388,17 @@ fn all_roots_skipped(status: &Status) -> CopyProgress {
         CopyOperationState::Failed
     };
     let mut lines: Vec<String> = progress.errors.iter().map(ToString::to_string).collect();
-    lines.push(format!(
-        "{} entries or subtrees skipped; source data retained.",
-        progress.skipped
-    ));
+    lines.push(skipped_line(progress.skipped));
     progress.message = lines.join("\n");
     progress
+}
+
+/// The line that counts the entries and subtrees Skip left out, each where it was.
+pub(super) fn skipped_line(skipped: u64) -> String {
+    match skipped {
+        1 => "1 entry or subtree skipped; source data retained.".into(),
+        count => format!("{count} entries or subtrees skipped; source data retained."),
+    }
 }
 
 /// An item that disappeared from the source while the job copied or moved it (or before
@@ -420,3 +425,14 @@ pub(super) fn vanished_source(
 #[cfg(test)]
 #[path = "copy_namespace_preparation_tests.rs"]
 mod namespace_preparation_tests;
+
+#[cfg(test)]
+mod skipped_line_tests {
+    #[test]
+    fn one_skipped_item_is_counted_in_the_singular() {
+        let one = "1 entry or subtree skipped; source data retained.";
+        assert_eq!(super::skipped_line(1), one);
+        let three = "3 entries or subtrees skipped; source data retained.";
+        assert_eq!(super::skipped_line(3), three);
+    }
+}
