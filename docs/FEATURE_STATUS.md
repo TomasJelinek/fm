@@ -286,8 +286,8 @@ How to read it:
   read-only, and RAR is not supported.
 - **Open:** ARCH-01 to ARCH-09 (content limits, nested archives, writes, Copy permits
   of failed sessions, provider content leases, solid 7z decoding, stopped workers
-  during a Copy, validation of the held archive file). The archive mount work is in
-  flight; see [active work](ACTIVE_WORK.md).
+  during a Copy, validation of the held archive file). Two archives can be open at
+  once; opening a third offers to close one of them.
 - **Documents:** [archive formats](ARCHIVE_FORMATS.md),
   [archive API](developer/FILESYSTEM_API.md),
   [security requirements](../SECURITY.md#archive-passwords).

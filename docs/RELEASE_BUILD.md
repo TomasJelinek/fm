@@ -137,7 +137,7 @@ nothing behind when it is refused.
 ## Distribution archives
 
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, plus a
-`SHA256SUMS` file; the first was the [0.1.0 preview](releases/0.1.0.md). Linux archives
+`SHA256SUMS` file: the [0.1.0](releases/0.1.0.md) and [0.3.0](releases/0.3.0.md) previews. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable is unsigned: the archive checksums establish download
 integrity, not code signing.

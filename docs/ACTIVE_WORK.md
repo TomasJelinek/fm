@@ -8,10 +8,11 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 22 November 2026 at `ad91634e`, with the documentation pass that made the
-current documents true to the source. Since `5cc55222` it also carries link following
-in the HTML and Markdown viewers, faster archive copy-out with a quick Cancel, the
-first archive mount-limit fixes and the archive password-dialog fixes.
+Main of 22 November 2026, prepared as the [0.3.0 preview](releases/0.3.0.md): link
+following in the HTML and Markdown viewers, faster archive copy-out with a quick
+Cancel, the two-archive limit with its offer to close one, the archive password-dialog
+fixes, the AppArmor and test-fixture security fixes, and the fixes of the pre-release
+review of these changes. The documents describe this source.
 
 - **Acceptance.** The last runs of the whole suite are Windows `20261121-144422` and
   Linux `20261121-144246`, both at `3f6fff8a`. On 22 November the acceptance work
@@ -23,9 +24,8 @@ first archive mount-limit fixes and the archive password-dialog fixes.
   [tools](developer/acceptance/tools.md), [journeys](developer/acceptance/journeys.md),
   [UI polish](developer/acceptance/ui-polish.md) and the
   [Windows run](developer/acceptance/windows.md).
-- **CI.** The last hosted run recorded as passing every job on Windows and Linux is at
-  `2b901122` ([CI time record](verification/2026-11-21-ci-time.md)). No hosted run of
-  this checkpoint is recorded yet.
+- **CI.** Hosted runs pass every job on Windows and Linux at `2a9e382c`; the CI time
+  record is at `2b901122` ([CI time record](verification/2026-11-21-ci-time.md)).
 - **Not qualified.** Native and manual qualifications that automated runs cannot
   provide are listed under PLAT-02; macOS is PLAT-01.
 
@@ -34,16 +34,11 @@ first archive mount-limit fixes and the archive password-dialog fixes.
 These changes are being made now. The documents named describe the current behaviour
 until they land.
 
-- **Archive mount-limit prompt:** an offer to close an open archive when two are
-  already open, beyond the refusal that asks for it ([archive formats](ARCHIVE_FORMATS.md),
-  [archive API](developer/FILESYSTEM_API.md),
-  [engine lifetime](developer/ENGINE_LIFETIME.md); backlog ARCH-01 to ARCH-09).
-- **Security fixes without a backlog row:** the folder permission check of the HTML
-  viewer's AppArmor installer, and the link commands of three engine test fixtures.
 - **Acceptance:** reruns that the area records mark as pending, and the scenarios they
   list as not yet written.
-- **Final builds and release:** the release builds and packages
-  ([release build](RELEASE_BUILD.md)).
+- **Release validation:** the 0.3.0 release and debug builds, whole-suite acceptance
+  runs on Windows and Linux with packages built from the release commit, and the
+  packages ([release build](RELEASE_BUILD.md)).
 
 ## Where evidence lives
 
