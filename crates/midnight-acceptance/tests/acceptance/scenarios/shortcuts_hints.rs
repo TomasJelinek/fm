@@ -1,9 +1,10 @@
 //! What the windows say about the shortcuts, compared with the catalog: F1 keyboard help
 //! lists every action with all of its keys ("Unassigned" without one) and its context;
 //! the F10 main menu shows each item's key (Ctrl+= beside Select by mask, nothing
-//! beside Options); after Create folder is rebound in Options › Keyboard the menu, the
-//! help and the footer show the new key at once, F7's cell is unassigned, and the new
-//! key opens the dialog.
+//! beside Options); the panel's View and Sort menus show every key of each item's
+//! action; after Create folder is rebound and Sort by size gets a second key in Options
+//! › Keyboard, the menus, the help and the footer show the new keys at once, F7's cell
+//! is unassigned, and the new key opens the dialog.
 use crate::{
     Context,
     app::{App, Config},
@@ -27,6 +28,8 @@ use std::{
 const LEFT: PaneId = PaneId::Left;
 const HELP: &str = "Keyboard help · Midnight Explorer";
 const NEW_KEY: &str = "Ctrl+Alt+K";
+/// A second key for Sort by size.
+const SIZE_KEY: &str = "Ctrl+Alt+Z";
 
 /// The main menu's items and their actions (main-menu.slint), in display order.
 const MENU: [(&str, &str); 65] = [
@@ -256,6 +259,108 @@ fn menu_keys(app: &mut App) -> Result<BTreeMap<String, String>, String> {
     Ok(keys)
 }
 
+/// The left panel's View and Sort menus (panel-view-controls.slint): each row's label
+/// and the action whose keys it shows. The Sort menu's "Reverse order" shows the keys
+/// of the current sort column (Name here).
+const PANEL_MENUS: [(&str, &[(&str, &str)]); 2] = [
+    (
+        "Left panel view mode",
+        &[
+            ("Detailed", "view.detailed"),
+            ("Brief", "view.brief"),
+            ("Thumbnails", "view.thumbnails"),
+            ("Hide hidden files", "panel.hidden-files"),
+        ],
+    ),
+    (
+        "Left panel sort",
+        &[
+            ("Name", "sort.name"),
+            ("Size", "sort.size"),
+            ("Modified", "sort.modified"),
+            ("Extension", "sort.extension"),
+            ("Reverse order", "sort.name"),
+        ],
+    ),
+];
+
+/// Every row of the panel menu labelled `menu`: (label, the key text beside it), read
+/// from its open list (opened with a click, closed with Escape).
+fn panel_menu_keys(app: &mut App, menu: &str) -> Result<Vec<(String, String)>, String> {
+    panel::focus_list(app, LEFT)?;
+    let popups = inspect::roots(app.slint()).len();
+    input::click(app.slint(), AccessibleRole::Combobox, menu)?;
+    wait(app, &format!("the {menu:?} list"), move |app| {
+        inspect::roots(app.slint()).len() > popups
+    })?;
+    let mut rows: Vec<(f32, String, String)> = Vec::new();
+    if let Some(list) = inspect::roots(app.slint()).last() {
+        inspect::walk(list, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && item.is_visible()
+                && let Some(label) = inspect::label(item)
+            {
+                let key = tools::item_texts(item)
+                    .into_iter()
+                    .rev()
+                    .find(|text| *text != label && text != "✓")
+                    .unwrap_or_default();
+                rows.push((inspect::rect(item).1, label, key));
+            }
+        });
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    input::key(app.slint(), Key::Escape);
+    wait(app, &format!("the {menu:?} list to close"), move |app| {
+        inspect::roots(app.slint()).len() == popups
+    })?;
+    Ok(rows
+        .into_iter()
+        .map(|(_, label, key)| (label, key))
+        .collect())
+}
+
+/// The panel menus against `keys_of(action)`: every row shows all of its action's keys,
+/// as F1 lists them ("Ctrl+F3 / …"), or nothing for an unassigned action.
+fn compare_panel_menus(
+    app: &mut App,
+    keys_of: &dyn Fn(&str) -> Vec<String>,
+    when: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    for (menu, rows) in PANEL_MENUS {
+        let shown_rows = panel_menu_keys(app, menu)?;
+        // The hidden-files row names what it will do: Hide or Show.
+        let labels: Vec<&str> = shown_rows
+            .iter()
+            .map(|(label, _)| match label.as_str() {
+                "Show hidden files" => "Hide hidden files",
+                other => other,
+            })
+            .collect();
+        let wanted_labels: Vec<&str> = rows.iter().map(|(label, _)| *label).collect();
+        if labels != wanted_labels {
+            failures.push(format!(
+                "{when}: the {menu:?} list shows {labels:?} instead of {wanted_labels:?}"
+            ));
+            continue;
+        }
+        for ((label, key), (_, action)) in shown_rows.iter().zip(rows.iter()) {
+            let wanted = keys_of(action)
+                .iter()
+                .map(|key| shown(key))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" / ");
+            if *key != wanted {
+                failures.push(format!(
+                    "{when}: the {menu:?} list shows {key:?} beside {label:?}, expected {wanted:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The footer cell for an unmodified function key: (label, enabled).
 fn footer_cell(app: &App, key: &str) -> Option<(String, bool)> {
     let prefix = format!("{key} ");
@@ -367,6 +472,7 @@ pub fn hints(context: &mut Context) -> Result<(), String> {
         }
     }
     compare(&mut app, &defaults, "defaults", &mut failures)?;
+    compare_panel_menus(&mut app, &defaults, "defaults", &mut failures)?;
     let cell = footer_cell(&app, "F7");
     if !cell
         .as_ref()
@@ -395,20 +501,41 @@ pub fn hints(context: &mut Context) -> Result<(), String> {
     if aliases.as_deref() != Some(NEW_KEY) {
         return Err(format!("after Assign Create folder has {aliases:?}"));
     }
+    // Sort by size gets a second key, which its panel menu row must list too.
+    options::fill(&mut app, "Search commands", "Sort by size")?;
+    let entry = options::reveal(&mut app, AccessibleRole::ListItem, "Sort by size")?;
+    options::click_item(&mut app, &entry)?;
+    let field = options::reveal(&mut app, AccessibleRole::TextInput, "Press shortcut keys")?;
+    options::click_item(&mut app, &field)?;
+    input::chord(app.slint(), &[Key::Control, Key::Alt], "z");
+    app.idle(Duration::from_millis(60));
+    let captured = options::value(&app, AccessibleRole::TextInput, "Press shortcut keys");
+    if captured.as_deref() != Some(SIZE_KEY) {
+        return Err(format!("pressing {SIZE_KEY} captured {captured:?}"));
+    }
+    options::press(&mut app, "Assign")?;
     if !options::ok(&mut app, &store)? {
         return Err("OK did not save the rebinding".into());
     }
-    let rebound = |action: &str| {
-        if action == "files.create-directory" {
-            vec![NEW_KEY.to_owned()]
-        } else {
-            defaults(action)
+    let rebound = |action: &str| match action {
+        "files.create-directory" => vec![NEW_KEY.to_owned()],
+        "sort.size" => {
+            let mut keys = defaults(action);
+            keys.push(SIZE_KEY.to_owned());
+            keys
         }
+        _ => defaults(action),
     };
     compare(
         &mut app,
         &rebound,
         "after rebinding Create folder",
+        &mut failures,
+    )?;
+    compare_panel_menus(
+        &mut app,
+        &rebound,
+        "after adding a key to Sort by size",
         &mut failures,
     )?;
     match footer_cell(&app, "F7") {
@@ -437,7 +564,7 @@ pub fn hints(context: &mut Context) -> Result<(), String> {
     );
     app.shutdown()?;
     if failures.is_empty() {
-        context.note("F1 help and the F10 menu matched the catalog before and after rebinding Create folder; the footer followed");
+        context.note(format!("F1 help, the F10 menu and the left panel's View and Sort menus matched the catalog before and after rebinding Create folder to {NEW_KEY} and adding {SIZE_KEY} to Sort by size (the Sort menu listing both keys); the footer followed"));
         Ok(())
     } else {
         Err(failures.join("\n"))

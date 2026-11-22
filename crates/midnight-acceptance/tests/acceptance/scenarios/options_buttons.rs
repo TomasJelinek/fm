@@ -304,7 +304,25 @@ pub fn every_button(context: &mut Context) -> Result<(), String> {
                 continue;
             }
             fresh(&mut app, page)?;
-            let before = look(&app);
+            // A quiet baseline: two looks a moment apart must agree, or a page still
+            // settling would pass for the click's effect.
+            let mut before = look(&app);
+            let mut quiet = false;
+            for _ in 0..8 {
+                app.idle(Duration::from_millis(250));
+                let again = look(&app);
+                if again == before {
+                    quiet = true;
+                    break;
+                }
+                before = again;
+            }
+            if !quiet {
+                failures.push(format!(
+                    "{page} › {label}: the page keeps changing by itself for 2 s, so the click's effect cannot be judged"
+                ));
+                continue;
+            }
             let trace = app.recent_events();
             if let Err(error) = options::press(&mut app, &label) {
                 failures.push(format!("{page} › {label}: {error}"));

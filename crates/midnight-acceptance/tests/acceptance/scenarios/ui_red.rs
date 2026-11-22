@@ -235,6 +235,21 @@ slint::slint! {
             }
         }
 
+        // Selected text that meets WCAG AA (white on #1a5fb4, 6.3:1) but not a contrast
+        // palette's 7:1 or a high-contrast palette's 12:1; the twin's selection is
+        // #001a40 (17:1).
+        if root.case == 21: Rectangle {
+            x: 12px; y: 40px; width: 260px; height: 32px; background: #ffffff;
+            TextInput {
+                x: 4px; y: 4px; width: 250px; height: 24px;
+                text: "Selected words in a field"; color: #000000; read-only: true;
+                selection-foreground-color: #ffffff;
+                selection-background-color: root.broken ? #1a5fb4 : #001a40;
+                accessible-label: "Field text";
+                init => { self.select-all(); }
+            }
+        }
+
         // Overflow without a scroll bar that does scroll with the wheel (the twin
         // passes the check because it scrolls; the broken one swallows the wheel).
         if root.case == 20: Rectangle {
@@ -441,6 +456,65 @@ pub fn checks(context: &mut Context) -> Result<(), String> {
             fixed.len()
         ));
     }
+    // Case 21: selected text judged by the palette (G2). The broken selection passes
+    // WCAG AA (the control: no contrast flag at 4.5:1), and must be flagged at the
+    // contrast palettes' 7:1 and the high-contrast palettes' 12:1; its twin passes both.
+    fixture.set_case(21);
+    fixture.set_framed(true);
+    fixture.set_broken(true);
+    app.settle();
+    let target = Target::Tool(window.clone());
+    let frame = Frame::of(&window);
+    gate::save(
+        context,
+        &frame,
+        "red-21-broken",
+        "Red case 21: selected text below a contrast palette's minimum (broken)",
+    );
+    let at_aa = gate::settled_issues_at(&mut app, &target, 4.5);
+    if at_aa.iter().any(|issue| issue.kind == gate::CONTRAST) {
+        failures.push(format!(
+            "case 21 (control): selected text at 6.3:1 was flagged at WCAG AA: {}",
+            summary(&at_aa)
+        ));
+    }
+    let mut noted = Vec::new();
+    for minimum in [7.0, 12.0] {
+        fixture.set_broken(true);
+        app.settle();
+        let broken = gate::settled_issues_at(&mut app, &target, minimum);
+        if !broken
+            .iter()
+            .any(|issue| issue.kind == gate::CONTRAST && issue.detail.contains("selected text"))
+        {
+            failures.push(format!(
+                "case 21 ({}, selected text at {minimum}:1): the broken window was not flagged; found: {}",
+                gate::CONTRAST,
+                summary(&broken)
+            ));
+        }
+        fixture.set_broken(false);
+        app.settle();
+        let fixed = gate::settled_issues_at(&mut app, &target, minimum);
+        if !fixed.is_empty() {
+            failures.push(format!(
+                "case 21 ({}, selected text at {minimum}:1): the corrected twin was flagged: {}",
+                gate::CONTRAST,
+                summary(&fixed)
+            ));
+        }
+        noted.push(format!(
+            "at {minimum}:1 broken → {}; corrected twin → {} flag(s)",
+            summary(&broken),
+            fixed.len()
+        ));
+    }
+    context.note(format!(
+        "red case 21 {} (selected text by palette): at 4.5:1 broken → {} flag(s); {}",
+        gate::CONTRAST,
+        at_aa.len(),
+        noted.join("; ")
+    ));
     let _ = fixture.hide();
     app.settle();
     if let Err(error) = super::ui_interact::red_cases(&mut app, context) {

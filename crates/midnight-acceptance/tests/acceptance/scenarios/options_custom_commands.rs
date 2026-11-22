@@ -2,7 +2,10 @@
 //! commands and a separator; placeholder arguments; grouped and per-item runs from the
 //! toolbar verified on disk; a failing command's notice; a dry-run preview; the
 //! keyboard editor's `user-command.<id>` entry bound to a key; Cancel discarding;
-//! persistence across a restart; and the F9 User menu.
+//! persistence across a restart; the F9 User menu listing the commands; a toolbar
+//! command's right-click "Custom Commands settings…"; the list's Alt+Up, Alt+Down,
+//! Delete and Insert; Escape cancelling a drag; a terminal-mode command's dry run (it is
+//! never run: the native launcher would open a real terminal); a disabled command.
 //!
 //! Every command runs "directly" (never in a terminal) and only writes into this
 //! scenario's `out` folder: `/bin/sh` with a literal script and `touch`.
@@ -15,7 +18,10 @@ use crate::{
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::{PaneId, UserCommand, UserCommandInvocation, UserCommandLaunch};
-use slint::{LogicalPosition, platform::Key};
+use slint::{
+    LogicalPosition,
+    platform::{Key, PointerEventButton, WindowEvent},
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -31,6 +37,11 @@ const BROKEN: &str = "Broken tool";
 const DISCARDED: &str = "Discarded draft";
 const SHORTCUT: &str = "Ctrl+Alt+J";
 const CAPTION: &str = "List";
+/// A terminal-mode command, previewed and never run.
+const TERMINAL: &str = "Terminal echo";
+const TERMINAL_SCRIPT: &str = "echo midnight-terminal-preview";
+/// What a preview reports on a system without a supported terminal.
+const NO_TERMINAL: &str = "No supported system terminal is installed";
 const COMMANDS_LIST: &str = "Configured Custom Commands";
 /// The grouped command's script: one line per argument after `$0`, written into its
 /// working folder.
@@ -251,6 +262,267 @@ fn wait_lines(app: &mut App, path: &Path, count: usize, what: &str) -> Result<Ve
         path.display(),
         read_lines(path)
     ))
+}
+
+/// A right click (press and release of the right button) at `position`.
+fn right_click(app: &App, position: LogicalPosition) {
+    let button = PointerEventButton::Right;
+    let window = app.slint();
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed { position, button });
+    window.dispatch_event(WindowEvent::PointerReleased { position, button });
+}
+
+/// The newest popup's item showing exactly `text`, if any.
+fn popup_text(app: &App, text: &str) -> Option<i_slint_core::item_tree::ItemRc> {
+    let popup = inspect::roots(app.slint()).into_iter().skip(1).last()?;
+    let mut found = None;
+    inspect::walk(&popup, &mut |item| {
+        if found.is_none() && options::text_of(item).as_deref() == Some(text) {
+            found = Some(item.clone());
+        }
+    });
+    found
+}
+
+/// The command list's order changes as `wanted` within two seconds.
+fn wait_order(app: &mut App, wanted: &[&str], what: &str) -> Result<(), String> {
+    let expected: Vec<String> = wanted.iter().map(|name| (*name).to_owned()).collect();
+    let reached = options::poll(app, Duration::from_secs(2), |app| {
+        command_names(app) == expected
+    });
+    if reached {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: the command list shows {:?} instead of {wanted:?}",
+            command_names(app)
+        ))
+    }
+}
+
+/// O7: the toolbar's context menu opens the selected command's settings; the command
+/// list's keys (Alt+Up, Alt+Down, Delete, Insert); Escape cancelling a drag; a
+/// terminal-mode command's dry run; a disabled command that does not run. Starts and
+/// ends with Options closed on the saved commands `order`; saves nothing new except the
+/// disabled command.
+fn list_and_toolbar(
+    app: &mut App,
+    setup: &Setup,
+    order: &[&str; 3],
+    context: &mut Context,
+) -> Result<(), String> {
+    let saves = setup.store.saves();
+    // A right click on a toolbar command offers "Custom Commands settings…", which
+    // opens Options on Custom Commands with that command selected.
+    let button = inspect::find(app.slint(), AccessibleRole::Button, LIST_RENAMED)
+        .ok_or_else(|| format!("the toolbar shows no {LIST_RENAMED:?}"))?;
+    right_click(app, inspect::center(&button));
+    if !options::poll(app, Duration::from_secs(3), |app| {
+        popup_text(app, "Custom Commands settings…").is_some()
+    }) {
+        return Err(format!(
+            "a right click on the {LIST_RENAMED:?} toolbar command shows no \"Custom Commands settings…\"; popups {}",
+            inspect::roots(app.slint()).len()
+        ));
+    }
+    app.screenshot(
+        context,
+        "commands-context-menu",
+        "A toolbar command's context menu",
+    );
+    let item = popup_text(app, "Custom Commands settings…").expect("the menu item");
+    input::click_at(app.slint(), inspect::center(&item));
+    app.until("Options on Custom Commands", |app| {
+        app.window.get_options_open()
+            && app.window.get_options_topic_index() == 9
+            && app.window.get_preferences_ready()
+    });
+    let wanted = LIST_RENAMED.to_owned();
+    if !options::poll(app, Duration::from_secs(5), move |app| {
+        options::value(app, AccessibleRole::TextInput, "Command name").as_deref()
+            == Some(wanted.as_str())
+    }) {
+        return Err(format!(
+            "\"Custom Commands settings…\" opened Options without {LIST_RENAMED:?} selected; the form shows {:?}",
+            options::value(app, AccessibleRole::TextInput, "Command name")
+        ));
+    }
+
+    // The list's keys: Alt+Up and Alt+Down move the selected command, Delete removes
+    // it and Insert starts a new one; Cancel discards all of it.
+    select_command(app, LIST_RENAMED)?;
+    let index = order
+        .iter()
+        .position(|name| *name == LIST_RENAMED)
+        .ok_or("the order lacks the renamed command")?;
+    if index == 0 {
+        return Err("the renamed command must not be first".into());
+    }
+    let mut moved_up = order.to_vec();
+    moved_up.swap(index, index - 1);
+    input::chord(app.slint(), &[Key::Alt], Key::UpArrow);
+    wait_order(app, &moved_up, "Alt+Up")?;
+    input::chord(app.slint(), &[Key::Alt], Key::DownArrow);
+    wait_order(app, order, "Alt+Down")?;
+    let last = order[2];
+    select_command(app, last)?;
+    input::key(app.slint(), Key::Delete);
+    wait_order(app, &order[..2], "Delete")?;
+    input::key(app.slint(), Key::Insert);
+    if !options::poll(app, Duration::from_secs(3), |app| {
+        options::value(app, AccessibleRole::TextInput, "Command name").as_deref()
+            == Some("New command")
+    }) {
+        return Err(format!(
+            "Insert in the command list started no new command; the form shows {:?}",
+            options::value(app, AccessibleRole::TextInput, "Command name")
+        ));
+    }
+    options::cancel(app)?;
+    let saved: Vec<String> = setup
+        .store
+        .current()
+        .user_commands
+        .iter()
+        .map(|command| command.name.clone())
+        .collect();
+    if setup.store.saves() != saves || saved != *order {
+        return Err(format!(
+            "Cancel after the list's keys saved {} times, commands {saved:?}",
+            setup.store.saves() - saves
+        ));
+    }
+
+    // Escape during a drag cancels only the drag; the second Escape closes Options.
+    options::open(app)?;
+    options::page(app, "Custom Commands")?;
+    let rows = command_rows(app);
+    if rows.len() < 2 {
+        return Err(format!("the command list shows {rows:?}"));
+    }
+    let (from, to) = (rows[0].1, rows[1].1);
+    let start = LogicalPosition::new(from.0 + from.2 / 2.0, from.1 + from.3 / 2.0);
+    let end = LogicalPosition::new(to.0 + to.2 / 2.0, to.1 + to.3 - 2.0);
+    let window = app.slint();
+    let left = PointerEventButton::Left;
+    window.dispatch_event(WindowEvent::PointerMoved { position: start });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position: start,
+        button: left,
+    });
+    for step in 1..=8 {
+        let fraction = step as f32 / 8.0;
+        window.dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(
+                start.x + (end.x - start.x) * fraction,
+                start.y + (end.y - start.y) * fraction,
+            ),
+        });
+    }
+    app.settle();
+    input::key(app.slint(), Key::Escape);
+    app.settle();
+    let still_open = app.window.get_options_open();
+    app.slint().dispatch_event(WindowEvent::PointerReleased {
+        position: end,
+        button: left,
+    });
+    app.idle(Duration::from_millis(100));
+    if !still_open || !app.window.get_options_open() {
+        return Err("Escape during a drag of a command closed Options".into());
+    }
+    wait_order(app, order, "a drag cancelled with Escape")?;
+    input::key(app.slint(), Key::Escape);
+    app.until("the second Escape to close Options", |app| {
+        !app.window.get_options_open()
+    });
+    if setup.store.saves() != saves {
+        return Err("the cancelled drag saved settings".into());
+    }
+
+    // A terminal-mode command: its dry run names the shell and the literal script.
+    // It is never run here: the harness installs the native launcher, which would
+    // open a real terminal window.
+    options::open(app)?;
+    options::page(app, "Custom Commands")?;
+    options::press(app, "New Custom Command")?;
+    app.until("the new command form", |app| {
+        options::value(app, AccessibleRole::TextInput, "Command name").as_deref()
+            == Some("New command")
+    });
+    options::choose(app, "Custom Command type", "Run in terminal")?;
+    options::fill(app, "Command name", TERMINAL)?;
+    options::fill(app, "Custom Command script", TERMINAL_SCRIPT)?;
+    options::fill(app, "Working folder", &setup.out.to_string_lossy())?;
+    save_draft(app)?;
+    options::press(app, "Preview Custom Command")?;
+    // A system without a supported terminal (Linux without a desktop, as WSL) cannot
+    // prepare the dry run: the preview says so instead, and that is what is checked.
+    let no_terminal = |app: &App| !options::texts_with(app, NO_TERMINAL).is_empty();
+    let shown = options::poll(app, Duration::from_secs(5), |app| {
+        no_terminal(app)
+            || (!options::texts_with(app, "Terminal:").is_empty()
+                && !options::texts_with(app, TERMINAL_SCRIPT).is_empty())
+    });
+    if !shown {
+        return Err(format!(
+            "the terminal command's preview does not name its shell and script; texts {:?}",
+            options::texts_with(app, "Terminal")
+        ));
+    }
+    options::review_shot(
+        app,
+        context,
+        "commands-terminal-preview",
+        "A terminal-mode Custom Command's preview",
+    );
+    if no_terminal(app) {
+        context.note(format!(
+            "SKIP: the terminal-mode command's dry run: this system has no supported terminal, and the preview reported \"{NO_TERMINAL}\" instead of the shell and script"
+        ));
+        if options::notice_open(app) {
+            options::dismiss_notice(app)?;
+        }
+    }
+    context.note(format!(
+        "SKIP: running the terminal-mode command {TERMINAL:?}: the harness installs the native Custom Command launcher, which would open a real terminal window; its dry run was checked instead"
+    ));
+    options::cancel(app)?;
+
+    // A disabled command: its toolbar button is disabled and a click runs nothing.
+    options::open(app)?;
+    options::page(app, "Custom Commands")?;
+    select_command(app, STAMP)?;
+    options::set_checked(app, "Enabled", false)?;
+    save_draft(app)?;
+    if !options::ok(app, &setup.store)? {
+        return Err("OK did not save the disabled command".into());
+    }
+    if find_command(&setup.store.current().user_commands, STAMP)?.enabled {
+        return Err(format!("{STAMP} was saved enabled"));
+    }
+    if options::enabled_state(app, AccessibleRole::Button, STAMP) != Some(false) {
+        return Err(format!(
+            "the disabled {STAMP:?} toolbar button is {:?}",
+            options::enabled_state(app, AccessibleRole::Button, STAMP)
+        ));
+    }
+    let stamp = setup.out.join("beta one.txt.stamp");
+    select_files(app, &["beta one.txt"])?;
+    let item = inspect::find(app.slint(), AccessibleRole::Button, STAMP)
+        .ok_or_else(|| format!("the toolbar shows no {STAMP:?}"))?;
+    input::click_at(app.slint(), inspect::center(&item));
+    // The negative window: the enabled per-item command wrote its stamps within a
+    // second of its click above (`wait_file`).
+    let ran = options::poll(app, Duration::from_secs(2), |_| stamp.exists());
+    if ran || options::notice_open(app) {
+        return Err(format!(
+            "a click on the disabled {STAMP:?} ran it ({ran}) or raised a notice ({:?})",
+            app.notice()
+        ));
+    }
+    Ok(())
 }
 
 fn find_command<'a>(commands: &'a [UserCommand], name: &str) -> Result<&'a UserCommand, String> {
@@ -590,13 +862,32 @@ pub fn custom_commands(context: &mut Context) -> Result<(), String> {
         return Err(format!("the shortcut's run listed {lines:?}"));
     }
 
-    // F9 opens the User menu (it lists built-in actions; commands run from the toolbar).
+    // F9 opens the User menu, which lists the commands in the saved order.
     panel::focus_list(&mut app, PaneId::Left)?;
     input::key(app.slint(), Key::F9);
     app.until("the User menu", |app| inspect::roots(app.slint()).len() > 1);
     let menu = inspect::visible_texts(app.slint());
     if !menu.iter().any(|text| text == "User menu") {
         return Err(format!("F9 opened no User menu: {menu:?}"));
+    }
+    let mut listed: Vec<(f32, String)> = Vec::new();
+    if let Some(popup) = inspect::roots(app.slint()).last() {
+        inspect::walk(popup, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && let Some(label) = inspect::label(item)
+                && [STAMP, LIST_RENAMED, BROKEN].contains(&label.as_str())
+            {
+                listed.push((inspect::rect(item).1, label));
+            }
+        });
+    }
+    listed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let listed: Vec<String> = listed.into_iter().map(|(_, label)| label).collect();
+    if listed != [STAMP, LIST_RENAMED, BROKEN] {
+        return Err(format!(
+            "the F9 User menu lists the commands {listed:?} instead of {:?}",
+            [STAMP, LIST_RENAMED, BROKEN]
+        ));
     }
     app.screenshot(context, "commands-f9", "F9 User menu");
     input::key(app.slint(), Key::Escape);
@@ -667,8 +958,9 @@ pub fn custom_commands(context: &mut Context) -> Result<(), String> {
         "commands-final",
         "Custom Commands after deleting the separator",
     );
+    list_and_toolbar(&mut app, &setup, &[STAMP, LIST_RENAMED, BROKEN], context)?;
     context.note(format!(
-        "Custom Commands: created grouped (${{selected.paths}}), per-item (${{file.name}}), separator and failing items; drag reorder, rename with a toolbar caption, Cancel and Delete verified; grouped run listed 2 paths, per-item run stamped 2 files, preview started nothing, the missing program raised a notice, {SHORTCUT} bound to user-command.{list_id} ran the command before and after a restart. F9 opens the User menu, which lists no Custom Commands (they run from the toolbar and keys)"
+        "Custom Commands: created grouped (${{selected.paths}}), per-item (${{file.name}}), separator and failing items; drag reorder, rename with a toolbar caption, Cancel and Delete verified; grouped run listed 2 paths, per-item run stamped 2 files, preview started nothing, the missing program raised a notice, {SHORTCUT} bound to user-command.{list_id} ran the command before and after a restart; F9 lists the commands in the saved order. A toolbar command's right-click menu opened its settings; Alt+Up, Alt+Down, Delete and Insert in the list, Cancel discarding them; Escape cancelled a drag without closing Options; a terminal-mode command's dry run named its shell and script; a disabled command's button was disabled and ran nothing"
     ));
     app.shutdown()?;
     if findings.is_empty() {

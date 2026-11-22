@@ -14,6 +14,7 @@ use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Clip, ComplexText, Flickable, SimpleText},
+    window::WindowInner,
 };
 use midnight_core::{ComparatorValidationProof, FsError, PaneId, SettingsService, UserPreferences};
 use midnight_ui::NoticePresentation;
@@ -24,7 +25,7 @@ use slint::{
 use std::{
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Font families the store reports as installed. The build image ships DejaVu; on a
@@ -42,6 +43,8 @@ struct StoreState {
     seed: Option<SeedEdit>,
     /// Completed saves.
     saves: usize,
+    /// How long each load takes: a slow disk (`SettingsStore::delay`).
+    delay: Option<Duration>,
 }
 
 /// Settings shared by successive application runs of one scenario (opt-in through
@@ -81,6 +84,13 @@ impl SettingsStore {
         self.lock().saves
     }
 
+    /// Make every later load take `delay` (`None`: immediate again), as a slow disk does:
+    /// the application's settings deadline then shows the defaults first.
+    #[allow(dead_code)] // For O10 (slow settings) once `App::start` arms the deadline (H6).
+    pub fn delay(&self, delay: Option<Duration>) {
+        self.lock().delay = delay;
+    }
+
     /// The settings service an application run installs; `initial` is what its
     /// `Config` describes and seeds an unused store.
     pub fn service(self: &Arc<Self>, initial: UserPreferences) -> Arc<dyn SettingsService> {
@@ -108,6 +118,11 @@ impl SettingsService for StoreService {
     }
 
     fn load_preferences(&self) -> Result<UserPreferences, FsError> {
+        // A backend worker loads settings, so a slow load blocks only that worker.
+        let delay = self.0.lock().delay;
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
         Ok(self.0.current())
     }
 
@@ -449,6 +464,88 @@ pub fn is_enabled(app: &App, role: AccessibleRole, label: &str) -> bool {
     find_any(app, role, label).is_some_and(|item| enabled(&item))
 }
 
+/// Whether the control with this role and label is enabled; `None` when it is not shown
+/// (a negative check must not pass because the control is missing).
+pub fn enabled_state(app: &App, role: AccessibleRole, label: &str) -> Option<bool> {
+    find_any(app, role, label).map(|item| enabled(&item))
+}
+
+/// Pump the application until `condition` holds or `limit` has passed; whether it
+/// held. The limit is a hang guard for a positive condition, or the observation window
+/// of a negative one (then pair it with a positive control that shows within it).
+pub fn poll(app: &mut App, limit: Duration, condition: impl Fn(&App) -> bool) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        app.settle();
+        if condition(app) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        app.idle(Duration::from_millis(10));
+    }
+}
+
+/// The item that has the keyboard focus in the main window or one of its popups.
+pub fn focus_item(app: &App) -> Option<ItemRc> {
+    WindowInner::from_pub(app.slint())
+        .focus_item
+        .borrow()
+        .upgrade()
+}
+
+/// The role and label of the control that has the keyboard focus: the focused item or
+/// its nearest ancestor with an accessible role and a label (a topic row's focus scope
+/// names its row, a combo box's inner focus scope its combo box).
+pub fn focus(app: &App) -> Option<(AccessibleRole, String)> {
+    let mut current = focus_item(app);
+    while let Some(item) = current {
+        let role = item.accessible_role();
+        if role != AccessibleRole::None
+            && let Some(label) = inspect::label(&item).filter(|label| !label.is_empty())
+        {
+            return Some((role, label));
+        }
+        current = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    None
+}
+
+/// Press Tab (or Shift+Tab) until the focused control is one `accept` takes, at most
+/// `limit` times. Returns the controls visited on the way (the last is the accepted
+/// one); an error names them when none was accepted.
+pub fn tab_until(
+    app: &mut App,
+    backwards: bool,
+    limit: usize,
+    what: &str,
+    accept: &dyn Fn(AccessibleRole, &str) -> bool,
+) -> Result<Vec<String>, String> {
+    let mut visited = Vec::new();
+    for _ in 0..limit {
+        if backwards {
+            input::chord(app.slint(), &[Key::Shift], Key::Tab);
+        } else {
+            input::key(app.slint(), Key::Tab);
+        }
+        app.settle();
+        match focus(app) {
+            Some((role, label)) => {
+                visited.push(format!("{role:?} {label:?}"));
+                if accept(role, &label) {
+                    return Ok(visited);
+                }
+            }
+            None => visited.push("(nothing)".to_owned()),
+        }
+    }
+    Err(format!(
+        "{} {limit} times did not reach {what}; focus went to {visited:?}",
+        if backwards { "Shift+Tab" } else { "Tab" }
+    ))
+}
+
 /// The accessible value of a control (a picker's shown choice, a field's text).
 pub fn value(app: &App, role: AccessibleRole, label: &str) -> Option<String> {
     find_any(app, role, label)
@@ -488,10 +585,17 @@ fn pick_where(
         }
     });
     let Some(item) = found else {
+        // Escape goes to the open list, which has the keyboard, and closes only it.
         input::key(app.slint(), Key::Escape);
         app.settle();
+        let left_open = inspect::roots(app.slint()).len() > popups;
         return Err(format!(
-            "the {label:?} picker offers no {describe}; it offers {offered:?}"
+            "the {label:?} picker offers no {describe}; it offers {offered:?}{}",
+            if left_open {
+                " (Escape left its list open)"
+            } else {
+                ""
+            }
         ));
     };
     let name = inspect::label(&item).unwrap_or_default();
@@ -813,22 +917,26 @@ pub fn review_shot(app: &mut App, context: &mut Context, name: &str, caption: &s
     }
 }
 
-/// Wait (bounded) until `path` exists, pumping the application meanwhile.
+/// Wait (bounded) until `path` exists and its size holds still across two looks 50 ms
+/// apart (a writer has finished its bytes), pumping the application meanwhile.
 pub fn wait_file(app: &mut App, path: &Path, what: &str) -> Result<(), String> {
-    let wanted = path.to_path_buf();
-    for _ in 0..600 {
-        if wanted.exists() {
-            // Let a writer finish its last bytes.
-            app.idle(Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut size: Option<u64> = None;
+    loop {
+        let now = std::fs::metadata(path).ok().map(|metadata| metadata.len());
+        if now.is_some() && now == size {
             return Ok(());
         }
-        app.idle(Duration::from_millis(25));
+        size = now;
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{what}: {} did not appear and hold still (size {size:?}); notice: {:?}",
+                path.display(),
+                app.notice()
+            ));
+        }
+        app.idle(Duration::from_millis(50));
     }
-    Err(format!(
-        "{what}: {} did not appear; notice: {:?}",
-        path.display(),
-        app.notice()
-    ))
 }
 
 /// Wait (bounded) until the button labelled `label` is enabled.

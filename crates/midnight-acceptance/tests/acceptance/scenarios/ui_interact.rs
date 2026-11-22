@@ -14,8 +14,9 @@ use crate::{
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
-    items::{AccessibleRole, TooltipArea},
-    window::WindowInner,
+    items::{AccessibleRole, StyledTextItem, TooltipArea},
+    styled_text,
+    window::{WindowInner, WindowKind},
 };
 use midnight_core::PaneId;
 use slint::{
@@ -66,6 +67,9 @@ pub struct Surface<'a> {
     pub enter_text: Option<&'static str>,
     pub buttons: bool,
     pub hover: bool,
+    /// Popups of the main window the surface lies over (Options under its colour
+    /// picker), which stay open when it closes.
+    pub nested: usize,
 }
 
 impl<'a> Surface<'a> {
@@ -86,6 +90,7 @@ impl<'a> Surface<'a> {
             enter_text: None,
             buttons: true,
             hover: true,
+            nested: 0,
         }
     }
 }
@@ -347,7 +352,10 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     issues
 }
 
-/// Hovering every operable control changes how it looks (or its surroundings).
+/// Hovering every operable control changes how it looks (or its surroundings). Each
+/// control is judged against two frames taken just before it is hovered, with the
+/// pointer away: pixels that change between those two (a caret blinking, progress) are
+/// left out, so that only the hover's own change counts.
 pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     let mut issues = Vec::new();
     let software = target.software(app);
@@ -360,7 +368,6 @@ pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     };
     for root in roots {
         let nodes = gate::nodes(window, &root);
-        let base = Frame::of(&software);
         for index in operable(&nodes) {
             let node = &nodes[index];
             if !matches!(
@@ -380,10 +387,14 @@ pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
             }
             let Some(shown) = node.shown else { continue };
             let (x, y, w, h) = shown;
+            let area = inflate(shown, 2.0);
+            let before = Frame::of(&software);
+            app.idle(Duration::from_millis(180));
+            let base = Frame::of(&software);
             gate::hover(window, x + w / 2.0, y + h / 2.0);
             app.idle(Duration::from_millis(180));
             let frame = Frame::of(&software);
-            if frame.changed(&base, inflate(shown, 2.0)).is_empty() {
+            if !changed_beyond(&frame, &base, &before, area) {
                 issues.push(Issue::new(
                     NO_HOVER,
                     format!("{} does not change when hovered", gate::describe(node)),
@@ -394,6 +405,50 @@ pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
         }
     }
     issues
+}
+
+/// Whether `after` differs from `base` inside `area` at a pixel that did not already
+/// change between `before` and `base` (an animation in progress).
+fn changed_beyond(after: &Frame, base: &Frame, before: &Frame, area: inspect::Rect) -> bool {
+    if after.width != base.width
+        || after.height != base.height
+        || before.width != base.width
+        || before.height != base.height
+    {
+        return !after.changed(base, area).is_empty();
+    }
+    let Some((x0, y0, x1, y1)) = after.bounds(area) else {
+        return false;
+    };
+    (y0..y1).any(|y| {
+        (x0..x1).any(|x| after.at(x, y) != base.at(x, y) && before.at(x, y) == base.at(x, y))
+    })
+}
+
+/// Texts of the window's open tooltips: the plain texts of custom tooltip content and
+/// the styled text a `Tooltip { text: ... }` shows, which `tools_support::tooltip_texts`
+/// does not read.
+fn tooltip_texts(window: &slint::Window) -> Vec<String> {
+    let roots: Vec<ItemRc> = WindowInner::from_pub(window)
+        .active_popups()
+        .iter()
+        .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+        .map(|popup| ItemRc::new_root(popup.component.clone()))
+        .collect();
+    let mut texts = tools_support::tooltip_texts(window);
+    for root in &roots {
+        inspect::walk(root, &mut |item| {
+            if let Some(styled) = item.downcast::<StyledTextItem>()
+                && item.is_visible()
+            {
+                let text = styled_text::get_raw_text(&styled.as_pin_ref().text()).into_owned();
+                if !text.trim().is_empty() {
+                    texts.push(text);
+                }
+            }
+        });
+    }
+    texts
 }
 
 /// Every icon-only button with a tooltip area shows a tooltip with text on hovering.
@@ -443,7 +498,7 @@ pub fn tooltip_checks(app: &mut App, target: &Target) -> Vec<Issue> {
             let mut texts = Vec::new();
             while Instant::now() < deadline {
                 app.idle(Duration::from_millis(60));
-                texts = tools_support::tooltip_texts(window);
+                texts = tooltip_texts(window);
                 if texts
                     .iter()
                     .any(|text| text.chars().any(char::is_alphanumeric))
@@ -594,10 +649,12 @@ fn state(app: &App, folders: &[PathBuf], skip: &[(usize, inspect::Rect)]) -> Sta
         texts,
         controls,
         folders: folder_digest(&all_folders),
+        // The harness's own acknowledgement of the visible listing is sent in the
+        // background after any refresh: never a button's effect.
         commands: app
             .recent_events()
             .into_iter()
-            .filter(|line| line.starts_with('→'))
+            .filter(|line| line.starts_with('→') && !line.contains("PaneCommitted"))
             .collect(),
         picker: app.picker.requests().len(),
         jobs: (
@@ -620,6 +677,32 @@ fn state(app: &App, folders: &[PathBuf], skip: &[(usize, inspect::Rect)]) -> Sta
             .as_ref()
             .map_or(0, |clipboard| clipboard.writes()),
     }
+}
+
+/// The fields still changing between the two samples before an action: they cannot
+/// count as its effect, which the outcome's notes then say.
+fn unsettled(noisy: &State, quiet: &State) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    macro_rules! field {
+        ($name:ident) => {
+            if noisy.$name != quiet.$name {
+                found.push(stringify!($name));
+            }
+        };
+    }
+    field!(windows);
+    field!(notice);
+    field!(popups);
+    field!(texts);
+    field!(controls);
+    field!(folders);
+    field!(picker);
+    field!(jobs);
+    field!(panels);
+    field!(pixels);
+    field!(clipboard);
+    field!(commands);
+    found
 }
 
 /// What changed from `quiet` to `after` that had not changed between the two quiet
@@ -658,8 +741,9 @@ fn is_dismissal(label: &str) -> bool {
     ) || label.starts_with("close ")
 }
 
-/// After a dismissal: no window or notice beyond those open before the surface.
-fn extra_surfaces(app: &App, baseline: &[String], what: &str) -> Option<Issue> {
+/// After a dismissal: no window or notice beyond those open before the surface, and no
+/// main-window popup beyond the `nested` ones it lay over.
+fn extra_surfaces(app: &App, baseline: &[String], what: &str, nested: usize) -> Option<Issue> {
     let mut windows: Vec<String> = app
         .tool_windows()
         .iter()
@@ -671,7 +755,7 @@ fn extra_surfaces(app: &App, baseline: &[String], what: &str) -> Option<Issue> {
         }
     }
     let notice = tools_support::shown_notice(app);
-    let popups = inspect::roots(app.slint()).len() > 1;
+    let popups = inspect::roots(app.slint()).len() > 1 + nested;
     if windows.is_empty() && notice.is_none() && !popups {
         return None;
     }
@@ -811,15 +895,18 @@ fn still_enabled(app: &mut App, surface: &mut Surface<'_>, button: &ButtonRef) -
     enabled
 }
 
-/// Open the surface fresh and measure one action (a click on `button`, or Enter):
-/// returns the evidence of an effect and, after a dismissal, unexpected surfaces.
+/// What one action showed: the evidence of an effect, an unexpected surface after a
+/// dismissal, and the fields that were still changing before it (never evidence).
+type Acted = (Vec<&'static str>, Option<Issue>, Vec<&'static str>);
+
+/// Open the surface fresh and measure one action (a click on `button`, or Enter).
 fn act(
     app: &mut App,
     surface: &mut Surface<'_>,
     what: &str,
     button: Option<&ButtonRef>,
     dismissal: bool,
-) -> Result<(Vec<&'static str>, Option<Issue>), String> {
+) -> Result<Acted, String> {
     let baseline = titles(app);
     let target = (surface.open)(app)?;
     gate::pointer_out(target.window(app));
@@ -880,12 +967,12 @@ fn act(
     }
     let extra = if dismissal {
         app.idle(Duration::from_millis(500));
-        extra_surfaces(app, &baseline, what)
+        extra_surfaces(app, &baseline, what, surface.nested)
     } else {
         None
     };
     (surface.reset)(app);
-    Ok((found, extra))
+    Ok((found, extra, unsettled(&noisy, &quiet)))
 }
 
 /// Run every interactive check on a surface.
@@ -917,7 +1004,7 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
                 ));
             } else {
                 app.idle(Duration::from_millis(500));
-                if let Some(issue) = extra_surfaces(app, &baseline, "Escape") {
+                if let Some(issue) = extra_surfaces(app, &baseline, "Escape", surface.nested) {
                     outcome.issues.push(issue);
                 }
             }
@@ -926,11 +1013,19 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
     }
     if surface.enter {
         match act(app, surface, "Enter", None, false) {
-            Ok((found, _)) if found.is_empty() => outcome.issues.push(Issue::new(
+            Ok((found, _, unsettled)) if found.is_empty() => outcome.issues.push(Issue::new(
                 ENTER,
-                format!("Enter in {} changes nothing observable", surface.name),
+                format!(
+                    "Enter in {} changes nothing observable{}",
+                    surface.name,
+                    if unsettled.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (still changing before it: {unsettled:?})")
+                    }
+                ),
             )),
-            Ok((found, _)) => outcome
+            Ok((found, _, _)) => outcome
                 .notes
                 .push(format!("{}: Enter changed {found:?}", surface.name)),
             Err(error) => outcome.issues.push(Issue::new(
@@ -986,13 +1081,20 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
             let dismissal = is_dismissal(&button.label);
             let what = format!("clicking {:?}", button.label);
             match act(app, surface, &what, Some(&button), dismissal) {
-                Ok((found, extra)) => {
+                Ok((found, extra, unsettled)) => {
                     if found.is_empty() {
                         outcome.issues.push(Issue::new(
                             NO_EFFECT,
                             format!(
-                                "{}: {:?} {:?} changes nothing observable",
-                                surface.name, button.role, button.label
+                                "{}: {:?} {:?} changes nothing observable{}",
+                                surface.name,
+                                button.role,
+                                button.label,
+                                if unsettled.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" (still changing before the click: {unsettled:?})")
+                                }
                             ),
                         ));
                     } else {
@@ -1039,6 +1141,7 @@ slint::slint! {
         in property <bool> ring: true;
         in property <color> ring-color: #1a3fb4;
         in property <bool> hover-look: true;
+        out property <bool> focused: focus.has-focus;
         callback clicked();
         width: 96px; height: 30px;
         background: area.has-hover && root.hover-look ? #c0d0ff : #d8d8d8;
@@ -1067,6 +1170,39 @@ slint::slint! {
         }
     }
 
+    // An icon-only button (case 11); its tooltip comes with the two variants below.
+    component RedIconBase inherits Rectangle {
+        callback clicked();
+        width: 30px; height: 30px;
+        background: area.has-hover ? #c0d0ff : #d8d8d8;
+        border-width: 2px;
+        border-color: focus.has-focus ? #1a3fb4 : #d8d8d8;
+        accessible-role: button; accessible-label: "Refresh";
+        accessible-action-default => { root.clicked(); }
+        forward-focus: focus;
+        focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == " " { root.clicked(); return accept; }
+                reject
+            }
+            area := TouchArea {
+                clicked => { focus.focus(); root.clicked(); }
+            }
+        }
+        // The icon.
+        Rectangle { x: 9px; y: 9px; width: 12px; height: 12px; background: #000000; }
+    }
+
+    // The corrected twin: a tooltip that names the button's action.
+    component RedIconButton inherits RedIconBase {
+        Tooltip { text: @markdown("Refresh the status"); }
+    }
+
+    // The broken one: a tooltip area whose tooltip shows no text.
+    component RedIconButtonMute inherits RedIconBase {
+        Tooltip { text: @markdown(" "); }
+    }
+
     // One dialog with one deliberately broken behaviour per case.
     export component RedDialog inherits Window {
         in property <int> case;
@@ -1080,11 +1216,40 @@ slint::slint! {
         default-font-size: 14px;
         preferred-width: 480px;
         preferred-height: 260px;
-        public function focus-first() { first.focus(); }
+        public function focus-first() { elsewhere.close(); first.focus(); }
         init => { first.focus(); }
+        // Case 10: where the broken dialog's Tab sends the focus, outside the dialog.
+        elsewhere := PopupWindow {
+            x: 300px; y: 60px; width: 160px; height: 60px;
+            close-policy: no-auto-close;
+            forward-focus: elsewhere-focus;
+            Rectangle {
+                background: #f0f0f0;
+                Text { x: 8px; y: 8px; text: "Somewhere else"; color: #000000; }
+            }
+            elsewhere-focus := FocusScope {
+                key-pressed(event) => { reject }
+            }
+        }
         FocusScope {
             x: 0px; y: 0px; width: root.width; height: root.height;
             focus-on-tab-navigation: false;
+            capture-key-pressed(event) => {
+                // Case 9: Shift+Tab moves forwards, like Tab.
+                if root.case == 9 && root.broken && event.text == Key.Tab && event.modifiers.shift {
+                    if first.focused { second.focus(); }
+                    else if second.focused { third.focus(); }
+                    else { first.focus(); }
+                    return accept;
+                }
+                // Case 10: Tab from the last button leaves the dialog.
+                if root.case == 10 && root.broken && event.text == Key.Tab && !event.modifiers.shift
+                    && third.focused {
+                    elsewhere.show();
+                    return accept;
+                }
+                reject
+            }
             key-pressed(event) => {
                 if event.text == Key.Escape {
                     if !(root.case == 3 && root.broken) { root.closed(); }
@@ -1106,17 +1271,26 @@ slint::slint! {
                 hover-look: !(root.case == 7 && root.broken);
                 clicked => { root.status = "Applied"; }
             }
-            RedButton {
+            second := RedButton {
                 x: 116px; y: 200px; caption: "Details";
                 focusable: !(root.case == 1 && root.broken);
                 clicked => { if !(root.case == 5 && root.broken) { root.details = !root.details; } }
             }
-            RedButton {
+            third := RedButton {
                 x: 220px; y: 200px; caption: "Cancel";
                 clicked => {
                     root.closed();
                     if root.case == 6 && root.broken { root.extra(); }
                 }
+            }
+            // Case 11: the broken tooltip area shows no text.
+            if root.case == 11 && !root.broken : RedIconButton {
+                x: 330px; y: 200px;
+                clicked => { root.status = "Refreshed"; }
+            }
+            if root.case == 11 && root.broken : RedIconButtonMute {
+                x: 330px; y: 200px;
+                clicked => { root.status = "Refreshed"; }
             }
         }
     }
@@ -1132,7 +1306,7 @@ slint::slint! {
 }
 
 /// The interactive red cases: case, broken behaviour, the check that must flag it.
-const INTERACTIVE: [(i32, &str); 8] = [
+const INTERACTIVE: [(i32, &str); 11] = [
     (1, TAB_UNREACHABLE),
     (2, FOCUS_INVISIBLE),
     (3, ESCAPE),
@@ -1141,6 +1315,9 @@ const INTERACTIVE: [(i32, &str); 8] = [
     (6, EXTRA_SURFACE),
     (7, NO_HOVER),
     (8, FOCUS_FAINT),
+    (9, TAB_ORDER),
+    (10, FOCUS_ESCAPES),
+    (11, TOOLTIP_MISSING),
 ];
 
 /// Prove every interactive check against the red dialog; returns the failures.

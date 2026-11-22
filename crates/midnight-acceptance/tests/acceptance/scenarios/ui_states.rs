@@ -9,12 +9,14 @@
 //!   window, Escape on an active job asks to cancel, a cancelled or finished job's window
 //!   leaves no notice or extra window behind.
 //! - `ui_polish_viewers`: viewer windows (text, source with a selection, image,
-//!   Markdown, hex) and a comparator, in a dark and a light theme, in a staged process
-//!   with the installed plugins.
+//!   Markdown, hex), a comparator and the archive password dialog (F3 on an encrypted
+//!   member of a ZipCrypto archive; static and interactive checks), in a dark and a
+//!   light theme, in a staged process with the installed plugins.
 use crate::{
     Context, Scenario,
     app::{self, App, Config},
-    files_support::{self as support, Choice, TransferSpec},
+    encode::{self, Entry},
+    files_support::{self as support, Choice, LinkChoice, TransferSpec},
     input, inspect, panel, report,
     scenarios::{
         ui_gate::{self as gate, Issue, Target},
@@ -181,8 +183,9 @@ fn job_folders(root: &Path) -> Result<(), String> {
     let target = root.join("target");
     fs::create_dir_all(&target).map_err(|error| error.to_string())?;
     // Long enough to be paused while it copies: Windows reads a sparse file's zeros fast
-    // enough to finish 256 MiB before the window's Pause is pressed.
-    let big: u64 = if cfg!(windows) { 1 << 30 } else { 256 << 20 };
+    // enough to finish 256 MiB before the window's Pause is pressed, and a Linux page
+    // cache (WSL) copied 256 MiB before it, too.
+    let big: u64 = if cfg!(windows) { 1 << 30 } else { 2 << 30 };
     tools::sparse(&source.join("big.bin"), big).or_else(|_| {
         fs::create_dir_all(&source).map_err(|error| error.to_string())?;
         tools::sparse(&source.join("big.bin"), big)
@@ -206,9 +209,16 @@ fn job_folders(root: &Path) -> Result<(), String> {
     write(&source.join("conflict.txt"), "new\n")?;
     write(&target.join("conflict.txt"), "old\n")?;
     fs::create_dir_all(source.join("links")).map_err(|error| error.to_string())?;
+    // A dangling link: copied as a link with a note whatever the Links choice. Windows
+    // has a directory junction (no privilege needed) to a folder that does not exist.
     #[cfg(unix)]
     std::os::unix::fs::symlink("missing-target", source.join("links/dangling"))
         .map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    crate::fixtures::junction(
+        &source.join("links/dangling"),
+        &source.join("links/missing-target"),
+    )?;
     write(&source.join("links/kept.txt"), "kept\n")?;
     Ok(())
 }
@@ -368,7 +378,15 @@ fn long_copy(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), S
                     "Escape on an active Copy job neither closes its window nor asks to cancel",
                 )],
             );
+        } else {
+            context.note(format!(
+                "SKIP: {prefix}: the cancel question was not captured: the copy ended before it was asked"
+            ));
         }
+    } else {
+        context.note(format!(
+            "SKIP: {prefix}: the running copy and its cancel question were not captured: the copy ended before Resume took effect"
+        ));
     }
     let allowed: Vec<String> = vec!["Copy".to_owned(), "Copy".to_owned()];
     wait_for(app, Duration::from_secs(60), move |app| {
@@ -395,6 +413,10 @@ fn long_copy(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), S
                 gate::record(context, &cancelled, &surface_ended, vec![issue]);
             }
         }
+    } else {
+        context.note(format!(
+            "SKIP: {prefix}: the ended copy ({ended:?}) closed its window before it could be captured"
+        ));
     }
     // The waiting copy runs once the first one ended and completes.
     wait_for(app, Duration::from_secs(60), move |app| {
@@ -480,7 +502,7 @@ fn errors(
         Ok(window) => window,
         Err(_) => {
             context.note(format!(
-                "{prefix}: the {label} errors job ({ended:?}) shows no window"
+                "SKIP: {prefix}: the {label} errors job ({ended:?}) shows no window to capture"
             ));
             support::dismiss_all(app);
             return Ok(());
@@ -551,30 +573,45 @@ fn errors(
     Ok(())
 }
 
-/// A copy that follows a dangling link: completed with a note.
+/// A copy of a folder with a dangling link (on Windows a dangling junction) with Links
+/// set to "Copy the files links point to": the link has nothing to copy, stays a link
+/// and the job completes with a note.
 fn notes(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), String> {
-    if cfg!(windows) {
-        context.note(format!(
-            "{prefix}: no job with notes on Windows: its note comes from a dangling link \
-             copied as a link, and Windows links need a privilege or Developer Mode and are \
-             never recreated by a copy"
-        ));
-        return Ok(());
-    }
     let before = copy_windows(app).len();
     let mut spec = TransferSpec::copy();
-    spec.follow_links = Some(true);
+    // "Copy the files links point to", chosen in the open Links list with the keys.
+    spec.links = Some(LinkChoice::CopyFiles);
     let start = start_copy(app, context, "links", spec)?;
     wait_for(app, Duration::from_secs(60), move |app| {
         support::job(app, start).is_some_and(|progress| progress.state.is_terminal())
             || support::decision_window(app).is_some()
     });
+    let asked = support::decision_window(app).is_some();
     if let Some(window) = support::decision_window(app) {
         let _ = support::answer(app, &window, &Choice::Skip);
     }
     wait_for(app, Duration::from_secs(60), move |app| {
         support::job(app, start).is_some_and(|progress| progress.state.is_terminal())
     });
+    // The state this capture stands for: the job ended with its note, unasked.
+    let ended = support::job(app, start).map(|progress| {
+        (
+            progress.state,
+            progress.note_count,
+            progress.notes.first().cloned(),
+        )
+    });
+    match &ended {
+        Some((state, count, _)) if state.is_terminal() && *count > 0 && !asked => {
+            context.note(format!("{prefix}: the job with notes ended {ended:?}"));
+        }
+        _ => {
+            support::dismiss_all(app);
+            return Err(format!(
+                "the copy of a dangling link did not end with a note (state, notes, first note: {ended:?}; asked a question: {asked})"
+            ));
+        }
+    }
     match new_copy_window(app, before, "the job with notes") {
         Ok(window) => {
             capture_sizes(
@@ -839,6 +876,89 @@ fn comparator(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------
+// The archive password dialog
+
+/// A ZipCrypto archive whose one member needs a password. The gate never types it, so
+/// nothing it presses can unlock the archive.
+const LOCKED: &str = "locked.zip";
+const SECRET: &str = "secret.txt";
+const LOCKED_PASSWORD: &str = "polish-gate-secret";
+/// A hang guard for the archive's listing and for the dialog.
+const LOCKED_WAIT: Duration = Duration::from_secs(30);
+
+fn write_locked(folder: &Path) -> Result<(), String> {
+    fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+    let bytes = encode::zip_entries(&[
+        Entry::file(SECRET, "The polish gate's secret.\n").zip_crypto(LOCKED_PASSWORD)
+    ]);
+    fs::write(folder.join(LOCKED), bytes).map_err(|error| format!("{LOCKED}: {error}"))
+}
+
+/// The password surface's idle state: inside `locked.zip` with the cursor on its
+/// encrypted member and nothing open over the panel.
+fn locked_member(app: &mut App) -> Result<(), String> {
+    if viewers_support::password_dialog(app).is_some() {
+        viewers_support::dismiss_password(app, viewers_support::Dismiss::Escape)?;
+    }
+    support::dismiss_all(app);
+    if !app.names(LEFT).iter().any(|name| name == SECRET) {
+        panel::select_row(app, LEFT, LOCKED)?;
+        input::key(app.slint(), Key::Return);
+        if !wait_for(app, LOCKED_WAIT, |app| {
+            app.names(LEFT).iter().any(|name| name == SECRET)
+        }) {
+            return Err(format!(
+                "{LOCKED} did not open as a folder: rows {:?}",
+                app.names(LEFT)
+            ));
+        }
+    }
+    panel::select_row(app, LEFT, SECRET)
+}
+
+/// F3 on the encrypted member opens the archive password dialog.
+fn open_password(app: &mut App) -> Result<Target, String> {
+    locked_member(app)?;
+    input::key(app.slint(), Key::F3);
+    viewers_support::wait_password_dialog(app, LOCKED_WAIT)?;
+    Ok(Target::Main)
+}
+
+/// The archive password dialog over the main window: the static and contrast checks,
+/// then the interactive ones (Tab, focus, Escape, Enter with the empty field, every
+/// button, hover, no extra window or notice after a dismissal).
+fn password_dialog(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), String> {
+    let surface_name = format!("{prefix}/password");
+    let shot = format!("{prefix}-password");
+    open_password(app)?;
+    gate::capture(
+        app,
+        context,
+        &Target::Main,
+        &surface_name,
+        &shot,
+        "Archive password",
+    );
+    locked_member(app)?;
+    let mut surface = interact::Surface::new(
+        surface_name.clone(),
+        open_password,
+        |app: &App, _: &Target| viewers_support::password_dialog(app).is_some(),
+        |app: &mut App| {
+            let _ = locked_member(app);
+        },
+    );
+    let outcome = interact::check_surface(app, &mut surface);
+    interact::record(
+        context,
+        &surface_name,
+        &format!("shots/{}/{shot}.png", app::context_name()),
+        outcome,
+    );
+    locked_member(app)
+}
+
 fn viewers_body(context: &mut Context) -> Result<(), String> {
     if viewers_stage::installed_packages("viewers") == 0 {
         return Err("SKIP: no viewer packages are staged".into());
@@ -877,6 +997,20 @@ fn viewers_body(context: &mut Context) -> Result<(), String> {
             context.note(format!("{prefix} comparator failed: {error}"));
         }
         app.shutdown()?;
+        drop(app);
+        // The archive password dialog, from a folder of this run holding the archive.
+        let locked = context.work.join(format!("locked-{prefix}"));
+        write_locked(&locked)?;
+        let mut config = Config::new(&locked, &context.work);
+        config.theme = theme;
+        config.density = density;
+        config.plugins = Some(context.work.join(format!("plugins-locked-{prefix}")));
+        let mut app = App::start(config);
+        if let Err(error) = password_dialog(&mut app, context, &prefix) {
+            record_failure(context, &format!("{prefix}/password"), error.clone());
+            context.note(format!("{prefix} archive password dialog failed: {error}"));
+        }
+        app.shutdown()?;
     }
     gate::verdict(context, "ui_polish_viewers")
 }
@@ -900,7 +1034,7 @@ pub fn viewers_scenario() -> Scenario {
     Scenario {
         name: "ui_polish_viewers",
         area: "ui",
-        summary: "Polish gate on viewer windows (text, source with a selection, image, Markdown, hex) and a comparator in a dark and a light theme (staged with the installed plugins).",
+        summary: "Polish gate on viewer windows (text, source with a selection, image, Markdown, hex), a comparator and the archive password dialog in a dark and a light theme (staged with the installed plugins).",
         run: viewers,
         timeout: VIEWERS_TIMEOUT,
     }

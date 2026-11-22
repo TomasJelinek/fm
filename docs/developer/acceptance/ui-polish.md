@@ -27,9 +27,9 @@ raise, and needs the next run to confirm.
 | `ui_polish_checks` | Red cases: every check flags a deliberately broken window and passes its corrected twin. | in process |
 | `ui_review` | Default matrix: the main window's states, menus and popups, every embedded dialog and the tool windows, static and contrast checks. | in process |
 | `ui_themes` | Every theme the default matrix leaves out: main window states, menus, popups, Copy, an error notice and Find. | in process |
-| `ui_polish_dialogs` | Interactive checks of every dialog and tool window; hover and tooltips of the main window. | private child (`run_private`) |
+| `ui_polish_dialogs` | Interactive checks of every dialog and tool window, every Options page, the colour picker, the Replace shortcut question, Select by mask and Change name case; hover and tooltips of the main window. | private child (`run_private`) |
 | `ui_polish_jobs` | Copy job windows in every state, the decision windows and Jobs, at preferred and minimum size, with interactive checks. | in process |
-| `ui_polish_viewers` | Viewer windows (text, source with a selection, image, Markdown, hex) and a comparator, dark and light. | staged child with plugins |
+| `ui_polish_viewers` | Viewer windows (text, source with a selection, image, Markdown, hex), a comparator and the archive password dialog, dark and light. | staged child with plugins |
 | `options_visual` | Every Options page in light, dark and a narrow touch layout. | in process |
 | `ui_matrix_full` | The full matrix, on request only (`--all-themes` or `MIDNIGHT_ACCEPTANCE_UI_MATRIX=full`); `SKIP` otherwise. | in process |
 
@@ -46,7 +46,7 @@ belongs to a check marked pending, the scenario reports `PENDING`.
 | Themes (`ui_themes`) | The other 21 themes, Desktop 1340×820 ×1, colour scope. |
 | Jobs (`ui_polish_jobs`) | Blue Desktop and Dark Touch; every window at its preferred and its minimum size. |
 | Viewers (`ui_polish_viewers`) | Dark Desktop and Light Touch. |
-| Full (`ui_matrix_full`) | Every theme × both densities at 1340×820 ×1, plus Blue, Dark, Light, HighContrastDark and HighContrastLight × both densities × {minimum, 960×600, 1340×820, 1600×1000} × {1, 2} (148 combinations, every surface). |
+| Full (`ui_matrix_full`) | Every theme × both densities at 1340×820 ×1, plus Blue, Dark, Light, HighContrastDark and HighContrastLight × both densities × {minimum, 960×600, 1340×820, 1600×1000} × {1, 2} (122 combinations: 52 plus 70, every surface). |
 
 Tool windows are sized per combination from their own layout: the minimum size, three
 quarters of the preferred size, the preferred size, or 1.4 times it. Scale 2 renders at
@@ -72,7 +72,7 @@ flagged and its corrected twin must pass every check.
 | U-K11 | uneven button heights | Text buttons of one row differ in height by more than 1.5 px. | Case 11: 36/30/30 px → 30/30/30 px. |
 | U-K12 | uneven button spacing | Gaps of at most 24 px between neighbouring buttons of one row differ by more than 1.5 px. | Case 11: 8 and 16 px gaps → 8 and 8 px. |
 | U-K13 | dismiss button not last | In a dialog's footer row, Cancel or Close is followed by another button. | Case 11: Cancel first → Cancel last. |
-| U-K14 | low text contrast | WCAG 2.2 AA in the rendered pixels: every visible text against each background colour that covers at least 15 % of its glyph area, 4.5:1, or 3:1 for large text (24 px, or 18.67 px bold) and symbols; selected text in text fields is measured with the selection colours. Text of disabled controls is exempt (WCAG 1.4.3). | Case 12: #9a9a9a on #808080 → #000000; case 13: selected text #b8b8b8 on #c8c8c8 → white on #1a5fb4. |
+| U-K14 | low text contrast | WCAG 2.2 AA in the rendered pixels: every visible text against each background colour that covers at least 15 % of its glyph area, 4.5:1, or 3:1 for large text (24 px, or 18.67 px bold) and symbols; selected text in text fields is measured with the selection colours, and on its selection it needs the palette's own minimum at any size, as the product's palettes promise it (`text_minimum` in `crates/midnight-ui/tests/themes.rs`): 7:1 in the contrast palettes (Paper Contrast, Sandstone Contrast, Deep Ocean, Graphite Contrast), 12:1 in High Contrast Dark and Light, 4.5:1 otherwise (`ui_gate::selected_text_minimum`, read from the application's theme at each capture). Text of disabled controls is exempt (WCAG 1.4.3). | Case 12: #9a9a9a on #808080 → #000000; case 13: selected text #b8b8b8 on #c8c8c8 → white on #1a5fb4; case 21: selected white on #1a5fb4 (6.3:1) passes at 4.5:1 (the control) and is flagged at 7:1 and 12:1 → white on #001a40 (17:1). |
 | U-K15 | surface shows no text | A window, dialog or popup without any visible text. | Case 14: blank → captioned. |
 | U-K16 | control clipped by window | (`inspect::check_layout`) an interactive control outside the window. | Case 15: half outside → inside. |
 | U-K17 | overlapping controls | (`inspect::check_layout`) two interactive controls overlap by more than 2 px, neither containing the other. | Case 16: overlapping → apart. |
@@ -80,16 +80,16 @@ flagged and its corrected twin must pass every check.
 | U-K19 | label elided to nothing | (`inspect::check_layout`) a visible text narrower than about one character while it needs more. | Case 18: 6 px → 100 px. |
 | U-K20 | text does not fit its button | (`inspect::check_layout`) a button's caption needs more width than it has (paths exempt). | Case 19: 50 px → 140 px. |
 | U-K21 | control not reachable with Tab | Tab from the dialog's first focus visits every enabled interactive control (one member of a tab or radio group reaches the group) before the cycle closes. | Interactive case 1: a button that cannot take the focus → it can. |
-| U-K22 | Shift+Tab does not reverse Tab | Shift+Tab from the first stop visits the Tab cycle backwards. | Covered by the corrected twins of every interactive case (a wrong order fails them). |
-| U-K23 | focus leaves the dialog | Tab moves the focus out of the dialog's popup or window. | Covered by the corrected twins. |
+| U-K22 | Shift+Tab does not reverse Tab | Shift+Tab from the first stop visits the Tab cycle backwards. | Interactive case 9: Shift+Tab moves forwards like Tab → reverses it. |
+| U-K23 | focus leaves the dialog | Tab moves the focus out of the dialog's popup or window. | Interactive case 10: Tab from the last button moves the keyboard into another popup → stays in the dialog. |
 | U-K24 | focus not visible | A control looks the same focused and unfocused (pixels within 4 px of it), or Tab stops on something that is not a control. | Interactive case 2: no focus ring → a ring. |
 | U-K25 | focus indicator below 3:1 | The changed pixels of the focused control reach less than 3:1 against their unfocused colour and against the surrounding colour (WCAG 1.4.11). | Interactive case 8: #cfcfcf ring on #d8d8d8 → #1a3fb4. |
 | U-K26 | Escape does not close | Escape leaves the dialog open for 3 s. | Interactive case 3: Escape ignored → closes. |
 | U-K27 | Enter has no effect | Enter in a freshly opened dialog changes nothing observable. | Interactive case 4: Enter ignored → applies. |
-| U-K28 | button has no effect | Clicking a button or tab of a freshly opened dialog changes nothing observable: windows, notices, popups, visible texts, control states, the scratch folders and the panels' folders on disk, commands sent to the backend, file-chooser requests, jobs, the panels, or (where the window is still) its pixels outside the clicked and the focused control. Changes between two quiet samples before the click (progress) do not count. | Interactive case 5: Details does nothing → shows the details. |
+| U-K28 | button has no effect | Clicking a button or tab of a freshly opened dialog changes nothing observable: windows, notices, popups, visible texts, control states, the scratch folders and the panels' folders on disk, commands sent to the backend (not the harness's own acknowledgement of a visible listing, `PaneCommitted`, which follows any refresh), file-chooser requests, jobs, the panels, or (where the window is still) its pixels outside the clicked and the focused control. Changes between two quiet samples before the click (progress) do not count. | Interactive case 5: Details does nothing → shows the details. |
 | U-K29 | unexpected window or notice | After Escape, Cancel, Close, the header's close or Decide later, a window, notice or popup that was not open before the dialog; after a job ends or its window closes, a notice or another window. | Interactive case 6: Cancel opens a notice → only closes. |
-| U-K30 | no hover feedback | Hovering a button, tab, check box, radio button, combo box or switch changes no pixel of it. | Interactive case 7: a button without hover state → with one. |
-| U-K31 | tooltip does not show | Hovering an icon-only button that has a tooltip area shows no tooltip text within the area's delay plus 600 ms. | Recorded by the product sweep (the static check U-K08 has the red case). |
+| U-K30 | no hover feedback | Hovering a button, tab, check box, radio button, combo box or switch changes no pixel of it, judged against two frames taken 180 ms apart just before it is hovered: pixels that change between those two (a caret, progress) do not count. | Interactive case 7: a button without hover state → with one. |
+| U-K31 | tooltip does not show | Hovering an icon-only button that has a tooltip area shows no tooltip text within the area's delay plus 600 ms (the texts of custom tooltip content and the styled text of a `Tooltip { text: … }` count). | Interactive case 11: an icon-only button whose tooltip area shows no text → one whose tooltip names its action. |
 
 ## Surfaces and states
 
@@ -122,8 +122,8 @@ tooltips). Combinations are those of the scenario's matrix.
 | U-S21 | Drive information (Ctrl+F1) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
 | U-S22 | Properties (Alt+Enter) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
 | U-S23 | Error notice with a long path, details shown | `ui_review`, `ui_themes`, `ui_polish_dialogs` | PASS (Linux, 320×200 included) | PASS (Linux) |
-| U-S24 | Find (Alt+F7) | `ui_review`, `ui_themes`, `ui_polish_dialogs` | FAIL U-D22 (Dark Touch 320×200: uneven button spacing in the footer). Also flagged at Blue Desktop 320×200: the results' "Path" heading, cut where the table scrolls sideways (a gate defect: the heading's own box holds it; the harness owner's pending change exempts it) | PASS (Linux) |
-| U-S25 | Checksums (Ctrl+F8) | `ui_review`, `ui_polish_dialogs` | FAIL U-D22 (Blue Desktop 320×200: "Save…" half outside the footer's scroller) | PASS (Linux) |
+| U-S24 | Find (Alt+F7) | `ui_review`, `ui_themes`, `ui_polish_dialogs` | PASS (Windows and Linux, 320×200 included: U-D22 and the "Path" heading flag of the 21 November runs are gone) | PASS (Linux, Windows) |
+| U-S25 | Checksums (Ctrl+F8) | `ui_review`, `ui_polish_dialogs` | FAIL U-D27 (Dark Touch 320×200: the empty-list text overlaps the column headings; Windows and Linux); U-D22 is gone on Windows | PASS (Linux, Windows) |
 | U-S26 | Help (F1) | `ui_review`, `ui_polish_dialogs` | PASS (Linux) | PASS (Linux) |
 | U-S27 | Jobs, empty | `ui_review`, `ui_polish_dialogs` | PASS | PASS (Linux, run `20261121-164146` with the Linux harness patch; in run `20261121-144246` the gate clicked the disabled Clear all finished, a gate defect) |
 | U-S28 | Copy job paused, details shown | `ui_polish_jobs` | PASS | PASS (Linux) |
@@ -133,7 +133,7 @@ tooltips). Combinations are those of the scenario's matrix.
 | U-S32 | Copy job cancelled | `ui_polish_jobs` | PASS (Linux: Blue Desktop; Dark Touch not reached) | PASS (no notice or extra window after the job ended or its window closed) |
 | U-S33 | Copy job completed | `ui_polish_jobs` | closes itself when done | – |
 | U-S34 | Copy job completed with errors (3 and 40), details shown | `ui_polish_jobs` | PASS (Linux, minimum size included) | PASS (Linux) |
-| U-S35 | Copy job with notes | `ui_polish_jobs` | PASS (Linux) | – |
+| U-S35 | Copy job with notes | `ui_polish_jobs` | PASS (Linux; Windows with a dangling directory junction, Links chosen in the open list with the keys) | – |
 | U-S36 | Name conflict decision window | `ui_polish_jobs` | PASS (no own × any more) | PASS (Linux) |
 | U-S37 | Failure decision window (Retry, Skip, Skip all, Cancel job) | `ui_polish_jobs` | PASS (Linux, minimum size included) | PASS (Linux) |
 | U-S38 | Jobs listing finished jobs | `ui_polish_jobs` | PASS | PASS (Linux) |
@@ -143,23 +143,46 @@ tooltips). Combinations are those of the scenario's matrix.
 | U-S42 | Viewer: Markdown | `ui_polish_viewers` | PASS (Linux) | – |
 | U-S43 | Viewer: hex, all selected | `ui_polish_viewers` | PASS (Linux) | – |
 | U-S44 | Comparator: two texts with differences | `ui_polish_viewers` | PASS (Linux) | – |
+| U-S45 | Main menu (F10), each other category (Files, Selection, Panels and navigation, Tools, Application) | `ui_review`, `ui_themes` | PASS (Windows, Linux) | – |
+| U-S46 | The left panel's View and Sort menus | `ui_review`, `ui_themes` | FAIL U-D27 (Dark Touch 320×200: the Sort menu reaches below the window); PASS at every other combination (Windows, Linux) | – |
+| U-S47 | Copy (F5) with its Links list open | `ui_review` | PASS (Windows, 320×200 included; Linux) | – |
+| U-S48 | Attributes › Times: the Modified calendar and time picker | `ui_review` | FAIL U-D27 (Dark Touch 320×200: a "Now" caption elided under them); the arrows are exempt (see "Exemptions"); PASS at every other combination (Windows, Linux) | – |
+| U-S49 | Change name case (Ctrl+F7) | `ui_review`, `ui_polish_dialogs` | PASS (Windows, Linux) | PASS (Windows, Linux) |
+| U-S50 | Select by mask (Ctrl+=) | `ui_review`, `ui_polish_dialogs` | FAIL U-D27 (Dark Touch 320×200: its footer is cut); PASS at every other combination (Windows, Linux) | PASS (Windows, Linux) |
+| U-S51 | Options › Colors: the colour picker | `ui_review`, `ui_polish_dialogs` | FAIL U-D23 (its swatches have no tooltip; Windows, Linux) | FAIL U-D23 (no tooltip, no hover feedback on the swatches; Windows, Linux) |
+| U-S52 | Options › Keyboard: the Replace shortcut question and the Restore all defaults confirmation | `ui_review`, `ui_polish_dialogs` (Replace shortcut) | PASS (Windows, Linux; with the gate fix for surfaces wholly under another one) | PASS (Windows, Linux) |
+| U-S53 | Find and Checksums: the More… list of a footer too narrow for its actions (at the windows' minimum size) | `ui_review` | PASS (Windows, Linux) | – |
+| U-S54 | Custom Commands: the toolbar (every main-window capture now has two seeded commands) and, in a compact window, its "Custom commands" popup | `ui_review`, `ui_themes` | PASS for the toolbar (Windows, Linux); the popup SKIP: no size of the default matrix shows its button (see "Not covered yet") | – |
+| U-S55 | Options, every page interactively (General's surface also clicks the page list and the footer; the other pages skip them, as the same controls) | `ui_polish_dialogs` | – | FAIL U-D25 (Archives), U-D26 (Keyboard), U-D24 (General: raised in both Linux runs and in Windows run `20261122-060309`, not in Windows runs `20261122-092401` and `20261122-124508`); PASS on Appearance, Colors, Previews, Editors, Comparators, Custom Commands and Plugins (Windows, Linux) |
+| U-S56 | Archive password dialog: F3 on the encrypted member of a ZipCrypto archive (the gate never types its password) | `ui_polish_viewers` | PASS (Windows, Linux) | FAIL U-D28 (a notice after every dismissal; Windows, Linux) |
 
 Not covered yet: the Find window's other pages (advanced options, folders, syntax help,
 details, results, Feed to panel), the Checksums window's Verify page and results, the
-thumbnail view, inline trees, tabs and the main window's toolbar menus beyond F9, F10
-and Alt+F1. The main window gets no Tab/Escape/Enter checks: Tab switches the panels
-there by design.
+thumbnail view, inline trees, tabs, the toolbar's other menus (Back/Forward history,
+Hot Paths, drives), the Links reason and warning lines (they need a FAT, removable or
+network destination), interactive checks of the calendar and time picker (each day
+cell is a button: clicking all of them is left to `panels_times`), and the compact
+window's Custom commands popup (no size of the default matrix shows its button: the
+wider windows show the commands in the toolbar, and at 320×200 the toolbar clips the
+button away, which the sweep records as SKIP). The main window gets
+no Tab/Escape/Enter checks: Tab switches the panels there by design.
 
 ## Exemptions
 
-None. A finding the product cannot avoid would be listed here with its reason (and in
+A finding the product cannot avoid is listed here with its reason (and in
 `ui_gate::EXEMPTIONS`, or a dialog's `skip` list for a button that must not be clicked).
+An exempt finding is recorded as a note ("exempt (reason): …"), not as a flag.
+
+| Surface | Check | Finding | Reason |
+| --- | --- | --- | --- |
+| Attributes › Times › the calendar (`times-calendar`) | U-K08 | "Previous month" and "Next month" show no text and have no tooltip | These popups close themselves, and Slint 1.18.1 panics when a shown tooltip is destroyed inside a popup (U-D19); the arrows' accessible names say what they do. |
+| Attributes › Times › the time picker (`times-clock`) | U-K08 | "Increase …" and "Decrease …" (each column's arrows) show no text and have no tooltip | The same as the calendar's arrows. |
 
 ## Pending checks
 
-| Surface | Check | Reason |
-| --- | --- | --- |
-| Decision windows (`…/decision/…`) | U-K01 | The decision windows' own close button is being removed (backend change in progress). On Linux (run `20261121-144246`) the decision windows raised no U-K01 flag, and `files_transfer_errors`' matching pending check ("the framed decision window has no × of its own") passes: the mark can go. |
+None (`ui_gate::PENDING` is empty). The decision windows' U-K01 mark was removed on
+22 November: their own close button is gone (no U-K01 flag on Linux in run
+`20261121-144246`), so a × of their own fails the gate again.
 
 ## Product defects
 
@@ -188,7 +211,15 @@ All reported to the coordinator with their shots (run folders below `_build/acce
 | U-D19 | Icon-only buttons without tooltip: Attributes › Times date and time pickers, Options › Colors "Choose Foreground/Background" and "Discard changes". | U-K08 | 20261120-143600 `ui_review/Blue-Desktop-Normal-x1-times.png`, `…-options-08.png` |
 | U-D20 | The command line's working folder is cut without ellipsis at Touch 960×600 and 320×200 (to confirm with the wheel probe). | U-K03 | 20261120-143600 `ui_review/Dark-Touch-Small-x1-main.png` |
 | U-D21 | Create dir / New file: Enter with the empty name gives no feedback (the gate now types a name first; to confirm). | U-K27 | 20261120-144625 `ui_polish_dialogs/dialogs-mkdir.png` |
-| U-D22 | Found on Linux (run `20261121-144246`, again in `20261121-164146` and `20261121-170455`): at the minimum size (320×200) a footer action sits half outside the footer's scroller, under the dismiss button, although `DialogFooter` says a dialog leaves out an optional action that would not fit "so that no button sits half outside the scroller": Checksums' "Save…" shows 36 of its 42 px caption (Blue Desktop; `checksum-window.slint` keeps it below 460 px as "Save…"), and Find's View shows a sliver beside Close, which the gate reads as uneven spacing ("Find\|Go to file 8px", "Go to file\|Close 19px", Dark Touch; at Blue Desktop "Vi" shows). | U-K20, U-K12 | `_build/acceptance-linux/20261121-144246/shots/ui_review/Blue-Desktop-Min-x1-checksums.png`, `Dark-Touch-Min-x1-find.png`, `Blue-Desktop-Min-x1-find.png` |
+| U-D22 | Found on Linux (run `20261121-144246`, again in `20261121-164146` and `20261121-170455`): at the minimum size (320×200) a footer action sits half outside the footer's scroller, under the dismiss button, although `DialogFooter` says a dialog leaves out an optional action that would not fit "so that no button sits half outside the scroller": Checksums' "Save…" shows 36 of its 42 px caption (Blue Desktop; `checksum-window.slint` keeps it below 460 px as "Save…"), and Find's View shows a sliver beside Close, which the gate reads as uneven spacing ("Find\|Go to file 8px", "Go to file\|Close 19px", Dark Touch; at Blue Desktop "Vi" shows). Not raised since be086db9 (fitted footers with More…): Windows runs `20261122-060309` and `20261122-092401`, Linux run `20261122-073609`. | U-K20, U-K12 | `_build/acceptance-linux/20261121-144246/shots/ui_review/Blue-Desktop-Min-x1-checksums.png`, `Dark-Touch-Min-x1-find.png`, `Blue-Desktop-Min-x1-find.png` |
+| U-D23 | Options › Colors, the colour picker: its eight palette swatches (accessible names "RGB 0, 0, 0" … "RGB 168, 85, 247") show no text and have no tooltip, and change no pixel when hovered. The picker is a popup: tooltips there meet the Slint 1.18.1 constraint noted under U-D19, the hover state does not. | U-K08, U-K30 | Windows `20261122-060309`, Linux `20261122-073609` `ui_review/Blue-Desktop-Normal-x1-options-08-picker.png` (every default combination), `ui_polish_dialogs/dialogs-options-colour-picker.png` |
+| U-D24 | Options: "Reset to defaults" is enabled and changes nothing observable while every page already shows its defaults (the class of finding O-4 in [options-tools.md](options-tools.md#findings)). | U-K28 | Windows `20261122-060309`, Linux `20261122-073609` `ui_polish_dialogs/dialogs-options.png` |
+| U-D25 | Options › Archives: Tab from the page never focuses part of the footer: "Import configuration…" and "OK" on Windows, also "Reset to defaults" and "Export configuration…" on Linux (the other pages' Tab cycles reach them). | U-K21 | Windows `20261122-060309`, Linux `20261122-073609` `ui_polish_dialogs/dialogs-options-archives.png` |
+| U-D26 | Options › Keyboard: the command list (619×146 at 1340×820) is a Tab stop without a role that shows no focus; "Restore all defaults" (and on Linux "Restore command") looks the same focused and unfocused; and Tab from the page's stops moves the keyboard focus out of the Options dialog. | U-K24, U-K23 | Windows `20261122-060309`, Linux `20261122-073609` `ui_polish_dialogs/dialogs-options-keyboard.png` |
+| U-D27 | At the minimum size (320×200) in Dark Touch: the left panel's Sort menu reaches 4 px below the window ("Reverse order" at 164 px, 40 px high); Select by mask ("Select files") cuts its footer (Cancel reaches 29 px outside the dialog on Windows, 24 px on Linux; the dialog does not scroll); Checksums' empty-list text ("Choose the checksums in the list above, then press Calculate.") overlaps its column headings "File / folder" and "Bytes read"; on Linux, Attributes › Times scrolled to Modified shows 11 of the 33 px of a "Now" caption under the open calendar and time picker. | U-K16, U-K03, U-K09, U-K19 | Windows `20261122-060309` `ui_review/Dark-Touch-Min-x1-panel-sort-menu.png`, `Dark-Touch-Min-x1-select-mask.png`, `Dark-Touch-Min-x1-checksums.png`; Linux `20261122-073609` the same shots and `Dark-Touch-Min-x1-times-calendar.png`, `…-times-clock.png` |
+| U-D28 | The archive password dialog: after Escape, Cancel or the header's Cancel dialog, a notice opens ("Archive member: secret.txt is password-protected; it was not opened, since no password was entered"), although a dismissal opens no further window or notice; since dbddf711 the product reports background failures in status rows instead of notices. | U-K29 | Linux `20261122-123625`, Windows `20261122-124508` `ui_polish_viewers/Dark-Desktop-password.png`, `Light-Touch-password.png` |
+
+U-D23–U-D28 were found on 22 November; U-D23–U-D27 are assigned: U-D23–U-D26 to the Options work, U-D27 to the UI layout work; U-D28 is reported. The gate keeps failing on them (no exemption) until their fixes land and a rerun confirms them.
 
 U-D01–U-D12 were sent in the first batch and U-D13–U-D21 in the second (21 November).
 The Linux gate runs of 21 November (below) raised none of U-D01–U-D21, nor WIN-2, WIN-3
@@ -403,3 +434,35 @@ thumbnail experiment, which no gate scenario uses.
 On Windows `ui_themes` and `options_visual` passed, `ui_polish_viewers` failed (WIN-9)
 and `ui_matrix_full` reported SKIP ([Windows results](windows.md#results)).
 `ui_matrix_full` (estimated 2.5 h) has not run on either platform.
+
+Runs of 22 November with this record's checks (the new surfaces, the palette's selected
+text minimum, interactive red cases 9–11, the Windows job with notes): Windows 11 at
+scale 1, `--scale smoke`, the debug acceptance binary through `scripts\acceptance.ps1
+--test-binary`, plugin packages of the release build of d7ff8860; Linux in WSL 2 (Ubuntu
+24.04), `scripts/acceptance.sh debug`, the shared debug plugin packages of the same base.
+Every failure below is a product defect of the table above; none is a gate defect.
+
+| Run | Base | Scenario | Result | Time |
+| --- | --- | --- | --- | --- |
+| `20261122-033749` (Windows) | 05710878 | `ui_polish_checks` | FAIL: one red case not proven: interactive case 11's corrected twin was flagged (the check could not read a text-mode tooltip's styled text); fixed | 370 s |
+| `20261122-033749` (Windows) | 05710878 | `ui_polish_jobs` | PASS; the job with notes (a dangling junction) ended Completed with 1 note in both looks | 256 s |
+| `20261122-050833` (Windows) | 05710878 | `ui_polish_checks` | PASS: every static and interactive red case flagged (case 21 at 7:1 and 12:1, not at 4.5:1; interactive cases 9, 10 and 11), corrected twins clean | 361 s |
+| `20261122-050833` (Windows) | 05710878 | `options_visual` | PASS | 43 s |
+| `20261122-060309` (Windows) | 05710878 | `ui_review` | FAIL: 54 flags: U-D23 (32), U-D27 (4), and two gate defects fixed since (12 × "surface shows no text" for Options under its full-window colour picker and Replace shortcut question; 6 steps at 320×200 that did not scroll the Times pickers and Copy's Links box into view, or clicked a Custom commands button the toolbar clips away) | 499 s |
+| `20261122-060309` (Windows) | 05710878 | `ui_themes` | PASS (356 screenshots; selected text at each palette's minimum) | 557 s |
+| `20261122-060309` (Windows) | 05710878 | `ui_polish_dialogs` | FAIL: 23 flags: U-D23 (16), U-D24, U-D25, U-D26 (3), and the covered-surface gate defect (2) | 1790 s |
+| `20261122-060309` (Windows) | 05710878 | `ui_polish_jobs` | PASS | 270 s |
+| `20261122-073609` (Linux) | 05710878 | `ui_review` | FAIL: 38 flags: U-D23 (32), U-D27 (6) | 434 s |
+| `20261122-073609` (Linux) | 05710878 | `ui_themes`, `ui_polish_checks`, `ui_polish_jobs`, `options_visual` | PASS | 546, 377, 355, 35 s |
+| `20261122-073609` (Linux) | 05710878 | `ui_polish_dialogs` | FAIL: 22 flags: U-D23 (16), U-D24, U-D25, U-D26 (4) | 2220 s |
+| `20261122-092401` (Windows) | 26c18895 | `ui_review` | FAIL: 38 flags: U-D23 (32), U-D27 (6); no gate defect left | 518 s |
+| `20261122-092401` (Windows) | 26c18895 | `ui_themes`, `ui_polish_checks`, `ui_polish_jobs` (Links chosen with `links`), `options_visual` | PASS | 520, 353, 295, 37 s |
+| `20261122-092401` (Windows) | 26c18895 | `ui_polish_dialogs` | FAIL: 20 flags: U-D23 (16), U-D25, U-D26 (3); U-D24 not raised | 1819 s |
+| `20261122-123625` (Linux) | 5ccd0eb7 | `ui_review` | FAIL: 38 flags: U-D23 (32), U-D27 (6) | 692 s |
+| `20261122-123625` (Linux) | 5ccd0eb7 | `ui_themes`, `ui_polish_checks`, `ui_polish_jobs`, `options_visual` | PASS | 571, 427, 252, 78 s |
+| `20261122-123625` (Linux) | 5ccd0eb7 | `ui_polish_dialogs` | FAIL: 22 flags: U-D23 (16), U-D24, U-D25, U-D26 (4) | 1759 s |
+| `20261122-123625` (Linux) | 5ccd0eb7 | `ui_polish_viewers` | FAIL: 6 flags, U-D28 (three dismissals in each look); the viewer windows and the password dialog's static checks pass | 166 s |
+| `20261122-124508` (Windows) | 5ccd0eb7 | `ui_review` | FAIL: 38 flags: U-D23 (32), U-D27 (6) | 525 s |
+| `20261122-124508` (Windows) | 5ccd0eb7 | `ui_themes`, `ui_polish_checks`, `ui_polish_jobs`, `options_visual` | PASS | 484, 381, 292, 44 s |
+| `20261122-124508` (Windows) | 5ccd0eb7 | `ui_polish_dialogs` | FAIL: 20 flags: U-D23 (16), U-D25, U-D26 (3); U-D24 not raised | 1782 s |
+| `20261122-124508` (Windows) | 5ccd0eb7 | `ui_polish_viewers` | FAIL: 6 flags, U-D28, as on Linux | 128 s |

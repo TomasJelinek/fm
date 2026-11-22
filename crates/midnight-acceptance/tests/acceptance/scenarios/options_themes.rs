@@ -2,8 +2,11 @@
 //! once (the theme changes and the panels behind Options render differently from every
 //! other theme; themes named Light are bright and Dark ones dark), the picker shows it,
 //! and OK saves the last one, which a restart keeps. In a narrow touch window the topic
-//! picker replaces the page list: a page chosen there, a theme changed and saved, and a
-//! cancelled check box all behave as in the wide layout.
+//! picker replaces the page list: it lists the pages in the displayed order, Shift+Tab
+//! from OK reaches it and Down and Up walk the pages as the list does; a page chosen
+//! there, a theme changed and saved, and a cancelled check box all behave as in the wide
+//! layout. In a window so low that Options is compact the picker sits in the header: the
+//! same order, Down opens it and Enter chooses a page.
 use crate::{
     Context,
     app::{App, Config},
@@ -177,12 +180,13 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
     narrow.theme = PreferenceTheme::Dark;
     let mut app = App::start(narrow);
     options::open(&mut app)?;
-    if options::find_any(&app, AccessibleRole::Combobox, "Options topic").is_none() {
+    if options::find_any(&app, AccessibleRole::Combobox, TOPIC_PICKER).is_none() {
         failures.push("a narrow window's Options shows no topic picker".into());
     }
     if options::find_any(&app, AccessibleRole::Button, "Appearance").is_some() {
         failures.push("a narrow window's Options still shows the page list".into());
     }
+    failures.extend(narrow_picker(&mut app, &store)?);
     options::page(&mut app, "Appearance")?;
     options::choose(&mut app, "Theme", "Light")?;
     options::review_shot(
@@ -206,9 +210,185 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
         failures.push("Cancel in the narrow layout saved the cancelled check box".into());
     }
     app.shutdown()?;
+    drop(app);
+
+    // A window so low that Options is compact: the topic picker moves into the header.
+    let store = SettingsStore::new();
+    let mut compact = config(&folder, &store);
+    compact.width = 560;
+    compact.height = 330;
+    let mut app = App::start(compact);
+    options::open(&mut app)?;
+    options::review_shot(
+        &mut app,
+        context,
+        "compact-header-picker",
+        "Options in a low narrow window: the topic picker in the header",
+    );
+    failures.extend(header_picker(&mut app, &store)?);
+    app.shutdown()?;
+    context.note("Topic pickers: the narrow combo box lists the pages in the displayed order, Shift+Tab from OK reaches it, Down and Up walk every page and stop at the ends with the focus kept; the compact header picker lists the same order, opens with Down and chooses with Enter; nothing was saved");
     if failures.is_empty() {
         Ok(())
     } else {
         Err(failures.join("\n"))
     }
+}
+
+const TOPIC_PICKER: &str = "Options topic";
+
+fn titles() -> Vec<String> {
+    options::PAGES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect()
+}
+
+/// Whether the topic picker has the keyboard focus.
+fn picker_focused(app: &App) -> bool {
+    options::focus(app)
+        .is_some_and(|(role, label)| role == AccessibleRole::Combobox && label == TOPIC_PICKER)
+}
+
+/// The narrow layout's topic combo box: its list in the displayed order, reached from OK
+/// with Shift+Tab, Down and Up walking the pages (and stopping at the ends) with the
+/// focus kept on the picker. Options stays open on General and nothing is saved.
+fn narrow_picker(app: &mut App, store: &SettingsStore) -> Result<Vec<String>, String> {
+    let mut failures = Vec::new();
+    let saves = store.saves();
+    let listed = offered(app, TOPIC_PICKER)?;
+    if listed != titles() {
+        failures.push(format!(
+            "the narrow topic picker lists {listed:?} instead of {:?}",
+            titles()
+        ));
+    }
+    if !app.window.get_options_open() || app.window.get_options_topic_index() != 0 {
+        return Err(format!(
+            "reading the topic picker's list closed Options ({}) or changed the page to {}",
+            !app.window.get_options_open(),
+            app.window.get_options_topic_index()
+        ));
+    }
+    // From OK, as Options opens.
+    input::key(app.slint(), Key::Escape);
+    app.until("Escape to close Options", |app| {
+        !app.window.get_options_open()
+    });
+    options::open(app)?;
+    options::tab_until(app, true, 60, "the topic picker", &|role, label| {
+        role == AccessibleRole::Combobox && label == TOPIC_PICKER
+    })?;
+    let walk = |app: &mut App, key: Key, topic: i32, failures: &mut Vec<String>| {
+        input::key(app.slint(), key);
+        let reached = options::poll(app, Duration::from_secs(2), |app| {
+            app.window.get_options_topic_index() == topic && picker_focused(app)
+        });
+        if !reached {
+            failures.push(format!(
+                "{key:?} on the narrow topic picker should show topic {topic} and keep the focus; topic {}, focus {:?}",
+                app.window.get_options_topic_index(),
+                options::focus(app)
+            ));
+        }
+    };
+    let order: Vec<i32> = options::PAGES.iter().map(|(_, topic)| *topic).collect();
+    for topic in order.iter().skip(1) {
+        walk(app, Key::DownArrow, *topic, &mut failures);
+    }
+    walk(app, Key::DownArrow, order[order.len() - 1], &mut failures);
+    for topic in order.iter().rev().skip(1) {
+        walk(app, Key::UpArrow, *topic, &mut failures);
+    }
+    walk(app, Key::UpArrow, order[0], &mut failures);
+    if !app.window.get_options_open() || store.saves() != saves {
+        return Err("walking the narrow topic picker closed or saved Options".into());
+    }
+    Ok(failures)
+}
+
+/// The compact layout's header picker: its list in the displayed order; reached from
+/// OK with Shift+Tab, Down opens it on the shown page, Down moves and Enter chooses;
+/// Escape then closes Options without saving.
+fn header_picker(app: &mut App, store: &SettingsStore) -> Result<Vec<String>, String> {
+    let mut failures = Vec::new();
+    let saves = store.saves();
+    if options::find_any(app, AccessibleRole::Button, "Appearance").is_some() {
+        failures.push("a compact Options window still shows the page list".into());
+    }
+    options::tab_until(
+        app,
+        true,
+        60,
+        "the header's topic picker",
+        &|role, label| role == AccessibleRole::Combobox && label == TOPIC_PICKER,
+    )?;
+    let popups = inspect::roots(app.slint()).len();
+    input::key(app.slint(), Key::DownArrow);
+    if !options::poll(app, Duration::from_secs(2), |app| {
+        inspect::roots(app.slint()).len() > popups
+    }) {
+        return Err(format!(
+            "Down on the header's topic picker opened no list; focus {:?}",
+            options::focus(app)
+        ));
+    }
+    let mut rows: Vec<(String, f32)> = Vec::new();
+    if let Some(popup) = inspect::roots(app.slint()).last() {
+        inspect::walk(popup, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && shown(item)
+                && let Some(name) = inspect::label(item)
+            {
+                rows.push((name, inspect::rect(item).1));
+            }
+        });
+    }
+    rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let listed: Vec<String> = rows.into_iter().map(|(name, _)| name).collect();
+    // The list is virtualised: the rows it shows must be the pages' first ones, in order.
+    let expected = titles();
+    if listed.len() < 3 || !expected.starts_with(&listed) {
+        failures.push(format!(
+            "the header's topic picker lists {listed:?}, not a prefix of {expected:?}"
+        ));
+    }
+    // Down from the shown page (General) to Keyboard, then Enter.
+    let (keyboard_index, keyboard_topic) = options::PAGES
+        .iter()
+        .enumerate()
+        .find(|(_, (name, _))| *name == "Keyboard")
+        .map(|(index, (_, topic))| (index, *topic))
+        .expect("Keyboard page");
+    for _ in 0..keyboard_index {
+        input::key(app.slint(), Key::DownArrow);
+    }
+    input::key(app.slint(), Key::Return);
+    if !options::poll(app, Duration::from_secs(2), |app| {
+        app.window.get_options_topic_index() == keyboard_topic
+            && inspect::roots(app.slint()).len() == popups
+    }) {
+        failures.push(format!(
+            "Down ×{keyboard_index} and Enter in the header's topic list should show Keyboard (topic {keyboard_topic}) and close the list; topic {}, popups {}",
+            app.window.get_options_topic_index(),
+            inspect::roots(app.slint()).len()
+        ));
+    }
+    if !app.window.get_options_open() || store.saves() != saves {
+        return Err("choosing a page in the header's topic picker closed or saved Options".into());
+    }
+    if !picker_focused(app) {
+        failures.push(format!(
+            "after choosing a page the focus is on {:?}, not on the header's topic picker",
+            options::focus(app)
+        ));
+    }
+    input::key(app.slint(), Key::Escape);
+    app.until("Escape to close Options", |app| {
+        !app.window.get_options_open()
+    });
+    if store.saves() != saves {
+        failures.push("Escape after the header's topic picker saved settings".into());
+    }
+    Ok(failures)
 }

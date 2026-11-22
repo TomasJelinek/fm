@@ -220,6 +220,82 @@ fn tool_open(_: &App, target: &Target) -> bool {
     }
 }
 
+/// The colour picker over Options › Colors is open.
+fn colour_picker_open(app: &App) -> bool {
+    crate::options_support::find_any(
+        app,
+        i_slint_core::items::AccessibleRole::Button,
+        "Use color",
+    )
+    .is_some()
+}
+
+/// The Replace shortcut question over Options › Keyboard is open.
+fn replacement_open(app: &App) -> bool {
+    inspect::find(
+        app.slint(),
+        i_slint_core::items::AccessibleRole::Groupbox,
+        "Replace shortcut",
+    )
+    .is_some()
+}
+
+/// Options on `page`: opened as the main menu opens it, then the page chosen in the page
+/// list (Options reopens on the page shown last in a session).
+fn options_on(app: &mut App, page: &str) -> Result<Target, String> {
+    app.window.invoke_show_options();
+    app.until("Options", |app| {
+        app.window.get_options_open() && app.window.get_preferences_ready()
+    });
+    crate::options_support::page(app, page)?;
+    Ok(Target::Main)
+}
+
+/// The page list and the footer are the same on every Options page; their buttons are
+/// clicked on General's surface (`options`).
+const OPTIONS_SHARED_REASON: &str = "the same on every page: clicked on the General page's surface";
+const OPTIONS_SHARED: &[(&str, &str)] = &[
+    ("General", OPTIONS_SHARED_REASON),
+    ("Appearance", OPTIONS_SHARED_REASON),
+    ("Colors", OPTIONS_SHARED_REASON),
+    ("Previews", OPTIONS_SHARED_REASON),
+    ("Archives", OPTIONS_SHARED_REASON),
+    ("Editors", OPTIONS_SHARED_REASON),
+    ("Comparators", OPTIONS_SHARED_REASON),
+    ("Custom Commands", OPTIONS_SHARED_REASON),
+    ("Keyboard", OPTIONS_SHARED_REASON),
+    ("Plugins", OPTIONS_SHARED_REASON),
+    ("Reset to defaults", OPTIONS_SHARED_REASON),
+    ("Export configuration…", OPTIONS_SHARED_REASON),
+    ("Import configuration…", OPTIONS_SHARED_REASON),
+    ("OK", OPTIONS_SHARED_REASON),
+    ("Cancel", OPTIONS_SHARED_REASON),
+    ("Close dialog", OPTIONS_SHARED_REASON),
+];
+/// Previews also leaves out Clear thumbnail cache, as `options_buttons` does.
+const OPTIONS_PREVIEWS: &[(&str, &str)] = &[
+    ("General", OPTIONS_SHARED_REASON),
+    ("Appearance", OPTIONS_SHARED_REASON),
+    ("Colors", OPTIONS_SHARED_REASON),
+    ("Previews", OPTIONS_SHARED_REASON),
+    ("Archives", OPTIONS_SHARED_REASON),
+    ("Editors", OPTIONS_SHARED_REASON),
+    ("Comparators", OPTIONS_SHARED_REASON),
+    ("Custom Commands", OPTIONS_SHARED_REASON),
+    ("Keyboard", OPTIONS_SHARED_REASON),
+    ("Plugins", OPTIONS_SHARED_REASON),
+    ("Reset to defaults", OPTIONS_SHARED_REASON),
+    ("Export configuration…", OPTIONS_SHARED_REASON),
+    ("Import configuration…", OPTIONS_SHARED_REASON),
+    ("OK", OPTIONS_SHARED_REASON),
+    ("Cancel", OPTIONS_SHARED_REASON),
+    ("Close dialog", OPTIONS_SHARED_REASON),
+    (
+        "Clear thumbnail cache",
+        "the thumbnail service is installed only in staged viewer processes",
+    ),
+];
+
 /// Every surface of the sweep: name, opener, open test, buttons that are not clicked
 /// (with the reason), and whether Enter and the buttons are checked.
 struct Spec {
@@ -485,12 +561,167 @@ const SPECS: &[Spec] = &[
     },
     Spec {
         name: "options",
+        open: |app| options_on(app, "General"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: &[],
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-appearance",
+        open: |app| options_on(app, "Appearance"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-colors",
+        open: |app| options_on(app, "Colors"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-previews",
+        open: |app| options_on(app, "Previews"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_PREVIEWS,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-archives",
+        open: |app| options_on(app, "Archives"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-editors",
+        open: |app| options_on(app, "Editors"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-comparators",
+        open: |app| options_on(app, "Comparators"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-custom-commands",
+        open: |app| options_on(app, "Custom Commands"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-keyboard",
+        open: |app| options_on(app, "Keyboard"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-plugins",
+        open: |app| options_on(app, "Plugins"),
+        is_open: |app, _| app.window.get_options_open(),
+        skip: OPTIONS_SHARED,
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-colour-picker",
         open: |app| {
-            app.window.invoke_show_options();
-            app.until("Options", |app| app.window.get_options_open());
+            use crate::options_support as options;
+            options_on(app, "Colors")?;
+            options::click_row(app, "Filename color rules", "first rule", &|label| {
+                label.starts_with("1. ")
+            })?;
+            options::press(app, "Choose Foreground")?;
+            app.until("the colour picker", colour_picker_open);
             Ok(Target::Main)
         },
-        is_open: |app, _| app.window.get_options_open(),
+        is_open: |app, _| colour_picker_open(app),
+        skip: &[],
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "options-replace-shortcut",
+        open: |app| {
+            use crate::options_support as options;
+            options_on(app, "Keyboard")?;
+            options::fill(app, "Search commands", "Create folder")?;
+            let entry = options::reveal(
+                app,
+                i_slint_core::items::AccessibleRole::ListItem,
+                "Create folder",
+            )?;
+            options::click_item(app, &entry)?;
+            let field = options::reveal(
+                app,
+                i_slint_core::items::AccessibleRole::TextInput,
+                "Press shortcut keys",
+            )?;
+            options::click_item(app, &field)?;
+            input::key(app.slint(), Key::F5);
+            app.settle();
+            options::press(app, "Assign")?;
+            app.until("the Replace shortcut question", replacement_open);
+            Ok(Target::Main)
+        },
+        is_open: |app, _| replacement_open(app),
+        skip: &[],
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "select-mask",
+        open: |app| {
+            panel::focus_list(app, LEFT)?;
+            // Ctrl+= through the window's physical-shortcut entry, as the native key
+            // hook delivers it.
+            app.window
+                .invoke_physical_shortcut("Equal".into(), true, false, false, false);
+            app.until("Select by mask", embedded_open);
+            Ok(Target::Main)
+        },
+        is_open: |app, _| embedded_open(app),
+        skip: &[],
+        enter: true,
+        buttons: true,
+        enter_text: None,
+    },
+    Spec {
+        name: "case",
+        open: |app| {
+            key_dialog(app, "alpha.bin", &[Key::Control], Key::F7, "Case", |app| {
+                !app.window.get_metadata_token().is_empty()
+            })
+        },
+        is_open: |app, _| !app.window.get_metadata_token().is_empty(),
         skip: &[],
         enter: true,
         buttons: true,
@@ -618,6 +849,11 @@ fn body(context: &mut Context) -> Result<(), String> {
         surface.enter = spec.enter;
         surface.enter_text = spec.enter_text;
         surface.buttons = spec.buttons;
+        // These lie over Options, which stays open when they close.
+        surface.nested = usize::from(matches!(
+            spec.name,
+            "options-colour-picker" | "options-replace-shortcut"
+        ));
         // Windows recycles into the account's own Recycle Bin, which no variable makes
         // private: the Trash confirmation is never confirmed there (Enter, its button).
         if cfg!(windows) && spec.name == "trash" {

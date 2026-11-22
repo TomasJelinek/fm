@@ -1,12 +1,15 @@
 //! Options › Previews (thumbnail switches and size, seen in the Thumbnails panel view)
 //! and Options › Plugins (its sections, empty states without staged plugins, Rescan
-//! and the link to Archives); Cancel, OK and a restart.
+//! and the link to Archives); Cancel, OK and a restart. Then, in a staged child with
+//! the installed plugin packages beside it (`viewers_stage::run`), the Plugins page
+//! lists every package family instead of its empty state, and Rescan reports what the
+//! sections list; without packages to stage that part is reported as skipped.
 use crate::{
     Context,
     app::{App, Config},
     input, inspect,
     options_support::{self as options, SettingsStore},
-    panel,
+    panel, viewers_stage,
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
@@ -15,6 +18,57 @@ use std::{fs, path::Path, sync::Arc, time::Duration};
 const PREVIEWS: &str = "Show image and video previews";
 const NETWORK: &str = "Allow previews on network locations";
 const ARCHIVES: &str = "Allow previews inside archives";
+/// The registered timeout of `options_previews_plugins`, which the staged child also
+/// needs to know (its deadline counts from the scenario's start).
+const TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// A hang guard for the plugin catalogs and a rescan.
+const CATALOGS: Duration = Duration::from_secs(30);
+/// The Plugins sections: the tab, its list's label, its empty state and the word the
+/// rescan report counts it with.
+const SECTIONS: [(&str, &str, &str, &str); 4] = [
+    (
+        "Viewers",
+        "Viewer priority",
+        "No viewer plugins are installed",
+        "viewer",
+    ),
+    (
+        "Filesystems",
+        "Filesystem plugins",
+        "No filesystem plugins are installed",
+        "filesystem",
+    ),
+    (
+        "Archives",
+        "Archive plugins",
+        "No archive plugins are installed",
+        "archive",
+    ),
+    (
+        "Thumbnailers",
+        "Thumbnailer plugins",
+        "No thumbnailer plugins are installed",
+        "thumbnailer",
+    ),
+];
+
+/// The Plugins page's section tab: "Archives" is also a topic button, and the section
+/// tab is the one to its right.
+fn section_tab(app: &App, tab: &str) -> Result<inspect::Rect, String> {
+    inspect::find_all(app.slint(), AccessibleRole::Button, tab)
+        .into_iter()
+        .map(|item| inspect::rect(&item))
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .ok_or_else(|| format!("the Plugins page has no {tab} section"))
+}
+
+/// The page's texts that speak of plugins, for messages.
+fn plugin_texts(app: &App) -> Vec<String> {
+    options::texts(app)
+        .into_iter()
+        .filter(|text| text.contains("plugin") || text.contains("Rescan"))
+        .collect()
+}
 
 fn config(folder: &Path, store: &Arc<SettingsStore>) -> Config {
     let mut config = Config::new(folder, folder);
@@ -27,6 +81,11 @@ fn row_height(app: &App) -> f32 {
 }
 
 pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
+    // This scenario's staged child (it has a deadline from its parent) runs only the
+    // part with the installed packages.
+    if std::env::var_os(viewers_stage::LIMIT).is_some() {
+        return viewers_stage::run(context, TIMEOUT, plugins_installed);
+    }
     let folder = context.work.join("previews");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     for name in ["one.png", "two.txt", "three.bin"] {
@@ -119,32 +178,38 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
         "plugins-viewers",
         "Options › Plugins › Viewers",
     );
-    // "Archives" is also a topic button; the section tab is the one to its right.
-    let tab = |app: &App, tab: &str| -> Result<inspect::Rect, String> {
-        inspect::find_all(app.slint(), AccessibleRole::Button, tab)
-            .into_iter()
-            .map(|item| inspect::rect(&item))
-            .max_by(|a, b| a.0.total_cmp(&b.0))
-            .ok_or_else(|| format!("the Plugins page has no {tab} section"))
-    };
+    // This process installs no plugin packages: every section must say so.
     let mut empty = Vec::new();
-    for (name, empty_text) in [
-        ("Viewers", "No viewer plugins are installed"),
-        ("Filesystems", "No filesystem plugins are installed"),
-        ("Archives", "No archive plugins are installed"),
-        ("Thumbnailers", "No thumbnailer plugins are installed"),
-    ] {
-        let rect = tab(&app, name)?;
+    let mut missing = Vec::new();
+    for (name, _, empty_text, _) in SECTIONS {
+        let rect = section_tab(&app, name)?;
         options::click_rect(&mut app, rect);
-        if !options::texts_with(&app, empty_text).is_empty() {
+        let shown = options::poll(&mut app, Duration::from_secs(2), |app| {
+            !options::texts_with(app, empty_text).is_empty()
+        });
+        if shown {
             empty.push(name);
+        } else {
+            missing.push(format!(
+                "{name}: {empty_text:?} not shown; texts {:?}",
+                options::texts(&app)
+                    .into_iter()
+                    .filter(|text| text.contains("plugin"))
+                    .collect::<Vec<_>>()
+            ));
         }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "Plugins sections without installed plugins do not show their empty state:\n{}",
+            missing.join("\n")
+        ));
     }
     options::press(&mut app, "Rescan all plugins")?;
     app.until_for("the rescan to finish", Duration::from_secs(30), |app| {
         options::texts_with(app, "Rescanning").is_empty()
     });
-    let rect = tab(&app, "Archives")?;
+    let rect = section_tab(&app, "Archives")?;
     options::click_rect(&mut app, rect);
     options::press(&mut app, "Archive associations…")?;
     app.until("the Archives page", |app| {
@@ -179,6 +244,128 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
     options::cancel(&mut app)?;
     context.note(format!(
         "Previews: 192 px grew Thumbnails rows by 96 px, previews off disabled the dependent switches, OK saved all four values, Cancel restored a 64 px preview, a restart kept them. Plugins: sections without staged plugins show their empty state ({empty:?}); Rescan finished; Archive associations… opened the Archives page"
+    ));
+    app.shutdown()?;
+    drop(app);
+
+    // The same page with the installed packages, in a staged child of this scenario.
+    match viewers_stage::run(context, TIMEOUT, plugins_installed) {
+        Err(reason) if reason.starts_with("SKIP") => {
+            // A passing scenario's message says what it skipped.
+            let skipped = format!(
+                "SKIP the Plugins page with the installed packages: {}",
+                reason.trim_start_matches("SKIP:").trim()
+            );
+            context.note(skipped.clone());
+            context.outcome.message = skipped;
+            Ok(())
+        }
+        result => result,
+    }
+}
+
+/// Options › Plugins with the installed packages beside this executable (the staged
+/// child): every section lists them instead of its empty state, as many rows as there
+/// are packages of its family at least, and Rescan reports what the sections list.
+fn plugins_installed(context: &mut Context) -> Result<(), String> {
+    let folder = context.work.join("plugins-installed");
+    fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let store = SettingsStore::new();
+    let mut app = App::start(config(&folder, &store));
+    options::open(&mut app)?;
+    options::page(&mut app, "Plugins")?;
+    let mut listed: Vec<(&str, Vec<String>)> = Vec::new();
+    for (name, list, empty_text, _) in SECTIONS {
+        let rect = section_tab(&app, name)?;
+        options::click_rect(&mut app, rect);
+        let ready = options::poll(&mut app, CATALOGS, |app| {
+            !options::list_rows(app, list).is_empty()
+                && options::texts_with(app, "Refreshing plugin catalogs").is_empty()
+        });
+        let rows: Vec<String> = options::list_rows(&app, list)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        if !ready
+            || !options::texts_with(&app, empty_text).is_empty()
+            || rows
+                .iter()
+                .any(|row| row.trim().is_empty() || row.contains("Not installed"))
+        {
+            return Err(format!(
+                "with the installed packages the {name} section lists {rows:?}; the page shows {:?}",
+                plugin_texts(&app)
+            ));
+        }
+        options::review_shot(
+            &mut app,
+            context,
+            &format!("plugins-installed-{}", name.to_lowercase()),
+            &format!("Options › Plugins › {name} with the installed packages"),
+        );
+        listed.push((name, rows));
+    }
+    let count = |section: &str| {
+        listed
+            .iter()
+            .find(|(name, _)| *name == section)
+            .map_or(0, |(_, rows)| rows.len())
+    };
+    let packages = [
+        ("viewers", viewers_stage::installed_packages("viewers")),
+        (
+            "filesystems",
+            viewers_stage::installed_packages("filesystems"),
+        ),
+        (
+            "thumbnailers",
+            viewers_stage::installed_packages("thumbnailers"),
+        ),
+    ];
+    if count("Viewers") < packages[0].1
+        || count("Filesystems") + count("Archives") < packages[1].1
+        || count("Thumbnailers") < packages[2].1
+    {
+        return Err(format!(
+            "the Plugins page lists {listed:?} for the installed packages {packages:?}"
+        ));
+    }
+
+    // Rescan reports what the sections list, every package available.
+    options::press(&mut app, "Rescan all plugins")?;
+    if !options::poll(&mut app, CATALOGS, |app| {
+        !options::texts_with(app, "Rescanned").is_empty()
+    }) {
+        return Err(format!(
+            "Rescan all plugins reported nothing; the page shows {:?}",
+            plugin_texts(&app)
+        ));
+    }
+    let report = options::texts_with(&app, "Rescanned").join(" ");
+    let missing: Vec<String> = SECTIONS
+        .into_iter()
+        .map(|(name, _, _, kind)| format!(" {} {kind}", count(name)))
+        .filter(|part| !report.contains(part.as_str()))
+        .collect();
+    if !report.starts_with("Rescanned: found")
+        || report.contains("unavailable")
+        || !missing.is_empty()
+    {
+        return Err(format!(
+            "Rescan all plugins reported {report:?}, without {missing:?} that the sections list ({listed:?})"
+        ));
+    }
+    // The section shown last still lists the same packages.
+    let (last, list) = (SECTIONS[3].0, SECTIONS[3].1);
+    if options::list_rows(&app, list).len() != count(last) {
+        return Err(format!(
+            "after Rescan the {last} section lists {:?}",
+            options::list_rows(&app, list)
+        ));
+    }
+    options::cancel(&mut app)?;
+    context.note(format!(
+        "Plugins with the installed packages {packages:?}: every section lists them ({listed:?}), none shows its empty state; Rescan reported {report:?}"
     ));
     app.shutdown()
 }

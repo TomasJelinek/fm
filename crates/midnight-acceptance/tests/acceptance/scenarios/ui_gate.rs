@@ -25,7 +25,7 @@ use i_slint_core::{
     window::{WindowInner, WindowKind},
 };
 use slint::{
-    Brush, Color, LogicalPosition, Rgb8Pixel,
+    Brush, Color, ComponentHandle, LogicalPosition, Rgb8Pixel,
     platform::{WindowAdapter, WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
 use std::{collections::HashMap, rc::Rc, time::Duration};
@@ -76,16 +76,44 @@ pub struct Exemption {
 
 /// Exemptions of the gate. Keep this list and the coverage record
 /// (docs/developer/acceptance/ui-polish.md, "Exemptions") in step.
-pub const EXEMPTIONS: &[Exemption] = &[];
+pub const EXEMPTIONS: &[Exemption] = &[
+    Exemption {
+        surface: "times-calendar",
+        kind: NO_TOOLTIP,
+        detail: "Button \"Previous month\"",
+        reason: POPUP_ARROWS,
+    },
+    Exemption {
+        surface: "times-calendar",
+        kind: NO_TOOLTIP,
+        detail: "Button \"Next month\"",
+        reason: POPUP_ARROWS,
+    },
+    Exemption {
+        surface: "times-clock",
+        kind: NO_TOOLTIP,
+        detail: "Button \"Increase ",
+        reason: POPUP_ARROWS,
+    },
+    Exemption {
+        surface: "times-clock",
+        kind: NO_TOOLTIP,
+        detail: "Button \"Decrease ",
+        reason: POPUP_ARROWS,
+    },
+];
+
+/// Why the arrows of the Times calendar and time picker show no tooltip.
+const POPUP_ARROWS: &str = "the calendar's and the time picker's arrows have no tooltip by \
+    design: these popups close themselves, and Slint 1.18.1 panics when a shown tooltip is \
+    destroyed inside a popup; their accessible names say what they do";
 
 /// Checks of announced behavior that other changes are implementing now: their flags
 /// make the scenario PENDING instead of FAIL while nothing else is flagged. The
-/// surface substring, the check (empty for every check) and the reason.
-pub const PENDING: &[(&str, &str, &str)] = &[(
-    "decision/",
-    FRAMED_CLOSE,
-    "the decision windows' own close button is being removed",
-)];
+/// surface substring, the check (empty for every check) and the reason. Keep this list
+/// and the coverage record (docs/developer/acceptance/ui-polish.md, "Pending checks")
+/// in step; an entry goes as soon as its behavior has landed.
+pub const PENDING: &[(&str, &str, &str)] = &[];
 
 /// Where a capture's window lives.
 #[derive(Clone)]
@@ -1472,10 +1500,30 @@ pub fn analyse(analysis: &Analysis<'_>) -> Vec<Issue> {
     issues
 }
 
+/// The contrast selected text keeps on its selection in a palette, as the product's
+/// palettes promise it (`text_minimum` in crates/midnight-ui/tests/themes.rs): 7:1 in the
+/// contrast palettes (PaperContrast, SandstoneContrast, DeepOcean, GraphiteContrast),
+/// 12:1 in the two high-contrast ones, WCAG AA (4.5:1) otherwise, whatever the text size.
+pub fn selected_text_minimum(scheme: i32) -> f64 {
+    match scheme {
+        17..=20 => 7.0,
+        21..=22 => 12.0,
+        _ => 4.5,
+    }
+}
+
+/// The selected-text minimum of the palette the application shows (its main window's
+/// theme, which its tool windows follow).
+pub fn palette_minimum(app: &App) -> f64 {
+    selected_text_minimum(app.window.global::<midnight_ui::Theme>().get_scheme())
+}
+
 /// WCAG AA contrast of every visible text against the rendered background(s) under its
 /// glyphs: 4.5:1, or 3:1 for large text (24px, or 18.67px bold) and for symbols.
-/// Text of disabled controls is exempt (WCAG 1.4.3).
-pub fn contrast_issues(frame: &Frame, nodes: &[Node]) -> Vec<Issue> {
+/// Selected text on its selection needs the palette's `selected` minimum
+/// ([`selected_text_minimum`]) at any size. Text of disabled controls is exempt (WCAG
+/// 1.4.3).
+pub fn contrast_issues(frame: &Frame, nodes: &[Node], selected: f64) -> Vec<Issue> {
     let mut issues = Vec::new();
     for node in nodes {
         let Some(text) = &node.text else { continue };
@@ -1492,14 +1540,20 @@ pub fn contrast_issues(frame: &Frame, nodes: &[Node]) -> Vec<Issue> {
         if area.3 < inked.3 * 0.5 {
             continue;
         }
-        if let Some(issue) = text_contrast(frame, node, text, area) {
+        if let Some(issue) = text_contrast(frame, node, text, area, selected) {
             issues.push(issue);
         }
     }
     issues
 }
 
-fn text_contrast(frame: &Frame, node: &Node, text: &TextNode, area: Rect) -> Option<Issue> {
+fn text_contrast(
+    frame: &Frame,
+    node: &Node,
+    text: &TextNode,
+    area: Rect,
+    selected_minimum: f64,
+) -> Option<Issue> {
     let (x0, y0, x1, y1) = frame.bounds(area)?;
     let total = (x1 - x0) * (y1 - y0);
     if total < 12 {
@@ -1546,17 +1600,17 @@ fn text_contrast(frame: &Frame, node: &Node, text: &TextNode, area: Rect) -> Opt
         return None;
     }
     let large = text.font_size >= 24.0 || (text.bold && text.font_size >= 18.66);
-    let needed = if large || !has_alnum(&text.text) {
+    let needed: f64 = if large || !has_alnum(&text.text) {
         3.0
     } else {
         4.5
     };
     for background in backgrounds {
-        let foreground = match text.selection {
+        let (foreground, needed) = match text.selection {
             Some((foreground, selected)) if distance(background, rgb(selected)) <= 24 => {
-                rgb(foreground)
+                (rgb(foreground), needed.max(selected_minimum))
             }
-            _ => declared,
+            _ => (declared, needed),
         };
         let shown = blend(foreground, alpha, background);
         let ratio = contrast(shown, background);
@@ -1584,13 +1638,15 @@ fn text_contrast(frame: &Frame, node: &Node, text: &TextNode, area: Rect) -> Opt
 // Capturing a window and recording its flags
 
 /// Analyse the window as rendered in `frame`: `inspect::check_layout`, the static checks
-/// of every checked root and the contrast of its texts. Viewports in `scrolling` were
-/// seen to scroll with the wheel.
+/// of every checked root and the contrast of its texts (selected text against the
+/// palette's `selected` minimum). Viewports in `scrolling` were seen to scroll with the
+/// wheel.
 pub fn inspect_window(
     window: &slint::Window,
     frame: &Frame,
     framed: bool,
     scrolling: &[ItemRc],
+    selected: f64,
 ) -> Vec<Issue> {
     let size = frame.logical();
     // The gate has its own occlusion-aware versions of these two checks.
@@ -1615,8 +1671,20 @@ pub fn inspect_window(
             framed: framed && position == 0 && !dialogs,
             dialog: framed || dialogs,
         };
-        issues.extend(analyse(&analysis));
-        issues.extend(contrast_issues(frame, &nodes));
+        let mut found = analyse(&analysis);
+        // A surface wholly under a later one (Options under its full-window colour
+        // picker or Replace shortcut question) shows no text because it is covered.
+        let (x, y, w, h) = rects[position];
+        if rects[position + 1..].iter().any(|cover| {
+            cover.0 <= x + 0.5
+                && cover.1 <= y + 0.5
+                && cover.0 + cover.2 >= x + w - 0.5
+                && cover.1 + cover.3 >= y + h - 0.5
+        }) {
+            found.retain(|issue| issue.kind != BLANK);
+        }
+        issues.extend(found);
+        issues.extend(contrast_issues(frame, &nodes, selected));
     }
     issues
 }
@@ -1800,13 +1868,27 @@ pub fn scrolling_viewports(app: &mut App, software: &MinimalSoftwareWindow) -> V
 }
 
 /// Every check on the window as it is now: the wheel probe of overflowing viewports,
-/// then one frame for the static and the contrast checks.
+/// then one frame for the static and the contrast checks, selected text judged by the
+/// palette the application shows.
 pub fn settled_issues(app: &mut App, target: &Target) -> Vec<Issue> {
+    let selected = palette_minimum(app);
+    settled_issues_at(app, target, selected)
+}
+
+/// [`settled_issues`] with selected text judged against `selected` (a red case's
+/// palette).
+pub fn settled_issues_at(app: &mut App, target: &Target, selected: f64) -> Vec<Issue> {
     let software = target.software(app);
     inspect::settle_tree(software.window());
     let scrolling = scrolling_viewports(app, &software);
     let frame = Frame::of(&software);
-    inspect_window(software.window(), &frame, target.framed(), &scrolling)
+    inspect_window(
+        software.window(),
+        &frame,
+        target.framed(),
+        &scrolling,
+        selected,
+    )
 }
 
 /// Settle, render, save and check one window; flags are recorded against the
@@ -1821,12 +1903,19 @@ pub fn capture(
 ) -> usize {
     // Theme colours and hover states animate briefly; let them settle first.
     app.idle(Duration::from_millis(250));
+    let selected = palette_minimum(app);
     let software = target.software(app);
     inspect::settle_tree(software.window());
     let scrolling = scrolling_viewports(app, &software);
     let frame = Frame::of(&software);
     let shot = save(context, &frame, name, caption);
-    let issues = inspect_window(software.window(), &frame, target.framed(), &scrolling);
+    let issues = inspect_window(
+        software.window(),
+        &frame,
+        target.framed(),
+        &scrolling,
+        selected,
+    );
     record(context, &shot, surface, issues)
 }
 

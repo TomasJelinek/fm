@@ -18,13 +18,17 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-D01 | The toolbar's gear opens Options when its settings are ready | every `options_*` | `options_open`, `preferences_ready`, not busy | PASS |
 | O-D02 | F10 › Options opens it | `tools_main_menu` | `options_open` | PASS |
 | O-D03 | The page list switches pages | every `options_*` | topic index per page | PASS |
-| O-D04 | A narrow window shows a topic picker instead of the list, and works | `options_themes`, `options_visual` | picker present, list absent; a theme chosen and saved through it | PASS |
+| O-D04 | A narrow window shows a topic picker instead of the list, and works | `options_themes`, `options_visual` | picker present, list absent; a theme chosen and saved through it; its list in the displayed order; Shift+Tab from OK reaches it; Down and Up walk every page with the focus kept, stopping at the ends | PASS (Windows, Linux) |
+| O-D13 | The page list by keyboard (DIALOG_ERGONOMICS.md, "Options page order"): Options opens on General with the focus on OK; Shift+Tab from OK reaches the list at its last row; Space and Enter choose the focused row's page (Enter keeps Options open); Up walks to General and Down to Plugins in the displayed order (topics 1, 8, 6, 7, 4, 10, 9, 3, 5), the focus following and both stopping at the ends | `options_general` | topic index, the focused row, its checked state, saves | PASS (Windows, Linux) |
+| O-D14 | Options reopens on the page shown last in a session; a restart opens General | `options_general` | topic index after Escape and reopening, and after a restart | PASS (Windows, Linux) |
+| O-D15 | Enter on a focused combo box (Disk I/O concurrency) opens its list and neither confirms nor saves Options; Escape closes only the list | `options_general` | popups, Options open, saves, the combo's value | PASS (Windows, Linux) |
+| O-D16 | A low narrow window (Options compact) puts the topic picker in the header: the displayed order, Shift+Tab reaches it, Down opens it on the shown page, Down moves, Enter chooses (Keyboard) and closes it, the focus back on the picker | `options_themes` | listed rows, topic index, popups, focus | PASS (Windows, Linux) |
 | O-D05 | OK saves and closes | every `options_*` | settings store saves | PASS |
 | O-D06 | Cancel discards previews and closes | `options_general`, `options_appearance`, `options_colors`, `options_keyboard`, `options_themes` | previews restored, no save | PASS |
 | O-D07 | Escape discards like Cancel | `options_general`, `options_buttons` | preview restored, no save | PASS |
 | O-D08 | Enter confirms like OK | `options_general` | one save, closed | PASS |
 | O-D09 | The header's close button discards and closes | `options_buttons` | Options closes, nothing saved | PASS |
-| O-D10 | Reset to defaults restores every page's defaults and keeps tabs, history, Hot Paths and commands | `options_general`, `options_appearance` | shown values and saved values | PASS |
+| O-D10 | Reset to defaults restores every page's defaults and keeps tabs, Hot Paths and Custom Commands | `options_general`, `options_appearance` | shown values; saved values, the tabs, a seeded Hot Path (slot 2) and a seeded Custom Command (history is not checked: the scenario cleared it before) | PASS (Windows, Linux) |
 | O-D11 | A page's invalid entry keeps Options open with its reason | `options_editors`, `options_comparators` | error line text | PASS |
 | O-D12 | Every enabled button on every page has a visible effect | `options_buttons` | text, control, popup, window, chooser or command changes | PASS (after the fix for finding O-4) |
 
@@ -38,8 +42,21 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-G04 | Verify entire copied file with SHA-256, and the quick-verification note | `options_general`, `files_copy_options` (transfers) | note shown; saved; the job's verification | PASS (the job side in `files_copy_options`, whose other check has a transfers finding) |
 | O-G05 | Disk I/O concurrency picker | `options_general` | shown, saved, restart, reset to Automatic (4) | PASS |
 | O-G06 | Disk I/O concurrency's effect on a job | – | no visible effect to observe (worker count is not shown) | PENDING |
-| O-G07 | Remember command history after restart | `options_general` | saved; after clearing and a restart Alt+Up recalls nothing | PASS |
+| O-G07 | Remember command history after restart | `options_general` | positive control: the first start loads the seeded history as a restart loads remembered history (the "Executed command history" picker enabled, Alt+Up recalls the newest command); after clearing, remembering off and a restart the picker is disabled and Alt+Up, pressed for 2 s, recalls nothing | PASS (Windows, Linux) |
 | O-G08 | Clear command history (enabled only with history) | `options_general` | enabled states; saved history empty | PASS |
+
+## Settings file (Export and Import)
+
+Through the scripted file chooser (every answer queued first, inside the scenario's
+folder) and the Engine's own settings-file workers.
+
+| ID | Behavior | Scenario | Check | Status |
+| --- | --- | --- | --- | --- |
+| O-I01 | Export configuration writes what OK would save now, a previewed change included: "Exported settings to <path>." | `options_settings_file` | the status line; the file holds the previewed byte sizes and the Hot Path | PASS (Windows, Linux) |
+| O-I02 | Exporting onto an existing file asks "… already exists. Replace it?": Keep leaves it byte for byte ("… was kept. Settings were not exported."), Replace writes the current settings and keeps the replaced file for recovery | `options_settings_file` | status lines; file bytes; the recovery copy's bytes | PASS (Windows, Linux) |
+| O-I03 | Import configuration previews the file's settings ("Imported <name>. … Cancel keeps your current settings."): Cancel restores the theme and saves nothing; OK saves them and applies the file's Hot Paths (the number row's 4 opens the imported one) | `options_settings_file` | status line; theme; saved settings; the panel's folder | PASS (Windows, Linux) |
+| O-I04 | Refused files leave the settings unchanged with the reason: not JSON, no settings version, a newer version | `options_settings_file` | "Could not import <name>: <reason> Your settings are unchanged."; saves | PASS (Windows, Linux) |
+| O-I05 | A file from the other operating system keeps its Hot Path and its editor inactive ("Kept inactive because they use <system> paths: 1 hot path and the editor."): after OK the Hot Path's number says why it does not open, the Hot Paths manager lists it and removes it; General lists the editor, and Remove then OK drops it | `options_settings_file` | status line; saved inactive Hot Paths and settings; the notice; the manager's and the General page's rows | PASS (Windows, Linux) |
 
 ## Appearance
 
@@ -58,6 +75,10 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | --- | --- | --- | --- | --- |
 | O-L01 | Colors: an added rule colours matching names; priority by Move up; Cancel; OK; restart | `options_colors` | row colours, rendered pixels, saved rules | PASS |
 | O-L02 | Colors stay on their rows sorted by size and filtered by a panel filter | `options_colors` | row colours, rendered pixels | PASS |
+| O-L03 | Colors: the colour picker keeps OK disabled while it is open; a swatch (`#ef4444`) and Use color set the foreground; Escape closes only the picker and keeps the value | `options_colors` | OK's enabled state, the hex field, the row colour, Options open | PASS (Windows, Linux) |
+| O-L04 | Colors: each rule field changes what the panel shows after Apply colors: Regex (`^val.*\.dat$`), Case sensitive (`*.DAT`), the Folders target, Enable rule off, a background colour; Discard changes returns an unapplied edit to the applied rule; Move down; Cancel discards all of it | `options_colors` | row foreground and background colours, the expression, rule labels, saved rules | PASS (Windows, Linux) |
+| O-L05 | The filename colours as shown: `.rs` cyan `#06A4C7`, `.docx`, `.md` and `.txt` blue `#3B82F6` (since f153478c), each rendered as the shared readability policy (`midnight_core::readable_rgb`) makes its base colour on the row it is drawn on, at least 4.5:1, in Blue, Dark and Light (FILENAME_COLOR_OPTIONS.md) | `options_palette` | each name's model colour; its rendered glyph colour against the policy's value for the measured row | PASS (Windows, Linux; rendered as the policy gives them: Blue `#06A4C7`/`#3B82F6`, `#3E84F6` on its alternate rows; Dark `#3D84F6` and `#4689F6` for the blue; Light `#3473DB`/`#326ED1` and `#057B96` for the cyan, all 4.50:1 or more) |
+| O-L06 | Saved lists on loading (the real settings store, in a private child): the palette shipped until 22 November (blue source, neutral documents and text) and the interim all-cyan one move to the defaults; a customised list is kept, except its document rule still exactly as the interim build set it, which turns blue (its blue source rule, green text rule and changed font colour stay) | `options_palette` | model colours after each restart | PASS (Windows, Linux) |
 | O-V01 | Previews: switches, thumbnail size seen in the Thumbnails view; Cancel, OK, restart | `options_previews_plugins` | row height; saved values | PASS |
 | O-V02 | Previews: Clear thumbnail cache | – | the thumbnail service exists only in staged viewer processes; the button would clear a real cache | SKIP |
 | O-R01 | Archives: custom extension chips (add, fold, remove, invalid, built-in conflict), an association; Cancel, OK, restart; Escape in the field | `options_archives` | chips, errors, saved values | PASS |
@@ -66,6 +87,12 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-C01 | Comparators: built-in and external overrides saved, listed after a restart | `options_comparators` | rule rows, saved values | PASS |
 | O-C02 | Comparators: an invalid regular expression is refused | `options_comparators` | error line | PASS |
 | O-U01 | Custom Commands: create, edit, drag, delete, separators, placeholders; runs; failure notice; Preview; key; restart | `options_custom_commands` | files written, notices, saved commands | PASS |
+| O-U02 | F9 lists the Custom Commands in the saved order | `options_custom_commands` | the User menu's command buttons | PASS (Windows, Linux) |
+| O-U03 | A right click on a toolbar command offers "Custom Commands settings…", which opens Options › Custom Commands with that command selected | `options_custom_commands` | the context menu's text; the page; the form's name | PASS (Windows, Linux) |
+| O-U04 | The command list's keys: Alt+Up and Alt+Down move the selected command, Delete removes it, Insert starts a new one; Cancel discards them | `options_custom_commands` | list order, the form, saved commands | PASS (Windows, Linux) |
+| O-U05 | Escape during a drag in the command list cancels only the drag; the next Escape closes Options | `options_custom_commands` | order, Options open, saves | PASS (Windows, Linux) |
+| O-U06 | A terminal-mode command: its dry run names the shell and the literal script | `options_custom_commands` | preview text. Running it is SKIP: the harness installs the native launcher, which would open a real terminal window | PASS (Windows: the dry run; running it SKIP. Linux in WSL, without a supported terminal: the preview reports "No supported system terminal is installed", SKIP of the dry run) |
+| O-U07 | A disabled command's toolbar button is disabled and a click runs nothing | `options_custom_commands` | enabled state; no file, no notice within 2 s (the enabled per-item command wrote its files at once) | PASS (Windows, Linux) |
 | O-H01 | Hot Paths manager: add, exchange numbers, remove; Ctrl+digit; restart | `options_hot_paths`, `files_hot_paths` (panels) | panel folders, saved Hot Paths | PASS |
 
 ## Keyboard
@@ -78,17 +105,21 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-K04 | Remove an alias | `options_keyboard`, `shortcuts_hints` | aliases | PASS |
 | O-K05 | An occupied key names its owner and asks (Replace, Cancel) | `options_keyboard` | "Shortcut currently used by"; Replace shortcut dialog | PASS |
 | O-K06 | Restore command | `options_keyboard` | default back; override dropped | PASS |
-| O-K07 | Restore all defaults asks first | `options_buttons` | the confirmation appears | PASS |
+| O-K07 | Restore all defaults asks first: Keep custom shortcuts changes nothing, Reset all shortcuts restores the default map, which OK saves (no override left; F5 opens Copy and F7 Create folder again) | `options_keyboard`, `options_buttons` | the question, the command's shortcuts, saved overrides, the keys' effect | PASS (Windows, Linux) |
 | O-K08 | The rebound key works, the old one does not, also after a restart | `options_keyboard`, `shortcuts_hints` | Create folder dialog | PASS |
 | O-K09 | Hints follow a rebinding: F10 menu, F1 help, footer | `shortcuts_hints` | shown keys | PASS |
 | O-K10 | Tab or Escape in the capture field is recorded, not run | `options_keyboard` | captured text; Options stays open | PASS |
 | O-K11 | Reserved keys (Ctrl+Space) and a fifth alias are refused with a reason | `options_keyboard` | "reserved" and "At most four" reasons; shortcuts unchanged; Cancel discards | PASS |
+| O-K12 | The Replace shortcut question opens with the keyboard on its Cancel; Enter there and Escape decline it, closing only the question | `options_keyboard` | focus, the question, Options open, the command's shortcuts | PASS (Windows, Linux) |
+| O-K13 | Replace by keyboard (Tab to Replace, Enter) then OK saves: F5 moves from Copy to Create folder, which keeps F7 | `options_keyboard` | shortcuts shown and saved; F5 opens Create folder, not Copy | PASS (Windows, Linux) |
+| O-K14 | Clear empties a captured key and is disabled again (Assign too) | `options_keyboard` | the capture field, enabled states | PASS (Windows, Linux) |
 
 ## Plugins
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| O-P01 | Plugins: empty states without staged plugins; Rescan; the Archives link | `options_previews_plugins` | texts; page switch | PASS |
+| O-P01 | Plugins: every section's empty state without staged plugins (asserted for Viewers, Filesystems, Archives and Thumbnailers); Rescan; the Archives link | `options_previews_plugins` | texts; page switch | PASS (Windows, Linux) |
+| O-P02 | Plugins with the installed packages (a staged child of the same scenario): every section lists them instead of its empty state, at least one row per viewer and per thumbnailer package and the filesystem packages across Filesystems and Archives; Rescan reports "Rescanned: found …" with the counts the sections list and no unavailable package | `options_previews_plugins` | rows per section against the staged packages; the rescan report | PASS (Windows, Linux) |
 
 ## Keyboard shortcut catalog
 
@@ -129,7 +160,7 @@ besides the action's own effect fails it.
 | O-F04 | Footer cells without an action are disabled and do nothing | `shortcuts_footer` | disabled; state unchanged | PASS (after the fix for finding O-2) |
 | O-F05 | Footer F11/F12 (network) hidden on Linux | `shortcuts_footer` | no cell | PASS |
 | O-F06 | After a rebinding the footer cell becomes unassigned | `shortcuts_hints` | "F7 — unavailable" | PASS |
-| O-F07 | Panel View and Sort menus show their keys | – | not driven yet | PENDING |
+| O-F07 | The panel's View and Sort menus show every key of each item's action (as F1 lists them, "Ctrl+F6 / …"); after Sort by size gets a second key they list both | `shortcuts_hints` | each row's key text against the catalog, before and after the change | PASS (Windows, Linux) |
 
 ## Combinations
 
@@ -174,3 +205,30 @@ Several of these runs also ran tools scenarios; their results are in
 | 2026-11-20 14:58 | `options_buttons` (with the fix for O-4) | PASS (53.0 s) |
 | 2026-11-20 15:21 | `shortcuts_catalog`, `shortcuts_footer` with the fixes for O-1 and O-2 | PASS (350.8, 81.6 s) |
 | `20261121-144246` (Linux, commit 3f6fff8a, WSL 2 Ubuntu 24.04, every scenario of the suite; report in `_build/acceptance-linux/20261121-144246/`) | every scenario of this record: the ten `options_*` page scenarios, `options_buttons`, `options_themes`, `shortcuts_catalog`, `shortcuts_footer`, `shortcuts_hints` | all PASS (6.3–26.4 s for the pages; 45.6, 21.1, 224.8, 46.2, 11.2 s) |
+
+Runs of 22 November with this record's checks: Windows 11 at scale 1 with the smoke
+fixture, the debug acceptance binary through `scripts\acceptance.ps1 --test-binary`,
+plugin packages of the release build of d7ff8860 through `--plugins`; Linux in WSL 2
+(Ubuntu 24.04) through `scripts/acceptance.sh debug` with the shared debug plugin
+packages, after the workspace clean step of the shared Cargo target. The base is the
+main commit the record's files were applied to; 5ccd0eb7 has the corrected filename
+colours (f153478c), and the earlier bases still had the interim all-cyan palette, which
+`options_palette` checked then.
+
+| Run | Base | Scenarios | Result |
+| --- | --- | --- | --- |
+| `20261122-050833` (Windows) | 05710878 | `options_general`, `options_settings_file`, `options_custom_commands`, `options_keyboard`, `options_colors`, `options_previews_plugins` (its staged part with the installed packages included), `options_visual`, `shortcuts_hints`, `options_buttons`, `options_themes` | all PASS (17.0, 20.0, 51.2, 30.3, 28.4, 35.4, 43.0, 21.1, 87.0, 37.5 s) |
+| `20261122-050833` (Windows) | 05710878 | `options_palette` | FAIL in the migration part, a harness defect: the rules list makes only the rows near its viewport, and the scenario looked for rule 11 without scrolling; its colour checks passed (18.4 s). Fixed: the wheel brings the row in |
+| `20261122-074313` (Windows) | 05710878 | `options_palette` with that fix | PASS (22.1 s) |
+| `20261122-073609` (Linux) | 05710878 | the ten scenarios of the first row and `options_palette` | PASS except `options_custom_commands`, whose terminal-mode preview reported "No supported system terminal is installed" (WSL has none; the check now records that as SKIP of the dry run), and `options_palette`, which read the panel before its colours after a restart (the scenario now waits for them) |
+| `20261122-092401` (Windows) | 26c18895 | the ten scenarios of the first row and `options_palette` | all PASS (18.0, 20.9, 55.8, 28.9, 25.3, 26.5, 36.7, 22.5, 96.8, 39.8, 49.6 s) |
+| `20261122-123625` (Linux) | 5ccd0eb7 | the ten scenarios of the first row and `options_palette` | all PASS (18.8, 20.6, 57.7, 38.0, 47.4, 49.3, 77.5, 38.5, 140.3, 40.5, 31.8 s); `options_custom_commands` records SKIP of the terminal dry run (no supported terminal in WSL) |
+| `20261122-124508` (Windows) | 5ccd0eb7 | the ten scenarios of the first row and `options_palette` | all PASS (19.1, 22.0, 52.6, 31.6, 27.5, 34.5, 43.8, 20.7, 90.3, 40.7, 39.5 s) |
+Red runs: every check added or changed on 22 November (O-D04, O-D10, O-D13–O-D16, O-G07,
+O-I01–O-I05, O-L03–O-L06, O-U02–O-U07, O-K07, O-K12–O-K14, O-P01, O-P02, O-F07) was
+run once against a wrong expectation: a temporary copy of its scenario with one expected
+value or condition inverted, built into the same test binary and not kept in the
+repository. In Windows run `20261122-074313` all 57 copies failed, each at the check
+it inverted, except `red_commands_settings_menu`, which failed earlier (a grouped
+command's output file did not appear within 15 s); run again on its own in
+`20261122-121540`, it failed at its inverted check (the context menu's entry). The palette checks rewritten for f153478c got five new copies (source code expected blue, the base colours expected without the readability policy, a list one step off each shipped palette expected to migrate, a customised list expected to keep its interim document rule cyan): all five failed at their inverted checks in Windows run `20261122-140946` (base 5ccd0eb7).

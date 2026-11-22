@@ -16,13 +16,16 @@ use super::{
     scenarios::ui_gate::{self as gate, Target},
 };
 use i_slint_core::items::AccessibleRole;
-use midnight_core::{PaneId, PreferenceTheme, UiDensity};
+use midnight_core::{
+    PaneId, PreferenceTheme, UiDensity, UserCommand, UserCommandId, UserCommandInvocation,
+    UserCommandLaunch,
+};
 use midnight_ui::{FileListPresentation, HotPathsPresentation};
 use slint::{
     ComponentHandle,
     platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow},
 };
-use std::{path::Path, rc::Rc, time::Duration};
+use std::{path::Path, rc::Rc, sync::Arc, time::Duration};
 
 /// Window size class of a combination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,8 +295,75 @@ fn options_pages(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<
             &format!("options-{topic:02}"),
             &format!("Options › {label}"),
         );
+        match topic {
+            8 => colour_picker(app, context, sweep)?,
+            3 => keyboard_questions(app, context, sweep)?,
+            _ => {}
+        }
     }
     close(app, &Host::Main, "Options");
+    Ok(())
+}
+
+/// Options › Colors: the colour picker of the first rule's foreground, closed with
+/// Escape (which closes only the picker).
+fn colour_picker(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<(), String> {
+    use super::options_support as options;
+    options::click_row(app, "Filename color rules", "first rule", &|label| {
+        label.starts_with("1. ")
+    })?;
+    options::press(app, "Choose Foreground")?;
+    wait(app, "the colour picker", |app| {
+        options::find_any(app, AccessibleRole::Button, "Use color").is_some()
+    });
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "options-08-picker",
+        "Options › Colors › the colour picker",
+    );
+    input::key(app.slint(), Key::Escape);
+    wait(app, "the colour picker to close", |app| {
+        options::find_any(app, AccessibleRole::Button, "Use color").is_none()
+    });
+    Ok(())
+}
+
+/// Options › Keyboard: the Replace shortcut question (F5 for Create folder) and the
+/// Restore all defaults confirmation; both answered so that nothing changes.
+fn keyboard_questions(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<(), String> {
+    use super::options_support as options;
+    options::fill(app, "Search commands", "Create folder")?;
+    let entry = options::reveal(app, AccessibleRole::ListItem, "Create folder")?;
+    options::click_item(app, &entry)?;
+    let field = options::reveal(app, AccessibleRole::TextInput, "Press shortcut keys")?;
+    options::click_item(app, &field)?;
+    input::key(app.slint(), Key::F5);
+    app.settle();
+    options::press(app, "Assign")?;
+    let open = |app: &App| {
+        inspect::find(app.slint(), AccessibleRole::Groupbox, "Replace shortcut").is_some()
+    };
+    wait(app, "the Replace shortcut question", open);
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "options-03-replace",
+        "Options › Keyboard › Replace shortcut",
+    );
+    input::key(app.slint(), Key::Escape);
+    wait(app, "the question to close", move |app| !open(app));
+    options::press(app, "Restore all defaults")?;
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "options-03-restore-all",
+        "Options › Keyboard › Restore all defaults, asking",
+    );
+    options::press(app, "Keep custom shortcuts")?;
     Ok(())
 }
 
@@ -451,6 +521,125 @@ fn main_states(app: &mut App, context: &mut Context, sweep: &Sweep) {
             }),
         );
     }
+    isolated(
+        app,
+        context,
+        &prefix,
+        "main menu categories",
+        Box::new(|app: &mut App, context: &mut Context| main_menu_categories(app, context, sweep)),
+    );
+    for (name, label) in PANEL_MENUS {
+        isolated(
+            app,
+            context,
+            &prefix,
+            label,
+            Box::new(move |app: &mut App, context: &mut Context| {
+                panel::focus_list(app, left)?;
+                if super::options_support::find_any(app, AccessibleRole::Combobox, label).is_none()
+                {
+                    context.note(format!(
+                        "{}: the {label:?} picker is not shown at this size",
+                        sweep.prefix
+                    ));
+                    return Ok(());
+                }
+                input::click(app.slint(), AccessibleRole::Combobox, label)?;
+                wait(app, label, has_popup);
+                sweep.capture(app, context, &Host::Main, name, label);
+                close(app, &Host::Main, label);
+                Ok(())
+            }),
+        );
+    }
+    // A compact window moves the Custom Commands toolbar into a popup behind its
+    // "Custom commands" button (wider windows show the toolbar in every capture).
+    isolated(
+        app,
+        context,
+        &prefix,
+        "Custom commands",
+        Box::new(|app: &mut App, context: &mut Context| {
+            let Some(button) =
+                super::options_support::find_any(app, AccessibleRole::Button, "Custom commands")
+            else {
+                return Ok(());
+            };
+            // At the minimum size the toolbar clips the button away (no scroll view).
+            if inspect::visible_rect(&button).is_none() {
+                context.note(format!(
+                    "SKIP: {}: the \"Custom commands\" button is clipped away at this size",
+                    sweep.prefix
+                ));
+                return Ok(());
+            }
+            panel::focus_list(app, left)?;
+            super::options_support::click_item(app, &button)?;
+            wait(app, "the Custom commands popup", has_popup);
+            sweep.capture(
+                app,
+                context,
+                &Host::Main,
+                "custom-commands",
+                "Custom commands (compact window)",
+            );
+            close(app, &Host::Main, "the Custom commands popup");
+            Ok(())
+        }),
+    );
+}
+
+/// Two Custom Commands for the toolbar and its compact popup; never run (this sweep
+/// installs no launcher).
+fn seeded_commands(folder: &Path) -> Arc<super::options_support::SettingsStore> {
+    let program = folder.join("never-run");
+    super::options_support::SettingsStore::seeded(move |preferences| {
+        preferences.user_commands = Arc::new(
+            [("build", "Build project"), ("deploy", "Deploy preview")]
+                .into_iter()
+                .map(|(id, name)| UserCommand {
+                    id: UserCommandId::new(id).expect("a valid command id"),
+                    name: name.into(),
+                    enabled: true,
+                    toolbar_label: None,
+                    icon: None,
+                    working_directory: "${active.path}".into(),
+                    launch: UserCommandLaunch::Single,
+                    invocation: UserCommandInvocation::Program {
+                        executable: program.clone(),
+                        arguments: Vec::new(),
+                    },
+                })
+                .collect(),
+        );
+    })
+}
+
+/// The left panel's menus: screenshot name and the picker's accessible name.
+const PANEL_MENUS: [(&str, &str); 2] = [
+    ("panel-view-menu", "Left panel view mode"),
+    ("panel-sort-menu", "Left panel sort"),
+];
+
+/// F10's categories other than "All actions", chosen with Down in its category picker
+/// (which has the keyboard when the menu opens).
+fn main_menu_categories(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<(), String> {
+    panel::focus_list(app, PaneId::Left)?;
+    input::key(app.slint(), Key::F10);
+    wait(app, "the main menu", has_popup);
+    for category in ["files", "selection", "panels", "tools", "application"] {
+        input::key(app.slint(), Key::DownArrow);
+        app.settle();
+        sweep.capture(
+            app,
+            context,
+            &Host::Main,
+            &format!("main-menu-{category}"),
+            &format!("Main menu (F10), category {category}"),
+        );
+    }
+    close(app, &Host::Main, "the main menu");
+    Ok(())
 }
 
 /// An unreadable folder with a long name inside the review folder: entering it shows
@@ -483,17 +672,21 @@ fn error_notice(
         "notice-error",
         "Error notice with a long path",
     );
-    if inspect::find(app.slint(), AccessibleRole::Button, "Details").is_some() {
-        input::click_button(app.slint(), "Details")?;
-        app.settle();
-        sweep.capture(
-            app,
-            context,
-            &Host::Main,
-            "notice-details",
-            "Error notice, details shown",
-        );
+    // A folder notice always offers Details (as a glyph where its caption does not fit):
+    // a missing one fails the step instead of skipping the capture.
+    if super::options_support::find_any(app, AccessibleRole::Button, "Details").is_none() {
+        input::key(app.slint(), Key::Escape);
+        return Err("the error notice offers no Details".to_owned());
     }
+    input::click_button(app.slint(), "Details")?;
+    app.settle();
+    sweep.capture(
+        app,
+        context,
+        &Host::Main,
+        "notice-details",
+        "Error notice, details shown",
+    );
     input::key(app.slint(), Key::Escape);
     wait(app, "the notice to close", |app| {
         super::tools_support::shown_notice(app).is_none()
@@ -640,7 +833,114 @@ fn dialogs(app: &mut App, context: &mut Context, sweep: &Sweep, locked: &str) {
             input::click_button(app.slint(), "Times")?;
             app.settle();
             sweep.capture(app, context, &Host::Main, "times", "Attributes › Times");
+            // The calendar and the time picker of Modified, each closed with Escape
+            // (which keeps the editor open).
+            for (button, name, caption) in [
+                (
+                    "Modified: choose date",
+                    "times-calendar",
+                    "Attributes › Times › the calendar",
+                ),
+                (
+                    "Modified: choose time",
+                    "times-clock",
+                    "Attributes › Times › the time picker",
+                ),
+            ] {
+                let popups = inspect::roots(app.slint()).len();
+                // Scrolled into view first: a small window shows only part of the page.
+                let opener = super::options_support::reveal(app, AccessibleRole::Button, button)?;
+                super::options_support::click_item(app, &opener)?;
+                wait(app, caption, move |app| {
+                    inspect::roots(app.slint()).len() > popups
+                });
+                sweep.capture(app, context, &Host::Main, name, caption);
+                input::key(app.slint(), Key::Escape);
+                wait(app, &format!("{caption} to close"), move |app| {
+                    inspect::roots(app.slint()).len() == popups
+                });
+            }
             close(app, &Host::Main, "Attributes");
+            Ok(())
+        }),
+    );
+    isolated(
+        app,
+        context,
+        &prefix,
+        "Case",
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
+            input::chord(app.slint(), &[Key::Control], Key::F7);
+            wait(app, "the Case page", |app| {
+                !app.window.get_metadata_token().is_empty()
+            });
+            sweep.capture(
+                app,
+                context,
+                &Host::Main,
+                "case",
+                "Change name case (Ctrl+F7)",
+            );
+            close(app, &Host::Main, "the Case page");
+            Ok(())
+        }),
+    );
+    isolated(
+        app,
+        context,
+        &prefix,
+        "Select by mask",
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::focus_list(app, left)?;
+            // Ctrl+= through the window's physical-shortcut entry, as the native key
+            // hook delivers it.
+            app.window
+                .invoke_physical_shortcut("Equal".into(), true, false, false, false);
+            wait(app, "Select by mask", |app| {
+                has_popup(app) || app.window.get_embedded_modal_open()
+            });
+            sweep.capture(
+                app,
+                context,
+                &Host::Main,
+                "select-mask",
+                "Select by mask (Ctrl+=)",
+            );
+            close(app, &Host::Main, "Select by mask");
+            Ok(())
+        }),
+    );
+    isolated(
+        app,
+        context,
+        &prefix,
+        "Links",
+        Box::new(|app: &mut App, context: &mut Context| {
+            panel::select_row(app, left, "alpha.bin")?;
+            input::key(app.slint(), Key::F5);
+            wait(app, "Copy", |app| {
+                !app.window.get_copy_draft_token().is_empty()
+            });
+            let popups = inspect::roots(app.slint()).len();
+            // Scrolled into view first: a small window shows only part of the dialog.
+            let links = super::options_support::reveal(app, AccessibleRole::Combobox, "Links")?;
+            super::options_support::click_item(app, &links)?;
+            wait(app, "the Links list", move |app| {
+                inspect::roots(app.slint()).len() > popups
+            });
+            sweep.capture(
+                app,
+                context,
+                &Host::Main,
+                "copy-links",
+                "Copy (F5) › the Links list",
+            );
+            input::key(app.slint(), Key::Escape);
+            wait(app, "the Links list to close", move |app| {
+                inspect::roots(app.slint()).len() <= popups
+            });
+            close(app, &Host::Main, "Copy");
             Ok(())
         }),
     );
@@ -739,6 +1039,30 @@ fn dialogs(app: &mut App, context: &mut Context, sweep: &Sweep, locked: &str) {
                 input::chord(app.slint(), modifiers, key);
                 let host = tool(app, sweep, caption, before);
                 sweep.capture(app, context, &host, name, caption);
+                // A footer too narrow for its actions moves some into More…: its list,
+                // closed with Escape (which keeps the window open).
+                if let Host::Tool(window) = &host
+                    && inspect::find(window.window(), AccessibleRole::Button, "More…").is_some()
+                {
+                    let popups = inspect::roots(window.window()).len();
+                    input::click_button(window.window(), "More…")?;
+                    let shown = window.clone();
+                    wait(app, &format!("{caption} › More…"), move |_| {
+                        inspect::roots(shown.window()).len() > popups
+                    });
+                    sweep.capture(
+                        app,
+                        context,
+                        &host,
+                        &format!("{name}-more"),
+                        &format!("{caption} › More…"),
+                    );
+                    input::key(window.window(), Key::Escape);
+                    let shown = window.clone();
+                    wait(app, &format!("{caption} › More… to close"), move |_| {
+                        inspect::roots(shown.window()).len() <= popups
+                    });
+                }
                 close(app, &host, caption);
                 Ok(())
             }),
@@ -779,6 +1103,7 @@ pub fn sweep(context: &mut Context, combinations: &[Combination]) -> Result<usiz
         config.density = combination.density;
         config.width = width;
         config.height = height;
+        config.settings = Some(seeded_commands(&left));
         let mut app = App::start(config);
         gate::scale_main(&mut app, (width, height), combination.scale);
         let sweep = Sweep {

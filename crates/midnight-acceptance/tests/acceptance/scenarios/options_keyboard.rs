@@ -1,8 +1,12 @@
 //! Options › Keyboard: rebind Create folder from F7 to another key; the new key works
-//! and the old one does nothing; an occupied key asks before replacing (declined, and
-//! accepted then cancelled with Options); persistence across a restart; Restore
-//! command brings the default back. The capture field records Tab and Escape; Ctrl+Space
-//! and a fifth shortcut are refused with a reason.
+//! and the old one does nothing; an occupied key asks before replacing (declined with
+//! Cancel, with Enter on the question's focused Cancel and with Escape, which closes
+//! only the question; accepted then cancelled with Options; accepted by Tab and Enter
+//! then saved with OK, which moves the key from Copy); persistence across a restart;
+//! Restore command brings the default back; Restore all defaults asks first (Keep
+//! changes nothing, Reset restores the default map). The capture field records Tab and
+//! Escape and Clear empties it; Ctrl+Space and a fifth shortcut are refused with a
+//! reason.
 use crate::{
     Context,
     app::{App, Config},
@@ -137,6 +141,85 @@ fn replacement_open(app: &App) -> bool {
     inspect::find(app.slint(), AccessibleRole::Groupbox, "Replace shortcut").is_some()
 }
 
+/// Capture F5 (Copy's key) for the selected command and press Assign: the Replace
+/// shortcut question opens, with the keyboard on its dismiss button.
+fn ask_replacement(app: &mut App) -> Result<(), String> {
+    capture(app, &[], Key::F5, "F5")?;
+    options::press(app, "Assign")?;
+    if !options::poll(app, Duration::from_secs(5), replacement_open) {
+        return Err("assigning the occupied F5 did not ask to replace it".into());
+    }
+    Ok(())
+}
+
+/// Every shortcut of the selected command, read from the open list of its shortcuts
+/// picker (closed again with Escape); empty when the picker is disabled.
+fn all_aliases(app: &mut App) -> Result<Vec<String>, String> {
+    if options::enabled_state(app, AccessibleRole::Combobox, ALIASES) != Some(true) {
+        return Ok(Vec::new());
+    }
+    let picker = options::reveal(app, AccessibleRole::Combobox, ALIASES)?;
+    let popups = inspect::roots(app.slint()).len();
+    options::click_item(app, &picker)?;
+    if !options::poll(app, Duration::from_secs(2), |app| {
+        inspect::roots(app.slint()).len() > popups
+    }) {
+        return Err(format!("the {ALIASES:?} picker opened no list"));
+    }
+    let mut rows: Vec<(String, f32)> = Vec::new();
+    if let Some(popup) = inspect::roots(app.slint()).last() {
+        inspect::walk(popup, &mut |item| {
+            if item.accessible_role() == AccessibleRole::Button
+                && let Some(name) = inspect::label(item)
+            {
+                rows.push((name, inspect::rect(item).1));
+            }
+        });
+    }
+    rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+    input::key(app.slint(), Key::Escape);
+    if !options::poll(app, Duration::from_secs(2), |app| {
+        inspect::roots(app.slint()).len() == popups
+    }) || !app.window.get_options_open()
+    {
+        return Err(format!(
+            "Escape did not close only the {ALIASES:?} list (Options open: {})",
+            app.window.get_options_open()
+        ));
+    }
+    Ok(rows.into_iter().map(|(name, _)| name).collect())
+}
+
+/// After the question was declined: it is closed, Options is still open and the
+/// command still has only F7.
+fn declined(app: &mut App, how: &str) -> Result<(), String> {
+    if !options::poll(app, Duration::from_secs(5), |app| !replacement_open(app)) {
+        return Err(format!("{how} left the Replace shortcut question open"));
+    }
+    if !app.window.get_options_open() {
+        return Err(format!(
+            "{how} in the Replace shortcut question closed Options"
+        ));
+    }
+    let shown = all_aliases(app)?;
+    if shown != ["F7"] {
+        return Err(format!(
+            "{how} declined the replacement but {LABEL} has the shortcuts {shown:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// The keys the store saved for `action`, if it saved an override.
+fn saved_keys(store: &SettingsStore, action: &str) -> Option<Vec<String>> {
+    store
+        .current()
+        .shortcuts
+        .into_iter()
+        .find(|binding| binding.action == action)
+        .map(|binding| binding.keys)
+}
+
 pub fn keyboard(context: &mut Context) -> Result<(), String> {
     let folder = context.work.join("keyboard");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
@@ -228,9 +311,40 @@ pub fn keyboard(context: &mut Context) -> Result<(), String> {
         "Keyboard: F5 is taken, replace?",
     );
     options::press(&mut app, "Cancel")?;
-    app.until("the question to close", |app| !replacement_open(app));
-    if options::value(&app, AccessibleRole::Combobox, ALIASES).as_deref() != Some("F7") {
-        return Err("declining the replacement changed the shortcuts".into());
+    declined(&mut app, "Cancel")?;
+    // The question opens with the keyboard on its dismiss button: Enter declines, and
+    // so does Escape, which closes only the question.
+    ask_replacement(&mut app)?;
+    let first_focus = options::focus(&app);
+    if first_focus.as_ref().is_none_or(|(role, label)| {
+        *role != AccessibleRole::Button || !label.to_lowercase().contains("cancel")
+    }) {
+        return Err(format!(
+            "the Replace shortcut question opened with the keyboard on {first_focus:?}, not on its Cancel"
+        ));
+    }
+    input::key(app.slint(), Key::Return);
+    declined(&mut app, "Enter on the focused Cancel")?;
+    ask_replacement(&mut app)?;
+    input::key(app.slint(), Key::Escape);
+    declined(&mut app, "Escape")?;
+
+    // Clear empties a captured key and is disabled again.
+    capture(&mut app, &[Key::Control, Key::Alt], "j", "Ctrl+Alt+J")?;
+    if options::enabled_state(&app, AccessibleRole::Button, "Clear") != Some(true) {
+        return Err("Clear is not enabled with a captured key".into());
+    }
+    options::press(&mut app, "Clear")?;
+    let cleared = options::value(&app, AccessibleRole::TextInput, CAPTURE);
+    if cleared.as_deref().is_some_and(|value| !value.is_empty())
+        || options::enabled_state(&app, AccessibleRole::Button, "Clear") != Some(false)
+        || options::is_enabled(&app, AccessibleRole::Button, "Assign")
+    {
+        return Err(format!(
+            "Clear left the captured key {cleared:?} (Clear enabled: {:?}, Assign enabled: {})",
+            options::enabled_state(&app, AccessibleRole::Button, "Clear"),
+            options::is_enabled(&app, AccessibleRole::Button, "Assign")
+        ));
     }
 
     // Rebind: remove F7, assign a free key, OK.
@@ -330,8 +444,92 @@ pub fn keyboard(context: &mut Context) -> Result<(), String> {
     if !opens_create_folder(&mut app, &[], Key::F7)? {
         return Err("after Restore command F7 does not open Create folder".into());
     }
+
+    // Replace by keyboard (Tab to Replace, Enter), then OK: F5 moves from Copy to
+    // Create folder, which keeps F7.
+    options::open(&mut app)?;
+    select_entry(&mut app)?;
+    ask_replacement(&mut app)?;
+    options::tab_until(&mut app, false, 6, "the Replace button", &|role, label| {
+        role == AccessibleRole::Button && label == "Replace"
+    })?;
+    input::key(app.slint(), Key::Return);
+    if !options::poll(&mut app, Duration::from_secs(5), |app| {
+        !replacement_open(app)
+    }) {
+        return Err("Enter on Replace left the question open".into());
+    }
+    let both = |mut keys: Vec<String>| {
+        keys.sort();
+        keys == ["F5", "F7"]
+    };
+    let replaced = all_aliases(&mut app)?;
+    if !both(replaced.clone()) {
+        return Err(format!(
+            "after Replace {LABEL} has the shortcuts {replaced:?} instead of F7 and F5"
+        ));
+    }
+    if !options::ok(&mut app, &store)? {
+        return Err("OK after Replace saved nothing".into());
+    }
+    let keys = saved_keys(&store, ACTION);
+    if !keys.clone().is_some_and(both) {
+        return Err(format!(
+            "OK after Replace saved {keys:?} for {ACTION}; shortcuts {:?}",
+            store.current().shortcuts
+        ));
+    }
+    if f5_opens_copy(&mut app)? {
+        return Err("after Replace and OK F5 still opens Copy".into());
+    }
+    if !opens_create_folder(&mut app, &[], Key::F5)? {
+        return Err("after Replace and OK F5 does not open Create folder".into());
+    }
+
+    // Restore all defaults asks first: Keep custom shortcuts changes nothing, Reset all
+    // shortcuts restores the default map, which OK saves.
+    options::open(&mut app)?;
+    select_entry(&mut app)?;
+    let question = "Replace all custom shortcuts with the defaults?";
+    options::press(&mut app, "Restore all defaults")?;
+    if options::texts_with(&app, question).is_empty() {
+        return Err("Restore all defaults did not ask before resetting".into());
+    }
+    options::review_shot(
+        &mut app,
+        context,
+        "keyboard-restore-all",
+        "Keyboard: Restore all defaults asks first",
+    );
+    options::press(&mut app, "Keep custom shortcuts")?;
+    if !options::texts_with(&app, question).is_empty() || !both(all_aliases(&mut app)?) {
+        return Err(format!(
+            "Keep custom shortcuts left the question {} or changed the shortcuts to {:?}",
+            !options::texts_with(&app, question).is_empty(),
+            all_aliases(&mut app)?
+        ));
+    }
+    options::press(&mut app, "Restore all defaults")?;
+    options::press(&mut app, "Reset all shortcuts")?;
+    let reset = all_aliases(&mut app)?;
+    if !options::texts_with(&app, question).is_empty() || reset != ["F7"] {
+        return Err(format!(
+            "Reset all shortcuts left the question or gave {LABEL} the shortcuts {reset:?}"
+        ));
+    }
+    if !options::ok(&mut app, &store)? || !store.current().shortcuts.is_empty() {
+        return Err(format!(
+            "OK after Reset all shortcuts saved the overrides {:?}",
+            store.current().shortcuts
+        ));
+    }
+    if !f5_opens_copy(&mut app)? || !opens_create_folder(&mut app, &[], Key::F7)? {
+        return Err(
+            "after Reset all shortcuts F5 and F7 do not open Copy and Create folder".into(),
+        );
+    }
     context.note(format!(
-        "Keyboard: F5 reported as used by {owner:?}; replacement declined, then accepted and cancelled with Options; Create folder rebound F7 → {NEW_KEY}: the new key opens it, F7 does not, also after a restart; Restore command brought F7 back"
+        "Keyboard: F5 reported as used by {owner:?}; the replacement question declined with Cancel, Enter on its focused Cancel and Escape (only the question closed), accepted and cancelled with Options; Clear emptied a captured key; Create folder rebound F7 → {NEW_KEY}: the new key opens it, F7 does not, also after a restart; Restore command brought F7 back; Replace by Tab and Enter then OK moved F5 from Copy to Create folder; Restore all defaults: Keep changed nothing, Reset all restored the default map and OK saved no override"
     ));
     app.shutdown()
 }
