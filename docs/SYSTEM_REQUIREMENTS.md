@@ -1,7 +1,7 @@
 # System requirements
 
 Applies to Midnight Explorer **0.3.0**. Build and run commands are in the
-[README](../README.md#build-and-run).
+[user guide](USER_GUIDE.md#build-and-run).
 
 ## Operating systems and support status
 
@@ -124,7 +124,7 @@ Windows PowerShell are part of Windows; the PowerShell choice uses PowerShell 7
 **Linux:** an X11 or Wayland desktop with fontconfig/FreeType, libxkbcommon, the X11/XCB
 or Wayland client libraries, libudev, the Vulkan loader and the graphics driver's
 runtime libraries. Desktop integration also uses `xdg-open` (`xdg-utils`) and an
-installed terminal ([which terminals](../README.md#linux--ubuntu--mint)). External file
+installed terminal ([which terminals](USER_GUIDE.md#linux--ubuntu--mint)). External file
 drag and drop works through X11/XWayland; under native Wayland, files can be dragged
 only inside the application (PLAT-03).
 
@@ -140,8 +140,8 @@ libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0t64 libpango-1.0-0
 libcairo2 libxcomposite1 libxdamage1 libxext6 libxfixes3
 ```
 
-On Fedora and openSUSE the script installs the same libraries by soname (the README
-lists the [package commands](../README.md#linux--ubuntu--mint)). The second half of the
+On Fedora and openSUSE the script installs the same libraries by soname (the user guide
+lists the [package commands](USER_GUIDE.md#linux--ubuntu--mint)). The second half of the
 list is what the HTML viewer's Chromium (CEF) loads: NSS/NSPR, ALSA, ATK/AT-SPI, CUPS,
 D-Bus, DRM/GBM, Expat, GLib, Pango/Cairo and X11/XCB with its extensions. Desktop
 installations normally have them. When one is missing, the dynamic loader stops the
@@ -335,7 +335,7 @@ An **8 GB** development machine with `-j 1` and adequate pagefile or swap is a
 low-memory configuration to try, **not a tested minimum**. Fat LTO can still need
 substantial RAM for a single link; lowering Cargo's parallelism cannot remove that cost.
 Cargo runs as many jobs as there are logical CPUs unless `-j N` or `CARGO_BUILD_JOBS`
-limits them, and [full validation](../README.md#full-validation) takes `--jobs N`. See
+limits them, and [full validation](USER_GUIDE.md#full-validation) takes `--jobs N`. See
 [release settings](RELEASE_BUILD.md).
 
 Several operating systems, profiles and test caches together can use **100 GiB or

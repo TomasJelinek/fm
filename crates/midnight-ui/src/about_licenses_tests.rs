@@ -371,3 +371,28 @@ fn requests_name_a_package_folder_or_a_bundled_one() {
     assert!(missing_text(ffmpeg).contains("notices/ffmpeg-9.0.2/"));
     assert!(missing_text(zip).contains("The declared license is MIT."));
 }
+
+#[test]
+fn the_own_license_is_the_complete_gpl_version_3() {
+    assert_eq!(OWN_LICENSE, "GPL-3.0-or-later");
+    assert_eq!(OWN_COPYRIGHT, "© 2026 Tomas Jelinek");
+    let text = OWN_LICENSE_TEXT;
+    assert!(text.trim_start().starts_with("GNU GENERAL PUBLIC LICENSE"));
+    assert!(text.contains("Version 3, 29 June 2007"));
+    for section in [
+        "  0. Definitions.",
+        "  15. Disclaimer of Warranty.",
+        "  17. Interpretation of Sections 15 and 16.",
+    ] {
+        assert!(text.contains(section), "{section:?} is missing");
+    }
+    assert!(text.contains("END OF TERMS AND CONDITIONS"));
+    assert!(text.contains("How to Apply These Terms to Your New Programs"));
+    assert!(
+        text.trim_end()
+            .ends_with("<https://www.gnu.org/licenses/why-not-lgpl.html>.")
+    );
+    // The unmodified text: LF line endings, no tabs, nothing appended.
+    assert!(!text.contains('\r') && !text.contains('\t'));
+    assert_eq!(text.lines().count(), 674);
+}

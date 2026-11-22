@@ -683,10 +683,38 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         "The inventory conservatively includes build dependencies, not just linked code.\n"
         "Rust standard-library notices are in licenses/rust/.\n"
         "Adapted palette sources are in THEME_PROVENANCE.md; licenses are in licenses/themes/.\n"
-        "Midnight Explorer uses Slint under its royalty-free desktop application license.\n"
-        "The release download page displays Slint's attribution badge.\n"
-        "These notices do not assign a new license to Midnight Explorer source code.\n",
+        "Midnight Explorer uses Slint under Slint's GPL-3.0-only option.\n"
+        "The About dialog and the release download page display Slint's attribution.\n"
+        "Midnight Explorer itself is licensed under GPL-3.0-or-later; see the LICENSE file.\n"
+        "These notices cover third-party components only.\n",
         encoding="utf-8")
+
+
+# The program's license is the repository's LICENSE (GNU GPL version 3). Windows
+# packages name it LICENSE.txt, so it opens on a double-click.
+PROJECT_DOCUMENTS = ("SECURITY.md", "docs/SYSTEM_REQUIREMENTS.md", "docs/KEYBOARD_SHORTCUTS.md",
+                     "docs/FEATURE_STATUS.md", "docs/ASSET_PROVENANCE.md")
+SOURCE_REPOSITORY = "https://github.com/TomasJelinek/fm"
+
+
+def project_license_name(target):
+    return "LICENSE.txt" if target.endswith("windows-msvc") else "LICENSE"
+
+
+def copy_project_documents(stage, root, target):
+    """The license, the project README and the user documents every archive carries."""
+    shutil.copyfile(root / "LICENSE", stage / project_license_name(target))
+    shutil.copyfile(root / "README.md", stage / "README.md")
+    for relative in PROJECT_DOCUMENTS:
+        shutil.copyfile(root / relative, stage / Path(relative).name)
+
+
+def check_release_readme(readme, version):
+    """The run instructions name this version and where its corresponding source is."""
+    if not readme.startswith(f"Midnight Explorer {version} "):
+        raise ValueError(f"The release README must begin with 'Midnight Explorer {version} '")
+    if f"{SOURCE_REPOSITORY}/tree/v{version}" not in readme:
+        raise ValueError(f"The release README must name its source, {SOURCE_REPOSITORY}/tree/v{version}")
 
 
 def write_archive(stage, archive, binary_name, archive_format, executables=()):
@@ -808,9 +836,7 @@ def main():
     name = f"midnight-explorer-{version}-{args.target}"
     output = build_output(args.output, root)
     stage = output / name
-    readme = args.readme.read_text(encoding="utf-8")
-    if not readme.startswith(f"Midnight Explorer {version} "):
-        raise ValueError(f"{args.readme} must begin with 'Midnight Explorer {version} '")
+    check_release_readme(args.readme.read_text(encoding="utf-8"), version)
     viewers_root = args.viewers_root or args.binary.parent / "viewers"
     filesystem_root = args.filesystems_root or args.binary.parent / "filesystems"
     thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
@@ -830,9 +856,7 @@ def main():
     shutil.copyfile(args.readme, stage / "README.txt")
     shutil.copyfile(root / "Cargo.lock", stage / "Cargo.lock")
     shutil.copyfile(root / "assets/branding/midnight-explorer.png", stage / "midnight-explorer.png")
-    for relative in ("SECURITY.md", "docs/SYSTEM_REQUIREMENTS.md", "docs/KEYBOARD_SHORTCUTS.md",
-                     "docs/FEATURE_STATUS.md", "docs/ASSET_PROVENANCE.md"):
-        shutil.copyfile(root / relative, stage / Path(relative).name)
+    copy_project_documents(stage, root, args.target)
     if args.desktop_entry:
         shutil.copyfile(args.desktop_entry, stage / args.desktop_entry.name)
     plugins = copy_viewer_packages(stage, viewers_root, args.target, required_ids=REQUIRED_VIEWERS)

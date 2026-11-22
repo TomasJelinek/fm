@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # Generated bindings have no unit tests. Keep presenter tests in midnight-ui so
 # the large generated module is not compiled again as part of its test harness.

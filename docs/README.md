@@ -11,7 +11,8 @@ show that a feature exists.
 
 | Document | Purpose |
 | --- | --- |
-| [Project README](../README.md) | Building, installing and running the application, and its controls. |
+| [Project README](../README.md) | Overview, downloads, building from source and the license. |
+| [User guide](USER_GUIDE.md) | Building, installing and running the application, and its controls. |
 | [Feature status](FEATURE_STATUS.md) | What each feature area implements on Windows and Linux, and where it is verified. |
 | [Keyboard shortcuts](KEYBOARD_SHORTCUTS.md) | The default shortcuts and the configurable actions. |
 | [System requirements](SYSTEM_REQUIREMENTS.md) | Supported systems, required packages and runtime prerequisites. |

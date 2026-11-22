@@ -352,7 +352,8 @@ class RuntimePackages(unittest.TestCase):
 
     def release(self, source, readme_version='0.2.0'):
         readme = self.root / 'README.txt'
-        readme.write_text(f'Midnight Explorer {readme_version} - fixture\n')
+        readme.write_text(f'Midnight Explorer {readme_version} - fixture\n'
+                          f'https://github.com/TomasJelinek/fm/tree/v{readme_version}\n')
         output = self.root / 'release-output'
         command = [sys.executable, '-B', str(ROOT / 'scripts/package-release.py'),
                    '--binary', str(source / 'me'), '--metadata', str(self.root / 'absent.json'),

@@ -1,7 +1,7 @@
 # Build, test and install a viewer plugin
 
 This guide covers independent viewer plugins. To build, validate and run the
-application itself, see [Build and run](../../README.md#build-and-run) in the README.
+application itself, see [Build and run](../USER_GUIDE.md#build-and-run) in the user guide.
 
 Use Rust 1.99 or newer (the plugins' `rust-version`; the repository pins 1.99.1 in
 `rust-toolchain.toml`) with the native target toolchain: MSVC Build Tools on

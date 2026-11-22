@@ -29,6 +29,8 @@ export global AboutView {
     in property <string> detail-text;
     callback filter(string);
     callback open(string, string);
+    // Shows Midnight Explorer's own license, the GNU GPL, in the detail view.
+    callback open-own-license();
     // Retires a shown hint before its control is destroyed: Slint 1.18.1 panics
     // when a popup's `if` drops a control whose tooltip is showing.
     callback retire-hints();
@@ -585,7 +587,7 @@ export component AboutDialog inherits Rectangle {
                         // with a large font, so Copyright stays whole and the values
                         // keep one column.
                         property <length> labels: max(96px, version-row.label-needs, copyright-row.label-needs,
-                            built-row.label-needs, libraries-row.label-needs);
+                            license-row.label-needs, built-row.label-needs, libraries-row.label-needs);
                         width: parent.width; height: parent.height;
                         VerticalLayout {
                             spacing: 10px; alignment: start; padding-right: 6px;
@@ -599,14 +601,27 @@ export component AboutDialog inherits Rectangle {
                             }
                             Rectangle { height: 1px; background: Theme.frame; }
                             version-row := InfoRow { label: "Version"; value: root.application-version; label-width: info.labels; }
-                            // Plain text like the version. The project has no licence yet,
-                            // so the copyright line names none.
+                            // Plain text like the version.
                             copyright-row := InfoRow { label: "Copyright"; value: "© 2026 Tomas Jelinek"; label-width: info.labels; }
+                            license-row := InfoRow { label: "License"; value: "GNU General Public License, version 3 or later"; label-width: info.labels; }
                             built-row := InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; label-width: info.labels; }
                             libraries-row := InfoRow { label: "Libraries"; value: "Every open-source library and bundled component this package ships is listed with its license on the Licenses tab."; label-width: info.labels; }
                             Rectangle { height: 1px; background: Theme.frame; }
-                            // Slint's royalty-free license requires this attribution to stay
-                            // visible. The covering TouchArea keeps a click from opening its
+                            Text {
+                                text: "Midnight Explorer is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It comes with ABSOLUTELY NO WARRANTY.";
+                                color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                HintedActionButton {
+                                    text: "View license"; fallback-icon: FallbackIcons.view;
+                                    hint: "Show the full text of the GNU General Public License, version 3.";
+                                    clicked => { AboutView.open-own-license(); }
+                                }
+                            }
+                            Rectangle { height: 1px; background: Theme.frame; }
+                            // Slint's attribution stays visible whichever of its licenses
+                            // applies (DEPENDENCY_POLICY.md). The covering TouchArea keeps a click from opening its
                             // link: Slint would start the browser with std::process::Command on
                             // the UI thread, outside the process-creation lock (WORKER_SDK.md).
                             Rectangle {
@@ -636,7 +651,8 @@ export component AboutDialog inherits Rectangle {
                                 spacing: 6px;
                                 Text { text: AboutView.detail-title; color: Theme.strong-text; font-size: Theme.font-size * 1.2; font-weight: 700; overflow: elide; }
                                 InfoRow { label: "License"; value: AboutView.detail-license; }
-                                InfoRow { label: "Used by"; value: AboutView.detail-used-by; }
+                                // Midnight Explorer's own license names no component.
+                                if AboutView.detail-used-by != "" : InfoRow { label: "Used by"; value: AboutView.detail-used-by; }
                             }
                             Rectangle {
                                 vertical-stretch: 1; min-height: max(56px, Theme.small-font * 4 + 22px);

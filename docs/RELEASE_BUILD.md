@@ -150,7 +150,8 @@ Python 3.11 or later and its standard library. It neither builds nor publishes.
   folder or archive.
 - Every module input and the README version are validated before the staging folder is
   created, so a refused run leaves nothing that blocks the next attempt. The `--readme`
-  file must begin with `Midnight Explorer VERSION ` for the workspace version, and
+  file must begin with `Midnight Explorer VERSION ` for the workspace version and name
+  the release's source, `https://github.com/TomasJelinek/fm/tree/vVERSION`, and
   `--revision` must be the full 40-character Git revision.
 - `--metadata` takes target-filtered Cargo metadata:
   `cargo metadata --locked --format-version 1 --filter-platform TARGET`. Its source
@@ -200,9 +201,13 @@ An archive contains:
 - the executable and `midnight-elevated-listing` (`.exe` on Windows) beside it;
 - on Linux, `install-html-viewer-apparmor.sh` and, with `--desktop-entry`, the desktop
   entry;
-- `README.txt` (run instructions), `SECURITY.md`, `SYSTEM_REQUIREMENTS.md`,
-  `KEYBOARD_SHORTCUTS.md`, `FEATURE_STATUS.md`, `ASSET_PROVENANCE.md`,
-  `THEME_PROVENANCE.md` and the application icon;
+- the program's license, the unmodified GNU GPL version 3 text from the repository's
+  `LICENSE`: `LICENSE.txt` in the Windows ZIP, so that it opens on a double-click, and
+  `LICENSE` in the Linux tar.gz;
+- `README.txt` (run instructions, which must name the version and its source,
+  `https://github.com/TomasJelinek/fm/tree/v<version>`), the project's `README.md`,
+  `SECURITY.md`, `SYSTEM_REQUIREMENTS.md`, `KEYBOARD_SHORTCUTS.md`, `FEATURE_STATUS.md`,
+  `ASSET_PROVENANCE.md`, `THEME_PROVENANCE.md` and the application icon;
 - `BUILD-INFO.json` with the version, target, source revision, Rust version and the
   executable's SHA-256, and the manifests, file sizes and SHA-256 values of the
   authorization helper and every module;
@@ -248,7 +253,9 @@ used the shipped helper from such a folder; see
 their users must replace or delete.
 
 The public download page carries the official Slint attribution badge, and the
-application keeps its AboutSlint widget.
+application keeps its AboutSlint widget. Midnight Explorer is GPL-3.0-or-later, so each
+published release must have its corresponding source available: push the release tag
+(`v<version>`) for the packaged commit before publishing the archives.
 
 Before publishing, unpack both archives, compare the executable hashes with the tested
 artifacts, run the unpacked executables' filesystem and UI smoke checks, inspect the

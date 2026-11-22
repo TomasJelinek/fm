@@ -11,11 +11,11 @@
 //! Space and Backspace load the file they open as it is at that moment: a file changed
 //! after the viewer opened shows its new content. In a folder whose order holds more
 //! than 8 MiB of paths, they cycle within the contiguous window of the order that the
-//! viewer keeps around the opened file (README, "Viewers"): from the first file
+//! viewer keeps around the opened file (user guide, "Viewers"): from the first file
 //! Backspace shows the window's last file, not the folder's, and from the last file
 //! Space shows the window's first file.
 //!
-//! Links in Markdown and HTML documents (README, "Links") are followed as a person follows
+//! Links in Markdown and HTML documents (user guide, "Links") are followed as a person follows
 //! them: see [`links`]. A web or mail link reaches the presenter's URL opening, which this
 //! harness's Engine refuses without a desktop service, so no browser or mail program ever
 //! starts.
@@ -194,7 +194,7 @@ fn shows(
     })
 }
 
-/// Space and Backspace load the file they open as it is at that moment (README): b.txt
+/// Space and Backspace load the file they open as it is at that moment (user guide): b.txt
 /// changed after a.txt was opened shows its new text after Space, and a.txt changed
 /// meanwhile shows its new text after Backspace.
 fn reload(app: &mut App, context: &mut Context) -> Result<(), String> {
@@ -301,7 +301,7 @@ fn prepare_order(context: &mut Context) -> Result<usize, String> {
 /// A folder whose paths exceed the 8 MiB order budget by half: from its first file,
 /// Backspace shows the last file of the window the viewer keeps (not the folder's last
 /// file) and Space returns; from its last file, Space shows the window's first file and
-/// Backspace returns (README: navigation cycles within a contiguous window around the
+/// Backspace returns (user guide: navigation cycles within a contiguous window around the
 /// opened file, which reaches the start or end of the folder there).
 fn large_order(app: &mut App, context: &mut Context, count: usize) -> Result<(), String> {
     panel::enter(app, PaneId::Right, "order")?;
@@ -1047,7 +1047,7 @@ const FILE_SHOWN: (&str, &str) = ("No viewer shows ", "; it is shown in the acti
 /// The document opened from the relative link, and its text.
 const OTHER: (&str, &str) = ("other.md", "Back home");
 
-/// `links/links.md` with one link of every kind the host's policy knows (README, "Links"),
+/// `links/links.md` with one link of every kind the host's policy knows (user guide, "Links"),
 /// each after a word or two so that no link starts a line, and the files and the folder
 /// its local links lead to. The program is never run: an executable header with NUL
 /// bytes and no code, so no viewer claims it and the policy shows it in the panel.
@@ -1087,7 +1087,7 @@ fn prepare_links(context: &mut Context) -> Result<(), String> {
     Ok(())
 }
 
-/// Links in a Markdown document (README, "Links"; `midnight_core::viewer_links`): Tab and
+/// Links in a Markdown document (user guide, "Links"; `midnight_core::viewer_links`): Tab and
 /// Shift+Tab move a focus ring through the links with each target on the status line;
 /// Enter and a click follow a link to the presenter's URL opening, a drag over one
 /// selects; the pointer over a link shows its target; a mail link loses its `attach`

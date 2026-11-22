@@ -96,7 +96,7 @@ It prints the bundle folder; the builds take its `.cargo/registry.toml`. See the
 - CI's `archive-filesystem` job checks formatting and Clippy, runs the plugin's tests
   and packages the worker on Windows and Linux from a checkout that contains only the
   plugin; its `check` job runs the host tests against that package.
-  [Full validation](../README.md#full-validation) runs the same steps.
+  [Full validation](USER_GUIDE.md#full-validation) runs the same steps.
 
 ## Saved locations
 

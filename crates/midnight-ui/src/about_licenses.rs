@@ -1,17 +1,25 @@
-//! The About dialog's third-party list and library details.
+//! The About dialog's third-party list and library details, and Midnight Explorer's
+//! own license.
 //!
 //! The list is the current dependency inventory (`docs/dependencies/cargo-licenses.csv`)
 //! restricted to the components a release ships for this platform, plus the
 //! bundled components outside Cargo that `docs/THIRD_PARTY.md` records. Like the
 //! release notice, it conservatively includes build- and test-time libraries. A
 //! library's license text and authors come from the backend
-//! (`Command::ReadLicenseNotice`); this module reads no files.
+//! (`Command::ReadLicenseNotice`); this module reads no files. The program's own
+//! license is the repository's `LICENSE`, compiled in.
 use crate::{AboutView, LicenseRow, MainWindow, Presenter};
 use midnight_core::{Command, LicenseNotice, LicenseNoticeId, LicenseNoticeRequest};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::OnceLock};
 
 const INVENTORY: &str = include_str!("../../../docs/dependencies/cargo-licenses.csv");
+/// Midnight Explorer's license: the unmodified GNU GPL version 3 text. The program is
+/// licensed under that version or, at the user's option, any later version.
+const OWN_LICENSE_TEXT: &str = include_str!("../../../LICENSE");
+const OWN_NAME: &str = "Midnight Explorer";
+const OWN_LICENSE: &str = "GPL-3.0-or-later";
+const OWN_COPYRIGHT: &str = "© 2026 Tomas Jelinek";
 const COLUMNS: [&str; 7] = [
     "name",
     "version",
@@ -489,6 +497,27 @@ fn open(
     view.set_detail_open(true);
 }
 
+/// Show Midnight Explorer's own license in the detail view. Its text is compiled in,
+/// so nothing is requested; an awaited library notice is dropped.
+fn open_own(window: &MainWindow, presenter: &RefCell<Presenter>) {
+    // The detail replaces the About tab: retire its View license hint first.
+    crate::tooltip::dismiss(window.window());
+    if let Ok(mut state) = presenter.try_borrow_mut() {
+        state.about_notice.cancel();
+    }
+    let view = window.global::<AboutView>();
+    view.set_detail_title(OWN_NAME.into());
+    view.set_detail_license(OWN_LICENSE.into());
+    view.set_detail_used_by(SharedString::new());
+    view.set_detail_loading(false);
+    view.set_detail_authors_heading("Copyright".into());
+    view.set_detail_authors(ModelRc::from(Rc::new(VecModel::from(vec![
+        SharedString::from(OWN_COPYRIGHT),
+    ]))));
+    view.set_detail_text(OWN_LICENSE_TEXT.into());
+    view.set_detail_open(true);
+}
+
 const UNAVAILABLE: &str = "The license text could not be requested. Go back and try again.";
 
 pub(crate) fn install(
@@ -511,6 +540,13 @@ pub(crate) fn install(
     view.on_retire_hints(move || {
         if let Some(window) = weak.upgrade() {
             crate::tooltip::dismiss(window.window());
+        }
+    });
+    let weak = window.as_weak();
+    let own_presenter = Rc::clone(&presenter);
+    view.on_open_own_license(move || {
+        if let Some(window) = weak.upgrade() {
+            open_own(&window, &own_presenter);
         }
     });
     let weak = window.as_weak();

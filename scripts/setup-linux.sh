@@ -60,7 +60,7 @@ for distribution in "$distribution_id" $distribution_like; do
     esac
 done
 if [ -z "$package_manager" ]; then
-    printf 'Unsupported Linux distribution: %s. Install the README prerequisites manually.\n' "$distribution_id" >&2
+    printf 'Unsupported Linux distribution: %s. Install the prerequisites listed in docs/USER_GUIDE.md manually.\n' "$distribution_id" >&2
     exit 1
 fi
 

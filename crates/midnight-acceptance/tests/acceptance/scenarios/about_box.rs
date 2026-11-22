@@ -1,7 +1,9 @@
 //! The About box, driven with the pointer and keys: opened from the toolbar's
 //! application icon; the About tab (Version, a Copyright row with the year and the owner's
-//! name, Built with, Libraries, in one label column; no Author row) laid out with room
-//! between its lines; Saturn drawn in the sky clear of the title and the icon, no
+//! name, License naming the GNU GPL version 3 or later, Built with, Libraries, in one label
+//! column; no Author row) laid out with room between its lines; the free-software notice
+//! and its View license showing the GPL's full text, with Back returning to the About tab;
+//! Saturn drawn in the sky clear of the title and the icon, no
 //! crescent moon; the Licenses tab: the count,
 //! the filter ("K of N", no match,
 //! cleared), a click selecting a library (selected state, the "›" open mark, View
@@ -281,6 +283,58 @@ fn spacing(texts: &[(String, Rect)], wanted: &[&str], minimum: f32) -> Result<f3
     Ok(tightest)
 }
 
+const LICENSE_VALUE: &str = "GNU General Public License, version 3 or later";
+const FREE_SOFTWARE: &str = "Midnight Explorer is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It comes with ABSOLUTELY NO WARRANTY.";
+
+/// The About tab names the program's license, states the free-software notice, and its
+/// View license shows the GPL's full text in the detail view; Back returns to the tab.
+fn own_license(app: &mut App, shown: &[(String, Rect)]) -> Result<(), String> {
+    if row_value(shown, "License").as_deref() != Some(LICENSE_VALUE) {
+        return Err(format!(
+            "the About tab's License row shows {:?}, not {LICENSE_VALUE:?}",
+            row_value(shown, "License")
+        ));
+    }
+    if !shown.iter().any(|(text, _)| text == FREE_SOFTWARE) {
+        return Err("the About tab shows no free-software notice".into());
+    }
+    input::click_button(app.slint(), "View license")?;
+    wait(
+        app,
+        "View license on the About tab to open the GPL",
+        detail_open,
+    )?;
+    let view = app.window.global::<AboutView>();
+    let (title, license) = (view.get_detail_title(), view.get_detail_license());
+    if title != "Midnight Explorer" || license != "GPL-3.0-or-later" {
+        return Err(format!(
+            "View license on the About tab shows {title:?} under {license:?}"
+        ));
+    }
+    let detail = texts(app);
+    if row_value(&detail, "License").as_deref() != Some("GPL-3.0-or-later") {
+        return Err(format!(
+            "the program's license detail shows License {:?}",
+            row_value(&detail, "License")
+        ));
+    }
+    if !detail.iter().any(|(text, _)| text == COPYRIGHT) {
+        return Err("the program's license detail shows no copyright line".into());
+    }
+    if !detail.iter().any(|(text, _)| {
+        text.contains("GNU GENERAL PUBLIC LICENSE") && text.contains("Version 3, 29 June 2007")
+    }) {
+        return Err("the program's license detail shows no GPL text".into());
+    }
+    input::click_button(app.slint(), "Back")?;
+    wait(app, "Back to the About tab", |app| {
+        !detail_open(app)
+            && inspect::visible_texts(app.slint())
+                .iter()
+                .any(|text| text == "Built with")
+    })
+}
+
 const COPYRIGHT_LABEL: &str = "Copyright";
 const COPYRIGHT: &str = "© 2026 Tomas Jelinek";
 /// The owner's name alone, as the removed Author row showed it.
@@ -512,6 +566,8 @@ fn checks(
             "Version",
             COPYRIGHT_LABEL,
             COPYRIGHT,
+            "License",
+            LICENSE_VALUE,
             "Built with",
             "Libraries",
         ],
@@ -526,6 +582,9 @@ fn checks(
         failures.push(error);
     }
     app.screenshot(context, "about-tab", "About, the About tab");
+    if let Err(error) = own_license(app, &shown) {
+        failures.push(error);
+    }
 
     // Left and Right move between the tabs.
     show_tab(app, "About")?;

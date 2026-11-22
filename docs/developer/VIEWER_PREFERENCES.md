@@ -230,7 +230,7 @@ invalid zoom modes are rejected. Defaults continue using the minimum schema need
 for other selected application features. Disabled or absent plugins do not erase
 their viewer preferences.
 
-Settings live in the same [native application preferences file](../../README.md)
+Settings live in the same [native application preferences file](../USER_GUIDE.md)
 as other options. Search text, opened file contents, per-file reading offsets and
 viewer window geometry are not serialized here. New viewer windows still use the
 main application's placement.

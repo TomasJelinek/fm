@@ -7,7 +7,7 @@ branding; file and drive icons continue to come from the operating system.
 - `moon-master.png`: original generated artwork, retained for future exports.
 - `midnight-explorer.png`: 256-pixel window icon, embedded by Slint. On Wayland,
   the compositor uses the installed desktop entry and this PNG instead; see the
-  [Linux launcher instructions](../../README.md#linux-desktop-launcher).
+  [Linux launcher instructions](../../docs/USER_GUIDE.md#linux-desktop-launcher).
 - `midnight-explorer.ico`: Windows executable icon with 16, 20, 24, 32, 40, 48, 64,
   128 and 256-pixel frames. Embedded at build time using the Windows SDK resource
   compiler; the application does not need to load an external icon file at runtime.

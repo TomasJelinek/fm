@@ -33,7 +33,7 @@ for argument in "$@"; do
 done
 
 if [ "$dry_run" = 0 ] && ! command -v docker >/dev/null 2>&1; then
-    printf '%s\n' 'Native build dependencies are missing. Install/start Docker with access for your user, or install the native prerequisites listed in README.md.' >&2
+    printf '%s\n' 'Native build dependencies are missing. Install/start Docker with access for your user, or install the native prerequisites listed in docs/USER_GUIDE.md.' >&2
     exit 1
 fi
 

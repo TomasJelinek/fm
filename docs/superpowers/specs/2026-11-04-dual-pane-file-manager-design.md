@@ -1313,7 +1313,7 @@ obsahovat označení komprese. Koncový odkaz se sleduje až při výslovné nav
 
 Podrobná rozhraní, prior art Salamanderu a ověřovací scénáře jsou v
 [návrhu hledání, tooltipů a metadat](2026-11-05-panel-search-and-metadata-design.md).
-[README](../../../README.md) obsahuje sestavení a spuštění Windows x64 a
+[README](../../USER_GUIDE.md) obsahuje sestavení a spuštění Windows x64 a
 Linuxu/Ubuntu/Mintu včetně `build.bat` a `build.sh`; macOS zůstává budoucí etapou.
 
 ## 31. Sdílení kódu a velikost generovaného Rustu

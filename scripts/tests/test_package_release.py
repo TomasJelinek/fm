@@ -469,5 +469,80 @@ class AuthorizationHelperPackageTests(unittest.TestCase):
             self.assertTrue(record["executable"])
 
 
+class ProjectLicenseTests(unittest.TestCase):
+    """Every archive carries the program's GPL text, the project README and the source."""
+
+    def setUp(self):
+        self.root = Path(__file__).resolve().parents[2]
+        temporary = self.root / "_build" / "tmp"
+        temporary.mkdir(parents=True, exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=temporary)
+        self.addCleanup(self.temporary.cleanup)
+        self.version = tomllib.loads((self.root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+
+    def test_the_repository_license_is_the_complete_gpl_version_3(self):
+        text = (self.root / "LICENSE").read_text(encoding="utf-8")
+        self.assertTrue(text.lstrip().startswith("GNU GENERAL PUBLIC LICENSE"))
+        self.assertIn("Version 3, 29 June 2007", text)
+        self.assertIn("END OF TERMS AND CONDITIONS", text)
+        self.assertEqual(len(text.splitlines()), 674)
+        manifest = tomllib.loads((self.root / "Cargo.toml").read_text())
+        self.assertEqual(manifest["workspace"]["package"]["license"], "GPL-3.0-or-later")
+
+    def test_windows_names_the_license_txt_and_linux_keeps_license(self):
+        for target, name, absent in (("x86_64-pc-windows-msvc", "LICENSE.txt", "LICENSE"),
+                                     ("x86_64-unknown-linux-gnu", "LICENSE", "LICENSE.txt")):
+            with self.subTest(target=target):
+                stage = Path(self.temporary.name) / target
+                stage.mkdir()
+                packaging.copy_project_documents(stage, self.root, target)
+                self.assertEqual(packaging.project_license_name(target), name)
+                self.assertEqual((stage / name).read_bytes(), (self.root / "LICENSE").read_bytes())
+                self.assertFalse((stage / absent).exists())
+                self.assertEqual((stage / "README.md").read_bytes(), (self.root / "README.md").read_bytes())
+                for relative in packaging.PROJECT_DOCUMENTS:
+                    self.assertTrue((stage / Path(relative).name).is_file(), relative)
+                archive_format = "zip" if name == "LICENSE.txt" else "tar.gz"
+                (stage / "me").write_text("fixture", encoding="utf-8")
+                archive = Path(self.temporary.name) / f"{target}.{archive_format}"
+                packaging.write_archive(stage, archive, "me", archive_format)
+                if archive_format == "zip":
+                    with zipfile.ZipFile(archive) as bundle:
+                        names = set(bundle.namelist())
+                else:
+                    with tarfile.open(archive) as bundle:
+                        names = set(bundle.getnames())
+                self.assertIn(f"{target}/{name}", names)
+                self.assertIn(f"{target}/README.md", names)
+                self.assertNotIn(f"{target}/{absent}", names)
+
+    def test_release_readmes_name_the_license_and_the_tagged_source(self):
+        source = f"https://github.com/TomasJelinek/fm/tree/v{self.version}"
+        for platform, license_name in (("windows", "LICENSE.txt"), ("linux", "LICENSE")):
+            with self.subTest(platform=platform):
+                readme = (self.root / "packaging" / platform / "README.txt").read_text(encoding="utf-8")
+                packaging.check_release_readme(readme, self.version)
+                self.assertIn(source, readme)
+                self.assertIn(f"see {license_name}.", readme)
+                self.assertIn("GNU General Public License, version 3", readme)
+        with self.assertRaises(ValueError):
+            packaging.check_release_readme(f"Midnight Explorer {self.version} - fixture\n", self.version)
+        with self.assertRaises(ValueError):
+            packaging.check_release_readme(f"Midnight Explorer 0.0.0 - fixture\n{source}\n", self.version)
+
+    def test_third_party_notice_states_the_program_and_slint_licenses(self):
+        stage = Path(self.temporary.name) / "release"
+        stage.mkdir()
+        rust_docs = Path(self.temporary.name) / "rust"
+        rust_docs.mkdir()
+        (rust_docs / "COPYRIGHT-library.html").write_text("Rust fixture", encoding="utf-8")
+        packaging.add_notices(stage, {"packages": [package("midnight-explorer", None)]},
+                              "midnight-explorer v0.1.0\n", rust_docs, None)
+        notice = (stage / "THIRD-PARTY.txt").read_text(encoding="utf-8")
+        self.assertIn("licensed under GPL-3.0-or-later; see the LICENSE file", notice)
+        self.assertIn("Slint's GPL-3.0-only option", notice)
+        self.assertNotIn("do not assign", notice)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,9 @@ This document records the third-party code and data that Midnight Explorer, its 
 API/SDK and its independent plugins use, the license choices made for them, and how the
 dependency inventory is produced. The rules are in the
 [dependency policy](DEPENDENCY_POLICY.md). These records describe third-party components
-only; they grant no license to Midnight Explorer's own code.
+only. Midnight Explorer itself is licensed under the GNU General Public License, version
+3 or later ([LICENSE](../LICENSE)); its plugins and public API/SDK workspaces are
+MIT-licensed. Every component listed here is distributed under its own license.
 
 ## Inventories
 
@@ -49,10 +51,11 @@ lock file's checksum. A regeneration from Cargo's own captures
 
 ### Slint
 
-Slint 1.18.1 is used under the **Slint Royalty-free License 2.0** branch of its
+Slint 1.18.1 is used under the **GPL-3.0-only** branch of its
 `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`
-declaration. The About dialog shows Slint's AboutSlint attribution. The decision and the
-license's conditions are in the [dependency policy](DEPENDENCY_POLICY.md#current-decisions).
+declaration, which matches the application's GPL license. The About dialog keeps Slint's
+AboutSlint attribution and release pages the Made with Slint badge. The decision is in
+the [dependency policy](DEPENDENCY_POLICY.md#current-decisions).
 
 ### Async runtime (Tokio)
 
@@ -231,7 +234,7 @@ This table is a guide; the inventories above list every selected crate.
 
 | Library | Purpose | Declared license |
 | --- | --- | --- |
-| Slint 1.18.1 | UI toolkit, compiler and renderers | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0; royalty-free branch selected |
+| Slint 1.18.1 | UI toolkit, compiler and renderers | GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0; GPL-3.0-only branch selected |
 | Tokio 1.54.1 | Asynchronous backend work | MIT |
 | serde 1.0.229 / serde_json 1.0.154 / toml 0.9.12 | Settings, manifests and wire data | MIT OR Apache-2.0 |
 | sha2 0.10.9 | SHA-256 copy verification, plugin runtime trust, SDK packages and SHA-256/SHA-512 checksums | MIT OR Apache-2.0 |

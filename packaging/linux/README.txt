@@ -90,5 +90,10 @@ Alt+F3 forces basic text; Ctrl+F searches; Space advances to the next captured
 panel file; Escape closes the viewer. Selection/copy is limited to the loaded page.
 F4 opens the external editor configured in Options > Editors. Options > Plugins
 lists installed packages; enabling/disabling a package takes effect after restart.
-Source and releases: https://github.com/TomasJelinek/fm
+License: GNU General Public License, version 3 or (at your option) any later
+version, with no warranty; see LICENSE.
+The plugins' own code is MIT-licensed.
+Source of this release (its tagged commit; BUILD-INFO.json names the revision):
+https://github.com/TomasJelinek/fm/tree/v0.3.0
+Releases: https://github.com/TomasJelinek/fm/releases
 Dependency notices and licenses are included alongside the executable.

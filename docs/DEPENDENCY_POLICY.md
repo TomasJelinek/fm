@@ -38,15 +38,29 @@ the license of Midnight Explorer or its public API as a side effect of this poli
 
 ## Current decisions
 
-**Slint 1.18.1:** the application uses the **Slint Royalty-free License 2.0** for
-desktop applications. It requires no paid Slint subscription. Retain Slint notices
-and the attribution required by the exact license; the application has About Slint
-attribution and public release download pages carry the Slint badge. The license
-also limits standalone redistribution, embedded use and exposing Slint APIs to
-third-party applications. The custom royalty-free license is not described here
-as an OSI open-source license. The upstream GPL-3.0 alternative is open source;
-the paid Software License alternative is not selected. See the
-[pinned license](https://github.com/slint-ui/slint/blob/v1.18.1/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md)
+**Midnight Explorer's own license (owner's decision, 22 November 2026):** the
+application is licensed under the GNU General Public License, version 3 or (at the
+user's option) any later version, `GPL-3.0-or-later`; the unmodified license text is the
+repository's [LICENSE](../LICENSE) and ships in every release archive. The plugins under
+`plugins/` stay MIT-licensed, each by its author, and the public API/SDK workspaces are
+MIT-licensed so that independent plugins under permissive licenses can depend on them;
+a GPL host loading MIT plugins is compatible. Binary releases are accompanied by their
+corresponding source: each release's tagged commit in the public repository, which the
+release notes, the archives' `README.txt` and `BUILD-INFO.json` name. Every dependency
+shipped with the application must allow distribution of the combined work under
+GPL-3.0; `GPL-2.0-only`, CDDL, EPL-1.0, MPL-1.1, the original four-clause BSD license,
+the OpenSSL/SSLeay licenses and non-commercial or no-derivatives terms do not.
+
+**Slint 1.18.1:** the application uses Slint under the **GPL-3.0-only** branch of its
+`GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`
+declaration, which matches the application's own license and needs no paid Slint
+subscription. Because that branch is version 3 only, the released binaries, which
+combine Slint with the application, are conveyed under GPL version 3; the project's own
+source remains GPL-3.0-or-later. The Slint Royalty-free License 2.0 would also permit
+this desktop use but is not relied on, and the paid Software License alternative is not
+selected. The application keeps the About Slint attribution and public release download
+pages carry the Made with Slint badge in any case. See the
+[pinned licenses](https://github.com/slint-ui/slint/tree/v1.18.1/LICENSES)
 and [upstream licensing terms](https://slint.dev/terms-and-conditions).
 
 **cbindgen 0.29.4:** MPL-2.0, used by the public API header-generation tool. It is
@@ -128,6 +142,6 @@ need a run-time fallback when GStreamer is absent.
 platform helper may load a distribution FFmpeg that was built with GPL components (as
 Debian's and Ubuntu's are) at run time, in its own sandboxed helper process. Nothing
 GPL is shipped: no GPL code is bundled, linked at build time or redistributed with the
-application or its packages. Revisit this when the project's own license is chosen;
-if that license is closed-source, switch the helper to LGPL-only FFmpeg builds by
-checking `avcodec_license()` and refusing a GPL build like a missing decoder.
+application or its packages. The project's own license is GPL-3.0-or-later, so this
+stays: a distribution FFmpeg under GPL-2.0-or-later is compatible with it, and the
+helper keeps accepting GPL builds.

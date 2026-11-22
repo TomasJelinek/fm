@@ -421,8 +421,9 @@ Source directories are removed postorder only when their contents were moved;
 skips and failures preserve unfinished sources. Platform and metadata limits
 remain explicit in the transfer contract.
 Options is the gear next to the right end of the top toolbar. The application moon
-icon to its right, at the end, opens About, with the application version and
-copyright; Escape or Close dismisses it. Both controls stay in place when the panel
+icon to its right, at the end, opens About, with the application version,
+copyright and license; its View license shows the GNU GPL text, and Escape or Back
+returns from it. Escape or Close dismisses About. Both controls stay in place when the panel
 tools scroll.
 In the Options page list, Up and Down (or Left and Right) show the page before or
 after the focused entry and move the focus with it, stopping at the first and the

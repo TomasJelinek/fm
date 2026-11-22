@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 # The opt-in end-to-end acceptance suite (docs/developer/ACCEPTANCE.md). Nothing here
 # runs in `cargo test --workspace`, CI or `./build.sh --validate`: the only test target
 # requires the `acceptance` feature, which no other package enables, and every

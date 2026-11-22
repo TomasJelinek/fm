@@ -116,7 +116,7 @@ that **Retry with authorization** needs an administrator-managed installation. T
 authorization helper never runs from this per-user runtime: it runs as an
 administrator, so the runtime's user must not be able to replace it. Authorized
 listing needs an installation that only administrators can change, for example a
-folder below `C:\Program Files` ([installation steps](../../README.md#build-and-run));
+folder below `C:\Program Files` ([installation steps](../USER_GUIDE.md#build-and-run));
 see the [directory authorization helper](../../SECURITY.md#directory-authorization-helper).
 From a per-user runtime, Retry with authorization is refused with an explanation of
 this requirement; plugin loading is unaffected. A helper found in a per-user runtime is

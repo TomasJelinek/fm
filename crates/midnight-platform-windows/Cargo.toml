@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [features]
 # `new_junction` (src/test_fixtures.rs) for other packages' Windows tests: a directory

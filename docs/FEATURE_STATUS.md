@@ -34,7 +34,7 @@ How to read it:
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
   release profile (REL-02); signed Windows release binaries (REL-03).
-- **Documents:** [project README](../README.md) (Build and run),
+- **Documents:** [user guide](USER_GUIDE.md#build-and-run) (Build and run),
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).
 - **Verified:** the last hosted CI run recorded as passing every job on Windows and
@@ -58,7 +58,7 @@ How to read it:
   silently (NOTICE-03); watch gaps after failed archive or network navigation
   (WATCH-01); Ctrl+letter shortcuts on layouts without Latin letters (INPUT-01).
 - **Documents:** [keyboard shortcuts](KEYBOARD_SHORTCUTS.md),
-  [project README](../README.md) (Controls),
+  [user guide](USER_GUIDE.md#controls) (Controls),
   [parent navigation](developer/PARENT_NAVIGATION.md),
   [path paste](developer/PATH_PASTE.md), [pixel scrolling](developer/SCROLLING.md),
   [panel diagnostics](developer/PANEL_DIAGNOSTICS.md),
@@ -147,7 +147,7 @@ How to read it:
   open is refused (TRASH-01); a Linux Properties rename that leaves its staging folder
   counts the item as failed (META-04); Linux Rename and permanent Delete on live vfat,
   exFAT, ntfs3 and CIFS mounts are not verified (PLAT-02).
-- **Documents:** [project README](../README.md) (Controls),
+- **Documents:** [user guide](USER_GUIDE.md#controls) (Controls),
   [operation progress](developer/OPERATION_PROGRESS.md),
   [security requirements](../SECURITY.md#directory-comparison-filters-and-metadata-editing).
 - **Verified:** `delete`, `trash`, `files_delete`, `files_trash`, `mkdir`, `newfile`,
