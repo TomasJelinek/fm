@@ -5,6 +5,9 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "archive_password_targets.rs"]
+mod archive_password_targets;
+
 #[derive(Debug, Default)]
 struct LockedMount {
     unlocked: AtomicBool,
@@ -32,12 +35,20 @@ impl ArchiveMount for LockedMount {
 }
 
 fn member(id: u64, name: &str, kind: EntryKind, encryption: ArchiveEncryption) -> Entry {
+    member_in(42, id, name, kind, encryption)
+}
+
+/// A member listed through session `mount`.
+fn member_in(
+    mount: u64,
+    id: u64,
+    name: &str,
+    kind: EntryKind,
+    encryption: ArchiveEncryption,
+) -> Entry {
     Entry::from_archive(ArchiveNode {
         modified: None,
-        id: VirtualEntryId {
-            mount: 42,
-            entry: id,
-        },
+        id: VirtualEntryId { mount, entry: id },
         parent: 1,
         raw_name: name.as_bytes().into(),
         display_name: name.into(),
@@ -52,13 +63,25 @@ fn member(id: u64, name: &str, kind: EntryKind, encryption: ArchiveEncryption) -
     })
 }
 
-/// `share.zip`: a folder holding encrypted members, an encrypted member and a plain one.
+/// `share.zip`, listing `entries` through `mount`, in the left panel.
 fn share_pane(mount: Arc<LockedMount>, entries: Vec<Entry>) -> Presenter {
+    let mut p = native_left();
+    enter_share(&mut p, mount, entries);
+    p
+}
+
+/// The left panel in its native folder, with the viewer settings read.
+fn native_left() -> Presenter {
     let mut p = Presenter::new(test_root(), test_root());
+    p.viewer_plugins.startup_disabled = Some(Arc::from([]));
     let path = p.panes[0].path.to_string_lossy().into_owned();
     let nav = begin(&mut p, PaneId::Left, &path);
     finish(&mut p, PaneId::Left, nav, vec![]);
+    p
+}
 
+/// The left panel enters `share.zip`, which lists `entries` through `mount`.
+fn enter_share(p: &mut Presenter, mount: Arc<LockedMount>, entries: Vec<Entry>) {
     let location = ArchiveLocation {
         mount: Some(mount),
         address: ArchiveAddress {
@@ -83,7 +106,6 @@ fn share_pane(mount: Arc<LockedMount>, entries: Vec<Entry>) -> Presenter {
             entries,
         }),
     });
-    p
 }
 
 fn share() -> (Presenter, Arc<LockedMount>) {
@@ -194,9 +216,9 @@ fn assert_on_row(p: &Presenter, id: u64) {
 }
 
 /// Escape, Cancel or the dialog's × (each reaches `cancel_archive_password`, through
-/// `ArchivePasswords.dismiss`).
+/// `ArchivePasswords.dismiss`; it has no sender, so a dismissal sends nothing).
 fn dismiss(p: &mut Presenter) {
-    p.cancel_archive_password(&|command| panic!("a dismissal sends nothing: {command:?}"));
+    p.cancel_archive_password();
 }
 
 fn unlock_request(commands: &[Command], expected: &str) -> DesktopRequestId {
@@ -372,7 +394,7 @@ fn f5_of_a_folder_with_encrypted_members_asks_once_and_cancel_still_copies() {
         p.copies.draft.is_none(),
         "the Copy dialog waits for the password"
     );
-    p.cancel_archive_password(&send);
+    p.cancel_archive_password();
     assert!(
         p.copies.draft.is_some(),
         "without the password the copy goes on and skips the protected members"

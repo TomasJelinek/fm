@@ -526,6 +526,10 @@ impl Presenter {
         self.retired
             .push(Box::new(mem::take(&mut self.checksums.sessions)));
         self.force_retire_copy_draft();
+        // The password dialog's session and what its action captured (listings, a Copy
+        // draft, a viewer launch).
+        self.retired
+            .push(Box::new(mem::take(&mut self.archive_password)));
         self.retire_metadata();
         self.force_retire_drag_owners();
         self.retire_drag_drop();

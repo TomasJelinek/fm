@@ -85,7 +85,8 @@ impl Presenter {
     }
 
     /// F3 and Alt+F3: the focused file's viewer launch, or why there is none. `None`
-    /// declines silently (a focused folder or the parent row).
+    /// declines silently (a focused folder or the parent row). After an archive's
+    /// password, it is the member that F3 named when it asked (`take_archive_view`).
     pub fn view_command(
         &mut self,
         pane: PaneId,
@@ -93,6 +94,9 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) -> Result<ViewerLaunch, Option<String>> {
         self.panel_command(pane, send, |p| {
+            if let Some(launch) = p.take_unlocked_view(pane, basic) {
+                return Ok(launch);
+            }
             p.viewer_launch(pane, basic)
                 .ok_or_else(|| p.viewer_unavailable_reason(pane))
         })

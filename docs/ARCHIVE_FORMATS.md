@@ -302,9 +302,21 @@ message: F3 and Enter open nothing, and the keyboard is back in the file list wi
 cursor on the same row. A copy goes on and skips each protected member, naming that
 reason in its results, without asking again. The next action that needs the password
 asks for it again. If the archive plugin cannot decrypt the members, or the archive
-fails while the password is checked, the dialog closes and a message says why. Find's
-search inside archives never asks: it skips protected members with that reason, and
-previews of protected members appear once the archive has been unlocked in its panel.
+fails while the password is checked, the dialog closes and a message says why.
+
+The dialog keeps what it was asked for: after the password, F3 views the member that it
+was pressed on, Enter opens that archive and F5 copies that selection, wherever the
+cursor is by then. Another window can move the panel while the dialog is open (Find's
+Go to file). If the panel no longer shows the archive when OK is pressed, the password
+is not used; if it moves while the password is checked, the accepted password opens
+nothing. Either way the status line says "The archive was left; open the member again."
+(for F5 "copy the members again", for a 7z listing "open the folder again"). F3 or F5
+that cannot go on at that moment, for example on a member that a filter hides or while
+the listing is still loading, says why instead of asking for the password.
+
+Find's search inside archives never asks: it skips protected members with that reason,
+and previews of protected members appear once the archive has been unlocked in its
+panel.
 
 Once accepted, the password is remembered until the archive is closed, and F3, Enter
 and F5 use it without asking. The archive is closed when nothing uses it any more:

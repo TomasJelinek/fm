@@ -806,30 +806,44 @@ impl Presenter {
     }
 
     fn request_archive_copy_dialog(&mut self, pane: PaneId) {
-        // Encrypted members of a locked archive: its password is asked for once first.
-        if self.copy_needs_archive_password(pane) {
-            return;
-        }
-        self.request_archive_copy_dialog_unchecked(pane);
-    }
-
-    /// The Copy dialog of an archive selection, whether or not its password was entered:
-    /// without it the copy skips the protected members with that reason.
-    pub(super) fn request_archive_copy_dialog_unchecked(&mut self, pane: PaneId) {
-        let p = &self.panes[pane.index()];
-        let Some(archive) = &p.archive else {
+        let Some(draft) = self.archive_copy_draft(pane) else {
             return;
         };
+        // Encrypted members of a locked archive: its password is asked for once first,
+        // and the dialog then shows this draft, whatever the panel shows by then.
+        if let Some(draft) = self.copy_needs_archive_password(pane, draft) {
+            self.open_archive_copy_draft(draft);
+        }
+    }
+
+    /// Show `draft`, the Copy dialog of an archive selection, unless another transfer
+    /// dialog took its place meanwhile.
+    pub(super) fn open_archive_copy_draft(&mut self, draft: CopyDraft) {
+        if self.operations.closing
+            || self.copies.draft.is_some()
+            || self.copies.tree_pending.is_some()
+        {
+            self.retired.push(Box::new(draft));
+            return;
+        }
+        self.copies.draft = Some(draft);
+    }
+
+    /// The Copy dialog of the archive selection that F5 names now, whether or not its
+    /// password is entered: without it the copy skips the protected members with that
+    /// reason. `None` when there is nothing to copy; a notice then says why.
+    fn archive_copy_draft(&mut self, pane: PaneId) -> Option<CopyDraft> {
+        let p = &self.panes[pane.index()];
+        let archive = p.archive.as_ref()?;
         if p.loading || archive.selection_pending || !p.rows_settled() {
             self.desktop.report(
                 "Selection still loading",
                 "Wait for the archive listing and selection to finish before copying.".into(),
             );
-            return;
+            return None;
         }
-        if archive.location.mount.is_none() {
-            return;
-        }
+        // Without its session there is nothing to copy from.
+        archive.location.mount.as_ref()?;
         // The focused row only while the panel shows it (a filter may hide it).
         let focused = (!p.parent_cursor && p.focus_actionable())
             .then_some(p.cursor)
@@ -837,7 +851,7 @@ impl Presenter {
             .and_then(|id| p.entry_by_id(id));
         if archive.selected.is_empty() && focused.is_none() {
             self.note_filter_hides_focus(pane);
-            return;
+            return None;
         }
         // The panel's own counts of the marked members (settled: the selection is not
         // pending here).
@@ -863,7 +877,7 @@ impl Presenter {
             destination: destination.clone(),
         }));
         let request = self.desktop.request();
-        self.copies.draft = Some(CopyDraft {
+        Some(CopyDraft {
             token: format!("copy-draft:{}", request.0),
             input,
             source,
@@ -872,7 +886,7 @@ impl Presenter {
             error: String::new(),
             intent: TransferIntent::Copy,
             retire_requested: false,
-        });
+        })
     }
 
     pub(crate) fn cancel_copy_dialog(&mut self, token: &str) {

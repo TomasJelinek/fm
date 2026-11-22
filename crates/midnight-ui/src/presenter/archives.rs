@@ -788,10 +788,29 @@ impl Presenter {
         format: ArchiveFormat,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        let Some(location) = self.panes[pane.index()]
+            .archive
+            .as_ref()
+            .map(|archive| archive.location.clone())
+        else {
+            return false;
+        };
+        self.open_member_archive_in(pane, location, node, format, send)
+    }
+
+    /// Open `node`, a member of the folder `location` of `pane`'s archive, as an archive
+    /// inside it. The password dialog passes the folder that Enter named.
+    pub(super) fn open_member_archive_in(
+        &mut self,
+        pane: PaneId,
+        location: ArchiveLocation,
+        node: ArchiveNode,
+        format: ArchiveFormat,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
         let Some(archive) = &self.panes[pane.index()].archive else {
             return false;
         };
-        let location = archive.location.clone();
         let refusal = if location.mount_id() != Some(node.id.mount) {
             Some((
                 "Archive unavailable",
@@ -818,6 +837,7 @@ impl Presenter {
                 format!("Enter its password to open {name}."),
                 super::archive_password::PasswordAction::OpenMember {
                     pane,
+                    location: Box::new(location),
                     node: Box::new(node),
                     format,
                 },

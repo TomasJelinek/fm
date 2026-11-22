@@ -569,7 +569,22 @@ goes on without the password: it skips each encrypted member with that reason in
 results, without asking again (the copy job skips every `is_archive_password_required`
 failure itself). The dialog closes without the user's dismissal only on the worker's
 answer: `Unsupported` and a failed unlock close it with a notice that says why, and
-nothing opens. Background consumers never open the dialog: Find's private archive
+nothing opens.
+
+The dialog's action (`PasswordAction`) is bound to what it was opened for: the pane,
+the archive session that the pane showed (the dialog's mount), and what the action
+named, captured when the dialog opened: F3's `ViewerLaunch` (`viewer_launch`; after
+`take_archive_view`, `view_command` hands that launch to the UI's view request), Enter's
+member with the folder that holds it, F5's Copy draft, and a locked listing's folder.
+The action never reads the cursor again. A modeless tool window can move the pane while
+the dialog is open (Find's Go to file), so OK, the worker's `Unlocked` or `NotEncrypted`
+answer, and a dismissal that lets a copy go on each check first that the pane still
+shows that session, with no native navigation in flight. If it does not, the dialog
+closes, OK sends nothing, nothing opens, and the status line says once that the archive
+was left ("The archive was left; open the member again.", or "copy the members again"
+and "open the folder again"). F3 and F5 that cannot proceed now (viewer settings still
+being read, a member hidden by a filter, a listing or selection still loading) say why
+instead of asking. Background consumers never open the dialog: Find's private archive
 sessions skip encrypted and other unreadable members with their reason, and archive
 previews fail like any read until the user has unlocked the mount in the panel.
 

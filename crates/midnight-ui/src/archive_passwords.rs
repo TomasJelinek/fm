@@ -16,20 +16,18 @@ pub(crate) fn install(
     send: Rc<dyn Fn(Command) -> bool>,
 ) {
     let dialog = main.global::<ArchivePasswords>();
-    let (window, presenter, sender) = (main.as_weak(), Rc::downgrade(&state), send.clone());
+    let (window, presenter) = (main.as_weak(), Rc::downgrade(&state));
     dialog.on_submit(move |token, password| {
         // The callback's text becomes a zeroizing password at once; it goes into the
         // command, or is wiped here when the dialog is stale.
         let password = midnight_core::ArchivePassword::new(password.as_str().to_owned());
         act(&window, &presenter, &token, |p| {
-            p.submit_archive_password(password, sender.as_ref());
+            p.submit_archive_password(password, send.as_ref());
         });
     });
     let (window, presenter) = (main.as_weak(), Rc::downgrade(&state));
     dialog.on_dismiss(move |token| {
-        act(&window, &presenter, &token, |p| {
-            p.cancel_archive_password(send.as_ref());
-        });
+        act(&window, &presenter, &token, |p| p.cancel_archive_password());
     });
 }
 
