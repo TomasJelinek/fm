@@ -1555,9 +1555,11 @@ and complete diagnostic. See the [contract](developer/PANEL_DIAGNOSTICS.md) and
 
 Default filename coloring now covers twelve categories with contrast adjustment
 for every theme and selection/focus state. PDF has its own coral base color;
-source code, Word documents and plain text/Markdown share cyan `#06A4C7` (since
-22 November 2026), which dark themes show unchanged on ordinary rows and light themes
-darken to 4.5:1. Exact historical defaults migrate; custom rules remain unchanged. See the [current palette contract](developer/FILENAME_COLOR_OPTIONS.md)
+since 22 November 2026 source code is cyan `#06A4C7`, which dark themes show unchanged
+on ordinary rows and light themes darken to 4.5:1, and Word documents and plain
+text/Markdown are blue `#3B82F6`, adjusted to 4.5:1 where a row needs it. Exact
+historical defaults migrate; custom rules remain unchanged, except that document and
+text rules still at the interim cyan turn blue. See the [current palette contract](developer/FILENAME_COLOR_OPTIONS.md)
 and [PDF/palette qualification](verification/2026-11-12-panel-interaction-polish.md).
 Readable sizes use KiB/MiB/GiB/TiB for the existing 1,024-based conversion, and
 Reverse order is separated in the sort menu; the [older palette/units report](verification/2026-11-10-filename-palette-and-units.md)

@@ -50,21 +50,23 @@ base colors:
 | Source code and structured configuration | Cyan `#06A4C7` |
 | Videos | Purple `#8B5CF6` |
 | PDF documents | Coral red `#EF5A5A` |
-| Word documents and ebooks | Cyan `#06A4C7`, as source code |
+| Word documents and ebooks | Blue `#3B82F6` |
 | Images | Pink `#EC4899` |
 | Executables and installers | Orange `#F97316` |
 | Spreadsheets and tabular data, including CSV | Green `#22C55E` |
 | Audio | Teal `#14B8A6` |
 | Archives | Yellow `#EAB308` |
 | Presentations | Red `#EF4444` |
-| Plain text, Markdown and README files | Cyan `#06A4C7`, as source code |
+| Plain text, Markdown and README files | Blue `#3B82F6` |
 | Fonts | Brown `#92400E` |
 
-Since 22 November 2026 source code, Word documents (`*.doc;*.docx;*.odt;*.rtf;*.epub`)
-and plain text with Markdown (`*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*`)
-share cyan `#06A4C7`; before, source code was blue `#3B82F6` and the two document
-rules light cool neutral `#C4CFE0`. Only these three colors changed: the rules, their
-order and their masks are the same.
+Since 22 November 2026 source code is cyan `#06A4C7`, and Word documents
+(`*.doc;*.docx;*.odt;*.rtf;*.epub`) and plain text with Markdown
+(`*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*`) have the blue `#3B82F6`
+that source code had before; until then the two document rules were light cool
+neutral `#C4CFE0`. A build of that day (`ebf11cff`) first gave all three rules cyan;
+it was then corrected to these colors. Only these three colors changed: the rules,
+their order and their masks are the same.
 
 The shared contrast policy preserves a readable base color or mixes it toward
 black or white by the smallest RGB change that reaches 4.5:1 against the actual
@@ -77,7 +79,7 @@ use the same policy: categories retain their semantic hues, with foregrounds
 adjusted for each actual row state rather than recolored to blue, teal or violet
 just because that is the active theme's accent.
 
-### Shared cyan contrast per theme
+### Source-code cyan contrast per theme
 
 `#06A4C7` is readable on the ordinary rows of every dark theme, which show it
 unchanged (Nord and One Dark lighten it slightly on their alternate rows); it is too
@@ -118,20 +120,65 @@ The last column is the lowest contrast of the shown cyan on the active and inact
 cursor rows and on selected rows; each is adjusted to 4.5:1 or more as above.
 Audio keeps teal `#14B8A6`, a neighboring but greener hue.
 
+### Document blue contrast per theme
+
+`#3B82F6`, the color of Word documents and plain text/Markdown, falls a little short
+of 4.5:1 on many rows, and the same shared policy adjusts it. Dark themes show it
+unchanged on ordinary rows in Blue, Carbon Green, Deep Ocean, Graphite Contrast, High
+Contrast Dark, Rosé Pine and Tokyo Night, and lighten it slightly elsewhere, most on
+Nord, Norton Commander, One Dark and Dracula; light themes darken it (3.25–3.68:1
+unadjusted). Every row shows it at 4.5:1 or more. Measured as above:
+
+| Theme | Kind | Row | `#3B82F6` on row | Shown on row | Alternate row | `#3B82F6` on it | Shown on it | Lowest shown, focus and selection |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Amber Terminal | dark | `#162226` | 4.42:1 | #3D84F6 4.52:1 | `#1B2A2E` | 4.03:1 | #4A8CF7 4.51:1 | 4.52:1 |
+| Blue | dark | `#151C26` | 4.66:1 | unchanged 4.66:1 | `#19212D` | 4.40:1 | #3E84F6 4.50:1 | 4.51:1 |
+| Carbon Green | dark | `#171B16` | 4.74:1 | unchanged 4.74:1 | `#1C211A` | 4.45:1 | #3C83F6 4.50:1 | 4.52:1 |
+| Catppuccin Latte | light | `#EFF1F5` | 3.25:1 | #316BCB 4.53:1 | `#E9ECF2` | 3.11:1 | #2F68C6 4.53:1 | 4.51:1 |
+| Catppuccin Mocha | dark | `#1E1E2E` | 4.46:1 | #3C83F6 4.51:1 | `#232335` | 4.19:1 | #4589F6 4.52:1 | 4.52:1 |
+| Dark | dark | `#202020` | 4.43:1 | #3D84F6 4.52:1 | `#252525` | 4.17:1 | #4689F6 4.50:1 | 4.51:1 |
+| Deep Ocean | dark | `#091923` | 4.86:1 | unchanged 4.86:1 | `#10232E` | 4.39:1 | #3F85F6 4.53:1 | 4.50:1 |
+| Dracula | dark | `#282A36` | 3.87:1 | #5090F7 4.53:1 | `#2C2E3B` | 3.66:1 | #5895F7 4.52:1 | 4.50:1 |
+| Graphite Contrast | dark | `#1B181B` | 4.79:1 | unchanged 4.79:1 | `#221F22` | 4.44:1 | #3D84F6 4.53:1 | 4.50:1 |
+| Gruvbox Dark | dark | `#282828` | 4.01:1 | #4B8DF7 4.53:1 | `#2D2B29` | 3.83:1 | #5291F7 4.53:1 | 4.50:1 |
+| High Contrast Dark | dark | `#000000` | 5.71:1 | unchanged 5.71:1 | `#080808` | 5.45:1 | unchanged 5.45:1 | 4.52:1 |
+| High Contrast Light | light | `#FFFFFF` | 3.68:1 | #3473DB 4.54:1 | `#FAFAFA` | 3.52:1 | #3371D5 4.51:1 | 4.50:1 |
+| Light | light | `#FFFFFF` | 3.68:1 | #3473DB 4.54:1 | `#F6F6F6` | 3.40:1 | #326ED1 4.53:1 | 4.50:1 |
+| Nord | dark | `#282E39` | 3.71:1 | #5694F7 4.53:1 | `#323A48` | 3.11:1 | #6EA3F8 4.50:1 | 4.50:1 |
+| Norton Commander | dark | `#0000AA` | 3.61:1 | #5A96F7 4.52:1 | `#00009B` | 3.88:1 | #5090F7 4.53:1 | 4.51:1 |
+| One Dark | dark | `#282C34` | 3.81:1 | #5291F7 4.50:1 | `#2C323C` | 3.51:1 | #5E99F8 4.54:1 | 4.50:1 |
+| Paper Contrast | light | `#FDFEFE` | 3.64:1 | #3473DA 4.51:1 | `#F0F3F8` | 3.31:1 | #316CCD 4.54:1 | 4.51:1 |
+| Rosé Pine | dark | `#191724` | 4.80:1 | unchanged 4.80:1 | `#1F1D2E` | 4.48:1 | #3C83F6 4.53:1 | 4.50:1 |
+| Rosé Pine Dawn | light | `#FAF4ED` | 3.37:1 | #326ECF 4.51:1 | `#F4EDE8` | 3.17:1 | #306AC8 4.51:1 | 4.50:1 |
+| Sandstone Contrast | light | `#FFFBF2` | 3.56:1 | #3471D7 4.53:1 | `#F7F0E4` | 3.25:1 | #316BCB 4.53:1 | 4.50:1 |
+| Slate Blue | dark | `#1F2228` | 4.33:1 | #4086F6 4.52:1 | `#242830` | 4.02:1 | #4B8DF7 4.54:1 | 4.51:1 |
+| Slate Teal | dark | `#1F2228` | 4.33:1 | #4086F6 4.52:1 | `#242830` | 4.02:1 | #4B8DF7 4.54:1 | 4.50:1 |
+| Slate Violet | dark | `#1F2228` | 4.33:1 | #4086F6 4.52:1 | `#242830` | 4.02:1 | #4B8DF7 4.54:1 | 4.50:1 |
+| Solarized Light | light | `#FDF6E3` | 3.41:1 | #326ED1 4.54:1 | `#F5EEDB` | 3.18:1 | #306AC8 4.51:1 | 4.50:1 |
+| Tokyo Night | dark | `#1A1B26` | 4.65:1 | unchanged 4.65:1 | `#202131` | 4.31:1 | #4086F6 4.50:1 | 4.50:1 |
+| Verdant Light | light | `#FBFDF8` | 3.59:1 | #3472D9 4.50:1 | `#F1F6EB` | 3.35:1 | #326DCF 4.53:1 | 4.51:1 |
+
 ### Saved color lists
 
 Loading a saved document upgrades only an exact match for a historical shipped
 preset: the original five-rule list, the eleven-category slate/amber list, that
 list after archives became yellow, the eleven-rule palette with bright
-document/text colors, or the twelve-category palette with blue source code and
-light cool neutral documents and text (shipped until 22 November 2026). These
+document/text colors, the twelve-category palette with blue source code and
+light cool neutral documents and text (shipped until 22 November 2026), or the
+interim twelve-category palette in which all three were cyan. These
 earlier presets are kept as fixed copies in
 `crates/midnight-platform-common/src/settings/filename_colors.rs`, so a later change
 of the defaults cannot alter what they match. Customizations retain their order,
 disabled state, matching options, colors, backgrounds and explicit removal of all
-rules, except for the narrow legacy-document split described below: a saved list
-that differs from the twelve-category palette in any way keeps blue source code and
-light cool neutral documents and text. Unrelated customized rules remain unchanged.
+rules, except for two narrow rule-by-rule upgrades: the legacy-document split
+described below, and Word document and plain-text rules still exactly as the interim
+palette set them (masks, the default expression, case-insensitive, files, no
+background, foreground `#06A4C7`), which turn blue `#3B82F6`, disabled ones
+included. A saved list that differs from the earlier twelve-category palette in any
+way therefore keeps blue source code and light cool neutral documents and text; one
+customized on the interim build keeps its source-code color, and its document and
+text rules turn blue unless their color, mask, mode, case, target or background was
+changed. Unrelated customized rules remain unchanged.
 New and legacy documents without a stored color list receive the new defaults.
 Settings files store the whole color list once any newer setting, such as the
 window placement, is saved, so this exact-preset match, not the settings schema,
@@ -144,11 +191,13 @@ precedence, so `README.rs` stays a source-code name.
 
 The platform-common filename-color tests check actual mask matching for every
 category and preservation of customized preferences through encode/decode,
-including the move of the unchanged twelve-category palette to the shared cyan and
-the preservation of its customizations. The UI filename-color tests inspect actual
-rendered glyph pixels and contrast across every theme, alternating rows and all
-active/inactive focus/selection combinations, and that dark themes show the shared
-cyan unchanged on ordinary rows.
+including the move of both unchanged twelve-category palettes to the current
+defaults, the preservation of customizations of the earlier one, and the
+rule-by-rule move of interim cyan documents and text to blue with its negative
+cases. The UI filename-color tests inspect actual rendered glyph pixels and the
+contrast of every category, the blue documents and text included, across every
+theme, alternating rows and all active/inactive focus/selection combinations, and
+that dark themes show the source-code cyan unchanged on ordinary rows.
 
 PDF uses its own rule before other documents. Complete unchanged legacy presets
 still migrate to the twelve-rule palette. In an otherwise customized list, only

@@ -66,13 +66,17 @@ fn reload(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
         .to_vec()
 }
 
-// The twelve-category palette as shipped before source code, Word documents and plain
-// text/Markdown shared cyan: blue source code and light cool neutral documents and
-// text, with today's masks and other colors.
+const CYAN: RgbColor = RgbColor(6, 164, 199);
+const BLUE: RgbColor = RgbColor(59, 130, 246);
+const WORD_DOCUMENTS: &str = "*.doc;*.docx;*.odt;*.rtf;*.epub";
+const PLAIN_TEXT: &str = "*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*";
+
+// The twelve-category palette as shipped before the interim cyan: blue source code and
+// light cool neutral documents and text, with today's masks and other colors.
 fn twelve_category_defaults() -> Vec<FilenameColorRule> {
     let mut rules = midnight_core::default_filename_colors();
     for (index, color) in [
-        (0, RgbColor(59, 130, 246)),
+        (0, BLUE),
         (3, RgbColor(196, 207, 224)),
         (10, RgbColor(196, 207, 224)),
     ] {
@@ -81,19 +85,148 @@ fn twelve_category_defaults() -> Vec<FilenameColorRule> {
     rules
 }
 
-#[test]
-fn unchanged_twelve_category_palette_moves_to_the_shared_cyan() {
-    let current = midnight_core::default_filename_colors();
+// The interim palette, in which source code, Word documents and plain text/Markdown
+// shared cyan, with today's masks and other colors.
+fn interim_defaults() -> Vec<FilenameColorRule> {
+    let mut rules = midnight_core::default_filename_colors();
     for index in [0, 3, 10] {
+        rules[index].style.foreground = Some(CYAN);
+    }
+    rules
+}
+
+#[test]
+fn defaults_color_source_cyan_and_documents_and_text_blue() {
+    let current = midnight_core::default_filename_colors();
+    let colors: Vec<_> = current
+        .iter()
+        .map(|rule| (rule.expression.as_str(), rule.style.foreground))
+        .collect();
+    assert_eq!(colors[3], (WORD_DOCUMENTS, Some(BLUE)));
+    assert_eq!(colors[10], (PLAIN_TEXT, Some(BLUE)));
+    assert!(colors[0].0.starts_with("*.rs;*.c;*.h;"), "{}", colors[0].0);
+    assert_eq!(colors[0].1, Some(CYAN));
+}
+
+#[test]
+fn unchanged_shipped_twelve_category_palettes_move_to_the_current_defaults() {
+    let current = midnight_core::default_filename_colors();
+    for (name, old) in [
+        ("blue source, neutral documents", twelve_category_defaults()),
+        ("interim cyan", interim_defaults()),
+    ] {
+        let migrated = reload(old);
+        assert_eq!(migrated, current, "{name}");
+        assert_eq!(reload(migrated), current, "{name}: migration is stable");
+    }
+}
+
+#[test]
+fn interim_cyan_documents_and_text_turn_blue_in_a_customized_list() {
+    let old = interim_defaults();
+    for variation in 0..8 {
+        let mut custom = old.clone();
+        // The rows whose saved interim cyan turns blue.
+        let blue = match variation {
+            0 => {
+                custom[7].style.foreground = Some(RgbColor(12, 34, 56));
+                vec![3, 10]
+            }
+            1 => {
+                custom[0].style.foreground = Some(RgbColor(1, 2, 3));
+                vec![3, 10]
+            }
+            2 => {
+                custom[3].enabled = false;
+                vec![3, 10]
+            }
+            3 => {
+                custom.swap(0, 3);
+                vec![0, 10]
+            }
+            4 => {
+                custom.pop();
+                vec![3, 10]
+            }
+            5 => {
+                custom.push(rule("*.personal", RgbColor(1, 2, 3)));
+                vec![3, 10]
+            }
+            6 => {
+                custom.remove(3);
+                vec![9]
+            }
+            7 => {
+                custom.resize(
+                    midnight_core::MAX_FILENAME_COLOR_RULES,
+                    rule("*.personal", RgbColor(1, 2, 3)),
+                );
+                vec![3, 10]
+            }
+            _ => unreachable!(),
+        };
+        let mut expected = custom.clone();
+        for index in blue {
+            expected[index].style.foreground = Some(BLUE);
+        }
+        let migrated = reload(custom);
+        assert_eq!(migrated, expected, "customization {variation}");
+        assert!(
+            migrated
+                .iter()
+                .filter(|rule| rule.expression.starts_with("*.rs;"))
+                .all(|rule| rule.style.foreground != Some(BLUE)),
+            "customization {variation}: source code keeps its saved color"
+        );
         assert_eq!(
-            current[index].style.foreground,
-            Some(RgbColor(6, 164, 199)),
-            "{}",
-            current[index].expression
+            reload(migrated.clone()),
+            migrated,
+            "customization {variation}"
         );
     }
-    assert_eq!(reload(twelve_category_defaults()), current);
-    assert_eq!(reload(current.clone()), current, "migration is stable");
+}
+
+#[test]
+fn interim_doc_text_upgrade_preserves_custom_rule_fields() {
+    for expression in [WORD_DOCUMENTS, PLAIN_TEXT] {
+        // The exact interim signature alone turns blue.
+        assert_eq!(
+            reload(vec![rule(expression, CYAN)]),
+            [rule(expression, BLUE)]
+        );
+        for variation in 0..9 {
+            let mut custom = rule(expression, CYAN);
+            match variation {
+                0 => custom.style.foreground = Some(RgbColor(6, 164, 200)),
+                1 => custom.style.foreground = None,
+                2 => custom.style.background = Some(RgbColor(1, 2, 3)),
+                3 => custom.expression.push_str(";*.personal"),
+                4 => custom.case_sensitive = true,
+                5 => custom.target = FilenameColorTarget::All,
+                6 => custom.target = FilenameColorTarget::Folders,
+                7 => {
+                    custom.mode = FilterMode::Regex;
+                    custom.expression = r".*\.(docx|md)$".into();
+                }
+                8 => custom.expression = expression.to_ascii_uppercase(),
+                _ => unreachable!(),
+            }
+            let before = vec![custom];
+            assert_eq!(
+                reload(before.clone()),
+                before,
+                "customization {variation} of {expression}"
+            );
+        }
+    }
+    // Source code keeps whatever color it was saved with, the interim cyan included.
+    let source = midnight_core::default_filename_colors()[0]
+        .expression
+        .clone();
+    for color in [CYAN, BLUE, RgbColor(1, 2, 3)] {
+        let saved = vec![rule(&source, color)];
+        assert_eq!(reload(saved.clone()), saved);
+    }
 }
 
 #[test]

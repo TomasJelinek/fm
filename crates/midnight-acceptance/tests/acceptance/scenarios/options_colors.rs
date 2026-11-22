@@ -15,7 +15,7 @@ use std::{fs, path::Path, sync::Arc, time::Duration};
 const EXPRESSION: &str = "*.dat;notes.txt";
 const RED: (u8, u8, u8) = (0xFF, 0x20, 0x50);
 /// The default "text" rule's colour (`default_filename_colors`).
-const TEXT_CYAN: (u8, u8, u8) = (6, 164, 199);
+const TEXT_BLUE: (u8, u8, u8) = (59, 130, 246);
 const RULES: &str = "Filename color rules";
 
 fn config(folder: &Path, store: &Arc<SettingsStore>) -> Config {
@@ -85,8 +85,8 @@ pub fn colors(context: &mut Context) -> Result<(), String> {
     }
     let store = SettingsStore::new();
     let mut app = App::start(config(&folder, &store));
-    // The default rules: text cyan, no colour for .dat and .bin.
-    if foreground(&app, "notes.txt")? != Some(TEXT_CYAN)
+    // The default rules: text blue, no colour for .dat and .bin.
+    if foreground(&app, "notes.txt")? != Some(TEXT_BLUE)
         || foreground(&app, "report.dat")?.is_some()
     {
         return Err(format!(
@@ -114,7 +114,7 @@ pub fn colors(context: &mut Context) -> Result<(), String> {
     apply(&mut app)?;
     wait_color(&mut app, "report.dat", Some(RED));
     wait_color(&mut app, "values.dat", Some(RED));
-    if foreground(&app, "notes.txt")? != Some(TEXT_CYAN) {
+    if foreground(&app, "notes.txt")? != Some(TEXT_BLUE) {
         return Err(format!(
             "a later rule overrode the earlier text rule: notes.txt is {:?}",
             foreground(&app, "notes.txt")?

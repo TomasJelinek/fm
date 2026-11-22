@@ -130,9 +130,10 @@ fn legacy_defaults() -> Vec<FilenameColorRule> {
     .collect()
 }
 
-// Exact twelve-category preset shipped before source code, Word documents and plain
-// text/Markdown shared one cyan. The earlier eleven-rule presets derive from it, not
-// from today's defaults, so that a change of the defaults cannot alter them.
+// Exact twelve-category preset with blue source code and light cool neutral Word
+// documents and plain text/Markdown. The earlier eleven-rule presets and the interim
+// preset derive from it, not from today's defaults, so that a change of the defaults
+// cannot alter them.
 fn twelve_category_defaults() -> Vec<FilenameColorRule> {
     [
         (
@@ -194,8 +195,16 @@ fn twelve_category_defaults() -> Vec<FilenameColorRule> {
     .collect()
 }
 
+// The cyan source code, Word documents and plain text/Markdown shared in the interim
+// twelve-category preset; today only source code keeps it.
+const INTERIM_CYAN: RgbColor = RgbColor(6, 164, 199);
+
 pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
     let twelve_defaults = twelve_category_defaults();
+    let mut interim_defaults = twelve_defaults.clone();
+    for index in [0, 3, 10] {
+        interim_defaults[index].style.foreground = Some(INTERIM_CYAN);
+    }
     let mut bright_defaults = twelve_defaults.clone();
     bright_defaults.remove(2);
     bright_defaults[2].expression = "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub".into();
@@ -208,6 +217,7 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
     amber_defaults[7].style.foreground = Some(RgbColor(217, 119, 6));
     let mut migrated = if rules == legacy_defaults()
         || rules == twelve_defaults
+        || rules == interim_defaults
         || rules == bright_defaults
         || rules == slate_defaults
         || rules == amber_defaults
@@ -216,8 +226,10 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
     } else {
         split_unchanged_document_rules(rules)
     };
-    // Promote only exact historical DOC/TEXT signatures, including disabled rules.
-    // This adds no rows, so it also applies when the PDF split has no free slot.
+    // Promote only exact historical DOC/TEXT signatures, including disabled rules: slate
+    // gray to the light cool neutral, and the interim cyan to today's blue. This adds no
+    // rows, so it also applies when the PDF split has no free slot. Source code rules
+    // and any other color, mask, mode, case, target or background stay as saved.
     for rule in &mut migrated {
         if rule.mode == FilterMode::Masks
             && matches!(
@@ -228,9 +240,12 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
             && !rule.case_sensitive
             && rule.target == FilenameColorTarget::Files
             && rule.style.background.is_none()
-            && rule.style.foreground == Some(RgbColor(100, 116, 139))
         {
-            rule.style.foreground = Some(RgbColor(196, 207, 224));
+            if rule.style.foreground == Some(RgbColor(100, 116, 139)) {
+                rule.style.foreground = Some(RgbColor(196, 207, 224));
+            } else if rule.style.foreground == Some(INTERIM_CYAN) {
+                rule.style.foreground = Some(RgbColor(59, 130, 246));
+            }
         }
     }
     migrated

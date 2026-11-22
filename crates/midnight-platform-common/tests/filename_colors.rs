@@ -170,15 +170,18 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
         })
         .collect();
     assert_eq!(colors.len(), categories.len());
-    // Source code, Word documents and plain text with Markdown share one cyan.
-    let cyan = Some(FilenameStyle {
-        foreground: Some(RgbColor(6, 164, 199)),
-        background: None,
-    });
+    // Source code is cyan; Word documents and plain text with Markdown share the blue
+    // that source code had before.
+    let style = |red, green, blue| {
+        Some(FilenameStyle {
+            foreground: Some(RgbColor(red, green, blue)),
+            background: None,
+        })
+    };
     assert_eq!(
         ["main.rs", "letter.docx", "notes.md"]
             .map(|name| compiled.style(name.as_ref(), EntryKind::File)),
-        [cyan; 3]
+        [style(6, 164, 199), style(59, 130, 246), style(59, 130, 246)]
     );
     for (names, expected) in [
         (
@@ -195,7 +198,7 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
                 "letter.rtf",
                 "book.epub",
             ][..],
-            "#06a4c7",
+            "#3b82f6",
         ),
         (&["photo.jpg", "vector.svg", "image.avif"][..], "#ec4899"),
         (
@@ -221,7 +224,7 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
                 "README.release",
                 "notes.rst",
             ][..],
-            "#06a4c7",
+            "#3b82f6",
         ),
         (&["type.ttf", "font.otf", "web.woff2"][..], "#92400e"),
     ] {
