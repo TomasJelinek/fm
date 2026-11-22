@@ -47,7 +47,10 @@ read what another job changes waits as a whole. A job whose footprint is unknown
 "Waiting for another job: jobs whose folders cannot be confirmed run alone" rather than
 that they use the same folders. Each
 job performs one native call at a time and holds its disk slot only while it
-executes native steps; see
+executes native steps. The copy actor runs a job's steps on a blocking worker in calls
+of at most 5 ms (`STEP_BUDGET`, `Job::steps` in `copy_worker.rs`), so a small file's
+quick steps take one hop; each call returns at every boundary the actor acts on, and the
+actor checks pause, Cancel and the disk slot between calls; see
 [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). A job never
 copies in parallel streams: the
 [local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md) measured
@@ -60,12 +63,48 @@ characters. Exclusive creation is relative to a held directory handle, without a
 inodes. Both stage on the destination filesystem. The final name is assigned only
 after verification; same-volume native Move does not stage content.
 
+On local fixed NTFS a Copy job (`TransferDirectory::stage_job_file`) keeps the stages of
+each destination folder in one private staging folder of the job, `.midnight-stage-` plus
+32 random hex characters, in that folder (`transfer_destination_staging.rs`). The job
+creates it as it creates a `.midnight-recovery-*` directory, owner-only and held with
+DELETE and without delete sharing, in one namespace turn before its first stage there;
+it is not hidden, as the stages are not. Its pin is reserved before it exists and covers
+everything below it, so each stage is created in it through its handle outside any turn,
+and each publication is one turn: a handle-relative no-replace rename out of it into the
+destination folder. A folder whose staging folder cannot be created (an ACL or a quota
+refuses it) fails the job's first file there with the error a stage of its own would
+report; there is no fallback. A paused job keeps its staging folders and stages in them
+again when resumed. Outside a job (checksum, file-list and other single outputs),
+elsewhere than local fixed NTFS, for the files a cross-volume Move removes once they are
+copied and for required-metadata stages, each stage is a `.me-*` entry of its own in the
+destination folder, created in a turn of its own.
+
+The staging folder's DACL is not inheritable, so each stage is created with the
+descriptor that a file created directly in the destination folder gets, computed from
+that folder's current owner, group and DACL (`CreatePrivateObjectSecurityEx` with the
+process token; `transfer_destination_security.rs`). As NTFS does, the entries are marked
+inherited only when the folder's DACL is auto-inherited, and then the stage's DACL is set
+once more with `SE_DACL_AUTO_INHERIT_REQ`. The kernel gives the stage its SACL and
+mandatory label from the staging folder, which inherited them from the destination
+folder. The descriptor is computed for each stage, so an ACL changed during the job
+applies to the files staged after the change; the owner, group, DACL and label of a
+published file equal those of a file created in the destination folder
+(`transfer::destination::staging_tests`). Known limits: an inheritable SACL entry marked
+`NO_PROPAGATE_INHERIT_ACE` (an audit entry or a mandatory label) reaches the staging
+folder but not the files staged in it; and a file still in the staging folder while the
+destination folder's ACL is propagated keeps the inherited entries from before until a
+later propagation reaches it (one file's copy).
+
 Cancellation waits for any in-flight native step and explicitly removes the
 unpublished stage before terminal progress. Factory failures after stage creation
 also attempt explicit cleanup. Unfinished sources, existing target originals and
 already completed files are retained. A cleanup refusal is reported with its exact
 residual path, even when the job is Cancelled; destructor cleanup alone does not
-prove removal. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
+prove removal. The job removes each staging folder through its handle in one turn once it
+stages nothing more in that folder (after the folder's copy, or when the folder is
+skipped) and at its end: the kernel refuses one that still holds an entry, such as another
+program's file, and the job keeps it, never lists or empties it, and reports it with its
+exact path. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
 
 ## Destination capabilities
 
@@ -228,7 +267,7 @@ unchanged, and every other captured field still counts.
 | Move capture of the source (its own binding pin) and Move children | `AcceptChangeTimeOnly` (`prepare_move_source_with_policy`) | As a conflict pin |
 | Revalidation of Copy sources (`prepare_transfer_source_with_policy`), Move sources and their children | Linux `AcceptChangeTimeOnly`; Windows does not compare ChangeTime here (`transfer_source.rs`) | Identity; length and modification time (Windows also creation time) |
 | Verification read guards, modified-time pins, planned-source namespace pins, Move finalization | Always `AcceptChangeTimeOnly`; only Copy and Move use them | As a conflict pin; Linux namespace pins compare length and mtime |
-| The archive file of archive members copied out, before each chunk and each Retry ([archive members as a source](#archive-members-as-a-source)) | `AcceptChangeTimeOnly` since 21 November, like every capture of an archive | Identity, length and modification time (Windows LastWriteTime, Linux mtime) |
+| The archive file of archive members copied out, at each worker exchange, before a folder's listing and before each Retry ([archive members as a source](#archive-members-as-a-source)) | `AcceptChangeTimeOnly`, like every capture of an archive | Identity, length and modification time (Windows LastWriteTime, Linux mtime) |
 
 Every other consumer of the same services keeps exact revisions: `prepare_target`,
 `prepare_transfer_source`, `prepare_transfer_source_with_links`, `prepare_move_source`
@@ -250,42 +289,35 @@ Directory-link stubs keep exact revisions.
 
 ### Archive members as a source
 
-A Copy out of an archive reads members through the archive's mount, which revalidates
-the captured archive file before every chunk and before a Retry resumes a member
-(`archive_transfer.rs`). On the Windows development machine Defender for Endpoint data
-loss prevention added its `sec.endpointdlp` alternate data stream to a tar file about
-two hours after it was written; NTFS moved the file's ChangeTime but not its
-LastWriteTime or the main stream's length, and a Copy of its members stopped at member
-315 with "archive source changed: Captured native content changed" (21 November,
-while measuring WIN-8). Decision, as VIEW-05: every capture of an archive file accepts
-a change time that alone moved, on Windows and Linux
-([content reads](CONTENT_READS.md#change-time-drift-view-05)); its identity, length and
-modification time still count, and the plugin still opens only a regular file without
+A Copy out of an archive reads members through the archive's mount
+(`archive_transfer.rs`). The filesystem host validates the captured archive file as each
+exchange with the archive worker begins and around each read of the file's bytes that the
+worker asks for (`session.rs`); the copy validates it once more before a folder's single
+listing and before a Retry resumes a member. Between those, a member's copy steps check
+only for Stop. Like every capture of an archive file, the validation accepts a change time
+that alone moved (VIEW-05: endpoint protection software can add an alternate data stream
+to an archive long after it was written, which moves only the change time; see
+[content reads](CONTENT_READS.md#change-time-drift-view-05)); identity, length and
+modification time still count, and the plugin opens only a regular file without
 following links.
 
-The question after that failure offered Retry, which could never succeed: the capture
-compared every revalidation with its fixed revision, change time included, and a
-failure inside an exchange with the archive worker also stops that worker, so every
-later request through that mount fails with "Archive worker was stopped after a failed
-request (…); open the archive again". Now a lasting change, found when a reader that
-the plugin opens on the archive's path reports another identity, length or
-modification time, fails as `InvalidData` (`Mount::source_failure` in the filesystem
-host, from `CapturedFile::changed_since_capture`), and the copy offers Skip, Skip all
-and Cancel but no Retry, as for a changed native source. Other source failures, such as
-an unreachable network file, still offer Retry, which succeeds once the file is back
-when the revalidation between chunks failed: the mount survives that failure.
+A lasting change, found when a reader that the plugin opens on the archive's path reports
+another identity, length or modification time, fails as `InvalidData`
+(`source_failure` in the filesystem host's `session.rs`), and the copy offers Skip, Skip
+all and Cancel but no Retry, as for a changed native source. Other source failures, such
+as an unreachable network file, offer Retry, which succeeds once the file is back when a
+validation between worker exchanges failed: the mount survives that failure.
 
 A failure inside an exchange with the archive worker (a source read the host could not
-complete, a member the worker could not read, a protocol violation) stops that
-worker, and so does the 20-second idle watchdog. The mount then never serves another
-request: each one fails with "Archive worker was stopped after a failed request (…);
-open the archive again" or "Archive worker made no progress for 20 seconds and was
-stopped; open the archive again", as `InvalidData` since 21 November (`STOPPED` in the
-filesystem host's `session.rs`; before, `Other` and `TimedOut`, which Copy offered to
-retry), so the question offers Skip, Skip all and Cancel only. The failure that
-stopped the worker keeps its own kind and message, such as a full spool volume's, so
-its own question can still offer Retry once; that Retry then reports the stopped
-worker. Not done: a Retry that opens the archive again for the copy (ARCH-08 in the
+complete, a member the worker could not read, a protocol violation) stops that worker,
+and so does the 20-second idle watchdog (`DEADLINE` in `session.rs`). The mount then
+never serves another request: each one fails with "Archive worker was stopped after a
+failed request (…); open the archive again" or "Archive worker made no progress for 20
+seconds and was stopped; open the archive again", as `InvalidData` (`STOPPED`), so the
+question offers Skip, Skip all and Cancel only. The failure that stopped the worker keeps
+its own kind and message, such as a full spool volume's, so its own question can still
+offer Retry once; that Retry then reports the stopped worker. Known limit: a Retry does
+not open the archive again for the copy (ARCH-08 in the
 [backlog](../IMPLEMENTATION_BACKLOG.md)).
 
 ## Conflict policies
@@ -723,15 +755,26 @@ the job's immutable full/quick policy before source removal. A Move from another
 needs a destination that keeps a replaced file recoverable (`recoverable_replacement`:
 an NTFS folder on a fixed drive on Windows, ext2/3/4 on Linux); elsewhere, a network
 location included, the job refuses it ("Cross-volume Move requires a qualified
-verified-copy destination; the source was retained."). The dialog (F6, a pasted Cut) and
-a drag refuse it before any job starts, from the destination's facts
-(`TransferLinkDestination::refuses_cross_volume_move`, the same volume check) and the
-selection's drive: "Items from another drive cannot be moved to a network location: Move
+verified-copy destination; the source was retained."). The dialog (F6, a pasted Cut), a
+drag and the Move job's own admission refuse it before any job starts, from the
+destination's facts (`TransferLinkDestination::refuses_cross_volume_move`) and the
+selection's volume: "Items from another drive cannot be moved to a network location: Move
 cannot verify their copies there before removing the originals. Copy them instead." (or
-"to this drive (exFAT)"; the dialog shows it as the note under its destination). A Move
-on the destination's own drive
-renames and is not refused; where the facts are unknown, the job decides. Native permission
-errors do not authorize a cross-device fallback. Recursive Move uses ContentOnly;
+"to this drive (exFAT)"; the dialog shows it as the note under its destination). All three
+decide by one determination (`TransferLinkDestination::same_volume_as`, through the
+engine's `transfer_destination::move_facts` and `move_refusal`), so the dialog never
+offers a Move that admission then refuses: the selection's folder is on the destination's
+volume only where both name the same volume and reach it the same way, both locally or
+both through a network location. A share is a volume of its own: on Windows its name
+(`\\server\share`, with mapped drives resolved) joins the server volume's serial number,
+so a loopback or mapped share of a local drive (such as `\\localhost\D$`) is never that
+drive's volume, a Move there from the drive is refused up front and a drag there proposes
+Copy; on Linux the volume is the mount (`statx` `STATX_MNT_ID`,
+`transfer_native_location.rs`), since bind mounts share a device number but no rename. A
+Move on the destination's own volume renames and is not refused; where the destination's
+facts cannot be read, the job decides, and a selection's folder whose facts cannot be read
+is not known to share the volume. Native permission errors do not authorize a cross-device
+fallback. Recursive Move uses ContentOnly;
 required modified time still
 accepts only distinct regular-file roots. Under `Preserve` links move as links on Windows
 and Linux (see [links](#links-in-copy-and-move)). Hard links, virtual providers and broader
@@ -745,8 +788,14 @@ Requests and constructors default to `ContentOnly`. An explicit
 `Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
 `TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
 selection or shared clipboard input, with an explicit Copy/Move intent.
-It accepts at most 64 distinct native regular-file roots within the 4 MiB proof-path
-reservation. Directories, links, virtual sources and
+It accepts at most 64 distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`)
+within the 4 MiB proof-path reservation. The backend enforces this whatever the dialog
+offered: input resolution refuses more roots before any source is captured
+(`copy_input.rs`), a Copy with "Required modified time accepts at most 64 distinct native
+regular files; choose content-only Copy for larger selections."
+(`REQUIRED_METADATA_ROOTS_REFUSAL`) and a Move with `MOVE_ROOTS_REFUSAL`, the sentence
+every Move entry point gives. There is no content-only fallback. Directories, links,
+virtual sources and
 unsupported providers are refused without a policy downgrade. The UI option is
 described separately in [transfer options](TRANSFER_OPTIONS.md).
 
@@ -795,9 +844,12 @@ version checks are still not immutable snapshots.
 
 ## Progressive selection feedback
 
-`CopyEvent::RootCompleted` reports one requested root after verified publication
-and, for Move, source removal. It is independent of throttled byte-progress
-snapshots and precedes the next conflict or terminal event. Directory completion
+`CopyEvent::RootsCompleted` reports requested roots, in completion order, after verified
+publication and, for Move, source removal. The copy actor announces each root as it
+completes; roots that wait because the UI is behind are joined into one notice of up to
+512 roots (`MAX_ROOTS_PER_NOTICE`, `copy_delivery.rs`), and every notice reaches the UI
+before the job's terminal progress and precedes the next conflict or terminal event. It
+is independent of throttled byte-progress snapshots. Directory completion
 requires the entire subtree with no skipped or failed descendants. Failed,
 skipped or cancelled unfinished roots remain selected. This is feedback only;
 it grants no filesystem authority and never infers success from a progress count.
@@ -805,7 +857,12 @@ it grants no filesystem authority and never infers success from a progress count
 Native selection identities use the exact raw source path; archive adapters
 provide `TransferSource::virtual_identity` and retain mount/entry identity.
 Presenters capture the originating pane context, preserve the caret, and queue
-small idempotent Remove edits on existing selection workers. Bounded-channel
+small idempotent Remove edits on the selection workers. An archive panel removes copied
+members from a selection that it alone holds itself, at most 4,096 per pass and each with
+its share of the totals, as a row toggle does; a selection that something else still
+shares (a copy's captured request, the folder-size observer) goes to the backend, which
+copies it once and then removes in place too (`archive_selection::apply`, whose cost
+follows the removed members). Bounded-channel
 pressure and coalesced refusal acknowledgements must retry. Same-folder refresh
 rebases by path; navigating away must not alter a new selection context. See the
 [regression evidence](../verification/2026-11-08-transfer-selection.md).
@@ -856,8 +913,18 @@ creates 8.3 names, every Copy into it and every Move from or into it), and a job
 waits for it shows `UnconfirmedFolders`, not `SameFolders`. A source that a Copy only
 reads stays unclaimed instead, so it does not make the Copy run alone.
 Original pins (selected sources and destination entries or
-subtrees) and their directory anchor handles are retained for the job's lifetime;
-an external change to one of their bindings is a job namespace error. Private pins
+subtrees) and their directory anchor handles are retained for the job's lifetime. A turn
+that announces every binding it changes refreshes those pins as it finishes; before the
+pins close, the job's final revalidation (`Claim::revalidate_before_close`) probes the
+pins of every selected item the job started (completed, failed, skipped or current), of
+every root its turns touched and every private pin it still holds, and reports an
+external change to one of those bindings as a job namespace error. A job that Cancel or
+an error stops early releases the pins of the items it never started without probing
+them: it never acted on those bindings, and no outcome of the job depends on them. A turn
+that does not announce every binding it changes (the opaque lane) refreshes every pin, and
+the final revalidation then probes every pin. A refresh tests each root against one bit per
+planned root, so its cost follows the pins it probes, not the size of the selection.
+Private pins
 witness the stages a job creates and then their published outputs; once every native
 owner of such an object has closed, the next refresh retires that alias, so published
 outputs neither accumulate claims nor turn later external changes into job errors.
@@ -866,19 +933,38 @@ output's object identity no longer takes part in peer admission: another job tha
 reaches the same object through a different hard-link name is not excluded by it,
 because this job never touches that object again.
 
-Before a change the adapter checks the folder it changes: each held ancestor's
-identity, each ancestor's name in its parent, the volume root's path and the folder's
-case and 8.3 rules; a pin's refresh checks the same for the folder of each of its
-bindings, and that the binding's recorded path still opens its folder. These checks
-open one handle per ancestor level, so the adapter makes each of them once per refresh
-batch (`TransferNamespaceRefreshBatch`, `transfer_namespace_parent.rs`), as the Linux
-adapter walks an ancestry once per batch: the binding checks and the announcement of a
-change up to its native operation are one batch, and the host's refresh of the pins
-the change touched is another. A batch changes no names; an external rename during a
-batch is seen by the next batch, as by a check that ran just before the rename, and a
-check that fails is never kept. A copied file's stage creation and publication thus
-check the destination's ancestry four times (WIN-8 in the
-[Windows acceptance record](acceptance/windows.md)).
+Before a change the adapter checks the folder it changes; a pin's refresh checks the
+folder of each of its bindings, and that the binding's recorded path still opens that
+folder. The check shows that the folder's pinned ancestry is unchanged and reads the
+folder's case and 8.3 rules again (`transfer_namespace_parent.rs`).
+
+A folder with qualified lookup rules (local NTFS that creates no 8.3 names) proves its
+ancestry through the handles it holds, without opening anything by name: its normalized
+final path with its NT volume name (`GetFinalPathNameByHandleW` with
+`FILE_NAME_NORMALIZED | VOLUME_NAME_NT`) is the one pinned at capture; the held handle
+keeps its pinned identity; no delete is pending on it
+(`FileStandardInformation.DeletePending`); and each held level is still linked, under
+exactly its pinned name, in the held level above it (`FileHardLinkInformation`). NTFS
+refuses to rename a directory while anything below it is open, so the held ancestors
+cannot change while the folder is held; only the held folder itself can, which its path,
+delete state and links show. A proof that does not hold falls back to the per-level check,
+so a change is reported with its usual error (`NotFound`, `InvalidInput`,
+`PermissionDenied`), or as `InvalidInput` ("original namespace ancestor binding changed")
+where only the path changed, as after a case-only rename of a held level.
+
+Every other folder keeps the per-level check, which opens one handle per level: each held
+ancestor's identity, each ancestor's name in its parent, the volume root's path and the
+folder's case and 8.3 rules. That covers 8.3 names, other filesystems and network shares.
+
+The adapter makes each check once per refresh batch (`TransferNamespaceRefreshBatch`), as
+the Linux adapter walks an ancestry once per batch: the binding checks and the
+announcement of a change up to its native operation are one batch, and the host's refresh
+of the pins the change touched is another. A batch changes no names; an external rename
+during a batch is seen by the next batch, as by a check that ran just before the rename,
+and a check that fails is never kept. A copied file staged in turns of its own checks the
+destination's ancestry four times (WIN-8 in the
+[Windows acceptance record](acceptance/windows.md)); a file staged in a job's staging
+folder takes only its publication's turn, whose two batches check it twice.
 
 A turn reserves each pin at most once. The pin of a private directory that the turn
 creates (a Move stage or a `.midnight-recovery-*` directory) is reserved before the
@@ -1026,8 +1112,9 @@ lookup".
 ## Links in Copy and Move
 
 `CopyLinkPolicy` is frozen when a job is admitted. The Copy/Move dialog sends it through
-`Command::EnqueueCopyWithOptions`. Its **Links** choice is the same on Windows and Linux
-and for Copy and Move (`crates/midnight-ui/src/transfer_link_option.rs`):
+`Command::EnqueueCopyWithOptions`. Its links box (no visible caption; a screen reader
+reads it as "Links", `operation-controls.slint`) is the same on Windows and Linux and for
+Copy and Move (`crates/midnight-ui/src/transfer_link_option.rs`):
 
 | Dialog | Policy | Copy | Move |
 | --- | --- | --- | --- |

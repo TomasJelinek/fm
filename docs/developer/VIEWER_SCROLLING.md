@@ -285,24 +285,20 @@ unculled painting, including far decorations and ink above table cells.
 Generated fixtures and logs belong under `_build/`.
 
 A scrollbar position reads its page from some context ahead of the byte the position
-names, so that page started inside a row. The first page read above it showed that row
-whole, so the first notch up after a scrollbar drag (it wants screens above the window)
-handed the camera over to a corrected surface (`RasterRebase`): the glide paused for that
-round trip and eased out anew. The position's page now drops the row it starts inside
-(`Worker::trim_position_start`, as a backward chain drops its cut row) when the row after
-it ends at or before the named byte, so it starts at a row and the page read above it
-keeps its context. Over Text and Source, wrapped and unwrapped, windows of 600 and 720
-pixels at 1x and 900 at 1.5x, and positions 0.3, 0.4 and 0.5, the first notch up after
-the position made 36 handoffs in 36 gestures before and none after, with the same
-landing (`worker_frontier_tests::measure_handoffs_after_scrollbar_positions`, ignored;
-`a_notch_up_after_a_scrollbar_position_needs_no_corrected_surface` checks the landing, no
-handoff, a notch down, up and five down, a notch at once and PageDown and PageUp). A
-position whose context holds fewer than two rows (very long rows) keeps its cut row and
-still meets a handoff; so do the pages of correction reads, which stay whole. Across a
-handoff the window keeps the whole travel with winit's frames and with the acceptance
-seam's (`acceptance_seams_tests::a_notch_up_across_a_corrected_surface_*`); until 22
-November 2026 the seam ended its frames while such a glide waited, so the rest of the
-notch got none: the acceptance run measured 15 to 42 px of 100 (see
+names. The position's page drops the row it starts inside (`Worker::trim_position_start`,
+as a backward chain drops its cut row) when the row after it ends at or before the named
+byte, so it starts at a row and the page read above it keeps its context: the first notch
+up after a scrollbar drag (it wants screens above the window) glides on without handing
+the camera over to a corrected surface (`RasterRebase`). Tests:
+`worker_frontier_tests::a_notch_up_after_a_scrollbar_position_needs_no_corrected_surface`
+(the landing, no handoff, a notch down, up and five down, a notch at once, PageDown and
+PageUp) and the ignored measurement `measure_handoffs_after_scrollbar_positions` (Text and
+Source, wrapped and unwrapped, windows of 600 and 720 pixels at 1x and 900 at 1.5x,
+positions 0.3, 0.4 and 0.5; it prints each landing and handoff). Known
+limit: a position whose context holds fewer than two rows (very long rows) keeps its cut
+row and still meets a handoff, and so do the pages of correction reads, which stay whole.
+Across a handoff the window keeps the whole travel with winit's frames and with the
+acceptance seam's (`acceptance_seams_tests::a_notch_up_across_a_corrected_surface_*`; see
 [Wheel distance](SCROLLING.md#wheel-distance)).
 
 For native measurements, build the `midnight-viewer-ui` example
