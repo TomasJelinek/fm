@@ -25,10 +25,25 @@ Run these scenarios with `bash scripts/acceptance.sh --only viewers,tools_compar
 Every `viewers_*` scenario runs in a staged child process with the installed plugin
 packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see ACCEPTANCE.md). Their helpers are
 `tests/acceptance/viewers_support.rs` (composition, opening and closing windows,
-`Failures` with pending and skipped checks), `viewers_probe.rs` (scrollbar drags,
-wheel notches, settling, the byte range of a text page, how far rendered content moved,
-text colours and WCAG contrast, the layout review of content windows) and
-`viewers_fixtures.rs` (content the scenarios generate in their own work folders).
+`Failures` with pending and skipped checks), `viewers_probe.rs` (scrollbar drags and the
+frames shown during a drag, Slint pixel deltas, settling, the byte range of a text page,
+how far rendered content moved, text colours at their glyphs' solid cores, WCAG contrast
+and the product's minima, how sharp rendered text is, whether the HTML viewer can run
+here, the layout review of content windows) and `viewers_fixtures.rs` (content the
+scenarios generate in their own work folders, SVG feature and refusal documents,
+two-frame GIF and WebP files, and the image decoder's licensed AVIF fixtures).
+
+The harness sends Slint's own pointer, wheel and key events. Production converts a wheel
+notch (a winit `LineDelta`, with the system's lines per notch), focus changes and the
+reduce-motion setting only from native window events (`on_winit_window_event`), which
+those events never reach. The acceptance-only native input seam (decision A1,
+`midnight_viewer_ui::acceptance_seams`, compiled only with `midnight-acceptance`'s
+`acceptance` feature) delivers such events to a viewer window through the same observer:
+`viewers_probe` turns the wheel by native notches, moves the system focus away and back,
+and overrides the system's wheel and reduce-motion settings, which a window reads when it
+next gains the focus, as it reads the system's. The seam reaches viewer windows only, so
+the comparator's notch (F15) is reported `SKIP`. Checks with Slint's own wheel event
+measure that a Slint pixel delta moves the content exactly its pixels.
 
 Latest recorded run: the Linux run `20261121-144246` of commit 3f6fff8a (WSL 2,
 Ubuntu 24.04 on ext4, debug test build, software rendering, smoke scale, every plugin
@@ -60,135 +75,171 @@ Earlier runs (debug test build, plugins from a complete plugin set of 20 Novembe
 `tools_compare_dirs` and `viewers_combinations` in one run; `viewers_scroll` alone;
 `viewers_selection`, `viewers_presentation` and `viewers_combinations` in a third run.
 
-Checked in source on 21 November, without a new acceptance run:
+WP5a's scenarios (`viewers_files`, `viewers_controls`, `viewers_presentation`,
+`viewers_scroll`, `viewers_selection`, `viewers_compare`, `viewers_combinations`) ran again
+on 22 November with the checks of this record; the statuses of their rows are from these
+runs (smoke scale, debug test builds, software rendering):
 
-- The Source viewer's Lines check box lies inside 480×320 and 320×200 windows, at both
-  densities and fonts of 12 to 32 px (`midnight-viewer-ui` test
-  `ui_polish::source_toolbar_controls_stay_inside_small_windows_and_take_clicks`).
-  `viewers_combinations` › compact reports it outside every window, 1000×720 included,
-  because its visibility probe drops anything under an opacity-0 layer, and a
-  `WrappingCheckBox` keeps its accessible native check box in such a layer over the
-  drawn box (Word wrap too). The probe needs fixing, not the toolbar. In the Linux run
-  `20261121-144246` `viewers_combinations` passed all 6 checks, its 480×320 and 320×200
-  viewer windows included.
+- Windows 11, the release plugin packages of main 05710878, test builds of main 5ccd0eb7
+  with these scenarios: runs `20261122-104409` (`viewers_files`, `viewers_scroll`),
+  `20261122-152615` (`viewers_presentation`) and `20261122-135339` (`viewers_controls`,
+  `viewers_compare`, `viewers_combinations`, `viewers_selection`).
+- Linux (WSL 2, Ubuntu 24.04), the debug plugin packages of main b1b89343, a test build of
+  main 5ccd0eb7 with these scenarios in a shared Cargo target whose path packages were
+  cleaned first: run `20261122-110817` (all seven). That machine has no writable cgroup-v2
+  delegation for the HTML viewer's browser, which refuses to start there; every HTML check
+  reports `SKIP` with the browser's own sentence.
+- Red runs (Windows; each new check broken in a copy of the scenarios, by a wrong expected
+  value or action, and seen failing with its own message): `20261122-080620` and `20261122-115842`.
+
+Settled since then:
+
+- `viewers_combinations` › small viewer windows tests where a control is placed
+  (`inspect::placed_rect`), so a `WrappingCheckBox` (Lines, Word wrap), whose accessible
+  native check box lies under an opacity-0 layer over the drawn box, counts as inside
+  the window; it passed all 6 checks in the Linux run `20261121-144246`.
 - With Find open, a short window pushed the viewer's footer outside it (320×200 with
   touch spacing, 560×200 with 32 px fonts). Since 21 November the rows above the
   text give way to the Find bar there, and the Find bar's Close find button (or Aa in
   Text mode) brings them back
   (`ui_polish::rows_above_the_text_give_way_to_find_in_short_windows_and_come_back`).
-- S4, S5 and X8 are refuted: the ink the renderer draws for selected text keeps at
-  least 4.50:1 against the selection for every theme (26) and syntax role (12, CSV
-  columns included), 312 checks (`selection_contrast::selected_text_of_every_syntax_role_reaches_aa_contrast_in_every_theme`).
-  The low readings were antialiased edge pixels, blends of that ink with the
-  selection: the probe should take the highest-contrast pixel of large glyphs. The Linux
-  run `20261121-144246`, with the Source viewer built from the current source, reports
-  the same two themes (RosePineDawn #bd9ead on #985069 and GraphiteContrast #cb834e on
-  #ffdbc4, both 2.35:1). A pixel count of its screenshots agrees with the analysis: the
-  reported colours cover only 28 and 10 scattered edge pixels, while the glyph cores of
-  line 4 are #faf4ed (code, 5.2:1) and #e1e5ec (comments, 4.51:1) in RosePineDawn, and
-  #1b181b (code, 13.6:1), #3b65a5 (comments, 4.51:1) and #407119 (strings, 4.50:1) in
-  GraphiteContrast. The probe still needs that change; note how close to 4.5:1 the
-  comment and string inks are.
+- Selection colours: since aac18026 every palette has its own selected-text colour, which
+  the viewer uses for every selected glyph and underline (4.5:1, 7:1 in the Contrast and
+  12:1 in the High Contrast palettes, and an inactive pair). `viewers_selection` checks
+  exactly that (S4–S8): the painted selection against the theme's selection colour, the
+  solid cores of the selected glyphs right of the gutter against the theme's
+  selected-text colour, the pair against the theme's minimum. The low readings of the
+  earlier probe (2.35:1 in RosePineDawn and GraphiteContrast) were antialiased edge
+  pixels and the gutter's numbers.
 
 ## Opening and routing (F3, Alt+F3)
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| O1 | F3 opens the applicable installed viewer for every fixture file kind (40 files) | `viewers_files` › each fixture case | PASS |
-| O2 | Alt+F3 forces the plain-text viewer (Markdown source shown, not rendered) | `viewers_controls` › Alt+F3 plain text; `viewers_scroll` › CSV as plain text | PASS |
-| O3 | Every extension the Source viewer claims (58, including `makefile`/`gnumakefile` whole names) opens in Source mode with syntax colours | `viewers_files` › generated Source extensions | PASS |
-| O4 | CSV and TSV show rainbow columns (text colour and four column hues) | `viewers_files` › `table.csv`, `table.tsv` | PASS |
-| O5 | Markdown extensions `md`, `markdown`, `mdown`, `mkd` render | `viewers_files` › Markdown extensions | PASS |
-| O6 | HTML extensions `html`, `htm`, `xhtml` open in the HTML viewer (Chromium) with local stylesheet and image | `viewers_files` › `docs/page.html`, `plain.htm`, `page.xhtml` | SKIP in the Linux run `20261121-144246`: the machine lacks the HTML viewer's system libraries (see above; the four cases failed with "Chromium transport stopped"). Last PASS on 20 November |
-| O7 | Image extensions PNG, JPEG (`.jpg`, `.jpeg`), GIF, WebP, SVG, BMP, ICO, TIFF (`.tif`, `.tiff`) show their pixels | `viewers_files` › image cases | PASS |
-| O8 | AVIF images | none | SKIP: no AVIF encoder in the suite or on this machine to make a fixture |
-| O9 | PDF opens with its page counter | `viewers_files` › `docs/report.pdf` | PASS |
-| O10 | Binary files open in the hex view; one printable byte is text | `viewers_files` › `sizes/*` | PASS |
-| O11 | Empty text and binary files open without content or error | `viewers_files` › `text/empty.txt`, `sizes/zero.bin` | PASS |
-| O12 | Encodings: UTF-8, UTF-8 BOM (hidden), UTF-16 LE/BE with BOM, CRLF (no CR shown), no final newline | `viewers_files` › text cases | PASS |
-| O13 | Invalid UTF-8 and odd UTF-16 bytes are made visible (`\xFF`, `\uD800`) | `viewers_files` › `invalid-utf8.txt`, `odd-utf16.txt` | PASS |
-| O14 | NUL bytes are never shown raw (hex view or `\x00`) | `viewers_files` › `nul.txt` | PASS |
-| O15 | Damaged images: truncated PNG, GIF, WebP, BMP, TIFF, zero-byte PNG, broken SVG are refused with "This image is damaged or incomplete" and the decoder's reason | `viewers_files` › damaged cases | PASS |
-| O16 | Damaged PDFs: garbage after the signature and empty files are refused; a truncated PDF or JPEG shows what can be decoded or is refused, never an error or hang | `viewers_files` › damaged cases | PASS |
-| O17 | Broken Markdown, HTML and JSON show as far as they go | `viewers_files` › `broken.*` | PASS for Markdown and JSON; `broken.html` SKIP (no HTML viewer on this machine, see above) |
-| O18 | Open latency recorded per file (flagged over 500 ms, failing over 10 s) and its spread over 15 repeated opens | `viewers_files` › latency notes, repeated opens | PASS: no slow-open flag; 65–467 ms (the first open, `text/plain.txt`, 467 ms) |
-| O19 | Every viewer kind's window passes the UI review's layout checks | `viewers_files` › layout review; `viewers_scroll` › layout review | PASS |
-| O20 | The HTML viewer's AppArmor Install… offer when the sandbox is refused | none | NOT YET WRITTEN: needs a stage outside the AppArmor profile's `_build/*/viewers/...` pattern (a `viewers_stage` change) |
+| O1 | F3 opens the applicable installed viewer for every fixture file kind (40 files) | `viewers_files` › each fixture case | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O2 | Alt+F3 forces the plain-text viewer (Markdown source shown, not rendered) | `viewers_controls` › Alt+F3 plain text; `viewers_scroll` › CSV as plain text | PASS (Windows `20261122-135339`, `20261122-104409`; Linux `20261122-110817`) |
+| O3 | Every extension the Source viewer claims (58, including `makefile`/`gnumakefile` whole names) opens in Source mode with syntax colours | `viewers_files` › generated Source extensions | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O4 | CSV and TSV show rainbow columns (text colour and four column hues) | `viewers_files` › `table.csv`, `table.tsv` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O5 | Markdown extensions `md`, `markdown`, `mdown`, `mkd` render | `viewers_files` › Markdown extensions | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O6 | HTML extensions `html`, `htm`, `xhtml` open in the HTML viewer (Chromium) with local stylesheet and image | `viewers_files` › `docs/page.html`, `plain.htm`, `page.xhtml` | PASS on Windows (`20261122-104409`); SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| O7 | Image extensions PNG, JPEG (`.jpg`, `.jpeg`), GIF, WebP, SVG, BMP, ICO, TIFF (`.tif`, `.tiff`) show their pixels | `viewers_files` › image cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O8 | AVIF images: the image decoder's licensed fixtures (libavif 1.3.0 test data, BSD-2-Clause, `plugins/image-decoder/tests/fixtures`): the quality-100 `draw_points_idat.avif` with its alpha item shows the pixels of its reference `draw_points.png` (both at a typed 800 % zoom, within 6 per channel for 99.5 % of the image's pixels); `white_1x1.avif` is white | `viewers_files` › AVIF fixtures | PASS (Windows `20261122-104409`, Linux `20261122-110817`): all 23,232 picture pixels within 6 of the PNG's (largest deviation 1); the 1×1 picture white |
+| O9 | PDF opens with its page counter | `viewers_files` › `docs/report.pdf` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O10 | Binary files open in the hex view; one printable byte is text | `viewers_files` › `sizes/*` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O11 | Empty text and binary files open without content or error | `viewers_files` › `text/empty.txt`, `sizes/zero.bin` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O12 | Encodings: UTF-8, UTF-8 BOM (hidden), UTF-16 LE/BE with BOM, CRLF (no CR shown), no final newline | `viewers_files` › text cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O13 | Invalid UTF-8 and odd UTF-16 bytes are made visible (`\xFF`, `\uD800`) | `viewers_files` › `invalid-utf8.txt`, `odd-utf16.txt` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O14 | NUL bytes are never shown raw (hex view or `\x00`) | `viewers_files` › `nul.txt` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O15 | Damaged images: truncated PNG, GIF, WebP, BMP, TIFF, zero-byte PNG, broken SVG are refused with "This image is damaged or incomplete" and the decoder's reason | `viewers_files` › damaged cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O16 | Damaged PDFs: garbage after the signature and empty files are refused; a truncated PDF or JPEG shows what can be decoded or is refused, never an error or hang | `viewers_files` › damaged cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O17 | Broken Markdown, HTML and JSON show as far as they go | `viewers_files` › `broken.*` | PASS (Windows `20261122-104409`, Linux `20261122-110817`); `broken.html` SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| O18 | Open latency recorded per file (flagged over 500 ms, failing over 10 s) and its spread over 15 repeated opens | `viewers_files` › latency notes, repeated opens | PASS (Windows `20261122-104409`, Linux `20261122-110817`): no open near the 10 s limit. Flagged for review on Windows (debug build on a shared machine): 33 opens over 500 ms, the first one 2.5 s, the HTML page 6.2 s |
+| O19 | Every viewer kind's window passes the UI review's layout checks | `viewers_files` › layout review; `viewers_scroll` › layout review | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| O20 | The HTML viewer's AppArmor Install… offer when the sandbox is refused | `viewers_files` › the AppArmor offer | SKIP, with the reason in the scenario's message: Windows has no AppArmor; WSL has AppArmor off. It needs Ubuntu outside WSL that restricts unprivileged user namespaces and a stage outside the profile's `_build/*/viewers/...` pattern (a `viewers_stage` change) |
+| O21 | SVG features drawn: a marker, a pattern, a mask, a clip path, a blur filter, a `data:` PNG and a `switch` fallback for `foreignObject` (each proven by the pixel count of its own colour on a 200 × 120 page at 1:1); a script and images linked to a local file (`linked.png`, magenta) and a URL neither run nor show (the page's colour covers all of it, no magenta) | `viewers_files` › `svg-*.svg` | PASS (Windows `20261122-104409`, Linux `20261122-110817`): every feature's colour in its pixel range; no magenta of the linked image |
+| O22 | Hostile SVGs refused before drawing with the decoder's own sentence: no SVG namespace, XML entities (a DOCTYPE internal subset), nesting past 64 levels, a `use` that refers to itself | `viewers_files` › `svg-no-namespace.svg`, `svg-entities.svg`, `svg-deep.svg`, `svg-cycle.svg` | PASS (Windows `20261122-104409`, Linux `20261122-110817`): each refused with its sentence ("This SVG does not declare the SVG namespace …", "… declares XML entities …", "… more than 64 levels deep (line 1) …", "This SVG is invalid: the reference on line 2 leads back to itself.") |
+| O23 | Two-frame GIF and WebP (100 ms frames, looping) show their first frame and hold still | `viewers_files` › `two-frames.gif`, `two-frames.webp` | PASS (Windows `20261122-104409`, Linux `20261122-110817`): the first frame's colour only, unchanged while still |
 
 ## Viewer controls
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| C1 | Status bar (bytes, line and column) | `viewers_controls` › status bar | PASS |
-| C2 | Find: Ctrl+F, Enter, F3, Shift+F3, "No further match." | `viewers_controls` › find | PASS |
-| C3 | Find button, Next and Previous match buttons walk the matches in order (the highlight moves line by line, column by column) | `viewers_presentation` › Find bar | PASS with the corrected measurement: matches at (0, 0), (25, 16), (0, 32), (8, 48); Shift+F3 back to (0, 32), Previous to (25, 16) |
-| C4 | Aa (case sensitive) and Whole words | `viewers_controls` › find; `viewers_presentation` › Find bar | PASS |
-| C5 | Clear find text empties the query and removes the highlight | `viewers_presentation` › Find bar | PASS |
-| C6 | Escape closes the viewer while the search field has the focus | `viewers_presentation` › Find bar | PASS |
-| C7 | Find in the hex view matches source bytes; Whole words is not offered there | `viewers_presentation` › Find in the hex view | PASS |
-| C8 | Find in the HTML viewer (Chromium's search, "Match 1 of 1", "No matches"); no Whole words | `viewers_presentation` › HTML zoom, policy and Find | FAIL (minor, 20 November): "1 matches" and never "Match 1 of 1" (worker_web.rs FindResult); the check accepts it and flags the text. Since then Office previews, which Find through the same viewer, show "Match 1 of 1" (`viewers_office`, run `20261122-040925`). Since 22 November (cee7ecd8) the reply composes the whole status at once: "Offline · JavaScript off · Match 1 of 1" in source, "Office preview · Offline · JavaScript off · Match 1 of 1" in an Office preview (OF1). `viewers_presentation` has not been rerun since. Not run in the Linux run `20261121-144246` (no HTML viewer on that machine) |
-| C9 | Wrap: Ctrl+W and the Wrap box; the horizontal scrollbar goes | `viewers_controls` › wrap | PASS |
-| C10 | Font and presentation (Aa) row | `viewers_controls` › presentation row | PASS |
-| C11 | Font size + button (taller rows) and font family picker (other glyphs) | `viewers_presentation` › font size and family | PASS |
-| C12 | Font choices are kept for the next text file | `viewers_presentation` › preferences kept | PASS |
-| C13 | Lines (source line numbers) off removes the gutter; kept for the next source file | `viewers_presentation` › Source and Text modes, Lines; preferences kept | PASS |
-| C14 | Markdown presets GitHub, Compact, Comfortable move the text | `viewers_presentation` › Markdown and Text modes, presets | PASS |
-| C15 | Mode picker: Text ↔ Binary | `viewers_controls` › text and binary modes | PASS |
-| C16 | Mode picker: Source ↔ Text (syntax colours go and return), Markdown ↔ Text (raw markup) | `viewers_presentation` › modes | PASS |
-| C17 | Image zoom: Ctrl+1, Ctrl+Plus, Ctrl+Minus, Zoom in button, Ctrl+wheel, Fit | `viewers_controls` › image zoom | PASS |
-| C18 | Image 1:1 button, Ctrl+0 (Fit), dragging the picture | `viewers_presentation` › image 1:1, Fit and dragging | PASS |
-| C19 | PDF Paged and Continuous layouts | `viewers_controls` › PDF layout; `viewers_scroll` › PDF | PASS |
-| C20 | PDF pages: Ctrl+PageDown, Ctrl+PageUp, the page buttons, the counter, nothing before the first or after the last page | `viewers_presentation` › PDF pages | PASS |
-| C21 | HTML zoom: buttons, Ctrl+Plus, Ctrl+0; Online and JavaScript boxes (unchecked; JavaScript needs Online) | `viewers_presentation` › HTML zoom, policy and Find | PASS on 20 November; not run in the Linux run `20261121-144246` (no HTML viewer on that machine) |
-| C22 | Space and Backspace show the next and previous file; Alt+Right and Alt+Left too; wrapping at the ends | `viewers_controls` › next and previous file | PASS, Alt+Right/Alt+Left and the wrap from the first file to the last included |
+| C1 | Status bar: the large log's page as "Bytes 0–N / length" with the file's exact length | `viewers_controls` › status bar | PASS (Windows `20261122-135339`, Linux `20261122-110817`): "Bytes 0–30242 / 1048600" for the 1,048,600-byte log |
+| C2 | Find: Ctrl+F, Enter, F3, Shift+F3, "No further match." | `viewers_controls` › find | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| C3 | Find button, Next and Previous match buttons walk the matches in order (the highlight moves line by line, column by column) | `viewers_presentation` › Find bar | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C4 | Aa (case sensitive) and Whole words | `viewers_controls` › find; `viewers_presentation` › Find bar | PASS (Windows `20261122-135339`, `20261122-152615`; Linux `20261122-110817`) |
+| C5 | Clear find text empties the query and removes the highlight | `viewers_presentation` › Find bar | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C6 | Escape closes the viewer while the search field has the focus | `viewers_presentation` › Find bar | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C7 | Find in the hex view matches source bytes; Whole words is not offered there | `viewers_presentation` › Find in the hex view | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C8 | Find in the HTML viewer (Chromium's search, exactly "Match 1 of 1", "No matches"); no Whole words | `viewers_presentation` › HTML zoom, typed zoom, policy and Find | PASS (Windows `20261122-152615`; the whole status "Offline · JavaScript off · Match 1 of 1", then "… · No matches", since cee7ecd8 composes it so); SKIP on Linux (no cgroup-v2 delegation for the browser) |
+| C9 | Wrap: Ctrl+W and the Wrap box; the horizontal scrollbar goes | `viewers_controls` › wrap | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| C10 | Font and presentation (Aa) row | `viewers_controls` › presentation row | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| C11 | Font size + button (taller rows) and font family picker (other glyphs) | `viewers_presentation` › font size and family | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C12 | Font choices are kept for the next text file | `viewers_presentation` › preferences kept | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C13 | Lines (source line numbers) off removes the gutter; kept for the next source file | `viewers_presentation` › Source and Text modes, Lines; preferences kept | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C14 | Markdown presets GitHub, Compact, Comfortable move the text | `viewers_presentation` › Markdown and Text modes, presets | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C15 | Mode picker: Text ↔ Binary | `viewers_controls` › text and binary modes | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| C16 | Mode picker: Source ↔ Text (syntax colours go and return), Markdown ↔ Text (raw markup) | `viewers_presentation` › modes | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C17 | Image zoom: Ctrl+1, Ctrl+Plus, Ctrl+Minus, Ctrl+Equal (one step of 1.25), Zoom in button, Ctrl+wheel, Fit (back to the fit zoom the picture opened with, away from the Ctrl+wheel zoom) | `viewers_controls` › image zoom | PASS (Windows `20261122-135339`, Linux `20261122-110817`): Ctrl+Plus 125.0 %, Ctrl+Equal one step, Ctrl+wheel 195.3 %, Fit 100.0 % again |
+| C18 | Image 1:1 button, Ctrl+0 (Fit), dragging the picture | `viewers_presentation` › image 1:1, Fit and dragging | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C19 | PDF Paged and Continuous layouts | `viewers_controls` › PDF layout; `viewers_scroll` › PDF | PASS (Windows `20261122-135339`, `20261122-104409`; Linux `20261122-110817`) |
+| C26 | The layout chosen last is the next PDF's: Continuous in one PDF opens the next Continuous, Paged there opens the first Paged again | `viewers_presentation` › the PDF layout kept for the next PDF | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C27 | Typed zoom: Ctrl+Y and a click on the percentage open a field with the shown zoom; "150", "62.5" and "150%" apply; "0" and "7000" apply 0.01 % and 6400 % with "The smallest zoom is 0.01%" and "The largest zoom is 6400%"; "abc" keeps the field open with "Type a zoom percentage from 0.01% to 6400%, for example 150.5" and changes nothing; Escape closes only the field and keeps the zoom; HTML takes 10 % to 1000 % the same way; a PDF at a typed 400 % | `viewers_presentation` › typed zoom, HTML zoom, typed zoom, policy and Find; `viewers_scroll` › PDF sharp text | PASS (Windows `20261122-152615`, Linux `20261122-110817`; the HTML part SKIP on Linux). The scenario makes the invariant number format the user's first: the machine's own may use a decimal comma |
+| C28 | The typed zoom in a decimal-comma number format with space-grouped thousands (made the user's format as the Engine's read of the regional settings delivers it, `viewers_support::use_number_locale`): the field opens with the shown zoom in that format ("62,5" again after "62,5"); "62,5", a dot ("75.5") and grouped thousands ("1 000,5") apply; "0" gives "The smallest zoom is 0,01%" and "abc" "Type a zoom percentage from 0,01% to 6400%, for example 150,5" | `viewers_presentation` › the typed zoom in a decimal-comma number format | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C29 | Viewer choices after a restart on one profile: Wrap, Lines, the Markdown preset, the text font and size, Aa, the image's 1:1 zoom, the PDF's Continuous layout and the comparator's font (saved in the profile, then shown by the next start) | `viewers_presentation` › viewer preferences saved in the profile, after a restart | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C20 | PDF pages: Ctrl+PageDown, Ctrl+PageUp, the page buttons, the counter, nothing before the first or after the last page | `viewers_presentation` › PDF pages | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
+| C21 | HTML zoom: buttons, Ctrl+Plus, Ctrl+0; Online and JavaScript boxes (unchecked; JavaScript needs Online) | `viewers_presentation` › HTML zoom, policy and Find | PASS on Windows (`20261122-152615`); SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| C22 | Space and Backspace show the next and previous file; Alt+Right and Alt+Left too; wrapping at the ends | `viewers_controls` › next and previous file | PASS (Windows `20261122-135339`, Linux `20261122-110817`), Alt+Right/Alt+Left and the wrap from the first file to the last included |
+| C30 | Space and Backspace load the file they open as it is at that moment: a file changed after the viewer opened shows its new content | `viewers_controls` › Space and Backspace load a file changed after the viewer opened | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| C31 | A folder whose order exceeds 8 MiB of paths (long names, 1.5 times the budget): from the first file Backspace shows the last file of the window the viewer keeps around it, not the folder's last file; from the last file Space shows the window's first file (README: navigation cycles within that window) | `viewers_controls` › Space and Backspace in a folder over 8 MiB of paths | PASS (Windows `20261122-135339`, Linux `20261122-110817`): 42,225 files with 120-character names, 12.0 MiB of order; the window from either end holds 28,149 files |
 | C23 | Space and Backspace in the HTML viewer (Chromium arbitrates the physical keys) | none | SKIP: Chromium arbitrates the physical keys through native window events, which this harness cannot deliver |
-| C24 | Escape closes the viewer | every viewer scenario (`Viewing::close`) | PASS |
-| C25 | The window's own close button | none | SKIP: the window decorations are native; a headless software window has none |
+| C24 | Escape closes the viewer | every viewer scenario (`Viewing::close`) | PASS (every viewer scenario of these runs) |
+| C25 | The window's own close button: the platform's close request (`CloseRequested`) closes the viewer and the comparator | `viewers_controls` › next and previous file (the plain-text viewer closed so); `viewers_compare` › same text in two encodings | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 
 ## Selection and copy
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| S1 | Ctrl+A selects the page's rows; Ctrl+C copies them (source without line numbers, as a prefix of the file) | `viewers_selection` › each theme and sample | PASS (Rust and CSV in every theme; plain text) |
-| S2 | Markdown copies rendered text, the hex view its hex rows | `viewers_selection` › Markdown, hex view | PASS |
-| S3 | A mouse drag and a Shift+click select runs of the file's text | `viewers_selection` › mouse selection | PASS |
-| S4 | Selected text keeps 4.5:1 contrast against the selection in every theme (Rust source and CSV columns) | `viewers_selection` › every theme | REFUTED in source on 21 November (see above; the probe read antialiased pixels). Reported: Rust source in RosePineDawn and GraphiteContrast, 2.35:1 each in the Linux run `20261121-144246` (2.24:1 and 2.07:1 in run 20261120-151137); every other theme ≥ 4.5:1. The scenario fails on these two readings until the probe changes |
-| S5 | The same for plain text, Markdown, the hex view, Python, JSON, XML, YAML, CSS and SQL in Blue, Dark and Light | `viewers_selection` › representative themes | PASS in the Linux run `20261121-144246` (no reading below 4.5:1). Run 20261120-151137 had reported numbers, strings and types of Python, JSON, YAML, CSS and SQL at 3.50–4.45:1 (for example Light Python #865f43 on #cccccc 3.50:1), refuted in source on 21 November (see above) |
-| S6 | Unselected syntax colours below 3:1 against the background are flagged for review | `viewers_selection` › flags | PASS (flags only) |
+| S1 | Ctrl+A selects the page's rows; Ctrl+C copies them (source without line numbers, as a prefix of the file) | `viewers_selection` › each theme and sample | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| S2 | Markdown copies rendered text, the hex view its hex rows | `viewers_selection` › Markdown, hex view | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| S3 | A mouse drag and a Shift+click select runs of the file's text | `viewers_selection` › mouse selection | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| S4 | Every theme's selection as users see it (Rust source and CSV columns): the selection is painted in the theme's selection colour, every selected glyph (its solid core, right of the line-number gutter) in the theme's selected-text colour, as the viewer window's Theme names them, and that pair keeps the product's minimum: 4.5:1, 7:1 in PaperContrast, SandstoneContrast, DeepOcean and GraphiteContrast, 12:1 in High Contrast Dark and Light | `viewers_selection` › every theme | PASS (Windows `20261122-135339`, Linux `20261122-110817`): 26 themes, each pair above its theme's minimum, the lowest NortonCommander's 5.60:1 (minimum 4.5); in High Contrast Dark and Light the selected text is the page's own colour (#000000 on #1aebff, 14.37:1; #ffffff on #37006e, 15.13:1) |
+| S5 | The same for plain text, Markdown, the hex view, Python, JSON, XML, YAML, CSS and SQL in Blue, Dark and Light | `viewers_selection` › representative themes | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| S6 | Unselected text colours keep 5:1 against the page (7:1 in the Contrast and High Contrast palettes), right of the gutter: strictly for a colour covering at least 300 pixels (its cores are solid), flagged for review below that | `viewers_selection` › every theme and sample | PASS (Windows `20261122-135339`, Linux `20261122-110817`); no colour flagged |
+| S7 | The strikethrough lines of selected struck Markdown words take the selected-text colour (the Markdown viewer colours links without underlining them, so no bundled viewer draws underlines) | `viewers_selection` › Markdown links and struck text | PASS (Windows `20261122-135339`, Linux `20261122-110817`): 24 strikethrough rows over the selection, all in the selected-text colour (#ffffff in Blue and Dark, #202020 in Light), and in the text colour before it |
+| S8 | An inactive viewer window (the system focus moved away through the seam) paints its selection in the theme's dimmer inactive pair, every selected glyph core in the inactive selected-text colour, a pair that keeps the theme's minimum; the active pair returns with the focus (Rust source, every theme) | `viewers_selection` › every theme, Rust source | PASS (Windows `20261122-135339`, Linux `20261122-110817`): in every theme the inactive fill and text as the Theme names them, the lowest Nord's #eceff4 on #484d54 (7.39:1), High Contrast's #000000 on #c8c8c8 (12.55:1); the active pair back with the focus |
 
 ## Scrolling
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| R1 | A content taller than the window shows a scrollbar with a visible thumb | `viewers_scroll` › scrollbar shown | PASS |
-| R2 | Scrollbar drags from 0 % to 100 % (every 1 %) land without an error in the large log, CSV, TSV, CSV as plain text, Markdown with tables | `viewers_scroll` › scrollbar drags land | PASS (every 1 % in all five; the reported CSV drag failures are gone) |
-| R3 | The same every 2 % in Rust source, the hex view, a PDF (Continuous) and an image at actual pixels | `viewers_scroll` › scrollbar drags land | PASS in all four (51 drags each; landing median 0.79–0.96 s). On 20 November 3–8 of the PDF's 51 drags stopped 2–4 % short (run 20261120-143743) |
-| R4 | The horizontal scrollbar of a 200,000-character line | `viewers_scroll` › horizontal scrollbar | PASS |
-| R5 | One wheel notch moves 60 px in every viewer kind; one up −60 px; a burst of five 300 px | `viewers_scroll` › wheel, same wheel travel | PASS: 60 px per notch and the burst in every viewer kind, Rust source included. On 20 November a burst of five moved 256 px in Rust source (run 20261120-143743) |
-| R6 | The HTML viewer's wheel travel per notch | `viewers_scroll` › HTML wheel | SKIP: the HTML viewer takes the wheel as a native window event; viewer.slint drops Slint's wheel event in web mode, so the harness moves the page 0 px |
-| R7 | Down and Up move 28 px; PageDown and PageUp exactly one screen; Ctrl+End and Ctrl+Home reach the ends | `viewers_scroll` › keys | PASS in every viewer kind (Down 28 px, PageDown 712 or 748 px = one screen, Ctrl+End 1.0, Ctrl+Home 0.0; the image's Ctrl+End and Ctrl+Home included), the held-key check too. The 20 November failures (CSV/TSV/Rust PageUp, the image's Ctrl+End/Home, CSV as plain text) did not recur |
-| R8 | HTML keys: Down, PageDown, Ctrl+End, Ctrl+Home (back to the first view, pixel for pixel) | `viewers_scroll` › HTML keys | PASS on 20 November (Chromium: Down 40 px, PageDown 623 of 712 px); not run in the Linux run `20261121-144246` (no HTML viewer on that machine: "open: long.html: Chromium transport stopped", the scenario's only failure) |
-| R9 | Large log: Ctrl+End to the last line, Ctrl+Home, PageDown, the wheel | `viewers_controls` › keyboard and wheel scrolling | PASS |
-| R10 | Kinetic (touchpad) coasting | none | SKIP: synthetic PointerScrolled events carry no touchpad phases and the harness delivers no native window events |
+| R1 | A content taller than the window shows a scrollbar with a visible thumb | `viewers_scroll` › scrollbar shown | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| R2 | Scrollbar drags from 0 % to 100 % (every 1 %) land without an error in the large log, CSV, TSV, CSV as plain text, Markdown with tables | `viewers_scroll` › scrollbar drags land | PASS (Windows `20261122-104409`, Linux `20261122-110817`): every 1 % in all five |
+| R3 | The same every 2 % in Rust source, the hex view, a PDF (Continuous) and an image at actual pixels | `viewers_scroll` › scrollbar drags land | PASS (Windows `20261122-104409`, Linux `20261122-110817`): 51 drags each |
+| R4 | The horizontal scrollbar of a 200,000-character line | `viewers_scroll` › horizontal scrollbar | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
+| R5 | A Slint pixel delta (the harness's synthetic wheel event, 60 px) moves the content exactly its pixels in every viewer kind: one down 60 px, one up −60 px, a burst of five 300 px, the same in every viewer. This is not the product's notch (R11) | `viewers_scroll` › a Slint pixel delta moves exactly its pixels, the same travel in every viewer | PASS (Windows `20261122-104409`, Linux `20261122-110817`): 60 px down, −60 px up and 300 px for five in all nine viewer kinds with a scrollbar (the HTML viewer: R6) |
+| R6 | The HTML viewer and Slint's own wheel event | `viewers_scroll` › HTML Slint pixel delta | SKIP: viewer.slint drops Slint's own wheel event in the HTML mode, so a Slint pixel delta moves the page 0 px; the HTML viewer's native notch is checked in R11 |
+| R11 | One native wheel notch (through the seam) at three lines per notch moves 100 px, one up −100 px, five 500 px, in every viewer kind, HTML included; on the large log six lines per notch move 200 px and one screen per notch a screen; a notch glides (three or more position changes) and with reduced motion moves in one step | `viewers_scroll` › one wheel notch moves 100 px; the system's wheel setting and reduced motion | FAIL: VIEW-NOTCH-UP (below), on both systems. A notch up right after a notch down rested after 15–42 px and did not move on within 5 s (Windows `20261122-104409`: CSV −29, TSV −42, CSV as plain text −15 px; Linux `20261122-110817`: large log −30, CSV −15, Rust source −15 px). Every other kind 100, −100 and 500 px, the HTML viewer included on Windows (in one of three Windows runs its glide fell short: 87, −72 and 364 px in run `20261122-065626`). The large log: six lines per notch 200 px, one screen per notch 748 px, a notch glides over 13 positions, on both systems. Those runs misread the one-step move with reduced motion (it can come before the first reading) and the PDF's burst of five (−271 px: a page period away from 500); the measurement is corrected since, its final run is pending |
+| R14 | Source highlighting while a person scrolls: in a C++ file of 150 rows (about 6 KB) twelve wheel notches down and up, eight PageDowns and PageUps and a scrollbar drag never show "Preparing source highlighting…" in any frame's status line, and after each gesture the rows show their keyword, string and comment tints; in one of 56,000 rows (about 2.2 MB) the rows shown after Ctrl+End are coloured within a second and the notice, if shown, is gone once they are | `viewers_scroll` › source highlighting | PENDING until the fix announced for it is on main. On main 5ccd0eb7 (red run `20261122-115842`) the small file showed "Preparing source highlighting…" while scrolling, and the large file's rows after Ctrl+End were coloured after 1,808 ms |
+| R12 | A PDF shows new frames while its scrollbar is dragged (at least two distinct frames that differ from the page before the drag, over 20 moves 33 ms apart), not only at the release | `viewers_scroll` › PDF, new frames while the scrollbar is dragged | PASS (Windows `20261122-104409`, Linux `20261122-110817`): 20 distinct frames during 20 moves 33 ms apart |
+| R13 | PDF text is sharp at a typed 400 %: three quarters of its edges between the white page and solid ink are at most 2 px wide (rendered at the zoom, not an enlarged raster) | `viewers_scroll` › PDF, sharp text at a typed 400 % zoom | PASS (Windows `20261122-104409`, Linux `20261122-110817`): 19,486 text edges, three quarters at most 1 px wide |
+| R7 | Down and Up move 28 px; PageDown and PageUp exactly one screen; Ctrl+End and Ctrl+Home reach the ends | `viewers_scroll` › keys | PASS in every viewer kind (Windows `20261122-104409`, Linux `20261122-110817`): Down 28 px, Up −28 px, PageDown and PageUp 712 or 748 px (one screen), twenty Down presses in a row 560 px, Ctrl+End 1.0, Ctrl+Home 0.0. The moves are measured on the pixels, also where a refill drew the text again at another sub-pixel phase (the large log's Slint pixel delta up −60.22 px, its notch up −100.63 px) |
+| R8 | HTML keys: Down, PageDown, Ctrl+End, Ctrl+Home (back to the first view, pixel for pixel) | `viewers_scroll` › HTML keys | PASS on Windows (`20261122-104409`: Chromium Down 40 px, PageDown 623 of 712 px); SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| R9 | Large log: Ctrl+End to the last line, Ctrl+Home, PageDown, the wheel down and back to the first view (followed by the shown position and the pixels: the content's accessible text is the whole prepared page) | `viewers_controls` › keyboard and wheel scrolling | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| R10 | Kinetic (touchpad) coasting | none | SKIP: not written yet; the acceptance seam's touchpad reports (`NativeWheel::Pixels` with their phases) can drive it now |
+
+VIEW-NOTCH-UP (Windows and Linux, 22 November, main 5ccd0eb7): in a text viewer at rest
+after a wheel notch down, one notch up moves 15–42 px instead of 100 px and stops there;
+five seconds later the rest has not come. Reproduction: open a 1,500-row CSV (also TSV,
+the same CSV with Alt+F3, a Rust source or a 1 MiB log), drag the scrollbar to 40 %, let
+it rest, turn the wheel one notch down, wait a second, turn it one notch up. Seen: CSV −29
+and −15 px, TSV −42 px, CSV as plain text −15 px (three runs), large log −30 px, Rust
+source −15 px; five notches down right after move 500 px. Candidates in the code, not
+traced: `raster_camera.rs` `tick` drops an axis's remaining distance when the target,
+clamped to the camera's `info`, equals the origin; and the wheel motion delivers only
+pixels the prepared strips cover. The seam keeps delivering frames while the viewer's
+raster motion runs (`acceptance_seams::moving`), as winit would; the Viewer agent should
+confirm with a native wheel.
 
 ## File comparison (Ctrl+Shift+C)
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| F1 | Two marked files compared: identical, the same text in two encodings, different | `viewers_compare` › identical, encodings, three differences | PASS |
-| F2 | Difference navigation: N, P, F7, Shift+F7, Alt+Down, Alt+Up, Alt+Right, Alt+Left, Alt+Home, Alt+End, the Next and Previous difference buttons | `viewers_compare` › three differences | PASS |
-| F3 | Find in both files: Find… button, Ctrl+F, Enter, F3, Shift+F3, Shift+Enter, "Match N of M · File · line", Aa, Whole words, Clear Find | `viewers_compare` › Find in the compared files | PASS |
-| F4 | The text font chooser repaints the comparison | `viewers_compare` › Find in the compared files | PASS or SKIP per machine (passes when another fixed-pitch family renders differently): PASS in the Linux run (System monospace → Ubuntu Mono repaints; DejaVu Sans Mono renders alike) |
-| F5 | Scrolling: an arrow moves one row, PageDown the visible rows, a wheel notch 60 px, the position bar | `viewers_compare` › scrolling the compared text | PASS (row 20 px, PageDown 35 rows, notch 60 px, position bar) |
-| F6 | Images: Side by side, Swipe, Onion skin; the divider and opacity sliders; dragging the divider; Zoom in and out, Ctrl+wheel, Fit; Close | `viewers_compare` › images | PASS |
-| F7 | Binary pairs in the hex view: summary, navigation keys and button | `viewers_compare` › binary files | PASS |
-| F8 | The Hex button of a text pair shows its bytes and back | `viewers_compare` › text over the former 4 MiB limit | PASS |
-| F9 | Large text: 3.5 MiB and 4.25 MiB logs compared as text | `viewers_compare` › large logs, over the former limit | PASS |
-| F10 | Text over 32 MiB, over 1,000,000 lines, or with a line over 16 KiB is compared as bytes with the reason | `viewers_compare` › over a text limit | PASS |
-| F11 | File A / File B chosen by hand: the resolved side prefilled, a missing path refused in the form (drafts kept), Browse…, Compare, Cancel | `viewers_compare` › File A and File B chosen by hand | PASS |
+| F1 | Two marked files compared: identical, the same text in two encodings, different | `viewers_compare` › identical, encodings, three differences | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F2 | Difference navigation: N, P, F7, Shift+F7, Alt+Down, Alt+Up, Alt+Right, Alt+Left, Alt+Home, Alt+End, the Next and Previous difference buttons | `viewers_compare` › three differences | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F3 | Find in both files: Find… button, Ctrl+F, Enter, F3, Shift+F3, Shift+Enter, "Match N of M · File · line", Aa, Whole words, Clear Find | `viewers_compare` › Find in the compared files | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F4 | The text font chooser repaints the comparison | `viewers_compare` › Find in the compared files | PASS or SKIP per machine (passes when another fixed-pitch family renders differently): PASS on Windows `20261122-135339` and Linux `20261122-110817` |
+| F5 | Scrolling: an arrow moves one row, PageDown the visible rows, a Slint pixel delta exactly its 60 px, the position bar | `viewers_compare` › scrolling the compared text | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F15 | One wheel notch in the comparator moves `notch_pixels_for` the system's lines per notch (100 px at three lines) | `viewers_compare` | SKIP: the acceptance seam reaches viewer windows only (`midnight_viewer_ui::acceptance_seams`); the comparator needs a seam of its own |
+| F6 | Images: Side by side, Swipe, Onion skin; the divider and opacity sliders; dragging the divider; Zoom in and out, Ctrl+wheel, Fit; Close | `viewers_compare` › images | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F7 | Binary pairs in the hex view: summary, navigation keys and button | `viewers_compare` › binary files | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F8 | The Hex button of a text pair shows its bytes and back | `viewers_compare` › text over the former 4 MiB limit | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F9 | Large text: 3.5 MiB and 4.25 MiB logs compared as text | `viewers_compare` › large logs, over the former limit | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F10 | Text over 32 MiB, over 1,000,000 lines, or with a line over 16 KiB is compared as bytes with the reason | `viewers_compare` › over a text limit | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F11 | File A / File B chosen by hand: the resolved side prefilled, a missing path refused in the form (drafts kept), Browse…, Compare, Cancel | `viewers_compare` › File A and File B chosen by hand | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | F12 | Archive members: Compare asks for File A and File B (members have no native paths) | `viewers_archives` › Compare files on archive members | PASS |
-| F13 | Compare files in a list of search results is refused with the reason | `viewers_combinations` › Find results and a fed list | PASS |
-| F14 | Escape and Close close the comparator | `viewers_compare` | PASS |
+| F13 | Compare files in a list of search results is refused with the reason | `viewers_combinations` › Find results and a fed list | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| F14 | Escape, Close and the window's close request close the comparator | `viewers_compare` | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 
 ## Directory comparison (Ctrl+F10)
 
@@ -333,16 +384,22 @@ delegated systemd user scope.
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| X1 | F3 on a result in the Find window | `viewers_combinations` › Find results and a fed list | PASS |
-| X2 | F3 in results fed to a panel; Space and Backspace follow the results | `viewers_combinations` › Find results and a fed list | PASS |
-| X3 | F3 in an expanded inline tree branch; Space follows the visible file order | `viewers_combinations` › an inline tree branch | PASS |
-| X4 | Four viewer windows at once, each with its own file; a fifth refused with the reason; closing one keeps the others | `viewers_combinations` › four viewer windows | PASS |
-| X5 | A theme previewed in Options recolours an open viewer; Cancel restores it | `viewers_combinations` › a theme previewed in Options | PASS |
-| X6 | A viewer moved to a display of twice the scale shows the same lines twice as tall | `viewers_combinations` › a viewer at twice the scale | PASS |
+| X1 | F3 on a result in the Find window | `viewers_combinations` › Find results and a fed list | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| X2 | F3 in results fed to a panel; Space and Backspace follow the results | `viewers_combinations` › Find results and a fed list | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| X3 | F3 in an expanded inline tree branch; Space follows the visible file order | `viewers_combinations` › an inline tree branch | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| X4 | Four viewer windows at once, each with its own file; a fifth refused with the reason; closing one keeps the others | `viewers_combinations` › four viewer windows | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| X5 | A theme previewed in Options recolours an open viewer, its syntax colours (glyph cores of at least 300 pixels, right of the gutter) keep 5:1 against the Light page; Cancel restores it | `viewers_combinations` › a theme previewed in Options | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
+| X6 | A viewer moved to a display of twice the scale shows the same lines twice as tall | `viewers_combinations` › a viewer at twice the scale | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | X7 | Viewers on archive members (and inner archives' members) | `viewers_archives` | PASS |
-| X8 | Every theme's selection colours | `viewers_selection` | REFUTED in source on 21 November (S4, S5). Reported in the Linux run `20261121-144246`: RosePineDawn and GraphiteContrast Rust source (S4), 2.35:1 each, which the pixel count above attributes to edge pixels; every other theme and sample PASS |
+| X8 | Every theme's selection colours | `viewers_selection` | See S4–S8 |
 
 ## Not yet written
 
-- The AppArmor Install… offer (O20), the Make File List viewer opened from Ctrl+M (P's
-  area, hooked here), a viewer for every file reached from a Find feed of archive members.
+- The AppArmor Install… offer (O20: reported `SKIP` with the machine's reason), the Make
+  File List viewer opened from Ctrl+M (P's area, hooked here), a viewer for every file
+  reached from a Find feed of archive members.
+- The comparator's own wheel notch (F15): the acceptance seam reaches viewer windows only;
+  it is reported `SKIP` with that reason.
+- The SVG decoder's note naming what it left out ("Not shown: linked images, scripts.")
+  is not shown by any viewer yet (its notice API is deferred), so O21 checks the pixels
+  only.

@@ -1,14 +1,24 @@
-//! The viewer's controls, used as a person would: the status bar, Find (Ctrl+F, Enter,
+//! The viewer's controls, used as a person would: the status bar (the page's bytes out of
+//! the file's exact length), Find (Ctrl+F, Enter,
 //! F3, Shift+F3) with case sensitivity (the find bar's Aa), Wrap (Ctrl+W and its check
 //! box), the Font and presentation (Aa) row, switching between the text and binary
 //! modes, Alt+F3 plain text, scrolling to the end and back with keys and the mouse
-//! wheel, image zoom (keys, buttons, Ctrl+wheel), PDF layout, the next and previous
-//! file (Space, Backspace) and closing with Escape.
+//! wheel, image zoom (Ctrl+1, Ctrl+Plus, Ctrl+Minus, Ctrl+Equal, the buttons, Ctrl+wheel,
+//! Fit), PDF layout, the next and previous
+//! file (Space, Backspace), closing with Escape and with the window's own close button
+//! (the platform's close request).
+//!
+//! Space and Backspace load the file they open as it is at that moment: a file changed
+//! after the viewer opened shows its new content. In a folder whose order holds more
+//! than 8 MiB of paths, they cycle within the contiguous window of the order that the
+//! viewer keeps around the opened file (README, "Viewers"): from the first file
+//! Backspace shows the window's last file, not the folder's, and from the last file
+//! Space shows the window's first file.
 use crate::{
     Context,
     app::{App, Config},
     input, panel, viewers_stage,
-    viewers_support::{self as support, Failures, Viewing, clip},
+    viewers_support::{self as support, Failures, Viewing, clip, generated, probe},
 };
 use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
@@ -16,7 +26,7 @@ use slint::{
     LogicalPosition, Model,
     platform::{Key, WindowEvent},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// The large log can take long to open (see the latency notes of `viewers_files`).
@@ -32,6 +42,18 @@ pub fn controls(context: &mut Context) -> Result<(), String> {
 
 fn run(context: &mut Context) -> Result<(), String> {
     let root = context.fixture.root.clone();
+    // Written before the start, so the right panel lists them at once.
+    let order = prepare_order(context)?;
+    generated::write(
+        &context.work.join("reload"),
+        "a.txt",
+        "alpha first version\n",
+    )?;
+    generated::write(
+        &context.work.join("reload"),
+        "b.txt",
+        "bravo first version\n",
+    )?;
     let mut config = Config::new(&root, &context.work);
     config.plugins = Some(context.work.join("plugins"));
     let mut app = App::start(config);
@@ -72,10 +94,20 @@ fn run(context: &mut Context) -> Result<(), String> {
     open(&mut app, "plain.txt")
         .and_then(|viewing| {
             failures.check("next and previous file", cycle(&mut app, context, &viewing));
-            viewing.close(&mut app)
+            // The window's own close button: the platform's close request.
+            close_requested(&mut app, viewing)
         })
         .unwrap_or_else(|error| failures.check("text/plain.txt", Err(error)));
     panel::leave(&mut app, PaneId::Left)?;
+
+    failures.check(
+        "Space and Backspace load a file changed after the viewer opened",
+        reload(&mut app, context),
+    );
+    failures.check(
+        "Space and Backspace in a folder over 8 MiB of paths",
+        large_order(&mut app, context, order),
+    );
 
     panel::enter(&mut app, PaneId::Left, "docs")?;
     failures.check("Alt+F3 plain text", plain_text(&mut app, context));
@@ -98,11 +130,293 @@ fn run(context: &mut Context) -> Result<(), String> {
     }
     panel::leave(&mut app, PaneId::Left)?;
     app.shutdown()?;
-    failures.into_result()
+    failures.finish(context)
 }
 
 fn open(app: &mut App, name: &str) -> Result<Viewing, String> {
-    panel::select_row(app, PaneId::Left, name)?;
+    open_in(app, PaneId::Left, name)
+}
+
+fn open_in(app: &mut App, pane: PaneId, name: &str) -> Result<Viewing, String> {
+    panel::select_row(app, pane, name)?;
+    let viewing = support::view(app, false, OPEN_LIMIT)?;
+    viewing
+        .result
+        .clone()
+        .map_err(|error| format!("{name}: {error}"))?;
+    Ok(viewing)
+}
+
+/// The window's own close button (its title bar's ×): the platform's close request
+/// closes the viewer; the main window gets its activation back.
+fn close_requested(app: &mut App, viewing: Viewing) -> Result<(), String> {
+    viewing.slint().dispatch_event(WindowEvent::CloseRequested);
+    let deadline = Instant::now() + STEP;
+    while support::software_window(app, viewing.slint()).is_some() {
+        if Instant::now() >= deadline {
+            return Err("the window's close request did not close the viewer".into());
+        }
+        app.idle(Duration::from_millis(10));
+    }
+    app.slint()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    app.settle();
+    Ok(())
+}
+
+/// Wait until the viewer shows `name` with text containing `text`.
+fn shows(
+    app: &mut App,
+    viewing: &Viewing,
+    what: &str,
+    name: &str,
+    text: &str,
+) -> Result<(), String> {
+    viewing.wait(app, what, STEP, |window| {
+        window.get_caption().contains(name) && window.get_accessible_text().contains(text)
+    })
+}
+
+/// Space and Backspace load the file they open as it is at that moment (README): b.txt
+/// changed after a.txt was opened shows its new text after Space, and a.txt changed
+/// meanwhile shows its new text after Backspace.
+fn reload(app: &mut App, context: &mut Context) -> Result<(), String> {
+    let folder = context.work.join("reload");
+    panel::enter(app, PaneId::Right, "reload")?;
+    let viewing = open_in(app, PaneId::Right, "a.txt")?;
+    let result = (|| {
+        shows(app, &viewing, "a.txt", "a.txt", "alpha first version")?;
+        generated::write(&folder, "b.txt", "bravo second, a longer version\n")?;
+        viewing.click_content(app);
+        input::key(viewing.slint(), Key::Space);
+        shows(
+            app,
+            &viewing,
+            "Space to show the changed b.txt",
+            "b.txt",
+            "bravo second, a longer version",
+        )?;
+        generated::write(&folder, "a.txt", "alpha second, a longer version\n")?;
+        input::key(viewing.slint(), Key::Backspace);
+        shows(
+            app,
+            &viewing,
+            "Backspace to show the changed a.txt",
+            "a.txt",
+            "alpha second, a longer version",
+        )?;
+        app.screenshot_window(
+            context,
+            &viewing.software,
+            "reloaded-file",
+            "Backspace after a.txt changed: its new content",
+        );
+        Ok(())
+    })();
+    viewing.close(app)?;
+    panel::leave(app, PaneId::Right)?;
+    result
+}
+
+/// The order budget of a viewer window (`midnight-viewer-engine` `capture::ORDER_BUDGET`)
+/// and what each native entry costs besides its path's bytes (`NATIVE_ENTRY`).
+const ORDER_BUDGET: usize = 8 * 1024 * 1024;
+const NATIVE_ENTRY: usize = 64;
+/// Long names (with `.txt`), so that the folder needs fewer files to exceed the budget.
+const LONG_NAME: usize = 120;
+
+fn long_name(index: usize) -> String {
+    let stem = format!("order-{index:06}-");
+    format!("{stem}{}.txt", "x".repeat(LONG_NAME - stem.len() - 4))
+}
+
+/// The contiguous window around `focus` that the viewer keeps (`capture::window`): grown
+/// alternately after and before the focus while the costs fit the budget.
+fn order_window(costs: &[usize], focus: usize) -> std::ops::Range<usize> {
+    let mut range = focus..focus + 1;
+    let mut used = costs[focus];
+    let mut admit = |index: usize| {
+        let fits = used + costs[index] <= ORDER_BUDGET;
+        if fits {
+            used += costs[index];
+        }
+        fits
+    };
+    let (mut after, mut before) = (true, true);
+    while after || before {
+        after = after && range.end < costs.len() && admit(range.end);
+        if after {
+            range.end += 1;
+        }
+        before = before && range.start > 0 && admit(range.start - 1);
+        if before {
+            range.start -= 1;
+        }
+    }
+    range
+}
+
+/// The text of the order's file `index`: unique, so a view of one cannot pass for another.
+fn order_text(index: usize) -> String {
+    format!("order file {index:06}.")
+}
+
+/// `work/order`: enough files with long names that their paths exceed the order budget
+/// by half; returns how many.
+fn prepare_order(context: &mut Context) -> Result<usize, String> {
+    let folder = context.work.join("order");
+    std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    let cost = folder.join(long_name(0)).as_os_str().len() + NATIVE_ENTRY;
+    let count = ORDER_BUDGET * 3 / 2 / cost + 1;
+    let started = Instant::now();
+    for index in 0..count {
+        let path = folder.join(long_name(index));
+        std::fs::write(&path, format!("{}\n", order_text(index)))
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    context.note(format!(
+        "work/order: {count} files written in {:.1} s",
+        started.elapsed().as_secs_f64()
+    ));
+    Ok(count)
+}
+
+/// A folder whose paths exceed the 8 MiB order budget by half: from its first file,
+/// Backspace shows the last file of the window the viewer keeps (not the folder's last
+/// file) and Space returns; from its last file, Space shows the window's first file and
+/// Backspace returns (README: navigation cycles within a contiguous window around the
+/// opened file, which reaches the start or end of the folder there).
+fn large_order(app: &mut App, context: &mut Context, count: usize) -> Result<(), String> {
+    panel::enter(app, PaneId::Right, "order")?;
+    let mut costs: Vec<usize> = Vec::new();
+    let result = (|| {
+        let names = app.names(PaneId::Right);
+        let files = names
+            .iter()
+            .filter(|name| name.starts_with("order-"))
+            .count();
+        if files != count {
+            return Err(format!("the panel lists {files} of the {count} files"));
+        }
+        let viewing = open_edge(app, PaneId::Right, true, &long_name(0))?;
+        let checked = (|| {
+            shows(
+                app,
+                &viewing,
+                "the first file",
+                &long_name(0),
+                &order_text(0),
+            )?;
+            // The viewer's caption is the native path it holds ("<path> — Midnight
+            // Explorer"): every entry costs that path's folder, its name and the slot.
+            let caption = viewing.window.get_caption().to_string();
+            let path = caption
+                .strip_suffix(" — Midnight Explorer")
+                .ok_or_else(|| format!("the caption {caption:?} names no path"))?;
+            let folder = path.len() - long_name(0).len();
+            costs = (0..count)
+                .map(|index| folder + long_name(index).len() + NATIVE_ENTRY)
+                .collect();
+            viewing.click_content(app);
+            input::key(viewing.slint(), Key::Backspace);
+            // From the first file the window reaches the folder's start.
+            let last = order_window(&costs, 0).end - 1;
+            shows(
+                app,
+                &viewing,
+                "Backspace on the first file to show the window's last file",
+                &long_name(last),
+                &order_text(last),
+            )?;
+            input::key(viewing.slint(), Key::Space);
+            shows(
+                app,
+                &viewing,
+                "Space to return to the first file",
+                &long_name(0),
+                &order_text(0),
+            )
+        })();
+        viewing.close(app)?;
+        checked?;
+        let first = order_window(&costs, 0);
+        let total: usize = costs.iter().sum();
+        // From the last file: the window reaches the folder's end.
+        let end = order_window(&costs, count - 1);
+        let viewing = open_edge(app, PaneId::Right, false, &long_name(count - 1))?;
+        let checked = (|| {
+            viewing.click_content(app);
+            input::key(viewing.slint(), Key::Space);
+            shows(
+                app,
+                &viewing,
+                "Space on the last file to show the window's first file",
+                &long_name(end.start),
+                &order_text(end.start),
+            )?;
+            app.screenshot_window(
+                context,
+                &viewing.software,
+                "order-window-first",
+                &format!(
+                    "Space on the last of {count} files: the first file of the viewer's window \
+                     ({})",
+                    end.start
+                ),
+            );
+            input::key(viewing.slint(), Key::Backspace);
+            shows(
+                app,
+                &viewing,
+                "Backspace to return to the last file",
+                &long_name(count - 1),
+                &order_text(count - 1),
+            )
+        })();
+        viewing.close(app)?;
+        checked?;
+        context.note(format!(
+            "Order over the budget: {count} files with {LONG_NAME}-character names, {:.1} MiB \
+             of order; the window from the first file holds {}, from the last file {} (files \
+             {}..{})",
+            total as f64 / 1_048_576.0,
+            first.len(),
+            end.len(),
+            end.start,
+            end.end
+        ));
+        if first.end >= count || end.start == 0 {
+            return Err(format!(
+                "the {count} files fit one window ({first:?}, {end:?}): the order did not \
+                 exceed the budget"
+            ));
+        }
+        Ok(())
+    })();
+    panel::leave(app, PaneId::Right)?;
+    result
+}
+
+/// Put the cursor on the panel's first (Home, `first`) or last (End) row, check it is
+/// `name`, and open it with F3.
+fn open_edge(app: &mut App, pane: PaneId, first: bool, name: &str) -> Result<Viewing, String> {
+    panel::focus_list(app, pane)?;
+    input::key(app.slint(), if first { Key::Home } else { Key::End });
+    app.settle();
+    let names = app.names(pane);
+    let mut cursor = usize::try_from(app.cursor(pane)).unwrap_or(usize::MAX);
+    // Home stops on the parent row ("..") above the first file.
+    if first && names.get(cursor).is_some_and(|row| row != name) {
+        input::key(app.slint(), Key::DownArrow);
+        app.settle();
+        cursor = usize::try_from(app.cursor(pane)).unwrap_or(usize::MAX);
+    }
+    if names.get(cursor).map(String::as_str) != Some(name) {
+        return Err(format!(
+            "the cursor is on {:?}, not {name:?}",
+            names.get(cursor)
+        ));
+    }
     let viewing = support::view(app, false, OPEN_LIMIT)?;
     viewing
         .result
@@ -127,7 +441,17 @@ fn status_bar(app: &mut App, context: &mut Context, viewing: &Viewing) -> Result
     if status.to_lowercase().contains("error") {
         return Err(format!("the status reports an error: {status:?}"));
     }
-    Ok(())
+    // The page's bytes: from the file's start, out of the file's exact length.
+    let length = std::fs::metadata(context.fixture.path("text/huge.log"))
+        .map_err(|error| error.to_string())?
+        .len();
+    match probe::page_bytes(&status) {
+        Some((0, end, total)) if end > 0 && total == length => Ok(()),
+        other => Err(format!(
+            "the status names bytes {other:?} (start, end, length) of the {length}-byte log: \
+             {status:?}"
+        )),
+    }
 }
 
 /// Type a query into the open find bar (replacing it) and press Enter.
@@ -280,26 +604,41 @@ fn wheel(viewing: &Viewing, delta_y: f32) {
         });
 }
 
+/// The wheel scrolls the large log down and back to its first view. Followed by the shown
+/// position and the pixels: the content's accessible text is the whole prepared page,
+/// which still holds the first lines after a scroll within it.
 fn wheel_scroll(app: &mut App, viewing: &Viewing) -> Result<(), String> {
-    let start = viewing.window.get_position();
+    let top = probe::still_canvas(app, viewing, STEP)?;
+    let start = viewing.window.get_displayed_position();
     for _ in 0..8 {
         wheel(viewing, -120.0);
         app.idle(Duration::from_millis(20));
     }
     viewing.wait(app, "the wheel to scroll down", STEP, |window| {
-        window.get_position() > start && !window.get_accessible_text().contains("line=0 ")
+        window.get_position() > start && window.get_displayed_position() > start
     })?;
-    // Wheel back up, a notch at a time, until the first line shows.
+    let down = probe::still_canvas(app, viewing, STEP)?;
+    if down.fingerprint() == top.fingerprint() {
+        return Err("the wheel moved the position but the shown lines stayed".into());
+    }
+    // Wheel back up, a step at a time, until the first view shows again.
     for _ in 0..200 {
-        if viewing.text().contains("line=0 ") {
-            return Ok(());
+        if viewing.window.get_displayed_position() <= start {
+            break;
         }
         wheel(viewing, 120.0);
         app.idle(Duration::from_millis(15));
     }
     viewing.wait(app, "the wheel to scroll back to the top", STEP, |window| {
-        window.get_accessible_text().contains("line=0 ")
-    })
+        window.get_displayed_position() <= start && window.get_position() <= start
+    })?;
+    let back = probe::still_canvas(app, viewing, STEP)?;
+    match probe::vertical_shift(&top, &back) {
+        Some((0, share)) if share >= probe::SHIFT_CONFIDENCE => Ok(()),
+        other => Err(format!(
+            "back at the top, the view is not the first view: {other:?} (shift, share of rows)"
+        )),
+    }
 }
 
 fn wrap(app: &mut App, context: &mut Context, viewing: &Viewing) -> Result<(), String> {
@@ -553,6 +892,12 @@ fn zoom(app: &mut App, context: &mut Context, viewing: &Viewing) -> Result<(), S
     viewing.wait(app, "Ctrl+Minus to zoom out", STEP, |window| {
         window.get_zoom_percent() < zoomed - 1.0
     })?;
+    // Ctrl+Equal (the "=" key without Shift) zooms in like Ctrl+Plus: one step of 1.25.
+    let equal = window.get_zoom_percent();
+    input::chord(viewing.slint(), &[Key::Control], "=");
+    viewing.wait(app, "Ctrl+Equal to zoom in", STEP, |window| {
+        (window.get_zoom_percent() - equal * 1.25).abs() < 0.5
+    })?;
     let before = window.get_zoom_percent();
     input::click(viewing.slint(), AccessibleRole::Button, "Zoom image in")?;
     viewing.wait(app, "the Zoom in button", STEP, |window| {
@@ -588,19 +933,43 @@ fn zoom(app: &mut App, context: &mut Context, viewing: &Viewing) -> Result<(), S
     viewing.wait(app, "Ctrl+wheel to zoom", STEP, |window| {
         (window.get_zoom_percent() - before).abs() > 1.0
     })?;
+    let wheeled = window.get_zoom_percent();
+    // Fit: the whole picture in the content, never enlarged (`image_zoom.rs`): the zoom
+    // it opened with, as Fit is the default image zoom, and not the Ctrl+wheel zoom.
+    let fit = (window.get_content_width() / PHOTO[0])
+        .min(window.get_content_height() / PHOTO[1])
+        .min(1.0)
+        * 100.0;
     input::click(
         viewing.slint(),
         AccessibleRole::Button,
         "Fit image to window",
     )?;
-    app.idle(Duration::from_millis(200));
-    viewing.wait(app, "Fit", STEP, |window| {
-        (window.get_zoom_percent() - before).abs() > 1.0
-    })?;
+    viewing
+        .wait(app, "Fit", STEP, |window| {
+            let zoom = window.get_zoom_percent();
+            (zoom - fit).abs() < 0.5 && (zoom - wheeled).abs() > 1.0
+        })
+        .map_err(|error| {
+            format!(
+                "{error}; Fit should show {fit:.1}% (it opened at {initial:.1}%), the Ctrl+wheel \
+                 zoom was {wheeled:.1}%"
+            )
+        })?;
+    if (initial - fit).abs() >= 0.5 {
+        return Err(format!(
+            "photo.png opened at {initial:.1}%, not fitted ({fit:.1}%), although Fit is the \
+             default image zoom"
+        ));
+    }
     context.note(format!(
-        "Image zoom: initial {initial:.1}%, Ctrl+Plus {zoomed:.1}%, Fit {:.1}%; status {:?}",
+        "Image zoom: initial {initial:.1}%, Ctrl+Plus {zoomed:.1}%, Ctrl+wheel {wheeled:.1}%, \
+         Fit {:.1}% (expected {fit:.1}%); status {:?}",
         window.get_zoom_percent(),
         clip(&viewing.status(), 80)
     ));
     Ok(())
 }
+
+/// `images/photo.png` of the fixture: 160 x 120 pixels.
+const PHOTO: [f32; 2] = [160.0, 120.0];

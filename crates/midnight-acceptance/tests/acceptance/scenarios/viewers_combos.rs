@@ -18,7 +18,7 @@ use crate::{
     tools_support as tools, viewers_stage,
     viewers_support::{self as support, Failures, Viewing, generated, probe},
 };
-use midnight_core::PaneId;
+use midnight_core::{PaneId, PreferenceTheme};
 use slint::{
     ComponentHandle,
     platform::{Key, WindowAdapter, WindowEvent},
@@ -77,7 +77,11 @@ fn run(context: &mut Context) -> Result<(), String> {
     config.plugins = Some(context.work.join("plugins"));
     let mut app = App::start(config);
     let failures = Failures::default();
-    type Section = fn(&mut App, &mut Context) -> Result<(), String>;
+    if let Some(reason) = probe::html_unavailable() {
+        failures.skip("small viewer windows: page.html", &reason);
+    }
+    // A section records the checks this machine cannot make in `failures` itself.
+    type Section = fn(&mut App, &mut Context, &Failures) -> Result<(), String>;
     let sections: [(&str, Section, &str); 6] = [
         ("Find results and a fed list", find_results, "find"),
         ("an inline tree branch", tree_branch, "tree"),
@@ -87,8 +91,8 @@ fn run(context: &mut Context) -> Result<(), String> {
         ("small viewer windows", compact, "compact"),
     ];
     for (what, section, folder) in sections {
-        let result =
-            panel::enter(&mut app, PaneId::Left, folder).and_then(|_| section(&mut app, context));
+        let result = panel::enter(&mut app, PaneId::Left, folder)
+            .and_then(|_| section(&mut app, context, &failures));
         failures.check(what, result);
         files::dismiss_all(&mut app);
         // Back to the root for the next section, whatever the section left.
@@ -119,7 +123,7 @@ fn wait_text(app: &mut App, viewing: &Viewing, text: &str) -> Result<(), String>
 
 /// F3 in the Find window on a result, then the results fed to the panel: F3 there,
 /// Space and Backspace through the results, Compare files refused, Backspace out.
-fn find_results(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn find_results(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     let window = find::open_on(app, PaneId::Left)?;
     let (text, rows) = find::search(
         app,
@@ -221,7 +225,7 @@ fn find_results(app: &mut App, context: &mut Context) -> Result<(), String> {
 /// F3 in an expanded inline branch; Space follows the visible files across it.
 /// Inline branches list folders: with `one` expanded (showing `two`), F3 on the
 /// folder's own files works, and Space and Backspace follow the visible file order.
-fn tree_branch(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn tree_branch(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     files::toggle_tree(app, "one")?;
     files::wait_tree_depth(app, "two", Some(1));
     panel::select_row(app, PaneId::Left, "top.txt")?;
@@ -250,7 +254,7 @@ fn tree_branch(app: &mut App, context: &mut Context) -> Result<(), String> {
 }
 
 /// Four viewers at once; a fifth refused; closing one keeps the others.
-fn several_windows(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn several_windows(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     let mut open: Vec<(usize, Viewing)> = Vec::new();
     let result = (|| {
         for index in 1..=4 {
@@ -308,19 +312,25 @@ fn several_windows(app: &mut App, context: &mut Context) -> Result<(), String> {
     Ok(())
 }
 
-/// The viewer's background and text colours, and its canvas.
-fn colours(app: &mut App, viewing: &Viewing) -> Result<([u8; 3], Vec<[u8; 3]>), String> {
+/// A text colour covering at least this many pixels shows its solid core, so its
+/// contrast is checked strictly; smaller groups are noted.
+const CORE_PIXELS: usize = 300;
+
+/// A page's colour and the text colours on it: (core colour, pixels of its group).
+type Colours = ([u8; 3], Vec<([u8; 3], usize)>);
+
+/// The viewer's background and its text colours right of the line-number gutter, each
+/// measured at its glyphs' solid cores (anti-aliased edges are blends towards the
+/// background), with the pixels of its group.
+fn colours(app: &mut App, viewing: &Viewing) -> Result<Colours, String> {
     let canvas = probe::still_canvas(app, viewing, STEP)?;
+    let canvas = probe::right_of_gutter(viewing, &canvas, 6);
     let background = probe::dominant(&canvas);
-    let glyphs = probe::glyph_colours(&canvas, background, 24)
-        .into_iter()
-        .map(|(colour, _)| colour)
-        .collect();
-    Ok((background, glyphs))
+    Ok((background, probe::glyph_cores(&canvas, background, 24)))
 }
 
 /// A theme previewed in Options recolours the open viewer; Cancel restores it.
-fn theme_preview(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn theme_preview(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     panel::select_row(app, PaneId::Left, "sample.rs")?;
     let viewing = support::view(app, false, OPEN_LIMIT)?;
     let result = (|| {
@@ -344,20 +354,37 @@ fn theme_preview(app: &mut App, context: &mut Context) -> Result<(), String> {
             "theme-preview-light",
             "The open viewer while Options previews the Light theme",
         );
-        if light_glyphs == dark_glyphs {
+        let colour_set = |glyphs: &[([u8; 3], usize)]| {
+            glyphs.iter().map(|(colour, _)| *colour).collect::<Vec<_>>()
+        };
+        if colour_set(&light_glyphs) == colour_set(&dark_glyphs) {
             return Err("the syntax colours did not change with the theme".into());
         }
-        let dim: Vec<String> = light_glyphs
-            .iter()
-            .filter(|colour| probe::contrast(**colour, light) < 3.0)
-            .map(|colour| probe::hex(*colour))
-            .collect();
+        // The product keeps syntax colours at 5:1 against the page in the Light theme.
+        let minimum = probe::syntax_minimum(PreferenceTheme::Light);
+        let below = |strict: bool| -> Vec<String> {
+            light_glyphs
+                .iter()
+                .filter(|(colour, pixels)| {
+                    probe::contrast(*colour, light) < minimum && (*pixels >= CORE_PIXELS) == strict
+                })
+                .map(|(colour, pixels)| {
+                    format!(
+                        "{} ({pixels} px) {:.2}:1",
+                        probe::hex(*colour),
+                        probe::contrast(*colour, light)
+                    )
+                })
+                .collect()
+        };
+        let (dim, faint) = (below(true), below(false));
         options::cancel(app)?;
         viewing.wait(app, "Cancel to restore the viewer's theme", STEP, |_| {
             probe::dominant(&viewing.canvas()) == dark
         })?;
         context.note(format!(
-            "Theme preview: background {} → {} → {}; text colours {} → {}",
+            "Theme preview: background {} → {} → {}; text colours {} → {}; Light colours of \
+             fewer than {CORE_PIXELS} pixels below {minimum}:1 (cores may be blends): {faint:?}",
             probe::hex(dark),
             probe::hex(light),
             probe::hex(dark),
@@ -366,7 +393,9 @@ fn theme_preview(app: &mut App, context: &mut Context) -> Result<(), String> {
         ));
         if !dim.is_empty() {
             return Err(format!(
-                "in the previewed Light theme these text colours stay below 3:1: {dim:?}"
+                "in the previewed Light theme these text colours stay below {minimum}:1 against \
+                 the page {}: {dim:?}",
+                probe::hex(light)
             ));
         }
         Ok(())
@@ -377,7 +406,7 @@ fn theme_preview(app: &mut App, context: &mut Context) -> Result<(), String> {
 
 /// The viewer moved to a display of twice the scale (same logical size): the same
 /// first lines, rendered twice as tall, and no error.
-fn scale(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn scale(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     panel::select_row(app, PaneId::Left, "sample.rs")?;
     let viewing = support::view(app, false, OPEN_LIMIT)?;
     let result = (|| {
@@ -440,7 +469,7 @@ fn scale(app: &mut App, context: &mut Context) -> Result<(), String> {
 /// Every viewer kind in a small window (480 x 320, then the 320 x 200 minimum): the
 /// controls that kind needs stay inside the window, and the UI review's layout checks
 /// run on each (their findings are flags, not failures).
-fn compact(app: &mut App, context: &mut Context) -> Result<(), String> {
+fn compact(app: &mut App, context: &mut Context, failures: &Failures) -> Result<(), String> {
     use i_slint_core::items::AccessibleRole;
     let kinds: [(&str, &[(AccessibleRole, &str)]); 6] = [
         (
@@ -483,13 +512,24 @@ fn compact(app: &mut App, context: &mut Context) -> Result<(), String> {
     let mut problems = Vec::new();
     for (file, controls) in kinds {
         if file.ends_with(".html")
-            && let Some(reason) = crate::viewers_stage::html_viewer_missing()
+            && let Some(reason) = probe::html_unavailable()
         {
             context.note(format!("{file} in small windows not checked: {reason}"));
             continue;
         }
         panel::select_row(app, PaneId::Left, file)?;
         let viewing = support::view(app, false, OPEN_LIMIT)?;
+        if let Err(error) = viewing.result.clone() {
+            close(app, viewing)?;
+            match probe::browser_refused(&error) {
+                Some(reason) if file.ends_with(".html") => failures.skip(
+                    &format!("small viewer windows: {file}"),
+                    &format!("{reason}: {}", support::clip(&error, 160)),
+                ),
+                _ => problems.push(format!("{file}: the viewer reported {error:?}")),
+            }
+            continue;
+        }
         for (width, height) in [(480, 320), (320, 200)] {
             crate::app::layout_tool(&viewing.software, width, height);
             probe::pause(app, Duration::from_millis(400));

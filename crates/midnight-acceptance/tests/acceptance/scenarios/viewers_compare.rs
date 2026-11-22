@@ -11,7 +11,9 @@
 //! the Previous difference button; Find in both files (the Find… button and Ctrl+F,
 //! Enter, F3, Shift+F3, "Match N of M · File · line", Aa, Whole words, Clear Find);
 //! scrolling the compared text (an arrow moves one row, PageDown the rows that were
-//! visible, the wheel, the position bar); the image controls (Fit, Zoom in and out,
+//! visible, a Slint pixel delta exactly its pixels, the position bar; the product's own
+//! wheel notch is skipped: the native input seam reaches viewers only); the window's
+//! close request (its ×); the image controls (Fit, Zoom in and out,
 //! Ctrl+wheel, the Swipe divider and Right image opacity sliders, dragging the divider
 //! on the picture); text over the comparator's limits (32 MiB, 1,000,000 lines, a line
 //! over 16 KiB) compared as bytes with the reason; and File A / File B chosen by hand
@@ -156,13 +158,22 @@ impl Comparing {
         } else {
             input::key(self.slint(), Key::Escape);
         }
+        self.closed(app, if button { "Close" } else { "Escape" })
+    }
+
+    /// The window's own close button (its title bar's ×): the platform's close request.
+    fn close_requested(self, app: &mut App) -> Result<(), String> {
+        self.slint().dispatch_event(WindowEvent::CloseRequested);
+        self.closed(app, "The window's close request")
+    }
+
+    /// Wait until the comparator window is gone after `what`, then give the main window
+    /// back its activation.
+    fn closed(self, app: &mut App, what: &str) -> Result<(), String> {
         let deadline = Instant::now() + STEP;
         while support::software_window(app, self.slint()).is_some() {
             if Instant::now() >= deadline {
-                return Err(format!(
-                    "{} did not close the comparator",
-                    if button { "Close" } else { "Escape" }
-                ));
+                return Err(format!("{what} did not close the comparator"));
             }
             app.idle(Duration::from_millis(10));
         }
@@ -307,7 +318,8 @@ fn run(context: &mut Context) -> Result<(), String> {
                 "encodings",
                 "text-utf8.txt and text-utf16.txt: identical text, bytes differ (encoding/BOM)",
             );
-            comparing.close(&mut app, false)
+            // The window's own close button: the platform's close request.
+            comparing.close_requested(&mut app)
         }),
     );
 
@@ -355,6 +367,13 @@ fn run(context: &mut Context) -> Result<(), String> {
         "scrolling the compared text",
         open(&mut app, context, "large-a.log", "large-b.log", DIFFERENT)
             .and_then(|comparing| scrolling(&mut app, context, comparing)),
+    );
+    failures.skip(
+        "one wheel notch moves the compared text notch_pixels_for(the system's lines per \
+         notch), 100 px at the default three lines",
+        "needs a native input seam for the comparator: production reads its wheel notches \
+         only from native window events (`on_winit_window_event`), and the acceptance seam \
+         reaches viewer windows only (`midnight_viewer_ui::acceptance_seams`)",
     );
     input::chord(app.slint(), &[Key::Control], "d");
     failures.check(
@@ -588,8 +607,9 @@ fn font_choice(
     Ok(false)
 }
 
-/// An arrow moves one row, PageDown the rows that were fully visible, a wheel notch
-/// 60 pixels; the position bar jumps where it is clicked.
+/// An arrow moves one row, PageDown the rows that were fully visible, a Slint pixel
+/// delta exactly its pixels (the product's own notch is skipped: no native seam reaches
+/// the comparator); the position bar jumps where it is clicked.
 fn scrolling(app: &mut App, context: &mut Context, comparing: Comparing) -> Result<(), String> {
     let result = (|| {
         comparing.click_content(app);
@@ -618,11 +638,12 @@ fn scrolling(app: &mut App, context: &mut Context, comparing: Comparing) -> Resu
             comparing.window.get_content_left() + comparing.window.get_content_width() / 2.0,
             comparing.window.get_content_top() + comparing.window.get_content_height() / 2.0,
         );
-        let notch = comparing.moved(app, |window| probe::wheel(window, at, 1))?;
-        if notch.abs_diff(probe::NOTCH as i32) > 1 {
+        // A Slint pixel delta, not the product's notch (`probe::SLINT_PIXEL_DELTA`).
+        let notch = comparing.moved(app, |window| probe::pixel_deltas(window, at, 1))?;
+        if notch.abs_diff(probe::SLINT_PIXEL_DELTA as i32) > 1 {
             return Err(format!(
-                "a wheel notch moved the compared text {notch} px (the viewer: {} px)",
-                probe::NOTCH
+                "a Slint pixel delta of {} px moved the compared text {notch} px",
+                probe::SLINT_PIXEL_DELTA
             ));
         }
         // The position bar right of the content: a click at three quarters.
@@ -642,8 +663,8 @@ fn scrolling(app: &mut App, context: &mut Context, comparing: Comparing) -> Resu
             "large-a.log and large-b.log after a click at three quarters of the position bar",
         );
         context.note(format!(
-            "Comparison scrolling: row {row} px, PageDown {page} px ({visible} rows), notch {notch} px, \
-             position bar {:.3}",
+            "Comparison scrolling: row {row} px, PageDown {page} px ({visible} rows), Slint pixel \
+             delta {notch} px, position bar {:.3}",
             comparing.window.get_position()
         ));
         Ok(())
@@ -932,7 +953,7 @@ fn images(app: &mut App, context: &mut Context, comparing: Comparing) -> Result<
     let smaller = comparing.still(app)?.fingerprint();
     let at = slint::LogicalPosition::new(content.0 + content.2 / 2.0, content.1 + content.3 / 2.0);
     input::press(comparing.slint(), Key::Control);
-    probe::wheel(comparing.slint(), at, -1);
+    probe::pixel_deltas(comparing.slint(), at, -1);
     input::release(comparing.slint(), Key::Control);
     let wheeled = comparing.still(app)?.fingerprint();
     input::click_button(comparing.slint(), "Fit")?;

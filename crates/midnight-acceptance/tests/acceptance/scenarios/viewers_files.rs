@@ -15,6 +15,15 @@
 //! refusal), invalid UTF-8 and UTF-16 (shown with replacement characters), NUL bytes
 //! (the hex view), broken Markdown, HTML and JSON (shown as far as they go).
 //!
+//! SVG features are drawn (a marker, a pattern, a mask, a clip path, a blur filter, a
+//! `data:` PNG and a `switch` fallback, each proven by its pixels), while a script and
+//! images linked to a local file and a URL neither run nor show; hostile SVGs (no SVG
+//! namespace, XML entities, nesting past 64 levels, a reference to itself) are refused
+//! with the decoder's sentence. Two-frame GIF and WebP files show their first frame and
+//! hold still. The licensed AVIF fixtures open: `draw_points_idat.avif` matches its
+//! PNG reference pixel for pixel (within the quality-100 encoding's tolerance) at a
+//! typed 800 % zoom, and the white pixel is white.
+//!
 //! An HTML case is skipped, with its reason in the scenario's message, only when the
 //! stage has no HTML viewer package, or the HTML viewer reports that this machine
 //! refuses its browser: AppArmor denies Chromium's sandbox to this installation (no
@@ -23,13 +32,13 @@
 use crate::{
     Context,
     app::{App, Config},
-    panel, viewers_stage,
+    input, panel, viewers_stage,
     viewers_support::{
         self as support, Canvas, Failures, SLOW_OPEN, Viewing, clip, generated, millis, probe,
     },
 };
 use midnight_core::PaneId;
-use slint::Model;
+use slint::{Model, platform::Key};
 use std::time::Duration;
 
 pub const TIMEOUT: Duration = Duration::from_secs(25 * 60);
@@ -75,6 +84,11 @@ enum Expect {
     /// A truncated document or image ("document" or "image"): what can be decoded is
     /// shown, or the file is refused like [`Expect::Damaged`]; never an error or hang.
     Truncated(&'static str),
+    /// An image whose colours cover these pixel counts once it holds still (a feature
+    /// drawn, content left out, the first frame of an animation).
+    Counts(&'static [generated::Count]),
+    /// A refusal with this sentence (the decoder's own, shown as it is).
+    Statement(&'static str),
 }
 
 struct Case {
@@ -107,23 +121,6 @@ fn generated_case(name: &str, kind: &str, expect: Expect) -> Case {
 const UTF8_SAMPLE: &[&str] = &["Příliš žluťoučký kůň", "Ελληνικά", "日本語"];
 /// The image host's refusal; the decoder's reason follows it.
 const DAMAGED_IMAGE: &str = "This image is damaged or incomplete: ";
-
-/// Why this machine refuses the HTML viewer's browser, when `error` (the viewer's own
-/// report) is one of the two refusals that depend on the machine, not on Midnight
-/// Explorer: the messages of `midnight_worker_platform`'s `browser_sandbox_linux.rs`
-/// and `browser_cgroup_linux.rs`.
-fn browser_refused(error: &str) -> Option<&'static str> {
-    if error.contains("The HTML viewer needs permission for Chromium's sandbox") {
-        Some(
-            "AppArmor denies Chromium's sandbox to this installation (no \
-             midnight-explorer-html-viewer profile covers the stage)",
-        )
-    } else if error.contains("Chromium requires a writable cgroup-v2 user delegation") {
-        Some("no writable cgroup-v2 delegation for the browser on this machine")
-    } else {
-        None
-    }
-}
 
 fn cases() -> Vec<Case> {
     vec![
@@ -314,6 +311,51 @@ fn generated_cases(root: &std::path::Path) -> Result<Vec<Case>, String> {
         "image .jpeg",
         Expect::Image(8, &[]),
     ));
+    generated::write(root, "linked.png", generated::linked_png())?;
+    // The licensed AVIF fixtures and their reference, checked together (`avif`).
+    generated::write(root, "draw_points.png", generated::POINTS_PNG)?;
+    generated::write(root, "draw_points_idat.avif", generated::POINTS_AVIF)?;
+    generated::write(root, "white_1x1.avif", generated::WHITE_AVIF)?;
+    for feature in generated::svg_features() {
+        generated::write(root, feature.name, &feature.text)?;
+        cases.push(generated_case(
+            feature.name,
+            "SVG feature",
+            Expect::Counts(feature.counts),
+        ));
+    }
+    for (name, text, sentence) in generated::hostile_svgs() {
+        generated::write(root, name, text)?;
+        cases.push(generated_case(
+            name,
+            "hostile SVG",
+            Expect::Statement(sentence),
+        ));
+    }
+    // 48 x 48 frames: 2,304 pixels of the first colour, none of the second.
+    const FIRST: [u8; 3] = [0x20, 0x80, 0xff];
+    const SECOND: [u8; 3] = [0xff, 0x80, 0x20];
+    const FIRST_FRAME: &[generated::Count] = &[(FIRST, 2200, 2304), (SECOND, 0, 0)];
+    generated::write(
+        root,
+        "two-frames.gif",
+        generated::two_frame_gif(FIRST, SECOND),
+    )?;
+    cases.push(generated_case(
+        "two-frames.gif",
+        "animated GIF",
+        Expect::Counts(FIRST_FRAME),
+    ));
+    generated::write(
+        root,
+        "two-frames.webp",
+        generated::two_frame_webp(FIRST, SECOND),
+    )?;
+    cases.push(generated_case(
+        "two-frames.webp",
+        "animated WebP",
+        Expect::Counts(FIRST_FRAME),
+    ));
     for damaged in generated::damaged() {
         generated::write(root, damaged.name, &damaged.bytes)?;
         let expect = match damaged.name {
@@ -420,6 +462,14 @@ fn run(context: &mut Context) -> Result<(), String> {
             },
         }
     }
+    failures.check(
+        "AVIF fixtures (draw_points_idat.avif against draw_points.png, white_1x1.avif)",
+        avif(&mut app, context),
+    );
+    skipped.push(format!(
+        "the HTML viewer's AppArmor Install… offer (O20): {}",
+        apparmor_offer()
+    ));
     if !skipped.is_empty() {
         let text = format!("SKIP {} case(s): {}", skipped.len(), skipped.join("; "));
         context.note(text.clone());
@@ -446,6 +496,21 @@ fn run(context: &mut Context) -> Result<(), String> {
     }
     app.shutdown()?;
     failures.into_result()
+}
+
+/// Why the HTML viewer's AppArmor Install… offer (shown when AppArmor refuses
+/// Chromium's sandbox to an installation no profile covers) is not checked here.
+fn apparmor_offer() -> &'static str {
+    if cfg!(windows) {
+        "Windows has no AppArmor; the offer exists on Linux only"
+    } else if std::fs::read_to_string("/sys/module/apparmor/parameters/enabled")
+        .is_ok_and(|enabled| enabled.trim() == "Y")
+    {
+        "needs Ubuntu outside WSL that restricts unprivileged user namespaces and a stage \
+         outside the profile's pattern; no such machine in this run"
+    } else {
+        "AppArmor is not enabled on this machine (WSL); the offer needs Ubuntu outside WSL"
+    }
 }
 
 /// Open and close one file `REPEATS` times; note the distribution and flag slow opens.
@@ -550,17 +615,17 @@ fn open_and_check(
 fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
     let window = &viewing.window;
     if matches!(case.expect, Expect::Html | Expect::HtmlText)
-        && let Some(reason) = crate::viewers_stage::html_viewer_missing()
+        && let Some(reason) = probe::html_unavailable()
     {
         return Err(format!("SKIP: {reason}"));
     }
     if !matches!(
         case.expect,
-        Expect::Rejected(_) | Expect::Damaged(_) | Expect::Truncated(_)
+        Expect::Rejected(_) | Expect::Damaged(_) | Expect::Truncated(_) | Expect::Statement(_)
     ) && let Err(error) = &viewing.result
     {
         if matches!(case.expect, Expect::Html | Expect::HtmlText)
-            && let Some(reason) = browser_refused(error)
+            && let Some(reason) = probe::browser_refused(error)
         {
             return Err(format!("SKIP: {reason}: {error:?}"));
         }
@@ -590,7 +655,8 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
             Ok(())
         }
         Expect::Empty => {
-            app.idle(Duration::from_millis(300));
+            // Settled: the page holds still, so no later content can come.
+            probe::still_canvas(app, viewing, Duration::from_secs(10))?;
             let text = viewing.text();
             if !text.trim().is_empty() {
                 return Err(format!("an empty file shows {:?}", clip(&text, 80)));
@@ -723,17 +789,21 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
             })
         }
         Expect::Rejected(sentence) => {
-            app.idle(Duration::from_millis(500));
+            let reason = |viewing: &Viewing| {
+                [viewing.result.clone().err(), Some(viewing.status())]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|text| {
+                        text.split_once(sentence)
+                            .map(|(_, reason)| reason.trim().to_owned())
+                            .filter(|reason| !reason.is_empty())
+                    })
+            };
+            let _ = viewing.wait(app, "the refusal", Duration::from_secs(10), |_| {
+                reason(viewing).is_some()
+            });
             let status = viewing.status();
-            let reason = [viewing.result.clone().err(), Some(status.clone())]
-                .into_iter()
-                .flatten()
-                .find_map(|text| {
-                    text.split_once(sentence)
-                        .map(|(_, reason)| reason.trim().to_owned())
-                        .filter(|reason| !reason.is_empty())
-                });
-            if reason.is_none() {
+            if reason(viewing).is_none() {
                 return Err(format!(
                     "no refusal with the decoder's reason (expected {sentence:?} and a \
                      reason): result {:?}, status {status:?}",
@@ -765,25 +835,29 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
             Ok(())
         }
         Expect::Damaged(noun) => {
-            app.idle(Duration::from_millis(500));
-            let status = viewing.status();
             let sentence = format!("This {noun} is damaged or incomplete");
-            let answered = [viewing.result.clone().err(), Some(status.clone())]
-                .into_iter()
-                .flatten()
-                .find_map(|text| {
-                    let (_, rest) = text.split_once(&sentence)?;
-                    let reason = rest
-                        .strip_prefix(':')
-                        .map(str::trim)
-                        .filter(|reason| !reason.is_empty())
-                        .map(str::to_owned);
-                    reason.or_else(|| {
-                        rest.starts_with(", or its format is not supported")
-                            .then(|| "format not supported".to_owned())
+            let answered = |viewing: &Viewing| {
+                [viewing.result.clone().err(), Some(viewing.status())]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|text| {
+                        let (_, rest) = text.split_once(&sentence)?;
+                        let reason = rest
+                            .strip_prefix(':')
+                            .map(str::trim)
+                            .filter(|reason| !reason.is_empty())
+                            .map(str::to_owned);
+                        reason.or_else(|| {
+                            rest.starts_with(", or its format is not supported")
+                                .then(|| "format not supported".to_owned())
+                        })
                     })
-                });
-            if answered.is_none() {
+            };
+            let _ = viewing.wait(app, "the refusal", Duration::from_secs(10), |_| {
+                answered(viewing).is_some()
+            });
+            let status = viewing.status();
+            if answered(viewing).is_none() {
                 return Err(format!(
                     "no clear refusal (expected {sentence:?} with a reason): result {:?}, \
                      status {status:?}",
@@ -822,23 +896,38 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
             Ok(())
         }
         Expect::Truncated(noun) => {
-            app.idle(Duration::from_millis(500));
-            let status = viewing.status();
             let sentence = format!("This {noun} is damaged or incomplete");
-            let refused = [viewing.result.clone().err(), Some(status.clone())]
-                .into_iter()
-                .flatten()
-                .any(|text| text.contains(&sentence));
-            if refused {
+            let refused = |viewing: &Viewing| {
+                [viewing.result.clone().err(), Some(viewing.status())]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| text.contains(&sentence))
+            };
+            let shown = |viewing: &Viewing| {
+                let window = &viewing.window;
+                window.get_image_mode()
+                    && viewing.canvas().colours(4).len() >= 2
+                    && (noun != "document" || window.get_document_pages() >= 1)
+            };
+            // Either answer settles it: a refusal, or what could be decoded, held still.
+            let _ = viewing.wait(
+                app,
+                "the refusal or the picture",
+                Duration::from_secs(10),
+                |_| refused(viewing) || shown(viewing),
+            );
+            if refused(viewing) {
                 return Ok(());
             }
             if let Err(error) = &viewing.result {
                 return Err(format!("neither shown nor clearly refused: {error:?}"));
             }
-            let shown = window.get_image_mode()
-                && viewing.canvas().colours(4).len() >= 2
-                && (noun != "document" || window.get_document_pages() >= 1);
-            if !shown || support::probe::status_error(&status).is_some() {
+            probe::still_canvas(app, viewing, Duration::from_secs(10))?;
+            let status = viewing.status();
+            if refused(viewing) {
+                return Ok(());
+            }
+            if !shown(viewing) || support::probe::status_error(&status).is_some() {
                 return Err(format!(
                     "neither shown nor clearly refused: status {status:?}, image mode {}",
                     window.get_image_mode()
@@ -846,7 +935,171 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
             }
             Ok(())
         }
+        Expect::Counts(counts) => {
+            if !window.get_image_mode() {
+                return Err(format!(
+                    "not shown as an image (status {:?})",
+                    viewing.status()
+                ));
+            }
+            let measure = |canvas: &Canvas| -> Vec<usize> {
+                counts
+                    .iter()
+                    .map(|(colour, _, _)| canvas.count_near(*colour, 6))
+                    .collect()
+            };
+            let within = |found: &[usize]| {
+                counts
+                    .iter()
+                    .zip(found)
+                    .all(|((_, least, most), found)| (least..=most).contains(&found))
+            };
+            let _ = viewing.wait(app, "the drawn image", Duration::from_secs(10), |_| {
+                within(&measure(&viewing.canvas()))
+            });
+            // Held still: an animation that moved on would keep changing the picture.
+            let canvas = probe::still_canvas(app, viewing, Duration::from_secs(10))?;
+            let found = measure(&canvas);
+            if !within(&found) {
+                return Err(format!(
+                    "the picture shows {} (colour: pixels found, wanted)",
+                    counts
+                        .iter()
+                        .zip(&found)
+                        .map(|((colour, least, most), found)| format!(
+                            "{}: {found}, {least}–{most}",
+                            probe::hex(*colour)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+            Ok(())
+        }
+        Expect::Statement(sentence) => {
+            let refused = |viewing: &Viewing| {
+                [viewing.result.clone().err(), Some(viewing.status())]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| text.contains(sentence))
+            };
+            let _ = viewing.wait(app, "the refusal", Duration::from_secs(10), |_| {
+                refused(viewing)
+            });
+            if !refused(viewing) {
+                return Err(format!(
+                    "no refusal saying {sentence:?}: result {:?}, status {:?}",
+                    viewing.result,
+                    viewing.status()
+                ));
+            }
+            Ok(())
+        }
     }
+}
+
+/// The licensed AVIF fixtures in `folder`: `draw_points_idat.avif` shows the pixels of
+/// its PNG reference (both at a typed 800 % zoom, which the second image opens with as
+/// the saved image zoom), and the white pixel is white. Ctrl+0 leaves Fit saved again.
+fn avif(app: &mut App, context: &mut Context) -> Result<(), String> {
+    let mut renders = Vec::new();
+    for (name, zoom) in [("draw_points.png", true), ("draw_points_idat.avif", false)] {
+        panel::select_row(app, PaneId::Right, name)?;
+        let viewing = support::view(app, false, OPEN_LIMIT)?;
+        let result: Result<Canvas, String> = (|| {
+            viewing.result.clone()?;
+            viewing.wait(app, "the image", Duration::from_secs(10), |window| {
+                window.get_image_mode()
+            })?;
+            if zoom {
+                viewing.click_content(app);
+                input::chord(viewing.slint(), &[Key::Control], "y");
+                viewing.wait(
+                    app,
+                    "Ctrl+Y to open the zoom field",
+                    Duration::from_secs(10),
+                    |window| window.get_zoom_editing(),
+                )?;
+                input::replace_text(viewing.slint(), "800");
+                input::key(viewing.slint(), Key::Return);
+            }
+            viewing.wait(app, "the 800 % zoom", Duration::from_secs(10), |window| {
+                !window.get_zoom_editing() && (window.get_zoom_percent() - 800.0).abs() < 0.5
+            })?;
+            let canvas = probe::still_canvas(app, &viewing, Duration::from_secs(10))?;
+            app.screenshot_window(
+                context,
+                &viewing.software,
+                &format!("avif-{}", name.replace('.', "-")),
+                &format!("{name} at 800 %"),
+            );
+            Ok(canvas)
+        })();
+        viewing.close(app)?;
+        renders.push(result.map_err(|error| format!("{name}: {error}"))?);
+    }
+    let (png, avif) = (&renders[0], &renders[1]);
+    if (png.width, png.height) != (avif.width, avif.height) {
+        return Err(format!(
+            "the two renders differ in size: {}x{} and {}x{}",
+            png.width, png.height, avif.width, avif.height
+        ));
+    }
+    let background = probe::dominant(png);
+    let mut image = 0;
+    let mut close = 0;
+    let mut largest = 0;
+    for y in 0..png.height {
+        for x in 0..png.width {
+            let (a, b) = (png.at(x, y), avif.at(x, y));
+            if a == background && b == background {
+                continue;
+            }
+            image += 1;
+            let deviation = (0..3)
+                .map(|channel| a[channel].abs_diff(b[channel]))
+                .max()
+                .unwrap_or(0);
+            largest = largest.max(deviation);
+            if deviation <= 6 {
+                close += 1;
+            }
+        }
+    }
+    context.note(format!(
+        "AVIF: {image} image pixels at 800 %, {close} within 6 of the PNG reference, largest \
+         deviation {largest}"
+    ));
+    // 33 x 11 pixels at 800 %: 23,232 pixels.
+    if image < 20_000 || close * 1000 < image * 995 {
+        return Err(format!(
+            "draw_points_idat.avif does not match draw_points.png: {close} of {image} image \
+             pixels within 6 per channel (largest deviation {largest})"
+        ));
+    }
+    panel::select_row(app, PaneId::Right, "white_1x1.avif")?;
+    let viewing = support::view(app, false, OPEN_LIMIT)?;
+    let white = (|| {
+        viewing.result.clone()?;
+        viewing.wait(
+            app,
+            "the white pixel at 800 %",
+            Duration::from_secs(10),
+            |window| {
+                window.get_image_mode()
+                    && (window.get_zoom_percent() - 800.0).abs() < 0.5
+                    && viewing.canvas().count_near([255, 255, 255], 3) >= 60
+            },
+        )
+    })();
+    viewing.click_content(app);
+    input::chord(viewing.slint(), &[Key::Control], "0");
+    let fitted = viewing.wait(app, "Ctrl+0 to fit", Duration::from_secs(10), |window| {
+        window.get_zoom_percent() < 800.0
+    });
+    viewing.close(app)?;
+    white.map_err(|error| format!("white_1x1.avif: {error}"))?;
+    fitted
 }
 
 /// Pixels clearly off the blend between the text and background colours: syntax

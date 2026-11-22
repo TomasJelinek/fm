@@ -517,6 +517,245 @@ pub fn picture(x: u32, y: u32) -> [u8; 3] {
     }
 }
 
+/// Standard base64 with padding (RFC 4648), for `data:` URIs.
+pub fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = chunk
+            .iter()
+            .enumerate()
+            .fold(0_u32, |value, (index, byte)| {
+                value | u32::from(*byte) << (16 - 8 * index)
+            });
+        for index in 0..4 {
+            text.push(if index <= chunk.len() {
+                TABLE[(value >> (18 - 6 * index) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    text
+}
+
+/// A colour a pixel count must reach: (colour, at least, at most) pixels within six
+/// steps per channel.
+pub type Count = ([u8; 3], usize, usize);
+
+/// An SVG that uses one feature the image decoder draws, on a white 200 x 120 page
+/// (shown at 1:1: an image that fits the window is not enlarged): its name, its text and
+/// the pixel counts that prove the feature was drawn (or, for a script and links,
+/// that nothing else was).
+pub struct SvgFeature {
+    pub name: &'static str,
+    pub text: String,
+    pub counts: &'static [Count],
+}
+
+const SVG_OPEN: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120"><rect width="200" height="120" fill="#ffffff"/>"##;
+const MAGENTA: [u8; 3] = [0xff, 0x00, 0xff];
+
+/// A marker, a pattern, a mask, a clip path, a blur filter, an embedded `data:` PNG and
+/// a `switch` fallback for `foreignObject`, each drawn; a script and images linked to a
+/// local file and a URL, none of which is run or shown. `linked.png` (magenta) must lie
+/// beside them.
+pub fn svg_features() -> Vec<SvgFeature> {
+    let embedded = crate::encode::png(8, 8, |_, _| [0x30, 0xc0, 0x60]);
+    let feature = |name: &'static str, body: String, counts: &'static [Count]| SvgFeature {
+        name,
+        text: format!("{SVG_OPEN}{body}</svg>"),
+        counts,
+    };
+    vec![
+        // Two 12 x 12 squares at the line's ends (markerUnits in user space).
+        feature(
+            "svg-marker.svg",
+            r##"<defs><marker id="m" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse"><rect width="10" height="10" fill="#ff0080"/></marker></defs><path d="M20 60 L180 60" stroke="#202020" stroke-width="4" marker-start="url(#m)" marker-end="url(#m)"/>"##.into(),
+            &[([0xff, 0x00, 0x80], 200, 320)],
+        ),
+        // Half of a 160 x 80 rectangle: a checkerboard of 10-pixel squares.
+        feature(
+            "svg-pattern.svg",
+            r##"<defs><pattern id="p" width="20" height="20" patternUnits="userSpaceOnUse"><rect width="10" height="10" fill="#00a0ff"/><rect x="10" y="10" width="10" height="10" fill="#00a0ff"/></pattern></defs><rect x="20" y="20" width="160" height="80" fill="url(#p)"/>"##.into(),
+            &[([0x00, 0xa0, 0xff], 5800, 6600)],
+        ),
+        // The whole page in red, masked to a circle of radius 40 (5,027 pixels).
+        feature(
+            "svg-mask.svg",
+            r##"<defs><mask id="k"><rect width="200" height="120" fill="#000000"/><circle cx="100" cy="60" r="40" fill="#ffffff"/></mask></defs><rect width="200" height="120" fill="#e01010" mask="url(#k)"/>"##.into(),
+            &[([0xe0, 0x10, 0x10], 4500, 5300)],
+        ),
+        // The whole page in blue, clipped to the same circle.
+        feature(
+            "svg-clip.svg",
+            r##"<defs><clipPath id="c"><circle cx="100" cy="60" r="40"/></clipPath></defs><rect width="200" height="120" fill="#1040e0" clip-path="url(#c)"/>"##.into(),
+            &[([0x10, 0x40, 0xe0], 4500, 5300)],
+        ),
+        // A blurred black rectangle: its solid middle stays, its edges become greys.
+        feature(
+            "svg-blur.svg",
+            r##"<defs><filter id="f" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter></defs><rect x="60" y="30" width="80" height="60" fill="#000000" filter="url(#f)"/>"##.into(),
+            &[([0x00, 0x00, 0x00], 100, 3000), ([0x80, 0x80, 0x80], 40, 2000)],
+        ),
+        // An 8 x 8 PNG in a data: URI, drawn 40 x 40.
+        feature(
+            "svg-data-image.svg",
+            format!(
+                r##"<image x="20" y="20" width="40" height="40" href="data:image/png;base64,{}"/>"##,
+                base64(&embedded)
+            ),
+            &[([0x30, 0xc0, 0x60], 1300, 1700)],
+        ),
+        // The fallback of a switch whose foreignObject is not drawn.
+        feature(
+            "svg-switch.svg",
+            r##"<switch><foreignObject requiredFeatures="http://www.w3.org/TR/SVG11/feature#Extensibility" width="200" height="120"><div xmlns="http://www.w3.org/1999/xhtml">HTML</div></foreignObject><rect width="200" height="120" fill="#c08000"/></switch>"##.into(),
+            &[([0xc0, 0x80, 0x00], 23000, 24000)],
+        ),
+        // A script that would paint the page magenta and two linked images (a local
+        // magenta file and a URL) that would cover a third of it: none runs or shows.
+        feature(
+            "svg-script-links.svg",
+            r##"<script>document.getElementById('r').setAttribute('fill', '#ff00ff');</script><rect id="r" width="200" height="120" fill="#2040a0"/><image x="20" y="20" width="60" height="60" href="linked.png"/><image x="110" y="20" width="60" height="60" href="https://example.invalid/linked.png"/>"##.into(),
+            &[([0x20, 0x40, 0xa0], 23500, 24000), (MAGENTA, 0, 0)],
+        ),
+    ]
+}
+
+/// The magenta picture `svg-script-links.svg` links to.
+pub fn linked_png() -> Vec<u8> {
+    crate::encode::png(60, 60, |_, _| MAGENTA)
+}
+
+/// SVGs the decoder refuses before drawing, each with the start of the sentence it
+/// reports (a complete sentence starting with "This SVG", shown as it is).
+pub fn hostile_svgs() -> Vec<(&'static str, String, &'static str)> {
+    let mut deep =
+        String::from(r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">"##);
+    for _ in 0..70 {
+        deep.push_str("<g>");
+    }
+    deep.push_str(r##"<rect width="10" height="10"/>"##);
+    for _ in 0..70 {
+        deep.push_str("</g>");
+    }
+    deep.push_str("</svg>");
+    vec![
+        (
+            "svg-no-namespace.svg",
+            r##"<svg width="10" height="10"><rect width="10" height="10"/></svg>"##.into(),
+            "This SVG does not declare the SVG namespace on its root element, so it is not a \
+             standalone SVG image.",
+        ),
+        (
+            "svg-entities.svg",
+            r##"<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text y="8">&b;</text></svg>"##.into(),
+            "This SVG declares XML entities (a DOCTYPE internal subset), which are not \
+             supported.",
+        ),
+        (
+            "svg-deep.svg",
+            deep,
+            "This SVG nests elements and references more than 64 levels deep (line",
+        ),
+        (
+            "svg-cycle.svg",
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+<use id="a" href="#a"/>
+</svg>"##.into(),
+            "This SVG is invalid: the reference on line 2 leads back to itself.",
+        ),
+    ]
+}
+
+/// A GIF89a of two 48 x 48 frames, `first` and then `second` all over, 100 ms apart:
+/// two single-frame GIFs of one palette (`encode::gif`) spliced into one stream, each
+/// frame after a graphic control extension.
+pub fn two_frame_gif(first: [u8; 3], second: [u8; 3]) -> Vec<u8> {
+    let mut palette = [[0_u8; 3]; 256];
+    palette[1] = first;
+    palette[2] = second;
+    let frames = [
+        crate::encode::gif(48, 48, &palette, |_, _| 1),
+        crate::encode::gif(48, 48, &palette, |_, _| 2),
+    ];
+    // Header, logical screen descriptor and the 256-entry global colour table.
+    const HEAD: usize = 6 + 7 + 256 * 3;
+    let mut output = frames[0][..HEAD].to_vec();
+    // Loop forever (NETSCAPE2.0), as animated GIFs do.
+    output.extend_from_slice(b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00");
+    for frame in &frames {
+        // Graphic control extension: no disposal, 10 hundredths of a second.
+        output.extend_from_slice(&[0x21, 0xf9, 0x04, 0x00, 10, 0, 0, 0]);
+        // The image descriptor and its data, without the stream's trailer.
+        output.extend_from_slice(&frame[HEAD..frame.len() - 1]);
+    }
+    output.push(0x3b);
+    output
+}
+
+/// An animated WebP of two 48 x 48 lossless frames, `first` and then `second` all over,
+/// 100 ms each: the VP8L chunks of two still WebPs (`encode::webp`) in ANMF frames after
+/// the VP8X and ANIM chunks.
+pub fn two_frame_webp(first: [u8; 3], second: [u8; 3]) -> Vec<u8> {
+    let still =
+        |colour: [u8; 3]| crate::encode::webp(48, 48, colour, [255, 255, 255], |_, _| false);
+    let u24 = |value: u32| value.to_le_bytes()[..3].to_vec();
+    let chunk = |tag: &[u8], payload: &[u8]| {
+        let mut chunk = tag.to_vec();
+        chunk.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        chunk.extend_from_slice(payload);
+        if payload.len() % 2 == 1 {
+            chunk.push(0);
+        }
+        chunk
+    };
+    let mut body = b"WEBP".to_vec();
+    // VP8X: the animation flag, then the canvas size minus one.
+    let mut vp8x = vec![0x02, 0, 0, 0];
+    vp8x.extend(u24(47));
+    vp8x.extend(u24(47));
+    body.extend(chunk(b"VP8X", &vp8x));
+    // ANIM: a white background (BGRA), looping forever.
+    body.extend(chunk(b"ANIM", &[255, 255, 255, 255, 0, 0]));
+    for colour in [first, second] {
+        // A still WebP is RIFF, its size, WEBP, then the VP8L chunk.
+        let frame = still(colour);
+        let mut anmf = Vec::new();
+        anmf.extend(u24(0));
+        anmf.extend(u24(0));
+        anmf.extend(u24(47));
+        anmf.extend(u24(47));
+        anmf.extend(u24(100));
+        // Do not blend, no disposal.
+        anmf.push(0x02);
+        anmf.extend_from_slice(&frame[12..]);
+        body.extend(chunk(b"ANMF", &anmf));
+    }
+    let mut output = b"RIFF".to_vec();
+    output.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    output.extend(body);
+    output
+}
+
+/// The licensed AVIF fixtures of the image decoder (libavif 1.3.0 test data under its
+/// BSD-2-Clause license, provenance in `plugins/image-decoder/tests/fixtures/README.md`):
+/// an opaque white pixel, and the quality-100 encoding of `draw_points.png` with an
+/// alpha item, with that PNG as the independent reference.
+pub const WHITE_AVIF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../plugins/image-decoder/tests/fixtures/white_1x1.avif"
+));
+pub const POINTS_AVIF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../plugins/image-decoder/tests/fixtures/draw_points_idat.avif"
+));
+pub const POINTS_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../plugins/image-decoder/tests/fixtures/draw_points.png"
+));
+
 /// A damaged or unusual file and how its viewer must answer it.
 pub struct Damaged {
     pub name: &'static str,
