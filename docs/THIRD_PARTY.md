@@ -137,7 +137,8 @@ feature; MIT is selected for these bindings. Its separately packaged Chromium Em
 Framework runtime is `156.0.26+g8ea0c73+chromium-156.0.8078.88`. The main executable
 does not link CEF. CEF's BSD license does not cover Chromium's bundled components: the
 package keeps CEF's `LICENSE.txt` and Chromium's `CREDITS.html`, whose LGPL, MPL and
-other conditions apply. No Widevine, proprietary codec or paid component is selected.
+other conditions apply. It also carries the HTML viewer's own `LICENSE`; CEF's
+`LICENSE.txt` covers only CEF. No Widevine, proprietary codec or paid component is selected.
 The Linux package can also carry native runtime libraries named in a manifest
 (`MIDNIGHT_HTML_NATIVE_MANIFEST`) for hosts that lack them, with their notices and
 sources. See the [HTML viewer record](../plugins/midnight-viewer-html/THIRD_PARTY.md).
@@ -310,8 +311,9 @@ the four palette licenses under `licenses/themes/`, with
 [THEME_PROVENANCE.md](THEME_PROVENANCE.md). Like the inventory, the notices
 conservatively include build dependencies. The packager refuses a crate without license
 files unless `--license-overrides` supplies them, and refuses links. Plugin packages
-carry their own `THIRD-PARTY.md` files and notices, and the packager refuses a plugin
-package without its required notices. This inventory supplements those per-package
+carry their own `THIRD-PARTY.md` (`THIRD_PARTY.md` for the HTML viewer) and notices,
+viewer packages also their own `LICENSE`, and the packager refuses a plugin package
+without them. This inventory supplements those per-package
 notices; it does not replace them.
 
 The About dialog's Licenses tab is compiled from the

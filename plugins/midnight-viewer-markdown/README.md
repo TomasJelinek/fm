@@ -16,9 +16,10 @@ marker; an item that opens with a code block, heading, table, quote or nested
 list shows its number on a line of its own and an unordered one shows no bullet.
 HTML is literal inert text. Images are alt text only. No HTML renderer, browser,
 JavaScript, network request, image/font/style fetch or automatic link launch
-exists. Metadata permits only HTTP, HTTPS, mailto and local fragments, with no
-controls, explicit bidirectional controls, whitespace or backslashes. The host
-must separately check any explicit action.
+exists. Link metadata carries every target of 1 to 8192 bytes without control
+characters, in its source range; the host's single link policy decides on an
+explicit user action what a target does, and names what it refuses
+([viewer links](../../docs/developer/VIEWER_PREFERENCES.md#links)).
 GitHub-style pipe tables, task checkboxes and strikethrough are enabled. Tables
 carry per-cell left/center/right alignment, header metadata, inline styles and
 source anchors; the host supplies column layout and borders. Empty cells and
@@ -166,15 +167,15 @@ before the offline commands when necessary.
 Windows PowerShell:
 
 ```powershell
-./scripts/ci.ps1 -SdkConfig C:/sdk/.cargo/config.toml -BuildRoot C:/qa/markdown/_build
-./scripts/build.ps1 -SdkConfig C:/sdk/.cargo/config.toml -BuildRoot C:/qa/markdown/_build -OutputDirectory C:/app/viewers/markdown
+./scripts/ci.ps1 -SdkConfig <sdk>/.cargo/config.toml -BuildRoot <folder>/_build
+./scripts/build.ps1 -SdkConfig <sdk>/.cargo/config.toml -BuildRoot <folder>/_build -OutputDirectory <install>/viewers/markdown
 ```
 
 Linux (Python 3.11+ is used only to read the released SDK config):
 
 ```sh
-bash scripts/ci.sh /sdk/.cargo/config.toml /qa/markdown/_build
-bash scripts/build.sh /sdk/.cargo/config.toml /qa/markdown/_build /app/viewers/markdown
+bash scripts/ci.sh <sdk>/.cargo/config.toml <folder>/_build
+bash scripts/build.sh <sdk>/.cargo/config.toml <folder>/_build <install>/viewers/markdown
 ```
 
 CI runs formatting, all tests, strict Clippy and native release packaging.
@@ -193,7 +194,7 @@ fenced logs between ordinary sections, ordered lists, controls from character
 references, stale generations and superseded requests waiting for reads.
 Heap-metered test binaries serialize their tests through the meter's lock.
 
-## Dependency review and licensing
+## Dependencies and license
 
 `pulldown-cmark = 0.13.6` is pinned, with all default features disabled: no HTML
 output feature or CLI dependency is linked. The reviewed upstream README and
@@ -201,6 +202,5 @@ output feature or CLI dependency is linked. The reviewed upstream README and
 Only those events are transformed into the public semantic API; no parser or
 renderer implementation is imported from the host or another plugin.
 
-Plugin-owned code is MIT. Third-party versions and licence copies are in
-THIRD-PARTY.md and notices/. The separate public project API/SDK release
-currently declares no licence; the plugin's MIT licence does not license it.
+The plugin's own code is under its MIT [LICENSE](LICENSE). Third-party versions and
+license copies are in [THIRD-PARTY.md](THIRD-PARTY.md) and `notices/`.

@@ -198,11 +198,23 @@ container path, captured source revision and raw member components separately.
 On restart only active tabs reopen; missing providers and changed sources remain
 unavailable read-only tabs with their addresses retained. Display labels never
 become native paths. In-session tabs, parent navigation, history, sorting,
-filtering and selection operate on provider identity. F3 receives a bounded
-content lease; F5 captures the archive selection and queues copy-out through the
-host's ordinary 32-job FIFO, with exclusive staging, SHA-256 source hashing,
-independent complete destination readback, and no-replace publication. The worker
-never receives a destination path and never writes files. Native clipboard
+filtering and selection operate on provider identity. Panels, tabs and viewers keep
+at most two archives opened from native files open at once, and those showing the same
+archive share its worker. A tab that leaves its archive for another one gives it up, so
+the next archive takes its place, at the latest after 10 seconds; while another tab, the
+other panel or a viewer still shows it, the new archive is refused with "Two archives
+are already open; close one of them first"
+([limits](../../docs/ARCHIVE_FORMATS.md#current-operation-limits)).
+
+F3 receives a bounded content lease. F5 captures the archive selection and queues
+copy-out through the host's ordinary 32-job FIFO, with exclusive staging, SHA-256
+source hashing, independent complete destination readback and no-replace
+publication. The copy validates the archive file before a folder's listing and before
+a Retry, and the host validates it at each exchange with the worker, not for every
+chunk. On a local fixed NTFS volume each receiving folder gets one private staging folder,
+whose staged files get the security descriptor that a file created in that folder
+would get. A member whose archive password was declined is skipped with that reason.
+The worker never receives a destination path and never writes files. Native clipboard
 export, external editing, shell launch and archive mutations are unavailable for
 archive members.
 Copy-out uses raw member names and fails on names that cannot be represented

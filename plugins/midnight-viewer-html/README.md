@@ -80,20 +80,12 @@ top edge, and that a notch the host glides in 25 frames of 2.4 px scrolls its 60
 reads the machine's wheel setting as CEF does and expects what Chromium can scroll there:
 the closest distance not past 120 px for the single event, and for the glide 60 px or
 less by under one wheel unit's scroll (both exact at three lines and on Linux); with a
-notch set to scroll a page it does not run. On Windows 11 (21 November 2026, debug
-package of this checkout, three wheel lines) it first measured 100 px for a 120 px event;
-with the unit conversion below alone, the glide moved 47 of 60 px; with whole quanta it
-passed at three lines. With the per-event conversion below it passed again (21 November
-2026, Windows 11, three wheel lines, a debug package of this checkout's provider: 120 px
-and 60 px, 2.44 s); other wheel settings are covered by the provider's unit tests, not
-measured. It earlier ran on Linux X11. Editable
-steps wait for the copied selection rather than fixed delays, because frames carry no
-input acknowledgment.
-The final fixture passed in 2.29 seconds on the development Windows environment;
-on a loaded development machine CefShutdown alone took 10-12 seconds, so the
-fixture allows 30 seconds for the clean exit. Tests
-inside Codex's additional process sandbox failed child DLL startup; external
-qualification keeps Chromium's own sandbox enabled and succeeds. No unsandboxed
+notch set to scroll a page it does not run. Other wheel settings are covered by the
+provider's unit tests. Editable steps wait for the copied selection rather than fixed
+delays, because frames carry no input acknowledgment. The fixture allows 30 seconds for
+the clean exit, because CefShutdown alone can take 10–12 seconds on a loaded machine.
+Inside another process sandbox Chromium's child processes can fail to start; run the
+test on an ordinary desktop, where Chromium's own sandbox stays enabled. No unsandboxed
 fallback exists.
 
 Policy changes require a new Open document generation and fresh source/resource
@@ -148,8 +140,8 @@ punctuation never acts as Delete, arrow or page commands. Mouse Back/Forward but
 focus loss ends a held button's capture. Chromium runs with `disable-smooth-scrolling`:
 the host glides wheel notches and coasts touchpad flicks itself, one delta per frame, so
 Chromium applies each wheel event at once instead of easing it again over about 170 ms.
-The host's deltas are the distance to scroll, a notch as far as in the text viewer: 100 px
-at three lines since 21 November 2026, 60 px when the figures below were measured.
+The host's deltas are the distance to scroll, a notch as far as in the text viewer
+(100 px at three lines). The figures below are for a 60 px notch.
 Chromium scrolls whole pixels of whole units. On Linux CEF reads a delta as pixels, so
 a unit is a pixel. On Windows CEF reads it as `WHEEL_DELTA` units (120 per notch) and
 Chromium scrolls the system's wheel lines (characters across) of 100/3 px each, computed
@@ -164,30 +156,22 @@ one unit's scroll, is dropped instead of moving the next gesture; a reversed dir
 drops it too. At three lines or fewer a unit is at most 5/6 px and every whole pixel is
 reachable, so a notch scrolls exactly 60 px. Above three lines not every distance is a
 whole number of units, and a gesture comes within one unit's scroll of its distance: a
-notch scrolls 59–60 px at five or seven lines and 58–60 px at ten (before, the adapter
-sent only units that scroll whole pixels, so 50, 35 and 50 px, with the rest waiting for
-the next gesture, and touchpad glides jumped in 25–35 px steps). CEF on Windows scrolls
+notch scrolls 59–60 px at five or seven lines and 58–60 px at ten. CEF on Windows scrolls
 one axis per event, so a delta on both axes goes out as two events. A "one screen at a
 time" setting cannot scroll by pixels; the adapter then uses the default three lines, and
 Chromium still scrolls by pages.
 IME composition and commit pass CEF's required invalid replacement range.
 
-Unit tests (`cargo test ... --lib --bins --test policy_surface --test native_runtime`)
-passed on Windows on 21 November 2026: 110 passed, 1 ignored in the library, the
-platform tests included (after the per-event wheel conversion; 109 before it), and 5 in
-`policy_surface`. Four resource and navigation tests had failed on Windows as on
-Linux because they read `ResourceRelease` from the control lane, while releases have
-their own lane since the output lanes were split; they now read the provider's output
-in order. This was a test defect, not an environment limit. Linux was not rerun on this
-host: its WSL has no Linux CEF SDK.
+Run the unit tests with `cargo test ... --lib --bins --test policy_surface --test native_runtime`.
 
 ## Linux status
 
 Linux has a separate process entry, window/input adapter, and CEF lifecycle.
 The launcher requires Chromium namespace/seccomp isolation or a correctly
-installed sandbox helper; unsupported policy must fail. The exact Linux x64 pair
-was qualified on Ubuntu 24.04 under WSLg XWayland with namespace/seccomp enabled
-and delegated memory/pid cgroup supervision. Actual installed host and Slint
+installed sandbox helper; unsupported policy must fail. The Linux x64 package was
+tested on Ubuntu 24.04 under WSLg XWayland with namespace/seccomp enabled and delegated
+memory/pid cgroup supervision ([record](../../docs/verification/2026-11-10-html-linux.md)).
+Installed host and Slint
 software-renderer tests cover source-relative CSS through explicit native directory
 authority, a 350-byte Unicode source path, Find, zoom, fractional viewport resize,
 Escape, policy-context replacement, provider crash and complete tree/state cleanup.
@@ -197,10 +181,10 @@ The launcher passes its arguments to CEF as raw bytes, so a non-UTF-8 installati
 path does not abort startup. Before CEF starts any child, the browser process keeps
 a private close-on-exec duplicate of the MWV1 standard output for its writer and
 points descriptor 1 at standard error, so Chromium children and native libraries
-cannot write into the protocol stream. These two Linux adapter changes have not yet
-been qualified with the native Linux package.
-Physical IME input and native Chromium Wayland remain unqualified. Other display/system
-policies require their own native qualification. macOS has no implementation here.
+cannot write into the protocol stream. These two Linux adapter behaviours have not
+been tested with the native Linux package. Physical IME input and native Chromium
+Wayland are not tested, and other display or system policies need their own native
+test. macOS has no implementation here.
 
 The launcher links `libcef.so` through a literal `$ORIGIN` DT_RPATH; CEF's other shared
 libraries come from the distribution (NSS/NSPR, ALSA, ATK/AT-SPI, CUPS, D-Bus, DRM/GBM,
@@ -214,7 +198,7 @@ The host keeps the full profile path and separately owns a short private socket
 directory, retained through whole-tree reaping. This avoids Chromium's AF_UNIX path
 limit without truncating source/profile identities. Existing user delegation and
 sandbox policy remain required; no root cgroup configuration or sandbox bypass is
-performed. Linux qualification artifacts are retained under `_build/qa/html-linux`.
+performed.
 
 `scripts/build-linux.sh /absolute/public-sdk-config.toml` can stage an independent
 Linux x64 package when `CEF_PATH` names the exact verified flattened Linux SDK.
@@ -250,8 +234,8 @@ dependency's root fails packaging, while links above it (a linked cargo home) ar
 accepted. Optional private native-library input requires `MIDNIGHT_HTML_NATIVE_MANIFEST` with
 explicit source/path/SHA-256 entries and matching license/source distribution data;
 see THIRD_PARTY.md. No install, root action or setuid configuration is performed.
-Each newly built package still needs real supervised rendering/input/cleanup
-qualification in its intended environment. Run packaging safety tests independently with
+Test each new package's supervised rendering, input and cleanup in its intended
+environment before distributing it. Run packaging safety tests independently with
 `python3 plugins/midnight-viewer-html/tests/test_linux_package.py` on Linux.
 
 ## Native source availability
