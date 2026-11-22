@@ -397,3 +397,36 @@ Shared controls such as Find and Close apply to both windows, including their se
 fields; file cycling and difference navigation apply only to their respective content.
 This permits Alt+Left/Right to cycle files in viewers while retaining difference
 navigation in comparators, with separate user overrides and conflict checks.
+
+## Options page order
+
+Since 22 November 2026 Options lists its pages in the order users look for settings:
+general behavior and appearance first, then how the panels show files, file
+handling, the programs that open and compare files, tools and keys, and the rarely
+changed plugin catalog last. Related pages sit next to each other, and the most used
+pages are at the top.
+
+| Position | Page | Why there |
+| --- | --- | --- |
+| 1 | General | Everyday behavior: filename search, hidden files, sizes, copy verification, disk I/O, command history and the settings file. The most used page, and the page Options first opens on. |
+| 2 | Appearance | Theme, spacing, fonts and text rendering: the other most used settings. |
+| 3 | Colors | Filename colors in the panels: the look of the file list, beside Appearance. |
+| 4 | Previews | Image and video thumbnails in the panels' Thumbnails view, their size and cache: panel display again. Its switch for previews inside archives leads on to the next page. |
+| 5 | Archives | Which file types open as folders, and custom archive extensions: how files are handled. |
+| 6 | Editors | The program that F4 opens for each file name. |
+| 7 | Comparators | The program that compares two files, with the same rule list and program fields as Editors. |
+| 8 | Custom Commands | Your own programs and scripts on the toolbar and in F9, again with a program, arguments and a working folder. |
+| 9 | Keyboard | Keys for every command, Custom Commands included: a new command gets its key on the next page. |
+| 10 | Plugins | Installed viewer, filesystem, archive and thumbnailer packages: viewer priority and extensions, diagnostics and Rescan. Changed rarely, so last. |
+
+Every page keeps its content and its keyboard access: Tab into the list, the arrow
+keys, Enter or Space, and the topic picker that replaces the list in narrow windows.
+Every page also keeps its topic identity (`OptionsTopics` in
+`crates/midnight-ui/ui/options-navigation.slint`, whose `ids` and `positions` map list
+positions to identities and back; the removed Command topic 2 shows General). The
+Custom Commands toolbar, F9 and shortcut, the settings pickers, page validation errors
+and the page shown again when Options reopens in the same session all use these
+identities, so they open the same page in any order. No setting stores a page, so
+nothing needs migrating. Options has no page for toolbar buttons or Hot Paths (Hot
+Paths has its own manager), and the internal viewers have none of their own: their
+extensions and priority are on Plugins › Viewers.

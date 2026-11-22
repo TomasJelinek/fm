@@ -52,6 +52,22 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-A05 | Desktop and touch font sizes | `options_appearance` | row height, rendered text | PASS |
 | O-A06 | Text rendering (Sharp, Balanced, Smooth) | `options_appearance` | stored and shown after a restart (the software renderer ignores it) | PASS |
 
+## Colors, Previews, Archives, Editors, Comparators, Custom Commands
+
+| ID | Behavior | Scenario | Check | Status |
+| --- | --- | --- | --- | --- |
+| O-L01 | Colors: an added rule colours matching names; priority by Move up; Cancel; OK; restart | `options_colors` | row colours, rendered pixels, saved rules | PASS |
+| O-L02 | Colors stay on their rows sorted by size and filtered by a panel filter | `options_colors` | row colours, rendered pixels | PASS |
+| O-V01 | Previews: switches, thumbnail size seen in the Thumbnails view; Cancel, OK, restart | `options_previews_plugins` | row height; saved values | PASS |
+| O-V02 | Previews: Clear thumbnail cache | – | the thumbnail service exists only in staged viewer processes; the button would clear a real cache | SKIP |
+| O-R01 | Archives: custom extension chips (add, fold, remove, invalid, built-in conflict), an association; Cancel, OK, restart; Escape in the field | `options_archives` | chips, errors, saved values | PASS |
+| O-E01 | Editors: a fallback and a `*.md` rule; F4 runs the matching one; restart | `options_editors` | file written by the editor command | PASS |
+| O-E02 | Editors: a rule without `{file}` is refused | `options_editors` | error line | PASS |
+| O-C01 | Comparators: built-in and external overrides saved, listed after a restart | `options_comparators` | rule rows, saved values | PASS |
+| O-C02 | Comparators: an invalid regular expression is refused | `options_comparators` | error line | PASS |
+| O-U01 | Custom Commands: create, edit, drag, delete, separators, placeholders; runs; failure notice; Preview; key; restart | `options_custom_commands` | files written, notices, saved commands | PASS |
+| O-H01 | Hot Paths manager: add, exchange numbers, remove; Ctrl+digit; restart | `options_hot_paths`, `files_hot_paths` (panels) | panel folders, saved Hot Paths | PASS |
+
 ## Keyboard
 
 | ID | Behavior | Scenario | Check | Status |
@@ -68,22 +84,11 @@ bug, with its finding), **PENDING** (not verified yet; the reason is given), **S
 | O-K10 | Tab or Escape in the capture field is recorded, not run | `options_keyboard` | captured text; Options stays open | PASS |
 | O-K11 | Reserved keys (Ctrl+Space) and a fifth alias are refused with a reason | `options_keyboard` | "reserved" and "At most four" reasons; shortcuts unchanged; Cancel discards | PASS |
 
-## Editors, Comparators, Plugins, Previews, Archives, Colors, Custom Commands
+## Plugins
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| O-E01 | Editors: a fallback and a `*.md` rule; F4 runs the matching one; restart | `options_editors` | file written by the editor command | PASS |
-| O-E02 | Editors: a rule without `{file}` is refused | `options_editors` | error line | PASS |
-| O-C01 | Comparators: built-in and external overrides saved, listed after a restart | `options_comparators` | rule rows, saved values | PASS |
-| O-C02 | Comparators: an invalid regular expression is refused | `options_comparators` | error line | PASS |
 | O-P01 | Plugins: empty states without staged plugins; Rescan; the Archives link | `options_previews_plugins` | texts; page switch | PASS |
-| O-V01 | Previews: switches, thumbnail size seen in the Thumbnails view; Cancel, OK, restart | `options_previews_plugins` | row height; saved values | PASS |
-| O-V02 | Previews: Clear thumbnail cache | – | the thumbnail service exists only in staged viewer processes; the button would clear a real cache | SKIP |
-| O-R01 | Archives: custom extension chips (add, fold, remove, invalid, built-in conflict), an association; Cancel, OK, restart; Escape in the field | `options_archives` | chips, errors, saved values | PASS |
-| O-L01 | Colors: an added rule colours matching names; priority by Move up; Cancel; OK; restart | `options_colors` | row colours, rendered pixels, saved rules | PASS |
-| O-L02 | Colors stay on their rows sorted by size and filtered by a panel filter | `options_colors` | row colours, rendered pixels | PASS |
-| O-U01 | Custom Commands: create, edit, drag, delete, separators, placeholders; runs; failure notice; Preview; key; restart | `options_custom_commands` | files written, notices, saved commands | PASS |
-| O-H01 | Hot Paths manager: add, exchange numbers, remove; Ctrl+digit; restart | `options_hot_paths`, `files_hot_paths` (panels) | panel folders, saved Hot Paths | PASS |
 
 ## Keyboard shortcut catalog
 

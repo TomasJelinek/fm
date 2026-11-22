@@ -5,34 +5,40 @@ use std::cell::RefCell;
 fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
     // settings_picker_context, the comparator Browse and the Custom Commands shortcut
     // identify picker pages by these Options topic identities; they must follow
-    // ui/options-navigation.slint, where Comparators (index 4) took the new topic 10
-    // and the other topics kept their identities.
+    // ui/options-navigation.slint, whose pages keep their identities in any list order.
     let source = include_str!("../../ui/options-navigation.slint");
-    assert!(
-        source.contains("return index == 4 ? 10 : index >= 5 && index <= 9 ? index")
-            && source.contains(": index >= 2 && index <= 3 ? index + 1 : index == 1 ? 1 : 0;"),
-        "OptionsTopics.topic mapping changed; update the picker pages"
-    );
-    let titles: Vec<&str> = source
-        .lines()
-        .find(|line| line.contains("property <[string]> titles:"))
-        .expect("OptionsTopics.titles")
+    let line = |declaration: &str| {
+        source
+            .lines()
+            .find(|line| line.contains(declaration))
+            .unwrap_or_else(|| panic!("OptionsTopics declares {declaration}"))
+    };
+    let titles: Vec<&str> = line("property <[string]> titles:")
         .split('"')
         .skip(1)
         .step_by(2)
         .collect();
+    let numbers = |declaration: &str| -> Vec<usize> {
+        let (_, list) = line(declaration).split_once(": [").expect("an array value");
+        list.trim_end()
+            .trim_end_matches("];")
+            .split(',')
+            .map(|number| number.trim().parse().unwrap())
+            .collect()
+    };
+    let ids = numbers("property <[int]> ids:");
+    let positions = numbers("property <[int]> positions:");
+    assert_eq!(ids.len(), titles.len(), "one topic identity per page");
+    for (position, (&id, title)) in ids.iter().zip(&titles).enumerate() {
+        assert_eq!(positions[id], position, "{title} lists at its position");
+    }
+    assert_eq!(positions[2], 0, "the removed Command topic shows General");
     let topic = |title: &str| {
-        let index = titles
+        let position = titles
             .iter()
             .position(|candidate| *candidate == title)
             .unwrap_or_else(|| panic!("no Options topic {title}"));
-        match index {
-            4 => 10,
-            5..=9 => index,
-            2..=3 => index + 1,
-            1 => 1,
-            _ => 0,
-        }
+        ids[position]
     };
     assert_eq!(topic("Editors"), OPTIONS_TOPIC_EDITORS as usize);
     assert_eq!(topic("Comparators"), OPTIONS_TOPIC_COMPARATORS as usize);

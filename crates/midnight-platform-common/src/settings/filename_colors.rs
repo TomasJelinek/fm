@@ -130,8 +130,73 @@ fn legacy_defaults() -> Vec<FilenameColorRule> {
     .collect()
 }
 
+// Exact twelve-category preset shipped before source code, Word documents and plain
+// text/Markdown shared one cyan. The earlier eleven-rule presets derive from it, not
+// from today's defaults, so that a change of the defaults cannot alter them.
+fn twelve_category_defaults() -> Vec<FilenameColorRule> {
+    [
+        (
+            concat!(
+                "*.rs;*.c;*.h;*.cpp;*.hpp;*.cc;*.cs;*.java;*.kt;*.go;*.py;*.rb;*.js;*.jsx;",
+                "*.ts;*.tsx;*.swift;*.sh;*.ps1;*.sql;*.html;*.css;*.scss;*.vue;*.svelte;*.lua;",
+                "*.pl;*.php;*.slint;*.toml;*.yaml;*.yml;*.json;*.xml;*.cmake;Makefile;Dockerfile"
+            ),
+            RgbColor(59, 130, 246),
+        ),
+        (
+            "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",
+            RgbColor(139, 92, 246),
+        ),
+        ("*.pdf", RgbColor(239, 90, 90)),
+        ("*.doc;*.docx;*.odt;*.rtf;*.epub", RgbColor(196, 207, 224)),
+        (
+            "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
+            RgbColor(236, 72, 153),
+        ),
+        (
+            "*.exe;*.com;*.bat;*.cmd;*.msi;*.appimage;*.run",
+            RgbColor(249, 115, 22),
+        ),
+        (
+            "*.xls;*.xlsx;*.xlsm;*.xlsb;*.ods;*.csv;*.tsv",
+            RgbColor(34, 197, 94),
+        ),
+        (
+            "*.mp3;*.flac;*.wav;*.ogg;*.opus;*.m4a;*.aac;*.wma;*.aiff;*.aif;*.ape;*.mid;*.midi",
+            RgbColor(20, 184, 166),
+        ),
+        (
+            "*.zip;*.7z;*.rar;*.tar;*.gz;*.bz2;*.xz;*.zst;*.tgz;*.tbz2;*.txz;*.cab;*.iso",
+            RgbColor(234, 179, 8),
+        ),
+        (
+            "*.ppt;*.pptx;*.pptm;*.pps;*.ppsx;*.odp",
+            RgbColor(239, 68, 68),
+        ),
+        (
+            "*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*",
+            RgbColor(196, 207, 224),
+        ),
+        (
+            "*.ttf;*.otf;*.ttc;*.woff;*.woff2;*.eot;*.fon",
+            RgbColor(146, 64, 14),
+        ),
+    ]
+    .into_iter()
+    .map(|(expression, color)| FilenameColorRule {
+        expression: expression.into(),
+        style: FilenameStyle {
+            foreground: Some(color),
+            background: None,
+        },
+        ..Default::default()
+    })
+    .collect()
+}
+
 pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
-    let mut bright_defaults = midnight_core::default_filename_colors();
+    let twelve_defaults = twelve_category_defaults();
+    let mut bright_defaults = twelve_defaults.clone();
     bright_defaults.remove(2);
     bright_defaults[2].expression = "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub".into();
     let mut slate_defaults = bright_defaults.clone();
@@ -142,6 +207,7 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
     let mut amber_defaults = slate_defaults.clone();
     amber_defaults[7].style.foreground = Some(RgbColor(217, 119, 6));
     let mut migrated = if rules == legacy_defaults()
+        || rules == twelve_defaults
         || rules == bright_defaults
         || rules == slate_defaults
         || rules == amber_defaults

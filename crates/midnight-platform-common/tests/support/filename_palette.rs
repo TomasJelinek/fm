@@ -66,6 +66,58 @@ fn reload(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
         .to_vec()
 }
 
+// The twelve-category palette as shipped before source code, Word documents and plain
+// text/Markdown shared cyan: blue source code and light cool neutral documents and
+// text, with today's masks and other colors.
+fn twelve_category_defaults() -> Vec<FilenameColorRule> {
+    let mut rules = midnight_core::default_filename_colors();
+    for (index, color) in [
+        (0, RgbColor(59, 130, 246)),
+        (3, RgbColor(196, 207, 224)),
+        (10, RgbColor(196, 207, 224)),
+    ] {
+        rules[index].style.foreground = Some(color);
+    }
+    rules
+}
+
+#[test]
+fn unchanged_twelve_category_palette_moves_to_the_shared_cyan() {
+    let current = midnight_core::default_filename_colors();
+    for index in [0, 3, 10] {
+        assert_eq!(
+            current[index].style.foreground,
+            Some(RgbColor(6, 164, 199)),
+            "{}",
+            current[index].expression
+        );
+    }
+    assert_eq!(reload(twelve_category_defaults()), current);
+    assert_eq!(reload(current.clone()), current, "migration is stable");
+}
+
+#[test]
+fn saved_customizations_of_the_twelve_category_palette_keep_their_colors() {
+    let old = twelve_category_defaults();
+    for variation in 0..8 {
+        let mut custom = old.clone();
+        match variation {
+            0 => custom[7].style.foreground = Some(RgbColor(12, 34, 56)),
+            1 => custom[0].style.foreground = Some(RgbColor(59, 130, 247)),
+            2 => custom[3].enabled = false,
+            3 => custom[10].expression.push_str(";*.mdx"),
+            4 => custom[10].style.background = Some(RgbColor(1, 2, 3)),
+            5 => custom.swap(0, 1),
+            6 => {
+                custom.pop();
+            }
+            7 => custom.push(rule("*.personal", RgbColor(1, 2, 3))),
+            _ => unreachable!(),
+        }
+        assert_eq!(reload(custom.clone()), custom, "customization {variation}");
+    }
+}
+
 #[test]
 fn exact_historical_default_palette_migrates_to_current_categories() {
     let migrated = reload(legacy_defaults());
@@ -126,7 +178,7 @@ fn untouched_slate_document_presets_keep_the_existing_whole_palette_migration() 
 }
 
 fn bright_document_defaults() -> Vec<FilenameColorRule> {
-    let mut rules = midnight_core::default_filename_colors();
+    let mut rules = twelve_category_defaults();
     rules.remove(2);
     rules[2].expression = "*.pdf;*.doc;*.docx;*.odt;*.rtf;*.epub".into();
     rules

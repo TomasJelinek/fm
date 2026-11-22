@@ -146,14 +146,14 @@ impl SettingsService for StoreService {
 pub const PAGES: [(&str, i32); 10] = [
     ("General", 0),
     ("Appearance", 1),
-    ("Keyboard", 3),
-    ("Editors", 4),
-    ("Comparators", 10),
-    ("Plugins", 5),
+    ("Colors", 8),
     ("Previews", 6),
     ("Archives", 7),
-    ("Colors", 8),
+    ("Editors", 4),
+    ("Comparators", 10),
     ("Custom Commands", 9),
+    ("Keyboard", 3),
+    ("Plugins", 5),
 ];
 
 fn topic(title: &str) -> Result<i32, String> {

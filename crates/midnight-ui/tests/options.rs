@@ -3,11 +3,109 @@
 mod popup_scroll;
 use crate::support::ui;
 
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 use midnight_ui::{NavigationChoiceRow, Theme};
 use slint::{ComponentHandle, ModelRc, VecModel, platform::Key};
 use std::{cell::Cell, rc::Rc};
 use ui::{TestUi, click, click_popup, key};
+
+/// The Options pages in their listed order with their topic identities.
+const PAGES: [(&str, i32); 10] = [
+    ("General", 0),
+    ("Appearance", 1),
+    ("Colors", 8),
+    ("Previews", 6),
+    ("Archives", 7),
+    ("Editors", 4),
+    ("Comparators", 10),
+    ("Custom Commands", 9),
+    ("Keyboard", 3),
+    ("Plugins", 5),
+];
+
+/// A control that only the page of this topic shows, with its role.
+fn page_control(topic: i32) -> (&'static str, AccessibleRole) {
+    match topic {
+        0 => ("Show hidden files", AccessibleRole::Checkbox),
+        1 => ("Theme", AccessibleRole::Combobox),
+        3 => ("Search commands", AccessibleRole::TextInput),
+        4 => ("Editor rules", AccessibleRole::List),
+        5 => ("Rescan all plugins", AccessibleRole::Button),
+        6 => ("Show image and video previews", AccessibleRole::Checkbox),
+        7 => ("Search archive associations", AccessibleRole::TextInput),
+        8 => ("Filename color rules", AccessibleRole::List),
+        9 => ("Configured Custom Commands", AccessibleRole::List),
+        10 => ("Comparator rules", AccessibleRole::List),
+        _ => unreachable!("no Options topic {topic}"),
+    }
+}
+
+#[test]
+fn options_pages_list_in_reading_order_and_keep_their_topic_identities() {
+    assert_eq!(PAGES.map(|(_, topic)| topic), ui::OPTIONS_TOPIC_ORDER);
+    let mut ui = TestUi::new();
+    ui.window.invoke_show_options();
+    ui.draw();
+    let tops = PAGES.map(|(title, _)| {
+        let button = ui::popup_item(&ui.window, title, AccessibleRole::Button);
+        button.map_to_native_window(button.geometry().origin).y
+    });
+    assert!(
+        tops.windows(2).all(|pair| pair[0] < pair[1]),
+        "the list shows the pages top to bottom in their order: {tops:?}"
+    );
+    // A click shows the page's own content under its own topic identity.
+    for (title, topic) in PAGES {
+        ui.options_topic(topic);
+        let (control, role) = page_control(topic);
+        assert!(
+            ui::try_popup_item(&ui.window, control, role).is_some(),
+            "{title} shows {control}"
+        );
+    }
+    // Arrows walk the list in the same order and stop at its ends.
+    ui.options_topic(0);
+    for (title, topic) in PAGES.iter().skip(1).chain(PAGES.last()) {
+        key(&ui.window, Key::DownArrow);
+        ui.draw();
+        let shown = ui.window.get_options_topic_index();
+        assert_eq!(shown, *topic, "Down to {title}");
+    }
+    for (title, topic) in PAGES.iter().rev().skip(1).chain(PAGES.first()) {
+        key(&ui.window, Key::UpArrow);
+        ui.draw();
+        let shown = ui.window.get_options_topic_index();
+        assert_eq!(shown, *topic, "Up to {title}");
+    }
+    // A page opened by its identity (the Custom Commands shortcut, a page's validation
+    // error, the page shown when Options closed) is the one marked in the list.
+    for (title, topic) in PAGES {
+        ui.window.set_options_topic_index(topic);
+        ui.draw();
+        let marked: Vec<&str> = PAGES
+            .iter()
+            .map(|(other, _)| *other)
+            .filter(|other| {
+                ui::popup_item(&ui.window, other, AccessibleRole::Button)
+                    .accessible_string_property(AccessibleStringProperty::Checked)
+                    .is_some_and(|checked| checked == "true")
+            })
+            .collect();
+        assert_eq!(marked, [title], "topic {topic}");
+    }
+    // A narrow window's topic picker lists the pages in the same order.
+    ui.resize(600, 700);
+    for (title, topic) in PAGES {
+        ui.options_topic(topic);
+        let picker = ui::popup_item(&ui.window, "Options topic", AccessibleRole::Combobox);
+        assert_eq!(
+            picker
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .as_deref(),
+            Some(title)
+        );
+    }
+}
 
 #[test]
 fn options_topics_keep_panel_preferences_and_appearance_readable() {
@@ -112,8 +210,8 @@ fn options_topics_keep_panel_preferences_and_appearance_readable() {
     key(&ui.window, Key::RightArrow);
     assert_eq!(
         ui.window.get_options_topic_index(),
-        3,
-        "repeated arrows reach Keyboard without a Command page"
+        8,
+        "repeated arrows reach Colors, the third page, without a Command page"
     );
     ui.draw();
     key(&ui.window, Key::LeftArrow);

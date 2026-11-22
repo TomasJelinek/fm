@@ -683,14 +683,14 @@ fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selec
                             contrast(ink, background) >= 4.5,
                             "{name}: theme {theme}, state {state}, active {active}, alternate {alternate}"
                         );
-                        if matches!(index, 3 | 10)
-                            && state == 0
-                            && !window.global::<Theme>().get_light()
-                        {
-                            assert!(
-                                contrast(ink, background) >= 7.0,
-                                "ordinary document names must stay bright in dark theme {theme}"
-                            );
+                        // Source code, Word documents and plain text/Markdown share cyan
+                        // #06A4C7, which dark themes show unchanged on ordinary rows and
+                        // light themes darken to 4.5:1.
+                        if matches!(index, 0 | 3 | 10) {
+                            assert_eq!(base, Color::from_rgb_u8(6, 164, 199), "{name}");
+                            if state == 0 && !alternate && !window.global::<Theme>().get_light() {
+                                assert_eq!(ink, base, "{name}: dark theme {theme}");
+                            }
                         }
                         // Check every category against both stripes, then inspect
                         // the ink on the stripe used by its rendered fixture row.

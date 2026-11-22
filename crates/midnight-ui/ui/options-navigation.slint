@@ -1,17 +1,22 @@
 import { Theme } from "theme.slint";
 import { VScrollView } from "scroll-view.slint";
 
-// Keep topic identities stable for asynchronous pickers and validation results.
-// The removed Command topic (2) now belongs to General, rather than shifting IDs.
+// Pages in the order users look for settings (docs/developer/DIALOG_ERGONOMICS.md,
+// "Options page order"): behavior and appearance, how panels show files, archives,
+// the programs for files and Custom Commands, keys, then the plugin catalog.
+// Each page keeps its topic identity, which asynchronous pickers, validation results
+// and the Custom Commands shortcut use; the removed Command topic (2) shows General.
 export global OptionsTopics {
-    out property <[string]> titles: ["General", "Appearance", "Keyboard", "Editors", "Comparators", "Plugins", "Previews", "Archives", "Colors", "Custom Commands"];
+    out property <[string]> titles: ["General", "Appearance", "Colors", "Previews", "Archives", "Editors", "Comparators", "Custom Commands", "Keyboard", "Plugins"];
+    // The topic identity of each listed page.
+    out property <[int]> ids: [0, 1, 8, 6, 7, 4, 10, 9, 3, 5];
+    // The list position of each topic identity.
+    out property <[int]> positions: [0, 1, 0, 8, 5, 9, 3, 4, 2, 7, 6];
     public pure function topic(index: int) -> int {
-        return index == 4 ? 10 : index >= 5 && index <= 9 ? index
-            : index >= 2 && index <= 3 ? index + 1 : index == 1 ? 1 : 0;
+        return index >= 0 && index < root.ids.length ? root.ids[index] : 0;
     }
     public pure function index(topic: int) -> int {
-        return topic == 10 ? 4 : topic >= 5 && topic <= 9 ? topic
-            : topic >= 3 && topic <= 4 ? topic - 1 : topic == 1 ? 1 : 0;
+        return topic >= 0 && topic < root.positions.length ? root.positions[topic] : 0;
     }
 }
 

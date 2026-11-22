@@ -251,28 +251,18 @@ fn close(app: &mut App, host: &Host, what: &str) {
 }
 
 fn options_pages(app: &mut App, context: &mut Context, sweep: &Sweep) -> Result<(), String> {
+    use super::options_support::PAGES;
     app.window.invoke_show_options();
     wait(app, "Options", |app| app.window.get_options_open());
-    for (topic, label) in [
-        (0, "General"),
-        (1, "Appearance"),
-        (3, "Keyboard"),
-        (4, "Editors"),
-        (10, "Comparators"),
-        (5, "Plugins"),
-        (6, "Previews"),
-        (7, "Archives"),
-        (8, "Colors"),
-        (9, "Custom Commands"),
-    ] {
+    for (label, topic) in PAGES {
         if app.window.get_options_topic_index() != topic {
             if inspect::find(app.slint(), AccessibleRole::Button, label).is_some() {
                 input::click_button(app.slint(), label)?;
             } else {
                 // Narrow layouts replace the topic list with a combo box: open it and
                 // move through the topics in their displayed order.
-                const ORDER: [i32; 10] = [0, 1, 3, 4, 10, 5, 6, 7, 8, 9];
-                let position = |topic: i32| ORDER.iter().position(|&id| id == topic).unwrap_or(0);
+                let position =
+                    |topic: i32| PAGES.iter().position(|&(_, id)| id == topic).unwrap_or(0);
                 let (from, to) = (
                     position(app.window.get_options_topic_index()),
                     position(topic),

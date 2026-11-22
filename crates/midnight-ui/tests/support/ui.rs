@@ -178,9 +178,13 @@ impl TestUi {
     }
 }
 
+/// The topic identities of the Options pages in their listed order (`OptionsTopics` in
+/// ui/options-navigation.slint).
+pub const OPTIONS_TOPIC_ORDER: [i32; 10] = [0, 1, 8, 6, 7, 4, 10, 9, 3, 5];
+
 /// The OptionsTopics picker position, with the removed Command topic mapped to General.
 pub fn options_topic_position(topic: i32) -> usize {
-    [0, 1, 3, 4, 10, 5, 6, 7, 8, 9]
+    OPTIONS_TOPIC_ORDER
         .iter()
         .position(|&id| id == topic)
         .unwrap_or(0)

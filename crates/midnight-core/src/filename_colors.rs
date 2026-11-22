@@ -4,6 +4,10 @@ use std::{collections::HashMap, sync::Arc};
 
 pub const MAX_FILENAME_COLOR_RULES: usize = 32;
 
+/// The default base color that source code, Word documents and plain text/Markdown
+/// share: cyan `#06A4C7`.
+const SOURCE_AND_DOCUMENT_COLOR: RgbColor = RgbColor(6, 164, 199);
+
 /// Starting presets; presentation derives contrast for each theme and selection state.
 /// Only files match, preserving the theme's distinct directory appearance.
 pub fn default_filename_colors() -> Vec<FilenameColorRule> {
@@ -14,14 +18,14 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
                 "*.ts;*.tsx;*.swift;*.sh;*.ps1;*.sql;*.html;*.css;*.scss;*.vue;*.svelte;*.lua;",
                 "*.pl;*.php;*.slint;*.toml;*.yaml;*.yml;*.json;*.xml;*.cmake;Makefile;Dockerfile"
             ),
-            RgbColor(59, 130, 246),
+            SOURCE_AND_DOCUMENT_COLOR,
         ),
         (
             "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",
             RgbColor(139, 92, 246),
         ),
         ("*.pdf", RgbColor(239, 90, 90)),
-        ("*.doc;*.docx;*.odt;*.rtf;*.epub", RgbColor(196, 207, 224)),
+        ("*.doc;*.docx;*.odt;*.rtf;*.epub", SOURCE_AND_DOCUMENT_COLOR),
         (
             "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.tif;*.tiff;*.svg;*.avif;*.heic;*.jxl",
             RgbColor(236, 72, 153),
@@ -48,7 +52,7 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
         ),
         (
             "*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*",
-            RgbColor(196, 207, 224),
+            SOURCE_AND_DOCUMENT_COLOR,
         ),
         (
             "*.ttf;*.otf;*.ttc;*.woff;*.woff2;*.eot;*.fon",

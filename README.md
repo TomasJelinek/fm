@@ -852,8 +852,10 @@ editor scope and shortcuts reserved for later stages.
   while the toolbar shows one primary OneDrive shortcut.
   Suitable host icons load on the backend; missing native action icons retain
   semantic application vectors and native colors remain intact.
-- The top toolbar's Options gear groups settings by topic, including Panel, Appearance, Command,
-  Keyboard and Custom Commands. It offers readable
+- The top toolbar's Options gear groups settings into pages, listed in the order users
+  look for them: General, Appearance, Colors, Previews, Archives, Editors, Comparators,
+  Custom Commands, Keyboard and Plugins ([why this order](docs/developer/DIALOG_ERGONOMICS.md#options-page-order)).
+  It offers readable
   or exact-byte sizes, history persistence/Clear, 26 themes including Slate Blue,
   Slate Teal and Slate Violet, Desktop/Touch spacing, an installed font family and
   independent Desktop/Touch base sizes (8–32px). Appearance → **Text rendering**
