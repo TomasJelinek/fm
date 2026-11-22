@@ -140,18 +140,106 @@ pub fn installed_packages(kind: &str) -> usize {
 }
 
 /// Why the HTML viewer cannot be checked here: its package is not installed beside this
-/// executable (in a staged child, not staged). Packages built by
-/// `scripts/validate.ps1` do not include it; a normal build (`build.bat`,
-/// `./build.sh`) does.
+/// executable (in a staged child, not staged), or, on Linux, system libraries its
+/// browser links are missing ([`html_viewer_missing_libraries`]), so it would exit at
+/// load. Packages built by `scripts/validate.ps1` do not include it; a normal build
+/// (`build.bat`, `./build.sh`) does.
 pub fn html_viewer_missing() -> Option<String> {
-    let installed = std::env::current_exe()
+    if html_viewer_package().is_none() {
+        return Some(
+            "the HTML viewer package (viewers/midnight-viewer-html) is not installed in this \
+             stage"
+                .to_owned(),
+        );
+    }
+    let missing = html_viewer_missing_libraries();
+    (!missing.is_empty()).then(|| {
+        format!(
+            "the HTML viewer's browser cannot load on this machine: the system libraries {} \
+             are missing (docs/SYSTEM_REQUIREMENTS.md names them)",
+            missing.join(", ")
+        )
+    })
+}
+
+/// The HTML viewer's package beside this executable, if installed there.
+fn html_viewer_package() -> Option<PathBuf> {
+    std::env::current_exe()
         .ok()
         .and_then(|executable| executable.parent().map(Path::to_path_buf))
-        .is_some_and(|folder| folder.join("viewers").join("midnight-viewer-html").is_dir());
-    (!installed).then(|| {
-        "the HTML viewer package (viewers/midnight-viewer-html) is not installed in this stage"
-            .to_owned()
-    })
+        .map(|folder| folder.join("viewers").join("midnight-viewer-html"))
+        .filter(|package| package.is_dir())
+}
+
+/// On Linux, the shared libraries the HTML viewer's browser and its helpers link that
+/// the dynamic loader cannot find (docs/SYSTEM_REQUIREMENTS.md: NSS, NSPR, ALSA and
+/// more), sorted; empty elsewhere, without the package, or when `ldd` is unavailable.
+/// Decided once per process.
+pub fn html_viewer_missing_libraries() -> Vec<String> {
+    static MISSING: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    MISSING
+        .get_or_init(|| {
+            html_viewer_package().map_or_else(Vec::new, |package| missing_libraries(&package))
+        })
+        .clone()
+}
+
+/// Shared libraries that the ELF files of `package` (the HTML viewer's browser and its
+/// helpers) link but the dynamic loader cannot find, as `ldd` reports them ("=> not
+/// found"); none on other systems or when `ldd` is unavailable.
+fn missing_libraries(package: &Path) -> Vec<String> {
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    let mut folders = vec![(package.to_path_buf(), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+        for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let (path, name) = (entry.path(), entry.file_name());
+            let name = name.to_string_lossy();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() && depth < 3 => folders.push((path, depth + 1)),
+                Ok(kind) if kind.is_file() && (name.ends_with(".so") || name.contains(".so.")) => {
+                    files.push(path)
+                }
+                Ok(kind) if kind.is_file() && executable(&path) && !name.contains('.') => {
+                    files.push(path)
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for file in files.iter().take(256) {
+        let Ok(output) = Command::new("ldd")
+            .arg(file)
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .output()
+        else {
+            return Vec::new();
+        };
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some((library, _)) = line.trim().split_once(" => not found")
+                && !missing.iter().any(|known| known == library)
+            {
+                missing.push(library.to_owned());
+            }
+        }
+    }
+    missing.sort();
+    missing
+}
+
+#[cfg(unix)]
+fn executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn executable(_: &Path) -> bool {
+    false
 }
 
 // ---------------------------------------------------------------------------------------
@@ -372,8 +460,16 @@ fn live() -> MutexGuard<'static, Vec<Live>> {
 /// Stop every staged child (its whole process group) and remove every stage, from the
 /// runner's thread, for a scenario it abandoned; later scenarios start no child.
 pub fn stop_all() {
-    let mut live = live();
     STOPPED.store(true, Ordering::Release);
+    stop_live();
+}
+
+/// Stop every staged child that is still alive (its whole process group) and remove its
+/// stage, from the runner's thread, for a scenario that timed out; unlike [`stop_all`],
+/// later scenarios still start theirs. The abandoned scenario's thread then finds its
+/// child gone (and its guard nothing left to clean).
+pub fn stop_live() {
+    let mut live = live();
     for entry in live.iter_mut() {
         if let Some(group) = entry.group.take() {
             kill_group(group);
@@ -382,6 +478,17 @@ pub fn stop_all() {
             let _ = fs::remove_dir_all(stage);
         }
     }
+}
+
+/// Set in a staged child to "1" when the run uses the opt-in stress sizes.
+const STRESS: &str = "MIDNIGHT_ACCEPTANCE_STRESS";
+
+/// Whether this run uses the opt-in stress sizes (the runner's `--stress`, or
+/// `MIDNIGHT_ACCEPTANCE_STRESS=1`, which a staged child gets from its parent).
+pub fn stress(_context: &Context) -> bool {
+    std::env::var(STRESS).is_ok_and(|value| value == "1")
+        || (std::env::var_os(STAGED).is_none()
+            && std::env::args().any(|argument| argument == "--stress"))
 }
 
 /// Kill process group `group` (the staged child and what it started in its group).
@@ -604,7 +711,28 @@ struct Stage {
 
 impl Drop for Stage {
     fn drop(&mut self) {
+        // [`Stage::remove`] reports a failure; this only covers early returns.
         let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Remove a stage folder. Plugin workers of a child that just exited can still hold
+/// their files for a moment (Windows refuses to delete an open file), so a failure is
+/// retried for up to five seconds before it is reported.
+fn remove_stage(root: &Path) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match fs::remove_dir_all(root) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(format!(
+                    "the stage {} could not be removed: {error}",
+                    root.display()
+                ));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
     }
 }
 
@@ -860,6 +988,7 @@ fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> R
         .env("MIDNIGHT_ACCEPTANCE_FILTER", name)
         .env("MIDNIGHT_ACCEPTANCE_RUN_DIR", &child_root)
         .env("MIDNIGHT_ACCEPTANCE_SCALE", scale)
+        .env(STRESS, if stress(context) { "1" } else { "0" })
         .env(
             "MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE",
             if context.options.keep_fixture {
@@ -899,7 +1028,11 @@ fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> R
             Err(error) => return Err(format!("waiting for the staged process: {error}")),
         }
     };
-    drop(stage);
+    if let Some(stage) = stage
+        && let Err(error) = remove_stage(&stage.root)
+    {
+        context.note(format!("Cleanup: {error}"));
+    }
     let elapsed = started.elapsed();
     let relative = console
         .strip_prefix(&context.run_dir)

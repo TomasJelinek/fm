@@ -5,11 +5,16 @@
 //! and Compare callbacks, the content-appearance bridge and a thumbnail pulse.
 //!
 //! The application's own modules cannot be included by path here (their unit-test
-//! modules need the explorer crate), so this mirrors them. Deliberate differences,
-//! documented in docs/developer/ACCEPTANCE.md: no parent-folder pin cache for viewer
-//! resources (each open prepares its folder), no external comparator programs, and the
-//! thumbnail pulse presents native files only (no archive members, command artwork,
-//! animation or upload retries); the thumbnail cache lives in the scenario's folder.
+//! modules need the explorer crate), so this mirrors them: F3 and Alt+F3 ask for an
+//! encrypted member's archive password first and close an open filename search
+//! (`view_needs_archive_password`, `view_command`), the viewer of an unlocked member
+//! opens through the same callback once the dialog has closed, a typed zoom reads the
+//! presenter's number format, and the thumbnail pulse offers program tiles for their
+//! own artwork (`refresh_file_icons`). Deliberate differences, documented in
+//! docs/developer/ACCEPTANCE.md: no parent-folder pin cache for viewer resources (each
+//! open prepares its folder), no external comparator programs, and the thumbnail pulse
+//! presents native files only (no archive members, command artwork, animation or
+//! upload retries); the thumbnail cache lives in the scenario's folder.
 //!
 //! Plugin discovery is relative to the running executable, so this works only in a
 //! staged child process (`viewers_stage`). The helpers below act on viewer and
@@ -24,15 +29,17 @@ pub mod probe;
 use super::{Context, app::App, input};
 use midnight_compare_ui::{ComparatorWindow, ComparatorWindows};
 use midnight_core::{
-    Cancellation, Command, Event, FONT_SIZE_MAX, FONT_SIZE_MIN, FsError, PaneId, PathPickerService,
-    PreferenceTheme, ShortcutChord, StorageKind, StorageService, TransferService, UiDensity,
-    ViewerAppearance, ViewerLaunch,
+    Cancellation, Command, Event, FONT_SIZE_MAX, FONT_SIZE_MIN, FsError, NumberLocale, PaneId,
+    PathPickerService, PreferenceTheme, ShortcutChord, StorageKind, StorageService,
+    TransferService, UiDensity, ViewerAppearance, ViewerLaunch,
 };
 use midnight_engine::{Engine, EngineLifetime};
 use midnight_native_filesystem_host::{InstalledProvider, SharedInstalledProvider};
 use midnight_platform::LocalFileSystem;
 use midnight_thumbnail_host::service as thumbnail;
-use midnight_ui::{MainWindow, Presenter, Theme, ThumbnailContent, ThumbnailTarget};
+use midnight_ui::{
+    ArchivePasswords, MainWindow, Presenter, Theme, ThumbnailContent, ThumbnailTarget,
+};
 use midnight_viewer_ui::{ViewerWindow, ViewerWindows};
 use midnight_work_budget::resident;
 use slint::{
@@ -65,6 +72,109 @@ const THUMBNAIL_PULSE: Duration = Duration::from_millis(100);
 pub struct Native {
     shared: Option<SharedInstalledProvider>,
     pub provider: Arc<InstalledProvider>,
+    local: Arc<LocalFileSystem>,
+}
+
+thread_local! {
+    /// Whether the next application this thread starts gets the desktop icon reader.
+    static FILE_ICONS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Give the next [`App::start`] of this thread the desktop service's icon reader, so
+/// tiles of programs show their own artwork, as the application's desktop service
+/// reads it (decision A3). Only reading: [`IconReader`] refuses to start programs or
+/// terminals, opens no native Properties and no system location.
+pub fn read_file_icons() {
+    FILE_ICONS.with(|icons| icons.set(true));
+}
+
+/// The desktop service of a scenario that asked for [`read_file_icons`]: the platform's
+/// own reader of the artwork listed programs carry (`load_file_icon`) and its read-only
+/// queries (locations, link targets, property details). Type icons stay the semantic
+/// ones the harness always shows (`load_icon` reads none), so no shell icon handler runs,
+/// and everything that would start a program is refused.
+pub struct IconReader(Arc<LocalFileSystem>);
+
+fn refused(operation: &'static str) -> FsError {
+    FsError::from_io(
+        operation,
+        Path::new(""),
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "The acceptance harness starts no programs.",
+        ),
+    )
+}
+
+impl midnight_core::IconService for IconReader {
+    fn load_icon(
+        &self,
+        _: &midnight_core::IconKey,
+    ) -> Result<Option<midnight_core::IconPixels>, FsError> {
+        Ok(None)
+    }
+
+    fn icon_edge(&self, drawn: u16) -> u16 {
+        midnight_core::IconService::icon_edge(self.0.as_ref(), drawn)
+    }
+
+    fn load_file_icon(
+        &self,
+        path: &Path,
+        edge: u16,
+        cancel: &Cancellation,
+    ) -> Result<Option<midnight_core::IconPixels>, FsError> {
+        midnight_core::IconService::load_file_icon(self.0.as_ref(), path, edge, cancel)
+    }
+}
+
+impl midnight_core::TerminalService for IconReader {
+    fn shell_flavor(&self) -> midnight_core::ShellFlavor {
+        midnight_core::TerminalService::shell_flavor(self.0.as_ref())
+    }
+
+    fn launch_terminal(
+        &self,
+        _: &midnight_core::TerminalRequest,
+    ) -> Result<Box<dyn midnight_core::TerminalProcess>, FsError> {
+        Err(refused("terminal"))
+    }
+}
+
+impl midnight_core::PropertyService for IconReader {
+    fn show_properties(&self, _: &[PathBuf]) -> Result<bool, FsError> {
+        // The metadata summary instead of the native dialog.
+        Ok(false)
+    }
+
+    fn property_details(
+        &self,
+        path: &Path,
+    ) -> Result<Option<midnight_core::PropertyDetails>, FsError> {
+        midnight_core::PropertyService::property_details(self.0.as_ref(), path)
+    }
+}
+
+impl midnight_core::LocationService for IconReader {
+    fn locations(&self) -> Result<Vec<midnight_core::NavigationLocation>, FsError> {
+        midnight_core::LocationService::locations(self.0.as_ref())
+    }
+}
+
+impl midnight_core::OpenService for IconReader {
+    fn open_entry(&self, path: &Path) -> Result<midnight_core::OpenEntryResult, FsError> {
+        // A folder (or a link to one) stays in the file manager; a file would start the
+        // program associated with it.
+        if path.is_dir() {
+            midnight_core::OpenService::open_entry(self.0.as_ref(), path)
+        } else {
+            Err(refused("open"))
+        }
+    }
+
+    fn read_link_target(&self, link: &Path) -> Result<Option<PathBuf>, FsError> {
+        midnight_core::OpenService::read_link_target(self.0.as_ref(), link)
+    }
 }
 
 impl Native {
@@ -77,6 +187,7 @@ impl Native {
         Self {
             shared: Some(shared),
             provider,
+            local: local.clone(),
         }
     }
 
@@ -92,12 +203,19 @@ impl Native {
         )
     }
 
-    /// Archive browsing reads containers through the same plugin.
+    /// Archive browsing reads containers through the same plugin; a scenario that asked
+    /// for [`read_file_icons`] gets the icon reader as the desktop service.
     pub fn configure(&self, engine: &mut Engine) {
         engine
             .configure_archive_capture()
             .expect("archive capture")
             .install(archive_capture(self.provider.clone()));
+        if FILE_ICONS.with(|icons| icons.replace(false)) {
+            engine
+                .configure_desktop()
+                .expect("desktop service")
+                .install(Arc::new(IconReader(self.local.clone())));
+        }
     }
 }
 
@@ -213,6 +331,15 @@ impl Plugins {
         );
         let spare = viewer_service.image_spare_retirement();
         let viewers = Rc::new(ViewerWindows::new(viewer_service.clone()));
+        // A typed zoom percentage uses the user's decimal separator: the presenter's
+        // number format, which [`use_number_locale`] can replace.
+        let locale = presenter.clone();
+        viewers.set_number_locale(Rc::new(move || {
+            locale
+                .try_borrow()
+                .map(|presenter| presenter.number_locale().clone())
+                .unwrap_or_default()
+        }));
         let settings = presenter.clone();
         let settings_send = send.clone();
         viewers.set_preferences_listener(Rc::new(move |change| {
@@ -231,6 +358,9 @@ impl Plugins {
                 window.as_weak(),
                 copied.clone(),
             );
+            // `viewers::install`'s F3 and Alt+F3. The viewer of a member the archive
+            // password dialog unlocked comes back here too: the dialog's bridge
+            // (`archive_passwords::refresh`) invokes this callback once it has closed.
             window.on_view_file(move |pane, basic| {
                 let Some(window) = weak.upgrade() else {
                     return;
@@ -240,14 +370,26 @@ impl Plugins {
                 } else {
                     PaneId::Right
                 };
-                let launch = state.borrow().viewer_launch(pane, basic);
-                let Some(launch) = launch else {
-                    let reason = state.borrow().viewer_unavailable_reason(pane);
-                    if let Some(reason) = reason {
-                        state.borrow_mut().report_viewer_error(reason);
-                        midnight_ui::refresh(&window, &state.borrow());
-                    }
+                // An encrypted member of an archive without its password yet: the
+                // password dialog opens first, and the viewer once it is unlocked.
+                if state.borrow_mut().view_needs_archive_password(pane, basic) {
+                    midnight_ui::refresh(&window, &state.borrow());
                     return;
+                }
+                // An open filename search closes; it never stops the viewer.
+                let launch = state
+                    .borrow_mut()
+                    .view_command(pane, basic, sender.as_ref());
+                midnight_ui::refresh(&window, &state.borrow());
+                let launch = match launch {
+                    Ok(launch) => launch,
+                    Err(reason) => {
+                        if let Some(reason) = reason {
+                            state.borrow_mut().report_viewer_error(reason);
+                            midnight_ui::refresh(&window, &state.borrow());
+                        }
+                        return;
+                    }
                 };
                 let ready: Ready = Rc::default();
                 let marker = ready.clone();
@@ -373,12 +515,13 @@ impl Plugins {
         let thumbnail_log: Rc<RefCell<ThumbnailLog>> = Rc::default();
         let pulse = slint::Timer::default();
         {
-            let (weak, presenter, service, log, provider) = (
+            let (weak, presenter, service, log, provider, send) = (
                 window.as_weak(),
                 presenter.clone(),
                 thumbnails.clone(),
                 thumbnail_log.clone(),
                 native.provider.clone(),
+                send.clone(),
             );
             let state = RefCell::new(ThumbnailState {
                 next_token: 1,
@@ -392,7 +535,7 @@ impl Plugins {
                         &service,
                         &mut state.borrow_mut(),
                         &log,
-                        &provider,
+                        (&provider, send.as_ref()),
                     );
                 }
             });
@@ -763,18 +906,53 @@ fn physical_edge(target: &ThumbnailTarget, scale: f32) -> u32 {
     midnight_thumbnail_host::cache::resolution_edge((target.edge as f32 * scale).ceil() as u32)
 }
 
-/// One pass of the thumbnail pulse: follow the visible rows, take ready frames.
+/// The visible row ranges and hovered rows of both panes, as `thumbnails::window_targets`
+/// reads them: with one panel shown (zoomed or a compact window) only the active one's.
+fn visible_ranges(window: &MainWindow) -> ([(usize, usize); 2], [SharedString; 2]) {
+    let single_panel = window.get_panel_zoomed() || window.get_compact_window();
+    let active_pane = window.get_active_pane();
+    let (left_hover, left_range) = if !single_panel || active_pane == 0 {
+        (
+            window.get_left_hovered_row(),
+            (
+                window.get_left_thumbnail_row_start().max(0) as usize,
+                window.get_left_thumbnail_row_end().max(0) as usize,
+            ),
+        )
+    } else {
+        (SharedString::default(), (0, 0))
+    };
+    let (right_hover, right_range) = if !single_panel || active_pane == 1 {
+        (
+            window.get_right_hovered_row(),
+            (
+                window.get_right_thumbnail_row_start().max(0) as usize,
+                window.get_right_thumbnail_row_end().max(0) as usize,
+            ),
+        )
+    } else {
+        (SharedString::default(), (0, 0))
+    };
+    ([left_range, right_range], [left_hover, right_hover])
+}
+
+/// One pass of the thumbnail pulse: follow the visible rows, offer the tiles of
+/// programs, whose own artwork the Engine's desktop actor reads (`refresh_file_icons`),
+/// and take ready frames. `routes` are the native filesystem plugin and the owned
+/// command sender.
 fn thumbnail_pass(
     window: &MainWindow,
     presenter: &Rc<RefCell<Presenter>>,
     service: &thumbnail::Service,
     state: &mut ThumbnailState,
     log: &RefCell<ThumbnailLog>,
-    provider: &Arc<InstalledProvider>,
+    routes: (&Arc<InstalledProvider>, &dyn Fn(Command) -> bool),
 ) {
+    let (provider, send) = routes;
     if !window.window().is_visible() {
         return;
     }
+    let (ranges, hovered) = visible_ranges(window);
     let Ok(mut presenter_state) = presenter.try_borrow_mut() else {
         return;
     };
@@ -785,23 +963,12 @@ fn thumbnail_pass(
         refresh_all = true;
     }
     let _ = service.take_cache_location();
-    let ranges = [
-        (
-            window.get_left_thumbnail_row_start().max(0) as usize,
-            window.get_left_thumbnail_row_end().max(0) as usize,
-        ),
-        (
-            window.get_right_thumbnail_row_start().max(0) as usize,
-            window.get_right_thumbnail_row_end().max(0) as usize,
-        ),
-    ];
-    let hovered = [
-        window.get_left_hovered_row(),
-        window.get_right_hovered_row(),
-    ];
     let rows =
         presenter_state.thumbnail_targets(ranges, [hovered[0].as_str(), hovered[1].as_str()]);
     let scale = window.window().scale_factor();
+    // Tiles of programs show their own artwork; a refused view is offered again on the
+    // next pass, as production's pulse does.
+    presenter_state.refresh_file_icons(&rows, scale, send);
     if rows != state.previous || scale != state.scale {
         // Keep a token while its row keeps its content: the service reuses its work.
         let previous = std::mem::take(&mut state.previous);
@@ -1054,6 +1221,206 @@ fn ready_viewer(
     })
 }
 
+// ---------------------------------------------------------------------------------------
+// The archive password dialog
+
+/// The archive password dialog as the window shows it (`ArchivePasswords`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasswordDialog {
+    /// The archive's shown name.
+    pub archive: String,
+    /// What the password lets go on, such as "Enter its password to view a.txt.".
+    pub purpose: String,
+    /// The reason under the field ("Wrong password — try again."); empty while none.
+    pub error: String,
+    /// Passwords refused so far.
+    pub attempt: i32,
+    /// A password is being checked.
+    pub busy: bool,
+}
+
+impl PasswordDialog {
+    /// The dialog's sentence: "<archive> is password-protected. <purpose>".
+    pub fn sentence(&self) -> String {
+        format!("{} is password-protected. {}", self.archive, self.purpose)
+    }
+}
+
+/// The open archive password dialog, if any.
+pub fn password_dialog(app: &App) -> Option<PasswordDialog> {
+    let dialog = app.window.global::<ArchivePasswords>();
+    if dialog.get_token().is_empty() {
+        return None;
+    }
+    Some(PasswordDialog {
+        archive: dialog.get_archive().to_string(),
+        purpose: dialog.get_purpose().to_string(),
+        error: dialog.get_error().to_string(),
+        attempt: dialog.get_attempt(),
+        busy: dialog.get_busy(),
+    })
+}
+
+/// Wait, at most `limit`, until the archive password dialog is open.
+pub fn wait_password_dialog(app: &mut App, limit: Duration) -> Result<PasswordDialog, String> {
+    let deadline = Instant::now() + limit;
+    loop {
+        app.settle();
+        if let Some(dialog) = password_dialog(app) {
+            return Ok(dialog);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "no archive password dialog within {limit:?}; notice {:?}, viewers opened {}",
+                app.notice(),
+                viewers_opened(app)
+            ));
+        }
+        app.idle(Duration::from_millis(10));
+    }
+}
+
+/// How a password reaches the dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Submit {
+    /// Typed into the field the dialog focused, then Enter.
+    Enter,
+    /// A click into the field, typed, then a click on OK.
+    Pointer,
+}
+
+/// How the dialog is dismissed without a password.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dismiss {
+    Escape,
+    /// The footer's Cancel button.
+    Cancel,
+}
+
+/// Give the open dialog `password` (`by` keyboard or pointer), then wait until the
+/// archive's worker answered: the dialog closed (unlocked: `None`) or shows a new
+/// reason (a refused password, or an empty field). Err when it opened none, or it
+/// gave no answer within `limit`.
+pub fn submit_password(
+    app: &mut App,
+    password: &str,
+    by: Submit,
+    limit: Duration,
+) -> Result<Option<PasswordDialog>, String> {
+    let before = password_dialog(app).ok_or("no archive password dialog is open")?;
+    match by {
+        Submit::Enter => {
+            input::type_text(app.slint(), password);
+            input::key(app.slint(), Key::Return);
+        }
+        Submit::Pointer => {
+            input::fill(app.slint(), "Password", password)?;
+            input::click_button(app.slint(), "OK")?;
+        }
+    }
+    let deadline = Instant::now() + limit;
+    loop {
+        app.settle();
+        let Some(now) = password_dialog(app) else {
+            return Ok(None);
+        };
+        if !now.busy && (now.attempt != before.attempt || now.error != before.error) {
+            return Ok(Some(now));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "the archive password dialog gave no answer within {limit:?}: {now:?}"
+            ));
+        }
+        app.idle(Duration::from_millis(10));
+    }
+}
+
+/// Dismiss the open dialog without a password and wait until it has closed.
+pub fn dismiss_password(app: &mut App, how: Dismiss) -> Result<(), String> {
+    if password_dialog(app).is_none() {
+        return Err("no archive password dialog is open".into());
+    }
+    match how {
+        Dismiss::Escape => input::key(app.slint(), Key::Escape),
+        Dismiss::Cancel => input::click_button(app.slint(), "Cancel")?,
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while password_dialog(app).is_some() {
+        if Instant::now() >= deadline {
+            return Err(format!("{how:?} did not close the archive password dialog"));
+        }
+        app.idle(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// F3 (Alt+F3 for `basic`) on an encrypted member of a locked archive: the password
+/// dialog opens, `password` unlocks it by `by`, and the member's viewer opens once the
+/// dialog has closed. The dialog the key opened is returned with the viewer.
+pub fn view_unlocking(
+    app: &mut App,
+    basic: bool,
+    password: &str,
+    by: Submit,
+    limit: Duration,
+) -> Result<(PasswordDialog, Viewing), String> {
+    let before = viewers_opened(app);
+    if basic {
+        input::chord(app.slint(), &[Key::Alt], Key::F3);
+    } else {
+        input::key(app.slint(), Key::F3);
+    }
+    let asked = wait_password_dialog(app, limit)?;
+    if viewers_opened(app) != before {
+        return Err("a viewer opened before the archive password was given".into());
+    }
+    if let Some(refused) = submit_password(app, password, by, limit)? {
+        return Err(format!(
+            "the archive password was refused: {:?} (attempt {})",
+            refused.error, refused.attempt
+        ));
+    }
+    let viewing = next_viewer(app, before, limit)?;
+    Ok((asked, viewing))
+}
+
+// ---------------------------------------------------------------------------------------
+// The user's number format
+
+/// A number format with a decimal comma and space-grouped thousands, as many regional
+/// settings have, for checks of typed numbers.
+#[allow(dead_code)] // For the typed zoom checks (V2) of the viewer scenarios.
+pub fn comma_locale() -> NumberLocale {
+    NumberLocale {
+        decimal_separator: ",".into(),
+        group_separator: "\u{a0}".into(),
+        grouping: vec![3],
+        repeat_last_group: true,
+    }
+}
+
+/// Make `locale` the user's number format, as the Engine's startup read of the regional
+/// settings delivers it (`Event::LocaleLoaded`); typed zoom percentages read it from
+/// then on. That read was answered long before (`App::start` waits for listings, which
+/// follow it), so it cannot replace this one later; Err when the presenter does not
+/// keep it.
+#[allow(dead_code)] // For the typed zoom checks (V2) of the viewer scenarios.
+pub fn use_number_locale(app: &mut App, locale: NumberLocale) -> Result<(), String> {
+    app.presenter
+        .borrow_mut()
+        .apply(Event::LocaleLoaded(Ok(locale.clone())));
+    app.settle();
+    let kept = app.presenter.borrow().number_locale().clone();
+    if kept == locale {
+        Ok(())
+    } else {
+        Err(format!(
+            "the presenter keeps the number format {kept:?}, not {locale:?}"
+        ))
+    }
+}
+
 impl Viewing {
     pub fn text(&self) -> String {
         self.window.get_accessible_text().to_string()
@@ -1295,6 +1662,7 @@ impl Failures {
     /// A check of announced behavior that is not implemented yet (`reason` names what
     /// it waits for). It keeps its full strength: while it fails, the scenario reports
     /// `PENDING` when nothing else failed; once it passes, a note asks to remove the mark.
+    #[allow(dead_code)] // No pending check now; the next one (V6, V7 until A1) uses it.
     pub fn pending(&self, what: &str, reason: &str, result: Result<(), String>) {
         self.checks.set(self.checks.get() + 1);
         match result {

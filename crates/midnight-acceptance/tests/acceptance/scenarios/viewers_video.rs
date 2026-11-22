@@ -2,30 +2,34 @@
 //! the thumbnail and playback helpers start from `thumbnailers/` beside the
 //! application, next to their FFmpeg libraries, in the restricted workers' sandbox.
 //! `.mp4` files are generated here: a plain one and, on Windows, an NTFS-compressed
-//! copy, and on Windows an H.264 + AAC movie and its NTFS-compressed copy. For each, the
-//! thumbnail view (Alt+5) must show the video's own colour, not the fallback icon, and F3
-//! must open the video viewer on its first frame; seeking shows the later frames and
-//! seeking back the first ones, and Play runs to the end. A helper that cannot start (a
-//! library it cannot load) fails the scenario with the viewer's own sentence, such as
-//! "The video helper stopped: a required library is missing or cannot be read
+//! copy, and an H.264 + AAC movie (on Windows written by Windows' own encoders and also
+//! NTFS-compressed; on Linux by the host's `ffmpeg` with `libx264`). For each, its own
+//! tile in the thumbnail view (Alt+5) must show the video's colour, not the fallback
+//! icon, and F3 must open the video viewer on its first frame; a click at three quarters
+//! of the position slider shows the later frames, Home on the slider the first ones
+//! again, and the Play button plays to the end. A helper that cannot start (a library it
+//! cannot load) fails the scenario with the viewer's own sentence, such as "The video
+//! helper stopped: a required library is missing or cannot be read
 //! (STATUS_DLL_NOT_FOUND, 0xC0000135)"; with dialogs suppressed for every helper, no
-//! system dialog can stall it.
+//! system dialog can stall it. Cases this machine cannot make are reported as skipped.
 //!
 //! The plain videos hold uncompressed 64 x 48 RGB frames in an MP4 container, which the
 //! bundled FFmpeg profile reads (rawvideo in the MOV/MP4 demuxer). That profile has no
-//! H.264 or AAC decoder: the H.264 movie, which Windows' own encoders write here, reaches
-//! Windows' decoders through the Media Foundation helpers, after the bundled helpers
-//! report that they have no decoder for it. The first ten frames are magenta, the last
-//! ten green: both colours read the same as RGB or BGR, and stay far apart after lossy
-//! compression and the decoders' colour conversion.
+//! H.264 or AAC decoder: the H.264 movie reaches the system's decoders, on Windows
+//! through the Media Foundation helpers and on Linux through the distribution's FFmpeg
+//! libraries, then GStreamer, after the bundled helpers report that they have no decoder
+//! for it. The first ten frames are magenta, the last ten green: both colours read the
+//! same as RGB or BGR, and stay far apart after lossy compression and the decoders'
+//! colour conversion.
 use crate::{
     Context,
     app::{self, App, Config},
-    input, panel, viewers_stage,
+    input, inspect, panel, viewers_stage,
     viewers_support::{self as support, Canvas, Failures, Viewing},
 };
+use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
-use slint::platform::Key;
+use slint::{LogicalPosition, platform::Key};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -82,25 +86,31 @@ fn run(context: &mut Context) -> Result<(), String> {
         std::fs::write(folder.join(name), &bytes)
             .map_err(|error| format!("{}: {error}", folder.join(name).display()))?;
     }
+    let failures = Failures::default();
     let mut names = vec![PLAIN];
     match compress(&folder.join(PACKED)) {
         Ok(()) => names.push(PACKED),
-        Err(reason) => context.note(format!("No NTFS-compressed case: {reason}")),
+        Err(reason) => failures.skip("an NTFS-compressed video", &reason),
     }
     match h264(&folder) {
         Ok(()) => {
             names.push(H264);
             match compress(&folder.join(H264_PACKED)) {
                 Ok(()) => names.push(H264_PACKED),
-                Err(reason) => context.note(format!("No NTFS-compressed H.264 case: {reason}")),
+                Err(reason) => failures.skip("an NTFS-compressed H.264 movie", &reason),
             }
         }
-        Err(reason) => context.note(format!("No H.264 case: {reason}")),
+        Err(reason) => failures.skip("an H.264 + AAC movie", &reason),
+    }
+    // Only the cases made above: the copies that could not be compressed or made go.
+    for name in [PACKED, H264, H264_PACKED] {
+        if !names.contains(&name) {
+            let _ = std::fs::remove_file(folder.join(name));
+        }
     }
     let mut config = Config::new(&folder, &folder);
     config.plugins = Some(context.work.join("plugins"));
     let mut app = App::start(config);
-    let failures = Failures::default();
     panel::focus_list(&mut app, PaneId::Left)?;
     input::chord(app.slint(), &[Key::Alt], "5");
     failures.check("thumbnails", thumbnails(&mut app, context, &names));
@@ -117,30 +127,26 @@ fn run(context: &mut Context) -> Result<(), String> {
     failures.finish(context)
 }
 
-/// The left panel's list, rendered.
-fn left_list(app: &App) -> Canvas {
-    let (width, _, pixels) = app::render(&app.main);
-    let window = &app.window;
-    Canvas::crop(
-        &pixels,
-        width,
-        window.get_left_list_left().max(0.0) as usize,
-        window.get_left_list_top().max(0.0) as usize,
-        window.get_left_list_width().max(0.0) as usize,
-        window.get_left_list_height().max(0.0) as usize,
-    )
-}
-
-/// The thumbnail tiles show the videos' first colour: each tile is a decoded frame,
-/// never the fallback icon, which has neither colour.
+/// Each video's own tile shows its first colour: a decoded frame, never the fallback
+/// icon, which has neither colour. Tiles are told apart by their grid cells.
 fn thumbnails(app: &mut App, context: &mut Context, names: &[&str]) -> Result<(), String> {
     let started = Instant::now();
-    let wanted = 150 * names.len();
-    let shown = loop {
+    let counts = loop {
         app.settle();
-        let shown = left_list(app).count_near(FIRST, TOLERANCE);
-        if shown >= wanted || started.elapsed() >= THUMBNAIL_LIMIT {
-            break shown;
+        let counts: Vec<(&str, Option<usize>)> = names
+            .iter()
+            .map(|name| {
+                (
+                    *name,
+                    tile(app, name).map(|tile| tile.count_near(FIRST, TOLERANCE)),
+                )
+            })
+            .collect();
+        let done = counts
+            .iter()
+            .all(|(_, shown)| shown.is_some_and(|shown| shown >= TILE_PIXELS));
+        if done || started.elapsed() >= THUMBNAIL_LIMIT {
+            break counts;
         }
         app.idle(Duration::from_millis(40));
     };
@@ -148,24 +154,55 @@ fn thumbnails(app: &mut App, context: &mut Context, names: &[&str]) -> Result<()
         context,
         "video-thumbnails",
         &format!(
-            "Alt+5 with {}: {shown} pixels of the videos' first colour after {} ms",
+            "Alt+5 with {}: pixels of the first colour per tile {counts:?} after {} ms",
             names.join(" and "),
             started.elapsed().as_millis()
         ),
     );
-    if shown >= wanted {
+    let missing: Vec<String> = counts
+        .iter()
+        .filter(|(_, shown)| !shown.is_some_and(|shown| shown >= TILE_PIXELS))
+        .map(|(name, shown)| match shown {
+            Some(shown) => format!("{name} ({shown} pixels)"),
+            None => format!("{name} (no tile in view)"),
+        })
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     let notices = support::plugins(app)
         .map(|plugins| plugins.thumbnail_log.borrow().notices.clone())
         .unwrap_or_default();
     Err(format!(
-        "after {THUMBNAIL_LIMIT:?} the tiles show {shown} pixels of the videos' colour, not \
-         {wanted}: a fallback icon instead of a frame; thumbnail notices {notices:?}"
+        "after {THUMBNAIL_LIMIT:?} these tiles show a fallback icon instead of a frame (fewer \
+         than {TILE_PIXELS} pixels of the video's colour): {}; thumbnail notices {notices:?}",
+        missing.join(", ")
     ))
 }
 
-/// F3 opens the video viewer on its first frame; seeking and Play work.
+/// A tile's frame shows the video's colour over at least this many pixels (a 96-pixel
+/// tile shows the 64 x 48 frame over about 6,900).
+const TILE_PIXELS: usize = 600;
+
+/// The rendered grid cell of `name` in the left panel's thumbnail view.
+fn tile(app: &App, name: &str) -> Option<Canvas> {
+    let (x, y, width, height) = inspect::controls(app.slint(), AccessibleRole::ListItem)
+        .into_iter()
+        .find(|(label, _)| panel::is_row_label(label, name))
+        .map(|(_, item)| inspect::rect(&item))?;
+    let (render_width, _, pixels) = app::render(&app.main);
+    Some(Canvas::crop(
+        &pixels,
+        render_width,
+        x.max(0.0) as usize,
+        y.max(0.0) as usize,
+        width.max(0.0) as usize,
+        height.max(0.0) as usize,
+    ))
+}
+
+/// F3 opens the video viewer on its first frame; the position slider and the Play
+/// button work by pointer and keyboard.
 fn playback(app: &mut App, context: &mut Context, name: &str) -> Result<(), String> {
     panel::select_row(app, PaneId::Left, name)?;
     let viewing = support::view(app, false, OPEN_LIMIT)?;
@@ -180,20 +217,32 @@ fn playback(app: &mut App, context: &mut Context, name: &str) -> Result<(), Stri
             &format!("video-{name}-first"),
             &format!("{name}: the first frame"),
         );
-        let session = viewing.window.get_media_controls().session;
-        viewing.window.invoke_media_seek(session.clone(), 0.75);
+        // A click at three quarters of the position slider.
+        let slider = inspect::find(viewing.slint(), AccessibleRole::Slider, "Playback position")
+            .ok_or("no Playback position slider")?;
+        let (x, y, width, height) = inspect::rect(&slider);
+        // The track starts half a thumb (16 px at desktop density) inside the slider.
+        input::click_at(
+            viewing.slint(),
+            LogicalPosition::new(x + 8.0 + 0.75 * (width - 16.0), y + height / 2.0),
+        );
         wait_frame(
             &viewing,
             app,
-            "the frame after seeking to 75%",
+            "the frame after a click at 75% of the slider",
             LATER,
             |state| state.position >= 0.7,
         )?;
-        viewing.window.invoke_media_seek(session.clone(), 0.0);
-        wait_frame(&viewing, app, "the first frame again", FIRST, |state| {
-            state.position <= 0.05
-        })?;
-        viewing.window.invoke_media_toggle(session);
+        // The click gave the slider the keyboard: Home seeks to the start.
+        input::key(viewing.slint(), Key::Home);
+        wait_frame(
+            &viewing,
+            app,
+            "the first frame again after Home",
+            FIRST,
+            |state| state.position <= 0.05,
+        )?;
+        input::click_button(viewing.slint(), "Play")?;
         wait_frame(
             &viewing,
             app,
@@ -391,9 +440,67 @@ fn h264(folder: &Path) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", folder.join(H264_PACKED).display()))
 }
 
+/// The H.264 + AAC movie, made by the host's `ffmpeg` with `libx264` and FFmpeg's own AAC
+/// encoder: two seconds of 320 x 240 at ten frames per second, ten frames of [`FIRST`]
+/// and ten of [`LATER`] (a key frame each), with silent stereo sound. Err with the
+/// reason when this machine has no `ffmpeg` that can.
 #[cfg(not(windows))]
-fn h264(_: &Path) -> Result<(), String> {
-    Err("the Linux platform decoders are not part of this package yet".into())
+fn h264(folder: &Path) -> Result<(), String> {
+    let colour = |[red, green, blue]: [u8; 3]| {
+        format!("color=c=0x{red:02X}{green:02X}{blue:02X}:s=320x240:r=10:d=1")
+    };
+    let (first, later) = (colour(FIRST), colour(LATER));
+    let output = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            first.as_str(),
+            "-f",
+            "lavfi",
+            "-i",
+            later.as_str(),
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+            "-map",
+            "[v]",
+            "-map",
+            "2:a",
+            "-t",
+            "2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "10",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(folder.join(H264))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("no ffmpeg on this machine to make it ({error})"))?;
+    if output.status.success() && folder.join(H264).is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the host's ffmpeg could not make it with libx264 ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
 }
 
 /// NTFS-compress one file, as Explorer's "Compress contents" or `compact /c` does.

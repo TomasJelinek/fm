@@ -204,12 +204,16 @@ Checked in source on 21 November, without a new acceptance run:
 
 | ID | Inventory item | Scenario › check | Status |
 | --- | --- | --- | --- |
-| T1 | Alt+5: every visible tile shows its own image, no flicker while still | `viewers_thumbnails` | FAIL: THUMB-UNKNOWN-STORAGE (below), fixed in source on 22 November, rerun pending; the 20 November run passed |
-| T2 | End and the wheel scroll to tiles that load; Home shows cached tiles at once | `viewers_thumbnails` | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T3 | PNG, JPEG, GIF, WebP and SVG thumbnails | `viewers_thumbnails` › image formats | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T4 | BMP, ICO and TIFF thumbnails | `viewers_thumbnails` › BMP, ICO and TIFF thumbnails | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T5 | A PDF thumbnail shows its first page | `viewers_thumbnails` › PDF first page | FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
-| T6 | AVIF thumbnails | none | SKIP: no AVIF encoder to make a fixture |
+| T1 | Alt+5: every visible tile shows its own image, no flicker while still | `viewers_thumbnails` | PASS on Windows (run `20261122-040925`, smoke): 9 of 9 tiles after 6.5 s. Linux FAIL: THUMB-UNKNOWN-STORAGE (below), fixed in source on 22 November, rerun pending |
+| T2 | End and the wheel scroll to tiles that load; Home shows cached tiles at once | `viewers_thumbnails` | PASS on Windows (run `20261122-040925`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T3 | PNG, JPEG, GIF, WebP and SVG thumbnails | `viewers_thumbnails` › image formats | PASS on Windows (run `20261122-040925`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T4 | BMP, ICO and TIFF thumbnails | `viewers_thumbnails` › BMP, ICO and TIFF thumbnails | PASS on Windows (run `20261122-040925`, smoke). Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T5 | A PDF thumbnail shows its first page | `viewers_thumbnails` › PDF first page | PASS on Windows (run `20261122-040925`, smoke): a white page of 96 x 64 px with 67 dark text pixels. Linux FAIL: THUMB-UNKNOWN-STORAGE, fixed in source on 22 November, rerun pending |
+| T6 | AVIF: libavif's `draw_points_idat.avif` (the image decoder's licensed fixture) looks like its PNG twin | `viewers_thumbnails` › the AVIF thumbnail matches its PNG twin | PASS on Windows (run `20261122-040925`, smoke) |
+| T7 | The JPEG, GIF, WebP and SVG tiles show their images' own colours (grey blocks, palette, checkerboard, the SVG's fills), not a placeholder | `viewers_thumbnails` › the … tile's pixels | PASS on Windows (run `20261122-040925`, smoke) |
+| T8 | A password-protected PDF (RC4, `encode::pdf_encrypted`) keeps its placeholder | `viewers_thumbnails` › a password-protected PDF keeps its placeholder | PASS on Windows (run `20261122-040925`, smoke) |
+| T9 | Two-frame GIF and WebP tiles show the first frame | `viewers_thumbnails` › … shows its first frame | PASS on Windows (run `20261122-040925`, smoke) |
+| T10 | A program's tile shows its own icon (Windows: a copy of `explorer.exe` against a file named `.exe` without icon resources; the harness installs only the desktop service's icon reader, decision A3) | `viewers_thumbnails` › a program's own icon | PASS on Windows (run `20261122-040925`, smoke); Linux tiles show type icons by design (reported SKIP) |
 
 THUMB-UNKNOWN-STORAGE (Linux run `20261121-144246`, again in `20261121-164146`): in the
 Thumbnails view no tile ever showed a thumbnail (`viewers_thumbnails`: 7 of 11 checks
@@ -225,14 +229,16 @@ classification". On a virtual machine's or cloud machine's local disk `Unknown` 
 final classification, not a transient one, so thumbnails never appear there by default
 and nothing says why. With network previews turned on in the harness's seeded
 preferences (a temporary experiment, run `20261121-170455`) every check passed in 20.5 s
-on the same machine. A product decision is needed (the Architect's): treat a final
-`Unknown` local disk like local storage (with the exclusive I/O admission `Unknown`
-already gets), or say in the view why previews are off.
+on the same machine. Decided on 22 November (A2): a local block device of unknown kind
+counts as local storage (exclusive I/O, previews allowed), and a withheld preview's
+reason shows in the panel's status row instead of a modal notice; that fix is not on
+main at 05710878. Since 22 November `viewers_thumbnails` names THUMB-UNKNOWN-STORAGE in its
+failure when no thumbnail appears on storage the platform reports as `Unknown`.
 
 Fixed in source on 22 November, both ways (the owner's decision: a local block device
 whose kind cannot be proven counts as local for previews; network storage and pending
-classifications keep the rule). Not yet rerun, so T1–T5 stay FAIL until an acceptance
-run passes them. The native filesystem plugins report a disk attached to the machine
+classifications keep the rule). Not yet rerun on Linux, so T1–T5 stay FAIL there until
+an acceptance run passes them. The native filesystem plugins report a disk attached to the machine
 whose media they cannot prove, the WSL disk among them, as `StorageKind::Local`
 (filesystem ABI minor 4; `classify_physical` in both Linux classifiers,
 `classify_descriptor` in both Windows ones); the presenter tells a pending
@@ -241,8 +247,8 @@ with exclusive I/O (`thumbnail_availability.rs`). A Thumbnails view withheld by 
 setting (network storage, storage not known to be local, archive members with archive
 previews off) names the reason and the option in its panel's status row, never in a
 dialog. Tests: the Linux classifiers' `virtual_machine_and_removable_disks_are_local_of_unknown_media`
-and `local_disks_of_unknown_media_stay_local_through_stacks` (compiled for Linux with
-Clippy, not run: no Linux run of this change yet), the presenter's
+and `local_disks_of_unknown_media_stay_local_through_stacks` (run in WSL when the fix was
+made, where WSL's own disks then classified as `Local` instead of `Unknown`), the presenter's
 `a_local_disk_of_unknown_media_admits_previews_without_network_permission`,
 `network_and_unclassified_storage_withhold_previews_and_say_which_option_allows_them`
 and the window test `storage_reasons_and_preview_failures_are_status_rows_that_leave_the_keyboard_alone`.
@@ -261,7 +267,48 @@ and the window test `storage_reasons_and_preview_failures_are_status_rows_that_l
 | A8 | Damaged: a text file named `.zip`, a truncated ZIP, garbage after a 7-Zip signature, a corrupted tar.gz, a truncated 7-Zip give a clear error | `viewers_archives` › damaged cases | PASS |
 | A9 | A member with a wrong CRC: the listing works, F3 and F5 fail clearly and leave no file | `viewers_archives` › crc.zip | PASS |
 | A10 | 100,100 entries; 8.9 MB of names | `viewers_archives` › many.tar, long-names.tar | PASS |
-| A11 | One folder of 100,001 files | `viewers_archives` › flat.tar | PASS for its listing (647 ms) and Ctrl+Shift+S inside it (5,151 bytes in 995 ms); the copy-out of the folder FAIL on its 600 s budget, see "Not yet written" |
+| A11 | One folder of 100,001 files: its listing and Ctrl+Shift+S inside it | `viewers_archives` › flat.tar | PASS for its listing (647 ms) and Ctrl+Shift+S (5,151 bytes in 995 ms) in the Linux run `20261121-144246` |
+| A12 | F5 copies a folder of 10,001 files out of a tar, then a Ctrl+A selection of all of them (more than the 4,096 entries a selection once stopped at), byte for byte within 360 s each | `viewers_archives` › F5 of the folder / of a selection of 10,001 … out of copy.tar | NOT RUN YET (written 22 November) |
+| A13 | The same with the 100,001 files of `flat.tar`, within 40 minutes each, with the runner's opt-in stress sizes (`--stress`, `MIDNIGHT_ACCEPTANCE_STRESS=1`) | `viewers_archives` (stress sizes) | NOT RUN YET. Earlier runs at 600 s ran out of time: 59,456 files on Windows (21 November, WIN-8), about 48,470 in the Linux run `20261121-144246` (about 81 files/s) |
+| A14 | A quick search, then F3: the search closes and the focused match opens, in a native folder and inside an archive | `viewers_archives` › quick search, then F3 | NOT RUN YET (written 22 November) |
+
+## Archive passwords
+
+The archives are written by `encode::zip_entries` (ZipCrypto and WinZip AES, checked
+against independent readers, see ACCEPTANCE.md); the password is non-ASCII.
+
+| ID | Inventory item | Scenario › check | Status |
+| --- | --- | --- | --- |
+| P1 | Encrypted rows end " · Encrypted" (and only they); the details name the method ("ZipCrypto", "AES-256", …) with its explanation | `viewers_passwords` › … listing and details | PASS on Windows (run `20261122-040925`, smoke) |
+| P2 | F3 on an encrypted member asks "<archive> is password-protected. Enter its password to view <member>."; an empty field gives "Type the password first.", a wrong password "Wrong password — try again."; Escape opens nothing and the notice says why | `viewers_passwords` › zipcrypto.zip: F3 asks; empty, wrong, Escape | PASS on Windows (run `20261122-040925`, smoke) |
+| P3 | The right password (OK by pointer, Enter by keyboard) opens the viewer; the other members and Alt+F3 then open without asking; leaving and entering the archive asks again; Cancel opens nothing | `viewers_passwords` › the password is asked once per archive | PASS on Windows (run `20261122-040925`, smoke) |
+| P4 | AES-256 (stored and deflated), AES-128 and AES-192 members; a plain member beside encrypted ones opens without asking | `viewers_passwords` › aes.zip, aes128.zip, aes192.zip | PASS on Windows (run `20261122-040925`, smoke) |
+| P5 | An AES archive inside a ZipCrypto archive: Enter asks for the outer password, F3 inside for the inner archive's own (the outer one is refused there); Escape at the outer password keeps the panel | `viewers_passwords` › nested.zip | PASS on Windows (run `20261122-040925`, smoke) |
+| P6 | Members no reader opens say why in their details and ask for nothing: Implode, an unsafe name (`../x`), a link, PKWARE strong encryption | `viewers_passwords` › odd.zip | PASS on Windows (run `20261122-040925`, smoke) |
+| P7 | A 7-Zip archive with encrypted names asks before it lists | `viewers_passwords` › names.7z | SKIP on Windows (run `20261122-040925`): no `7z` on that machine |
+| P8 | The password reaches neither the saved settings, the clipboard, the harness's event trace nor the staged child's console | `viewers_passwords` › no leaks | PASS on Windows (run `20261122-040925`, smoke) |
+
+## Office documents
+
+The packages are written by `encode::ooxml` with the extra fields Office writes (growth
+hints 0xA220, extended timestamps).
+
+| ID | Inventory item | Scenario › check | Status |
+| --- | --- | --- | --- |
+| OF1 | Padded DOCX, PPTX and XLSX render; Find reports "Match 1 of 1" | `viewers_office` › padded.… | PASS on Windows (run `20261122-040925`, smoke): "Match 1 of 1" for each |
+| OF2 | A package whose parts are encrypted: "This presentation is password-protected, so the preview cannot open it." | `viewers_office` › locked.pptx | PASS on Windows (run `20261122-040925`, smoke) |
+| OF3 | An OLE compound file: "This document is password-protected or saved in the older binary Office format (.doc, .xls or .ppt), which the preview cannot open." | `viewers_office` › protected.docx | PASS on Windows (run `20261122-040925`, smoke) |
+| OF4 | With the HTML viewer disabled in the settings: "Office preview requires an installed and enabled Chromium HTML viewer." | `viewers_office` › without the HTML viewer | PASS on Windows (run `20261122-040925`, smoke) |
+| OF5 | Linux without the browser's system libraries: the viewer names them and the command that installs them (b8537464) | `viewers_office` › the HTML viewer names its missing libraries | NOT RUN YET (Linux only, where libraries are missing) |
+
+## Video
+
+| ID | Inventory item | Scenario › check | Status |
+| --- | --- | --- | --- |
+| VD1 | Each video's own tile shows its colour, not the fallback icon | `viewers_video` › thumbnails | PASS on Windows (run `20261122-040925`, smoke): 6,902–6,912 pixels of the first colour per tile |
+| VD2 | F3 opens the first frame; a click at 75 % of the position slider shows the later frames, Home on the slider the first again; the Play button plays to the end | `viewers_video` › F3 on … | PASS on Windows (run `20261122-040925`, smoke) |
+| VD3 | An H.264 + AAC movie through the system's decoders: Windows' encoders and Media Foundation; on Linux the host's `ffmpeg -c:v libx264` and the distribution's FFmpeg (GStreamer is the fallback when FFmpeg is missing, not exercised) | `viewers_video` › F3 on h264.mp4 | PASS on Windows (run `20261122-040925`, smoke) |
+| VD4 | NTFS-compressed copies (Windows) | `viewers_video` › F3 on packed.mp4, h264-packed.mp4 | PASS on Windows (run `20261122-040925`, smoke); SKIP on Linux |
 
 ## Combinations
 
@@ -278,22 +325,5 @@ and the window test `storage_reasons_and_preview_failures_are_status_rows_that_l
 
 ## Not yet written
 
-- Copy-out of the 100,001-file folder (F5, bytes and a time budget), Ctrl+Shift+S on it
-  inside the archive (exact 5,151 bytes), and F5 of a 100,001-member selection
-  (PENDING: copy-out of more than 4,096 entries is being enabled): written in
-  `viewers_archives`. Its first run, on Windows on 21 November (debug test build, the
-  machine shared with other runs and builds), copied 59,456 of the 100,001 files in the
-  600 s budget, the selection likewise ran out of time; finding WIN-8 in
-  [windows.md](windows.md). Linux run `20261121-144246` (debug test build, WSL 2 on a
-  virtual disk, the machine shared with the Windows suite's runs): Ctrl+Shift+S measured
-  5,151 bytes (PASS); the folder's copy-out also ran out of its 600 s budget, at about
-  48,470 files (about 81 files/s; counted from the files left on disk, since the
-  committed harness reports no count). The selection's copy-out could not be measured:
-  at 3f6fff8a the harness does not cancel a copy that runs out of its budget, so the
-  folder's copy went on writing (files up to 059374) while the selection's copy waited
-  and wrote one file. The fix (count, then Cancel operation) is in the harness owner's
-  uncommitted change of `viewers_archives.rs`. Where Linux spends the time is not
-  measured yet (the per-file sync on a virtual disk is a candidate; Linux already checks
-  a destination's ancestry once per refresh batch, the WIN-8 fix on Windows).
 - The AppArmor Install… offer (O20), the Make File List viewer opened from Ctrl+M (P's
   area, hooked here), a viewer for every file reached from a Find feed of archive members.
