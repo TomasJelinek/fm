@@ -5,7 +5,7 @@ pixel background gutter immediately before the pinned Fluent scrollbar. Empty
 space below rows and unused Brief/Thumbnail cells also accepts a left mouse drag.
 Row pointer areas keep click, modifier click and native file drag behavior. A plain background click only focuses the panel.
 
-Movement of six logical pixels starts the rectangle. Unmodified dragging replaces
+Movement of six logical pixels on either axis starts the rectangle (`selection_bridge.rs`). Unmodified dragging replaces
 the marked set, Shift adds, Ctrl toggles and Ctrl+Shift adds. Modifiers are captured
 on pointer down. Only visible delegates repaint during the gesture; release sends
 one backend selection action. A refused queue restores original marks and displays

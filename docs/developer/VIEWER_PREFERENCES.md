@@ -115,8 +115,8 @@ by itself.
 
 - **Activation is explicit.** A press and release on the same link without a drag
   follows it; a drag still selects text. While the pointer is on a link the cursor is
-  a pointer and the status line says where it really leads ("Link to
-  D:\docs\guide.md", "Link to https://example.com/", or why it is not followed).
+  a pointer and the status line says where it really leads ("Link to" and the target's
+  full path, "Link to https://example.com/", or why it is not followed).
   In Markdown, Tab and Shift+Tab move a focus ring through the shown page's links
   (from the first one in view), Enter follows the focused one, and from the last link
   Tab moves on to the window's controls. HTML pages keep Tab and Enter: Chromium moves
@@ -125,10 +125,12 @@ by itself.
   removed, spaces as hyphens, repeats numbered `-1`, `-2` in document order); `#` is the
   top. A heading beyond the loaded page is found by reading the document's pages from
   the start, at most 256 pages, cancelled by any other action, with its progress on the
-  status line after about 300 ms. In HTML, fragments stay inside Chromium.
+  status line after about 300 ms (`SCAN_PAGES`, `SCAN_PROGRESS` in the viewer engine's
+  `worker_links.rs`). In HTML, fragments stay inside Chromium.
 - **A relative path or a `file:` URL without a host** resolves against the document's
   folder and is percent-decoded. A file a viewer shows (by its plugin or provider, or
-  as text when no viewer claims its name and its first 4 KiB hold no NUL) opens in the
+  as text when no viewer claims its name and its first 4 KiB hold no NUL, `SNIFF_BYTES`)
+  opens in the
   same window. A folder opens, and any other file (a program, for example) is shown
   with the cursor on it, in the active panel; nothing is ever opened by its program.
   The worker looks at the target on a thread of its own.
@@ -141,9 +143,9 @@ by itself.
   and file streams.
 - **Back and Forward** (Alt+Shift+Left and Alt+Shift+Right, or the mouse's Back and
   Forward buttons) go through the documents opened from links in this window, up to 64
-  each way, at the place each was left; with nothing in that direction they do nothing.
-  An HTML document opened this way starts at its top: neither its place nor a link's
-  `#fragment` is applied to it yet. Alt+Left and Alt+Right (and Space and Backspace)
+  each way (`HISTORY`), at the place each was left; with nothing in that direction they
+  do nothing. Known limit: an HTML document opened this way starts at its top; neither
+  its place nor a link's `#fragment` is applied to it. Alt+Left and Alt+Right (and Space and Backspace)
   keep cycling files; a document opened from a link is the only file they cycle until
   Back returns to the previous order.
 - **Inside an archive**, fragments and external links work, and a file a viewer shows
@@ -245,22 +247,6 @@ Generated preview pages use bounded inert HTML. The preview does not require ext
 Office, run macros, evaluate formulas or refresh external data. A sheet may show a
 stored formula result or inert formula text. Find searches only the currently generated
 page, not the complete workbook or document. See [Viewer protocol](VIEWER_PROTOCOL.md).
-
-Root accepted the generic provider small-body navigation contract for private
-implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
-admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
-larger targets retain streaming through the same resolved capability. Small-body
-failure cannot fall back to streaming/old bytes. Preserve one body credit through
-actual response release, exact one-shot request binding, a30-second admission
-deadline and current authority checks. This changes no public API/SDK or dependency
-pins. The strong retained-document boundary applies to eligible small targets;
-large streaming retains its late-Read-denial limitation. Office V3's exact16 sources are now canonical (freeze `10d0a5e6…`), with
-132 nonowned guards unchanged and public API/SDK, Cargo, executable and runtime
-preserved. The unchanged pure navigation core `c6596c4c…` passed **34/0**, compile0;
-the existing CEF version-metadata manifest warning remains, so this is not a
-zero-warning gate. These tests exclude CEF/native execution and do not qualify
-new V3 route/adapter integration. Five native cases await a legitimate complete
-new C product; no new executable or deployment is claimed.
 
 ### Office packages: what opens and what is refused
 

@@ -345,22 +345,6 @@ highlighting…" appears only when the visible rows stay plain at rest for 300 m
 plain until their colours arrive. See [Source highlighting](SCROLLING.md#source-highlighting)
 and its [record](../verification/2026-11-22-source-highlighting.md).
 
-Root accepted the generic provider small-body navigation contract for private
-implementation: captured main-frame GET/no-post targets of 0..1MiB are completely
-admitted through genuine Resolve/ResourceRead/Data before replacement navigation;
-larger targets retain streaming through the same resolved capability. Small-body
-failure cannot fall back to streaming/old bytes. Preserve one body credit through
-actual response release, exact one-shot request binding, a30-second admission
-deadline and current authority checks. This changes no public API/SDK or dependency
-pins. The strong retained-document boundary applies to eligible small targets;
-large streaming retains its late-Read-denial limitation. Office V3's exact16 sources are now canonical (freeze `10d0a5e6…`), with
-132 nonowned guards unchanged and public API/SDK, Cargo, executable and runtime
-preserved. The unchanged pure navigation core `c6596c4c…` passed **34/0**, compile0;
-the existing CEF version-metadata manifest warning remains, so this is not a
-zero-warning gate. These tests exclude CEF/native execution and do not qualify
-new V3 route/adapter integration. Five native cases await a legitimate complete
-new C product; no new executable or deployment is claimed.
-
 ## Live appearance
 
 Open viewer and comparator windows follow the application's theme, density and interface

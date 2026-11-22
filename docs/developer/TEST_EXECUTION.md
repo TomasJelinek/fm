@@ -34,7 +34,7 @@ is listed as skipped:
 | `public-worker-sdk` | `sdk-protocols` (tests of the worker, thumbnail, filesystem, image-viewer and web-viewer APIs), `sdk-web-package`, `sdk-worker-package` |
 | `viewers`, `viewer-conformance` | `viewer-basic`, `viewer-source`, `viewer-markdown` (the test command of their `scripts/ci.*`, then their package build), `viewer-conformance` (tests, fixture build and the native C loader test) |
 | `image-viewer`, `thumbnail-image` | `viewer-image`, `viewer-pdf`, `thumbnail-image` (the test commands of their `scripts/ci.*`; the two viewers then build their packages) |
-| not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix), `html-viewer` (`--no-default-features`, without native CEF) |
+| not in CI | `thumbnail-video` (needs an FFmpeg 9.0.2 prefix; it also runs the platform decoder helpers' tests, which CI runs in its `thumbnail-video-platform` job), `html-viewer` (`--no-default-features`, without native CEF) |
 | `archive-filesystem`, `filesystem-libraries` | `archive` (tests, release package, fixture export), `filesystem-api`, `filesystem-native` and `filesystem-network` (tests, release package) |
 | `scripts-and-lint` | `test-install`, `script-tests`, `decoder-native-tests`, `powershell-tests-7`, `powershell-tests-5` |
 | `check` | `workspace-tests`, `trash-qualification`, `bad-descriptor`, the eleven steps that run ignored tests after the gates (`host-plugin-ignored`, `viewer-engine-ignored`, `native-fs-ignored`, `engine-native-ignored`, `network-metadata-ignored`, `app-native-viewers`, `image-process-ignored`, `pdf-process-ignored`, `archive-worker-ignored`, `archive-nested-ignored`, `archive-streaming-ignored`), `x11-dnd`, `x11-clipboard` |
@@ -117,9 +117,11 @@ kept, while CI's `check` and `scripts-and-lint` jobs set `CARGO_PROFILE_DEV_DEBU
 `CARGO_PROFILE_TEST_DEBUG=0` and `CARGO_INCREMENTAL=0` (set them yourself to reproduce
 a CI build exactly; see [CI jobs and build time](#ci-jobs-and-build-time));
 the filesystem API tests run once instead of in both filesystem jobs; and the two
-modules above that CI does not build yet are included when their inputs exist.
+modules above that CI does not build are included when their inputs exist. CI's `thumbnail-video-platform` job has
+no step of its own; its tests run inside `thumbnail-video` and are skipped, without a
+WARNING line, when no FFmpeg prefix exists.
 Validation does not run inside `build.sh`'s Docker backend: the build image has no
-Xvfb, mounts the source read-only and is not set up for the tests, so
+Xvfb, mounts the source read-only and has not been tested for this, so
 `build.sh --validate` refuses Docker (exit status 2).
 
 ## CI jobs and build time

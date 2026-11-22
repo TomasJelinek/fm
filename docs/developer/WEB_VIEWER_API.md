@@ -1,7 +1,7 @@
 # Interactive HTML viewer
 
 The optional HTML provider uses Chromium Embedded Framework in a separate process.
-It renders owned premultiplied RGBA frames into the existing Slint viewer window;
+It renders owned premultiplied RGBA frames into the Slint viewer window;
 it does not open an external browser or embed CEF types in the application's API.
 The authoritative protocol is the independent
 [web-viewer API/SDK](../../web-viewer-api/README.md). The implementation is an
@@ -11,7 +11,7 @@ own dependencies, lockfile and tests and no private application crate dependency
 Install `viewers/<package>/web-viewer.json` and the complete matching runtime next
 to the executable in its validated private installation. Schema/protocol 1 includes
 `id`, `name`, `version`, `target`, a simple executable basename and default
-`extensions`. HTML, HTM and XHTML are defaults. Existing viewer associations in
+`extensions`. HTML, HTM and XHTML are defaults. Viewer associations in
 Options can override suffixes and priority. Removing the package removes this
 provider; Alt+F3 still selects the basic text viewer. SVG retains image routing.
 
@@ -77,7 +77,7 @@ cannot start content, and the UI rejects frames below the announced generation
 floor before they can rewrite chrome. Layout metadata and its acknowledgement do
 not make opening ready: a real frame is required. The public plugin API/wire
 protocol is unchanged; fixed-viewport `Service::open` consumers retain their
-existing explicit-initial-geometry behavior.
+explicit-initial-geometry behavior.
 
 HTML starts offline with JavaScript disabled. Explicit online mode grants only
 the captured main document, embedded data and remote resources; relative local
@@ -257,8 +257,11 @@ a session opens: `Session::open_with_links(provider, source, resources, viewport
 wake, ceiling, links)`. `Session::open_with_policy_ceiling` is
 `open_with_links(…, LinkRouting::Browser)`. With `LinkRouting::Browser` the host
 launches the provider as before and links inside the captured document's folder load
-in the browser through the provider's small-body navigation preparation, which the
-Office preview's generated `office/v1/…` paging links rely on. A provider that sends a
+in the browser through the provider's navigation preparation, which the Office
+preview's generated `office/v1/…` paging links rely on: a main-frame GET target of at
+most 1 MiB is admitted completely through the captured resource broker before the
+browser replaces the document, within a 30-second deadline (`BODY_BYTES`, `DEADLINE` in
+the provider's `navigation.rs`). A provider that sends a
 link event anyway ends the session ("Browser sent a link event without the
 link-routing launch opt-in").
 
@@ -308,8 +311,8 @@ more cannot be told apart from one with more and is refused with a notice that i
 leads above the 16 folder levels the viewer can tell apart; so is a root-relative link.
 The level names are distinctive, not reserved: a real folder of the document's parent
 named exactly like the innermost level would alias the document's own folder. Assets
-are unchanged: `ResourceResolve` carries the same folder-relative URLs as before, and
-assets above the document's folder are still denied.
+keep their folder-relative `ResourceResolve` URLs, and assets above the document's
+folder are denied.
 
 The application's viewer engine (`crates/midnight-viewer-engine/src/worker_web.rs`)
 opens ordinary HTML documents with `LinkRouting::Host` and the Office preview with

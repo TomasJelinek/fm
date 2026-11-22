@@ -272,9 +272,11 @@ nonempty, disjoint UTF-8 boundaries in their block text. Targets are bounded and
 may not contain control characters. The public schema does not itself whitelist
 URL schemes; plugins and any explicit host action must apply appropriate intent
 and scheme policy. A link target is inert metadata and is never an automatic
-launch, fetch or shell action. The current Markdown plugin additionally limits
-schemes, renders HTML as literal text and images as alternative text. Those are
-plugin behaviors, not HTML/browser facilities in the public API.
+launch, fetch or shell action: the host follows a link only on an explicit user
+activation, through its one link policy ([links](VIEWER_PREFERENCES.md#links)). The
+Markdown plugin additionally limits schemes, renders HTML as literal text and images as
+alternative text. Those are plugin behaviors, not HTML/browser facilities in the public
+API.
 
 ## Limits
 
