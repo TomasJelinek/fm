@@ -69,6 +69,10 @@ pub(crate) struct DesktopState {
     pub(crate) notice_details: String,
     pub(super) notice_copy: Option<String>,
     pub(super) notice_navigation: Option<(PaneId, NavigationId, u64, PathBuf)>,
+    /// The notice's own actions, each a button above its Close (`NoticeDialog::choose`).
+    pub(crate) notice_choices: Vec<String>,
+    /// The notice asks a question: its Close button cancels it.
+    pub(crate) notice_cancel: bool,
     pub(crate) notice_generation: i32,
     pub(crate) terminal_pending: Option<DesktopRequestId>,
     /// The pending launch asked for an elevated terminal (Ctrl+click): a declined
@@ -109,6 +113,8 @@ impl DesktopState {
         self.notice_details.clear();
         self.notice_copy = None;
         self.notice_navigation = None;
+        self.notice_choices.clear();
+        self.notice_cancel = false;
         self.notice_error = true;
         self.notice_generation = self.notice_generation.wrapping_add(1);
         self.notice = Some((title.into(), body));

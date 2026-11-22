@@ -10,10 +10,13 @@ export global NoticePresentation {
     in-out property <string> folder-path;
     in-out property <string> details;
     in-out property <bool> can-authorize;
+    in-out property <[string]> choices;
+    in-out property <bool> cancel;
     in-out property <bool> error;
     callback dismiss(string);
     callback copy-details(string);
     callback authorize-retry(string);
+    callback choose(string, int);
 }
 
 // A notice is a blocking surface in its owner's client area, with no OS window.
@@ -46,11 +49,13 @@ export component EmbeddedNotice inherits Rectangle {
                 title: NoticePresentation.title; body: NoticePresentation.body;
                 folder-path: NoticePresentation.folder-path; details: NoticePresentation.details;
                 can-authorize: NoticePresentation.can-authorize; error: NoticePresentation.error;
+                choices: NoticePresentation.choices; cancel: NoticePresentation.cancel;
                 generation: NoticePresentation.generation;
                 details-expanded <=> root.details-expanded;
                 move-dialog(dx, dy) => { frame.move-by(dx, dy); }
                 copy-details => { NoticePresentation.copy-details(self.occurrence); }
                 authorize-retry => { NoticePresentation.authorize-retry(self.occurrence); }
+                choose(index) => { NoticePresentation.choose(self.occurrence, index); }
                 close => { NoticePresentation.dismiss(self.occurrence); }
             }
         }

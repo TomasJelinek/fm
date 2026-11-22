@@ -601,6 +601,10 @@ export component MainWindow inherits Window {
     in property <string> message-details;
     in property <bool> message-can-authorize;
     callback authorize-message(int);
+    // A notice's own actions above its Close, which then cancels (an archive to close).
+    in property <[string]> message-choices;
+    in property <bool> message-cancel;
+    callback choose-message(int, int);
     in property <bool> message-error;
     callback copy-message();
     callback diagnostic-notice-closed(int);

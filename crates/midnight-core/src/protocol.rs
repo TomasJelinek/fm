@@ -557,6 +557,15 @@ pub enum Event {
         navigation: NavigationId,
         staged: u64,
     },
+    /// `navigation` did not open its archive because every archive opened from a native
+    /// file that may be open is open: these are `sessions`. Its failed `ArchiveListed`
+    /// follows. `retry` opens the same archive again once one of them is closed.
+    ArchiveSessionsFull {
+        pane: PaneId,
+        navigation: NavigationId,
+        sessions: Vec<crate::ArchiveSession>,
+        retry: crate::ArchiveAction,
+    },
     ArchiveAvailability(Vec<crate::ArchiveFormat>),
     ViewerPluginsListed(Result<Vec<crate::ViewerPluginInfo>, String>),
     ComparatorCapabilitiesListed(crate::ComparatorCapabilities),

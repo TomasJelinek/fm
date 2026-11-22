@@ -158,6 +158,19 @@ pub(crate) fn install(
             .map(|viewers| viewers.archive_sessions())
             .unwrap_or_default()
     }));
+    // Closing an archive for another one closes its viewers too, once the presenter's
+    // callback has returned: closing a viewer may call back into the presenter.
+    let closer = Rc::downgrade(&viewers);
+    presenter
+        .borrow_mut()
+        .set_archive_viewer_closer(Rc::new(move |session| {
+            let closer = closer.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(viewers) = closer.upgrade() {
+                    viewers.close_archive(session);
+                }
+            });
+        }));
     // Viewer windows move at once when the system asks for less motion, as the panels do.
     viewers.set_motion_preference(Rc::new(midnight_ui::system_reduces_motion));
     // A typed zoom percentage uses the user's decimal separator.

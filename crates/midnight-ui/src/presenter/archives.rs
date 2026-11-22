@@ -478,6 +478,12 @@ impl Presenter {
                 navigation,
                 staged,
             } => self.archive_progress(pane, navigation, staged),
+            Event::ArchiveSessionsFull {
+                pane,
+                navigation,
+                sessions,
+                retry,
+            } => self.archive_sessions_full(pane, navigation, sessions, retry),
             Event::ArchiveListed {
                 pane,
                 navigation,
@@ -647,6 +653,8 @@ impl Presenter {
                         p.set_error("", &mut self.retired);
                     }
                 }
+                // An open refused for want of a slot offers to close an archive.
+                self.offer_archive_close(pane, navigation);
                 if names_locked
                     && let Some(location) = self.panes[pane.index()]
                         .archive

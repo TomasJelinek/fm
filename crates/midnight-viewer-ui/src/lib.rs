@@ -606,6 +606,23 @@ impl ViewerWindows {
             .unwrap_or_default()
     }
 
+    /// Close the open viewers of members of archive session `session`, also of an archive
+    /// inside it. Returns how many closed.
+    pub fn close_archive(&self, session: u64) -> usize {
+        // `close` may re-enter this manager: never while the list is borrowed.
+        let windows: Vec<_> = self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|open| !open.closed.get() && open.archive.contains(&session))
+            .cloned()
+            .collect();
+        for open in &windows {
+            close(open);
+        }
+        windows.len()
+    }
+
     pub fn close_all(&self) {
         // `close` reports cancellation to `OpenReady` callbacks, which may
         // re-enter this manager. Never run them while the list is borrowed.

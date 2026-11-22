@@ -34,6 +34,18 @@ impl Target {
             Self::Saved(address) => &address.container,
         }
     }
+    /// The navigation that opens this archive again.
+    fn action(&self) -> ArchiveAction {
+        match self {
+            Self::Open { path, format } => ArchiveAction::Open {
+                path: path.clone(),
+                format: *format,
+            },
+            Self::Saved(address) => {
+                ArchiveAction::List(ArchiveLocation::unavailable(address.clone()))
+            }
+        }
+    }
     fn choose<'c>(&self, catalog: Option<&'c Catalog>) -> Option<(&'c Package, Format)> {
         match self {
             Self::Open { format, .. } => choose_new(catalog, *format),
@@ -182,6 +194,18 @@ fn open_mount(
     }
 }
 
+/// Why a navigation did not get its slot: its error, and when every slot counts, the
+/// counted sessions and the navigation that opens the archive again.
+pub(super) struct Refusal {
+    pub(super) error: FsError,
+    pub(super) full: Option<Box<(Vec<ArchiveSession>, ArchiveAction)>>,
+}
+impl Refusal {
+    fn failed(error: FsError) -> Self {
+        Self { error, full: None }
+    }
+}
+
 /// Before a navigation opens an archive from a native file, the pane lets go of the root
 /// of its last archive listing, which holds that archive's session, and the new session
 /// gets a slot. A free slot is taken at once. When every slot counts and `replaces`
@@ -196,7 +220,7 @@ pub(super) async fn slot(
     allowance: &Arc<NativeAllowance>,
     superseded: &Notify,
     scope: &TaskLifetime,
-) -> Result<(), FsError> {
+) -> Result<(), Refusal> {
     let root = {
         let mut states = request.snapshots.lock().unwrap_or_else(|e| e.into_inner());
         let state = &mut states[request.pane.index()];
@@ -212,7 +236,18 @@ pub(super) async fn slot(
         return Ok(());
     }
     let refused = |limit: NativeLimit| {
-        FsError::from_io("open archive", target.path(), std::io::Error::other(limit))
+        let sessions = limit
+            .sessions
+            .iter()
+            .map(|session| ArchiveSession {
+                id: session.id,
+                container: session.container.clone(),
+            })
+            .collect();
+        Refusal {
+            error: FsError::from_io("open archive", target.path(), std::io::Error::other(limit)),
+            full: Some(Box::new((sessions, target.action()))),
+        }
     };
     let reservation = allowance.reserve(replaces);
     tokio::pin!(reservation);
@@ -224,11 +259,11 @@ pub(super) async fn slot(
         tokio::pin!(changed);
         changed.as_mut().enable();
         if request.cancel.is_cancelled() {
-            return Err(FsError::from_io(
+            return Err(Refusal::failed(FsError::from_io(
                 "open archive",
                 target.path(),
                 std::io::ErrorKind::Interrupted.into(),
-            ));
+            )));
         }
         tokio::select! {
             reserved = &mut reservation => {

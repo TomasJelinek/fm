@@ -256,9 +256,20 @@ place as soon as the old one has closed, normally at once and never later than a
 10 seconds: a tab's own archive never blocks its next one. The tab keeps the old
 archive's folders in its history by their addresses, so going back to one opens that
 archive again. An archive that another tab, the other panel or a viewer still shows
-stays open and counts as before, so the new one is refused at once with "Two archives
-are already open; close one of them first"; one that a running copy still reads from
-also stays open, and the new archive is refused after those 10 seconds.
+stays open and counts as before; one that a running copy still reads from also stays
+open, and the new archive is then refused after those 10 seconds.
+
+When an archive opened from a native file is refused because two are open, the panel
+asks instead of showing an error line. The notice "Two archives are already open" offers
+to close each open archive that tabs or viewers show, for example "Close
+some-release.7z (right panel)" or "Close data.zip (left panel, tab 2 and a viewer)".
+Choosing one takes those tabs to the folder that contains the archive, with the cursor
+on the archive file, closes those viewers, and then opens the refused archive once more
+in that archive's place. An archive that only a running job reads, such as a copy, is
+named as in use by a running job, without an action; when nothing can be closed, the
+notice says to wait for the job or stop it, then open the archive again. Cancel or
+Escape changes nothing. Tab and Shift+Tab move between the notice's buttons, and Enter
+or Space presses one.
 
 ZIP support is Stored/Deflate, including password-protected members (below); other
 codecs, encrypted Office containers, DRM and corrupt archives fail explicitly, and the

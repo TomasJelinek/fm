@@ -965,6 +965,17 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         window.set_message_path(shown_text(&presenter.desktop.notice_path));
         window.set_message_details(shown_text(&presenter.desktop.notice_details));
         window.set_message_can_authorize(presenter.notice_can_authorize());
+        update_strings(
+            window.get_message_choices(),
+            presenter
+                .desktop
+                .notice_choices
+                .iter()
+                .map(|choice| shown_text(choice))
+                .collect(),
+            |choices| window.set_message_choices(choices),
+        );
+        window.set_message_cancel(presenter.desktop.notice_cancel);
         window.set_message_error(presenter.desktop.notice_error);
         window.set_message_generation(presenter.desktop.notice_generation);
     }
@@ -1194,6 +1205,11 @@ pub fn install_with_owned(
     });
     callback!(on_authorize_message, false, |_w, p, s, generation| {
         p.retry_notice_authorized(generation, s);
+    });
+    callback!(on_choose_message, false, |_w, p, s, generation, index| {
+        if let Ok(index) = usize::try_from(index) {
+            p.choose_notice(generation, index, s);
+        }
     });
     callback!(on_copy_message, false, |_w, p, s| {
         p.copy_notice_details(s);

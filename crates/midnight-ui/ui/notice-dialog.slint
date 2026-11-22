@@ -11,11 +11,15 @@ export component NoticeDialog inherits Rectangle {
     in property <string> folder-path;
     in property <string> details;
     in property <bool> can-authorize;
+    // The notice's own actions, one button each below its message; Close then cancels.
+    in property <[string]> choices;
+    in property <bool> cancel;
     in-out property <bool> details-expanded;
     in property <bool> error;
     in property <int> generation;
     callback copy-details();
     callback authorize-retry();
+    callback choose(int);
     callback close();
     callback move-dialog(length, length);
     // The height that shows every row below at its natural size with the regular
@@ -26,6 +30,7 @@ export component NoticeDialog inherits Rectangle {
         + (root.folder-path == "" ? 0px : 12px + root.folder-natural)
         + (root.can-authorize ? 12px + hint-measure.preferred-height : 0px)
         + (root.can-authorize && root.narrow ? 12px + copy-button.preferred-height : 0px)
+        + root.choices.length * (12px + copy-button.preferred-height)
         + 12px + root.action-row-height;
     // Below this width the authorization offer is a row of its own.
     private property <bool> narrow: root.width < 500px;
@@ -132,6 +137,10 @@ export component NoticeDialog inherits Rectangle {
                 preferred-height: body-measure.preferred-height;
                 vertical-stretch: root.folder-path == "" || root.details-inline ? 1 : 0;
             }
+            for choice[index] in root.choices: HintedActionButton {
+                text: choice; fallback-icon: FallbackIcons.close;
+                clicked => { root.choose(index); }
+            }
             if root.folder-path != "" && !root.details-inline: Rectangle {
                 background: Theme.secondary-surface; border-color: Theme.frame;
                 border-width: 1px; border-radius: 3px;
@@ -199,7 +208,8 @@ export component NoticeDialog inherits Rectangle {
                     }
                 }
                 close-button := HintedActionButton {
-                    text: "Close"; fallback-icon: FallbackIcons.close; hint: "Close this message (Escape).";
+                    text: root.cancel ? "Cancel" : "Close"; fallback-icon: FallbackIcons.close;
+                    hint: root.cancel ? "Keep everything as it is (Escape)." : "Close this message (Escape).";
                     clicked => { root.close(); }
                 }
             }

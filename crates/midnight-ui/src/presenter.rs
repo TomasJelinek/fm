@@ -1,5 +1,6 @@
 use midnight_core::*;
 mod archive_password;
+mod archive_prompt;
 mod archive_sessions;
 mod archive_sizes;
 mod archives;
@@ -306,6 +307,8 @@ pub struct Presenter {
     pub(crate) archive_password: archive_password::ArchivePasswordState,
     /// Archive sessions held by tabs and viewers, and the ones tabs let go of.
     pub(crate) archive_sessions: archive_sessions::State,
+    /// The offer to close an archive when every one that may be open is open.
+    pub(crate) archive_prompt: archive_prompt::State,
     pub(crate) hidden_entries: panel_visibility::HiddenEntriesState,
     pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
@@ -369,6 +372,7 @@ impl Presenter {
             mask_dialog: mask_selection::MaskDialogState::default(),
             archive_password: archive_password::ArchivePasswordState::default(),
             archive_sessions: archive_sessions::State::default(),
+            archive_prompt: archive_prompt::State::default(),
             hidden_entries: panel_visibility::HiddenEntriesState::default(),
             colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
@@ -475,6 +479,8 @@ impl Presenter {
     fn flush_background_refreshes(&mut self, send: &dyn Fn(Command) -> bool) {
         // Actions waiting for a re-read run before another re-read starts.
         self.run_deferred_actions(send);
+        // An archive refused for want of a slot opens again once the closed one let go.
+        self.flush_archive_retry(send);
         self.flush_hidden_entries(send);
         for pane in [PaneId::Left, PaneId::Right] {
             // An archive panel whose tree session was dropped still owes its re-list,

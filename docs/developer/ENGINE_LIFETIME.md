@@ -376,14 +376,21 @@ slot asynchronously (`archives/native.rs`, `NativeAllowance`), holding one of th
 navigation workers meanwhile: at once while a slot is free. Otherwise, when the command
 names the session that its tab let go of (`Command::ArchiveNavigate::replaces`), it
 waits for that session's teardown, at most 10 seconds and only until the navigation is
-cancelled; any other case is refused with the counted sessions. Dropping the wait
-withdraws it. The slot moves into the blocking open and then into the new session, and
-a failed or unwound open releases it. The presenter names a session only when no other
-tab, the other panel or a viewer holds it (`presenter/archive_sessions.rs`), and the tab
-lets go of every reference it has to it (its location, history entries, the listing in
-flight and a pending recovery), keeping their addresses, so revisiting one opens the
-archive again. After leaving an archive natively or for Network, the tab names the
-session it left for its next archive once, since that session's teardown may still run.
+cancelled; any other case is refused, and `Event::ArchiveSessionsFull` names the counted
+sessions before the failed listing. Dropping the wait withdraws it. The slot moves into
+the blocking open and then into the new session, and a failed or unwound open releases
+it. The presenter names a session only when no other tab, the other panel or a viewer
+holds it (`presenter/archive_sessions.rs`), and the tab lets go of every reference it
+has to it (its location, history entries, the listing in flight and a pending
+recovery), keeping their addresses, so revisiting one opens the archive again. After
+leaving an archive natively or for Network, the tab names the session it left for its
+next archive once, since that session's teardown may still run. The panel's offer to
+close an archive (`presenter/archive_prompt.rs`) lets the chosen session's tabs go (a
+shown one through a navigation to the archive's folder, one in the background at once)
+and closes its viewers after the presenter's callback returns. It then opens the
+refused archive once, naming the closed session even if a holder that it does not know,
+such as a copy, still holds it: a shown tab first finishes its listing, and that wait
+is the bounded hand-off above. A tab that moved on meanwhile drops the retry.
 
 A release never destroys a session whose cleanup is unconfirmed (tainted, for example
 by a failed source close). Releasing a shared reference of its guard, also from a Copy

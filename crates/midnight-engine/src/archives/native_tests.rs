@@ -342,3 +342,39 @@ async fn opening_one_archive_while_one_slot_is_free_needs_no_replacement() {
     drop((first, second));
     while fixture.tasks.join_next().await.is_some() {}
 }
+
+#[tokio::test]
+async fn a_refusal_names_the_open_sessions_and_the_open_to_retry_before_its_failure() {
+    let mut fixture = Fixture::new();
+    let (_left, _right) = fixture.both_panels_in_archives().await;
+    fixture.start(PaneId::Left, 2, "b.7z", None).await;
+    let (sessions, retry) = loop {
+        let event = tokio::time::timeout(Duration::from_secs(60), fixture.events.recv())
+            .await
+            .expect("the refusal arrives")
+            .expect("engine events");
+        match event {
+            Event::ArchiveSessionsFull {
+                pane: PaneId::Left,
+                navigation: NavigationId(2),
+                sessions,
+                retry,
+            } => break (sessions, retry),
+            Event::ArchiveListed { .. } => panic!("the failure came before the sessions"),
+            _ => {}
+        }
+    };
+    let named: Vec<_> = sessions
+        .iter()
+        .map(|session| (session.id, session.container.clone()))
+        .collect();
+    let temp = std::env::temp_dir();
+    assert_eq!(named, [(1, temp.join("a.7z")), (2, temp.join("x.7z"))]);
+    assert!(matches!(
+        retry,
+        ArchiveAction::List(location)
+            if location.mount.is_none() && location.address.container == temp.join("b.7z")
+    ));
+    refused(fixture.listed(PaneId::Left, NavigationId(2)).await);
+    while fixture.tasks.join_next().await.is_some() {}
+}

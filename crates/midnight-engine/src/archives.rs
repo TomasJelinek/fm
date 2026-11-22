@@ -318,18 +318,31 @@ impl Controller {
                 notified.await;
             }
             if let Some(target) = &target
-                && let Err(error) =
+                && let Err(refusal) =
                     native::slot(&request, target, replaces, &allowance, &superseded, &scope).await
             {
                 let snapshots = request.snapshots.clone();
                 drop(request);
+                // The sessions that count come first: the panel offers to close one of
+                // them when the failure that follows arrives.
+                if let Some(full) = refusal.full {
+                    let (sessions, retry) = *full;
+                    outbox
+                        .send(Event::ArchiveSessionsFull {
+                            pane,
+                            navigation,
+                            sessions,
+                            retry,
+                        })
+                        .await;
+                }
                 navigation::publish(
                     &snapshots,
                     &outbox,
                     pane,
                     navigation,
                     restore_native_on_failure,
-                    Err(error),
+                    Err(refusal.error),
                 )
                 .await;
                 return;

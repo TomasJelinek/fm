@@ -296,7 +296,9 @@ no other open can take it and never more than two workers run. Dropping a waitin
 reservation (cancellation, the caller's deadline, an unwind) withdraws it, and a slot
 handed over but not yet taken is freed. A full allowance is refused with
 `NativeLimit`, which lists the counted sessions (`ArchiveMount::id` and native file);
-a slot whose session is still starting counts but is not listed. Protocol 2 adds no aggregate CPU
+a slot whose session is still starting counts but is not listed. The engine passes that
+list to the panel as `Event::ArchiveSessionsFull`, with the navigation that opens the
+archive again, right before the failed listing. Protocol 2 adds no aggregate CPU
 ceiling; inherited OS resource policy remains in effect. Only successful bounded
 byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
 legacy limits. Shared tab/viewer leases count as the same mount. Source reads may

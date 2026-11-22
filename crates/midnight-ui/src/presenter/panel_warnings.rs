@@ -520,6 +520,7 @@ impl Presenter {
         if generation == self.desktop.notice_generation {
             self.desktop.notice_navigation = None;
         }
+        self.archive_offer_closed(generation);
         self.properties_closed(generation);
         if self
             .panel_warnings

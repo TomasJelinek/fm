@@ -14,6 +14,16 @@ pub fn archive_depth_message() -> String {
     )
 }
 
+/// The session of an archive opened from a native file, as a refused open names the
+/// sessions that count (`Event::ArchiveSessionsFull`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveSession {
+    /// The session's `ArchiveMount::id`.
+    pub id: u64,
+    /// The native archive file that the session reads.
+    pub container: std::path::PathBuf,
+}
+
 /// The enclosing archive of an archive that was opened from one of its members.
 #[derive(Clone, Debug)]
 pub struct ArchiveParent {

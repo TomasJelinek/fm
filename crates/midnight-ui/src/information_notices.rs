@@ -65,6 +65,22 @@ pub(super) fn install(main: &MainWindow) -> Rc<Context> {
         }
     });
     let weak = Rc::downgrade(&context);
+    presentation.on_choose(move |token, index| {
+        let Some(context) = weak.upgrade() else {
+            return;
+        };
+        let Some(main) = context.main.upgrade() else {
+            return;
+        };
+        if current(&context, &main, token.as_str()) {
+            let generation = main.get_message_generation();
+            // Retire this presentation before the choice can raise another notice.
+            retire(&context, &main);
+            main.invoke_choose_message(generation, index);
+            main.invoke_diagnostic_notice_closed(generation);
+        }
+    });
+    let weak = Rc::downgrade(&context);
     presentation.on_authorize_retry(move |token| {
         let Some(context) = weak.upgrade() else {
             return;
@@ -103,6 +119,8 @@ pub(super) fn refresh(context: &Rc<Context>, main: &MainWindow) {
     presentation.set_folder_path(main.get_message_path());
     presentation.set_details(main.get_message_details());
     presentation.set_can_authorize(main.get_message_can_authorize());
+    presentation.set_choices(main.get_message_choices());
+    presentation.set_cancel(main.get_message_cancel());
     presentation.set_error(main.get_message_error());
     presentation.set_generation(generation);
     context.shown.set(Some(generation));

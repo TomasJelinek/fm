@@ -123,6 +123,7 @@ mod navigation_location_layout;
 mod network_bookmarks;
 mod network_navigation;
 mod network_path_omission;
+mod notice_choices;
 mod operation_defaults;
 mod operations_native_ui;
 mod options;

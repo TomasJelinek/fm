@@ -427,6 +427,60 @@ impl Presenter {
         outgoing
     }
 
+    /// The shown tab of `pane`.
+    pub(super) fn active_tab(&self, pane: PaneId) -> TabId {
+        let tabs = &self.tabs.panes[pane.index()];
+        tabs.tabs[tabs.active].id
+    }
+
+    /// How many tabs `pane` has.
+    pub(super) fn tab_count(&self, pane: PaneId) -> usize {
+        self.tabs.panes[pane.index()].tabs.len()
+    }
+
+    /// The tabs that hold archive session `session`, shown ones included: their panel,
+    /// their number counted from 1 and their identity.
+    pub(super) fn archive_tabs(&self, session: u64) -> Vec<(PaneId, usize, TabId)> {
+        let mut found = Vec::new();
+        for pane in [PaneId::Left, PaneId::Right] {
+            let tabs = &self.tabs.panes[pane.index()];
+            for (index, tab) in tabs.tabs.iter().enumerate() {
+                let archive = if index == tabs.active {
+                    self.panes[pane.index()].archive.as_ref()
+                } else {
+                    tab.parked
+                        .as_ref()
+                        .and_then(|location| location.archive.as_ref())
+                };
+                if archive.is_some_and(|archive| archive.holds_session(session)) {
+                    found.push((pane, index + 1, tab.id));
+                }
+            }
+        }
+        found
+    }
+
+    /// A tab in the background leaves its archive for the folder that contains
+    /// `container`, with the cursor on the archive file once the tab is shown.
+    pub(super) fn leave_parked_archive(&mut self, pane: PaneId, tab: TabId, container: &Path) {
+        let Some(folder) = container.parent() else {
+            return;
+        };
+        let Some(location) = self.tabs.panes[pane.index()]
+            .tabs
+            .iter_mut()
+            .find(|candidate| candidate.id == tab)
+            .and_then(|candidate| candidate.parked.as_mut())
+        else {
+            return;
+        };
+        self.retired.push(Box::new(location.archive.take()));
+        location.path = folder.to_owned();
+        location.cursor_path = Some(container.to_owned());
+        location.parent_cursor = false;
+        location.navigation_history = None;
+    }
+
     /// Whether a tab in the background holds archive session `session`.
     pub(super) fn parked_tabs_hold(&self, session: u64) -> bool {
         self.tabs.panes.iter().any(|tabs| {
