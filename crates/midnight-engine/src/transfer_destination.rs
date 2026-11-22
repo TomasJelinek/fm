@@ -1,21 +1,28 @@
-//! One worker answers whether a typed Copy/Move destination is an existing folder.
-//! A newer question supersedes a pending one; nothing here blocks the command loop.
+//! One worker answers whether a typed Copy/Move destination is an existing folder, and
+//! another what the dialog's destination does with links. A newer question supersedes a
+//! pending one of its kind; nothing here blocks the command loop.
 use crate::{Outbox, task_lifetime::TaskLifetime};
-use midnight_core::{DestinationCheckRequest, DestinationCheckResult, Event, FileSystem, FsError};
+use midnight_core::{
+    Cancellation, DestinationCheckRequest, DestinationCheckResult, Event, FileSystem, FsError,
+    TransferLinkFacts, TransferLinksRequest, TransferLinksResult, TransferService,
+};
 use std::{io, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
 
 pub(crate) struct Controller {
     requests: watch::Sender<Option<DestinationCheckRequest>>,
+    links: watch::Sender<Option<TransferLinksRequest>>,
 }
 
 impl Controller {
     pub(crate) fn new(
         scope: TaskLifetime,
         filesystem: Arc<dyn FileSystem>,
+        transfers: Option<Arc<dyn TransferService>>,
         outbox: Outbox,
         tasks: &mut JoinSet<()>,
     ) -> Self {
+        let links = spawn_link_inspection(scope.clone(), transfers.clone(), outbox.clone(), tasks);
         let (requests, mut receiver) = watch::channel::<Option<DestinationCheckRequest>>(None);
         let worker_scope = scope.clone();
         tasks.spawn(scope.future(async move {
@@ -24,6 +31,7 @@ impl Controller {
                     continue;
                 };
                 let filesystem = filesystem.clone();
+                let transfers = transfers.clone();
                 let worker_outbox = outbox.clone();
                 let fallback = request.clone();
                 let completed = tokio::task::spawn_blocking(worker_scope.blocking(move || {
@@ -34,11 +42,27 @@ impl Controller {
                     let result = filesystem
                         .browse_directory_identity(&request.path, &request.cancel)
                         .map(|identity| identity.is_some());
+                    // What an existing folder does with links, when the dialog asks.
+                    let links = (request.links && matches!(result, Ok(true)))
+                        .then(|| {
+                            link_facts(
+                                transfers.as_deref(),
+                                &TransferLinksRequest {
+                                    request: request.request,
+                                    destination: request.path.clone(),
+                                    source: request.source.clone(),
+                                    cancel: request.cancel.clone(),
+                                },
+                            )
+                            .ok()
+                        })
+                        .flatten();
                     worker_outbox.blocking_send(
                         Event::TransferDestinationChecked(Box::new(DestinationCheckResult {
                             request: request.request,
                             path: request.path,
                             result,
+                            links,
                         })),
                         &request.cancel,
                     );
@@ -57,6 +81,7 @@ impl Controller {
                                 request: fallback.request,
                                 path: fallback.path,
                                 result: Err(error),
+                                links: None,
                             })),
                             &fallback.cancel,
                         );
@@ -65,11 +90,20 @@ impl Controller {
                 }
             }
         }));
-        Self { requests }
+        Self { requests, links }
     }
 
     pub(crate) fn check(&self, request: DestinationCheckRequest) {
         self.requests.send_modify(|previous| {
+            if let Some(previous) = previous {
+                previous.cancel.cancel();
+            }
+            *previous = Some(request);
+        });
+    }
+
+    pub(crate) fn inspect_links(&self, request: TransferLinksRequest) {
+        self.links.send_modify(|previous| {
             if let Some(previous) = previous {
                 previous.cancel.cancel();
             }
@@ -83,7 +117,100 @@ impl Drop for Controller {
         if let Some(request) = self.requests.borrow().as_ref() {
             request.cancel.cancel();
         }
+        if let Some(request) = self.links.borrow().as_ref() {
+            request.cancel.cancel();
+        }
     }
+}
+
+/// The worker that answers `Command::InspectTransferLinks`, one question at a time.
+fn spawn_link_inspection(
+    scope: TaskLifetime,
+    transfers: Option<Arc<dyn TransferService>>,
+    outbox: Outbox,
+    tasks: &mut JoinSet<()>,
+) -> watch::Sender<Option<TransferLinksRequest>> {
+    let (requests, mut receiver) = watch::channel::<Option<TransferLinksRequest>>(None);
+    let worker_scope = scope.clone();
+    tasks.spawn(scope.future(async move {
+        while receiver.changed().await.is_ok() {
+            let Some(request) = receiver.borrow_and_update().clone() else {
+                continue;
+            };
+            let transfers = transfers.clone();
+            let worker_outbox = outbox.clone();
+            let fallback = request.clone();
+            let completed = tokio::task::spawn_blocking(worker_scope.blocking(move || {
+                if request.cancel.is_cancelled() {
+                    return;
+                }
+                let result = link_facts(transfers.as_deref(), &request);
+                worker_outbox.blocking_send(
+                    Event::TransferLinksInspected(Box::new(TransferLinksResult {
+                        request: request.request,
+                        destination: request.destination,
+                        result,
+                    })),
+                    &request.cancel,
+                );
+            }))
+            .await;
+            if completed.is_err() && !fallback.cancel.is_cancelled() {
+                let error = FsError::from_io(
+                    "inspect destination links",
+                    &fallback.destination,
+                    io::Error::other("The destination's link support could not be checked."),
+                );
+                let outbox = outbox.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    outbox.blocking_send(
+                        Event::TransferLinksInspected(Box::new(TransferLinksResult {
+                            request: fallback.request,
+                            destination: fallback.destination,
+                            result: Err(error),
+                        })),
+                        &fallback.cancel,
+                    );
+                })
+                .await;
+            }
+        }
+    }));
+    requests
+}
+
+/// What the destination's volume reports about links, and whether the selection's folder
+/// is on that volume. Without a transfer service nothing is known.
+fn link_facts(
+    transfers: Option<&dyn TransferService>,
+    request: &TransferLinksRequest,
+) -> Result<TransferLinkFacts, FsError> {
+    let Some(transfers) = transfers else {
+        return Ok(TransferLinkFacts::default());
+    };
+    let destination = transfers.link_destination(&request.destination, &request.cancel)?;
+    let same_volume = match (&request.source, destination.volume) {
+        (Some(source), Some(volume)) => {
+            source_volume(transfers, source, &request.cancel) == Some(volume)
+        }
+        _ => false,
+    };
+    Ok(TransferLinkFacts {
+        destination,
+        same_volume,
+    })
+}
+
+/// The volume of the selection's folder; unknown when it cannot be read.
+fn source_volume(
+    transfers: &dyn TransferService,
+    source: &std::path::Path,
+    cancel: &Cancellation,
+) -> Option<u64> {
+    transfers
+        .link_destination(source, cancel)
+        .ok()
+        .and_then(|facts| facts.volume)
 }
 
 #[cfg(test)]
@@ -147,6 +274,7 @@ mod tests {
         let controller = Controller::new(
             TaskLifetime::testing(native.clone()),
             native.clone(),
+            None,
             Outbox {
                 sender,
                 wakeup: Arc::new(|| {}),
@@ -158,6 +286,8 @@ mod tests {
             controller.check(DestinationCheckRequest {
                 request: DesktopRequestId(id),
                 path: path.clone(),
+                links: true,
+                source: None,
                 cancel: Cancellation::default(),
             });
             let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
@@ -169,6 +299,11 @@ mod tests {
             };
             assert_eq!(checked.request, DesktopRequestId(id));
             assert_eq!(checked.path, path);
+            // Without a transfer service a folder's links are unknown, never invented.
+            assert_eq!(
+                checked.links,
+                (name == "folder").then(TransferLinkFacts::default)
+            );
             match name {
                 "folder" => assert!(matches!(checked.result, Ok(true))),
                 "file" => assert!(matches!(checked.result, Ok(false))),
@@ -179,5 +314,114 @@ mod tests {
         }
         drop(controller);
         tasks.join_next().await.unwrap().unwrap();
+    }
+
+    /// A USB stick (volume 7) and a fixed disk (volume 1), as a native service reports them.
+    struct Volumes;
+    impl TransferService for Volumes {
+        fn link_destination(
+            &self,
+            path: &Path,
+            _: &Cancellation,
+        ) -> Result<TransferLinkDestination, FsError> {
+            let removable = path.starts_with(std::env::temp_dir().join("stick"));
+            if path.ends_with("unreadable") {
+                return Err(FsError::from_io(
+                    "inspect links",
+                    path,
+                    io::ErrorKind::PermissionDenied.into(),
+                ));
+            }
+            Ok(TransferLinkDestination {
+                storage: TransferLinkStorage::Supported,
+                filesystem: None,
+                network: false,
+                removable,
+                volume: Some(if removable { 7 } else { 1 }),
+            })
+        }
+        fn prepare_transfer_source(
+            &self,
+            _: &Path,
+            _: &Cancellation,
+        ) -> Result<Box<dyn TransferSource>, FsError> {
+            unreachable!("inspecting links opens no source")
+        }
+        fn prepare_transfer_destination(
+            &self,
+            _: &Path,
+            _: &Cancellation,
+        ) -> Result<Arc<dyn TransferDirectory>, FsError> {
+            unreachable!("inspecting links opens no destination")
+        }
+    }
+
+    #[tokio::test]
+    async fn link_facts_name_the_destination_and_whether_the_selection_is_on_its_volume() {
+        let native = Arc::new(Native);
+        let (sender, mut events) = tokio::sync::mpsc::channel(1);
+        let mut tasks = JoinSet::new();
+        let controller = Controller::new(
+            TaskLifetime::testing(native.clone()),
+            native,
+            Some(Arc::new(Volumes)),
+            Outbox {
+                sender,
+                wakeup: Arc::new(|| {}),
+            },
+            &mut tasks,
+        );
+        let temp = std::env::temp_dir();
+        let stick = temp.join("stick").join("backup");
+        let cases = [
+            // From the fixed disk to the stick: removable, another volume.
+            (1, stick.clone(), Some(temp.join("home")), Some(false)),
+            // Within the stick: the same volume.
+            (
+                2,
+                stick.clone(),
+                Some(temp.join("stick").join("old")),
+                Some(true),
+            ),
+            // No single source folder (a captured tree): not the same volume.
+            (3, stick.clone(), None, Some(false)),
+            // An unreadable source folder is simply not known to share the volume.
+            (4, stick, Some(temp.join("unreadable")), Some(false)),
+            // An unreadable destination is the answer's error.
+            (5, temp.join("unreadable"), None, None),
+        ];
+        for (id, destination, source, same_volume) in cases {
+            controller.inspect_links(TransferLinksRequest {
+                request: DesktopRequestId(id),
+                destination: destination.clone(),
+                source,
+                cancel: Cancellation::default(),
+            });
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let Event::TransferLinksInspected(inspected) = event else {
+                panic!("a link inspection answers with its own event")
+            };
+            assert_eq!(inspected.request, DesktopRequestId(id));
+            assert_eq!(inspected.destination, destination);
+            match same_volume {
+                Some(same) => {
+                    let facts = inspected.result.unwrap();
+                    assert_eq!(facts.same_volume, same, "case {id}");
+                    assert_eq!(facts.destination.volume, Some(7));
+                    assert!(facts.destination.removable);
+                }
+                None => assert_eq!(
+                    inspected.result.unwrap_err().kind,
+                    io::ErrorKind::PermissionDenied
+                ),
+            }
+        }
+        drop(controller);
+        while let Some(task) = tasks.join_next().await {
+            task.unwrap();
+        }
     }
 }

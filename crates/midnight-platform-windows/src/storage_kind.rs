@@ -13,9 +13,10 @@ use std::{
 };
 use windows_sys::Win32::{
     Storage::FileSystem::{
-        BusTypeAta, BusTypeFibre, BusTypeNvme, BusTypeSata, BusTypeiScsi, FILE_SHARE_DELETE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW, GetVolumeNameForVolumeMountPointW,
-        GetVolumePathNameW, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        BusTypeAta, BusTypeFibre, BusTypeMmc, BusTypeNvme, BusTypeSata, BusTypeSd, BusTypeUsb,
+        BusTypeiScsi, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetDriveTypeW,
+        GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
     },
     System::{
         IO::DeviceIoControl,
@@ -24,7 +25,7 @@ use windows_sys::Win32::{
             PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
             StorageDeviceProperty, StorageDeviceSeekPenaltyProperty, VOLUME_DISK_EXTENTS,
         },
-        WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE},
+        WindowsProgramming::{DRIVE_FIXED, DRIVE_REMOTE, DRIVE_REMOVABLE},
     },
 };
 
@@ -79,6 +80,83 @@ pub(crate) fn detect(path: &Path) -> StorageKind {
         return StorageKind::Network;
     }
     detect_local(&canonical).unwrap_or(StorageKind::Unknown)
+}
+
+/// Whether `path` is on a network location: a UNC path or a mapped network drive.
+pub(crate) fn network(path: &Path) -> bool {
+    unc(path)
+        || drive_root(path).is_some_and(|root| drive_type(&root) == Some(DRIVE_REMOTE))
+        || std::fs::canonicalize(path).is_ok_and(|canonical| unc(&canonical))
+}
+
+/// Whether `path` is on removable media or on a disk attached by a removable bus (USB,
+/// an SD or MMC card reader), as its drive type and its disk's storage descriptor report
+/// them. Nothing is read from the disk itself; what cannot be told is not removable.
+pub(crate) fn removable(path: &Path) -> bool {
+    if unc(path) {
+        return false;
+    }
+    std::fs::canonicalize(path)
+        .ok()
+        .and_then(|canonical| removable_local(&canonical))
+        .unwrap_or(false)
+}
+
+fn removable_local(path: &Path) -> Option<bool> {
+    let input = wide(path)?;
+    // As in `detect_local`: the mount-point prefix fits the canonical input path.
+    let mut root = vec![0u16; input.len().checked_add(2)?];
+    let capacity = u32::try_from(root.len()).ok()?;
+    // SAFETY: input is terminated and output is writable for its stated capacity.
+    if unsafe { GetVolumePathNameW(input.as_ptr(), root.as_mut_ptr(), capacity) } == 0 {
+        return None;
+    }
+    let length = root.iter().position(|unit| *unit == 0)?;
+    root.truncate(length + 1);
+    // SAFETY: the returned root is terminated and validated by the OS.
+    match unsafe { GetDriveTypeW(root.as_ptr()) } {
+        DRIVE_REMOVABLE => return Some(true),
+        DRIVE_FIXED => {}
+        _ => return Some(false),
+    }
+    let mut guid = [0u16; 64];
+    // SAFETY: valid root and bounded output for the volume GUID identifier.
+    if unsafe {
+        GetVolumeNameForVolumeMountPointW(root.as_ptr(), guid.as_mut_ptr(), guid.len() as u32)
+    } == 0
+    {
+        return None;
+    }
+    let length = guid.iter().position(|unit| *unit == 0)?;
+    if length == 0 || guid[length - 1] != b'\\' as u16 {
+        return None;
+    }
+    let volume = query_handle(Path::new(&OsString::from_wide(&guid[..length - 1])))?;
+    let extents = ioctl(
+        &volume,
+        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+        &[],
+        size_of::<VOLUME_DISK_EXTENTS>(),
+    )?;
+    if extents.len() < size_of::<VOLUME_DISK_EXTENTS>() || u32_at(&extents, 0)? != 1 {
+        return None;
+    }
+    let disk_number = u32_at(
+        &extents,
+        offset_of!(VOLUME_DISK_EXTENTS, Extents) + offset_of!(DISK_EXTENT, DiskNumber),
+    )?;
+    let disk = query_handle(Path::new(&format!(r"\\.\PhysicalDrive{disk_number}")))?;
+    removable_descriptor(&property(&disk, StorageDeviceProperty)?)
+}
+
+/// A disk with removable media, or on a USB, SD or MMC bus.
+fn removable_descriptor(device: &[u8]) -> Option<bool> {
+    let device = validated(device, size_of::<STORAGE_DEVICE_DESCRIPTOR>())?;
+    let bus = u32_at(device, offset_of!(STORAGE_DEVICE_DESCRIPTOR, BusType))? as i32;
+    Some(
+        device[offset_of!(STORAGE_DEVICE_DESCRIPTOR, RemovableMedia)] != 0
+            || [BusTypeUsb, BusTypeSd, BusTypeMmc].contains(&bus),
+    )
 }
 
 fn query_handle(path: &Path) -> Option<File> {
@@ -287,7 +365,8 @@ mod tests {
     use std::mem::{offset_of, size_of};
     use windows_sys::Win32::{
         Storage::FileSystem::{
-            BusTypeAta, BusTypeNvme, BusTypeSata, BusTypeUsb, BusTypeVirtual, BusTypeiScsi,
+            BusTypeAta, BusTypeMmc, BusTypeNvme, BusTypeSata, BusTypeSd, BusTypeUsb,
+            BusTypeVirtual, BusTypeiScsi,
         },
         System::Ioctl::{DEVICE_SEEK_PENALTY_DESCRIPTOR, STORAGE_DEVICE_DESCRIPTOR},
     };
@@ -349,6 +428,36 @@ mod tests {
             classify_descriptor(&removable, &seek(0)),
             StorageKind::Unknown
         );
+    }
+
+    #[test]
+    fn usb_sd_and_removable_media_disks_are_removable_and_internal_disks_are_not() {
+        for bus in [BusTypeUsb, BusTypeSd, BusTypeMmc] {
+            assert_eq!(removable_descriptor(&descriptor(bus, b"Disk")), Some(true));
+        }
+        for bus in [
+            BusTypeAta,
+            BusTypeSata,
+            BusTypeNvme,
+            BusTypeVirtual,
+            BusTypeiScsi,
+        ] {
+            assert_eq!(removable_descriptor(&descriptor(bus, b"Disk")), Some(false));
+        }
+        let mut media = descriptor(BusTypeSata, b"Disk");
+        media[offset_of!(STORAGE_DEVICE_DESCRIPTOR, RemovableMedia)] = 1;
+        assert_eq!(removable_descriptor(&media), Some(true));
+        // A truncated descriptor tells nothing.
+        assert_eq!(removable_descriptor(&media[..8]), None);
+    }
+
+    #[test]
+    fn the_system_drive_is_neither_removable_nor_a_network_location() {
+        let temp = std::env::temp_dir();
+        assert!(!network(&temp));
+        assert!(network(Path::new(r"\\server\share\folder")));
+        // CI and development machines keep their temporary folder on a fixed disk.
+        assert!(!removable(&temp), "{}", temp.display());
     }
 
     #[test]

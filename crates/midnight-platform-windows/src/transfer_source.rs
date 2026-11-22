@@ -30,10 +30,19 @@ pub(super) struct Source {
     /// How the Move capture of each Move child compares the child's pinned revision.
     move_revisions: TransferRevisionPolicy,
     link: Option<Arc<source_links::Binding>>,
+    /// A link transferred as a link (Preserve, or a link FollowLinks cannot follow).
+    leaf: Option<Leaf>,
     parent_ancestry: Option<Arc<Ancestor>>,
     directory_ancestry: Option<Arc<Ancestor>>,
     // Last: all native fields, including lazy readable upgrades, close before this signal.
     _namespace_owner: super::namespace::NativeOwner,
+}
+
+/// A link kept as a link: the proof of its exact representation and, under FollowLinks,
+/// why it was not followed.
+struct Leaf {
+    proof: Arc<source_links::OriginalLink>,
+    unfollowed: Option<String>,
 }
 /// A source's directory and its already proven identity, for opening its children.
 #[derive(Clone)]
@@ -69,7 +78,17 @@ impl Access {
     fn projects_links(self) -> bool {
         matches!(
             self.links(),
-            CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories
+            CopyLinkPolicy::FollowDirectoryContents
+                | CopyLinkPolicy::EmptyDirectories
+                | CopyLinkPolicy::FollowLinks
+        )
+    }
+
+    /// Whether folders on the current path are kept to refuse a followed link back to one.
+    fn follows(self) -> bool {
+        matches!(
+            self.links(),
+            CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::FollowLinks
         )
     }
 }
@@ -195,6 +214,23 @@ impl Source {
             }
         };
         let expected_kind = expected.kind();
+        let link_kind = matches!(expected_kind, EntryKind::DirectoryLink | EntryKind::Symlink);
+        if link_kind && !matches!(access, Access::Move(_)) && access.links().recreates_links() {
+            // Preserve keeps every link; FollowLinks follows what it can and keeps the rest.
+            let followed = if access.links() == CopyLinkPolicy::FollowLinks {
+                Self::follow(&parent, name, &path, expected, probed, cancel)?
+            } else {
+                Err(None)
+            };
+            match followed {
+                Ok(binding) => {
+                    return Self::open_followed(parent, name, expected, probed, access, binding);
+                }
+                Err(reason) => {
+                    return Self::leaf(parent, name, expected, probed, access, reason, cancel);
+                }
+            }
+        }
         let (file, link) = if expected_kind == EntryKind::DirectoryLink
             && !matches!(access, Access::Move(_))
             && access.projects_links()
@@ -268,8 +304,7 @@ impl Source {
                 "directory link forms a cycle in the Copy source",
             ));
         }
-        let directory_ancestry = (entry.item.kind == EntryKind::Directory
-            && access.links() == CopyLinkPolicy::FollowDirectoryContents)
+        let directory_ancestry = (entry.item.kind == EntryKind::Directory && access.follows())
             .then(|| {
                 Arc::new(Ancestor {
                     _directory: file.clone(),
@@ -294,10 +329,189 @@ impl Source {
             access,
             move_revisions: TransferRevisionPolicy::Exact,
             link,
+            leaf: None,
             parent_ancestry: parent.ancestry,
             directory_ancestry,
             _namespace_owner: namespace_owner,
         })
+    }
+
+    /// FollowLinks: the binding of a link to a folder or to an ordinary file on a local
+    /// drive that this process can read, or (as `Err`) why the link is kept as a link.
+    /// Cancellation and changes while the link is opened stay errors.
+    #[allow(clippy::type_complexity)]
+    fn follow(
+        parent: &Parent,
+        name: &OsStr,
+        path: &Path,
+        expected: Native,
+        probed: Option<TransferIdentity>,
+        cancel: &Cancellation,
+    ) -> Result<Result<(Arc<File>, Arc<source_links::Binding>), Option<String>>, FsError> {
+        let captured = if expected.kind() == EntryKind::DirectoryLink {
+            source_links::Binding::capture(
+                parent.file.clone(),
+                name,
+                path,
+                expected,
+                probed,
+                true,
+                cancel,
+            )
+        } else {
+            source_links::Binding::capture_file(
+                parent.file.clone(),
+                name,
+                path,
+                expected,
+                probed,
+                cancel,
+            )
+        };
+        let (file, binding) = match captured {
+            Ok(captured) => captured,
+            Err(failure) => return unfollowed(failure).map(Err),
+        };
+        if expected.kind() == EntryKind::DirectoryLink {
+            let target = identity(&file, path)?;
+            if parent.identity == Some(target)
+                || contains_identity(parent.ancestry.as_deref(), target)
+            {
+                return Ok(Err(Some(
+                    "it points to a folder that contains it, so following it would never end"
+                        .into(),
+                )));
+            }
+        }
+        Ok(Ok((file, binding)))
+    }
+
+    /// The followed target of a link (FollowLinks): a folder, or a file read as itself.
+    fn open_followed(
+        mut parent: Parent,
+        name: &OsStr,
+        expected: Native,
+        probed: Option<TransferIdentity>,
+        access: Access,
+        (file, link): (Arc<File>, Arc<source_links::Binding>),
+    ) -> Result<Self, FsError> {
+        let path = parent.path.join(name);
+        let (entry, native, meta) = classified_with_metadata(&file, &path)?;
+        let expected_target = if expected.kind() == EntryKind::DirectoryLink {
+            EntryKind::Directory
+        } else {
+            EntryKind::File
+        };
+        if native.kind() != expected_target
+            || probed.is_some_and(|id| id != link.original_identity())
+        {
+            return Err(invalid(
+                &path,
+                "directory link target changed while opening",
+            ));
+        }
+        let parent_identity = match parent.identity {
+            Some(identity) => identity,
+            None => identity(&parent.file, &parent.path)?,
+        };
+        parent.identity = Some(parent_identity);
+        let directory_ancestry = (entry.item.kind == EntryKind::Directory).then(|| {
+            Arc::new(Ancestor {
+                _directory: file.clone(),
+                identity: entry.identity,
+                parent: parent.clone(),
+                link: Some(link.clone()),
+                contains_link: true,
+            })
+        });
+        let namespace_owner = super::namespace::owner(&[parent_identity, entry.identity]);
+        Ok(Self {
+            stamp: (
+                meta.file_size(),
+                meta.last_write_time(),
+                meta.creation_time(),
+            ),
+            entry,
+            native,
+            parent: parent.file,
+            parent_path: parent.path,
+            parent_identity,
+            name: name.to_owned(),
+            file,
+            readable: None,
+            listing: Listing::default(),
+            access,
+            move_revisions: TransferRevisionPolicy::Exact,
+            link: Some(link),
+            leaf: None,
+            parent_ancestry: parent.ancestry,
+            directory_ancestry,
+            _namespace_owner: namespace_owner,
+        })
+    }
+
+    /// A link kept as a link: its own no-follow handle and the proof of its exact
+    /// representation; its target is never opened.
+    fn leaf(
+        mut parent: Parent,
+        name: &OsStr,
+        expected: Native,
+        probed: Option<TransferIdentity>,
+        access: Access,
+        unfollowed: Option<String>,
+        cancel: &Cancellation,
+    ) -> Result<Self, FsError> {
+        let path = parent.path.join(name);
+        checked(cancel, &path)?;
+        let directory = expected.kind() == EntryKind::DirectoryLink;
+        let file = Arc::new(
+            source_links::open_link(&parent.file, name, directory).map_err(|e| error(&path, e))?,
+        );
+        let proof = Arc::new(source_links::OriginalLink::capture(
+            &file,
+            &path,
+            expected,
+            probed,
+            source_links::Targets::Any,
+        )?);
+        let (entry, native, meta) = classified_with_metadata(&file, &path)?;
+        if entry.identity != proof.entry.identity {
+            return Err(invalid(&path, "source changed while opening"));
+        }
+        let parent_identity = match parent.identity {
+            Some(identity) => identity,
+            None => identity(&parent.file, &parent.path)?,
+        };
+        parent.identity = Some(parent_identity);
+        let namespace_owner = super::namespace::owner(&[parent_identity, entry.identity]);
+        Ok(Self {
+            stamp: (
+                meta.file_size(),
+                meta.last_write_time(),
+                meta.creation_time(),
+            ),
+            entry,
+            native,
+            parent: parent.file,
+            parent_path: parent.path,
+            parent_identity,
+            name: name.to_owned(),
+            file,
+            readable: None,
+            listing: Listing::default(),
+            access,
+            move_revisions: TransferRevisionPolicy::Exact,
+            link: None,
+            leaf: Some(Leaf { proof, unfollowed }),
+            parent_ancestry: parent.ancestry,
+            directory_ancestry: None,
+            _namespace_owner: namespace_owner,
+        })
+    }
+
+    /// The link this source keeps as a link, with why FollowLinks did not follow it.
+    pub(super) fn link_leaf(&self) -> Option<Arc<source_links::OriginalLink>> {
+        self.leaf.as_ref().map(|leaf| leaf.proof.clone())
     }
     fn fill_names(&mut self) -> Result<(), FsError> {
         self.ensure_readable()?;
@@ -358,6 +572,10 @@ impl TransferSource for Source {
         visit: &mut dyn FnMut(&MutationItem),
     ) -> Result<(), FsError> {
         self.revalidate(cancel)?;
+        if self.leaf.is_some() {
+            visit(&self.entry.item);
+            return Ok(());
+        }
         if self.access.projects_links() {
             self.discover_projection(cancel, visit)?;
             return self.revalidate(cancel);
@@ -432,7 +650,7 @@ impl TransferSource for Source {
                 .next_move_child(cancel)
                 .map(|child| child.map(PreparedTransferMoveEntry::Ordinary));
         }
-        if !matches!(self.access, Access::Move(_)) || !Access::Copy(links).projects_links() {
+        if !matches!(self.access, Access::Move(_)) {
             return Err(unsupported(
                 &self.entry.item.path,
                 "recursive Move with directory links is unsupported",
@@ -555,7 +773,20 @@ impl TransferSource for Source {
             cancel,
         )?;
         if let Some(link) = &self.link {
-            return link.revalidate(cancel);
+            link.revalidate(cancel)?;
+            // A followed file's content must also still be the captured revision.
+            if self.entry.item.kind == EntryKind::File {
+                let meta = self.file.metadata().map_err(|e| error(path, e))?;
+                if (
+                    meta.file_size(),
+                    meta.last_write_time(),
+                    meta.creation_time(),
+                ) != self.stamp
+                {
+                    return Err(invalid(path, "source content changed"));
+                }
+            }
+            return Ok(());
         }
         let visible = native::open_relative(
             &self.parent,
@@ -569,6 +800,10 @@ impl TransferSource for Source {
         if identity(&visible, path)? != self.entry.identity {
             return Err(invalid(path, "source identity changed"));
         }
+        if let Some(leaf) = &self.leaf {
+            // The same link, with exactly the same target as when it was captured.
+            leaf.proof.validate_binding(&visible, path)?;
+        }
         let meta = self.file.metadata().map_err(|e| error(path, e))?;
         if self.entry.item.kind == EntryKind::File
             && (
@@ -580,6 +815,22 @@ impl TransferSource for Source {
             return Err(invalid(path, "source content changed"));
         }
         Ok(())
+    }
+    fn link_representation(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferLinkRepresentation, FsError> {
+        let path = &self.entry.item.path;
+        let leaf = self
+            .leaf
+            .as_ref()
+            .ok_or_else(|| unsupported(path, "this source is not a link kept as a link"))?;
+        // Revalidation reads the visible link's representation again.
+        self.revalidate(cancel)?;
+        Ok(leaf.proof.representation().clone())
+    }
+    fn link_not_followed(&self) -> Option<String> {
+        self.leaf.as_ref().and_then(|leaf| leaf.unfollowed.clone())
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         checked(cancel, &self.entry.item.path)?;
@@ -751,7 +1002,7 @@ impl Source {
                     "Copy sources have no Move authority",
                 ));
             }
-        } else if !matches!(self.access, Access::Move(_)) || !Access::Copy(links).projects_links() {
+        } else if !matches!(self.access, Access::Move(_)) {
             return Err(unsupported(
                 &self.entry.item.path,
                 "recursive Move with directory links is unsupported",
@@ -817,6 +1068,25 @@ impl Source {
             self.fill_names()?;
         }
     }
+}
+
+/// Why FollowLinks keeps a link it could not follow, in words for the job details, or the
+/// failure itself when it is no reason to keep the link: a cancellation, or the link or
+/// its folder changing while it was opened.
+fn unfollowed(failure: FsError) -> Result<Option<String>, FsError> {
+    Ok(Some(match failure.kind {
+        io::ErrorKind::NotFound => "its target does not exist".into(),
+        // A folder link whose target, or a name on its way, is a file.
+        io::ErrorKind::NotADirectory => "its target is not a folder".into(),
+        io::ErrorKind::PermissionDenied => "its target cannot be read (permission denied)".into(),
+        // What a target's qualification refuses: not where Windows follows a link to.
+        io::ErrorKind::Unsupported => "its target is not an ordinary folder or file on a \
+                                       local drive (a network share, a mounted volume or \
+                                       another link on its way), which Windows does not \
+                                       follow"
+            .into(),
+        _ => return Err(failure),
+    }))
 }
 
 fn open_ordinary(

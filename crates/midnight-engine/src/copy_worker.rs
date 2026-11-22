@@ -58,6 +58,8 @@ struct Frame {
 }
 struct RootCompletion {
     source: CompletedCopySource,
+    /// The selected item's own path, which the links below it are counted from.
+    path: std::path::PathBuf,
     failed: u64,
     skipped: u64,
 }
@@ -335,7 +337,7 @@ impl Job {
             }
             roots.push_back(source);
         }
-        link_job::admit_roots(&roots, destination.as_ref(), links, &cancel)?;
+        link_job::admit_roots(&roots, links, &cancel)?;
         let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
         job.links = links;
         job.set_verification(request.verification);
@@ -533,7 +535,7 @@ impl Job {
         for source in &roots {
             source.revalidate(&cancel)?;
         }
-        link_job::admit_roots(&roots, destination.as_ref(), links, &cancel)?;
+        link_job::admit_roots(&roots, links, &cancel)?;
         let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
         job.links = links;
         if metadata != TransferMetadataPolicy::ContentOnly {
@@ -1086,6 +1088,7 @@ impl Job {
                             },
                             CompletedCopySource::Tree,
                         ),
+                    path: source.entry().item.path.clone(),
                     failed: self.progress.failed,
                     skipped: self.progress.skipped,
                 });
@@ -1295,6 +1298,28 @@ impl Job {
         if link && self.move_work.is_none() {
             return self.prepare_link(work);
         }
+        // What the job details say about a link that the Move moves as a link, read while
+        // the link is still where it was.
+        let link_notes = if link {
+            let source = work.source.as_ref().expect("unstarted link source");
+            let representation = source.link_representation(&self.cancel)?;
+            // Across volumes the link is recreated, possibly in another form (a Windows
+            // junction for a symbolic link this process may not create): say which.
+            let recreated = work
+                .native_identity()
+                .is_some_and(|source| source.device != work.destination.identity().device);
+            let planned = recreated
+                .then(|| {
+                    work.destination
+                        .plan_link(&representation, &self.cancel)
+                        .ok()
+                        .and_then(|plan| plan.note)
+                })
+                .flatten();
+            self.link_notes(work, source.as_ref(), &representation, planned.as_deref())
+        } else {
+            Vec::new()
+        };
         if work.consent.is_none()
             && let Some(target) = self.observe_target(work)?
         {
@@ -1312,6 +1337,9 @@ impl Job {
         let moved = self.try_native_move(work);
         work.source_move_failed = moved.is_err();
         if self.at_final_name(moved)? {
+            for note in link_notes {
+                self.progress.add_note(note);
+            }
             return Ok(Action::Done);
         }
         if link {
@@ -1598,6 +1626,11 @@ impl Job {
                 move_work.proofs.push(proof);
                 move_work.published = Some(work.destination.path().join(&work.name));
             }
+            // A Move copying what links point to: the file a link pointed to is copied and
+            // verified; now only the link goes, never that file.
+            if proof_eligible && let EntryRemoval::DirectoryLink(original) = work.removal {
+                self.remove_copied_link(original, work);
+            }
             return Ok(Action::Done);
         }
         let before_copy = copy.copied_bytes();
@@ -1769,6 +1802,25 @@ impl Job {
                 self.wait_for_failure(failure, failures::Context::Entry)
             }
         }
+    }
+    /// Removes the link whose target file a Move copied (FollowLinks), once that copy is
+    /// verified and published. A removal that fails leaves the link and the copy where
+    /// they are; the job asks whether to go on (Skip, Skip all, Cancel).
+    fn remove_copied_link(&mut self, original: TransferIdentity, work: &EntryWork) {
+        let Some(move_work) = self.move_work.take() else {
+            return;
+        };
+        let mut move_work = ownership::Armed::new(move_work);
+        let result = move_work.remove_materialized_link(original, &work.entry, self);
+        self.move_work = Some(move_work.into_inner());
+        if let Err(error) = result {
+            let committed = self.committed_entry(work, error, CopyErrorStage::RemovingSource);
+            self.pause_committed(committed);
+        }
+    }
+    /// The path of the selected item the job is in, while it is in one.
+    fn active_root_path(&self) -> Option<&Path> {
+        self.active_root.as_ref().map(|root| root.path.as_path())
     }
     /// The uncertain commit `error` of `work`'s entry, at `stage`.
     fn committed_entry(
@@ -2095,6 +2147,9 @@ enum Refused {
 #[cfg(test)]
 #[path = "copy_directory_link_move_tests.rs"]
 mod directory_link_move_tests;
+#[cfg(test)]
+#[path = "move_follow_links_tests.rs"]
+mod follow_links_move_tests;
 
 #[cfg(test)]
 #[path = "copy_cleanup_contract_tests.rs"]

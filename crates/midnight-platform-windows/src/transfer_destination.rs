@@ -13,6 +13,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
 
+#[path = "transfer_link_stage.rs"]
+mod link_stage;
 #[path = "transfer_preservation.rs"]
 mod preservation;
 #[path = "transfer_recovery.rs"]
@@ -74,9 +76,33 @@ impl TransferDirectory for Directory {
             directory_merge: true,
             conditional_overwrite: false,
             recoverable_replacement: recovery::supported(self),
-            // Windows stages no links (see TRANSFERS.md, "Windows links").
+            // A link is published only without replacing anything (TRANSFERS.md, "Links
+            // in Copy and Move"): an existing name is skipped or renamed.
             link_replacement: false,
         }
+    }
+    fn admit_link(
+        &self,
+        representation: &midnight_core::TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        self.plan_link_representation(representation, cancel)
+            .map(|_| ())
+    }
+    fn plan_link(
+        &self,
+        representation: &midnight_core::TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferLinkPlan, FsError> {
+        self.plan_link_representation(representation, cancel)
+    }
+    fn stage_link(
+        &self,
+        representation: &midnight_core::TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn midnight_core::StagedTransferLink>, midnight_core::TransferLinkStageError>
+    {
+        self.create_link_stage(representation, cancel)
     }
     fn supports_native_move_replacement(&self, source: TransferIdentity) -> bool {
         source.device == self.identity.device && recovery::supported(self)

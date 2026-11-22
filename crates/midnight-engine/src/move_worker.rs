@@ -230,25 +230,20 @@ pub(super) fn prepare_entries(
 }
 
 fn move_links(
-    destination: &Path,
+    _destination: &Path,
     metadata: TransferMetadataPolicy,
     links: CopyLinkPolicy,
 ) -> Result<CopyLinkPolicy, FsError> {
-    // Move moves links themselves (Preserve); it never copies what they point to.
-    if links == CopyLinkPolicy::FollowLinks {
-        return Err(unsupported(
-            destination,
-            "Following links is available only for Copy.",
-        ));
-    }
+    // Move moves links themselves (Preserve), or copies what they point to and then
+    // removes the links alone (FollowLinks). Required modified time refuses links.
     Ok(input::source_link_policy(links, metadata))
 }
 
-/// Whether `kind` may be a Move entry: ordinary files and folders, and links
-/// when the job moves links themselves.
+/// Whether `kind` may be a Move entry: ordinary files and folders, and links when the
+/// job moves links themselves, or (under FollowLinks) a link it cannot follow.
 fn movable_kind(kind: EntryKind, links: CopyLinkPolicy) -> bool {
     matches!(kind, EntryKind::File | EntryKind::Directory)
-        || (links == CopyLinkPolicy::Preserve && link_job::is_link_kind(kind))
+        || (links.recreates_links() && link_job::is_link_kind(kind))
 }
 
 fn prepare_sources_inner(
@@ -310,7 +305,7 @@ fn prepare_sources_inner(
                         "Directory link Move requires an explicit policy.",
                     ));
                 }
-                let original = validate_link_source(&*source, &*capture, deferred, &cancel)?;
+                let original = validate_link_source(&*source, &*capture, deferred, links, &cancel)?;
                 link_captures.insert(original, LinkAuthority::new(capture));
                 (source, original)
             }
@@ -385,13 +380,18 @@ fn validate_link_source(
     source: &dyn TransferSource,
     capture: &dyn TransferDirectoryLinkMoveCapture,
     deferred: bool,
+    links: CopyLinkPolicy,
     cancel: &Cancellation,
 ) -> Result<TransferIdentity, FsError> {
     let projected = source.entry();
     let original = capture.entry();
-    if projected.item.kind != EntryKind::Directory
+    // A followed link reads a folder, or under FollowLinks also a regular file; the
+    // capture holds only the link itself.
+    let projected_kind = projected.item.kind == EntryKind::Directory
+        || (links == CopyLinkPolicy::FollowLinks && projected.item.kind == EntryKind::File);
+    if !projected_kind
         || (!deferred && source.native_identity() != Some(projected.identity))
-        || original.item.kind != EntryKind::DirectoryLink
+        || !link_job::is_link_kind(original.item.kind)
         || source.native_original_identity() != Some(original.identity)
         || projected.item.path != original.item.path
         || source.virtual_identity().is_some()
@@ -484,7 +484,8 @@ impl MoveWork {
             PreparedTransferMoveEntry::DirectoryLink { source, capture } => {
                 let path = &source.entry().item.path;
                 self.check_child_budget(path, 0)?;
-                let original = validate_link_source(&*source, &*capture, deferred, cancel)?;
+                let original =
+                    validate_link_source(&*source, &*capture, deferred, self.links, cancel)?;
                 if path.parent() != Some(parent)
                     || self.link_captures.contains_key(&original)
                     || self
@@ -586,7 +587,13 @@ impl MoveWork {
             .projection
             .as_ref()
             .expect("retained directory link projection");
-        validate_link_source(projection.as_ref(), link.capture.as_ref(), false, cancel)?;
+        validate_link_source(
+            projection.as_ref(),
+            link.capture.as_ref(),
+            false,
+            self.links,
+            cancel,
+        )?;
         let identity = projection.entry().identity;
         if let Some(parents) = &link.selected_parents {
             for parent in parents.iter() {

@@ -23,14 +23,17 @@ pub enum CopyLinkPolicy {
     FollowDirectoryContents,
     /// Materialize each qualified directory link as an empty ordinary directory.
     EmptyDirectories,
-    /// Copy only: copy what each link points to. A directory link is followed as
-    /// with `FollowDirectoryContents` (cycles are refused the same way) and a link to
-    /// a regular file is copied as that file's content, also where the target lies
-    /// on another filesystem than the link. A link that cannot be followed
-    /// (dangling, unreadable, pointing to a special file, into a system filesystem
-    /// such as /proc, or back to an active ancestor) is recreated as a link, as
-    /// `Preserve` does, and the source reports why through
-    /// `TransferSource::link_not_followed`.
+    /// Copy what each link points to. A directory link is followed as with
+    /// `FollowDirectoryContents` (cycles are refused the same way) and a link to a
+    /// regular file is copied as that file's content, also where the target lies on
+    /// another filesystem than the link. A link that cannot be followed (dangling,
+    /// unreadable, pointing to a special file, into a system filesystem such as
+    /// /proc, or back to an active ancestor) is recreated as a link, as `Preserve`
+    /// does, and the source reports why through `TransferSource::link_not_followed`.
+    /// Move copies the content the same way, verified like any copy, and then
+    /// removes only the link itself: what it points to is never removed or changed.
+    /// Move never renames a folder whole under this policy, so that the links in it
+    /// are followed too.
     FollowLinks,
 }
 
@@ -69,6 +72,18 @@ pub enum CopyOptionsInput {
 pub struct CopyOptionsRequest {
     pub input: CopyOptionsInput,
     pub links: CopyLinkPolicy,
+}
+
+/// The link a destination will create for a source link (`TransferDirectory::plan_link`):
+/// the source's exact representation, or another form the destination substitutes for
+/// one it cannot create (a Windows junction for a directory symbolic link that this
+/// process may not create), with the reason for the job details. The stage is verified
+/// against this representation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferLinkPlan {
+    pub representation: TransferLinkRepresentation,
+    /// Why `representation` differs from the source's, in words for the job details.
+    pub note: Option<String>,
 }
 
 /// Aggregate meaningful-payload allocation budget, not a native support or path
@@ -211,6 +226,58 @@ impl TransferLinkRepresentation {
         match &self.payload {
             LinkPayload::Linux(_) => None,
             LinkPayload::Windows { substitute, print } => Some((substitute, print)),
+        }
+    }
+
+    /// Whether this link's relative text, resolved name by name from a folder `depth`
+    /// levels below a reference folder, leads above that folder, as `../x` does from the
+    /// reference folder itself. Only the text decides, never what exists; absolute texts
+    /// (and junctions, which are always absolute) never do.
+    pub fn relative_text_leaves(&self, depth: usize) -> bool {
+        // Each element is a name: `..` goes up, `.` and empty names stay.
+        fn leaves<'a>(depth: usize, names: impl Iterator<Item = &'a [u8]>) -> bool {
+            let mut depth = depth;
+            for name in names {
+                match name {
+                    b".." => match depth.checked_sub(1) {
+                        Some(up) => depth = up,
+                        None => return true,
+                    },
+                    b"." | b"" => {}
+                    _ => depth += 1,
+                }
+            }
+            false
+        }
+        match &self.payload {
+            LinkPayload::Linux(target) => {
+                target.first() != Some(&b'/') && leaves(depth, target.split(|byte| *byte == b'/'))
+            }
+            LinkPayload::Windows { substitute, .. } => {
+                let symbolic = matches!(
+                    self.kind,
+                    TransferLinkKind::WindowsFileSymbolicLink
+                        | TransferLinkKind::WindowsDirectorySymbolicLink
+                );
+                if !symbolic || self.flags & 1 == 0 {
+                    return false;
+                }
+                // Only `.` and `..` matter; any other name is one level down.
+                let names: Vec<&[u8]> = substitute
+                    .split(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/'))
+                    .map(|name| match name {
+                        [] => b"".as_slice(),
+                        [dot] if *dot == u16::from(b'.') => b".".as_slice(),
+                        [first, second]
+                            if *first == u16::from(b'.') && *second == u16::from(b'.') =>
+                        {
+                            b"..".as_slice()
+                        }
+                        _ => b"name".as_slice(),
+                    })
+                    .collect();
+                leaves(depth, names.into_iter())
+            }
         }
     }
 }
@@ -441,6 +508,49 @@ mod tests {
         assert_eq!(representation.linux_target(), Some(target.as_slice()));
         assert_eq!(representation.payload_len(), target.len());
         assert!(representation.windows_names().is_none());
+    }
+
+    #[test]
+    fn relative_text_leaves_only_when_its_dot_dots_climb_above_the_reference_folder() {
+        let linux = |text: &[u8]| TransferLinkRepresentation::linux_symbolic_link(text).unwrap();
+        // From the reference folder itself (depth 0), any climb leaves it.
+        assert!(linux(b"../x").relative_text_leaves(0));
+        assert!(!linux(b"x/../y").relative_text_leaves(0));
+        assert!(linux(b"x/../../y").relative_text_leaves(0));
+        // One folder below it, one climb stays inside, two leave.
+        assert!(!linux(b"../sibling").relative_text_leaves(1));
+        assert!(linux(b"../../outside").relative_text_leaves(1));
+        assert!(!linux(b"./a//b/../../c").relative_text_leaves(0));
+        // An absolute text is not relative, wherever it points.
+        assert!(!linux(b"/etc/../..").relative_text_leaves(0));
+        let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+        let relative = TransferLinkRepresentation::windows_symbolic_link(
+            false,
+            1,
+            &wide(r"..\..\x"),
+            &wide(r"..\..\x"),
+        )
+        .unwrap();
+        assert!(relative.relative_text_leaves(1));
+        assert!(!relative.relative_text_leaves(2));
+        // Forward slashes separate names in a relative Windows text as well.
+        let slashes =
+            TransferLinkRepresentation::windows_symbolic_link(true, 1, &wide("../x"), &wide(""))
+                .unwrap();
+        assert!(slashes.relative_text_leaves(0));
+        // Absolute symbolic links and junctions never count as relative.
+        let absolute = TransferLinkRepresentation::windows_symbolic_link(
+            true,
+            0,
+            &wide(r"\??\C:\..\x"),
+            &wide(r"C:\..\x"),
+        )
+        .unwrap();
+        assert!(!absolute.relative_text_leaves(0));
+        let junction =
+            TransferLinkRepresentation::windows_junction(&wide(r"\??\C:\x"), &wide(r"C:\x"))
+                .unwrap();
+        assert!(!junction.relative_text_leaves(0));
     }
 
     #[test]

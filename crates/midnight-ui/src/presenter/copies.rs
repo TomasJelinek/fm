@@ -7,6 +7,8 @@ pub(crate) struct CopiesState {
     pub(crate) draft: Option<copy_dialog::CopyDraft>,
     /// The draft's typed destination while the backend checks that it is a folder.
     pub(crate) destination_check: Option<copy_dialog::DestinationCheck>,
+    /// What the draft's destination does with links, and the user's link choice.
+    pub(crate) links: Option<copy_dialog::DraftLinks>,
     pub(super) tree_pending: Option<tree_copy::Pending>,
     pub(crate) progress: Vec<Arc<CopyProgress>>,
     // Only live worker snapshots, excluding optimistic submission/drop rows.
@@ -30,7 +32,14 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         if clipboard.intent == FileClipboardIntent::Move {
+            // The folder of the first item stands for the selection's volume.
+            let source = clipboard
+                .paths
+                .first()
+                .and_then(|path| path.parent())
+                .map(Path::to_owned);
             self.open_clipboard_move(clipboard, destination);
+            self.inspect_copy_draft_links(source, send);
             return;
         }
         let requested_roots = clipboard.paths.len() as u64;
@@ -538,8 +547,13 @@ mod tests {
         let mut p = Presenter::new("left".into(), "right".into());
         let mut files = clipboard();
         files.intent = FileClipboardIntent::Move;
-        p.start_copy(files, std::env::temp_dir(), &|_| {
-            panic!("Move requires confirmation")
+        // Opening the confirmation asks only what its destination does with links.
+        p.start_copy(files, std::env::temp_dir(), &|command| {
+            assert!(
+                matches!(command, Command::InspectTransferLinks(_)),
+                "Move requires confirmation: {command:?}"
+            );
+            true
         });
         assert!(!p.has_live_operations());
         p.start_copy(clipboard(), std::env::temp_dir(), &|_| false);

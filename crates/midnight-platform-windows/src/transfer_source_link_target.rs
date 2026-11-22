@@ -17,11 +17,79 @@ pub(super) fn resolve(
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<File, FsError> {
+    let (mut walk, remaining) = start(parent, representation, path, cancel)?;
+    for component in remaining.split(|unit| *unit == SEPARATOR) {
+        checked(cancel, path)?;
+        walk.step(component, path)?;
+    }
+    Ok(walk.current)
+}
+
+/// `resolve` for a symbolic link to a file: its folders are walked as `resolve` walks
+/// them, and its last name is opened, without following it, as an ordinary regular file
+/// on the same volume (no reparse point, no cloud or deduplicated file). The handle has
+/// attribute access only.
+pub(super) fn resolve_file(
+    parent: &File,
+    representation: &TransferLinkRepresentation,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<File, FsError> {
+    let (mut walk, remaining) = start(parent, representation, path, cancel)?;
+    let names: Vec<&[u16]> = remaining
+        .split(|unit| *unit == SEPARATOR)
+        .filter(|name| !matches!(name, [] | [46]))
+        .collect();
+    let Some((last, folders)) = names.split_last() else {
+        return Err(unsupported(path, "file link target names no file"));
+    };
+    for component in folders {
+        checked(cancel, path)?;
+        walk.step(component, path)?;
+    }
+    if *last == [46, 46] {
+        return Err(unsupported(path, "file link target names a folder"));
+    }
+    let name = OsString::from_wide(last);
+    validate_name(&name).map_err(|e| error(path, e))?;
+    let file = native::open_relative(
+        &walk.current,
+        &name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+    )
+    .map_err(|e| error(path, e))?;
+    let native = Native::query(&file).map_err(|e| error(path, e))?;
+    if native.kind() != EntryKind::File || native.filtered() {
+        return Err(unsupported(
+            path,
+            "its target is not an ordinary file (a link, or a cloud or deduplicated file)",
+        ));
+    }
+    if identity(&file, path)?.device != walk.volume {
+        return Err(unsupported(
+            path,
+            "file link target crosses a volume boundary",
+        ));
+    }
+    Ok(file)
+}
+
+/// Where a link's walk starts (its target's drive root, or its own folder for a relative
+/// target) and the names left to walk.
+fn start<'a>(
+    parent: &File,
+    representation: &'a TransferLinkRepresentation,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<(Walk, &'a [u16]), FsError> {
     checked(cancel, path)?;
     let (substitute, _) = representation
         .windows_names()
         .ok_or_else(|| unsupported(path, "directory link has no Windows target representation"))?;
-    let (mut walk, remaining) = match (representation.meaningful_flags(), substitute) {
+    Ok(match (representation.meaningful_flags(), substitute) {
         (
             0,
             [
@@ -45,20 +113,7 @@ pub(super) fn resolve(
                 "directory link target has no qualified local root",
             ));
         }
-    };
-    for component in remaining.split(|unit| *unit == SEPARATOR) {
-        checked(cancel, path)?;
-        match component {
-            [] | [46] => {}
-            [46, 46] => {
-                walk.current = walk.ancestors.pop().ok_or_else(|| {
-                    unsupported(path, "directory link target goes above its local volume")
-                })?;
-            }
-            name => walk.descend(&OsString::from_wide(name), path)?,
-        }
-    }
-    Ok(walk.current)
+    })
 }
 
 struct Walk {
@@ -243,6 +298,21 @@ impl Walk {
             ));
         }
         Ok(walk)
+    }
+
+    /// One name of a link's text: `.` stays, `..` goes up (never above the volume's root),
+    /// any other name goes down into an ordinary folder.
+    fn step(&mut self, component: &[u16], path: &Path) -> Result<(), FsError> {
+        match component {
+            [] | [46] => Ok(()),
+            [46, 46] => {
+                self.current = self.ancestors.pop().ok_or_else(|| {
+                    unsupported(path, "directory link target goes above its local volume")
+                })?;
+                Ok(())
+            }
+            name => self.descend(&OsString::from_wide(name), path),
+        }
     }
 
     fn descend(&mut self, name: &OsStr, path: &Path) -> Result<(), FsError> {

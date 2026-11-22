@@ -162,6 +162,9 @@ impl OwnedCommandScope for FixtureScope {
             Command::CheckTransferDestination(request) => {
                 self.retire(Box::new(request.cancel.clone()));
             }
+            Command::InspectTransferLinks(request) => {
+                self.retire(Box::new(request.cancel.clone()));
+            }
             Command::ShowSelectionProperties {
                 selection, view, ..
             } => self.retire(Box::new((selection.clone(), view.clone()))),

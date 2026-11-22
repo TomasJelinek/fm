@@ -201,7 +201,14 @@ fn embedded_copy_cancellation_defers_while_presenter_is_borrowed() {
                     intent: FileClipboardIntent::Move,
                 },
                 std::env::temp_dir(),
-                &|_| panic!("opening a captured Move draft never submits a transfer"),
+                // Opening a draft asks only what its destination does with links.
+                &|command| {
+                    assert!(
+                        matches!(command, midnight_core::Command::InspectTransferLinks(_)),
+                        "opening a captured Move draft never submits a transfer: {command:?}"
+                    );
+                    true
+                },
             )
         });
         let token = h

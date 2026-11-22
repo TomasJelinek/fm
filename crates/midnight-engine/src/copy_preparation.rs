@@ -65,17 +65,24 @@ impl Preparation {
         self.tracker = Some(tracker);
     }
 
-    /// Whether `path` is one of several planned native roots, which Skip can leave out
-    /// before anything is copied. Captured and archive sources stay whole, and so does
-    /// a required-metadata selection: its preflight qualifies every root before anything
-    /// is copied or captured and refuses folders, links and virtual sources without a
-    /// downgrade (`MetadataTransferRequest`), so leaving one out would turn that refusal
-    /// into a partial transfer. Its preparation offers Retry or Cancel only.
+    /// Whether `path` is a planned native root, which Skip can leave out before anything
+    /// is copied: the others are still copied, and a job whose every root is left out
+    /// ends at once (`is_last_root`). Captured and archive sources stay whole, and so
+    /// does a required-metadata selection: its preflight qualifies every root before
+    /// anything is copied or captured and refuses folders, links and virtual sources
+    /// without a downgrade (`MetadataTransferRequest`), so leaving one out would turn
+    /// that refusal into a partial transfer. Its preparation offers Retry or Cancel only.
     pub(super) fn skippable_root(&self, path: &Path) -> bool {
         self.input.metadata == TransferMetadataPolicy::ContentOnly
             && matches!(&self.planned, Some(PlannedInput::Native(request, _))
-                if request.clipboard.paths.len() > 1
-                    && request.clipboard.paths.iter().any(|root| root == path))
+                if request.clipboard.paths.iter().any(|root| root == path))
+    }
+
+    /// Whether `path` is the only planned root left, so that leaving it out leaves the
+    /// job nothing to do.
+    pub(super) fn is_last_root(&self, path: &Path) -> bool {
+        matches!(&self.planned, Some(PlannedInput::Native(request, _))
+            if request.clipboard.paths.len() == 1 && request.clipboard.paths[0] == path)
     }
 
     /// Skip: plan the job again without the root at `path`. A namespace plan that is

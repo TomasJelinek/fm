@@ -13,10 +13,12 @@ export global OperationPresentation {
     in-out property <string> policy;
     in-out property <bool> wait-visible;
     in-out property <bool> wait-checked;
-    in-out property <bool> follow-directory-links-visible;
-    in-out property <bool> follow-directory-links-checked: true;
-    in-out property <string> follow-links-label: "Follow directory links";
-    in-out property <string> follow-links-hint;
+    in-out property <bool> links-visible;
+    in-out property <int> link-choice;
+    in-out property <[string]> link-choices;
+    in-out property <string> link-hint;
+    in-out property <string> link-reason;
+    in-out property <string> link-warning;
     in-out property <string> initial-name;
     in-out property <string> input-label;
     in-out property <int> selection-end;
@@ -34,6 +36,8 @@ export global OperationPresentation {
     in-out property <int> begin-revision;
     callback confirm(string, string);
     callback request-dismiss(string);
+    // The user chose the link handling (0 copies the files, 1 keeps links), for `token`.
+    callback link-chosen(string, int);
     public function begin() {
         self.active = true;
         self.begin-revision += 1;
@@ -74,10 +78,13 @@ export component EmbeddedOperation inherits Rectangle {
                 policy: OperationPresentation.policy;
                 wait-visible: OperationPresentation.wait-visible;
                 wait-checked <=> OperationPresentation.wait-checked;
-                follow-directory-links-visible: OperationPresentation.follow-directory-links-visible && self.current;
-                follow-directory-links-checked <=> OperationPresentation.follow-directory-links-checked;
-                follow-links-label: OperationPresentation.follow-links-label;
-                follow-links-hint: OperationPresentation.follow-links-hint;
+                links-visible: OperationPresentation.links-visible && self.current;
+                link-choice <=> OperationPresentation.link-choice;
+                link-choices: OperationPresentation.link-choices;
+                link-hint: OperationPresentation.link-hint;
+                link-reason: OperationPresentation.link-reason;
+                link-warning: OperationPresentation.link-warning;
+                link-chosen(choice) => { OperationPresentation.link-chosen(self.occurrence, choice); }
                 initial-name: OperationPresentation.initial-name;
                 input-label: OperationPresentation.input-label;
                 selection-end: OperationPresentation.selection-end;

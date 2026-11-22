@@ -170,6 +170,11 @@ impl Job {
                 (committed.stage, committed.source.clone(), false, true)
             }
         };
+        let error = super::super::decisions::vanished_source(
+            error,
+            source.as_deref(),
+            self.progress.intent,
+        );
         let can_retry = can_retry && retryable_error(&error);
         // A Move invariant failure has neither: the job ends.
         if !can_retry && !can_skip {

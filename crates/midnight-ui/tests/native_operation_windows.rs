@@ -204,8 +204,12 @@ impl Harness {
         ui::key(&self.main, if moving { Key::F6 } else { Key::F5 });
         assert_eq!(self.main.get_copy_draft_move(), moving);
         assert!(!self.main.get_copy_draft_token().is_empty());
+        // Opening a draft asks only what its destination does with links.
         assert!(
-            self.commands.borrow().is_empty(),
+            self.commands
+                .borrow()
+                .iter()
+                .all(crate::support::link_option::inspection),
             "opening a draft must not enqueue a transfer"
         );
         self.child()
@@ -231,6 +235,7 @@ impl Harness {
                     request: check.request,
                     path: check.path.clone(),
                     result: Ok(true),
+                    links: None,
                 })),
                 &|command| {
                     self.commands.borrow_mut().push(command);
@@ -427,9 +432,10 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
             let [Command::EnqueueCopyWithOptions(options)] = commands.as_slice() else {
                 panic!("the frozen options must enqueue exactly once");
             };
+            // No backend answers which default the destination has: links stay links.
             assert_eq!(
                 options.links,
-                crate::support::link_option::sent(moving, true)
+                crate::support::link_option::sent(moving, false)
             );
             let CopyOptionsInput::Native(request) = &options.input else {
                 panic!("the dialog must keep its native selection");
@@ -811,8 +817,12 @@ fn native_operation_copy_cancel_restores_invoking_command_editor() {
         );
         ui::key(&h.main, "x");
         assert_eq!(value(&h.windows.borrow()[0], "Command line"), "drxaft");
+        // Opening the draft asked only what its destination does with links.
         assert!(
-            h.commands.borrow().is_empty(),
+            h.commands
+                .borrow()
+                .iter()
+                .all(crate::support::link_option::inspection),
             "cancellation enqueued a transfer"
         );
     }

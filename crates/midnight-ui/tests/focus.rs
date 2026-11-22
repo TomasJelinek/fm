@@ -637,10 +637,15 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
         key(&window, shortcut);
         assert!(!window.get_copy_draft_token().is_empty());
         assert_eq!(window.get_copy_draft_move(), moving);
+        // Opening a draft asks only what its destination does with links.
         assert!(
-            commands.borrow().is_empty(),
+            commands
+                .borrow()
+                .iter()
+                .all(crate::support::link_option::inspection),
             "opening a draft must not queue a transfer"
         );
+        commands.borrow_mut().clear();
         slint::platform::update_timers_and_animations();
         native.draw_if_needed(|renderer| {
             renderer.render(&mut pixels, 1340);

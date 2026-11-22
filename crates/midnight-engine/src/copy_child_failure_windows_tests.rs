@@ -254,3 +254,83 @@ async fn skip_all_errors_leaves_out_later_children_denied_the_same_way_without_a
     }
     h.close().await;
 }
+
+/// Denies Everyone the deletion of `path` (and, for a folder, of its entries) until
+/// dropped: a Move cannot take an item out of such a folder.
+struct Undeletable(PathBuf);
+
+impl Undeletable {
+    fn new(path: &Path, rights: &str) -> Self {
+        let output = icacls(path, &["/deny", &format!("*S-1-1-0:({rights})")]);
+        assert!(output.status.success(), "fixture ACL: {output:?}");
+        Self(path.to_owned())
+    }
+}
+
+impl Drop for Undeletable {
+    fn drop(&mut self) {
+        let output = icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
+        if !output.status.success() {
+            eprintln!("cannot restore fixture ACL: {output:?}");
+        }
+    }
+}
+
+/// A Move of `held.txt` out of a folder that denies the deletion of its entries.
+async fn protected_move(temp: &Path) -> (Harness, PathBuf, PathBuf, Vec<Undeletable>) {
+    let folder = temp.join("protected");
+    fs::create_dir(&folder).unwrap();
+    let held = folder.join("held.txt");
+    fs::write(&held, b"held").unwrap();
+    let destination = temp.join("destination");
+    fs::create_dir(&destination).unwrap();
+    let denied = vec![
+        Undeletable::new(&held, "DE"),
+        Undeletable::new(&folder, "DC"),
+    ];
+    let h = Harness::native();
+    h.controller
+        .enqueue_move(request(1, std::slice::from_ref(&held), &destination))
+        .await;
+    (h, held, destination, denied)
+}
+
+#[tokio::test]
+async fn a_move_out_of_a_protected_folder_offers_skip_and_skip_leaves_the_item() {
+    // T-E06: like every other transfer error, Retry, Skip and Skip all this error type.
+    let temp = fixture();
+    let (mut h, held, destination, denied) = protected_move(temp.path()).await;
+    let failure = failure(&mut h, 1).await;
+    assert!(failure.can_retry && failure.can_skip, "{failure:?}");
+    assert_eq!(failure.stage, CopyErrorStage::Preparing, "{failure:?}");
+    assert_eq!(failure.source.as_deref(), Some(held.as_path()));
+    assert_eq!(
+        failure.error.kind,
+        io::ErrorKind::PermissionDenied,
+        "{failure:?}"
+    );
+    // The question's text, for the acceptance check (shown with --nocapture).
+    eprintln!("T-E06 question: {}", failure.error);
+    decide(&h, &failure, CopyChoice::Skip).await;
+    let done = h.terminal(1).await;
+    drop(denied);
+    assert_eq!(done.state, CopyOperationState::Failed, "{done:?}");
+    assert_eq!((done.skipped, done.failed), (1, 1), "{done:?}");
+    assert_eq!(fs::read(&held).unwrap(), b"held");
+    assert!(!destination.join("held.txt").exists());
+    h.close().await;
+}
+
+#[tokio::test]
+async fn retry_moves_the_item_once_its_folder_lets_it_leave() {
+    let temp = fixture();
+    let (mut h, held, destination, denied) = protected_move(temp.path()).await;
+    let failure = failure(&mut h, 1).await;
+    drop(denied);
+    decide(&h, &failure, CopyChoice::Retry).await;
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert!(!held.exists());
+    assert_eq!(fs::read(destination.join("held.txt")).unwrap(), b"held");
+    h.close().await;
+}

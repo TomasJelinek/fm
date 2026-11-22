@@ -1,10 +1,13 @@
 //! A copy draft retains shared identities; only backend admission expands selected paths.
 use super::*;
 use midnight_core::{CopyLinkPolicy, CopyOptionsInput, CopyOptionsRequest};
+#[path = "copy_dialog_links.rs"]
+mod links;
+pub(crate) use links::{DraftLinks, LinkChoiceView};
 
 #[derive(Clone)]
 pub(super) struct CopyContext {
-    source: PathBuf,
+    pub(super) source: PathBuf,
     destination: PathBuf,
     pub(super) intent: TransferIntent,
 }
@@ -634,6 +637,13 @@ impl Presenter {
         let known = destination == draft.destination
             || self.panes.iter().any(|pane| pane.path == destination);
         if known {
+            // Keeping links where none can be stored is explained once before starting.
+            if let Some(message) = self.copy_links_hold(&destination, links, None) {
+                if let Some(draft) = self.copies.draft.as_mut() {
+                    draft.error = message;
+                }
+                return;
+            }
             self.submit_copy_draft(destination, metadata, start_policy, links, send);
         } else {
             self.check_copy_destination(token, destination, metadata, start_policy, links, send);
@@ -704,6 +714,9 @@ impl Presenter {
         let sent = send(Command::CheckTransferDestination(DestinationCheckRequest {
             request,
             path: path.clone(),
+            // A link choice needs the folder's own link facts for its default and warning.
+            links: links.is_some(),
+            source: self.copy_draft_links_source(),
             cancel: cancel.clone(),
         }));
         if !sent {
@@ -763,6 +776,12 @@ impl Presenter {
             }
         } else if !self.owned_command_scope_available() {
             self.copy_dialog_reclaim_busy(&check.token);
+        } else if let Some(message) = self.copy_links_hold(&check.path, check.links, checked.links)
+        {
+            // The typed folder's link handling is shown, or explained, before starting.
+            if let Some(draft) = self.copies.draft.as_mut() {
+                draft.error = message;
+            }
         } else {
             self.submit_copy_draft(
                 check.path,
@@ -939,6 +958,7 @@ impl Presenter {
         if let Some(check) = self.copies.destination_check.take() {
             check.cancel.cancel();
         }
+        self.retire_copy_draft_links();
         if let Some(draft) = self.copies.draft.take() {
             self.retired.push(Box::new(draft));
         }

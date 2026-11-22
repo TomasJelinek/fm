@@ -58,6 +58,41 @@ async fn unavailable_destination_waits_for_user_instead_of_finishing_the_job() {
 }
 
 #[tokio::test]
+async fn a_source_removed_before_the_job_reaches_it_is_reported_in_words() {
+    // Not the system's text for a missing file ("The system cannot find the file
+    // specified (os error 2)", "No such file or directory (os error 2)").
+    let temp = fixture();
+    let source = temp.path().join("gone.bin");
+    fs::write(&source, b"gone").unwrap();
+    let destination = temp.path().join("target");
+    fs::create_dir(&destination).unwrap();
+    fs::remove_file(&source).unwrap();
+    let mut h = Harness::native();
+    h.controller
+        .enqueue(request(1, std::slice::from_ref(&source), &destination))
+        .await;
+    let failure = failure(&mut h, 1).await;
+    assert_eq!(failure.error.kind, io::ErrorKind::NotFound);
+    assert_eq!(
+        failure.error.message,
+        "removed from the source while copying"
+    );
+    assert_eq!(failure.error.path, source);
+    assert!(failure.can_skip, "{failure:?}");
+    decide(&h, &failure, CopyChoice::Skip).await;
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Failed, "{done:?}");
+    assert!(
+        done.errors
+            .iter()
+            .all(|error| !error.to_string().contains("os error")),
+        "{:?}",
+        done.errors
+    );
+    h.close().await;
+}
+
+#[tokio::test]
 async fn destination_retry_repeats_failure_then_works_without_stale_consent() {
     let temp = fixture();
     let source = temp.path().join("source.bin");

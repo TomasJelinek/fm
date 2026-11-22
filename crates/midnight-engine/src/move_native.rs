@@ -12,6 +12,9 @@ impl Job {
         if work.native_fallback || work.consent == Some(Consent::Merge) {
             return Ok(false);
         }
+        if self.links == CopyLinkPolicy::FollowLinks && self.copies_instead_of_renaming(work) {
+            return Ok(false);
+        }
         let replacement = if work.consent == Some(Consent::Replace) {
             let target = work.target.as_ref().expect("consented target pin");
             target.revalidate(&self.cancel)?;
@@ -136,6 +139,29 @@ impl Job {
         }
         self.progress.phase = CopyOperationPhase::Planning;
         Ok(true)
+    }
+
+    /// Copying what links point to (FollowLinks), a followed link is never renamed: its
+    /// target's content is copied and verified, and then only the link is removed. A
+    /// folder is never renamed whole, so that the links in it are followed too: it is
+    /// created at the destination and its entries are moved one by one (a file by its own
+    /// rename where it can), and it is removed once empty. A folder on another volume
+    /// takes the cross-volume route that its failed rename would have taken.
+    fn copies_instead_of_renaming(&self, work: &mut EntryWork) -> bool {
+        match work.removal {
+            EntryRemoval::DirectoryLink(_) => true,
+            EntryRemoval::Ordinary if work.entry().item.kind == EntryKind::Directory => {
+                let destination = work.destination.identity().device;
+                if work
+                    .native_identity()
+                    .is_some_and(|source| source.device != destination)
+                {
+                    work.native_fallback = true;
+                }
+                true
+            }
+            EntryRemoval::Ordinary | EntryRemoval::Copy => false,
+        }
     }
 
     pub(super) fn prepare_move_copy(&mut self, work: &mut EntryWork) -> Result<(), FsError> {

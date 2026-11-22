@@ -76,17 +76,9 @@ pub(super) fn prepare_with_links(
     revisions: TransferRevisionPolicy,
     cancel: &Cancellation,
 ) -> Result<PreparedTransferMoveEntry, FsError> {
-    if links == CopyLinkPolicy::FollowLinks {
-        // Move never copies what a link points to and then removes the link.
-        return Err(FsError::from_io(
-            "transfer capability",
-            path,
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Move does not follow links; it moves each link itself",
-            ),
-        ));
-    }
+    // FollowLinks: a link it follows (to a folder or a regular file) is a `DirectoryLink`
+    // entry, whose source reads the target and whose capture removes only the link once
+    // the copy is verified; a link it cannot follow is moved itself, as under Preserve.
     let Some(traversal) = directory_links::Traversal::for_policy(links) else {
         return prepare(path, revisions, cancel).map(PreparedTransferMoveEntry::Ordinary);
     };
@@ -373,13 +365,16 @@ impl SourceFolder {
 
 /// The folder that contains the selected item `path`, checked for that item: it is still
 /// the bound, protected recovery parent, and it lets a private stage be made in it and the
-/// item leave it. A Move never changes this folder's permissions.
+/// item leave it. A Move never changes this folder's permissions. The error names the
+/// item, with the kind of its cause: a write-protected folder is a permission error, so
+/// the job offers Retry (once the folder is writable) and Skip, which leaves the item.
 fn check_containing_folder(
     parent: &destination::Directory,
     path: &Path,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
     use rustix::fs::{Access, AtFlags, accessat};
+    use rustix::io::Errno;
     parent.check_recovery_parent(cancel)?;
     accessat(
         parent.native_file(),
@@ -388,15 +383,21 @@ fn check_containing_folder(
         AtFlags::EACCESS,
     )
     .map_err(|failure| {
+        let reason = match failure {
+            Errno::ACCESS | Errno::PERM => {
+                "Permission denied: it cannot be moved out of its folder, which is \
+                 write-protected or belongs to another user who does not allow it. It stays \
+                 there; copy it instead."
+            }
+            Errno::ROFS => {
+                "It cannot be moved out of its folder, which is on a read-only drive. It \
+                 stays there; copy it instead."
+            }
+            _ => "It cannot be moved out of its folder. It stays there; copy it instead.",
+        };
         move_error(
             path,
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!(
-                    "The source parent cannot create temporary staging: {failure}. Choose Copy \
-                     to retain the source; no fallback is performed."
-                ),
-            ),
+            io::Error::new(io::Error::from(failure).kind(), reason),
         )
     })
 }

@@ -1,6 +1,7 @@
 //! Links in Copy and Move on the native Linux filesystem: links kept as links,
-//! followed links, links that cannot be followed, Move of the link itself, and
-//! replacement of an existing name.
+//! followed links, links that cannot be followed, Move of the link itself, a Move that
+//! copies what links point to and removes only the links, and replacement of an
+//! existing name.
 use super::*;
 use std::os::unix::fs::symlink;
 
@@ -115,7 +116,19 @@ fn copy_without_following_recreates_every_link_with_its_exact_text() {
     let done = copy.finish();
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
     assert_eq!((done.files_completed, done.completed_roots), (4, 4));
-    assert_eq!((done.failed, done.note_count), (0, 0));
+    // Each selected link whose relative text climbs out of the folder it was selected in
+    // is named: at the destination it points somewhere else or nowhere.
+    assert_eq!((done.failed, done.note_count), (0, 3), "{:?}", done.notes);
+    for name in ["dangling", "to-file", "to-folder"] {
+        assert!(
+            done.notes.iter().any(
+                |note| note.starts_with(&links.join(name).display().to_string())
+                    && note.contains("which leads outside the copied items")
+            ),
+            "{name}: {:?}",
+            done.notes
+        );
+    }
     for name in LINKS {
         let copied = destination.join(name);
         assert!(
@@ -189,11 +202,22 @@ fn copy_following_links_copies_targets_and_keeps_unfollowable_links_with_notes()
         fs::read(copied_self.join("to-file")).unwrap(),
         b"plain text\n"
     );
-    assert_eq!(done.note_count, 3, "{:?}", done.notes);
+    // Three links kept as links, each with why; the two dangling ones also lead outside
+    // the copied items.
+    assert_eq!(done.note_count, 5, "{:?}", done.notes);
     assert!(
         done.notes
             .iter()
             .any(|note| note.contains("dangling") && note.contains("does not exist")),
+        "{:?}",
+        done.notes
+    );
+    assert_eq!(
+        done.notes
+            .iter()
+            .filter(|note| note.contains("dangling") && note.contains("leads outside"))
+            .count(),
+        2,
         "{:?}",
         done.notes
     );
@@ -254,6 +278,82 @@ fn move_moves_each_link_itself_and_leaves_its_target() {
         fs::read(parent.join("fixture/text/plain.txt")).unwrap(),
         b"plain text\n"
     );
+}
+
+#[test]
+fn move_copying_the_files_copies_each_target_and_removes_only_the_links() {
+    use std::os::unix::fs::MetadataExt;
+    let (_temp, parent) = protected_fixture();
+    let links = links_fixture(&parent);
+    let identity = |path: &Path| {
+        let meta = fs::metadata(path).unwrap();
+        (meta.dev(), meta.ino())
+    };
+    let text = parent.join("fixture/text/plain.txt");
+    let level = parent.join("fixture/deep/level-01");
+    let targets = [
+        text.clone(),
+        level.join("a.txt"),
+        level.join("level-02/b.txt"),
+    ];
+    let before: Vec<_> = targets.iter().map(|path| identity(path)).collect();
+    let deep = tree(&parent.join("fixture/deep"));
+    let destination = new_folder(parent.join("destination"));
+    let mut moving = job(
+        std::slice::from_ref(&links),
+        &destination,
+        true,
+        CopyLinkPolicy::FollowLinks,
+    );
+    run(&mut moving);
+    let done = moving.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    let moved = destination.join("links");
+    // The file link became a verified copy of its file, the folder link a copy of its
+    // folder.
+    assert!(
+        fs::symlink_metadata(moved.join("to-file"))
+            .unwrap()
+            .is_file()
+    );
+    assert_eq!(fs::read(moved.join("to-file")).unwrap(), b"plain text\n");
+    assert!(
+        fs::symlink_metadata(moved.join("to-folder"))
+            .unwrap()
+            .is_dir()
+    );
+    assert_eq!(tree(&moved.join("to-folder")), tree(&level));
+    // What cannot be followed moved as a link: the dangling one, and the one to the
+    // folder that holds it.
+    assert_eq!(
+        fs::read_link(moved.join("dangling")).unwrap(),
+        Path::new("../does-not-exist")
+    );
+    assert_eq!(
+        fs::read_link(moved.join("to-self")).unwrap(),
+        Path::new(".")
+    );
+    assert!(
+        done.notes
+            .iter()
+            .any(|note| note.contains("dangling") && note.contains("does not exist")),
+        "{:?}",
+        done.notes
+    );
+    assert!(
+        done.notes
+            .iter()
+            .any(|note| note.contains("to-self") && note.contains("contains it")),
+        "{:?}",
+        done.notes
+    );
+    // The moved folder and its links are gone; what they pointed to is the same files
+    // with the same bytes.
+    assert!(fs::symlink_metadata(&links).is_err());
+    assert_eq!(tree(&parent.join("fixture/deep")), deep);
+    assert_eq!(fs::read(&text).unwrap(), b"plain text\n");
+    let after: Vec<_> = targets.iter().map(|path| identity(path)).collect();
+    assert_eq!(after, before);
 }
 
 #[test]

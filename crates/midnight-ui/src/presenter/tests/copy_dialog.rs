@@ -133,6 +133,7 @@ fn answer_destination_check(
             request: check.request,
             path: check.path.clone(),
             result,
+            links: None,
         })),
         send,
     );
@@ -319,8 +320,13 @@ fn copy_dialog_captures_selection_and_other_panel_path_before_selection_finishes
 #[test]
 fn copy_dialog_cancel_and_invalid_or_stale_confirmation_never_queue_work() {
     let (mut p, _) = loaded();
-    p.request_copy_dialog(PaneId::Left, &|_| {
-        panic!("opening the dialog performs no I/O")
+    // Only the backend reads the destination's volume, for the link choice's default.
+    p.request_copy_dialog(PaneId::Left, &|command| {
+        assert!(
+            matches!(command, Command::InspectTransferLinks(_)),
+            "opening the dialog performs no I/O of its own: {command:?}"
+        );
+        true
     });
     let token = p.copies.draft.as_ref().unwrap().token.clone();
     let no_send = |_: Command| -> bool { panic!("no copy may be queued") };
@@ -381,8 +387,13 @@ fn move_clipboard_opens_a_confirmation_without_enqueuing_or_copying() {
         paths: vec![root.join("original.txt")],
         intent: FileClipboardIntent::Move,
     };
-    p.start_copy(clipboard, destination.clone(), &|_| {
-        panic!("Move clipboard must await explicit confirmation")
+    // Opening the confirmation asks only what its destination does with links.
+    p.start_copy(clipboard, destination.clone(), &|command| {
+        assert!(
+            matches!(command, Command::InspectTransferLinks(_)),
+            "Move clipboard must await explicit confirmation: {command:?}"
+        );
+        true
     });
     assert!(
         p.copies.draft.is_some(),
@@ -398,7 +409,14 @@ fn move_clipboard_opens_a_confirmation_without_enqueuing_or_copying() {
 #[test]
 fn f6_move_captures_selection_and_destination_and_confirms_once() {
     let (mut p, root) = loaded();
-    p.request_move_dialog(PaneId::Left, &|_| panic!("Opening F6 performs no I/O"));
+    // Only the backend reads the destination's volume, for the link choice's default.
+    p.request_move_dialog(PaneId::Left, &|command| {
+        assert!(
+            matches!(command, Command::InspectTransferLinks(_)),
+            "Opening F6 performs no I/O of its own: {command:?}"
+        );
+        true
+    });
     let draft = p.copies.draft.as_ref().unwrap();
     assert_eq!(draft.intent, TransferIntent::Move);
     let token = draft.token.clone();
@@ -435,7 +453,14 @@ fn clipboard_move_retains_shared_raw_paths_and_original_destination_after_busy_r
             intent: FileClipboardIntent::Move,
         },
         destination.clone(),
-        &|_| panic!("confirmation first"),
+        // Opening a draft asks only what its destination does with links.
+        &|command| {
+            assert!(
+                matches!(command, Command::InspectTransferLinks(_)),
+                "confirmation first: {command:?}"
+            );
+            true
+        },
     );
     let draft = p.copies.draft.as_ref().unwrap();
     let crate::presenter::copy_dialog::CopyDraftInput::Clipboard(files) = &draft.input else {
@@ -635,7 +660,14 @@ fn clipboard_required_metadata_retains_original_raw_payload_and_intent() {
                 intent: FileClipboardIntent::Move,
             },
             target.clone(),
-            &|_| panic!("confirmation first"),
+            // Opening a draft asks only what its destination does with links.
+            &|command| {
+                assert!(
+                    matches!(command, Command::InspectTransferLinks(_)),
+                    "confirmation first: {command:?}"
+                );
+                true
+            },
         );
         let draft = p.copies.draft.as_ref().unwrap();
         assert!(draft.metadata_available());

@@ -38,6 +38,15 @@ impl Directory {
                 "Linux recreates only Linux symbolic links",
             ));
         }
+        // Refused before anything is created: the destination says why.
+        if let Some(filesystem) = super::super::link_destination::cannot_store_links(&self.file) {
+            return Err(unsupported(
+                &self.path,
+                &format!(
+                    "This drive cannot store links ({filesystem}), so no link is created here"
+                ),
+            ));
+        }
         self.revalidate(cancel)
     }
 

@@ -46,26 +46,29 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
     let dialog = h.dialog();
     let links = modeless::accessible_popup_item(
         &dialog,
-        AccessibleRole::Checkbox,
+        AccessibleRole::Combobox,
         crate::support::link_option::LABEL,
     );
     if archive {
         assert!(links.is_none_or(|item| !item.is_visible()));
     } else {
-        let links = links.expect("captured native tree dialog exposes the directory-link policy");
+        let links = links.expect("captured native tree dialog exposes the link choice");
+        // No backend answers which default the destination has: links stay links.
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
-            "true"
+            crate::support::link_option::KEEP_LINKS
         );
-        if !follow_directory_links {
-            input::click(&dialog, &links);
+        if follow_directory_links {
+            // From the destination field (the metadata option is off) to the choice.
+            input::key(&dialog, Key::Tab);
+            input::key(&dialog, Key::UpArrow);
             assert_eq!(
                 links
-                    .accessible_string_property(AccessibleStringProperty::Checked)
+                    .accessible_string_property(AccessibleStringProperty::Value)
                     .unwrap(),
-                "false"
+                crate::support::link_option::COPY_FILES
             );
         }
     }

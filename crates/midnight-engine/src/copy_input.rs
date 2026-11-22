@@ -364,15 +364,9 @@ impl CopyInput {
     }
 
     pub(super) fn validate(&self) -> Result<(), FsError> {
-        // Move preserves links (a rename, or a recreation across volumes); it never
-        // copies what a link points to. Required modified time keeps links refused.
-        if self.links == CopyLinkPolicy::FollowLinks && self.intent != TransferIntent::Copy {
-            return Err(error(
-                &self.destination,
-                io::ErrorKind::Unsupported,
-                "Following links is available only for Copy; sources have been retained.",
-            ));
-        }
+        // Copy and Move keep links as links (Preserve) or copy what they point to
+        // (FollowLinks; a Move then removes only the link). Required modified time
+        // keeps links refused.
         if self.links.recreates_links() && matches!(self.sources, Sources::Archive(_)) {
             return Err(error(
                 &self.destination,

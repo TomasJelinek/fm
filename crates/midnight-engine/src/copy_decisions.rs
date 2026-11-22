@@ -281,6 +281,16 @@ pub(super) async fn prepare_job(
         // residuals. Retry cannot erase those or accumulate further abandoned
         // cleanup stages, and Skip would leave them behind.
         let residuals = snapshot(waiter.status).failed != skipped_roots;
+        // A selected item that is gone was removed from the source before the job reached it.
+        let error = if preparation.skippable_root(&error.path) {
+            vanished_source(
+                error.clone(),
+                Some(&error.path),
+                snapshot(waiter.status).intent,
+            )
+        } else {
+            error
+        };
         let can_retry = retryable_error(&error);
         // One of several selected items that failed alone can be left out; the
         // others are still copied.
@@ -346,13 +356,64 @@ pub(super) async fn prepare_job(
             if matches!(choice, CopyChoice::SkipAllErrors) {
                 skip_all.insert(scope);
             }
+            let last = preparation.is_last_root(&error.path);
             skipped_root = Some(error.path.clone());
             skipped_roots += 1;
-            let mut status = waiter.status.lock().unwrap_or_else(|e| e.into_inner());
-            status.skipped += 1;
-            retain_error(&mut status, error, false);
+            {
+                let mut status = waiter.status.lock().unwrap_or_else(|e| e.into_inner());
+                status.skipped += 1;
+                retain_error(&mut status, error, false);
+            }
+            if last {
+                // Every selected item was left out: the job has nothing left to do.
+                let progress = all_roots_skipped(waiter.status);
+                return Err(Box::new(
+                    retire_input(preparation, progress, waiter.status).await,
+                ));
+            }
         }
     }
+}
+
+/// The end of a job whose every selected item Skip left out before anything was copied:
+/// each skip is one of its errors, so it ends Failed, as a job that completed nothing
+/// does, with every item retained where it was.
+fn all_roots_skipped(status: &Status) -> CopyProgress {
+    let mut progress = snapshot(status);
+    progress.wait_reason = None;
+    progress.state = if progress.failed == 0 {
+        CopyOperationState::Completed
+    } else {
+        CopyOperationState::Failed
+    };
+    let mut lines: Vec<String> = progress.errors.iter().map(ToString::to_string).collect();
+    lines.push(format!(
+        "{} entries or subtrees skipped; source data retained.",
+        progress.skipped
+    ));
+    progress.message = lines.join("\n");
+    progress
+}
+
+/// An item that disappeared from the source while the job copied or moved it (or before
+/// the job reached it) is said so in words, not with the system's text for a missing
+/// file ("The system cannot find the file specified (os error 2)"). Only a missing
+/// `source`, or something below it, is meant; a missing destination keeps its error.
+pub(super) fn vanished_source(
+    mut error: FsError,
+    source: Option<&Path>,
+    intent: TransferIntent,
+) -> FsError {
+    if error.kind == io::ErrorKind::NotFound
+        && source.is_some_and(|source| error.path.starts_with(source))
+    {
+        error.message = match intent {
+            TransferIntent::Move => "removed from the source while moving",
+            TransferIntent::Copy => "removed from the source while copying",
+        }
+        .into();
+    }
+    error
 }
 
 #[cfg(test)]

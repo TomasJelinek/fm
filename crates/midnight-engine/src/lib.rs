@@ -735,6 +735,8 @@ impl EngineServices {
             copies.admission().fence(),
             &mut actors,
         );
+        // The Copy/Move dialog asks the transfer service what its destination does with links.
+        let link_transfers = self.transfers.clone();
         let mut drag_drop = drag_drop::Controller::new(
             resident.clone(),
             resources.drag,
@@ -795,6 +797,7 @@ impl EngineServices {
         let transfer_destination = transfer_destination::Controller::new(
             scope.clone(),
             self.filesystem.clone(),
+            link_transfers,
             self.outbox.clone(),
             &mut tasks,
         );
@@ -1283,6 +1286,7 @@ impl EngineServices {
                         }
                         Some(Command::QueryVolumeInformation(request)) => volume_information.query(request),
                         Some(Command::CheckTransferDestination(request)) => transfer_destination.check(request),
+                        Some(Command::InspectTransferLinks(request)) => transfer_destination.inspect_links(request),
                         Some(Command::ListVolumes) => {
                             volumes.refresh();
                         }

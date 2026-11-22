@@ -27,6 +27,8 @@ mod directory_links;
 #[cfg(test)]
 #[path = "transfer_drag_tests.rs"]
 mod drag_tests;
+#[path = "transfer_link_destination.rs"]
+mod link_destination;
 #[path = "transfer_metadata.rs"]
 mod metadata;
 #[path = "transfer_move.rs"]
@@ -71,6 +73,13 @@ impl TransferService for crate::LinuxFileSystem {
             .map_err(|e| error(&path, e.into()))?,
         );
         Ok(Arc::new(destination::Directory::from_file(file, path)?))
+    }
+    fn link_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferLinkDestination, FsError> {
+        link_destination::link_destination(path, cancel)
     }
     fn prepare_move_destination(
         &self,

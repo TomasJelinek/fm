@@ -62,18 +62,24 @@ destination, then delete that exact source before continuing. Recursive ordinary
 folders use the same per-file checks and remove emptied source folders last.
 There is no source-recovery mode or journal. See the
 [current accepted follow-ups](docs/superpowers/specs/2026-11-07-panel-viewer-followups.md).
-On Linux, symbolic links are transferred as links. F5 with **Follow links**
-cleared recreates every link, including a dangling one or one that points to itself,
-as a link with exactly the same target text (relative targets stay relative). With
-it checked (the default), a link to a folder is copied as that folder with its
-contents and a link to a file as the file; a link that cannot be followed (missing
-or unreadable target, another filesystem, or a folder that contains the link) is
-copied as a link, and the job details say why. F6 always moves the link itself: a
-rename on the same volume, otherwise the link is recreated at the destination and
-then removed from the source. Windows keeps its directory-link options (junctions and
-directory symbolic links followed or created as empty folders). Provider moves and
-full metadata preservation remain pending; required modified-time preservation
-currently accepts regular files only.
+Copy and Move (F5, F6) ask how to handle links, alike on Windows and Linux. **Copy the
+files links point to** copies a link to a file as that file and a link to a folder as
+the folder with everything in it, verified like any copy; a Move then removes only the
+link itself, never the files it pointed to. **Keep links as links** copies or moves
+each link with exactly the same target (relative targets stay relative). The default
+follows the destination: a drive that cannot store links (FAT32, exFAT), a network
+location on Windows, and a removable drive that the selection is not already on copy
+the files, and the dialog says why; elsewhere links stay links. Choosing to keep links
+where none can be stored is explained before the job starts. A link that cannot be
+followed (missing or unreadable target, a loop, a special file, a folder that contains
+the link) stays a link, and the job details say why. On Linux a followed link may lead
+into any filesystem but the kernel's own (/proc, /sys and the like). On Windows a
+junction is recreated without privilege; a symbolic link needs Developer Mode or
+administrator rights, and without them a directory symbolic link to a local folder
+becomes a junction (the job details say so), while a symbolic link to a file or a
+network share is left out with that reason. Provider moves and full metadata
+preservation remain pending; required modified-time preservation currently accepts
+regular files only.
 See [the transfer capabilities and implementation limits](docs/developer/TRANSFERS.md).
 On Linux, Copy and cross-volume Move write only to filesystems with anonymous
 `O_TMPFILE` files (ext4, XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB,

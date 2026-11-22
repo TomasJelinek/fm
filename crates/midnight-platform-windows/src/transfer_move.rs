@@ -18,6 +18,8 @@ mod directory_link;
 mod finalization;
 #[path = "transfer_folder_flush.rs"]
 mod folder_flush;
+#[path = "transfer_move_link.rs"]
+mod link_move;
 #[path = "transfer_native_move.rs"]
 mod native_move;
 
@@ -127,6 +129,12 @@ pub(super) fn prepare_child_with_links(
     if listed.is_some_and(|listed| listed.kind() != native.kind()) {
         return Err(invalid(&path, "Move source changed after enumeration"));
     }
+    if matches!(native.kind(), EntryKind::DirectoryLink | EntryKind::Symlink)
+        && policy.recreates_links()
+    {
+        drop(original);
+        return prepare_link_child(parent, parent_path, name, original_identity, policy, cancel);
+    }
     if native.kind() == EntryKind::DirectoryLink {
         if policy == CopyLinkPolicy::FollowDirectoryContents {
             let proof = Arc::new(source_links::OriginalLink::capture(
@@ -134,6 +142,7 @@ pub(super) fn prepare_child_with_links(
                 &path,
                 native,
                 Some(original_identity),
+                source_links::Targets::Local,
             )?);
             let capture =
                 directory_link::prepare(parent, parent_path, name, proof.clone(), policy, cancel)?;
@@ -165,6 +174,44 @@ pub(super) fn prepare_child_with_links(
         return Err(invalid(&path, "Move source changed while preparing"));
     }
     Ok(PreparedTransferMoveEntry::Ordinary(ordinary))
+}
+
+/// A link in a Move that keeps links as links (Preserve) or copies what they point to
+/// (FollowLinks). A link FollowLinks follows, to a folder or to a file, is a
+/// `DirectoryLink` entry whose source reads the target and whose capture removes only the
+/// link; any other link is moved itself: renamed on one volume, recreated and then removed
+/// across volumes (`link_move`).
+fn prepare_link_child(
+    parent: Arc<File>,
+    parent_path: PathBuf,
+    name: &OsStr,
+    original_identity: TransferIdentity,
+    policy: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<PreparedTransferMoveEntry, FsError> {
+    let path = parent_path.join(name);
+    let source =
+        source::Source::open_with_links(parent.clone(), parent_path.clone(), name, policy, cancel)?;
+    if source.native_original_identity() != Some(original_identity) {
+        return Err(invalid(&path, "original Move directory link changed"));
+    }
+    if let Some(proof) = source.original_link() {
+        let capture = directory_link::prepare(parent, parent_path, name, proof, policy, cancel)?;
+        source.revalidate(cancel)?;
+        return Ok(PreparedTransferMoveEntry::DirectoryLink {
+            source: Box::new(source),
+            capture,
+        });
+    }
+    let proof = source
+        .link_leaf()
+        .ok_or_else(|| invalid(&path, "original Move directory link changed"))?;
+    let inner = directory_link::prepare(parent, parent_path, name, proof.clone(), policy, cancel)?;
+    source.revalidate(cancel)?;
+    Ok(PreparedTransferMoveEntry::Ordinary(PreparedTransferMove {
+        source: Box::new(source),
+        capture: Arc::new(link_move::Capture::new(proof, inner)),
+    }))
 }
 
 pub(super) fn prepare_child(

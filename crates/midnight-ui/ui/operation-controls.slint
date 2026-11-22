@@ -1,6 +1,6 @@
 import { HScrollView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
-import { HintedActionButton, HintedCheckBox } from "hinted-inputs.slint";
+import { HintedActionButton, HintedCheckBox, HintedComboBox } from "hinted-inputs.slint";
 import { ThemedLineEdit } from "content-controls.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogText } from "dialog-text.slint";
@@ -13,11 +13,16 @@ export component OperationDialog inherits Rectangle {
     in property <string> policy;
     in property <bool> wait-visible;
     in-out property <bool> wait-checked;
-    in property <bool> follow-directory-links-visible;
-    in-out property <bool> follow-directory-links-checked: true;
-    // The link option's words differ by platform; the presenter sets them.
-    in property <string> follow-links-label: "Follow directory links";
-    in property <string> follow-links-hint;
+    // The Copy/Move link choice: index 0 copies the files links point to, 1 keeps links
+    // as links. The presenter sets the entries, the hint that explains both, why the
+    // default was chosen and what keeping links does where it cannot work.
+    in property <bool> links-visible;
+    in-out property <int> link-choice;
+    in property <[string]> link-choices;
+    in property <string> link-hint;
+    in property <string> link-reason;
+    in property <string> link-warning;
+    callback link-chosen(int);
     in property <string> initial-name;
     in property <string> input-label;
     in property <int> selection-end;
@@ -117,7 +122,7 @@ export component OperationDialog inherits Rectangle {
         return stop == 0 ? header.close-focusable
             : stop == 1 ? root.has-name
             : stop == 2 ? root.option-visible && root.option-enabled
-            : stop == 3 ? root.follow-directory-links-visible
+            : stop == 3 ? root.links-visible
             : stop == 4 ? root.wait-visible
             : stop == 5 || (stop == 6 && confirm-button.enabled);
     }
@@ -171,8 +176,10 @@ export component OperationDialog inherits Rectangle {
         + (root.has-name && root.input-label != "" ? Theme.font-size * 1.5 + root.regular-row-spacing : 0px)
         + (root.option-visible ? max(Theme.control-height, option.preferred-height)
             + root.regular-row-spacing + (root.wait-visible ? 0px : 12px) : 0px)
-        + (root.follow-directory-links-visible ? max(Theme.control-height, follow-links.preferred-height)
-            + root.regular-row-spacing : 0px)
+        + (root.links-visible ? max(Theme.control-height, links-row.preferred-height)
+            + root.regular-row-spacing
+            + (root.link-reason != "" ? link-reason-measure.preferred-height + root.regular-row-spacing : 0px)
+            + (root.link-warning != "" ? link-warning-measure.preferred-height + root.regular-row-spacing : 0px) : 0px)
         + (root.wait-visible ? max(Theme.control-height, wait-option.preferred-height) + root.regular-row-spacing : 0px)
         + (root.policy != "" ? policy-measure.preferred-height + root.regular-row-spacing : 0px)
         + max(32px, confirm-button.preferred-height) + (root.wait-visible ? 21px : 36px), 220px, 640px);
@@ -197,6 +204,16 @@ export component OperationDialog inherits Rectangle {
         visible: false; accessible-role: none;
         width: max(1px, root.width - 48px);
         text: root.policy; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    link-reason-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 48px);
+        text: root.link-reason; font-size: Theme.font-size; wrap: word-wrap;
+    }
+    link-warning-measure := Text {
+        visible: false; accessible-role: none;
+        width: max(1px, root.width - 48px);
+        text: root.link-warning; font-size: Theme.font-size; wrap: word-wrap;
     }
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
     public function begin() {
@@ -300,20 +317,35 @@ export component OperationDialog inherits Rectangle {
                         }
                     }
                     links-scroll := HScrollView {
-                        visible: root.follow-directory-links-visible; min-width: 0px;
-                        height: root.follow-directory-links-visible ? max(Theme.control-height, follow-links.preferred-height)
-                            + (self.width >= follow-links.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
+                        visible: root.links-visible; min-width: 0px;
+                        height: root.links-visible ? max(Theme.control-height, links-row.preferred-height)
+                            + (self.width >= links-row.preferred-width ? 0px : FluentScrollMetrics.overlay-size) : 0px;
                         horizontal-scrollbar-policy: as-needed;
-                        HorizontalLayout {
-                            follow-links := HintedCheckBox {
-                                text: root.follow-links-label;
-                                hint: root.follow-links-hint;
-                                enabled: root.follow-directory-links-visible;
-                                checked <=> root.follow-directory-links-checked;
-                                font-size: Theme.font-size;
+                        links-row := HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Links:"; color: Theme.text; font-size: Theme.font-size;
+                                vertical-alignment: center; accessible-role: none;
+                            }
+                            follow-links := HintedComboBox {
+                                model: root.link-choices;
+                                current-index <=> root.link-choice;
+                                hint: root.link-hint;
+                                enabled: root.links-visible;
+                                accessible-label: "Links";
+                                accessible-description: root.link-warning != "" ? root.link-warning : root.link-reason;
+                                selected => { root.link-chosen(self.current-index); }
                                 changed has-focus => { if self.has-focus { root.reveal-middle(links-scroll.y + self.y, self.height); } }
                             }
                         }
+                    }
+                    if root.links-visible && root.link-reason != "" : Text {
+                        text: root.link-reason; color: Theme.secondary-text;
+                        font-size: Theme.font-size; wrap: word-wrap;
+                    }
+                    if root.links-visible && root.link-warning != "" : Text {
+                        text: root.link-warning; color: Theme.error-text;
+                        font-size: Theme.font-size; wrap: word-wrap;
                     }
                     wait-scroll := HScrollView {
                         visible: root.wait-visible; min-width: 0px;

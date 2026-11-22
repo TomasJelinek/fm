@@ -125,6 +125,8 @@ pub(super) struct Control {
     fail_second_open: AtomicBool,
     replacement_on_open: Mutex<Option<TransferLinkRepresentation>>,
     refuse_admission: AtomicBool,
+    /// What the destination plans instead of the source's representation.
+    plan: Mutex<Option<TransferLinkPlan>>,
     pub(super) fail_stage_creation: AtomicBool,
     mismatch_readback: AtomicBool,
     change_binding_after_readback: AtomicBool,
@@ -489,6 +491,24 @@ impl TransferDirectory for Directory {
             control: self.control.clone(),
             published: false,
         }))
+    }
+
+    fn plan_link(
+        &self,
+        representation: &TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<TransferLinkPlan, FsError> {
+        self.admit_link(representation, cancel)?;
+        Ok(self
+            .control
+            .plan
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| TransferLinkPlan {
+                representation: representation.clone(),
+                note: None,
+            }))
     }
 
     fn admit_link(&self, _: &TransferLinkRepresentation, _: &Cancellation) -> Result<(), FsError> {
@@ -1090,28 +1110,85 @@ fn preserve_copies_exact_raw_native_representations_as_leaves_with_no_content_cr
 }
 
 #[test]
-fn following_links_in_a_move_rejects_before_any_provider_preparation() {
-    let fixture = Fixture::new();
-    let mut options = fixture.options(1);
-    options.links = CopyLinkPolicy::FollowLinks;
-    let CopyOptionsInput::Native(request) = &mut options.input else {
-        unreachable!()
-    };
-    request.intent = TransferIntent::Move;
-    let input = CopyInput::options(options);
-    assert_eq!(
-        input.validate().unwrap_err().kind,
-        io::ErrorKind::Unsupported
+fn copying_what_links_point_to_is_admitted_for_move_as_for_copy() {
+    // Copy and Move both copy the files links point to (FollowLinks) or keep links as
+    // links (Preserve); a Move then removes only the links. The provider decides.
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
+        for links in [CopyLinkPolicy::FollowLinks, CopyLinkPolicy::Preserve] {
+            let fixture = Fixture::new();
+            let mut options = fixture.options(1);
+            options.links = links;
+            let CopyOptionsInput::Native(request) = &mut options.input else {
+                unreachable!()
+            };
+            request.intent = intent;
+            CopyInput::options(options).validate().unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_link_the_destination_creates_in_another_form_is_verified_as_planned_and_noted() {
+    let fixture = Fixture::with_representation(
+        TransferLinkRepresentation::windows_symbolic_link(
+            true,
+            0,
+            &"\\??\\C:\\target".encode_utf16().collect::<Vec<_>>(),
+            &"C:\\target".encode_utf16().collect::<Vec<_>>(),
+        )
+        .unwrap(),
     );
-    let status = Arc::new(Mutex::new(initial(&input)));
-    let mut preparation = preparation::Preparation::new(input, fixture.service.clone());
-    let Err(error) = preparation.attempt(Cancellation::default(), status) else {
-        panic!("a Move that follows links was admitted")
-    };
-    assert_eq!(error.kind, io::ErrorKind::Unsupported);
-    assert_eq!(fixture.control.source_opens.load(Ordering::SeqCst), 0);
-    assert_eq!(fixture.control.destination_opens.load(Ordering::SeqCst), 0);
-    assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
+    let junction = TransferLinkRepresentation::windows_junction(
+        &"\\??\\C:\\target".encode_utf16().collect::<Vec<_>>(),
+        &"C:\\target".encode_utf16().collect::<Vec<_>>(),
+    )
+    .unwrap();
+    *fixture.control.plan.lock().unwrap() = Some(TransferLinkPlan {
+        representation: junction.clone(),
+        note: Some("was created as a junction to C:\\target, because creating a symbolic link needs Developer Mode or administrator rights".into()),
+    });
+    let (mut job, _, _) = fixture.prepare();
+    finish(&mut job);
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    // The stage was read back as the planned junction, not as the source's link.
+    assert_eq!(fixture.output(), Some(junction));
+    assert_eq!(done.note_count, 1, "{:?}", done.notes);
+    assert_eq!(
+        done.notes[0],
+        format!(
+            "{} was created as a junction to C:\\target, because creating a symbolic link needs Developer Mode or administrator rights.",
+            fixture.source.display()
+        )
+    );
+}
+
+#[test]
+fn a_kept_link_whose_relative_target_leads_outside_the_copied_items_is_noted() {
+    for (text, noted) in [
+        (b"../outside".as_slice(), true),
+        (b"sibling".as_slice(), false),
+        (b"/absolute/../x".as_slice(), false),
+    ] {
+        let fixture = Fixture::with_representation(
+            TransferLinkRepresentation::linux_symbolic_link(text).unwrap(),
+        );
+        let (mut job, _, _) = fixture.prepare();
+        finish(&mut job);
+        let done = job.finish();
+        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        assert_eq!(done.note_count, u64::from(noted), "{:?}", done.notes);
+        if noted {
+            assert_eq!(
+                done.notes[0],
+                format!(
+                    "{} keeps its relative target \u{201c}../outside\u{201d}, which leads outside \
+                     the copied items; at the destination it points somewhere else or nowhere.",
+                    fixture.source.display()
+                )
+            );
+        }
+    }
 }
 
 #[test]
@@ -1146,21 +1223,27 @@ fn preserve_move_without_provider_support_and_required_time_never_stage_a_link()
 }
 
 #[test]
-fn unsupported_native_link_kind_rejects_at_admission_before_staging() {
+fn a_link_the_destination_cannot_create_asks_alone_before_staging() {
+    // A link the destination refuses (a drive that cannot store links, a kind it cannot
+    // create) is reported when the job reaches it, with Skip and Skip all; the job is not
+    // refused as a whole, so other selected items would still be copied.
     let fixture = Fixture::new();
     fixture
         .control
         .refuse_admission
         .store(true, Ordering::SeqCst);
-    let input = CopyInput::options(fixture.options(1));
-    let status = Arc::new(Mutex::new(initial(&input)));
-    let mut preparation = preparation::Preparation::new(input, fixture.service.clone());
-    let Err(error) = preparation.attempt(Cancellation::default(), status) else {
-        panic!("unsupported native link kind was admitted")
-    };
-    assert_eq!(error.kind, io::ErrorKind::Unsupported);
+    let (mut job, _, _) = fixture.prepare();
+    let failure = next_failure(&mut job);
+    assert_eq!(failure.error.kind, io::ErrorKind::Unsupported);
+    assert!(!failure.can_retry && failure.can_skip, "{failure:?}");
+    assert_eq!(failure.source.as_deref(), Some(fixture.source.as_path()));
+    decide_failure(&mut job, &failure, CopyChoice::Skip);
+    finish(&mut job);
+    let done = job.finish();
+    assert_eq!((done.failed, done.skipped), (1, 1), "{done:?}");
     assert_eq!(fixture.control.stages_created.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.control.referent_reads.load(Ordering::SeqCst), 0);
+    assert!(fixture.output().is_none());
 }
 
 #[test]

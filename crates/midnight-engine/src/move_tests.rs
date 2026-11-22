@@ -70,3 +70,6 @@ pub(super) fn protected_fixture() -> (tempfile::TempDir, PathBuf) {
 #[cfg(windows)]
 #[path = "move_windows_tests.rs"]
 mod windows;
+#[cfg(windows)]
+#[path = "copy_link_windows_tests.rs"]
+mod windows_links;

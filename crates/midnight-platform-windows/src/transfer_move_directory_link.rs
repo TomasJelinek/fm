@@ -5,7 +5,8 @@ use midnight_core::{
     TransferNativeMoveOutcome as Outcome, TransferReplacementPolicy, TransferSourceRemoval,
 };
 use windows_sys::{
-    Wdk::Storage::FileSystem::FILE_DIRECTORY_FILE, Win32::Foundation::ERROR_NOT_SAME_DEVICE,
+    Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE},
+    Win32::Foundation::ERROR_NOT_SAME_DEVICE,
 };
 
 pub(super) fn prepare(
@@ -25,7 +26,7 @@ pub(super) fn prepare(
         FILE_READ_ATTRIBUTES | DELETE,
         FILE_SHARE_READ,
         FILE_OPEN,
-        FILE_DIRECTORY_FILE,
+        link_options(&proof),
     )
     .map_err(|e| error(path, e))?;
     if destination::final_path(&file, VOLUME_NAME_GUID).is_err() {
@@ -50,6 +51,15 @@ pub(super) fn prepare(
     });
     capture.revalidate(cancel)?;
     Ok(capture)
+}
+
+/// How the original link is opened: a link to a folder as a folder, any other as a file.
+fn link_options(proof: &source_links::OriginalLink) -> u32 {
+    if proof.directory() {
+        FILE_DIRECTORY_FILE
+    } else {
+        FILE_NON_DIRECTORY_FILE
+    }
 }
 
 pub(super) fn deferred_source(
@@ -158,7 +168,7 @@ impl Capture {
                 FILE_READ_ATTRIBUTES,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 FILE_OPEN,
-                FILE_DIRECTORY_FILE,
+                link_options(&self.proof),
             )
             .map_err(|e| error(path, e))?;
             // The file ID and full payload still belong to the stub at the new slot.
@@ -409,7 +419,7 @@ impl Capture {
             FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_OPEN,
-            FILE_DIRECTORY_FILE,
+            link_options(&self.proof),
         )
         .map_err(|e| error(path, e))?;
         self.proof.validate_for_move(&current)?;

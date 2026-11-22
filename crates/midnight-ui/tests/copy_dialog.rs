@@ -170,6 +170,7 @@ fn answer_destination_check(
                 request: check.request,
                 path: check.path.clone(),
                 result,
+                links: None,
             })),
             &|command| {
                 commands.borrow_mut().push(command);
@@ -207,7 +208,9 @@ fn refuse_a_destination_that_is_not_an_existing_folder(shortcut: Key, moving: bo
             &ui.window,
             state.clone(),
             Rc::new(move |command| {
-                captured.borrow_mut().push(command);
+                if !link_option::inspection(&command) {
+                    captured.borrow_mut().push(command);
+                }
                 true
             }),
         );
@@ -331,6 +334,150 @@ fn refuse_a_destination_that_is_not_an_existing_folder(shortcut: Key, moving: bo
     }
 }
 
+/// The Move dialog's link choice follows what its destination reports: a drive that
+/// cannot store links copies the files, and the dialog says why. Choosing to keep links
+/// there shows what happens to them, and the first OK explains it instead of starting;
+/// the second keeps links anyway.
+#[test]
+fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_links() {
+    let (mut ui, windows) = multi_window_ui();
+    let base = std::env::temp_dir().join("copy link reasons");
+    let state = Rc::new(RefCell::new(Presenter::new(
+        base.clone(),
+        base.join("stick"),
+    )));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    let captured = commands.clone();
+    let _begin = install(
+        &ui.window,
+        state.clone(),
+        Rc::new(move |command| {
+            captured.borrow_mut().push(command);
+            true
+        }),
+    );
+    let navigation = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::Navigate {
+                pane: PaneId::Left,
+                navigation,
+                ..
+            } => Some(*navigation),
+            _ => None,
+        })
+        .unwrap();
+    // A file, so that the metadata option is a keyboard stop before the link choice.
+    let entries: Arc<[Entry]> = vec![Entry::new(
+        EntryId(1),
+        base.join("notes.txt"),
+        EntryKind::File,
+    )]
+    .into();
+    state.borrow_mut().apply(Event::ListingFinished {
+        pane: PaneId::Left,
+        navigation,
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    });
+    refresh(&ui.window, &state.borrow());
+    ui.window.invoke_focus_files();
+    ui::key(&ui.window, Key::End);
+    commands.borrow_mut().clear();
+    ui::key(&ui.window, Key::F6);
+    ui.draw();
+    let child = draft_child(&windows);
+    let inspection = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::InspectTransferLinks(request) => Some(request.clone()),
+            _ => None,
+        })
+        .expect("the dialog asks what its destination does with links");
+    assert_eq!(inspection.destination, base.join("stick"));
+    assert_eq!(inspection.source.as_deref(), Some(base.as_path()));
+    let links = accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL)
+        .expect("the link choice");
+    let value = |links: &ItemRc| {
+        links
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap()
+    };
+    assert_eq!(
+        value(&links),
+        link_option::KEEP_LINKS,
+        "until the destination answers, links stay links"
+    );
+    state
+        .borrow_mut()
+        .apply(Event::TransferLinksInspected(Box::new(
+            TransferLinksResult {
+                request: inspection.request,
+                destination: inspection.destination.clone(),
+                result: Ok(TransferLinkFacts {
+                    destination: TransferLinkDestination {
+                        storage: TransferLinkStorage::Unsupported,
+                        filesystem: Some("FAT32".into()),
+                        network: false,
+                        removable: true,
+                        volume: Some(9),
+                    },
+                    same_volume: false,
+                }),
+            },
+        )));
+    refresh(&ui.window, &state.borrow());
+    ui.draw();
+    assert_eq!(value(&links), link_option::COPY_FILES);
+    let reason = "This drive cannot store links (FAT32), so the files they point to are copied.";
+    assert!(
+        accessible_item(&child, AccessibleRole::Text, reason).is_some_and(|item| not_hidden(&item)),
+        "the dialog says why it copies the files"
+    );
+    // From the destination field, past the metadata option, to the link choice.
+    input::key(&child, Key::Tab);
+    input::key(&child, Key::Tab);
+    input::key(&child, Key::DownArrow);
+    refresh(&ui.window, &state.borrow());
+    ui.draw();
+    assert_eq!(value(&links), link_option::KEEP_LINKS);
+    let warning = "This drive cannot store links (FAT32): each link is left out and stays \
+                   where it is, and the job details name it.";
+    assert!(
+        accessible_item(&child, AccessibleRole::Text, warning)
+            .is_some_and(|item| not_hidden(&item)),
+        "the dialog says what keeping links does here"
+    );
+    let started = |commands: &Rc<RefCell<Vec<Command>>>| {
+        commands.borrow().iter().find_map(|command| match command {
+            Command::EnqueueCopyWithOptions(options) => Some(options.links),
+            _ => None,
+        })
+    };
+    commands.borrow_mut().clear();
+    input::key(&child, Key::Return);
+    refresh(&ui.window, &state.borrow());
+    ui.draw();
+    assert_eq!(started(&commands), None, "the first OK starts nothing");
+    let error = ui.window.get_copy_draft_error();
+    assert!(error.starts_with(warning), "{error}");
+    assert!(
+        !ui.window.get_copy_draft_token().is_empty(),
+        "the dialog stays open"
+    );
+    input::key(&child, Key::Return);
+    refresh(&ui.window, &state.borrow());
+    ui.draw();
+    assert_eq!(
+        started(&commands),
+        Some(link_option::sent(true, false)),
+        "the second OK keeps links anyway"
+    );
+    ui.window.hide().unwrap();
+}
+
 #[test]
 fn f5_destination_editor_consumes_enter_and_escape_without_using_the_clipboard() {
     destination_editor(Key::F5, false, false, true, false, true);
@@ -410,7 +557,9 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
         &ui.window,
         state.clone(),
         Rc::new(move |command| {
-            captured.borrow_mut().push(command);
+            if !link_option::inspection(&command) {
+                captured.borrow_mut().push(command);
+            }
             true
         }),
     );
@@ -476,7 +625,7 @@ fn archive_dialog_disables_required_modified_time_and_keeps_ordinary_copy() {
     assert!(!ui.window.get_copy_draft_token().is_empty());
     let child = draft_child(&windows);
     assert!(
-        accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL)
+        accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL)
             .is_none_or(|item| !item.is_visible())
     );
     let option = accessible_item(
@@ -544,7 +693,9 @@ fn destination_editor(
             if !gate.get() {
                 return false;
             }
-            captured.borrow_mut().push(command);
+            if !link_option::inspection(&command) {
+                captured.borrow_mut().push(command);
+            }
             true
         }),
     );
@@ -634,14 +785,15 @@ fn destination_editor(
     // The 320×200 Move dialog scrolls its options: a shown link option can lie below
     // the view until the keyboard reaches it.
     let links =
-        accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL).filter(not_hidden);
-    assert_eq!(links.is_some(), shown, "the link option's presence");
+        accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL).filter(not_hidden);
+    assert_eq!(links.is_some(), shown, "the link choice's presence");
     if let Some(links) = &links {
+        // No backend answers which default the destination has: links stay links.
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
-            "true"
+            link_option::KEEP_LINKS
         );
     }
     assert_eq!(
@@ -652,12 +804,20 @@ fn destination_editor(
     input::key(&child, Key::Tab);
     input::key(&child, Key::Tab);
     if let Some(links) = &links {
-        input::key(&child, Key::Space);
+        // The arrow keys choose; Up reaches the first entry, Down the second again.
+        input::key(&child, Key::UpArrow);
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
-            "false"
+            link_option::COPY_FILES
+        );
+        input::key(&child, Key::DownArrow);
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .unwrap(),
+            link_option::KEEP_LINKS
         );
         input::key(&child, Key::Tab);
     }
@@ -714,18 +874,27 @@ fn destination_editor(
         "every new draft must start unchecked",
     );
     let links =
-        accessible_item(&child, AccessibleRole::Checkbox, link_option::LABEL).filter(not_hidden);
+        accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL).filter(not_hidden);
     assert_eq!(links.is_some(), shown);
     if let Some(links) = &links {
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
-            "true",
-            "new drafts default to following links"
+            link_option::KEEP_LINKS,
+            "a new draft keeps links where its destination tells nothing else"
         );
-        if !follow_directory_links {
-            input::click(&child, links);
+        if follow_directory_links {
+            // From the destination field, past the metadata option, to the link choice.
+            input::key(&child, Key::Tab);
+            input::key(&child, Key::Tab);
+            input::key(&child, Key::UpArrow);
+            assert_eq!(
+                links
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .unwrap(),
+                link_option::COPY_FILES
+            );
             let editor =
                 accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
             input::click(&child, &editor);
@@ -804,12 +973,12 @@ fn destination_editor(
     if let Some(links) = &links {
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
             if follow_directory_links {
-                "true"
+                link_option::COPY_FILES
             } else {
-                "false"
+                link_option::KEEP_LINKS
             },
             "rejected admission must preserve the chosen link policy"
         );
@@ -1070,6 +1239,10 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     let send: Rc<dyn Fn(Command) -> bool> = Rc::new({
         let commands = commands.clone();
         move |command| {
+            // The dialog's link question has no backend here; the log counts the rest.
+            if link_option::inspection(&command) {
+                return true;
+            }
             commands.borrow_mut().push(command);
             true
         }
@@ -1265,14 +1438,14 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     compact_settle(&mut test);
     let shown = link_option::shown(moving);
     if shown {
-        let links = compact_item(&test, AccessibleRole::Checkbox, link_option::LABEL);
+        let links = compact_item(&test, AccessibleRole::Combobox, link_option::LABEL);
         compact_assert_focus(&test, &links);
-        compact_assert_visible(&test, &links, true, "keyboard link checkbox indicator");
+        compact_assert_visible(&test, &links, true, "keyboard link choice");
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
-            "true"
+            link_option::KEEP_LINKS
         );
     }
     input::chord(&test.native, &[Key::Shift], Key::Tab);
@@ -1335,7 +1508,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
             "metadata confirmation must admit exactly one captured {action} request: {queued:?}"
         );
     };
-    assert_eq!(options.links, link_option::sent(moving, true));
+    assert_eq!(options.links, link_option::sent(moving, false));
     let CopyOptionsInput::Native(request) = &options.input else {
         panic!("metadata confirmation changed its native source");
     };

@@ -20,6 +20,7 @@ pub(crate) mod delete_decisions;
 mod desktop;
 mod directory_link_tooltip;
 pub(crate) mod row_continuity;
+pub(crate) use copy_dialog::LinkChoiceView;
 pub(crate) use desktop::IconPlace;
 pub use desktop::IconView;
 pub(crate) mod drag_drop;
@@ -1010,6 +1011,8 @@ impl Presenter {
         self.flush_search(send);
         self.flush_selection(send);
         self.flush_drag_commands(send);
+        // A draft opened without a sender (a tree or Find capture) asks about its links.
+        self.inspect_copy_draft_links(None, send);
         self.flush_comparison(send);
         self.flush_find_panels();
         // A manifest destination was just chosen: save to it now.
@@ -1021,6 +1024,10 @@ impl Presenter {
 
     /// Apply a backend event, retiring stale payloads and preserving the last usable location.
     pub fn apply(&mut self, event: Event) {
+        if let Event::TransferLinksInspected(result) = event {
+            self.transfer_links_inspected(*result);
+            return;
+        }
         if let Event::DirectoryElevationAvailable {
             pane,
             navigation,

@@ -291,18 +291,71 @@ fn same_filesystem_move_replaces_a_consented_file_and_keeps_it() {
 }
 
 #[test]
-fn follow_links_is_refused_for_move() {
+fn follow_links_projects_a_file_link_as_its_target_and_removes_only_the_link() {
     let fixture = fixture();
+    let target = fixture.path().join("target");
+    fs::write(&target, b"target data").unwrap();
     let link = fixture.path().join("link");
     symlink("target", &link).unwrap();
-    let error = LinuxFileSystem::new(None)
+    let cancel = Cancellation::default();
+    let prepared = LinuxFileSystem::new(None)
+        .prepare_move_source_with_links(&link, CopyLinkPolicy::FollowLinks, &cancel)
+        .unwrap();
+    let midnight_core::PreparedTransferMoveEntry::DirectoryLink {
+        mut source,
+        capture,
+    } = prepared
+    else {
+        panic!("a followed link is projected with a capture of the link alone");
+    };
+    // The projection reads the target at the link's path; the capture holds the link.
+    assert_eq!(source.entry().item.kind, EntryKind::File);
+    assert_eq!(source.entry().item.path, link);
+    assert_eq!(capture.entry().item.path, link);
+    assert_eq!(
+        source.native_original_identity(),
+        Some(capture.entry().identity)
+    );
+    let mut buffer = [0u8; 64];
+    let read = source.read_chunk(&mut buffer, &cancel).unwrap();
+    assert_eq!(&buffer[..read], b"target data");
+    drop(source);
+    let removed = capture.remove_original(&cancel).unwrap();
+    assert!(
+        matches!(
+            removed,
+            midnight_core::TransferDirectoryLinkRemoval::Removed { error: None, .. }
+        ),
+        "{removed:?}"
+    );
+    assert!(fs::symlink_metadata(&link).is_err(), "the link is removed");
+    assert_eq!(
+        fs::read(&target).unwrap(),
+        b"target data",
+        "its target is kept"
+    );
+    assert!(private_names(fixture.path()).is_empty());
+}
+
+#[test]
+fn follow_links_moves_a_link_it_cannot_follow_as_the_link_itself() {
+    let fixture = fixture();
+    let link = fixture.path().join("dangling");
+    symlink("missing", &link).unwrap();
+    let prepared = LinuxFileSystem::new(None)
         .prepare_move_source_with_links(
             &link,
             CopyLinkPolicy::FollowLinks,
             &Cancellation::default(),
         )
-        .err()
         .unwrap();
-    assert_eq!(error.kind, io::ErrorKind::Unsupported);
-    assert_eq!(fs::read_link(&link).unwrap(), Path::new("target"));
+    let midnight_core::PreparedTransferMoveEntry::Ordinary(prepared) = prepared else {
+        panic!("a link that cannot be followed is moved itself");
+    };
+    assert_eq!(prepared.source.entry().item.kind, EntryKind::Symlink);
+    assert_eq!(
+        prepared.source.link_not_followed().as_deref(),
+        Some("its target does not exist")
+    );
+    assert_eq!(fs::read_link(&link).unwrap(), Path::new("missing"));
 }

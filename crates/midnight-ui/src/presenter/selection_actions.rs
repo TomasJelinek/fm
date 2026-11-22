@@ -181,7 +181,9 @@ impl Presenter {
             SelectionIntent::Cut => Command::CutFiles { request, files },
             SelectionIntent::CopyDialog(context) => {
                 self.desktop.requests.remove(&request);
+                let source = context.source.clone();
                 self.open_captured_copy(request, context, files);
+                self.inspect_copy_draft_links(Some(source), send);
                 return;
             }
             SelectionIntent::Metadata { pane, case } => {

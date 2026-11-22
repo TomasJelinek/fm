@@ -205,7 +205,19 @@ fn the_folder_that_contains_the_selection_is_never_made_writable() {
         panic!("a write-protected containing folder refuses the Move");
     };
     assert_eq!(failure.path, source.join("file"));
-    assert!(failure.message.contains("temporary staging"), "{failure:?}");
+    // A permission error (T-E06): the job offers Retry and Skip, which leaves the item.
+    assert_eq!(
+        failure.kind,
+        std::io::ErrorKind::PermissionDenied,
+        "{failure:?}"
+    );
+    assert!(
+        failure
+            .message
+            .starts_with("Permission denied: it cannot be moved out of its folder"),
+        "{failure:?}"
+    );
+    assert!(!failure.message.contains("os error"), "{failure:?}");
     assert_eq!(left, 0o555);
     assert_eq!(fs::read(source.join("file")).unwrap(), b"file");
 }

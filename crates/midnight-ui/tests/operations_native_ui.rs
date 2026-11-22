@@ -85,18 +85,22 @@ fn real_f5_multiselection_toolbar_copy_and_f6_move_preserve_bytes_and_clear_sele
 
 #[cfg(windows)]
 #[test]
-fn real_copy_follows_a_junction_by_default() {
-    copy_junction(true);
-}
-
-#[cfg(windows)]
-#[test]
-fn real_copy_without_following_creates_an_empty_directory() {
+fn real_copy_keeps_a_junction_as_a_junction_on_a_fixed_drive() {
     copy_junction(false);
 }
 
 #[cfg(windows)]
-fn copy_junction(follow: bool) {
+#[test]
+fn real_copy_of_the_files_links_point_to_follows_a_junction() {
+    copy_junction(true);
+}
+
+/// F5 of a folder holding a junction, through the dialog's link choice and the production
+/// engine: by default (a fixed local drive) the junction is recreated as a junction;
+/// choosing "Copy the files links point to" copies the folder it points to.
+#[cfg(windows)]
+fn copy_junction(copy_files: bool) {
+    use crate::support::link_option;
     use i_slint_core::accessibility::AccessibleStringProperty;
     use std::{os::windows::fs::MetadataExt, path::Path};
 
@@ -120,54 +124,46 @@ fn copy_junction(follow: bool) {
     let start = h.copies.len();
     ui::key(&h.ui.window, Key::F5);
     h.until(|h| !h.ui.window.get_copy_draft_token().is_empty());
-    h.dialog();
-    let links = ui::popup_item(
-        &h.ui.window,
-        "Follow directory links",
-        AccessibleRole::Checkbox,
-    );
-    assert_eq!(
+    let dialog = h.dialog();
+    let links = ui::popup_item(&h.ui.window, link_option::LABEL, AccessibleRole::Combobox);
+    let shown = || {
         links
-            .accessible_string_property(AccessibleStringProperty::Checked)
-            .as_deref(),
-        Some("true")
-    );
-    if !follow {
-        ui::click_popup(
-            &h.ui.window,
-            "Follow directory links",
-            AccessibleRole::Checkbox,
-        );
-        assert_eq!(
-            links
-                .accessible_string_property(AccessibleStringProperty::Checked)
-                .as_deref(),
-            Some("false")
-        );
-        ui::click_popup(
-            &h.ui.window,
-            "Destination folder",
-            AccessibleRole::TextInput,
-        );
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .map(|value| value.to_string())
+    };
+    // A fixed local drive keeps links as links.
+    assert_eq!(shown().as_deref(), Some(link_option::KEEP_LINKS));
+    if copy_files {
+        // A folder has no metadata option: Tab leads from the destination to the choice.
+        input::key(&dialog, Key::Tab);
+        input::key(&dialog, Key::UpArrow);
+        assert_eq!(shown().as_deref(), Some(link_option::COPY_FILES));
     }
 
     let result = confirm_copy(&mut h, start);
     let destination = h.right.join("inside/junction");
     let metadata = fs::symlink_metadata(&destination).unwrap();
-    assert!(metadata.is_dir());
-    assert_eq!(metadata.file_attributes() & REPARSE_POINT, 0);
+    // Not followed, a junction is a link rather than a folder.
+    assert_eq!(metadata.is_dir(), copy_files);
+    assert_eq!(
+        metadata.file_attributes() & REPARSE_POINT != 0,
+        !copy_files,
+        "a junction exactly where links are kept"
+    );
     assert_eq!(result.completed_roots, 1);
-    assert_eq!(result.files_completed, u64::from(follow));
+    // A kept link counts as a completed file without content bytes.
+    assert_eq!(result.files_completed, 1);
     assert_eq!(
         result.verified_bytes,
-        if follow { PAYLOAD.len() as u64 } else { 0 }
+        if copy_files { PAYLOAD.len() as u64 } else { 0 }
     );
-    assert_eq!(
-        fs::read_dir(&destination).unwrap().count(),
-        usize::from(follow)
-    );
-    if follow {
-        assert_eq!(fs::read(destination.join("payload.bin")).unwrap(), PAYLOAD);
+    assert_eq!(fs::read(destination.join("payload.bin")).unwrap(), PAYLOAD);
+    if copy_files {
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    } else {
+        // The same folder through the recreated junction, nothing of it copied.
+        assert_eq!(fs::read_link(&destination).unwrap(), ordinary(&target));
+        fs::remove_dir(&destination).unwrap();
     }
     assert_eq!(fs::read(junction.join("payload.bin")).unwrap(), PAYLOAD);
     fs::remove_dir(&junction).unwrap();

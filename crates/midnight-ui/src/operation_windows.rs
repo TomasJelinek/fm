@@ -146,6 +146,13 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
             window.set_confirm_text(main.get_operation_title());
             window.set_dangerous(main.get_operation_dangerous());
         }
+        if matches!(record.key, Key::Copy(_)) {
+            // The destination's link facts can arrive while the dialog is open.
+            copy_draft_windows::refresh_links(
+                &main.global::<OperationPresentation>(),
+                p.copy_draft_links_view().as_ref(),
+            );
+        }
         update_warning(&record, main);
         return;
     }
@@ -196,19 +203,12 @@ fn open(
     window.set_policy("".into());
     window.set_wait_visible(false);
     window.set_wait_checked(false);
-    window.set_follow_directory_links_visible(false);
+    window.set_links_visible(false);
     window.set_option_enabled(true);
     window.set_option_checked(false);
     window.set_dangerous(false);
     match &key {
-        Key::Copy(_) => copy_draft_windows::initialize(
-            &window,
-            main,
-            p.copies
-                .draft
-                .as_ref()
-                .is_some_and(|draft| draft.directory_link_options_available()),
-        ),
+        Key::Copy(_) => copy_draft_windows::initialize(&window, main, p.copy_draft_links_view()),
         Key::Operation(_) => {
             window.set_title_text(main.get_operation_title());
             window.set_kind(main.get_operation_kind());
@@ -250,6 +250,16 @@ fn open(
             dismiss(&ctx, session);
         }
     });
+    let weak = Rc::downgrade(ctx);
+    let expected = token.clone();
+    window.on_link_chosen(move |token, choice| {
+        if token != expected {
+            return;
+        }
+        if let Some(ctx) = weak.upgrade() {
+            link_chosen(&ctx, session, choice);
+        }
+    });
     let record = Record {
         key,
         session,
@@ -278,6 +288,28 @@ fn update_warning(record: &Record, main: &MainWindow) {
         format!("{base}\n\n{error}").into()
     };
     main.global::<OperationPresentation>().set_warning(warning);
+}
+/// The user chose the Copy/Move link handling (0 copies the files, 1 keeps links): the
+/// presenter keeps that choice for the draft, whatever its destination reports later.
+fn link_chosen(ctx: &Rc<Context>, session: DialogSession, choice: i32) {
+    let (Some(record), Some(state), Some(main)) = (
+        current(ctx, session),
+        ctx.state.upgrade(),
+        ctx.main.upgrade(),
+    ) else {
+        return;
+    };
+    let Key::Copy(token) = &record.key else {
+        return;
+    };
+    let Ok(mut p) = state.try_borrow_mut() else {
+        return;
+    };
+    p.choose_copy_draft_links(token, choice == 0);
+    copy_draft_windows::refresh_links(
+        &main.global::<OperationPresentation>(),
+        p.copy_draft_links_view().as_ref(),
+    );
 }
 fn current(ctx: &Context, session: DialogSession) -> Option<Rc<Record>> {
     ctx.windows
@@ -326,16 +358,16 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
                     return false;
                 }
                 let window = main.global::<OperationPresentation>();
-                let follow_directory_links = window
-                    .get_follow_directory_links_visible()
-                    .then(|| window.get_follow_directory_links_checked());
+                let copy_files = window
+                    .get_links_visible()
+                    .then(|| window.get_link_choice() == 0);
                 *record.error.borrow_mut() = copy_draft_windows::confirm(
                     p,
                     token,
                     value.as_str(),
                     window.get_option_checked(),
                     window.get_wait_checked(),
-                    follow_directory_links,
+                    copy_files,
                     send,
                 );
                 !record.key.current(p)

@@ -148,23 +148,30 @@ application delivery remain pending.
   skipped entry) keeps its mode. The folder that contains the selection is never
   changed: when it does not let the selected item leave (write-protected, or owned by
   another user who does not allow it), the Move stops at preparation, before anything
-  is copied. Windows needs nothing for this rule: a folder's read-only attribute does
-  not stop entries from leaving it. A Windows cross-volume Move still refuses a source
+  is copied, with a permission error that names the item: Retry once the folder is
+  writable, Skip and Skip all (T-E06; before 21 November it was an Unsupported error
+  that ended the job without a question). Windows needs nothing for this rule: a
+  folder's read-only attribute does not stop entries from leaving it; a folder whose
+  access list denies deleting its entries refuses the item's preparation with the same
+  Retry, Skip and Skip all. A Windows cross-volume Move still refuses a source
   file or folder that itself has the read-only attribute, before copying it, because
   its removal does not override the attribute (unlike Delete's POSIX disposition);
   that is a separate gap ([transfers](TRANSFERS.md)).
 - Copy/Move stages that still end the job, or the rest of a folder, without an
   item-level Skip (20 November audit, revised 21 November), and why:
-  - Preparation (stage Preparing) of captured (tree) or archive sources, and of a
-    single selected item: a failure blocks the whole job before anything is copied,
-    with Retry and Cancel only (no Retry when retrying cannot help). One of several
-    selected native items that fails alone (its path is the error's) also offers Skip
-    and Skip all: `Preparation::skip_root` plans the job again without it, it counts
-    as skipped and as one error, and the others are copied. A job that requires the
-    exact modified time offers no such Skip: its preflight refuses folders, links and
-    virtual roots without a downgrade (`MetadataTransferRequest`), so leaving one out
-    would turn that refusal into a partial transfer. A preparation failure after
-    recorded cleanup residuals still ends the job.
+  - Preparation (stage Preparing) of captured (tree) or archive sources: a failure
+    blocks the whole job before anything is copied, with Retry and Cancel only (no
+    Retry when retrying cannot help). A selected native item that fails alone (its path
+    is the error's) also offers Skip and Skip all: `Preparation::skip_root` plans the
+    job again without it, it counts as skipped and as one error, and the others are
+    copied. Since 21 November this holds for a single selected item too (T-E06): Skip
+    leaves it where it is and, nothing being left to do, the job ends at once
+    (`Preparation::is_last_root`), Failed as a job that completed nothing ends, with
+    the item's error and "1 entries or subtrees skipped; source data retained." A job
+    that requires the exact modified time offers no such Skip: its preflight refuses
+    folders, links and virtual roots without a downgrade (`MetadataTransferRequest`),
+    so leaving one out would turn that refusal into a partial transfer. A preparation
+    failure after recorded cleanup residuals still ends the job.
   - A folder that fails itself (above), a Move's own folder included: its listing
     cannot resume where it stopped, so there is no Retry and Skip leaves out the rest
     of that folder.

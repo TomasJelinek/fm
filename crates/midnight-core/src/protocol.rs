@@ -200,6 +200,9 @@ pub enum Command {
     /// Whether a typed Copy/Move destination is an existing folder, answered by
     /// `Event::TransferDestinationChecked` on a backend worker.
     CheckTransferDestination(crate::DestinationCheckRequest),
+    /// What the Copy/Move dialog's destination does with links, for its default link
+    /// handling, answered by `Event::TransferLinksInspected` on a backend worker.
+    InspectTransferLinks(crate::TransferLinksRequest),
     EnqueueCopy(crate::CopyRequest),
     EnqueueSelectedCopy(crate::SelectedCopyRequest),
     EnqueueMove(crate::CopyRequest),
@@ -734,6 +737,7 @@ pub enum Event {
     },
     VolumeInformationLoaded(Box<crate::VolumeInformationResult>),
     TransferDestinationChecked(Box<crate::DestinationCheckResult>),
+    TransferLinksInspected(Box<crate::TransferLinksResult>),
     VolumesFailed(FsError),
     ListingStarted {
         pane: PaneId,

@@ -29,9 +29,12 @@ pub(super) fn validate_options(
     Ok(())
 }
 
+/// Checks the selected roots of a job that recreates links: each is a native file,
+/// folder or link whose representation reads. The destination is not asked here: a link
+/// it cannot create is reported when the job reaches it, with its own question, and the
+/// other selected items are still copied.
 pub(super) fn admit_roots(
     roots: &VecDeque<Box<dyn TransferSource>>,
-    destination: &dyn TransferDirectory,
     links: CopyLinkPolicy,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
@@ -44,8 +47,7 @@ pub(super) fn admit_roots(
         match source.entry().item.kind {
             EntryKind::File | EntryKind::Directory => {}
             EntryKind::Symlink | EntryKind::DirectoryLink => {
-                let representation = source.link_representation(cancel)?;
-                destination.admit_link(&representation, cancel)?;
+                source.link_representation(cancel)?;
             }
             EntryKind::Other => {
                 return Err(error(
@@ -195,12 +197,18 @@ pub(super) struct LinkCopy {
     // the source, which may own the captured provider registration and permit.
     stage: Option<Box<dyn StagedTransferLink>>,
     source: Box<dyn TransferSource>,
+    /// The source link's exact representation, checked again before each step.
     representation: TransferLinkRepresentation,
+    /// What the destination creates for it (`TransferDirectory::plan_link`): the stage
+    /// is verified against this.
+    planned: TransferLinkRepresentation,
     phase: Phase,
     stage_identity: Option<TransferIdentity>,
     cleanup_attempted: bool,
-    /// Why FollowLinks copied this link as a link, recorded once it is published.
-    note: Option<String>,
+    /// What the job details say about this link once it is published: why FollowLinks
+    /// copied it as a link, another form the destination created, a relative target
+    /// that leads outside what was copied.
+    notes: Vec<String>,
     // Retains the I/O guard after stage/source destruction on forced retirement.
     retirement: Arc<LinkRetirement>,
 }
@@ -209,17 +217,19 @@ impl LinkCopy {
     fn new(
         source: Box<dyn TransferSource>,
         representation: TransferLinkRepresentation,
-        note: Option<String>,
+        plan: TransferLinkPlan,
+        notes: Vec<String>,
         retirement: Arc<LinkRetirement>,
     ) -> Self {
         Self {
             stage: None,
             source,
             representation,
+            planned: plan.representation,
             phase: Phase::Staging,
             stage_identity: None,
             cleanup_attempted: false,
-            note,
+            notes,
             retirement,
         }
     }
@@ -301,8 +311,8 @@ impl LinkCopy {
                         "Link staging requires the existing Copy I/O permit.",
                     ));
                 }
-                destination.admit_link(&self.representation, cancel)?;
-                match destination.stage_link(&self.representation, cancel) {
+                destination.admit_link(&self.planned, cancel)?;
+                match destination.stage_link(&self.planned, cancel) {
                     Ok(stage) => {
                         self.stage = Some(stage);
                         self.retirement.retain_cleanup_io();
@@ -329,19 +339,19 @@ impl LinkCopy {
             }
             Phase::Verifying => {
                 let stage = self.stage.as_ref().expect("created link stage");
-                if stage.link_representation(cancel)? != self.representation {
+                if stage.link_representation(cancel)? != self.planned {
                     return Err(error(
                         &self.source.entry().item.path,
                         io::ErrorKind::InvalidData,
                         "Independent staged link readback differs from the source.",
                     ));
                 }
-                self.stage_identity = Some(stage.revalidate_stage(&self.representation, cancel)?);
+                self.stage_identity = Some(stage.revalidate_stage(&self.planned, cancel)?);
                 self.phase = Phase::ReadyToPublish;
             }
             Phase::ReadyToPublish => {
                 let stage = self.stage.as_mut().expect("verified link stage");
-                let identity = stage.revalidate_stage(&self.representation, cancel)?;
+                let identity = stage.revalidate_stage(&self.planned, cancel)?;
                 if Some(identity) != self.stage_identity {
                     return Err(error(
                         &self.source.entry().item.path,
@@ -370,7 +380,7 @@ impl LinkCopy {
                 return Ok(Some(validate_publication(
                     publication,
                     stage.as_ref(),
-                    &self.representation,
+                    &self.planned,
                     identity,
                     &expected_path,
                     replacing,
@@ -513,24 +523,59 @@ impl Job {
         let source = work.source.as_ref().expect("unstarted link source");
         validate_native_source(source.as_ref())?;
         let representation = source.link_representation(&self.cancel)?;
-        work.destination.admit_link(&representation, &self.cancel)?;
-        // Following links, only a link that cannot be followed arrives here.
-        let note = (self.links == CopyLinkPolicy::FollowLinks).then(|| {
-            let reason = source
-                .link_not_followed()
-                .unwrap_or_else(|| "it could not be followed".into());
-            format!(
-                "{} was copied as a link because {reason}.",
-                work.entry.item.path.display()
-            )
-        });
+        let plan = work.destination.plan_link(&representation, &self.cancel)?;
+        let notes = self.link_notes(work, source.as_ref(), &representation, plan.note.as_deref());
         work.link = Some(LinkCopy::new(
             work.source.take().expect("retained link source"),
             representation,
-            note,
+            plan,
+            notes,
             self.link_retirement.clone(),
         ));
         self.link_step(work)
+    }
+
+    /// What the job details say about the link `work` that the job keeps as a link: why
+    /// FollowLinks did not follow it, another form the destination creates for it
+    /// (`planned`), and a relative target that leads outside what is copied or moved.
+    pub(super) fn link_notes(
+        &self,
+        work: &EntryWork,
+        source: &dyn TransferSource,
+        representation: &TransferLinkRepresentation,
+        planned: Option<&str>,
+    ) -> Vec<String> {
+        let path = &work.entry.item.path;
+        let (moved, items) = if self.move_work.is_some() {
+            ("moved", "the moved items")
+        } else {
+            ("copied", "the copied items")
+        };
+        let mut notes = Vec::new();
+        // Following links, only a link that cannot be followed is kept as a link.
+        if self.links == CopyLinkPolicy::FollowLinks {
+            let reason = source
+                .link_not_followed()
+                .unwrap_or_else(|| "it could not be followed".into());
+            notes.push(format!(
+                "{} was {moved} as a link because {reason}.",
+                path.display()
+            ));
+        }
+        if let Some(note) = planned {
+            notes.push(format!("{} {note}.", path.display()));
+        }
+        if let Some(root) = self.active_root_path()
+            && relative_target_leaves(representation, path, root)
+        {
+            notes.push(format!(
+                "{} keeps its relative target \u{201c}{}\u{201d}, which leads outside {items}; \
+                 at the destination it points somewhere else or nowhere.",
+                path.display(),
+                link_text(representation)
+            ));
+        }
+        notes
     }
 
     pub(super) fn link_step(&mut self, work: &mut EntryWork) -> Result<Action, FsError> {
@@ -593,8 +638,10 @@ impl Job {
                 ..
             }
         );
-        if published && let Some(note) = copy.note.take() {
-            self.progress.add_note(note);
+        if published {
+            for note in std::mem::take(&mut copy.notes) {
+                self.progress.add_note(note);
+            }
         }
         match publication {
             TransferPublication::Published(_) => self.progress.files_completed += 1,
@@ -644,6 +691,38 @@ impl Job {
         let error = retain_link_recovery(&mut self.progress, failure);
         retain_error(&mut self.progress, error, true);
     }
+}
+
+/// Whether the relative text of the link at `path` leads outside the selected item
+/// `root` that holds it: from the link's folder, counted from `root` (or, for a selected
+/// link, from the folder it is in), its `..` names climb above that folder.
+pub(super) fn relative_target_leaves(
+    representation: &TransferLinkRepresentation,
+    path: &Path,
+    root: &Path,
+) -> bool {
+    let depth = if path == root {
+        Some(0)
+    } else {
+        path.parent()
+            .and_then(|parent| parent.strip_prefix(root).ok())
+            .map(|below| below.components().count())
+    };
+    depth.is_some_and(|depth| representation.relative_text_leaves(depth))
+}
+
+/// A link's text for the job details: its exact bytes on Linux, its print name (or
+/// substitute name) on Windows, with what cannot be shown replaced.
+pub(super) fn link_text(representation: &TransferLinkRepresentation) -> String {
+    if let Some(target) = representation.linux_target() {
+        return String::from_utf8_lossy(target).into_owned();
+    }
+    representation
+        .windows_names()
+        .map(|(substitute, print)| {
+            String::from_utf16_lossy(if print.is_empty() { substitute } else { print })
+        })
+        .unwrap_or_default()
 }
 
 /// Records the residue of a link stage that could not be cleaned up and returns its error.

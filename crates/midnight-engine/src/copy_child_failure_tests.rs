@@ -1,7 +1,8 @@
 //! A file or folder inside a copied folder that cannot be opened pauses alone:
 //! Skip leaves out only that child, Retry opens it again, and the rest of its
 //! folder is still copied. A selected item that cannot be prepared is skipped the
-//! same way, and the other selected items are copied.
+//! same way, and the other selected items are copied; so is an item that a Move cannot
+//! take out of its write-protected folder (T-E06).
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
@@ -256,7 +257,9 @@ async fn a_selected_item_that_cannot_be_prepared_is_skipped_and_the_others_are_c
 }
 
 #[tokio::test]
-async fn a_single_selected_item_that_cannot_be_prepared_offers_no_skip() {
+async fn a_single_selected_item_that_cannot_be_prepared_can_be_skipped_like_any_other() {
+    // T-E06: Skip leaves the one selected item where it is; the job then has nothing
+    // left to do and ends at once, with the skip among its errors.
     let temp = fixture();
     if privileged(temp.path()) {
         return;
@@ -271,10 +274,78 @@ async fn a_single_selected_item_that_cannot_be_prepared_offers_no_skip() {
         .enqueue(request(1, std::slice::from_ref(&locked), &destination))
         .await;
     let failure = failure(&mut h, 1).await;
-    decide(&h, &failure, CopyChoice::Cancel).await;
+    decide(&h, &failure, CopyChoice::Skip).await;
     let done = h.terminal(1).await;
     chmod(&locked, 0o755);
-    assert!(failure.can_retry && !failure.can_skip, "{failure:?}");
-    assert_eq!(done.state, CopyOperationState::Cancelled, "{done:?}");
+    assert!(failure.can_retry && failure.can_skip, "{failure:?}");
+    assert_eq!(failure.stage, CopyErrorStage::Preparing, "{failure:?}");
+    assert_eq!(done.state, CopyOperationState::Failed, "{done:?}");
+    assert_eq!((done.skipped, done.failed), (1, 1), "{done:?}");
+    assert!(locked.is_dir());
+    assert!(!destination.join("locked").exists());
+    h.close().await;
+}
+
+/// A Move of `held.txt` out of the write-protected (mode 0555) folder `ro-src`.
+async fn protected_move(temp: &Path) -> (Harness, PathBuf, PathBuf) {
+    let folder = temp.join("ro-src");
+    fs::create_dir(&folder).unwrap();
+    let held = folder.join("held.txt");
+    fs::write(&held, b"held").unwrap();
+    let destination = temp.join("destination");
+    fs::create_dir(&destination).unwrap();
+    chmod(&folder, 0o555);
+    let h = Harness::native();
+    h.controller
+        .enqueue_move(request(1, std::slice::from_ref(&held), &destination))
+        .await;
+    (h, held, destination)
+}
+
+#[tokio::test]
+async fn a_move_out_of_a_write_protected_folder_offers_skip_and_skip_leaves_the_item() {
+    // T-E06: a question, not a failed job, with Retry, Skip and Skip all this error type.
+    let temp = fixture();
+    if privileged(temp.path()) {
+        return;
+    }
+    let (mut h, held, destination) = protected_move(temp.path()).await;
+    let failure = failure(&mut h, 1).await;
+    decide(&h, &failure, CopyChoice::Skip).await;
+    let done = h.terminal(1).await;
+    chmod(held.parent().unwrap(), 0o755);
+    assert!(failure.can_retry && failure.can_skip, "{failure:?}");
+    assert_eq!(failure.stage, CopyErrorStage::Preparing, "{failure:?}");
+    assert_eq!(failure.source.as_deref(), Some(held.as_path()));
+    assert_eq!(failure.error.kind, io::ErrorKind::PermissionDenied);
+    assert!(
+        failure
+            .error
+            .message
+            .starts_with("Permission denied: it cannot be moved out of its folder"),
+        "{failure:?}"
+    );
+    assert!(!failure.error.message.contains("os error"), "{failure:?}");
+    assert_eq!(done.state, CopyOperationState::Failed, "{done:?}");
+    assert_eq!((done.skipped, done.failed), (1, 1), "{done:?}");
+    assert_eq!(fs::read(&held).unwrap(), b"held");
+    assert!(!destination.join("held.txt").exists());
+    h.close().await;
+}
+
+#[tokio::test]
+async fn retry_moves_the_item_once_its_folder_is_writable() {
+    let temp = fixture();
+    if privileged(temp.path()) {
+        return;
+    }
+    let (mut h, held, destination) = protected_move(temp.path()).await;
+    let failure = failure(&mut h, 1).await;
+    chmod(held.parent().unwrap(), 0o755);
+    decide(&h, &failure, CopyChoice::Retry).await;
+    let done = finished(&mut h, 1).await;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert!(!held.exists());
+    assert_eq!(fs::read(destination.join("held.txt")).unwrap(), b"held");
     h.close().await;
 }

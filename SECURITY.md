@@ -684,9 +684,16 @@ the clipboard capture contract above. Cut itself removes nothing. Copy remains
 available where Move is unsupported, without silent fallback.
 Copy supports files and ordinary directories; special files are rejected.
 
-Links (Linux; Windows keeps its directory-link options and recreates no link). A link
-is transferred from its exact `readlink` bytes, never by resolving or rebasing its
-target: Copy without following recreates every link, Move moves the link itself, and
+Links. The Copy/Move dialog's **Links** choice is the same on both platforms and for
+Copy and Move: copy the files links point to (`FollowLinks`) or keep links as links
+(`Preserve`); its default comes from what the destination's volume reports (statfs type
+and sysfs on Linux, `GetVolumeInformationByHandleW`, drive type and the disk's storage
+descriptor on Windows), never from a probe file. A Move that copies what a link points
+to verifies the copy like any copy and then removes only the link: the target, which was
+not selected, is never moved, removed or written. A link is transferred from its exact
+representation (Linux `readlink` bytes; Windows substitute and print names and flags read
+with `FSCTL_GET_REPARSE_POINT` through a no-follow handle), never by resolving or rebasing
+its target: Copy without following recreates every link, Move moves the link itself, and
 Copy that follows links opens a target only under the directory-link rules (no magic
 links; no target on one of the kernel's interface filesystems, by `statfs` type: proc,
 sysfs, devpts, cgroup, cgroup2, debugfs, tracefs, securityfs, apparmorfs, pstore, bpf,
@@ -727,6 +734,25 @@ through the protected link removal (owned link with one name, staged privately,
 revalidated, unlinked); a failed removal keeps both and reports it. A same-volume
 Move renames the link through the same private capture as a directory link. No link
 target is ever opened, written or deleted by these steps.
+On Windows a link is followed only to an ordinary folder or file on a local drive (no
+network target, mounted volume or reparse point on its way; the cycle check compares
+volume serial and file ID); a followed file is held with write and delete sharing
+denied. A recreated link is staged under a private `.me-<random>` name in the destination
+folder, held through its own no-follow DELETE handle, read back from that handle,
+revalidated and published with a no-replace rename; cleanup deletes only that held
+object. A junction is written with `FSCTL_SET_REPARSE_POINT` on a folder this job just
+created (exact names, a local absolute target only) and needs no privilege. A symbolic
+link is created with `CreateSymbolicLinkW` and the unprivileged flag, which works only in
+Developer Mode or for a process that already holds the symbolic-link privilege (an
+elevated one); the application reads the Developer Mode setting and its own token's
+privileges to decide, never requests elevation for it, and never uses the
+`midnight-elevation` helper (a one-shot elevated directory reader) to create links.
+`CreateSymbolicLinkW` takes a path: it is given the destination folder's path and the
+private name that the namespace turn just checked absent, and the created object must
+then open, relative to the held folder, as the planned link. Without the right, a
+directory symbolic link to a local folder becomes a junction to the same folder and the
+job details say so; any other symbolic link is left out with that reason. No link is
+created at a network location or on a volume without reparse points.
 Conflicts show source and target metadata and accept versioned Skip, Skip all for
 this job, another name, explicit recoverable replacement, directory merge, or
 Cancel when the provider supports that choice. All choices apply to this job;

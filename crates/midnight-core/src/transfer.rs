@@ -163,13 +163,29 @@ pub trait TransferService: Send + Sync {
         Err(transfer_unsupported(path, "verified Move is unsupported"))
     }
 
+    /// Whether the filesystem of the destination folder `path` can store links and
+    /// whether it is a removable or network location, from what its volume reports
+    /// (never from a file written to find out). Read-only and advisory: the Copy/Move
+    /// dialog chooses its default link handling from it; a transfer still reports each
+    /// link it cannot create. The default knows nothing.
+    fn link_destination(
+        &self,
+        _path: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<crate::TransferLinkDestination, FsError> {
+        Ok(crate::TransferLinkDestination::default())
+    }
+
     /// Prepare a native Move with an explicit copy-side directory-link policy.
     /// Reject keeps the ordinary native Move route. Implementations must supply
     /// independent no-follow removal authority for every projected directory link.
     /// Preserve moves each link itself: a link source (`link_representation`) is an
     /// `Ordinary` entry whose capture renames the link on one volume and, across
     /// volumes, recreates it at the destination before removing the original, so
-    /// its `try_native_move` never reports `CrossDevice`.
+    /// its `try_native_move` never reports `CrossDevice`. FollowLinks projects each
+    /// link it follows, a link to a folder or to a regular file, as a `DirectoryLink`
+    /// entry whose source reads the target and whose capture removes only the link;
+    /// a link it cannot follow is moved itself, as under Preserve.
     fn prepare_move_source_with_links(
         &self,
         path: &Path,
@@ -586,6 +602,23 @@ pub trait TransferDirectory: Send + Sync {
             self.path(),
             "link staging is unsupported",
         ))
+    }
+    /// The link this destination creates for `representation`: by default exactly it,
+    /// once `admit_link` admits it. A destination that cannot create that form but can
+    /// create an equivalent one (a Windows junction for a local directory symbolic link
+    /// that this process may not create) returns that form and says why; the caller
+    /// stages, verifies and publishes the planned representation. Read-only, never
+    /// opens a target.
+    fn plan_link(
+        &self,
+        representation: &TransferLinkRepresentation,
+        cancel: &Cancellation,
+    ) -> Result<TransferLinkPlan, FsError> {
+        self.admit_link(representation, cancel)?;
+        Ok(TransferLinkPlan {
+            representation: representation.clone(),
+            note: None,
+        })
     }
     /// Exclusively create an owned native link stage after positive admission;
     /// never normalize/rebase its target or create/open referent content. Validate

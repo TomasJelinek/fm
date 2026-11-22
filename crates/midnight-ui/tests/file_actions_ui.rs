@@ -215,7 +215,7 @@ fn native_cut_paste_requires_move_confirmation_before_shared_queue_admission() {
 }
 
 #[test]
-fn unchecked_clipboard_move_enqueues_empty_directories() {
+fn a_clipboard_move_keeps_links_unless_the_user_chooses_to_copy_their_files() {
     clipboard_move(false);
 }
 
@@ -275,29 +275,33 @@ fn clipboard_move(follow_directory_links: bool) {
     let native = h.windows.borrow()[0].clone();
     let links = modeless::accessible_popup_item(
         &native,
-        AccessibleRole::Checkbox,
+        AccessibleRole::Combobox,
         crate::support::link_option::LABEL,
     )
     .filter(|item| item.is_visible());
     assert_eq!(
         links.is_some(),
         crate::support::link_option::shown(true),
-        "a clipboard Move shows the link choice only where Move can follow links"
+        "a clipboard Move shows the link choice as a Copy does"
     );
     if let Some(links) = links {
+        // No backend answers which default the destination has: links stay links.
         assert_eq!(
             links
-                .accessible_string_property(AccessibleStringProperty::Checked)
+                .accessible_string_property(AccessibleStringProperty::Value)
                 .unwrap(),
-            "true"
+            crate::support::link_option::KEEP_LINKS
         );
-        if !follow_directory_links {
-            links.accessible_action(&AccessibilityAction::Default);
+        if follow_directory_links {
+            // From the destination field, past the metadata option, to the choice.
+            owned_windows::child_key(&h.windows, Key::Tab);
+            owned_windows::child_key(&h.windows, Key::Tab);
+            owned_windows::child_key(&h.windows, Key::UpArrow);
             assert_eq!(
                 links
-                    .accessible_string_property(AccessibleStringProperty::Checked)
+                    .accessible_string_property(AccessibleStringProperty::Value)
                     .unwrap(),
-                "false"
+                crate::support::link_option::COPY_FILES
             );
         }
     }

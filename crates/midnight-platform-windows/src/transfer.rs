@@ -12,6 +12,8 @@ use windows_sys::Win32::Storage::FileSystem::*;
 
 #[path = "transfer_destination.rs"]
 mod destination;
+#[path = "transfer_link_destination.rs"]
+mod link_destination;
 #[path = "transfer_metadata.rs"]
 mod metadata;
 #[path = "transfer_move.rs"]
@@ -110,6 +112,13 @@ impl TransferService for crate::WindowsFileSystem {
         destination::Directory::from_file(file, path.to_owned())
             .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
     }
+    fn link_destination(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferLinkDestination, FsError> {
+        link_destination::link_destination(path, cancel)
+    }
     fn prepare_move_destination(
         &self,
         path: &Path,
@@ -142,16 +151,15 @@ impl TransferService for crate::WindowsFileSystem {
         match links {
             CopyLinkPolicy::Reject => move_source::prepare(path, revisions, cancel)
                 .map(midnight_core::PreparedTransferMoveEntry::Ordinary),
-            CopyLinkPolicy::FollowDirectoryContents | CopyLinkPolicy::EmptyDirectories => {
+            // Preserve moves each link itself (a rename on one volume, recreated and then
+            // removed across volumes); FollowLinks copies what it points to and then
+            // removes only the link.
+            CopyLinkPolicy::FollowDirectoryContents
+            | CopyLinkPolicy::EmptyDirectories
+            | CopyLinkPolicy::Preserve
+            | CopyLinkPolicy::FollowLinks => {
                 move_source::prepare_with_links(path, links, revisions, cancel)
             }
-            // Not compiled on Linux hosts. Windows keeps its directory-link
-            // policies: link leaves need privileged CreateSymbolicLinkW staging
-            // and separate junction rules, which are not implemented.
-            CopyLinkPolicy::Preserve | CopyLinkPolicy::FollowLinks => Err(unsupported(
-                path,
-                "Move with preserved links is unsupported",
-            )),
         }
     }
     fn prepare_transfer_source(
@@ -167,16 +175,6 @@ impl TransferService for crate::WindowsFileSystem {
         links: CopyLinkPolicy,
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferSource>, FsError> {
-        if links.recreates_links() {
-            return Err(FsError::from_io(
-                "transfer capability",
-                path,
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "link-preserving source preparation is unsupported",
-                ),
-            ));
-        }
         checked(cancel, path)?;
         validate_path(path, false)?;
         let parent_path = path

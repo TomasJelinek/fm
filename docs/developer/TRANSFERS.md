@@ -581,8 +581,18 @@ Move of the folder itself reports it as read-only. A folder's check runs once fo
 all of its entries: its enumeration keeps the checked folder (`SourceFolder`) instead
 of checking it again, about a dozen system calls, for every entry. The folder that
 contains the selection is never changed, so a write-protected one still stops the
-Move at preparation ([security](../../SECURITY.md)). Windows needs nothing here: a
-folder's read-only attribute does not keep entries from leaving it.
+Move at preparation ([security](../../SECURITY.md)), before anything is copied for the
+item: a permission error that names it ("Permission denied: it cannot be moved out of
+its folder, …"; a read-only mount says so instead) and, like every other transfer
+error, offers Retry, Skip and Skip all of this error type (T-E06; until 21 November it
+was an Unsupported error that ended the job without a question). Skip leaves the item
+in its folder, and a job left with nothing to do ends at once, Failed, with the item's
+error and its skip (`Preparation::is_last_root`). Nothing was copied for it, so there is
+no verified copy to account for. Windows needs nothing here: a folder's read-only
+attribute does not keep entries from leaving it. A folder whose access list denies
+deleting its entries stops the item the same way, at its preparation, with the same
+Retry, Skip and Skip all; that question still shows the system's text ("Access is
+denied").
 
 Optional contracts default to Unsupported:
 
@@ -1000,47 +1010,98 @@ lookup".
 
 ## Links in Copy and Move
 
-`CopyLinkPolicy` is frozen when a job is admitted. The Copy/Move dialog sends it
-through `Command::EnqueueCopyWithOptions`; its choice is platform policy in
-`crates/midnight-ui/src/transfer_link_option/`:
+`CopyLinkPolicy` is frozen when a job is admitted. The Copy/Move dialog sends it through
+`Command::EnqueueCopyWithOptions`. Its **Links** choice is the same on Windows and Linux
+and for Copy and Move (`crates/midnight-ui/src/transfer_link_option.rs`):
 
-| Dialog | Linux | Windows |
-| --- | --- | --- |
-| Copy, **Follow links** checked (default) | `FollowLinks` | `FollowDirectoryContents` |
-| Copy, cleared | `Preserve` | `EmptyDirectories` |
-| Move (Linux shows no option) | `Preserve` | as Copy's option |
+| Dialog | Policy | Copy | Move |
+| --- | --- | --- | --- |
+| Copy the files links point to | `FollowLinks` | a followed link becomes the file or folder it points to | the same copy, verified like any copy, then only the link is removed |
+| Keep links as links | `Preserve` | each link is recreated with its exact target | each link is moved itself |
 
-`Preserve` never opens a link's target. The Linux source yields every link it meets,
-the selected root and each link below a selected folder, as a link leaf (`EntryKind::Symlink`)
-whose `link_representation` is the exact `readlink` bytes (at most 64 KiB, relative
-text kept verbatim). That read revalidates the parent binding, the link's identity,
-revision and text through the held parent; an in-place change fails. Discovery counts
-a leaf without following it.
+`FollowDirectoryContents` and `EmptyDirectories` remain for their existing callers; the
+dialog no longer sends them.
 
-`FollowLinks` (Copy only) follows a directory link exactly as `FollowDirectoryContents`
-does, under the same filesystem, link-depth and ancestry rules, and presents a link to
-a regular file as that file: its content is copied and verified like any file, and the
-binding of the link and its target is revalidated, with the file's revision, before
-each use.
+### The default and why
 
-Both follow a link to a target on any filesystem but the kernel's own (below), on the
-link's mount or another. The link's text is resolved as the kernel resolves it, never
+When the dialog opens it asks what its destination does with links
+(`Command::InspectTransferLinks`, answered by `Event::TransferLinksInspected` from
+`TransferService::link_destination` on a backend worker); the check of a typed folder
+(`Command::CheckTransferDestination` with `links`) answers the same for that folder. Only
+what the volume reports is read; nothing is written to find out:
+
+- Windows (`transfer_link_destination.rs`, `storage_kind.rs`): `GetVolumeInformationByHandleW`
+  on the folder (`FILE_SUPPORTS_REPARSE_POINTS`, the filesystem's name, the volume serial
+  number); `GetDriveTypeW` (removable, network; a UNC path is a network location); for a
+  fixed drive, the storage descriptor of its disk (`IOCTL_STORAGE_QUERY_PROPERTY`,
+  `StorageDeviceProperty`): the USB, SD or MMC bus, or removable media. No link is created
+  at a network location: a junction's target would be resolved on the server and a
+  symbolic link's by each client's evaluation policy.
+- Linux (`transfer_link_destination.rs`): the folder's `statfs` type (the FAT family and
+  exFAT cannot store links; ext2/3/4, XFS, Btrfs, tmpfs, F2FS, ZFS, bcachefs, ntfs3 and
+  NFS can; anything else, SMB and FUSE included, is unknown and keeps links by default),
+  and the sysfs entry of its block device (`removable`, an SD card's `device/type`, a
+  `usbN` bus on its path; device-mapper and md devices through their slaves).
+
+`TransferLinkFacts::copy_files_by_default` copies the files for a destination that cannot
+store links, a network location (Windows) and a removable drive, unless the selection's
+folder is on that same removable drive; elsewhere links stay links. Decision: within one
+removable drive the links already live on it, and following them would duplicate data and
+turn a Move's rename into a copy. The dialog (`presenter/copy_dialog_links.rs`) shows the
+reason under the choice ("This drive cannot store links (FAT32), …", "Removable drive: …",
+"Network location: …"). An answer never changes a choice the user made. Keeping links
+where none can be stored shows a warning under the choice and holds the first
+confirmation once with that explanation; confirming again starts. A typed folder whose
+default differs from the choice shown, while the user has not chosen, holds the
+confirmation once and shows that folder's default and reason. A confirmation before the
+answer arrives starts with the choice shown, which keeps links.
+
+Copy and Move to FAT32 and exFAT are refused on both platforms by requirements older than
+this choice (Linux stages need `O_TMPFILE`; Windows transfers need 128-bit file IDs), so
+there the choice only decides what the dialog shows and says; on a removable NTFS, ext4
+or other link-capable drive it decides what is written.
+
+### Keep links as links (`Preserve`)
+
+`Preserve` never opens a link's target. The source yields every link it meets, the
+selected root and each link below a selected folder, as a link leaf (`EntryKind::Symlink`
+or `DirectoryLink`) whose `link_representation` is exact: on Linux the `readlink` bytes
+(at most 64 KiB, relative text kept verbatim), on Windows the substitute and print names
+and the relative flag of a symbolic link or the names of a local junction, read with
+`FSCTL_GET_REPARSE_POINT` through a no-follow handle. That read revalidates the parent
+binding, the link's identity, revision and representation; an in-place change fails.
+Discovery counts a leaf without following it. Windows keeps a symbolic link to any target
+(a local drive, a relative path, a network share) and a junction to a local drive; a
+volume mounted in a folder (`\??\Volume{...}\`) and other reparse points are refused with
+that reason.
+
+### Copy the files links point to (`FollowLinks`)
+
+`FollowLinks` follows a directory link as `FollowDirectoryContents` does, under the same
+volume, link-depth and ancestry rules, and presents a link to a regular file as that file:
+its content is copied and verified like any file, and the binding of the link and its
+target is revalidated, with the file's revision, before each use. A link that cannot be
+followed is a leaf recreated as with `Preserve`, and `TransferSource::link_not_followed`
+gives the reason, which the job records as a note (`CopyProgress::notes`, first 16, with
+an exact `note_count`) shown in Jobs details.
+
+On Linux a link is followed to a target on any filesystem but the kernel's own (below), on
+the link's mount or another. The link's text is resolved as the kernel resolves it, never
 through a magic link (such as `/proc/self/fd/0`). A text that stays on the mount of the
-link's folder is resolved within it, as before: a relative one by the kernel under
-`RESOLVE_NO_XDEV`, and an absolute one, or one that meets an absolute link on another
-mount than the root's, one name at a time from the mount's root when it lies under the
-mount's path, with at most 40 links on the way (`MountAnchor::walk`). An absolute text
-is never left to the kernel there: given an absolute path, it starts at `/` under
-`RESOLVE_NO_XDEV` from whatever mount the folder is on. The folders below such a link
-are revalidated from the same anchor as the link's folder, the root of that mount. A
-text that leaves the mount (a mount point on the way, `..` above the mount's root, an
-absolute text outside the mount's path, or any absolute text below a link that already
-left its mount) is resolved by the kernel across mount points under
-`RESOLVE_NO_MAGICLINKS` alone, and that link becomes the anchor of the folders below it
-(`Binding::reopen_below`): revalidating one resolves the link again from its held
-folder, requires the same target (device and inode), and opens the folders below it
-from there without leaving the target's mount. So with `/home` on its own filesystem, a
-link there to `/home/user/folder` is followed within its mount, links to
+link's folder is resolved within it: a relative one by the kernel under
+`RESOLVE_NO_XDEV`, and an absolute one, or one that meets an absolute link on another mount
+than the root's, one name at a time from the mount's root when it lies under the mount's
+path, with at most 40 links on the way (`MountAnchor::walk`). An absolute text is never
+left to the kernel there: given an absolute path, it starts at `/` under `RESOLVE_NO_XDEV`
+from whatever mount the folder is on. The folders below such a link are revalidated from
+the same anchor as the link's folder, the root of that mount. A text that leaves the mount
+(a mount point on the way, `..` above the mount's root, an absolute text outside the
+mount's path, or any absolute text below a link that already left its mount) is resolved by
+the kernel across mount points under `RESOLVE_NO_MAGICLINKS` alone, and that link becomes
+the anchor of the folders below it (`Binding::reopen_below`): revalidating one resolves the
+link again from its held folder, requires the same target (device and inode), and opens
+the folders below it from there without leaving the target's mount. So with `/home` on its
+own filesystem, a link there to `/home/user/folder` is followed within its mount, links to
 `/media/stick/folder`, `/dev/shm/folder` or `/mnt/nas/share` across mounts, and one to
 `/proc` or `/sys/kernel` not at all.
 
@@ -1053,102 +1114,178 @@ functionfs and gadgetfs, 27 in all (`SYSTEM_FILESYSTEMS` in
 `transfer_directory_links.rs`). Their files describe the system and the copying process
 itself (`/proc/self/environ` is this process's environment), a read can wait for ever
 (tracefs's `trace_pipe`, a USB gadget's endpoint files) or change state (xenfs's
-hypervisor interfaces), and following a link to an automount point would mount it. The target is first located
-with `O_PATH` and not as a folder, which mounts nothing, so an automount point that is
-not mounted yet is seen as autofs and kept; the folder that is followed is then bound
-as a folder and its type checked again. This is a deny list rather than an allow list
-because a link only chooses which folder Copy reads, not what kind of filesystem: Copy
-reads any filesystem the user selects directly, and an allow list would refuse data
-filesystems it does not name (ZFS, bcachefs, VirtualBox shared folders, cluster and
-future filesystems). A new kernel interface filesystem missing from the list would be
-followed, still reading only regular files with this process's permissions and never a
-special file. devtmpfs reports the type of tmpfs and is not told apart: it holds device
-nodes, which Copy never opens, and links, which follow these same rules. Network
+hypervisor interfaces), and following a link to an automount point would mount it. The
+target is first located with `O_PATH` and not as a folder, which mounts nothing, so an
+automount point that is not mounted yet is seen as autofs and kept; the folder that is
+followed is then bound as a folder and its type checked again. This is a deny list rather
+than an allow list because a link only chooses which folder Copy reads, not what kind of
+filesystem: Copy reads any filesystem the user selects directly, and an allow list would
+refuse data filesystems it does not name (ZFS, bcachefs, VirtualBox shared folders,
+cluster and future filesystems). A new kernel interface filesystem missing from the list
+would be followed, still reading only regular files with this process's permissions and
+never a special file. devtmpfs reports the type of tmpfs and is not told apart: it holds
+device nodes, which Copy never opens, and links, which follow these same rules. Network
 filesystems (NFS, SMB, 9p such as WSL's `/mnt/c`) and FUSE are followed: they hold the
-user's files, which Copy reads when they are selected directly too, and their device
-and inode numbers identify a folder for the cycle check as on a local filesystem. An
+user's files, which Copy reads when they are selected directly too, and their device and
+inode numbers identify a folder for the cycle check as on a local filesystem. An
 unresponsive server or FUSE daemon can delay the job as when its folder is selected
-(cancellation takes effect when the call returns), and automount points along the way
-of a link's text are mounted as when the link is opened.
+(cancellation takes effect when the call returns), and automount points along the way of
+a link's text are mounted as when the link is opened.
+
+Linux keeps a link as a link, with its reason, when its target is missing, a loop of links
+(for a text resolved across mounts or in a folder of /proc, also a magic link, which ends
+the resolution the same way), unreadable, on a system filesystem (named in the note) or an
+automount point that is not mounted, a special file, or a directory that is an active
+ancestor. A target is unreadable when the user cannot read the file, or cannot list or
+enter the folder: opening it as a path needs neither, so this is checked (`faccessat` with
+the effective IDs, on the target the link was bound to) before the link is followed. A
+link whose text needs the walk within its folder's mount (an absolute one, say) is also
+kept when that mount cannot be qualified, for example a folder whose path leads through
+another link rather than along the mount's own path. `FollowDirectoryContents` refuses
+such a cycle as an error, and it and `EmptyDirectories` refuse a target on a system
+filesystem as an error.
+
+Windows (`transfer_source.rs`, `transfer_source_links.rs`) follows a junction or a
+directory symbolic link to a folder, and a file symbolic link to a file, only where the
+target is an ordinary folder or file on a local drive: an absolute target (`\??\D:\...`)
+is walked from that drive's own volume root, which `QueryDosDeviceW` must map to a
+`\Device\HarddiskVolumeN` opened through `\\?\GLOBALROOT`, with every component an
+ordinary folder on that volume; a relative target is walked from its link's folder, never
+above its volume's root (`transfer_source_link_target.rs`). A followed file is held for
+reading as a copied file is (write and delete sharing denied) and must be an ordinary
+file, not a link, cloud placeholder or deduplicated file. The cycle check compares volume
+serial number and file ID, so it holds across volumes (`transfer::source::volume_tests`,
+run with `NATIVE_MOVE_OTHER_VOLUME_ROOT`). Kept as links, with the reason, are a link
+whose target is missing or unreadable, a remote target (a UNC path or a mapped network
+drive), a volume mounted in a folder, a reparse point anywhere on a target's way, and a
+folder that contains the link. Decision: these refusals stay (they are what the earlier
+`FollowDirectoryContents` refused as errors); under `FollowLinks` such a link is kept as a
+link instead of failing the job, which this design needs and which is safe because a kept
+link is never opened through. Linux follows a link to a network filesystem and resolves
+links and mount points on a target's way; on Windows each of these still needs its own
+qualification.
 
 Only links followed inside one another count against the budget of 128, wherever they
-lead: Copy has no fixed depth limit for ordinary folders under any policy (Move keeps
-its own limit of 128 folders; on Linux the folders that transfers hold open, a followed
-one on another filesystem too, count against a
-[descriptor budget](#folders-held-open-on-linux)), and `Preserve` and
-`EmptyDirectories` keep no ancestry at all. A followed link back to a folder on the
-current path is a cycle, compared by device and inode across filesystems. Recursive
-totals (discovery) still stop after 128 nested folders, as without a link policy; the
-job then copies without them.
+lead: Copy has no fixed depth limit for ordinary folders under any policy (Move keeps its
+own limit of 128 folders and 100,000 entries; on Linux the folders that transfers hold
+open, a followed one on another filesystem too, count against a
+[descriptor budget](#folders-held-open-on-linux)), and `Preserve` and `EmptyDirectories`
+keep no ancestry at all. A followed link back to a folder on the current path is a cycle,
+compared by device and inode (Windows: volume serial and file ID) across filesystems.
+Recursive totals (discovery) still stop after 128 nested folders, as without a link
+policy; the job then copies without them.
 
-A link that `FollowLinks` cannot follow is a leaf recreated as with `Preserve`, and
-`TransferSource::link_not_followed` gives the reason, which the job records as a note
-(`CopyProgress::notes`, first 16, with an exact `note_count`) shown in Jobs details:
-a missing target, a loop of links (for a text resolved across mounts or in a folder of
-/proc, also a magic link, which ends the resolution the same way), an unreadable target,
-a target on a system filesystem (named in the note) or an automount point that is not
-mounted, a special file, or a directory that is an active ancestor.
-`FollowDirectoryContents` refuses such a cycle as an error, and it and
-`EmptyDirectories` refuse a target on a system filesystem as an error. A
-target is unreadable when the user cannot read the file, or cannot list or enter the
-folder: opening it as a path needs neither, so this is checked (`faccessat` with the
-effective IDs, on the target the link was bound to) before the link is followed, and
-such a link is kept rather than failing when it is copied. A link whose text needs the
-walk within its folder's mount (an absolute one, say) is also kept when that mount
-cannot be qualified, for example a folder whose path leads through another link rather
-than along the mount's own path. Notes are not errors; the job still completes.
+### Recreating a link
 
-Copy recreates a link (engine `LinkCopy`): admission (`TransferDirectory::admit_link`),
-a private stage, sync, an independent readback that must equal the source text, a
-revalidation of source and stage, then publication. On Linux the stage is `item` in a
-new owner-only `.midnight-link-<random>` directory beneath the protected destination
-folder (`symlinkat` relative to the held directory), so no link exists under a final
-name before it is verified. Publication renames it to the final name with
-`RENAME_NOREPLACE` (a filesystem that cannot exclude replacement refuses it) and
-removes the empty stage; the published link's identity and text are checked again.
+Copy recreates a link (engine `LinkCopy`): the destination plans it
+(`TransferDirectory::plan_link`, after `admit_link`), then a private stage, sync, an
+independent readback that must equal the planned representation, a revalidation of source
+and stage, then publication. A link the destination cannot create is reported when the job
+reaches it, with Skip and Skip all, and the other selected items are still copied (before
+this, a selected link that a destination refused failed the whole job's preparation).
+
+- Linux: the stage is `item` in a new owner-only `.midnight-link-<random>` directory
+  beneath the protected destination folder (`symlinkat` relative to the held directory),
+  so no link exists under a final name before it is verified. Publication renames it to
+  the final name with `RENAME_NOREPLACE` (a filesystem that cannot exclude replacement
+  refuses it) and removes the empty stage; the published link's identity and text are
+  checked again. A FAT or exFAT folder refuses before anything is created ("This drive
+  cannot store links (FAT)…"); a filesystem that refuses `symlinkat` with `EPERM` or
+  `EOPNOTSUPP` says it cannot store symbolic links.
+- Windows (`transfer_link_stage.rs`): the stage is a private `.me-<16 hex>` entry in the
+  destination folder, held through a no-follow handle with DELETE access, read back from
+  that handle and published by a no-replace rename, as a copied file is. A junction is
+  created as an empty folder with mount-point reparse data (`FSCTL_SET_REPARSE_POINT`,
+  exact substitute and print names); that needs no privilege, and only an absolute path on
+  a local drive can be its target. A symbolic link is created with `CreateSymbolicLinkW`
+  and `SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE`, which succeeds in Developer Mode or
+  with the symbolic-link privilege (an elevated process holds it); its target text is the
+  link's own (relative stays relative, `\??\C:\x` becomes `C:\x`, `\??\UNC\s\x` becomes
+  `\\s\x`), and its print name is that text. Whether symbolic links may be created is read
+  from the Developer Mode setting (`AppModelUnlock\AllowDevelopmentWithoutDevLicense`) and
+  the process token's privileges, never by creating one to find out. Without either, a
+  directory symbolic link to a local folder is planned as a junction to the same folder (a
+  relative target resolved from the destination folder, never above its drive), and the
+  job details say "… was created as a junction to D:\x, because creating a symbolic link
+  needs Developer Mode or administrator rights" (and that a relative target became
+  absolute); a file symbolic link, or one to a network share, is reported with that reason
+  and left out. A volume without reparse points (FAT32, exFAT) or a network location
+  refuses every link with that reason. Decision: the `midnight-elevation` helper is not
+  used to create links; it is a one-shot elevated directory reader (and the AppArmor
+  installer on Linux), and letting an elevated process create links at destinations the
+  unelevated application chooses would widen its authority beyond reading.
+
 An existing name is an ordinary conflict: Skip, another name, or Replace when the
-destination declares `TransferCapabilities::link_replacement` (local ext, as for
-files) and the target is a file or a link, never a folder. Replace binds the target
-pin (`StagedTransferLink::prepare_replacement`), moves the staged link into a new
+destination declares `TransferCapabilities::link_replacement` (Linux local ext, as for
+files) and the target is a file or a link, never a folder. Replace binds the target pin
+(`StagedTransferLink::prepare_replacement`), moves the staged link into a new
 `.midnight-recovery-<random>/item` and exchanges it with the target there
 (`RENAME_EXCHANGE`), so the displaced entry stays in recovery, with the identity and
-revision checks of file replacement. A link counts as a completed file and never as
-content bytes.
+revision checks of file replacement. Windows publishes links without replacement only
+(`link_replacement` is false): Skip or another name. A link counts as a completed file and
+never as content bytes.
 
-Move moves the link itself. Preparation with `Preserve` returns an `Ordinary` entry
-whose capture is the link's own: on one filesystem it renames the link through the
-private `.midnight-move-*` capture used for directory links (Replace of a file or link
-exchanges it into that capture directory, as a native file replacement does). Across
-filesystems the capture recreates the link at the destination (the stage, readback,
-publication and replacement above), checks the published link, and only then removes
-the original link with the protected removal of a moved directory link (owned link
-with one name, staged, revalidated, unlinked). If that removal fails, the outcome is
-`RecoveryRequired` with the published destination, so the job reports the error and
-both links remain. Its `try_native_move` therefore never reports `CrossDevice`; the
-engine has no content fallback for a link and reports one that a provider cannot move.
-Folders under a cross-volume Move are traversed with the same policy, so their links
-move as links. `FollowLinks` is refused for Move.
+### Move
 
-Windows (not compiled on Linux hosts) keeps its directory-link policies: the source
-refuses `Preserve` and `FollowLinks` and its destinations stage no links
-(`link_replacement` is false), because recreating a symbolic link needs
-`CreateSymbolicLinkW` with a privilege or Developer Mode and junctions need their own
-qualification. The UI therefore sends it the existing directory-link policies. Its
-`FollowDirectoryContents` already follows a junction or directory symbolic link to a
-folder on another local volume, as the Linux rule now does: an absolute target
-(`\??\D:\...`) is walked from that drive's own volume root, which `QueryDosDeviceW`
-must map to a `\Device\HarddiskVolumeN` opened through `\\?\GLOBALROOT`, with every
-component an ordinary folder on that volume; a relative target is walked from its
-link's folder, never above its volume's root (`transfer_source_link_target.rs`). The
-cycle check compares volume serial number and file ID, so it holds across volumes
-(`transfer::source::volume_tests`, run with `NATIVE_MOVE_OTHER_VOLUME_ROOT`). Windows
-still refuses, as errors since it keeps no link leaves: a remote target (a UNC path or
-a mapped network drive), a volume mounted in a folder (its target is a volume GUID,
-`\??\Volume{...}\`; like a mount point below a selected folder on Linux, Copy does not
-enter it), and a reparse point anywhere on a target's way (a junction, a symbolic link
-or a mounted folder). Linux follows a link to a network filesystem and resolves links
-and mount points on a target's way; on Windows each of these needs its own
-qualification first.
+`Preserve`: Move moves the link itself. Preparation returns an `Ordinary` entry whose
+capture is the link's own. On one filesystem it renames the link (Linux through the private
+`.midnight-move-*` capture used for directory links; Windows through the moved directory
+link's capture, `transfer_move_link.rs`, which also opens a file symbolic link). Across
+filesystems the capture recreates the link at the destination (the plan, stage, readback
+and publication above), checks the published link, and only then removes the original
+link with the protected removal of a moved directory link (owned link with one name on
+Linux, staged, revalidated, unlinked; on Windows its only DELETE handle, revalidated, then
+the delete disposition and its confirmation). If that removal fails, the outcome is
+`RecoveryRequired` with the published destination, so the job reports the error and both
+links remain. Its `try_native_move` therefore never reports `CrossDevice`; the engine has
+no content fallback for a link and reports one that a provider cannot move. Folders under
+a cross-volume Move are traversed with the same policy, so their links move as links. A
+folder that a Move renames whole keeps its links exactly; they are not examined, and a
+relative one resolves from the folder's new place.
+
+`FollowLinks`: a link that the source follows, to a folder or to a regular file, is a
+`DirectoryLink` entry whose source reads the target at the link's own path and whose
+capture holds only the link (`PreparedTransferMoveEntry::DirectoryLink`; the engine
+accepts a file projection under this policy). The engine never renames such a link: the
+target's content is copied and verified like any copy (a file by `VerifiedFileCopy`, a
+folder entry by entry), and then `remove_original` removes the link alone, a file link
+right after its copy is published (`Job::remove_copied_link`), a folder link once its
+whole branch completed without a failure or skip. What the link pointed to is never moved,
+removed or rewritten: it was not selected. A removal that fails leaves the link and the
+verified copy where they are and asks whether to go on (Skip, Skip all, Cancel; there is
+nothing to retry). A link that cannot be followed is moved itself, as under `Preserve`,
+and the job details say why. A folder is never renamed whole under `FollowLinks`, so that
+the links in it are followed too: the engine creates it at the destination, moves its
+entries one by one (a file by its own rename where it can) and removes it once empty, as
+for a merge (`Job::copies_instead_of_renaming`); a folder on another volume takes the
+cross-volume route that its failed rename would have taken. The folder's removal follows
+its links' outcomes: a link kept in it (skipped, failed, or not removed) keeps the folder.
+Not handled: a link inside the moved folder whose target lies in the same folder and was
+already moved by then is no longer found, and is moved as a link with "its target does not
+exist" in the job details.
+
+The Windows engine tests of both Moves to another volume (a junction recreated there,
+and a folder whose junction is followed; `copy_link_windows_tests.rs`) need
+NATIVE_MOVE_OTHER_VOLUME_ROOT, an owned folder on another local volume than the
+temporary folder, and print SKIP without it, as the provider's cross-volume tests do.
+
+### Notes in the job details
+
+A link handled other than as the choice says is named with its reason, never with raw
+system error text: "… was copied (moved) as a link because …" (why `FollowLinks` did not
+follow it); "… was created as a junction to …" (a Windows plan, for Copy and for a Move
+across volumes, `TransferLinkPlan::note`); and "… keeps its relative target “…”, which
+leads outside the copied (moved) items; at the destination it points somewhere else or
+nowhere" for a link kept as a link whose relative text, resolved name by name from its
+folder, climbs above the selected item that holds it (for a selected link, above the
+folder it is in; `TransferLinkRepresentation::relative_text_leaves`). Only the text decides,
+never what exists.
+
+An item that disappears from the source while a job copies or moves it, or before the job
+reaches it, is reported as "removed from the source while copying" ("…while moving")
+instead of the system's text for a missing file (`decisions::vanished_source`, applied to
+every question about a source and to a selected item's preparation); a missing destination
+keeps its own error.
 
 ## Folders held open on Linux
 

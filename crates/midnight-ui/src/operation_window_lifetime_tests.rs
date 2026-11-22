@@ -129,7 +129,14 @@ fn embedded_copy_busy_factory_preserves_draft_and_dismisses_in_place() {
                     intent: midnight_core::FileClipboardIntent::Move,
                 },
                 path.clone(),
-                &|_| panic!("opening a Move draft must not enqueue it"),
+                // Opening a draft asks only what its destination does with links.
+                &|command| {
+                    assert!(
+                        matches!(command, midnight_core::Command::InspectTransferLinks(_)),
+                        "opening a Move draft must not enqueue it: {command:?}"
+                    );
+                    true
+                },
             );
             p.require_owned_command_scope();
             p.copies.draft.as_ref().unwrap().token.clone()
@@ -341,7 +348,14 @@ fn embedded_operation_background_copy_retirement_keeps_owner_item_focus() {
                 intent: midnight_core::FileClipboardIntent::Move,
             },
             std::env::temp_dir(),
-            &|_| panic!("opening a draft must not submit a transfer"),
+            // Opening a draft asks only what its destination does with links.
+            &|command| {
+                assert!(
+                    matches!(command, midnight_core::Command::InspectTransferLinks(_)),
+                    "opening a draft must not submit a transfer: {command:?}"
+                );
+                true
+            },
         );
         crate::refresh(&h.main, &h.state.borrow());
         slint::platform::update_timers_and_animations();

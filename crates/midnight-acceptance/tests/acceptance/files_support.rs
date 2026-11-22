@@ -471,6 +471,33 @@ fn operation_form(app: &App) -> midnight_ui::OperationPresentation<'_> {
 /// The label of the dialog's queueing option.
 pub const WAIT_OPTION: &str = "Wait for other operations to finish";
 
+/// The Copy/Move dialog's Links entries: the first copies the files links point to, the
+/// second keeps links as links.
+pub const COPY_LINKED_FILES: &str = "Copy the files links point to";
+pub const KEEP_LINKS: &str = "Keep links as links";
+
+/// Choose the dialog's link handling as a user does: open the Links list with a click,
+/// move to the wanted entry and confirm with Enter.
+fn choose_links(app: &mut App, wanted: &str) -> Result<(), String> {
+    const LABEL: &str = "Links";
+    if accessible_value(app.slint(), AccessibleRole::Combobox, LABEL).as_deref() != Some(wanted) {
+        click_scrolled(app.slint(), AccessibleRole::Combobox, LABEL)?;
+        app.settle();
+        let step = if wanted == COPY_LINKED_FILES {
+            Key::UpArrow
+        } else {
+            Key::DownArrow
+        };
+        input::key(app.slint(), step);
+        input::key(app.slint(), Key::Return);
+        app.settle();
+    }
+    match accessible_value(app.slint(), AccessibleRole::Combobox, LABEL) {
+        Some(value) if value == wanted => Ok(()),
+        other => Err(format!("Links shows {other:?}, not {wanted:?}")),
+    }
+}
+
 /// Press F5/F6 on the focused panel, set the dialog up from `spec` and confirm with
 /// Enter. Returns the index of the job's first report in `app.copies` and when it was
 /// confirmed; the dialog's own refusal is an `Err`.
@@ -502,14 +529,16 @@ fn confirm_dialog(
             operation_form(app).get_option_checked()
         })?;
     }
-    // The link option's label differs by platform; use the one the dialog shows.
-    let link_label = operation_form(app).get_follow_links_label().to_string();
+    // The Links choice: following links copies the files they point to.
     if let Some(follow) = spec.follow_links
-        && inspect::find(app.slint(), AccessibleRole::Checkbox, &link_label).is_some()
+        && operation_form(app).get_links_visible()
     {
-        set_check(app, &link_label, follow, |app| {
-            operation_form(app).get_follow_directory_links_checked()
-        })?;
+        let wanted = if follow {
+            COPY_LINKED_FILES
+        } else {
+            KEEP_LINKS
+        };
+        choose_links(app, wanted)?;
     }
     if let Some(wait) = spec.wait {
         set_check(app, WAIT_OPTION, wait, |app| {
