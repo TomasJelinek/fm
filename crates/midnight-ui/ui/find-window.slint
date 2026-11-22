@@ -39,6 +39,11 @@ export component FindWindow inherits ToolWindow {
     preferred-width: 780px; preferred-height: 560px;
     icon: FallbackIcons.find;
     in property <[FindRow]> rows;
+    // Whether each shown result is selected; the host keeps the selection.
+    in property <[bool]> marks;
+    in property <int> selected-count;
+    // The current search, so that a new one closes the results' context menu.
+    in property <string> generation;
     in property <[FindRootRow]> roots;
     private property <int> selected-root;
     private property <int> current-root: root.roots.length == 0 ? -1
@@ -108,8 +113,21 @@ export component FindWindow inherits ToolWindow {
     callback feed-panel();
     callback file-action(string, int);
     callback action-key(KeyEvent, string) -> bool;
+    // Selection requests from the results (see `FindResults`).
+    callback select-row(int, bool, bool);
+    callback move-cursor(int, bool, bool);
+    callback toggle-mark(bool);
+    callback select-all();
+    callback deselect-all();
+    callback menu-row(int);
+    // Copy names (0), full paths (1) or row details (2) of the results an action on
+    // this row acts on.
+    callback copy-results(string, int);
     in property <string> view-hint;
     in property <string> edit-hint;
+    // The current bindings of View and Edit, shown in the context menu.
+    in property <string> view-keys;
+    in property <string> edit-keys;
     private property <bool> selected-file: root.selected-row >= 0
         && root.selected-row < root.rows.length && !root.rows[root.selected-row].directory
         && !root.rows[root.selected-row].in-archive;
@@ -126,6 +144,19 @@ export component FindWindow inherits ToolWindow {
             root.reveal(root.rows[root.selected-row].token);
         }
     }
+    // A footer action, as a button or from More…, by its index in `footer-actions`.
+    function footer-chosen(index: int) {
+        if index == 0 { if root.running { root.stop(); } else { root.submit(); } }
+        else if index == 1 { root.reveal-selected(); }
+        else if index == 2 { root.act-selected(0); }
+        else if index == 3 { root.act-selected(2); }
+        else if index == 4 { root.act-selected(3); }
+        else if index == 5 || index == 6 { root.copy-details(); }
+        else if index == 7 { root.show-details = false; }
+    }
+    // How many footer actions show as buttons, and how many are in More….
+    out property <int> footer-buttons: find-footer.shown-actions;
+    out property <int> footer-overflow: find-footer.overflow-actions;
     callback copy-details();
     public function begin() { masks.focus(); }
     public function start-adding() {
@@ -180,6 +211,9 @@ export component FindWindow inherits ToolWindow {
                 clip: true;
               query-scroll := ScrollView {
                 visible: !root.show-details;
+                // At the top of the query area: without a y, a shorter view is centred
+                // and its lower part runs under the status line below it.
+                y: 0px;
                 height: parent.height - root.query-status-height;
                 horizontal-scrollbar-policy: always-off;
                 content-width: self.visible-width;
@@ -363,7 +397,7 @@ export component FindWindow inherits ToolWindow {
                             row: 0; col: 2;
                             text: "Feed to panel"; fallback-icon: FallbackIcons.make-file-list;
                             enabled: !root.running && root.rows.length > 0;
-                            hint: "Show the results as a list in the panel that opened this Find, and close this window. View, Edit, Copy, Move, Delete and selection there act on the real files; Backspace returns to the folder.";
+                            hint: "Show the results as a list in the panel that opened this Find, and close this window. Selected results arrive marked there. View, Edit, Copy, Move, Delete and selection there act on the real files; Backspace returns to the folder.";
                             clicked => { root.feed-panel(); }
                         }
                     }
@@ -409,6 +443,10 @@ export component FindWindow inherits ToolWindow {
                 results := FindResults {
                     x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                     rows: root.rows; selected-row <=> root.selected-row;
+                    marks: root.marks; selected-count: root.selected-count;
+                    generation: root.generation;
+                    surface-width: root.width; surface-height: root.height;
+                    view-keys: root.view-keys; edit-keys: root.edit-keys;
                     duplicates: root.duplicate-results;
                     show-header: root.rows.length > 0
                         || self.height >= Theme.column-height + Theme.font-size + 8px;
@@ -421,6 +459,14 @@ export component FindWindow inherits ToolWindow {
                         }
                         false
                     }
+                    select-row(row, toggle, range) => { root.select-row(row, toggle, range); }
+                    move-cursor(row, extend, keep) => { root.move-cursor(row, extend, keep); }
+                    toggle-mark(advance) => { root.toggle-mark(advance); }
+                    select-all => { root.select-all(); }
+                    deselect-all => { root.deselect-all(); }
+                    menu-row(row) => { root.menu-row(row); }
+                    copy-results(token, kind) => { root.copy-results(token, kind); }
+                    file-action(token, action) => { root.file-action(token, action); }
                 }
                 // The results show that they have the keyboard, with a text field's
                 // focus frame drawn over their edge.
@@ -456,41 +502,38 @@ export component FindWindow inherits ToolWindow {
             find-footer := DialogFooter {
                 compact-height: root.height < 350px;
                 compact-controls: true;
-                // The captions of every query action, Copy details included.
-                measure-text: "Find" + "Go to file" + "View" + "Edit" + "Open" + "Copy details";
                 dismiss-text: "Close";
                 dismiss-hint: "Close this Find window and cancel its search (Escape).";
                 dismiss => { root.close-session(); }
-                FindActionButton { text: root.running ? "Stop" : "Find"; primary: !root.running;
-                    fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.find; enabled: !root.stopping && (root.running || advanced.valid);
-                    clicked => { if root.running { root.stop(); } else { root.submit(); } } }
-                FindActionButton { text: root.show-details ? "Copy" : "Go to file";
-                    fallback-icon: root.show-details ? FallbackIcons.copy : FallbackIcons.open-path; enabled: root.show-details || (root.selected-row >= 0 && root.selected-row < root.rows.length);
-                    clicked => { if root.show-details { root.copy-details(); } else { root.reveal-selected(); } } }
-                // One conditional, with the footer's spacing, instead of one per button.
-                if !root.show-details: HorizontalLayout {
-                    spacing: 8px;
-                    FindActionButton { text: "View"; fallback-icon: FallbackIcons.view;
-                        enabled: root.selected-file; hint: root.view-hint;
-                        clicked => { root.act-selected(0); } }
-                    FindActionButton { text: "Edit"; fallback-icon: FallbackIcons.edit;
-                        enabled: root.selected-file; hint: root.edit-hint;
-                        clicked => { root.act-selected(2); } }
-                    FindActionButton { text: "Open"; fallback-icon: FallbackIcons.run;
-                        enabled: root.selected-native;
-                        hint: "Open the selected file with its system association. This may run a program. Folders and archive members use Go to file.";
-                        clicked => { root.act-selected(3); } }
-                }
-                // Details open from the error or status line; Back returns to the query.
-                if root.show-details: FindActionButton { text: "Back"; fallback-icon: FallbackIcons.find;
-                    hint: "Return to the query."; clicked => { root.show-details = false; } }
-                // Only where all six query actions fit beside Close (each caption plus its
-                // glyph and 28px of padding, 8px apart); in a narrower window it would sit
-                // half outside the scroller. The status line opens the details, whose
-                // Copy is always shown.
-                if !root.show-details && find-footer.inline-room
-                    >= find-footer.measured-width + 6 * (Theme.icon-size + 28px) + 5 * 8px:
-                    FindActionButton { text: "Copy details"; fallback-icon: FallbackIcons.copy; clicked => { root.copy-details(); } }
+                // The query's actions, or the details' (details open from the error or
+                // status line; Back returns to the query). Actions that do not fit whole
+                // beside Close move into More…, by their `drop` rank: Copy details, Open,
+                // Edit, View, then Go to file; on the details page Copy, then Find or Stop.
+                footer-actions: [
+                    { text: root.running ? "Stop" : "Find", hint: "", shortcut: "", hidden: false,
+                        fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.find,
+                        enabled: !root.stopping && (root.running || advanced.valid), primary: !root.running,
+                        drop: root.show-details ? 2 : 0 },
+                    { text: "Go to file", fallback-icon: FallbackIcons.open-path, shortcut: "Enter", primary: false, drop: 5,
+                        hint: "Show the result under the cursor in the panel that opened this Find (Enter).",
+                        enabled: root.selected-row >= 0 && root.selected-row < root.rows.length, hidden: root.show-details },
+                    { text: "View", fallback-icon: FallbackIcons.view, hint: root.view-hint, shortcut: root.view-keys,
+                        enabled: root.selected-file, primary: false, drop: 4, hidden: root.show-details },
+                    { text: "Edit", fallback-icon: FallbackIcons.edit, hint: root.edit-hint, shortcut: root.edit-keys,
+                        enabled: root.selected-file, primary: false, drop: 3, hidden: root.show-details },
+                    { text: "Open", fallback-icon: FallbackIcons.run, shortcut: "", enabled: root.selected-native, primary: false, drop: 2,
+                        hint: "Open the selected file with its system association. This may run a program. Folders and archive members use Go to file.",
+                        hidden: root.show-details },
+                    { text: "Copy details", fallback-icon: FallbackIcons.copy, shortcut: "", enabled: true, primary: false, drop: 1,
+                        hint: "Copy the search's progress, errors and counts to the clipboard.", hidden: root.show-details },
+                    { text: "Copy", fallback-icon: FallbackIcons.copy, shortcut: "", enabled: true, primary: false, drop: 1,
+                        hint: "Copy the details, including full paths, to the clipboard.", hidden: !root.show-details },
+                    // Each glyph once: Slint 1.18 moves a global read twice in one literal
+                    // where one read is a branch of a condition (Find or Stop above).
+                    { text: "Back", fallback-icon: FallbackIcons.back, hint: "Return to the query.", shortcut: "",
+                        enabled: true, primary: false, drop: 0, hidden: !root.show-details },
+                ];
+                footer-action(index) => { root.footer-chosen(index); }
             }
         }
     }

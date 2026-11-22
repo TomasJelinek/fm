@@ -2,6 +2,7 @@ import { ListView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { ColumnGrip } from "column-grip.slint";
+import { FindResultMenu } from "find-menu.slint";
 
 // Column widths; a header separator drag changes one. The window keeps them for its session.
 export struct FindColumnWidths {
@@ -66,11 +67,15 @@ component Columns inherits HorizontalLayout {
     in property <bool> descending;
     in property <bool> duplicates;
     in property <FindColumnWidths> widths;
+    // The row is selected: its text takes the selection's colour.
+    in property <bool> selected;
+    // Room before the first column, for the selection square of a row.
+    in property <length> lead: 6px;
     callback sort(int);
     callback resize(int, length);
     // A heading took the keyboard: its left edge in the table, and its width.
     callback reveal(length, length);
-    padding-left: 6px; padding-right: 6px; spacing: 0px; alignment: start;
+    padding-left: root.lead; padding-right: 6px; spacing: 0px; alignment: start;
     pure function column-width(index: int) -> length {
         return index == 0 ? root.widths.name : index == 1 ? root.widths.extension
             : index == 2 ? root.widths.path : index == 3 ? root.widths.size : root.widths.modified;
@@ -80,7 +85,7 @@ component Columns inherits HorizontalLayout {
         Text {
             width: root.widths.group;
             text: root.header ? "Identical group" : root.entry.duplicate-group;
-            color: root.header ? Theme.secondary-text : Theme.accent;
+            color: root.header ? Theme.secondary-text : root.selected ? Theme.selected-text : Theme.accent;
             font-size: root.header ? Theme.small-font : Theme.font-size;
             font-weight: root.header || root.entry.group-start ? 600 : 400;
             vertical-alignment: center; overflow: elide;
@@ -97,7 +102,8 @@ component Columns inherits HorizontalLayout {
         if !root.header && index != 2: Text {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
             text: [root.entry.name, root.entry.extension, root.entry.path, root.entry.size, root.entry.modified][index];
-            color: index == 0 ? (root.entry.directory ? Theme.directory-text : Theme.text) : Theme.secondary-text;
+            color: root.selected ? Theme.selected-text
+                : index == 0 ? (root.entry.directory ? Theme.directory-text : Theme.text) : Theme.secondary-text;
             font-size: Theme.font-size;
             vertical-alignment: center; horizontal-alignment: index == 3 ? right : left;
             overflow: elide;
@@ -105,7 +111,7 @@ component Columns inherits HorizontalLayout {
         if !root.header && index == 2: PathText {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
             text: root.entry.path; tail: root.entry.path-tail;
-            foreground: Theme.secondary-text; font-size: Theme.font-size;
+            foreground: root.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.font-size;
         }
         if root.header: SortHeading {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
@@ -122,17 +128,54 @@ component Columns inherits HorizontalLayout {
     }
 }
 
+// The results of a search, with several of them selectable at once. The host keeps the
+// selection by result identity: it is told what a click or key asks (`select-row`,
+// `move-cursor`, `toggle-mark`, `select-all`, `deselect-all`) and answers with `marks`
+// and the cursor (`selected-row`). A click selects one row; Ctrl+click toggles it;
+// Shift+click selects the range from the anchor. Up/Down, Page Up/Down, Home and End
+// move the cursor and select its row, with Shift the range, with Ctrl the cursor alone.
+// Space toggles the cursor's row; Insert toggles it and moves down; Ctrl+A selects all,
+// Ctrl+D none.
 export component FindResults inherits FocusScope {
     in property <[FindRow]> rows;
+    // Whether each shown row is selected, by row.
+    in property <[bool]> marks;
+    // How many results are selected: what the menu's copy actions name.
+    in property <int> selected-count;
+    // The search the rows belong to: a new search closes an open menu.
+    in property <string> generation;
     in property <int> sort-column;
     in property <bool> descending;
     in property <bool> duplicates;
     in property <bool> show-header: true;
+    // The window's size, which the context menu stays inside.
+    in property <length> surface-width;
+    in property <length> surface-height;
+    in property <string> view-keys;
+    in property <string> edit-keys;
     out property <length> header-height: root.show-header ? Theme.column-height : 0px;
+    // The cursor's row: the keyboard's row and the row the footer actions act on.
     in-out property <int> selected-row: -1;
     callback sort(int);
     callback reveal(string);
     callback action-key(KeyEvent) -> bool;
+    // A click on a row: alone, toggled (Ctrl) or the range from the anchor (Shift).
+    callback select-row(int, bool, bool);
+    // A key moved the cursor to a row: select it alone, the range (Shift) or nothing (Ctrl).
+    callback move-cursor(int, bool, bool);
+    // Space (false) or Insert (true) on the cursor's row.
+    callback toggle-mark(bool);
+    callback select-all();
+    callback deselect-all();
+    // The context menu opens on a row: the host keeps a selection that holds it,
+    // otherwise selects the row alone.
+    callback menu-row(int);
+    // Copy names (0), full paths (1) or row details (2) for an action on this row.
+    callback copy-results(string, int);
+    // View (0), basic view (1), Edit (2) or Open (3) of this row, from the menu.
+    callback file-action(string, int);
+    // Room for the selection square before the first column, in rows and header alike.
+    private property <length> lead: (Theme.touch ? 9px : 7px) + 5px;
     // Defaults follow the font until a header separator is dragged.
     in-out property <FindColumnWidths> widths: {
         group: Theme.small-font * 16, name: Theme.small-font * 16, extension: Theme.small-font * 8,
@@ -140,7 +183,8 @@ export component FindResults inherits FocusScope {
     };
     // The other columns plus padding and one 10px separator after each column.
     private property <length> fixed-width: root.widths.name + root.widths.extension
-        + root.widths.size + root.widths.modified + (root.duplicates ? root.widths.group + 72px : 62px);
+        + root.widths.size + root.widths.modified + root.lead
+        + (root.duplicates ? root.widths.group + 66px : 56px);
     // Path takes the spare width; a separator drag starts from that shown width,
     // and a wider Path scrolls the table.
     private property <length> path-width: max(root.widths.path, list.visible-width - root.fixed-width);
@@ -171,20 +215,84 @@ export component FindResults inherits FocusScope {
     private property <length> content-height: list.content-height;
     private property <length> content-y: list.content-y;
     private property <int> page-size: max(1, floor(list.visible-height / root.row-height) - 1);
+    // The cursor moves at once; the host then selects for it and confirms the cursor.
+    function go(row: int, extend: bool, keep: bool) {
+        if row < 0 { return; }
+        root.selected-row = row;
+        root.move-cursor(row, extend, keep);
+    }
+    function click-row(index: int, toggle: bool, range: bool) {
+        root.selected-row = index;
+        root.focus();
+        root.select-row(index, toggle, range);
+    }
+    private property <bool> cursor-valid: root.selected-row >= 0 && root.selected-row < root.rows.length;
     key-pressed(event) => {
         if root.action-key(event) { return accept; }
-        if event.text == Key.DownArrow { root.selected-row = min(root.rows.length - 1, root.selected-row + 1); return accept; }
-        if event.text == Key.UpArrow { root.selected-row = root.rows.length > 0 ? max(0, root.selected-row - 1) : -1; return accept; }
-        if event.text == Key.PageDown { root.selected-row = min(root.rows.length - 1, max(0, root.selected-row) + root.page-size); return accept; }
-        if event.text == Key.PageUp { root.selected-row = root.rows.length > 0 ? max(0, root.selected-row - root.page-size) : -1; return accept; }
+        let extend = event.modifiers.shift;
+        let keep = event.modifiers.control;
+        if event.text == Key.DownArrow { root.go(min(root.rows.length - 1, root.selected-row + 1), extend, keep); return accept; }
+        if event.text == Key.UpArrow { root.go(root.rows.length > 0 ? max(0, root.selected-row - 1) : -1, extend, keep); return accept; }
+        if event.text == Key.PageDown { root.go(min(root.rows.length - 1, max(0, root.selected-row) + root.page-size), extend, keep); return accept; }
+        if event.text == Key.PageUp { root.go(root.rows.length > 0 ? max(0, root.selected-row - root.page-size) : -1, extend, keep); return accept; }
         if event.text == Key.LeftArrow { list.content-x = min(0px, list.content-x + list.visible-width / 2); return accept; }
         if event.text == Key.RightArrow { list.content-x = max(min(0px, list.visible-width - list.content-width), list.content-x - list.visible-width / 2); return accept; }
-        if event.text == Key.Home { root.selected-row = root.rows.length > 0 ? 0 : -1; return accept; }
-        if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
-        if event.text == Key.Return && root.selected-row >= 0 && root.selected-row < root.rows.length {
+        if event.text == Key.Home { root.go(root.rows.length > 0 ? 0 : -1, extend, keep); return accept; }
+        if event.text == Key.End { root.go(root.rows.length - 1, extend, keep); return accept; }
+        if event.text == Key.Return && root.cursor-valid {
             root.reveal(root.rows[root.selected-row].token); return accept;
         }
+        if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta
+            && (event.text == Key.Space || event.text == Key.Insert) {
+            if root.rows.length > 0 { root.toggle-mark(event.text == Key.Insert); }
+            return accept;
+        }
+        if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+            if event.text == "a" || event.text == "A" { root.select-all(); return accept; }
+            if event.text == "d" || event.text == "D" { root.deselect-all(); return accept; }
+            if event.text == "c" || event.text == "C" {
+                if root.cursor-valid { root.copy-results(root.rows[root.selected-row].token, 1); }
+                return accept;
+            }
+        }
+        if (event.modifiers.shift && event.text == Key.F10) || event.text == Key.Menu {
+            root.open-menu(root.selected-row, 12px,
+                root.header-height + (root.selected-row + 1) * root.row-height + list.content-y);
+            return accept;
+        }
         reject
+    }
+    // The context menu: the row it opened on, captured when it opens, so that rows
+    // which change meanwhile cannot redirect its actions.
+    private property <string> menu-token;
+    private property <bool> menu-file;
+    private property <bool> menu-native;
+    private property <length> menu-x;
+    private property <length> menu-y;
+    changed generation => { menu.close(); root.menu-token = ""; }
+    function open-menu(index: int, x: length, y: length) {
+        if index < 0 || index >= root.rows.length { return; }
+        root.selected-row = index;
+        root.focus();
+        root.menu-row(index);
+        root.menu-token = root.rows[index].token;
+        root.menu-file = !root.rows[index].directory && !root.rows[index].in-archive;
+        root.menu-native = !root.rows[index].in-archive;
+        root.menu-x = x;
+        root.menu-y = y;
+        menu.show();
+    }
+    function menu-chosen(code: int) {
+        let token = root.menu-token;
+        menu.close();
+        root.focus();
+        if code == 0 { root.reveal(token); }
+        else if code == 1 { root.file-action(token, 0); }
+        else if code == 2 { root.file-action(token, 2); }
+        else if code == 3 { root.file-action(token, 3); }
+        else if code <= 6 { root.copy-results(token, code - 4); }
+        else if code == 7 { root.select-all(); }
+        else if code == 8 { root.deselect-all(); }
     }
     changed selected-row => {
         root.reveal-active = true;
@@ -217,7 +325,7 @@ export component FindResults inherits FocusScope {
         Rectangle { width: parent.width; height: parent.height; background: Theme.header; }
         Columns { x: list.content-x; width: list.content-width; height: parent.height;
             header: true; sort-column: root.sort-column; descending: root.descending; duplicates: root.duplicates;
-            widths: root.shown-widths;
+            widths: root.shown-widths; lead: root.lead;
             sort(column) => { root.sort(column); }
             resize(index, width) => { root.resize-column(index, width); }
             reveal(left, width) => { root.reveal-column(left, width); } }
@@ -229,30 +337,78 @@ export component FindResults inherits FocusScope {
         accessible-role: AccessibleRole.list; accessible-label: "Find results";
         accessible-item-count: root.rows.length;
         for row[index] in root.rows: Rectangle {
+            // Selected rows look as in a panel: the selection's background and text with a
+            // square at the left; the cursor's row has a full-height stroke and a frame.
+            property <bool> marked: root.marks[index];
+            property <bool> current: root.selected-row == index;
             width: list.content-width; height: root.row-height;
-            background: root.selected-row == index ? Theme.cursor-background
+            background: self.marked ? Theme.selected-background : self.current ? Theme.cursor-background
                 : (root.duplicates ? row.group-shade : mod(index, 2) == 1) ? Theme.alternate-row : Theme.pane-background;
-            border-width: root.selected-row == index ? 1px : 0px; border-color: Theme.cursor-edge;
+            border-width: self.current ? 1px : 0px; border-color: Theme.cursor-edge;
             accessible-role: list-item; accessible-label: (root.duplicates ? row.duplicate-group + " · " : "")
                 + row.name + " · " + row.extension + " · " + row.path + " · " + row.size + " · " + row.modified;
             accessible-value: row.token;
-            accessible-item-selectable: true; accessible-item-selected: root.selected-row == index; accessible-item-index: index;
-            accessible-action-default => { root.selected-row = index; root.focus(); }
-            Columns { entry: row; duplicates: root.duplicates; widths: root.shown-widths; }
+            accessible-item-selectable: true; accessible-item-selected: self.marked; accessible-item-index: index;
+            accessible-action-default => { root.click-row(index, false, false); }
+            Columns { entry: row; duplicates: root.duplicates; widths: root.shown-widths;
+                lead: root.lead; selected: parent.marked; }
             // Hidden instead of conditional: an `if` is one more generated component.
             Rectangle {
                 visible: root.duplicates && row.group-start;
                 x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame;
             }
+            Rectangle {
+                x: 0px; y: 0px; width: 3px; height: parent.height;
+                background: parent.current ? Theme.cursor-edge : transparent;
+            }
+            Rectangle {
+                x: 0px; y: (parent.height - self.height) / 2;
+                width: Theme.touch ? 9px : 7px; height: self.width;
+                background: parent.marked ? Theme.selected-edge : transparent;
+            }
             TouchArea {
                 private property <string> pressed-token;
+                private property <bool> pressed-control;
+                private property <bool> pressed-shift;
                 pointer-event(event) => {
-                    if event.kind == PointerEventKind.down { self.pressed-token = row.token; }
+                    if event.kind == PointerEventKind.down {
+                        self.pressed-token = row.token;
+                        self.pressed-control = event.modifiers.control;
+                        self.pressed-shift = event.modifiers.shift;
+                    }
                     if event.kind == PointerEventKind.cancel { self.pressed-token = ""; }
+                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.right
+                        && self.pressed-token == row.token && self.mouse-x >= 0px && self.mouse-x < self.width
+                        && self.mouse-y >= 0px && self.mouse-y < self.height {
+                        root.open-menu(index, self.absolute-position.x + self.mouse-x - root.absolute-position.x,
+                            self.absolute-position.y + self.mouse-y - root.absolute-position.y);
+                    }
                 }
-                clicked => { if self.pressed-token == row.token { root.selected-row = index; root.focus(); } }
-                double-clicked => { if self.pressed-token == row.token { root.selected-row = index; root.reveal(row.token); } }
+                clicked => {
+                    if self.pressed-token == row.token {
+                        root.click-row(index, self.pressed-control, self.pressed-shift);
+                    }
+                }
+                double-clicked => {
+                    if self.pressed-token == row.token { root.click-row(index, false, false); root.reveal(row.token); }
+                }
             }
+        }
+    }
+    menu := PopupWindow {
+        x: clamp(root.absolute-position.x + root.menu-x, 4px,
+            max(4px, root.surface-width - self.width - 4px)) - root.absolute-position.x;
+        y: clamp(root.absolute-position.y + root.menu-y, 4px,
+            max(4px, root.surface-height - self.height - 4px)) - root.absolute-position.y;
+        width: min(Theme.font-size * 22, root.surface-width - 8px);
+        height: min(root.surface-height - 8px, 9 * Theme.control-height + 12px);
+        close-policy: close-on-click-outside;
+        FindResultMenu {
+            width: parent.width; height: parent.height;
+            file: root.menu-file; native: root.menu-native; any-rows: root.rows.length > 0;
+            count: root.selected-count; view-keys: root.view-keys; edit-keys: root.edit-keys;
+            chosen(code) => { root.menu-chosen(code); }
+            dismissed => { menu.close(); root.focus(); }
         }
     }
 }

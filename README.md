@@ -897,8 +897,8 @@ editor scope and shortcuts reserved for later stages.
   Checksums, Folder Sizes, Properties, Hot Paths, view mode and sort. Drives,
   paths and tabs remain per-panel. Narrow windows scroll the shared toolbar.
   The Options gear stays fixed at its right end; the moon button immediately
-  beside it opens About with the application version. The bottom bar keeps
-  F1–F12 and Jobs.
+  beside it opens About with the application version, author and copyright. The
+  bottom bar keeps F1–F12 and Jobs.
   Switching panels or locations invalidates an open context-dependent popup.
 - Custom Commands has a dedicated toolbar above the command editor whenever at
   least one command is configured. At compact window sizes, the shared toolbar's
@@ -992,7 +992,11 @@ editor scope and shortcuts reserved for later stages.
   members, in every archive however large, until the search ends or you press Stop
   (Go to file opens the archive at the member), and **Feed to panel** shows
   the results as a list in the panel, where View, Edit, Copy, Move, Delete and
-  marks act on the real files and Backspace returns to the folder. See
+  marks act on the real files and Backspace returns to the folder. The result
+  list selects several results (Ctrl+click, Shift+click, Shift with the cursor
+  keys, Space, Insert, Ctrl+A, Ctrl+D); Ctrl+C and the list's context menu copy
+  their full paths, names or row details, the status line counts them and their
+  size, and Feed to panel brings them marked into the panel. See
   [Find](docs/developer/FIND.md).
 - Ctrl+F12 opens a saved per-panel file filter. Choose wildcard masks, a Rust
   regular expression, or the supported metadata expression language, with explicit
@@ -1359,8 +1363,9 @@ Compact controls and volume tooltips have a
 [verification record](docs/verification/compact-tooltips.md).
 Salamander sources supplied separately are behavioral reference only; this
 implementation does not copy its source, assets or resource strings. The About
-dialog includes Slint attribution. A project distribution license has not yet
-been selected. macOS adapters and distribution are later work.
+dialog names the author and copyright holder and includes Slint attribution. A
+project distribution license has not yet been selected. macOS adapters and
+distribution are later work.
 The [asset provenance record](docs/ASSET_PROVENANCE.md) distinguishes project-created
 artwork from icons supplied at runtime by Windows or installed desktop themes.
 

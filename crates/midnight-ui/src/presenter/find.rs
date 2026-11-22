@@ -4,9 +4,12 @@ use super::*;
 mod actions;
 #[path = "find_feed.rs"]
 pub(crate) mod feed;
+#[path = "find_selection.rs"]
+pub(crate) mod result_selection;
 #[path = "find_roots.rs"]
 mod roots;
 pub(crate) use actions::FileAction;
+pub(crate) use result_selection::{FindCopy, FindSelect};
 pub(crate) use roots::FindRoot;
 
 pub(crate) struct FindForm {
@@ -77,6 +80,13 @@ pub(crate) struct FindSession {
     pub progress: FindProgress,
     pub summary: Option<FindSummary>,
     pub error: String,
+    /// The selected results, the cursor and the anchor, by result identity (slot = ID
+    /// minus one). A new search clears it; streamed results and sorting keep it.
+    pub selection: crate::list_selection::ListSelection,
+    /// Changes with every change of the selection or the cursor.
+    pub selection_revision: u64,
+    /// The bytes of the selected files, for the status line.
+    pub selection_bytes: u64,
     pending: Option<FindValidationRequest>,
     pending_file: Option<actions::PendingFile>,
     /// The native folder chooser opened by Add, bound to this session.
@@ -149,6 +159,9 @@ impl Presenter {
                 progress: FindProgress::default(),
                 summary: None,
                 error: String::new(),
+                selection: Default::default(),
+                selection_revision: 0,
+                selection_bytes: 0,
                 pending: None,
                 pending_file: None,
                 picker: None,
@@ -212,6 +225,7 @@ impl Presenter {
         s.progress = FindProgress::default();
         s.current_directory = None;
         s.sort_revision = 0;
+        s.reset_selection();
         self.retired.push(Box::new(s.order.take()));
         self.retired.push(Box::new(mem::take(&mut s.results)));
         self.retired.push(Box::new(s.summary.take()));

@@ -3,11 +3,39 @@ import { Theme } from "theme.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { FooterAction, FooterActions } from "footer-actions.slint";
+
+export { FooterAction }
 
 // Actions use spare width and scroll when necessary. Dismiss remains reachable; a
 // tall dialog whose actions do not fit beside it puts it on a second row instead of
 // squeezing controls.
+//
+// A dialog may instead pass its actions as data (`footer-actions`): the footer then shows
+// as many as fit whole beside the dismiss button, 8 px apart, and puts the others, in
+// their `drop` order, into a More… menu with the same captions, glyphs, shortcuts and
+// enabled states. Such a footer never scrolls and never cuts a button.
+//
+// Slint 1.18.1 generator pitfall (E0382 "borrow of moved value `tmp_…`" in the generated
+// main.rs): when one binding reads the same non-Copy value (an image such as a
+// `FallbackIcons` glyph, or a string property) twice and one of the reads is a branch of
+// `?:`, the generator hoists the read into a temporary, moves it in the branch and
+// borrows it again at the other read. Minimal pattern, in one `footer-actions` literal:
+//     [{ fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.find, … },
+//      { fallback-icon: FallbackIcons.find, … }]
+// Workaround: read each such value once per literal. Give the second action another
+// glyph, or bind each glyph to its own property on the footer element
+// (`property <image> run-glyph: root.running ? FallbackIcons.close : FallbackIcons.find;`)
+// and read every property once (`fallback-icon: self.run-glyph`).
 export component DialogFooter inherits Rectangle {
+    // The fitted actions, in their order, and the one chosen (its index there). In the
+    // literal a dialog binds here, read no image or string value twice where one read is
+    // inside `?:` (the Slint 1.18.1 pitfall above): one property per glyph, each read once.
+    in property <[FooterAction]> footer-actions;
+    callback footer-action(int);
+    // How many fitted actions show as buttons, and how many are in More….
+    out property <int> shown-actions: fitted.shown;
+    out property <int> overflow-actions: fitted.overflow;
     // Aliases, not copies: the footer is inlined into every dialog, so each
     // forwarded property would be one more generated binding per dialog.
     in property <string> dismiss-text <=> dismiss-button.text;
@@ -52,6 +80,20 @@ export component DialogFooter inherits Rectangle {
             spacing: 8px; alignment: root.fill-actions ? stretch : end;
             @children
         }
+    }
+    // Outside the scrolled row: it fits by construction, its last button 8 px before the
+    // dismiss button. Without fitted actions it is empty and takes no room.
+    fitted := FooterActions {
+        actions: root.footer-actions;
+        room: root.inline-room;
+        compact-controls: root.compact-controls;
+        // The gap before its first button may lie left of the footer (it fits up to
+        // 8 px wider than the room), so its last button ends exactly 8 px before dismiss.
+        x: root.inline-room - self.width;
+        y: 0px;
+        width: self.preferred-width;
+        height: root.control-height;
+        activated(index) => { root.footer-action(index); }
     }
     dismiss-button := HintedActionButton {
         minimum-control-height: root.compact-controls ? 0px : 32px;

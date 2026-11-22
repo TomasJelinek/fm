@@ -1,5 +1,7 @@
 //! The About dialog lives inside the main window, can be dragged by its sky and
-//! lists the third-party libraries; a library's notices come from the backend.
+//! lists the third-party libraries; a library's notices come from the backend. Its
+//! night sky loops every 72 s, and Saturn and the other scenes keep clear of the
+//! title and of each other at every size.
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
 #[path = "support/render.rs"]
@@ -9,7 +11,11 @@ use i_slint_core::{
     accessibility::AccessibleStringProperty,
     cursor::MouseCursorInner,
     item_tree::{ItemRc, ParentItemTraversalMode},
-    items::{AccessibleRole, BuiltInMouseCursor, ClippedImage, ImageItem, TouchArea},
+    items::{
+        AccessibleRole, BuiltInMouseCursor, ClippedImage, ComplexText, Flickable, ImageItem, Item,
+        Path, SimpleText, TouchArea,
+    },
+    layout::Orientation,
     lengths::LogicalRect,
     window::{WindowInner, WindowKind},
 };
@@ -17,7 +23,7 @@ use midnight_core::{Command, Event, LicenseNotice, LicenseNoticeRequest};
 use midnight_ui::{AboutView, BeginOwned, MainWindow, Presenter};
 use slint::{
     ComponentHandle, LogicalPosition, Model,
-    platform::{Key, PointerEventButton, WindowEvent},
+    platform::{Key, PointerEventButton, WindowEvent, software_renderer::RepaintBufferType},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -725,13 +731,18 @@ fn a_library_without_a_version_is_named_by_its_name_alone() {
 }
 
 #[test]
-fn the_sky_scenes_stay_clear_of_the_title_icon_and_crescent() {
+fn the_sky_scenes_stay_clear_of_the_title_icon_and_saturn() {
     let mut about = About::open(1000, 800);
     let image =
         |about: &About, label: &str| ui::popup_item(about.window(), label, AccessibleRole::Image);
+    // The icon is the Moon: the sky shows no second one.
+    assert!(
+        ui::try_popup_item(about.window(), "Crescent moon", AccessibleRole::Image).is_none(),
+        "a crescent moon beside the Moon icon"
+    );
     let mut satellite = Vec::new();
-    // Eight moments across the sky's 144 s loop, every 18 s from 6 s.
-    for second in [6_u64, 24, 42, 60, 78, 96, 114, 132] {
+    // Eight moments across the sky's 72 s loop, every 9 s from 3 s.
+    for second in [3_u64, 12, 21, 30, 39, 48, 57, 66] {
         ui::advance(
             &about.clock,
             Duration::from_secs(second).saturating_sub(about.clock.get()),
@@ -749,7 +760,7 @@ fn the_sky_scenes_stay_clear_of_the_title_icon_and_crescent() {
                 "icon",
                 bounds(&image(&about, "Midnight Explorer icon")).inflate(8.0, 8.0),
             ),
-            ("crescent", bounds(&image(&about, "Crescent moon"))),
+            ("Saturn", bounds(&image(&about, "Saturn"))),
         ];
         let dot = image(&about, "Satellite")
             .first_child()
@@ -780,10 +791,540 @@ fn the_sky_scenes_stay_clear_of_the_title_icon_and_crescent() {
     assert!(satellite.first().unwrap().x < satellite.last().unwrap().x);
     // A short dialog keeps only the title.
     about.ui.resize(1000, 300);
-    for scene in ["Cassiopeia", "Owl", "Satellite", "Midnight Explorer icon"] {
+    for scene in [
+        "Cassiopeia",
+        "Owl",
+        "Satellite",
+        "Saturn",
+        "Midnight Explorer icon",
+    ] {
         assert!(
             !image(&about, scene).is_visible(),
             "{scene} in a short dialog"
         );
     }
+}
+
+/// The sky at the top of the dialog: the item that holds the title and the scenes.
+fn about_sky(window: &MainWindow) -> ItemRc {
+    ui::popup_item(window, "Midnight Explorer", AccessibleRole::Text)
+        .parent_item(ParentItemTraversalMode::StopAtPopups)
+        .expect("the sky holds the title")
+}
+
+/// Calls `f` for `item` and every item inside it.
+fn visit(item: &ItemRc, f: &mut impl FnMut(&ItemRc)) {
+    f(item);
+    let mut child = item.first_child();
+    while let Some(next) = child {
+        visit(&next, f);
+        child = next.next_sibling();
+    }
+}
+
+/// Whether `item` is a shooting star: one of the sky's 64 × 30 streak paths.
+fn is_streak(item: &ItemRc) -> bool {
+    item.downcast::<Path>().is_some() && {
+        let size = item.geometry().size;
+        (size.width - 64.0).abs() < 0.5 && (size.height - 30.0).abs() < 0.5
+    }
+}
+
+/// The window bounds of the shooting stars, wherever they are in their flight or
+/// between flights.
+fn streaks(sky: &ItemRc) -> Vec<LogicalRect> {
+    let mut found = Vec::new();
+    visit(sky, &mut |item| {
+        if is_streak(item) {
+            found.push(bounds(item));
+        }
+    });
+    found
+}
+
+/// Draw the whole window afresh: a partly repainted frame keeps anti-aliased edges
+/// from the frame before it, so it depends on what was drawn earlier.
+fn draw_afresh(test: &mut ui::TestUi) {
+    slint::platform::update_timers_and_animations();
+    test.native.request_redraw();
+    test.native.draw_if_needed(|renderer| {
+        renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        renderer.render(&mut test.pixels, test.width);
+        renderer.set_repaint_buffer_type(RepaintBufferType::ReusedBuffer);
+    });
+}
+
+/// The pixels of a window rectangle in the last frame drawn.
+fn pixels(test: &ui::TestUi, rect: LogicalRect) -> Vec<slint::Rgb8Pixel> {
+    let columns = rect.min_x().max(0.0) as usize..(rect.max_x() as usize).min(test.width);
+    let rows = rect.min_y().max(0.0) as usize..(rect.max_y() as usize).min(test.height);
+    rows.flat_map(|y| {
+        columns
+            .clone()
+            .map(move |x| test.pixels[y * test.width + x])
+    })
+    .collect()
+}
+
+/// Drag the About dialog's bottom right resize corner by `dx`, `dy`.
+fn resize_about(about: &mut About, dx: f32, dy: f32) {
+    let corner = {
+        let inner = WindowInner::from_pub(about.window().window());
+        let popups = inner.active_popups();
+        let popup = popups
+            .iter()
+            .rev()
+            .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+            .expect("About's popup");
+        let diagonal = MouseCursorInner::BuiltIn(BuiltInMouseCursor::NwseResize);
+        let mut corners = Vec::new();
+        visit(&ItemRc::new_root(popup.component.clone()), &mut |item| {
+            if item
+                .downcast::<TouchArea>()
+                .is_some_and(|area| area.as_pin_ref().mouse_cursor() == diagonal)
+            {
+                corners.push(bounds(item));
+            }
+        });
+        corners
+            .into_iter()
+            .max_by(|a, b| a.min_y().total_cmp(&b.min_y()))
+            .expect("the dialog's resize corners")
+    };
+    let start = LogicalPosition::new(corner.center().x, corner.center().y);
+    let end = LogicalPosition::new(start.x + dx, start.y + dy);
+    ui::pointer_button(about.window(), start, PointerEventButton::Left, true);
+    about
+        .window()
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: end });
+    ui::pointer_button(about.window(), end, PointerEventButton::Left, false);
+    about.ui.draw();
+}
+
+#[test]
+fn the_sky_loops_every_72_seconds() {
+    let mut about = About::open(1000, 800);
+    let area = bounds(&about_sky(about.window()));
+    // The sky 3 s into its loop, then 24, 36 and 72 s later.
+    let mut frames = Vec::new();
+    for second in [3_u64, 27, 39, 75] {
+        ui::advance(
+            &about.clock,
+            Duration::from_secs(second).saturating_sub(about.clock.get()),
+        );
+        draw_afresh(&mut about.ui);
+        render::snapshot(&about.ui, &format!("about-sky-at-{second}s"));
+        frames.push(pixels(&about.ui, area));
+    }
+    let changed = |later: usize| {
+        frames[0]
+            .iter()
+            .zip(&frames[later])
+            .filter(|(first, then)| first != then)
+            .count()
+    };
+    assert_eq!(changed(3), 0, "the sky 72 s on is not where it was");
+    // Every shorter loop that repeats after 72 s repeats after 24 or 36 s as well.
+    for (later, seconds) in [(1, 24), (2, 36)] {
+        assert!(
+            changed(later) > 200,
+            "the sky {seconds} s on is where it was: its loop is shorter than 72 s"
+        );
+    }
+}
+
+#[test]
+fn saturn_keeps_clear_of_the_title_and_the_shooting_stars_at_every_size() {
+    let mut about = About::open(1000, 800);
+    let mut problems = Vec::new();
+    // The window, how far the dialog's corner is dragged, the sky that gives and whether
+    // Saturn shows: the dialog at its smallest (280 × 180) and in the smallest window,
+    // whose 40 px sky keeps only the title; the narrowest dialog with the whole sky
+    // (280 × 660); the default size (560 × 660); and the dialog dragged out to 1260 px.
+    for (width, height, corner, (sky_width, sky_height), shown) in [
+        (1000, 800, Some((-280.0, -480.0)), (280.0, 40.0), false),
+        (320, 200, None, (312.0, 40.0), false),
+        (1000, 800, Some((-280.0, 0.0)), (280.0, 176.0), true),
+        (1000, 800, None, (560.0, 176.0), true),
+        (2000, 900, Some((700.0, 0.0)), (1260.0, 176.0), true),
+    ] {
+        // Reopened, About starts at its default size.
+        about.window().set_about_open(false);
+        about.ui.resize(width, height);
+        assert!(!ui::has_popup(about.window()));
+        about.window().invoke_show_about();
+        about.ui.draw();
+        if let Some((dx, dy)) = corner {
+            resize_about(&mut about, dx, dy);
+        }
+        let case = format!("the {sky_width} × {sky_height} sky");
+        render::snapshot(&about.ui, &format!("about-sky-{sky_width}x{sky_height}"));
+        let sky = about_sky(about.window());
+        let area = bounds(&sky);
+        if (area.width() - sky_width).abs() > 0.5 || (area.height() - sky_height).abs() > 0.5 {
+            problems.push(format!("{case} is {area:?}"));
+            continue;
+        }
+        let Some(saturn) = ui::try_popup_item(about.window(), "Saturn", AccessibleRole::Image)
+        else {
+            problems.push(format!("{case}: no Saturn"));
+            continue;
+        };
+        if saturn.is_visible() != shown {
+            problems.push(format!("{case}: Saturn shown {}", saturn.is_visible()));
+        }
+        if !shown {
+            continue;
+        }
+        let planet = bounds(&saturn);
+        if !within(&planet, &area) {
+            problems.push(format!("{case}: Saturn {planet:?} leaves the sky {area:?}"));
+        }
+        let image = |label: &str| ui::popup_item(about.window(), label, AccessibleRole::Image);
+        let title = ui::popup_item(about.window(), "Midnight Explorer", AccessibleRole::Text);
+        let pill = ui::popup_item(about.window(), "Version 1.2.3", AccessibleRole::Text)
+            .parent_item(ParentItemTraversalMode::StopAtPopups)
+            .expect("the version pill");
+        // The halo glows a few pixels beyond the icon.
+        for (name, rect) in [
+            ("the title", bounds(&title)),
+            ("the version", bounds(&pill)),
+            (
+                "the icon",
+                bounds(&image("Midnight Explorer icon")).inflate(8.0, 8.0),
+            ),
+        ] {
+            if rect.intersects(&planet) {
+                problems.push(format!("{case}: Saturn {planet:?} meets {name} {rect:?}"));
+            }
+        }
+        // Every half second of the loop: the shooting stars wherever they fly, and the
+        // scenes of a roomy sky.
+        let mut met = Vec::new();
+        for step in 1..=144_u64 {
+            ui::advance(&about.clock, Duration::from_millis(500));
+            let mut moving = streaks(&sky)
+                .into_iter()
+                .map(|rect| ("a shooting star", rect))
+                .collect::<Vec<_>>();
+            if moving.len() != 3 {
+                problems.push(format!("{case}: {} shooting stars", moving.len()));
+                break;
+            }
+            for scene in ["Cassiopeia", "Owl", "Satellite"] {
+                let item = image(scene);
+                if item.is_visible() {
+                    // The satellite's container spans its whole crossing.
+                    let shape = if scene == "Satellite" {
+                        item.first_child().expect("the satellite itself")
+                    } else {
+                        item
+                    };
+                    moving.push((scene, bounds(&shape)));
+                }
+            }
+            for (name, rect) in moving {
+                if rect.intersects(&planet) && !met.contains(&name) {
+                    met.push(name);
+                    let at = step as f32 / 2.0;
+                    problems.push(format!(
+                        "{case}: at {at} s Saturn {planet:?} meets {name} {rect:?}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[test]
+fn shooting_stars_pass_in_front_of_the_moon() {
+    let about = About::open(1000, 800);
+    let sky = about_sky(about.window());
+    let moon = ui::popup_item(
+        about.window(),
+        "Midnight Explorer icon",
+        AccessibleRole::Image,
+    );
+    // The sky draws its items in tree order, so a later item is in front.
+    let mut order = Vec::new();
+    visit(&sky, &mut |item| order.push(item.clone()));
+    let icon = order
+        .iter()
+        .position(|item| *item == moon)
+        .expect("the icon is in the sky");
+    let meteors: Vec<usize> = order
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| is_streak(item))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(meteors.len(), 3, "the shooting stars");
+    assert!(
+        meteors.iter().all(|&at| at > icon),
+        "shooting stars {meteors:?} are drawn behind the Moon, item {icon}"
+    );
+    // At the default size the right one's path does cross the Moon.
+    let disc = bounds(&moon);
+    let mut crossed = false;
+    for _ in 0..48 {
+        ui::advance(&about.clock, Duration::from_millis(500));
+        crossed |= streaks(&sky).iter().any(|streak| streak.intersects(&disc));
+    }
+    assert!(crossed, "no shooting star crosses the Moon {disc:?}");
+}
+
+#[test]
+fn saturn_is_drawn_the_same_in_every_theme() {
+    let mut about = About::open(1000, 800);
+    let planet = bounds(&ui::popup_item(
+        about.window(),
+        "Saturn",
+        AccessibleRole::Image,
+    ));
+    let mut draw = |theme: i32| {
+        about.window().set_theme_index(theme);
+        draw_afresh(&mut about.ui);
+        // The planet's middle is lit gold against the midnight sky.
+        let middle = about.ui.pixel(planet.center().x, planet.center().y);
+        assert!(
+            middle.r > 150 && middle.g > 110 && middle.b < middle.r,
+            "theme {theme}: the planet's middle is {middle:?}"
+        );
+        // The planet is round, here drawn by the software renderer: the corners of its
+        // 16 px square that the rings miss show the blue sky, not its gold.
+        for (x, y) in [(16.5, 16.5), (31.5, 31.5)] {
+            let corner = about.ui.pixel(planet.min_x() + x, planet.min_y() + y);
+            assert!(
+                corner.b > corner.r,
+                "theme {theme}: the planet's corner at {x}, {y} is {corner:?}"
+            );
+        }
+        pixels(&about.ui, planet)
+    };
+    let first = draw(0);
+    for theme in 1..midnight_core::PreferenceTheme::ALL.len() as i32 {
+        assert!(
+            draw(theme) == first,
+            "theme {theme} draws Saturn differently"
+        );
+    }
+}
+
+/// What the About tab shows under the version: the author's label and name, and the
+/// copyright line under the name.
+const AUTHOR: &str = "Author";
+const AUTHOR_NAME: &str = "Tomas Jelinek";
+const COPYRIGHT: &str = "© 2026 Tomas Jelinek";
+
+/// A text's colour.
+fn text_color(item: &ItemRc) -> slint::Color {
+    match item.downcast::<SimpleText>() {
+        Some(text) => text.as_pin_ref().color().color(),
+        None => {
+            let text = item.downcast::<ComplexText>().expect("a text");
+            text.as_pin_ref().color().color()
+        }
+    }
+}
+
+/// A text's preferred extent along `orientation`, given `cross` across it (-1: any).
+fn preferred(item: &ItemRc, orientation: Orientation, cross: f32) -> f32 {
+    let adapter = item.window_adapter().expect("a shown text");
+    match item.downcast::<SimpleText>() {
+        Some(text) => {
+            let text = text.as_pin_ref();
+            text.layout_info(orientation, cross, &adapter, item)
+                .preferred
+        }
+        None => {
+            let text = item.downcast::<ComplexText>().expect("a text");
+            let text = text.as_pin_ref();
+            text.layout_info(orientation, cross, &adapter, item)
+                .preferred
+        }
+    }
+}
+
+/// The WCAG contrast between the lightest and the darkest pixel of a rectangle in the
+/// last frame drawn: a text's against its background.
+fn contrast(test: &ui::TestUi, rect: LogicalRect) -> f32 {
+    let luminance = |pixel: &slint::Rgb8Pixel| {
+        let linear = |channel: u8| {
+            let value = f32::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(pixel.r) + 0.7152 * linear(pixel.g) + 0.0722 * linear(pixel.b)
+    };
+    let (darkest, lightest) = pixels(test, rect)
+        .iter()
+        .map(luminance)
+        .fold((f32::MAX, f32::MIN), |(low, high), value| {
+            (low.min(value), high.max(value))
+        });
+    (lightest + 0.05) / (darkest + 0.05)
+}
+
+/// The scroll view that holds `item`, if any.
+fn scroll_view(item: &ItemRc) -> Option<ItemRc> {
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor.downcast::<Flickable>().is_some() {
+            return Some(ancestor);
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    None
+}
+
+/// Scroll `item` into its scroll view with the wheel, as a user does.
+fn reveal(about: &mut About, item: &ItemRc) {
+    let Some(view) = scroll_view(item) else {
+        return;
+    };
+    let (shown, area) = (bounds(&view), bounds(item));
+    let delta = if area.min_y() < shown.min_y() {
+        shown.min_y() - area.min_y()
+    } else if area.max_y() > shown.max_y() {
+        shown.max_y() - area.max_y()
+    } else {
+        0.0
+    };
+    if delta != 0.0 {
+        about
+            .window()
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position: LogicalPosition::new(shown.min_x() + 4.0, shown.min_y() + 4.0),
+                delta_x: 0.0,
+                delta_y: delta,
+            });
+        about.ui.draw();
+    }
+}
+
+#[test]
+fn the_about_tab_names_its_author_and_copyright_in_every_theme() {
+    let mut about = About::open(1000, 800);
+    let text =
+        |about: &About, name: &str| ui::popup_item(about.window(), name, AccessibleRole::Text);
+    let (version_label, version_value) = (text(&about, "Version"), text(&about, "1.2.3"));
+    let (label, name, line) = (
+        bounds(&text(&about, AUTHOR)),
+        bounds(&text(&about, AUTHOR_NAME)),
+        bounds(&text(&about, COPYRIGHT)),
+    );
+    // Under the version: the author's label beside the name, in the version's columns,
+    // then the copyright line under the name, then Built with.
+    let version = bounds(&version_label);
+    assert!(
+        label.min_y() > version.max_y() - 0.5,
+        "{AUTHOR} {label:?} is not below the version {version:?}"
+    );
+    assert!(
+        (label.min_y() - name.min_y()).abs() < 0.5,
+        "{AUTHOR} {label:?} and {AUTHOR_NAME} {name:?} are not one row"
+    );
+    let value_column = bounds(&version_value).min_x();
+    assert!(
+        (label.min_x() - version.min_x()).abs() < 0.5
+            && (name.min_x() - value_column).abs() < 0.5
+            && (line.min_x() - value_column).abs() < 0.5,
+        "the author's rows leave the version's columns"
+    );
+    assert!(
+        line.min_y() > name.max_y() - 0.5,
+        "{COPYRIGHT} {line:?} is not under {AUTHOR_NAME} {name:?}"
+    );
+    let next = bounds(&text(&about, "Built with"));
+    assert!(
+        next.min_y() > line.max_y() - 0.5,
+        "Built with {next:?} is above {COPYRIGHT} {line:?}"
+    );
+    // In every theme they take the version's colours and contrast at least as well.
+    for theme in 0..midnight_core::PreferenceTheme::ALL.len() as i32 {
+        about.window().set_theme_index(theme);
+        draw_afresh(&mut about.ui);
+        for (shown, like) in [
+            (AUTHOR, &version_label),
+            (AUTHOR_NAME, &version_value),
+            (COPYRIGHT, &version_value),
+        ] {
+            let item = text(&about, shown);
+            assert_eq!(
+                text_color(&item),
+                text_color(like),
+                "theme {theme}: the colour of {shown}"
+            );
+            let reached = contrast(&about.ui, bounds(&item));
+            let reference = contrast(&about.ui, bounds(like));
+            assert!(
+                reached >= reference.min(4.5) - 0.05,
+                "theme {theme}: {shown} at {reached:.2}:1, the version at {reference:.2}:1"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_author_and_copyright_stay_readable_at_the_smallest_size_and_large_fonts() {
+    let mut about = About::open(1000, 800);
+    let mut problems = Vec::new();
+    // Density, desktop and touch font sizes and the drag of the dialog's corner: the
+    // dialog at its smallest (280 × 180) with each density's default font, and at its
+    // narrowest (280 × 660) with the largest font.
+    for (density, desktop, touch, (dx, dy)) in [
+        (0, 12, 15, (-280.0, -480.0)),
+        (1, 12, 15, (-280.0, -480.0)),
+        (0, 26, 26, (-280.0, 0.0)),
+    ] {
+        // Reopened, About starts at its default size.
+        about.window().set_about_open(false);
+        about.ui.draw();
+        assert!(!ui::has_popup(about.window()));
+        about.window().set_density_index(density);
+        about.window().invoke_apply_fonts("".into(), desktop, touch);
+        about.window().invoke_show_about();
+        about.ui.draw();
+        resize_about(&mut about, dx, dy);
+        let case = format!("density {density}, fonts {desktop}/{touch}");
+        render::snapshot(
+            &about.ui,
+            &format!("about-author-density-{density}-fonts-{desktop}-{touch}"),
+        );
+        // A label holds one line; the values wrap.
+        for (name, wraps) in [(AUTHOR, false), (AUTHOR_NAME, true), (COPYRIGHT, true)] {
+            let Some(item) = ui::try_popup_item(about.window(), name, AccessibleRole::Text) else {
+                problems.push(format!("{case}: no {name:?}"));
+                continue;
+            };
+            reveal(&mut about, &item);
+            let area = bounds(&item);
+            if let Some(view) = scroll_view(&item)
+                && !within(&area, &bounds(&view))
+            {
+                problems.push(format!("{case}: {name:?} {area:?} is not whole in view"));
+            }
+            let (needs, has) = if wraps {
+                let needs = preferred(&item, Orientation::Vertical, area.width());
+                (needs, area.height())
+            } else {
+                (
+                    preferred(&item, Orientation::Horizontal, -1.0),
+                    area.width(),
+                )
+            };
+            if needs > has + 0.5 {
+                problems.push(format!(
+                    "{case}: {name:?} needs {needs:.1} px, has {has:.1}"
+                ));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
 }

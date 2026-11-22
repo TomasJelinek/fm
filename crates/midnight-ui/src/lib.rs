@@ -50,6 +50,7 @@ mod job_presentation;
 mod job_row_cache;
 mod job_speed;
 mod jobs_windows;
+pub(crate) mod list_selection;
 mod metadata_input;
 mod metadata_presentation;
 mod metadata_time;

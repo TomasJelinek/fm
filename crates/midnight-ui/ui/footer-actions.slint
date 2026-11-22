@@ -1,0 +1,263 @@
+import { Theme } from "theme.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { VScrollView } from "scroll-view.slint";
+
+// One action of a dialog footer that lets `DialogFooter` fit its actions.
+export struct FooterAction {
+    text: string,
+    fallback-icon: image,
+    hint: string,
+    // The action's keyboard shortcut, shown beside it in the More… menu.
+    shortcut: string,
+    enabled: bool,
+    primary: bool,
+    // 0: always a button. Otherwise the order in which the action moves into the More…
+    // menu when the footer is too narrow: 1 first, then 2, and so on (equal ranks move
+    // together).
+    drop: int,
+    // Not offered now (the dialog's state): neither a button nor in More….
+    hidden: bool,
+}
+
+// The actions of a footer, as many as fit whole in `room` as buttons, in their order and
+// 8 px apart, and the others in a More… menu at the end of the row, which opens upward.
+// The fit is computed from each caption's measured width, as `ActionButton` lays it out
+// (12 px padding, the glyph and 4 px before the caption, 12 px padding), so a button is
+// never cut and never scrolled. Where even the rank 0 actions and a captioned More… do not
+// fit, More… shows its glyph alone (its accessible name stays "More…"). At most eight
+// actions; a dialog keeps its rank 0 actions few enough to fit beside More….
+export component FooterActions inherits Rectangle {
+    in property <[FooterAction]> actions;
+    // The width the row may take; its last button ends at the right edge.
+    in property <length> room;
+    in property <bool> compact-controls;
+    // An action was chosen, by its index in `actions`.
+    callback activated(int);
+    // How many actions show as buttons, and how many are in the More… menu.
+    out property <int> shown: root.count-kept(root.moved);
+    out property <int> overflow: root.count-kept(-1) - root.shown;
+    // Each action's button and the gap before it; the gap before the first is outside
+    // the buttons, at the left end.
+    preferred-width: row.preferred-width;
+    min-width: row.min-width;
+    max-width: row.preferred-width;
+    // Captions, measured as the buttons draw them.
+    private property <length> caption-0: m0.preferred-width;
+    private property <length> caption-1: m1.preferred-width;
+    private property <length> caption-2: m2.preferred-width;
+    private property <length> caption-3: m3.preferred-width;
+    private property <length> caption-4: m4.preferred-width;
+    private property <length> caption-5: m5.preferred-width;
+    private property <length> caption-6: m6.preferred-width;
+    private property <length> caption-7: m7.preferred-width;
+    m0 := Text { visible: false; accessible-role: none; text: root.caption(0); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m1 := Text { visible: false; accessible-role: none; text: root.caption(1); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m2 := Text { visible: false; accessible-role: none; text: root.caption(2); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m3 := Text { visible: false; accessible-role: none; text: root.caption(3); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m4 := Text { visible: false; accessible-role: none; text: root.caption(4); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m5 := Text { visible: false; accessible-role: none; text: root.caption(5); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m6 := Text { visible: false; accessible-role: none; text: root.caption(6); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    m7 := Text { visible: false; accessible-role: none; text: root.caption(7); font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    more-measure := Text { visible: false; accessible-role: none; text: "More…"; font-family: Theme.effective-font-family; font-size: Theme.font-size; }
+    pure function caption(index: int) -> string {
+        return index < root.actions.length ? root.actions[index].text : "";
+    }
+    // The glyph `ActionButtonContent` draws for a caption, when it draws one.
+    pure function has-glyph(text: string, icon: image) -> bool {
+        return text == "Close" || icon.width > 0 || FallbackIcons.for-label(text).width > 0;
+    }
+    pure function button-width(text: string, icon: image, caption: length) -> length {
+        return max(32px, 24px + caption
+            + (root.has-glyph(text, icon) ? Theme.icon-size + (text != "" ? 4px : 0px) : 0px));
+    }
+    pure function measured(index: int) -> length {
+        return index >= root.actions.length ? 0px
+            : root.button-width(root.actions[index].text, root.actions[index].fallback-icon,
+                index == 0 ? root.caption-0 : index == 1 ? root.caption-1 : index == 2 ? root.caption-2
+                : index == 3 ? root.caption-3 : index == 4 ? root.caption-4 : index == 5 ? root.caption-5
+                : index == 6 ? root.caption-6 : root.caption-7);
+    }
+    // More… with its caption, or its glyph alone (as `ActionButton` lays out a button
+    // without a caption) when even the rank 0 actions and the captioned More… would not fit.
+    private property <length> more-captioned: root.button-width("More…", FallbackIcons.menu, more-measure.preferred-width);
+    private property <length> more-glyph: root.button-width("", FallbackIcons.menu, 0px);
+    out property <bool> compact-more: root.row-width-with(8, root.more-captioned) > root.room + 8px + 0.01px;
+    private property <length> more-width: root.compact-more ? root.more-glyph : root.more-captioned;
+    // Whether action `index` is a button when the actions ranked 1 to `moved` are in More…;
+    // with `moved` -1, whether it is offered at all.
+    pure function kept(index: int, moved: int) -> bool {
+        return index >= 0 && index < root.actions.length && index < 8 && !root.actions[index].hidden
+            && (moved < 0 || root.actions[index].drop <= 0 || root.actions[index].drop > moved);
+    }
+    pure function count-kept(moved: int) -> int {
+        return (root.kept(0, moved) ? 1 : 0) + (root.kept(1, moved) ? 1 : 0) + (root.kept(2, moved) ? 1 : 0)
+            + (root.kept(3, moved) ? 1 : 0) + (root.kept(4, moved) ? 1 : 0) + (root.kept(5, moved) ? 1 : 0)
+            + (root.kept(6, moved) ? 1 : 0) + (root.kept(7, moved) ? 1 : 0);
+    }
+    pure function slot(index: int, moved: int) -> length {
+        return root.kept(index, moved) ? root.measured(index) + 8px : 0px;
+    }
+    // The row's width with the actions ranked 1 to `moved` in More… (`more` wide): every
+    // button and More… with the 8 px gap before each.
+    pure function row-width-with(moved: int, more: length) -> length {
+        return root.slot(0, moved) + root.slot(1, moved) + root.slot(2, moved) + root.slot(3, moved)
+            + root.slot(4, moved) + root.slot(5, moved) + root.slot(6, moved) + root.slot(7, moved)
+            + (root.count-kept(moved) < root.count-kept(-1) ? more + 8px : 0px);
+    }
+    // The gap before the first button may lie outside the room.
+    pure function fits(moved: int) -> bool {
+        return root.row-width-with(moved, root.more-width) <= root.room + 8px + 0.01px;
+    }
+    // The fewest ranks that move into More… for the row to fit; when even the rank 0
+    // actions do not fit, all ranks move.
+    private property <int> moved: root.fits(0) ? 0 : root.fits(1) ? 1 : root.fits(2) ? 2 : root.fits(3) ? 3
+        : root.fits(4) ? 4 : root.fits(5) ? 5 : root.fits(6) ? 6 : root.fits(7) ? 7 : 8;
+    pure function in-menu(index: int) -> bool {
+        return root.kept(index, -1) && !root.kept(index, root.moved);
+    }
+    row := HorizontalLayout {
+        x: 0px; y: 0px; height: root.height;
+        spacing: 0px;
+        // Eight fixed slots, not one per element of `actions`: a dialog builds its list
+        // anew whenever any state in it changes (a streamed result, the cursor), and a
+        // repeater over that list would recreate every button then, dropping the keyboard
+        // focus. Each button reads its action's current state, so an activation never acts
+        // on a state older than the dialog's.
+        for index in 8: HorizontalLayout {
+            padding-left: root.kept(index, root.moved) ? 8px : 0px;
+            if root.kept(index, root.moved): HintedActionButton {
+                minimum-control-height: root.compact-controls ? 0px : 32px;
+                vertical-padding: root.compact-controls && !Theme.touch ? 4px : 5px;
+                height: root.height;
+                text: root.actions[index].text; fallback-icon: root.actions[index].fallback-icon;
+                hint: root.actions[index].hint;
+                // Screen readers get the hint too, as for the actions in More… (it also says
+                // why an action is disabled).
+                accessible-description: root.actions[index].hint;
+                enabled: root.actions[index].enabled; primary: root.actions[index].primary;
+                clicked => { root.activated(index); }
+            }
+        }
+        if root.overflow > 0: HorizontalLayout {
+            padding-left: 8px;
+            more := HintedActionButton {
+                minimum-control-height: root.compact-controls ? 0px : 32px;
+                vertical-padding: root.compact-controls && !Theme.touch ? 4px : 5px;
+                height: root.height;
+                text: root.compact-more ? "" : "More…"; fallback-icon: FallbackIcons.menu;
+                // Named also when only its glyph shows.
+                accessible-label: "More…";
+                accessible-description: "Actions that do not fit here (Space or Enter opens them).";
+                hint: "More… Actions that do not fit here (Space or Enter opens them).";
+                clicked => { menu.show(); }
+            }
+        }
+    }
+    // Opens upward from the row's right end, inside the window.
+    menu := PopupWindow {
+        width: min(max(root.more-width, Theme.font-size * 18), root.absolute-position.x + root.width - 8px);
+        height: min(root.overflow * Theme.control-height + 12px, max(Theme.control-height + 12px, root.absolute-position.y - 8px));
+        x: max(4px - root.absolute-position.x, root.width - self.width);
+        y: max(4px - root.absolute-position.y, -self.height - 4px);
+        close-policy: close-on-click-outside;
+        panel := Rectangle {
+            background: Theme.surface; border-width: 1px; border-color: Theme.active-frame; border-radius: 4px;
+            property <int> current: root.next-in-menu(-1, 1);
+            function choose(index: int) {
+                if !root.in-menu(index) || !root.actions[index].enabled { return; }
+                menu.close();
+                root.activated(index);
+            }
+            changed current => {
+                let top = list.position(self.current);
+                if top < -list.viewport-y { list.viewport-y = -top; }
+                else if top + Theme.control-height > -list.viewport-y + list.visible-height {
+                    list.viewport-y = min(0px, list.visible-height - top - Theme.control-height);
+                }
+            }
+            keys := FocusScope {
+                init => { self.focus(); }
+                key-pressed(event) => {
+                    if event.text == Key.Escape { menu.close(); return accept; }
+                    if event.text == Key.Return || event.text == Key.Space { panel.choose(panel.current); return accept; }
+                    if event.text == Key.DownArrow { panel.current = root.next-in-menu(panel.current, 1); return accept; }
+                    if event.text == Key.UpArrow { panel.current = root.next-in-menu(panel.current, -1); return accept; }
+                    accept
+                }
+                list := VScrollView {
+                    x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
+                    content-width: self.visible-width;
+                    content-height: root.overflow * Theme.control-height;
+                    // A menu row's top: the rows of the actions in the menu before it.
+                    pure function position(index: int) -> length {
+                        return ((index > 0 && root.in-menu(0) ? 1 : 0) + (index > 1 && root.in-menu(1) ? 1 : 0)
+                            + (index > 2 && root.in-menu(2) ? 1 : 0) + (index > 3 && root.in-menu(3) ? 1 : 0)
+                            + (index > 4 && root.in-menu(4) ? 1 : 0) + (index > 5 && root.in-menu(5) ? 1 : 0)
+                            + (index > 6 && root.in-menu(6) ? 1 : 0)) * Theme.control-height;
+                    }
+                    VerticalLayout {
+                        spacing: 0px; alignment: start;
+                        // Fixed slots reading the current actions, as the row's buttons.
+                        for index in 8: VerticalLayout {
+                            if root.in-menu(index): Rectangle {
+                                property <FooterAction> action: root.actions[index];
+                                height: Theme.control-height;
+                                background: self.action.enabled && (area.has-hover || panel.current == index)
+                                    ? Theme.hover : transparent;
+                                accessible-role: button;
+                                accessible-label: self.action.text;
+                                accessible-description: self.action.hint;
+                                accessible-enabled: self.action.enabled;
+                                accessible-action-default => { panel.choose(index); }
+                                Image {
+                                    x: 10px; y: (parent.height - self.height) / 2;
+                                    width: Theme.icon-size; height: Theme.icon-size;
+                                    source: parent.action.fallback-icon.width > 0 ? parent.action.fallback-icon
+                                        : FallbackIcons.for-label(parent.action.text);
+                                    colorize: parent.action.enabled ? Theme.secondary-text : Theme.muted-text;
+                                    image-fit: contain; accessible-role: none;
+                                }
+                                Text {
+                                    x: Theme.icon-size + 18px; height: parent.height;
+                                    width: max(0px, parent.width - self.x - shortcut.width - 18px);
+                                    text: parent.action.text; font-size: Theme.font-size; overflow: elide;
+                                    color: parent.action.enabled ? Theme.text : Theme.muted-text;
+                                    vertical-alignment: center; accessible-role: none;
+                                }
+                                shortcut := Text {
+                                    x: parent.width - self.width - 10px; height: parent.height;
+                                    width: parent.action.shortcut == "" ? 0px : parent.width * 0.35;
+                                    text: parent.action.shortcut; font-size: Theme.small-font; overflow: elide;
+                                    color: parent.action.enabled ? Theme.secondary-text : Theme.muted-text;
+                                    horizontal-alignment: right; vertical-alignment: center;
+                                    accessible-role: none;
+                                }
+                                area := TouchArea {
+                                    enabled: parent.action.enabled;
+                                    clicked => { panel.choose(index); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // The next action in the menu after `from` in direction `delta`, past the disabled
+    // ones; `from` when there is none.
+    pure function usable(index: int) -> bool {
+        return root.in-menu(index) && root.actions[index].enabled;
+    }
+    pure function next-in-menu(from: int, delta: int) -> int {
+        return root.usable(from + delta) ? from + delta
+            : root.usable(from + 2 * delta) ? from + 2 * delta
+            : root.usable(from + 3 * delta) ? from + 3 * delta
+            : root.usable(from + 4 * delta) ? from + 4 * delta
+            : root.usable(from + 5 * delta) ? from + 5 * delta
+            : root.usable(from + 6 * delta) ? from + 6 * delta
+            : root.usable(from + 7 * delta) ? from + 7 * delta
+            : root.usable(from + 8 * delta) ? from + 8 * delta
+            : from;
+    }
+}

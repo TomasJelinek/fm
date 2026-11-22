@@ -86,6 +86,103 @@ fn a_short_idle_find_with_large_text_keeps_its_status_in_view() {
     assert!(findings.is_empty(), "{findings:#?}");
 }
 
+/// The part of `item` its clipping ancestors and the window show, when any.
+fn shown(item: &ItemRc, (width, height): (f32, f32)) -> Option<Rect> {
+    if !item.is_visible() {
+        return None;
+    }
+    let (x, y, w, h) = bounds(item);
+    let (mut left, mut top) = (x.max(0.0), y.max(0.0));
+    let (mut right, mut bottom) = ((x + w).min(width), (y + h).min(height));
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor.borrow().as_ref().clips_children() {
+            let (cx, cy, cw, ch) = bounds(&ancestor);
+            left = left.max(cx);
+            top = top.max(cy);
+            right = right.min(cx + cw);
+            bottom = bottom.min(cy + ch);
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    (right > left + 0.5 && bottom > top + 0.5).then_some((left, top, right - left, bottom - top))
+}
+
+/// Every control a user can operate: buttons, fields, check boxes and choosers.
+fn controls(item: ItemRc, found: &mut Vec<ItemRc>) {
+    if matches!(
+        item.accessible_role(),
+        AccessibleRole::Button
+            | AccessibleRole::TextInput
+            | AccessibleRole::Checkbox
+            | AccessibleRole::Combobox
+    ) {
+        found.push(item.clone());
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        controls(item, found);
+    }
+}
+
+#[test]
+fn the_compact_status_line_covers_no_control_and_the_query_form_starts_at_the_top() {
+    use i_slint_core::{accessibility::AccessibleStringProperty, window::WindowInner};
+    use slint::platform::WindowAdapter;
+    let (window, native) = open();
+    window.set_progress(STATUS.into());
+    let mut findings = Vec::new();
+    for (scheme, density, font) in [(1, 1, 21), (1, 1, 24), (0, 0, 22), (0, 0, 32)] {
+        window.invoke_apply_preferences(scheme, density, "".into(), font, font);
+        for (width, height) in [(700, 340), (480, 300), (320, 200)] {
+            modeless::draw(&native, width, height, "find-compact-status-overlap");
+            let case = format!("theme {scheme}, density {density}, font {font}, {width}×{height}");
+            let size = (width as f32, height as f32);
+            let line = modeless::accessible_item(&native, AccessibleRole::Button, STATUS)
+                .expect("the status line");
+            let status = shown(&line, size).expect("the status line is shown");
+            let mut found = Vec::new();
+            let root = WindowInner::from_pub(native.window()).component();
+            controls(ItemRc::new_root(root), &mut found);
+            for control in found.iter().filter(|control| **control != line) {
+                let Some(area) = shown(control, size) else {
+                    continue;
+                };
+                let across = (area.0 + area.2).min(status.0 + status.2) - area.0.max(status.0);
+                let down = (area.1 + area.3).min(status.1 + status.3) - area.1.max(status.1);
+                if across > 0.5 && down > 0.5 {
+                    let label = control
+                        .accessible_string_property(AccessibleStringProperty::Label)
+                        .unwrap_or_default();
+                    findings.push(format!(
+                        "{case}: \"{label}\" covers the status line by {across:.0}×{down:.0}px"
+                    ));
+                }
+            }
+            // The scrolled query form starts at the top of the query area, not centred
+            // in the room the status line leaves.
+            let masks =
+                modeless::accessible_item(&native, AccessibleRole::TextInput, "File name masks")
+                    .expect("the masks field");
+            let mut clips = std::iter::successors(
+                masks.parent_item(ParentItemTraversalMode::StopAtPopups),
+                |item| item.parent_item(ParentItemTraversalMode::StopAtPopups),
+            )
+            .filter(|item| item.borrow().as_ref().clips_children());
+            let (form, area) = (clips.next().unwrap(), clips.next().unwrap());
+            let gap = bounds(&form).1 - bounds(&area).1;
+            if gap.abs() > 0.5 {
+                findings.push(format!(
+                    "{case}: the query form starts {gap:.0}px below the top of its area"
+                ));
+            }
+        }
+    }
+    window.hide().unwrap();
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
 #[test]
 fn the_compact_status_line_still_opens_the_details() {
     let (window, native) = open();

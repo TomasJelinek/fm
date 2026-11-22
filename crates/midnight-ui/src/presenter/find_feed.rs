@@ -179,8 +179,14 @@ impl Presenter {
                 .collect(),
             _ => s.results.iter().collect(),
         };
-        let mut seen = HashSet::new();
+        // The Find's selection arrives as the list's marks, unless it only follows the
+        // cursor; the list's cursor starts on the Find's cursor result.
+        let marked = s.selection_is_explicit();
+        let cursor_slot = s.selection.cursor();
+        let mut seen: HashMap<PathBuf, usize> = HashMap::new();
         let mut entries = Vec::with_capacity(ordered.len());
+        let mut marks: Vec<usize> = Vec::new();
+        let mut cursor = 0;
         let mut omitted = 0;
         for result in ordered {
             if result.archive.is_some()
@@ -189,7 +195,17 @@ impl Presenter {
                 omitted += 1;
                 continue;
             }
-            if !seen.insert(result.entry.path.clone()) {
+            let row = *seen
+                .entry(result.entry.path.clone())
+                .or_insert(entries.len());
+            let slot = result_selection::slot(result.id);
+            if marked && slot.is_some_and(|slot| s.selection.is_selected(slot)) {
+                marks.push(row);
+            }
+            if slot.is_some() && slot == cursor_slot {
+                cursor = row;
+            }
+            if row < entries.len() {
                 continue;
             }
             let mut entry = Entry::new(
@@ -225,13 +241,13 @@ impl Presenter {
         let count = entries.len();
         let index = Arc::new(DirectoryIndex::from_entries(&entries));
         let location = self.panes[pane.index()].display_location_text();
-        let feed = FeedPane {
+        let mut feed = FeedPane {
             entries: entries.into(),
             index,
             selected: vec![false; count],
             selected_count: 0,
             selected_bytes: 0,
-            cursor: 0,
+            cursor,
             page: match self.finds.feed_pages[pane.index()] {
                 0 => 20,
                 rows => rows,
@@ -243,6 +259,9 @@ impl Presenter {
             rows_serial: next_rows_serial(),
             deleting: None,
         };
+        for row in marks {
+            feed.set_mark(row, true);
+        }
         self.retired
             .push(Box::new(self.finds.feeds[pane.index()].replace(feed)));
         self.active = pane;

@@ -158,7 +158,7 @@ digits; change or disable them in Options → Keyboard to free those numbers.
 | Ctrl+X in files | Publish a Cut clipboard for captured native files and folders. Paste opens the same Move confirmation as F6 (at most 64 selected items; on Linux a link moves as a link); archive Move is unavailable |
 | F5 | Copy the captured selection or focused item, including selected nested native/archive folders in expanded trees; edit the destination folder, initially the other panel. Enter queues the copy; Escape cancels the dialog |
 | F6 | Move captured native files or folders, including selected nested directories in expanded native trees, to an editable destination initially set to the other panel. Same-volume native rename reads no content; copied files are verified before source removal. On Linux a link moves as a link. Archive Move is unavailable |
-| Ctrl+F / Alt+F7 | Open a separate Find window for the active native folder: masks, multiple roots, subfolders and optional UTF-8 content text or per-line regular expression, optionally inside archives (every archive and member, however large, until the search ends or Stop). Feed to panel shows the results as a list in the panel: the panel keys (F3, F4, F5, F6, F8, Shift+F8, Insert, Space, Enter) act on the results, Backspace returns to the folder. Up/Down selects results; Enter or Go to file validates the result and locates it in its originating panel; F1 shows or hides syntax help for the chosen match mode and moves the keyboard into it (Up/Down and Page Up/Page Down scroll it); Escape first closes the help or the Add folder entry, and otherwise closes that Find window. In a viewer, Ctrl+F searches the opened file instead. |
+| Ctrl+F / Alt+F7 | Open a separate Find window for the active native folder: masks, multiple roots, subfolders and optional UTF-8 content text or per-line regular expression, optionally inside archives (every archive and member, however large, until the search ends or Stop). Feed to panel shows the results as a list in the panel: the panel keys (F3, F4, F5, F6, F8, Shift+F8, Insert, Space, Enter) act on the results, Backspace returns to the folder. Up/Down moves through the results; Ctrl+click, Shift+click, Shift with the cursor keys, Space, Insert, Ctrl+A and Ctrl+D select several (see [Find result actions](#find-result-actions)); Enter or Go to file validates the result and locates it in its originating panel; F1 shows or hides syntax help for the chosen match mode and moves the keyboard into it (Up/Down and Page Up/Page Down scroll it); Escape first closes the help or the Add folder entry, and otherwise closes that Find window. In a viewer, Ctrl+F searches the opened file instead. |
 | Ctrl+R / Ctrl+F9 | Refresh |
 | Ctrl+F3 / Ctrl+F4 / Ctrl+F5 / Ctrl+F6 | Sort the active panel by name / extension / modified time / size; repeat to reverse the order. Each detailed panel also has a clickable Ext header next to Name, with the current sort arrow; repeat-click reverses the order. The drive-bar sort dropdown offers Extension in every view mode. |
 | Ctrl+F7 | Open the same metadata editor with filename case conversion enabled |
@@ -379,8 +379,9 @@ Source directories are removed postorder only when their contents were moved;
 skips and failures preserve unfinished sources. Platform and metadata limits
 remain explicit in the transfer contract.
 Options is the gear at the right end of the top toolbar. The application moon
-icon immediately to its right opens About, including the application version;
-Escape or Close dismisses it. Both controls remain fixed when panel tools scroll.
+icon immediately to its right opens About, including the application version,
+author and copyright; Escape or Close dismisses it. Both controls remain fixed
+when panel tools scroll.
 In About, Left and Right switch between its tabs. In the library list, Up, Down,
 Page Up, Page Down, Home and End move the selection, and Enter or a double-click
 opens the selected library; Down moves from the filter field into the list.
@@ -616,6 +617,22 @@ Within the focused Find result list, View (**F3**), Basic View (**Alt+F3**) and
 Edit (**F4**) use the current configured file-action bindings. Their button hints
 update from the same map. **Enter** and double-click retain Go to file; **Open** is
 an explicit button because the system association may execute the file.
+
+The list selects several results, as the Checksums results do. A click selects one
+result; **Ctrl+click** toggles one; **Shift+click** selects the range from the last
+clicked result. **Up/Down**, **Page Up/Page Down**, **Home** and **End** move the cursor
+and select its result; with **Shift** they select the range, with **Ctrl** they move the
+cursor alone. **Space** toggles the cursor's result, **Insert** toggles it and moves
+down, **Ctrl+A** selects every result and **Ctrl+D** none. **Ctrl+C** copies the full
+paths of the selection (or of the cursor's result when it is not selected), and the
+context menu (right click, **Shift+F10** or the **Menu** key) copies names, full paths or
+row details of the selection holding its row. F3, F4, Enter and the footer actions act
+on the cursor's result only, as in a panel; Feed to panel marks the selected results in
+the panel's list, where F5, F6 and F8 act on them. The status line counts the selected
+results and the size of their files. Footer actions that do not fit beside **Close** are
+in its **More…** button: **Tab** reaches it, **Space** or **Enter** opens its menu,
+**Up/Down** choose, **Enter** or **Space** runs and **Escape** closes it.
+
 **Tab** moves from the result list to its column headings (Name, Ext, Path, Size,
 Modified), each shown with a focus frame and scrolled into view; **Enter** or
 **Space** sorts by the focused heading, as a click does (repeat to reverse).

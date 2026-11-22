@@ -97,6 +97,22 @@ separately; this document is not a claim that every item is already released.
   its minimum size with any font. A notice's Details and Copy details go glyph-only
   beside Close the same way. The failure decision window is never narrower than its
   Retry, Skip and Skip all buttons.
+- A dialog can hand `DialogFooter` its actions as data (`footer-actions`, a list of
+  `FooterAction`: caption, glyph, hint, shortcut, enabled, primary, a `drop` rank and
+  `hidden`) instead of buttons. The footer measures each caption as `ActionButton` lays
+  it out and shows, in their order and 8 px apart, as many actions as fit whole beside
+  the dismiss button; the others move, lowest `drop` rank first (rank 0 never), into a
+  More… button at the end of the row, whose menu (opening upward, Up/Down, Enter or
+  Space, Escape) lists them with the same captions, glyphs, shortcuts and enabled
+  states. Where even the actions of rank 0 and a captioned More… do not fit (Find at
+  320×200 with a 32 px font), More… shows its glyph alone and keeps its accessible
+  name. Such a footer never scrolls and never cuts a button; it exposes
+  `shown-actions` and `overflow-actions`. Up to eight actions. Find uses it for its query
+  and details footers; footers that pass buttons as children are unchanged. In the
+  `footer-actions` literal, read no glyph (or string property) twice where one read is a
+  branch of `?:`: Slint 1.18.1's generator then fails with E0382 in the generated Rust.
+  Bind each glyph to its own property and read it once; `dialog-footer.slint` shows the
+  pattern and the workaround.
 - Dialog dismissal stays reachable at 320 by 200, including large touch fonts.
   A short About (under 300 px) keeps a 40 px title strip and tighter spacing; its
   Licenses tab and a library's licence scroll as a whole, keeping at least three list

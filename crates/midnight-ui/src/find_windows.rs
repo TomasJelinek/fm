@@ -3,7 +3,10 @@ use crate::dialog_host::{CloseDisposition, DialogHost, DialogOwner, DialogSessio
 use crate::tool_window_failure::Failures;
 use crate::{
     FindDraft, FindRootRow, FindRow, FindWindow, MainWindow, Presenter, Theme,
-    presenter::find::{FindForm, FindRoot},
+    presenter::find::{
+        FindCopy, FindForm, FindRoot, FindSelect,
+        result_selection::{group_text, modified_text, size_text, slot},
+    },
     shown_text,
 };
 use midnight_core::*;
@@ -67,24 +70,10 @@ impl Model for Rows {
                 }),
             path_tail: crate::path_tail(&path),
             path,
-            size: if entry.kind == EntryKind::Directory {
-                "<DIR>".into()
-            } else {
-                entry.metadata.size.map_or_else(
-                    || "Unknown size".into(),
-                    |n| format!("{} B", p.number_locale.format_u64(n)).into(),
-                )
-            },
-            modified: crate::time_presentation::modified(&entry.metadata)
-                .map_or_else(SharedString::default, |d| {
-                    format!("{} {}", d.date, d.time).into()
-                }),
+            size: size_text(entry, &p.number_locale).into(),
+            modified: modified_text(entry).into(),
             directory: entry.kind == EntryKind::Directory,
-            duplicate_group: result
-                .duplicate_group
-                .map_or_else(SharedString::default, |group| {
-                    format!("Group {group} · {} files", result.duplicate_group_size).into()
-                }),
+            duplicate_group: group_text(result).into(),
             group_start: result.duplicate_group.is_some()
                 && row
                     .checked_sub(1)
@@ -149,11 +138,50 @@ impl Rows {
         retired
     }
 }
+
+/// Whether each shown result is selected: one O(1) lookup in the session's selection
+/// per row the list shows. Any selection change resets it once, which re-reads only the
+/// visible rows' marks; the result rows themselves are not formatted again.
+struct Marks {
+    rows: Rc<Rows>,
+    notify: ModelNotify,
+    /// The session's selection revision last shown.
+    shown: Cell<Option<u64>>,
+}
+impl Marks {
+    /// Show the selection of `revision`: one notification for a change, however many
+    /// rows it marks or unmarks. Returns whether the selection changed.
+    fn show(&self, revision: u64) -> bool {
+        if self.shown.replace(Some(revision)) == Some(revision) {
+            return false;
+        }
+        self.notify.reset();
+        true
+    }
+}
+impl Model for Marks {
+    type Data = bool;
+    fn row_count(&self) -> usize {
+        self.rows.structure.get().1
+    }
+    fn row_data(&self, row: usize) -> Option<bool> {
+        let slot = slot(self.rows.id_for_row(row)?)?;
+        let state = self.rows.state.upgrade()?;
+        let p = state.borrow();
+        let session = p.finds.sessions.get(&self.rows.session)?;
+        Some(session.selection.is_selected(slot))
+    }
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
+}
+
 struct WindowRecord {
     window: FindWindow,
     host: Rc<DialogHost>,
     shown: bool,
     rows: Rc<Rows>,
+    marks: Rc<Marks>,
     roots: Vec<FindRoot>,
     // One model for the window's life: a tick updates its row in place, so an
     // open Search folders list stays open while several folders are toggled.
@@ -270,7 +298,7 @@ fn refresh(
         let Some(record) = records.get_mut(&id) else {
             continue;
         };
-        let w = &record.window;
+        let w = &record.window.clone_strong();
         let theme = main.global::<Theme>();
         w.invoke_apply_preferences(
             theme.get_scheme(),
@@ -297,72 +325,33 @@ fn refresh(
             )
             .into(),
         );
-        if record.revision == Some(s.revision) {
+        // The context menu shows the current bindings beside View and Edit.
+        w.set_view_keys(view_keys.into());
+        w.set_edit_keys(edit_keys.into());
+        let selection_changed = record.marks.shown.get() != Some(s.selection_revision);
+        if record.revision == Some(s.revision) && !selection_changed {
             crate::tooltip::synchronize_find(w);
             continue;
         }
-        record.revision = Some(s.revision);
-        w.set_running(s.running);
-        w.set_stopping(s.stopping);
-        w.set_duplicate_results(s.duplicates);
-        // Copy details formats the session again, with raw paths.
-        w.set_error(shown_text(&s.error));
-        w.set_attention(
-            !s.error.is_empty()
-                || s.summary.as_ref().is_some_and(|summary| {
-                    matches!(
-                        summary.completion,
-                        FindCompletion::Incomplete | FindCompletion::Failed
-                    )
-                }),
-        );
-        w.set_progress(progress(s, &p.number_locale).into());
-        w.set_current_directory(s.current_directory.as_ref().map_or_else(
-            SharedString::default,
-            |path| {
-                let mut text = match s.progress.phase {
-                    FindPhase::Scanning => "Scanning: ",
-                    FindPhase::HashingDuplicates => "Hashing: ",
-                    FindPhase::ComparingDuplicates => "Comparing: ",
-                }
-                .to_owned();
-                crate::error_presentation::append_path(&mut text, path);
-                shown_text(&text)
-            },
-        ));
-        w.set_sort_column(sort_index(s.sort.column));
-        w.set_sort_descending(s.sort.descending);
-        w.set_details(shown_text(&details(s, &p.number_locale)));
-        if record.roots != s.roots {
-            update_roots(&record.root_rows, &record.roots, &s.roots);
-            record.roots = s.roots.clone();
-            w.set_searched_roots(
-                i32::try_from(s.roots.iter().filter(|root| root.searched).count())
-                    .unwrap_or(i32::MAX),
-            );
+        let retired = if record.revision == Some(s.revision) {
+            None
+        } else {
+            record.revision = Some(s.revision);
+            show_session(w, record, s, &p)
+        };
+        // After the rows: the cursor's row in the order shown now, and the marks, which
+        // one notification re-reads for the visible rows.
+        if record.marks.show(s.selection_revision) {
+            w.set_selected_count(i32::try_from(s.selection.len()).unwrap_or(i32::MAX));
         }
-        // After the rows exist: an accepted Add, typed or browsed, chooses its folder
-        // and closes the entry, also when the folder was listed already.
-        if record.added_root != s.added_root.0 {
-            record.added_root = s.added_root.0;
-            w.invoke_root_added(i32::try_from(s.added_root.1).unwrap_or(i32::MAX));
-        }
-        let selected = (record.rows.structure.get().0 == s.generation.0)
-            .then(|| {
-                usize::try_from(w.get_selected_row())
-                    .ok()
-                    .and_then(|row| record.rows.id_for_row(row))
-            })
-            .flatten();
-        let retired = record
-            .rows
-            .update(s.generation.0, s.results.len(), s.order.clone());
         w.set_selected_row(
-            selected
-                .and_then(|id| record.rows.row_for_id(id))
+            s.selection
+                .cursor()
+                .and_then(|slot| record.rows.row_for_id(FindResultId(slot as u64 + 1)))
                 .and_then(|row| i32::try_from(row).ok())
                 .unwrap_or(-1),
         );
+        w.set_progress(status(s, &p).into());
         crate::tooltip::synchronize_find(w);
         let shown = if record.shown {
             Ok(())
@@ -382,6 +371,85 @@ fn refresh(
             failures.record(id, error.to_string());
         }
     }
+}
+
+/// Show a changed session: its state, its folders and its rows. Returns an order the
+/// rows no longer use, for backend disposal.
+fn show_session(
+    w: &FindWindow,
+    record: &mut WindowRecord,
+    s: &crate::presenter::find::FindSession,
+    p: &Presenter,
+) -> Option<Arc<FindOrder>> {
+    w.set_running(s.running);
+    w.set_stopping(s.stopping);
+    w.set_duplicate_results(s.duplicates);
+    // Copy details formats the session again, with raw paths.
+    w.set_error(shown_text(&s.error));
+    w.set_attention(
+        !s.error.is_empty()
+            || s.summary.as_ref().is_some_and(|summary| {
+                matches!(
+                    summary.completion,
+                    FindCompletion::Incomplete | FindCompletion::Failed
+                )
+            }),
+    );
+    w.set_generation(s.generation.0.to_string().into());
+    w.set_current_directory(s.current_directory.as_ref().map_or_else(
+        SharedString::default,
+        |path| {
+            let mut text = match s.progress.phase {
+                FindPhase::Scanning => "Scanning: ",
+                FindPhase::HashingDuplicates => "Hashing: ",
+                FindPhase::ComparingDuplicates => "Comparing: ",
+            }
+            .to_owned();
+            crate::error_presentation::append_path(&mut text, path);
+            shown_text(&text)
+        },
+    ));
+    w.set_sort_column(sort_index(s.sort.column));
+    w.set_sort_descending(s.sort.descending);
+    w.set_details(shown_text(&details(s, &p.number_locale)));
+    if record.roots != s.roots {
+        update_roots(&record.root_rows, &record.roots, &s.roots);
+        record.roots = s.roots.clone();
+        w.set_searched_roots(
+            i32::try_from(s.roots.iter().filter(|root| root.searched).count()).unwrap_or(i32::MAX),
+        );
+    }
+    // After the rows exist: an accepted Add, typed or browsed, chooses its folder
+    // and closes the entry, also when the folder was listed already.
+    if record.added_root != s.added_root.0 {
+        record.added_root = s.added_root.0;
+        w.invoke_root_added(i32::try_from(s.added_root.1).unwrap_or(i32::MAX));
+    }
+    record
+        .rows
+        .update(s.generation.0, s.results.len(), s.order.clone())
+}
+
+/// The status line: the search's progress, then how many results are selected and the
+/// size of their files.
+fn status(s: &crate::presenter::find::FindSession, p: &Presenter) -> String {
+    let locale = &p.number_locale;
+    let mut text = progress(s, locale);
+    if !s.selection.is_empty() {
+        text.push_str(&format!(
+            " · {} selected",
+            locale.format_u64(s.selection.len() as u64)
+        ));
+        if s.selection_bytes > 0 {
+            text.push_str(" · ");
+            text.push_str(&crate::size_presentation::file_size(
+                s.selection_bytes,
+                p.preferences.values.size_display,
+                locale,
+            ));
+        }
+    }
+    text
 }
 
 fn create(
@@ -406,6 +474,12 @@ fn create(
         view: RefCell::new(None),
     });
     window.set_rows(rows.clone().into());
+    let marks = Rc::new(Marks {
+        rows: rows.clone(),
+        notify: ModelNotify::default(),
+        shown: Cell::new(None),
+    });
+    window.set_marks(marks.clone().into());
     let root_rows = Rc::new(VecModel::default());
     window.set_roots(root_rows.clone().into());
     macro_rules! callback {
@@ -497,6 +571,77 @@ fn create(
             p.find_file_action(id, &row, action, send);
         }
     });
+    callback!(on_copy_results, |p, send, row, kind| {
+        let copy = match kind {
+            0 => FindCopy::Names,
+            1 => FindCopy::Paths,
+            _ => FindCopy::Details,
+        };
+        p.find_copy(id, &row, copy, send);
+    });
+    {
+        // A selection change shows in this window only: no application-wide refresh.
+        // The window is refreshed even when nothing changed, so a cursor the list
+        // moved ahead of the selection returns to the presenter's.
+        let select = {
+            let state = state.clone();
+            let weak = main.as_weak();
+            let host = host.clone();
+            Rc::new(move |select: Option<FindSelect>| {
+                if !host.is_current(session) {
+                    return;
+                }
+                if let Some(select) = select {
+                    state.borrow_mut().find_select(id, select);
+                }
+                if let Some(main) = weak.upgrade() {
+                    main.invoke_refresh_find_windows();
+                }
+            })
+        };
+        // The result shown in a row now, as the window shows it.
+        let result = {
+            let rows = rows.clone();
+            move |row: i32| {
+                usize::try_from(row)
+                    .ok()
+                    .and_then(|row| rows.id_for_row(row))
+            }
+        };
+        window.on_select_row({
+            let (select, result) = (select.clone(), result.clone());
+            move |row, toggle, range| {
+                select(result(row).map(|result| FindSelect::Click {
+                    result,
+                    toggle,
+                    range,
+                }))
+            }
+        });
+        window.on_move_cursor({
+            let (select, result) = (select.clone(), result.clone());
+            move |row, extend, keep| {
+                select(result(row).map(|result| FindSelect::Move {
+                    result,
+                    extend,
+                    keep,
+                }))
+            }
+        });
+        window.on_menu_row({
+            let select = select.clone();
+            move |row| select(result(row).map(|result| FindSelect::Menu { result }))
+        });
+        window.on_toggle_mark({
+            let select = select.clone();
+            move |advance| select(Some(FindSelect::Toggle { advance }))
+        });
+        window.on_select_all({
+            let select = select.clone();
+            move || select(Some(FindSelect::All))
+        });
+        window.on_deselect_all(move || select(Some(FindSelect::Clear)));
+    }
     {
         let host = host.clone();
         let state = state.clone();
@@ -546,6 +691,7 @@ fn create(
         host,
         shown: false,
         rows,
+        marks,
         roots: vec![],
         root_rows,
         added_root: 0,

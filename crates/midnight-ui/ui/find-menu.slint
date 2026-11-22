@@ -1,0 +1,115 @@
+import { VScrollView } from "scroll-view.slint";
+import { Theme } from "theme.slint";
+
+// The Find results' context menu (right click, Shift+F10 or the Menu key). Go to file,
+// View, Edit and Open act on the row it opened on; the copy actions act on the selection
+// when that row is part of it, otherwise on the row alone. Up/Down choose an action,
+// Enter or Space runs it, Escape closes the menu.
+export component FindResultMenu inherits Rectangle {
+    // The row is a native regular file (View, Edit) / not an archive member (Open).
+    in property <bool> file;
+    in property <bool> native;
+    in property <bool> any-rows;
+    // How many results the copy actions act on.
+    in property <int> count;
+    in property <string> view-keys;
+    in property <string> edit-keys;
+    // The action codes `FindResults.menu-chosen` handles, by position.
+    callback chosen(int);
+    callback dismissed();
+    // `FindResults` sizes the menu for these nine actions.
+    private property <int> items: 9;
+    private property <int> current: 0;
+    forward-focus: focus;
+    init => { focus.focus(); }
+    pure function enabled(index: int) -> bool {
+        return index == 1 || index == 2 ? root.file
+            : index == 3 ? root.native
+            : index == 7 ? root.any-rows
+            : true;
+    }
+    pure function usable(index: int) -> bool {
+        return index >= 0 && index < root.items && root.enabled(index);
+    }
+    // The next action that can run, past at most three that cannot (View, Edit, Open).
+    pure function next-usable(from: int, delta: int) -> int {
+        return root.usable(from + delta) ? from + delta
+            : root.usable(from + 2 * delta) ? from + 2 * delta
+            : root.usable(from + 3 * delta) ? from + 3 * delta
+            : root.usable(from + 4 * delta) ? from + 4 * delta
+            : from;
+    }
+    function choose(index: int) {
+        if root.enabled(index) { root.chosen(index); }
+    }
+    changed current => {
+        let top = root.current * Theme.control-height;
+        if top < -scroll.content-y { scroll.content-y = -top; }
+        else if top + Theme.control-height > -scroll.content-y + scroll.visible-height {
+            scroll.content-y = min(0px, scroll.visible-height - top - Theme.control-height);
+        }
+    }
+    background: Theme.surface;
+    border-color: Theme.active-frame;
+    border-width: 1px;
+    border-radius: 4px;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.dismissed(); return accept; }
+            if event.text == Key.Return || event.text == Key.Space { root.choose(root.current); return accept; }
+            if event.text == Key.DownArrow { root.current = root.next-usable(root.current, 1); return accept; }
+            if event.text == Key.UpArrow { root.current = root.next-usable(root.current, -1); return accept; }
+            if event.text == Key.Home { root.current = 0; return accept; }
+            if event.text == Key.End { root.current = root.items - 1; return accept; }
+            // While the menu is open, the list's keys do not reach the rows under it.
+            accept
+        }
+        scroll := VScrollView {
+            x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
+            content-width: self.visible-width;
+            content-height: root.items * Theme.control-height;
+            VerticalLayout {
+                padding: 0px; spacing: 0px;
+                for title[index] in [
+                    "Go to file", "View", "Edit", "Open",
+                    "Copy names", "Copy full paths", "Copy row details",
+                    "Select all", "Deselect all",
+                ]: Rectangle {
+                    property <string> shortcut: [
+                        "Enter", root.view-keys, root.edit-keys, "", "", "Ctrl+C", "", "Ctrl+A", "Ctrl+D",
+                    ][index];
+                    property <string> label: title
+                        + (index >= 4 && index <= 6 && root.count > 1 ? " (" + root.count + ")" : "");
+                    height: Theme.control-height;
+                    background: root.enabled(index) && (area.has-hover || root.current == index) ? Theme.hover : transparent;
+                    accessible-role: button;
+                    accessible-label: self.label;
+                    accessible-enabled: root.enabled(index);
+                    accessible-action-default => { root.choose(index); }
+                    // A rule above the copy actions and above the selection actions.
+                    Rectangle {
+                        x: 4px; y: 0px; width: parent.width - 8px; height: 1px;
+                        background: index == 4 || index == 7 ? Theme.frame : transparent;
+                    }
+                    Text {
+                        x: 10px; width: max(0px, keys.x - self.x - 8px); height: parent.height;
+                        text: parent.label; font-size: Theme.font-size; overflow: elide;
+                        color: root.enabled(index) ? Theme.text : Theme.muted-text;
+                        vertical-alignment: center;
+                    }
+                    keys := Text {
+                        x: parent.width - self.width - 10px; height: parent.height;
+                        width: parent.shortcut == "" ? 0px : parent.width * 0.35;
+                        text: parent.shortcut; font-size: Theme.small-font; overflow: elide;
+                        color: root.enabled(index) ? Theme.secondary-text : Theme.muted-text;
+                        horizontal-alignment: right; vertical-alignment: center;
+                    }
+                    area := TouchArea {
+                        enabled: root.enabled(index);
+                        clicked => { root.choose(index); }
+                    }
+                }
+            }
+        }
+    }
+}

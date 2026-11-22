@@ -205,6 +205,21 @@ fn find_accessible_rows_select_without_revealing_and_focus_keyboard_navigation()
     let revealed = Rc::new(RefCell::new(Vec::new()));
     let captured = revealed.clone();
     window.on_reveal(move |token| captured.borrow_mut().push(token));
+    // The host keeps the selection: this one selects the row a click asks for.
+    let marks = Rc::new(slint::VecModel::from(vec![false, false]));
+    window.set_marks(marks.clone().into());
+    window.on_select_row({
+        let marks = marks.clone();
+        move |row, toggle, range| {
+            assert!(
+                !toggle && !range,
+                "an accessible activation is a plain click"
+            );
+            for index in 0..2 {
+                slint::Model::set_row_data(&*marks, index, index as i32 == row);
+            }
+        }
+    });
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
     draw(&native, 860, 620);
@@ -613,6 +628,14 @@ fn click_footer_action(
         // Wheel input scrolls immediately (no animation), so layout suffices here.
         let name = format!("{case}-{label}-{attempt}");
         modeless::draw_or_layout(native, width, height, &name, render);
+        // An action that does not fit beside Close is in the footer's More… menu.
+        if modeless::accessible_item(native, AccessibleRole::Button, label).is_none()
+            && modeless::accessible_item(native, AccessibleRole::Button, "More…").is_some()
+        {
+            click(native, "More…");
+            click(native, label);
+            return;
+        }
         let item = modeless::accessible_item(native, AccessibleRole::Button, label)
             .unwrap_or_else(|| panic!("missing footer action {label} at {width}x{height}"));
         let area = bounds(&item);
@@ -649,4 +672,426 @@ fn click_footer_action(
         slint::platform::update_timers_and_animations();
     }
     panic!("footer action {label} could not be exposed at {width}x{height}");
+}
+
+/// A Find window driven by the real presenter, with a search of `file-N.txt` results
+/// (N bytes each), and the commands it sent.
+struct Search {
+    main: MainWindow,
+    state: Rc<RefCell<Presenter>>,
+    commands: Rc<RefCell<Vec<Command>>>,
+    find: Rc<MinimalSoftwareWindow>,
+    root: std::path::PathBuf,
+    request: FindRequest,
+}
+
+impl Search {
+    fn new(windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>, count: u64) -> Self {
+        let main = MainWindow::new().unwrap();
+        let root = std::env::temp_dir().join("find-multi-selection");
+        let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root.clone())));
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        midnight_ui::install(
+            &main,
+            state.clone(),
+            Rc::new({
+                let commands = commands.clone();
+                move |command| {
+                    commands.borrow_mut().push(command);
+                    true
+                }
+            }),
+        );
+        main.show().unwrap();
+        draw(&windows.borrow()[0], 1000, 700);
+        main.invoke_find_files(0);
+        let find = windows.borrow()[1].clone();
+        draw(&find, 860, 620);
+        click(&find, "Find");
+        let request = commands
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::StartFind(request) => Some((**request).clone()),
+                _ => None,
+            })
+            .unwrap();
+        let search = Self {
+            main,
+            state,
+            commands,
+            find,
+            root,
+            request,
+        };
+        search.stream(1, count);
+        search
+    }
+
+    /// Results `first..first + count` arrive.
+    fn stream(&self, first: u64, count: u64) {
+        let results: Vec<_> = (first..first + count)
+            .map(|n| {
+                std::sync::Arc::new(FindResult {
+                    id: FindResultId(n),
+                    duplicate_group: None,
+                    duplicate_group_size: 0,
+                    archive: None,
+                    entry: FindEntry {
+                        path: self.path(n),
+                        kind: EntryKind::File,
+                        metadata: EntryMetadata {
+                            size: Some(n),
+                            ..Default::default()
+                        },
+                        identity: TransferIdentity {
+                            device: 1,
+                            object: [n as u8; 16],
+                        },
+                        revision: FindRevision([0; 6]),
+                    },
+                })
+            })
+            .collect();
+        self.apply(FindUpdate::Batch(results.into()));
+    }
+
+    fn apply(&self, update: FindUpdate) {
+        self.state
+            .borrow_mut()
+            .apply(Event::Find(Box::new(FindEvent {
+                session: self.request.session,
+                generation: self.request.generation,
+                update,
+            })));
+        midnight_ui::refresh(&self.main, &self.state.borrow());
+        draw(&self.find, 860, 620);
+    }
+
+    fn finish(&self) {
+        self.apply(FindUpdate::Finished(FindSummary {
+            completion: FindCompletion::Completed,
+            progress: FindProgress::default(),
+            reached_budgets: vec![],
+            diagnostics: vec![],
+        }));
+    }
+
+    /// The first results sort into the order of `ids`.
+    fn sort(&self, ids: &[u64]) {
+        let mut positions = vec![0; ids.len()];
+        for (index, id) in ids.iter().enumerate() {
+            positions[*id as usize - 1] = index;
+        }
+        self.apply(FindUpdate::Sorted(std::sync::Arc::new(FindOrder {
+            revision: 0,
+            sort: FindSortSpec::default(),
+            ids: ids.iter().map(|id| FindResultId(*id)).collect(),
+            positions: positions.into(),
+        })));
+    }
+
+    fn path(&self, n: u64) -> std::path::PathBuf {
+        self.root.join(format!("file-{n}.txt"))
+    }
+
+    /// The list row that shows result `n`.
+    fn row(&self, n: u64) -> i_slint_core::item_tree::ItemRc {
+        use i_slint_core::{
+            accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+            window::WindowInner,
+        };
+        fn walk(item: ItemRc, token: &str) -> Option<ItemRc> {
+            if item.accessible_role() == AccessibleRole::ListItem
+                && item
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .is_some_and(|value| value == token)
+            {
+                return Some(item);
+            }
+            let mut child = item.first_child();
+            while let Some(item) = child {
+                child = item.next_sibling();
+                if let Some(found) = walk(item, token) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let token = format!("{}:{n}", self.request.generation.0);
+        let root = WindowInner::from_pub(self.find.window()).component();
+        walk(ItemRc::new_root(root), &token).unwrap_or_else(|| panic!("no row shows {token}"))
+    }
+
+    /// The results `1..=count` whose rows report themselves selected.
+    fn selected(&self, count: u64) -> Vec<u64> {
+        use i_slint_core::accessibility::AccessibleStringProperty;
+        (1..=count)
+            .filter(|n| {
+                self.row(*n)
+                    .accessible_string_property(AccessibleStringProperty::ItemSelected)
+                    .is_some_and(|selected| selected == "true")
+            })
+            .collect()
+    }
+
+    /// Press and release `button` on result `n`'s row, holding `modifiers`.
+    fn press(&self, n: u64, button: slint::platform::PointerEventButton, modifiers: &[Key]) {
+        let row = self.row(n);
+        let origin = row.map_to_native_window(row.geometry().origin);
+        let position =
+            slint::LogicalPosition::new(origin.x + 40.0, origin.y + row.geometry().height() / 2.0);
+        let window = self.find.window();
+        for modifier in modifiers {
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: (*modifier).into(),
+            });
+        }
+        window.dispatch_event(WindowEvent::PointerPressed { position, button });
+        window.dispatch_event(WindowEvent::PointerReleased { position, button });
+        for modifier in modifiers.iter().rev() {
+            window.dispatch_event(WindowEvent::KeyReleased {
+                text: (*modifier).into(),
+            });
+        }
+        draw(&self.find, 860, 620);
+    }
+
+    fn click(&self, n: u64, modifiers: &[Key]) {
+        self.press(n, slint::platform::PointerEventButton::Left, modifiers);
+    }
+
+    fn key(&self, text: impl Into<slint::SharedString>, modifiers: &[Key]) {
+        let text = text.into();
+        let window = self.find.window();
+        for modifier in modifiers {
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: (*modifier).into(),
+            });
+        }
+        window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window.dispatch_event(WindowEvent::KeyReleased { text });
+        for modifier in modifiers.iter().rev() {
+            window.dispatch_event(WindowEvent::KeyReleased {
+                text: (*modifier).into(),
+            });
+        }
+        draw(&self.find, 860, 620);
+    }
+
+    /// The clipboard texts sent so far.
+    fn copied(&self) -> Vec<String> {
+        self.commands
+            .borrow()
+            .iter()
+            .filter_map(|command| match command {
+                Command::CopyText { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn close(self) {
+        self.main.invoke_close_find_windows();
+        self.main.hide().unwrap();
+        self.state.borrow_mut().retire_all();
+        let retired = self.state.borrow_mut().take_retired();
+        std::thread::spawn(move || drop(retired)).join().unwrap();
+    }
+}
+
+#[test]
+fn find_results_select_several_rows_by_pointer_and_keys_and_keep_them_by_identity() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let search = Search::new(&windows, 6);
+    // A click selects one row; Ctrl+click adds one; Shift+click selects the range from
+    // the anchor (the Ctrl+clicked row), replacing the selection.
+    search.click(1, &[]);
+    assert_eq!(search.selected(6), [1]);
+    search.click(3, &[Key::Control]);
+    assert_eq!(search.selected(6), [1, 3]);
+    search.click(5, &[Key::Shift]);
+    assert_eq!(search.selected(6), [3, 4, 5]);
+    let status = status_line(&search.find);
+    assert!(
+        status.contains("· 3 selected · "),
+        "the status line counts the selection and its size: {status}"
+    );
+    // Results that stream in arrive unselected; a sort moves the selected rows.
+    search.stream(7, 2);
+    search.sort(&[8, 7, 6, 5, 4, 3, 2, 1]);
+    assert_eq!(search.selected(8), [3, 4, 5]);
+    // Shift+Down extends from the anchor (result 3) to the row under the cursor's.
+    search.key(Key::DownArrow, &[Key::Shift]);
+    assert_eq!(search.selected(8), [3, 4]);
+    // Plain Down selects the row it reaches alone.
+    search.key(Key::DownArrow, &[]);
+    assert_eq!(search.selected(8), [3]);
+    search.key("a", &[Key::Control]);
+    assert_eq!(search.selected(8), [1, 2, 3, 4, 5, 6, 7, 8]);
+    search.key("d", &[Key::Control]);
+    assert!(search.selected(8).is_empty());
+    // Space toggles the cursor's row; Insert toggles it and moves down.
+    search.key(Key::Space, &[]);
+    assert_eq!(search.selected(8), [3]);
+    search.key(Key::Insert, &[]);
+    assert!(search.selected(8).is_empty());
+    search.key(Key::Insert, &[]);
+    assert_eq!(search.selected(8), [2]);
+    // Ctrl+Up moves the cursor alone (to results 2, then 3); Space then adds its row.
+    search.key(Key::UpArrow, &[Key::Control]);
+    search.key(Key::UpArrow, &[Key::Control]);
+    assert_eq!(search.selected(8), [2]);
+    search.key(Key::Space, &[]);
+    assert_eq!(search.selected(8), [2, 3]);
+    // A new search clears the selection.
+    search.finish();
+    click(&search.find, "Find");
+    draw(&search.find, 860, 620);
+    let status = status_line(&search.find);
+    assert!(!status.contains("selected"), "{status}");
+    search.close();
+}
+
+#[test]
+fn selected_and_cursor_rows_look_distinct_in_every_theme() {
+    use i_slint_core::{
+        accessibility::AccessibleStringProperty, item_tree::ItemRc, items::AccessibleRole,
+        window::WindowInner,
+    };
+    use midnight_ui::FindRow;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let window = FindWindow::new().unwrap();
+    // Rows 0 and 1 plain, 2 and 3 selected, 4 the cursor's: each kind on an even row,
+    // compared with the plain row of the same parity.
+    let rows: Vec<FindRow> = (0..5)
+        .map(|index| FindRow {
+            token: format!("1:{}", index + 1).into(),
+            name: format!("r{index}").into(),
+            ..Default::default()
+        })
+        .collect();
+    window.set_rows(Rc::new(slint::VecModel::from(rows)).into());
+    window.set_marks(Rc::new(slint::VecModel::from(vec![false, false, true, true, false])).into());
+    window.set_selected_row(4);
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    let row = |token: &str| -> ItemRc {
+        fn walk(item: ItemRc, token: &str) -> Option<ItemRc> {
+            if item.accessible_role() == AccessibleRole::ListItem
+                && item
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .is_some_and(|value| value == token)
+            {
+                return Some(item);
+            }
+            let mut child = item.first_child();
+            while let Some(item) = child {
+                child = item.next_sibling();
+                if let Some(found) = walk(item, token) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let root = WindowInner::from_pub(native.window()).component();
+        walk(ItemRc::new_root(root), token).unwrap()
+    };
+    for scheme in PreferenceTheme::ALL.map(|theme| theme.index()) {
+        window.invoke_apply_preferences(scheme, 0, "".into(), 13, 17);
+        let pixels = modeless::render(&native, 860, 620, &format!("find-selection-theme{scheme}"));
+        // At a row's left: its cursor stroke, its selection square and, between the
+        // square and the text, its background.
+        let sample = |index: usize| {
+            let item = row(&format!("1:{}", index + 1));
+            let origin = item.map_to_native_window(item.geometry().origin);
+            let height = item.geometry().height();
+            let at =
+                |x: f32, y: f32| pixels[(origin.y + y) as usize * 860 + (origin.x + x) as usize];
+            (at(1.0, 2.0), at(4.0, height / 2.0), at(9.0, 3.0))
+        };
+        let [plain_even, plain_odd, selected_even, selected_odd, cursor] =
+            [0, 1, 2, 3, 4].map(sample);
+        let theme = format!("theme {scheme}");
+        assert_ne!(selected_even.1, plain_even.1, "{theme}: selection square");
+        assert_ne!(selected_odd.1, plain_odd.1, "{theme}: selection square");
+        assert_ne!(
+            selected_even.1, selected_even.2,
+            "{theme}: square on its own row"
+        );
+        assert_ne!(
+            selected_even.2, plain_even.2,
+            "{theme}: selected background"
+        );
+        assert_ne!(selected_odd.2, plain_odd.2, "{theme}: selected background");
+        assert_ne!(cursor.0, plain_even.0, "{theme}: cursor stroke");
+        assert_ne!(cursor.2, plain_even.2, "{theme}: cursor background");
+        assert_ne!(
+            cursor.2, selected_even.2,
+            "{theme}: cursor against selection"
+        );
+        for (index, selected) in [false, false, true, true, false].into_iter().enumerate() {
+            assert_eq!(
+                row(&format!("1:{}", index + 1))
+                    .accessible_string_property(AccessibleStringProperty::ItemSelected)
+                    .as_deref(),
+                Some(if selected { "true" } else { "false" }),
+                "{theme}: row {index} reports its selection"
+            );
+        }
+    }
+    window.hide().unwrap();
+}
+
+#[test]
+fn find_copy_menu_and_feed_act_on_the_selected_results_or_the_acted_on_row() {
+    use midnight_ui::FeedPresentation;
+    use slint::{Model, platform::PointerEventButton};
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let search = Search::new(&windows, 5);
+    search.finish();
+    let raw = |n: u64| search.path(n).to_string_lossy().into_owned();
+    search.click(2, &[]);
+    search.click(4, &[Key::Control]);
+    // Ctrl+C copies the full paths of the selection, which holds the cursor's row.
+    search.key("c", &[Key::Control]);
+    assert_eq!(search.copied(), [format!("{}\n{}", raw(2), raw(4))]);
+    // The context menu (Shift+F10) on a selected row acts on the whole selection.
+    search.key(Key::F10, &[Key::Shift]);
+    click(&search.find, "Copy names (2)");
+    assert_eq!(search.copied()[1], "file-2.txt\nfile-4.txt");
+    // A right click outside the selection selects that row alone and acts on it.
+    search.press(5, PointerEventButton::Right, &[]);
+    assert_eq!(search.selected(5), [5]);
+    click(&search.find, "Copy full paths");
+    assert_eq!(search.copied()[2], raw(5));
+    // After Ctrl+D, Ctrl+C acts on the cursor's row alone.
+    search.key("d", &[Key::Control]);
+    search.key("c", &[Key::Control]);
+    assert_eq!(search.copied()[3], raw(5));
+    // The Menu key opens the menu on the cursor's row; Down and Enter choose from it
+    // (Go to file, View, Edit, Open, then Copy names).
+    search.key(Key::Menu, &[]);
+    for _ in 0..4 {
+        search.key(Key::DownArrow, &[]);
+    }
+    search.key(Key::Return, &[]);
+    assert_eq!(search.copied()[4], "file-5.txt");
+    // Feed to panel: the selected results arrive marked, the cursor on the Find's.
+    search.click(1, &[]);
+    search.click(3, &[Key::Shift]);
+    click(&search.find, "Feed to panel");
+    let feed = search.main.global::<FeedPresentation>();
+    let marks: Vec<bool> = feed
+        .get_left_rows()
+        .iter()
+        .map(|row| row.selected)
+        .collect();
+    assert_eq!(marks, [true, true, true, false, false]);
+    assert_eq!(feed.get_left().cursor, 2);
+    assert!(feed.get_left().status.starts_with("3 of 5 selected"));
+    search.close();
 }

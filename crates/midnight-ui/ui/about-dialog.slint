@@ -236,20 +236,21 @@ component InfoRow inherits HorizontalLayout {
     Text { text: root.value; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; horizontal-stretch: 1; }
 }
 
-// The hero is the same midnight sky in every theme. One looping phase (three
-// cycles per loop, so every sine below repeats seamlessly) drives the aurora,
-// twinkling and glinting stars, three shooting stars, drifting clouds and the
-// fireflies over the hills. A roomy dialog also shows Cassiopeia drawing itself,
-// a satellite crossing once per loop and an owl that blinks on the far hill.
-// Every frame repaints the sky, so it stays cheap: the stars that do not twinkle
-// are one cached layer, and opacity is set on single items, never on a group,
-// which the renderer would draw through an offscreen layer of its own.
+// The hero is the same midnight sky in every theme, with the application icon as
+// its Moon. One looping phase (three cycles per loop, so every sine below repeats
+// seamlessly) drives the aurora, twinkling and glinting stars, three shooting
+// stars, drifting clouds, Saturn's glow and the fireflies over the hills. A roomy
+// dialog also shows Cassiopeia drawing itself, a satellite crossing once per loop
+// and an owl that blinks on the far hill. Every frame repaints the sky, so it
+// stays cheap: the stars that do not twinkle are one cached layer, and opacity is
+// set on single items, never on a group, which the renderer would draw through an
+// offscreen layer of its own.
 component Sky inherits Rectangle {
     in property <float> phase;
     in property <image> logo;
     in property <string> version;
     callback dragged(length, length);
-    // 0..1 over the whole 144 s loop: slow drift that wraps without a jump.
+    // 0..1 over the whole 72 s loop: slow drift that wraps without a jump.
     private property <float> drift: root.phase / 18.8496;
     private property <bool> compact: root.height < 170px;
     // Wide enough for the extra scenes to keep clear of the shooting stars.
@@ -270,18 +271,6 @@ component Sky inherits Rectangle {
         commands: "M 0 30 C 100 60, 170 0, 260 34 S 400 64, 480 26 L 480 60 C 390 80, 330 30, 250 58 S 90 30, 0 60 Z";
         fill: @linear-gradient(180deg, #a06bff4d 0%, #a06bff00 100%);
         opacity: 0.5 + 0.4 * Math.sin(root.phase * 3rad + 1rad);
-    }
-    // Glow behind the crescent.
-    Rectangle {
-        x: parent.width - 150px; y: -20px; width: 130px; height: 130px; border-radius: 65px;
-        background: @radial-gradient(circle, #f6d78a66 0%, #f6d78a00 70%);
-        opacity: 0.8 + 0.2 * Math.sin(root.phase * 2rad);
-    }
-    Path {
-        x: parent.width - 118px; y: 12px; width: 52px; height: 52px; viewbox-width: 60; viewbox-height: 60;
-        commands: "M 34 3 A 28 28 0 1 0 57 42 A 22 22 0 1 1 34 3 Z";
-        fill: @linear-gradient(135deg, #fff4cf 0%, #f2c768 100%);
-        accessible-role: image; accessible-label: "Crescent moon";
     }
     // Seventy stars. Two in three hold still, drawn once into a cached layer...
     Rectangle {
@@ -306,17 +295,68 @@ component Sky inherits Rectangle {
         background: Math.mod(self.i, 5) == 0 ? #ffd9a8 : Math.mod(self.i, 7) == 0 ? #a8c8ff : #dfe6ff;
         opacity: 0.2 + 0.8 * self.twinkle;
     }
-    // Brighter stars with a four-point glint; one that would sit in Cassiopeia
-    // gives way to it.
+    // Brighter stars with a four-point glint; one that would sit in Cassiopeia or
+    // on Saturn gives way to it.
     for i in 8 : Rectangle {
         private property <float> glint: Math.pow(Math.abs(Math.sin((root.phase * (1 + Math.mod(i, 3)) + i * 2.3) * 1rad)), 3);
-        visible: !cassiopeia.visible || self.y > cassiopeia.y + cassiopeia.height + 8px
-            || self.x < cassiopeia.x - 8px || self.x > cassiopeia.x + cassiopeia.width + 8px;
+        visible: (!cassiopeia.visible || self.y > cassiopeia.y + cassiopeia.height + 8px
+                || self.x < cassiopeia.x - 8px || self.x > cassiopeia.x + cassiopeia.width + 8px)
+            && (!saturn.visible || self.y > saturn.y + saturn.height + 8px
+                || self.x < saturn.x - 8px || self.x > saturn.x + saturn.width + 8px);
         x: (0.06 + 0.115 * i) * parent.width; y: 10px + Math.mod(i * 37, 56) * 1px;
         width: 1px; height: 1px;
         Rectangle { x: -6px * (0.4 + parent.glint); y: 0px; width: 12px * (0.4 + parent.glint); height: 1px; background: #ffffff; opacity: 0.3 + 0.7 * parent.glint; }
         Rectangle { x: 0px; y: -6px * (0.4 + parent.glint); width: 1px; height: 12px * (0.4 + parent.glint); background: #ffffff; opacity: 0.3 + 0.7 * parent.glint; }
         Rectangle { x: -2px; y: -2px; width: 5px; height: 5px; border-radius: 2.5px; background: #ffffff; opacity: 0.4 + 0.6 * parent.glint; }
+    }
+    // Pulsing halo and the application icon, the Moon: in front of the stars, behind
+    // the clouds and the shooting stars, which are nearer. A short dialog keeps only
+    // the title.
+    Rectangle {
+        x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
+        background: @radial-gradient(circle, #8fa2ff77 0%, #8fa2ff00 70%);
+        opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
+        visible: !root.compact;
+    }
+    Image {
+        source: root.logo; image-fit: contain; visible: !root.compact;
+        x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
+        accessible-role: image; accessible-label: "Midnight Explorer icon";
+    }
+    // Saturn shows with the icon, in clear sky right of the shooting stars: the far
+    // half of its rings behind the planet, the near half in front, a band across the
+    // planet and a soft glow that breathes. Clouds pass in front of it. Each path's
+    // viewbox is its size, so nothing is scaled. The software renderer, the fallback
+    // when the GPU fails, fills a path nonzero in one colour and drops the rounded
+    // corners of a gradient, so the Cassini division is a ring drawn the other way
+    // round and the planet a radial gradient that turns transparent at its edge.
+    saturn := Rectangle {
+        visible: !root.compact;
+        x: parent.width - 88px; y: 12px; width: 48px; height: 48px;
+        accessible-role: image; accessible-label: "Saturn";
+        Rectangle {
+            background: @radial-gradient(circle, #f5e0aa4d 0%, #f5e0aa00 70%);
+            opacity: 0.75 + 0.25 * Math.sin(root.phase * 2rad);
+        }
+        Path {
+            width: 48px; height: 48px; viewbox-width: 48; viewbox-height: 48;
+            commands: "M 7.178 28.824 A 17.5 6 -16 0 1 40.822 19.176 L 35.055 20.83 A 11.5 3.943 -16 0 0 12.945 27.17 Z M 9.773 28.079 A 14.8 5.074 -16 0 1 38.227 19.921 L 38.996 19.7 A 15.6 5.349 -16 0 0 9.004 28.3 Z";
+            fill: #e6d3a8a8;
+        }
+        Rectangle {
+            x: 16px; y: 16px; width: 16px; height: 16px;
+            background: @radial-gradient(circle, #fff3d2 0%, #f4d89c 30%, #e4bb75 52%, #c99a58 63%, #b38448 66%, #b3844800 71%);
+        }
+        Path {
+            x: 16px; y: 16px; width: 16px; height: 16px; viewbox-width: 16; viewbox-height: 16;
+            commands: "M 1.116 11.222 L 15.545 7.085 A 7.6 7.6 0 0 1 15.581 8.531 L 1.852 12.468 A 7.6 7.6 0 0 1 1.116 11.222 Z";
+            fill: #a8773f59;
+        }
+        Path {
+            width: 48px; height: 48px; viewbox-width: 48; viewbox-height: 48;
+            commands: "M 7.178 28.824 A 17.5 6 -16 0 0 40.822 19.176 L 35.055 20.83 A 11.5 3.943 -16 0 1 12.945 27.17 Z M 9.773 28.079 A 14.8 5.074 -16 0 0 38.227 19.921 L 38.996 19.7 A 15.6 5.349 -16 0 1 9.004 28.3 Z";
+            fill: #ecdcb4d8;
+        }
     }
     // Faint clouds drift across the sky and wrap around.
     for i in 3 : Rectangle {
@@ -350,9 +390,9 @@ component Sky inherits Rectangle {
         }
     }
     // A satellite crosses once per loop, high above Cassiopeia and the halo, its
-    // light blinking, and fades into the Earth's shadow before the crescent.
+    // light blinking, and fades into the Earth's shadow well before Saturn.
     satellite := Rectangle {
-        // 0..1 while it crosses, from 40 % to 85 % of the loop: 64.8 s.
+        // 0..1 while it crosses, from 40 % to 85 % of the loop: 32.4 s.
         private property <float> s: Math.clamp((root.drift - 0.4) / 0.45, 0, 1);
         private property <float> shown: Math.min(1, Math.min(self.s, 1 - self.s) * 8);
         visible: root.roomy;
@@ -373,11 +413,12 @@ component Sky inherits Rectangle {
     // Three shooting stars at staggered moments of the loop. Each flies head first
     // along its own streak, the tail fading behind it, and burns out quickly.
     for k in 3 : Path {
-        // 0..1 during a 7.2 s flight, from 10 % to 25 % of each 48 s cycle.
+        // 0..1 during a 3.6 s flight, from 10 % to 25 % of each 24 s cycle.
         private property <float> t: Math.clamp((Math.mod(root.phase / 6.2832 + k / 3, 1) - 0.1) / 0.15, 0, 1);
         // The head (the left end) travels down and left along the streak's own slope,
-        // 30 down for every 64 across, in clear sky: left of the crescent and to either
-        // side of the icon, never across them.
+        // 30 down for every 64 across, always left of Saturn. Drawn after the icon, they
+        // pass in front of the Moon: in a dialog narrower than about 680 px the right
+        // one at the end of its flight, narrower than 400 px the left one at its start.
         x: (k == 0 ? parent.width - 180px : k == 1 ? parent.width / 2 - 130px : parent.width * 0.25)
             - self.t * parent.width * 0.18;
         y: 6px + k * 14px + self.t * parent.width * 0.18 * 30 / 64;
@@ -387,7 +428,7 @@ component Sky inherits Rectangle {
         opacity: Math.sin(self.t * 3.1416 * 1rad);
     }
     // An owl sits on the left top of the far hill, which hides its feet, against
-    // the sky; it blinks twice in quick succession every 72 seconds.
+    // the sky; it blinks twice in quick succession every 36 seconds.
     owl := Rectangle {
         private property <float> blink: max(
             Math.pow(Math.abs(Math.sin((root.phase / 3 + 0.6) * 1rad)), 480),
@@ -430,18 +471,6 @@ component Sky inherits Rectangle {
         y: parent.height - self.height; width: parent.width; height: self.width * 30 / 480; viewbox-width: 480; viewbox-height: 30;
         commands: "M 0 30 L 0 20 Q 90 2 200 18 T 480 14 L 480 30 Z";
         fill: Theme.surface;
-    }
-    // Pulsing halo and the application icon; a short dialog keeps only the title.
-    Rectangle {
-        x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
-        background: @radial-gradient(circle, #8fa2ff77 0%, #8fa2ff00 70%);
-        opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
-        visible: !root.compact;
-    }
-    Image {
-        source: root.logo; image-fit: contain; visible: !root.compact;
-        x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
-        accessible-role: image; accessible-label: "Midnight Explorer icon";
     }
     // As wide as its text, so the scenes beside it can be checked against its ink.
     Text {
@@ -502,9 +531,9 @@ export component AboutDialog inherits Rectangle {
     background: Theme.surface;
     clip: true;
     init => { self.phase = 6.2832 * 3; close-button.focus(); }
-    // A slow 144 s loop. The phase is computed for every frame drawn, so a slower loop
-    // keeps the frame rate and only moves each scene a smaller step per frame.
-    animate phase { duration: 144s; iteration-count: -1; easing: linear; }
+    // A calm 72 s loop. The phase is computed for every frame drawn, so the loop's
+    // length sets only how far each scene moves per frame, never the frame rate.
+    animate phase { duration: 72s; iteration-count: -1; easing: linear; }
     keys := FocusScope { focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
@@ -554,6 +583,12 @@ export component AboutDialog inherits Rectangle {
                             }
                             Rectangle { height: 1px; background: Theme.frame; }
                             InfoRow { label: "Version"; value: root.application-version; }
+                            // The author, and the copyright line under the name: plain text
+                            // like the version. The project has no licence yet, so the line
+                            // names none. It has no label: "Copyright" would not fit the
+                            // label column with large fonts.
+                            InfoRow { label: "Author"; value: "Tomas Jelinek"; }
+                            InfoRow { label: ""; value: "© 2026 Tomas Jelinek"; }
                             InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; }
                             InfoRow { label: "Libraries"; value: "Every open-source library and bundled component this package ships is listed with its license on the Licenses tab."; }
                             Rectangle { height: 1px; background: Theme.frame; }

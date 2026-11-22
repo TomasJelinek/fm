@@ -226,7 +226,17 @@ shows the full error, counts and diagnostics with Copy and Back. There is no
 separate Details button. A window shorter than 360 px with text larger than
 20 px shows the status in the query area instead, pinned to its last line so that it
 is in view whatever the query area scrolls to, except while a search runs: the query
-area is then hidden, so the status stays under the results.
+area is then hidden, so the status stays under the results. The scrolled query form
+starts at the top of the query area and ends above that status line, so the line covers
+no control of the form.
+
+The footer shows its actions through `DialogFooter`'s fitted actions (see the
+[dialog ergonomics](DIALOG_ERGONOMICS.md)): every action that fits whole beside Close is a
+button, 8 px from the next, and the others are in a More… menu at the end of the row,
+with their captions, glyphs, shortcuts and enabled states. On the query page Copy
+details moves first, then Open, Edit, View and Go to file; Find or Stop always stays. On
+the details page Copy moves first, then Find or Stop; Back always stays. At 320×200 the
+query page shows Find and More…; at 1000 px every action is a button.
 
 The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry
 RED/GREEN coverage. Windows and Linux software-window pointer/key/geometry checks
@@ -253,6 +263,82 @@ and read 40,960 bytes: 2,000 singleton sizes required no content I/O, while four
 identical 4 KiB files required hashing and exact comparison. This is one local
 debug-build observation, not a hardware-independent latency guarantee; see
 `_build/qa/operations-find/duplicates-performance.log`.
+
+## Selecting several results
+
+The result list selects several results at once, with the conventions of the Checksums
+results list; both use the shared model in `crates/midnight-ui/src/list_selection.rs`.
+A click selects one result and makes it the cursor and the anchor; Ctrl+click toggles a
+result; Shift+click selects the range from the anchor to the clicked result, replacing the
+selection (Ctrl+Shift+click adds the range). Up/Down, Page Up/Down, Home and End move the
+cursor and select the result they reach; with Shift they select the range from the anchor,
+with Ctrl they move the cursor alone. Space toggles the cursor's result, Insert toggles it
+and moves the cursor down, Ctrl+A selects every result shown and Ctrl+D none (the cursor
+stays). Ctrl+Space is not bound. Selected rows look as in a panel, through the theme tokens:
+`Theme.selected-background` and `Theme.selected-text` with a `Theme.selected-edge` square at
+the left (7 px, 9 px in touch density); the cursor's row has a 3 px `Theme.cursor-edge`
+stroke and a 1 px `Theme.cursor-edge` frame, and `Theme.cursor-background` when it is not
+selected. Every row reports its selected state to accessibility
+(`accessible-item-selected`), and an accessible activation selects the row as a click does.
+
+The presenter keeps the selection by result identity (`FindSession::selection`; a result's
+slot is its ID minus one, its index in `FindSession::results`), as one bit per result, so a
+lookup is one bit test. Results that stream in arrive unselected, a re-sort moves the
+selected rows without changing what is selected, and a new search clears the selection,
+cursor and anchor. The window does not put the marks into the formatted result rows: a
+separate `[bool]` model (`Marks` in `find_windows.rs`) answers each visible row from the
+selection, and every selection change notifies it once (`ModelNotify::reset`), whatever its
+size, so Select all and a range re-read only the visible rows' marks and never format a row
+again. Selection changes refresh the Find windows only, not the whole application. The
+status line adds how many results are selected and the size of their files ("· 3 selected
+· 12 B"; folders count without a size).
+
+An action acts on the selection when the row it acts on is part of the selection, and
+otherwise on that row alone:
+
+- **Ctrl+C** copies the full paths of the selection that holds the cursor's row, else of
+  that row. The **context menu** (right click, Shift+F10 or the Menu key) offers Go to file,
+  View, Edit, Open, Copy names, Copy full paths, Copy row details (the columns separated by
+  tabs, the identical-files group first in a duplicate search), Select all and Deselect all;
+  its copy actions name how many results they copy. A right click on a row outside the
+  selection selects that row alone first, so the menu acts on what is shown selected.
+  Copies use the raw names and paths, one line per result in the order shown, built in one
+  pass over the shown order.
+- **View** (F3, Alt+F3), **Edit** (F4), **Open** and **Go to file** (Enter, double click)
+  act on the cursor's row only, as F3, F4 and Enter act on the focused file in a panel with
+  several selected files; the menu's versions act on the row it opened on.
+- **Feed to panel** feeds every result, as before. When the selection is more than the
+  cursor's row, the selected results arrive marked in the panel's list, so F5 and F6 (the
+  Copy/Move dialog naming "N selected search results"), F8 and Shift+F8 (the Delete
+  confirmation naming the count), the clipboard and Properties act on them there. A
+  selection that only follows the cursor marks nothing; the list's cursor starts on the
+  Find's cursor result either way.
+- The Find window itself offers no delete and no copy or move: those go through Feed to
+  panel. Results cannot be dragged, from the Find window or from the list fed to a panel.
+
+Measured on 21 November in a release build with 100,000 results (ten times the 10,000
+retained results a search keeps), on the Windows development machine, best of five: a
+click 1 µs; Ctrl+A 1.4 ms; a Shift+click range over every result 1.4 ms; a Ctrl+click in
+a full selection 1.1 ms (the status line's byte total is summed again); 100,000 mark
+lookups 89 µs; after Ctrl+A or such a range, the one notification and re-reading a
+visible page of 40 marks 1.6–1.7 ms in all, the 40 marks alone 0.6 µs (formatting those
+40 rows takes 48 µs and is not repeated); copying 100,000 full paths 21 ms and their row
+details 37 ms (`find_selection_measures_100k_results` and
+`find_window_marks_measure_100k_results`, ignored tests run with `--ignored`).
+
+The selection's presenter tests are `presenter/find_selection_tests.rs` (identity while
+results stream and re-sort, clicks and ranges, keys, Space and Insert, Ctrl+A and Ctrl+D,
+the menu, copies on the selection or the acted-on row, Feed to panel's marks and its
+Delete of exactly those results), the mark model's
+`marks_read_the_selection_by_identity_and_notify_once_per_change` in
+`find_window_order_tests.rs`, and the window tests in `tests/find_windows.rs`: pointer,
+keys, accessibility state and the status line, Ctrl+C, the menu by pointer and by
+keyboard and Feed to panel, all through the real presenter, and the selected and cursor
+rows told apart in every theme. Each of them fails with its part reverted (21 November,
+in an export of 2b901122 with the change). The footers' fit is
+`find_footers_show_whole_evenly_spaced_actions_and_move_the_rest_into_more` in
+`tests/find_narrow_layout.rs` (320×200, 560×420 and 1000×620, both densities, a 32 px
+font at 320×200, More… by pointer and from the keyboard).
 
 ## Content regular expressions
 
@@ -351,8 +437,7 @@ lists generated archives of millions of members through the sandboxed worker.
 
 ## Feed to panel
 
-**Feed to panel** (on the More options line, right above the results; the footer
-keeps its six query actions so none is cut in narrow windows; enabled when a
+**Feed to panel** (on the More options line, right above the results; enabled when a
 finished or stopped search has
 results) shows the results as a list over the panel that opened the Find, like Total
 Commander's feed to listbox, and closes the Find window. The list is a virtual
@@ -362,8 +447,10 @@ commands) shows it again unchanged. Any navigation of that panel to another loca
 (a path, a drive, a bookmark, a tab, history) also leaves the list. The rows are the
 native results in the Find window's sort order; archive members are left out and
 counted in the status line ("1 archive member not shown", "2 archive members not
-shown"). The list is a snapshot of the results: it is not updated
-by later file changes.
+shown"). The results selected in the Find window arrive marked, unless only the cursor's
+result was selected, and the list's cursor starts on the Find's cursor result (see
+[Selecting several results](#selecting-several-results)). The list is a snapshot of the
+results: it is not updated by later file changes.
 
 Keys keep their configured meaning: Up/Down, Page Up/Down, Home/End move; Insert
 marks and moves, Space marks in place, the bulk selection keys mark with a panel's

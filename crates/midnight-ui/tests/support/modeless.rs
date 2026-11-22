@@ -174,3 +174,102 @@ pub fn click_item(window: &MinimalSoftwareWindow, item: &ItemRc, label: &str) {
             button: PointerEventButton::Left,
         });
 }
+
+/// The window rectangle of `item`: left, top, right, bottom.
+#[allow(dead_code)] // Used by the footer checks.
+pub fn edges(item: &ItemRc) -> (f32, f32, f32, f32) {
+    let rect = item.geometry();
+    let at = item.map_to_native_window(rect.origin);
+    (at.x, at.y, at.x + rect.width(), at.y + rect.height())
+}
+
+/// The part of `item` that its clipping ancestors and the window show.
+#[allow(dead_code)] // Used by the footer checks.
+pub fn shown_edges(window: &MinimalSoftwareWindow, item: &ItemRc) -> (f32, f32, f32, f32) {
+    use i_slint_core::item_tree::ParentItemTraversalMode;
+    let size = window
+        .window()
+        .size()
+        .to_logical(window.window().scale_factor());
+    let (left, top, right, bottom) = edges(item);
+    let (mut left, mut top) = (left.max(0.0), top.max(0.0));
+    let (mut right, mut bottom) = (right.min(size.width), bottom.min(size.height));
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        if ancestor.borrow().as_ref().clips_children() {
+            let clip = edges(&ancestor);
+            (left, top) = (left.max(clip.0), top.max(clip.1));
+            (right, bottom) = (right.min(clip.2), bottom.min(clip.3));
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    (left, top, right, bottom)
+}
+
+/// The visible buttons on a dialog footer's row (the row of its `dismiss` button), left to
+/// right, with their labels.
+#[allow(dead_code)] // Used by the footer checks.
+pub fn footer_row(window: &MinimalSoftwareWindow, dismiss: &str) -> Vec<(String, ItemRc)> {
+    fn buttons(item: ItemRc, found: &mut Vec<ItemRc>) {
+        if item.accessible_role() == AccessibleRole::Button && item.is_visible() {
+            found.push(item.clone());
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            buttons(item, found);
+        }
+    }
+    let dismiss = accessible_item(window, AccessibleRole::Button, dismiss)
+        .map(|item| edges(&item))
+        .expect("the footer's dismiss button");
+    let mut found = Vec::new();
+    let root = WindowInner::from_pub(window.window()).component();
+    buttons(ItemRc::new_root(root), &mut found);
+    let mut row: Vec<(String, ItemRc)> = found
+        .into_iter()
+        .filter(|button| {
+            let (_, top, _, bottom) = edges(button);
+            (top - dismiss.1).abs() < 0.5 && (bottom - dismiss.3).abs() < 0.5
+        })
+        .map(|button| {
+            let label = button
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .unwrap_or_default()
+                .to_string();
+            (label, button)
+        })
+        .collect();
+    row.sort_by(|a, b| edges(&a.1).0.total_cmp(&edges(&b.1).0));
+    row
+}
+
+/// The labels of a dialog footer's row, after checking that every button on it is whole
+/// and 8 px from the next one, and that `dismiss` ends it.
+#[allow(dead_code)] // Used by the footer checks.
+pub fn fitted_footer(window: &MinimalSoftwareWindow, dismiss: &str, case: &str) -> Vec<String> {
+    let row = footer_row(window, dismiss);
+    for (label, button) in &row {
+        let (whole, shown) = (edges(button), shown_edges(window, button));
+        assert!(
+            (whole.0 - shown.0).abs() < 0.5 && (whole.2 - shown.2).abs() < 0.5,
+            "{case}: {label} is cut: {whole:?} shows {shown:?}"
+        );
+    }
+    for pair in row.windows(2) {
+        let gap = edges(&pair[1].1).0 - edges(&pair[0].1).2;
+        assert!(
+            (gap - 8.0).abs() < 0.75,
+            "{case}: {} | {} are {gap}px apart",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    let labels: Vec<String> = row.into_iter().map(|(label, _)| label).collect();
+    assert_eq!(
+        labels.last().map(String::as_str),
+        Some(dismiss),
+        "{case}: {labels:?}"
+    );
+    labels
+}
