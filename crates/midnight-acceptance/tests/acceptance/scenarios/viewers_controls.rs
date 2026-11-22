@@ -1049,7 +1049,8 @@ const OTHER: (&str, &str) = ("other.md", "Back home");
 
 /// `links/links.md` with one link of every kind the host's policy knows (README, "Links"),
 /// each after a word or two so that no link starts a line, and the files and the folder
-/// its local links lead to. The program is never run: its bytes are plain text.
+/// its local links lead to. The program is never run: an executable header with NUL
+/// bytes and no code, so no viewer claims it and the policy shows it in the panel.
 fn prepare_links(context: &mut Context) -> Result<(), String> {
     let mut text = String::from(
         "# Link following\n\n\
@@ -1077,7 +1078,11 @@ fn prepare_links(context: &mut Context) -> Result<(), String> {
         "# Other page\n\nBack [home](links.md).\n",
     )?;
     generated::write(&folder, "sub/inside.txt", "inside the linked folder\n")?;
-    generated::write(&folder, "tool.exe", "not a program\n")?;
+    generated::write(
+        &folder,
+        "tool.exe",
+        b"MZ\x90\0\x03\0\0\0\x04\0\0\0not a program\0\0\0\0",
+    )?;
     generated::write(&folder, "page.html", PAGE)?;
     Ok(())
 }
