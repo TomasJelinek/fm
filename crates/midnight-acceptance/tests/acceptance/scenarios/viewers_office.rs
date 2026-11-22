@@ -9,8 +9,10 @@
 //! cannot open it.", an OLE compound file (an encrypted or legacy Office file) with the
 //! older-format sentence, and with the HTML viewer disabled in the settings F3 says
 //! "Office preview requires an installed and enabled Chromium HTML viewer.". Where the
-//! HTML viewer cannot run (its package or its system libraries are missing), the checks
-//! that need it report SKIP with that reason; the refusals do not need it.
+//! HTML viewer cannot run (its package or its system libraries are missing, or the
+//! machine refuses its browser: AppArmor or no cgroup-v2 delegation, as in
+//! `viewers_files`), the checks that need it report SKIP with that reason; the refusals
+//! do not need it.
 use crate::{
     Context, Scenario,
     app::{App, Config},
@@ -115,10 +117,13 @@ fn run(context: &mut Context) -> Result<(), String> {
                 refused(&mut app, context, name, refusal),
             ),
             (None, Some(reason)) => failures.skip(&format!("{name}: renders, Find"), reason),
-            (None, None) => failures.check(
-                &format!("{name}: renders, Find"),
-                rendered(&mut app, context, name),
-            ),
+            (None, None) => {
+                let check = format!("{name}: renders, Find");
+                match rendered(&mut app, context, name) {
+                    Ok(Some(reason)) => failures.skip(&check, reason),
+                    result => failures.check(&check, result.map(|_| ())),
+                }
+            }
         }
         files::dismiss_all(&mut app);
     }
@@ -217,18 +222,35 @@ fn libraries_named(app: &mut App, context: &mut Context, missing: &[String]) -> 
 }
 
 /// F3 on `name`: the preview opens in the HTML viewer and Find reports one match.
-fn rendered(app: &mut App, context: &mut Context, name: &str) -> Result<(), String> {
+/// `Ok(Some(reason))` when this machine refuses the browser itself
+/// ([`support::browser_refused`]): the case is skipped with that reason.
+fn rendered(
+    app: &mut App,
+    context: &mut Context,
+    name: &str,
+) -> Result<Option<&'static str>, String> {
     panel::select_row(app, PaneId::Left, name)?;
     let viewing = support::view(app, false, OPEN_LIMIT)?;
-    let checked = (|| {
-        viewing.result.clone().map_err(|error| {
-            format!(
-                "the preview reported {error:?}; status {:?}",
-                viewing.status()
-            )
-        })?;
-        find(app, &viewing)
-    })();
+    let mut refused = viewing
+        .result
+        .as_ref()
+        .err()
+        .and_then(|error| support::browser_refused(error));
+    let checked = match refused {
+        Some(_) => Ok(()),
+        None => (|| {
+            viewing.result.clone().map_err(|error| {
+                format!(
+                    "the preview reported {error:?}; status {:?}",
+                    viewing.status()
+                )
+            })?;
+            find(app, &viewing)
+        })(),
+    };
+    if checked.is_err() {
+        refused = support::browser_refused(&viewing.status());
+    }
     app.screenshot_window(
         context,
         &viewing.software,
@@ -236,7 +258,13 @@ fn rendered(app: &mut App, context: &mut Context, name: &str) -> Result<(), Stri
         &format!("F3 on {name}: {}", viewing.status()),
     );
     let closed = viewing.close(app);
-    checked.and(closed)
+    match refused {
+        Some(reason) => {
+            context.note(format!("F3 on {name}: {reason}"));
+            closed.map(|()| Some(reason))
+        }
+        None => checked.and(closed).map(|()| None),
+    }
 }
 
 /// The status after Find: the preview and its policy, then Chromium's count. The reply
