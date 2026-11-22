@@ -78,6 +78,21 @@ opt-level = 2
 [profile.dev.package.naga]
 opt-level = 2
 
+# Development builds encode screenshots and snapshots as PNG: at level 0 the encoder
+# took 179.5 s for 110 acceptance screenshots, at level 2 6.9 s, with byte-identical
+# files, for about 12 s more compile time (image itself stays at level 0).
+[profile.dev.package.png]
+opt-level = 2
+
+[profile.dev.package.fdeflate]
+opt-level = 2
+
+[profile.dev.package.miniz_oxide]
+opt-level = 2
+
+[profile.dev.package.simd-adler32]
+opt-level = 2
+
 [profile.dev.package.midnight-ui]
 opt-level = 1
 
