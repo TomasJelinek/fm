@@ -133,6 +133,35 @@ running as the user could ask polkit for any root command itself, so the text gi
 a program nothing beyond what the administrator authorizes. Unlike the script, the
 button does not remove other files that define the same profile.
 
+Links in viewed Markdown and HTML documents never run a program, and only an explicit
+action follows one: a press and release on the same link without a drag, or Enter on a
+link focused with Tab. One host policy decides where a link leads
+(`midnight_core::classify_link`, `crates/midnight-core/src/viewer_links.rs`):
+
+- `#fragment` stays in the document. A relative path, or a `file:` URL without a host,
+  resolves against the document's folder. A local file that a viewer shows opens in the
+  viewer, a folder opens in the active panel, and any other file is shown in the active
+  panel with the cursor on it, never opened by its program.
+- Links to devices (on Windows `\\.\`, `\\?\` and names such as `CON` or `COM1`), to
+  file streams, to a host in a `file:` URL, to network shares and to `//host` are
+  refused. For a local target, a thread of its own (`viewer-link` in
+  `crates/midnight-viewer-engine/src/worker_links.rs`) reads the target's metadata and,
+  for a file that no viewer claims by name, at most its first 4 KiB, and refuses
+  anything other than a regular file or folder.
+- `http`, `https` and `mailto` go to the system's default handler; the viewer itself
+  stays offline. The address is at most 8,192 bytes (`MAX_LINK_TARGET_BYTES`), has no
+  control characters and is handed over as percent-encoded ASCII; a mail link loses its
+  `attach…` fields, and a `.invalid` host is refused. Windows passes only the address to
+  `ShellExecuteExW` with the open verb; Linux runs `/usr/bin/xdg-open`, else
+  `/usr/bin/gio open --`, with the address as its one argument, without a shell or a
+  `PATH` lookup. Any other scheme is refused and named.
+- The HTML viewer hands the host only top-level navigations that come from a user
+  gesture, and only when it was started with `MIDNIGHT_WEB_VIEWER_LINKS=host-v1`, which
+  Office previews do not get. A page that navigates by itself, opens a window or submits
+  a form is refused with a notice; a same-document fragment stays in the page.
+- Inside an archive, a link opens only files in the document's folder or below it,
+  through the document's own resources.
+
 Checksum manifests are untrusted input. The checksum worker reads a manifest as a
 stream of lines (its memory follows the entries, a short name and a fixed-length digest
 each, never the file's size), validates every entry before opening any file, and opens
@@ -727,24 +756,28 @@ destination are positively identified as local SSDs**, with a shared physical-de
 scheduler. HDD, network, unknown or failed classification on either endpoint requires
 one stream per job; an SSD at the other endpoint does not override this.
 
-Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent
-through the ordinary Copy route is rejected. Explicit native Move accepts at most
-64 ordinary file/directory roots with a conservative 4 MiB active proof-path
-reservation. Archive members, duplicate/overlapping sources and unsupported
-locations are rejected before mutation; links follow the link rules below.
-Qualified same-volume native Move uses
-held source/destination identities and no-replace rename without content reads,
-CRC or SHA computation. Whole-directory rename does not enumerate descendants.
-Same-volume errors never silently fall back to copying. Proven cross-volume moves
-and explicit directory merges use the per-file proof and postorder directory
-contract below, with explicit live-namespace and durability limits. F6 consumes native tree
-captures as well as flat selections; native tree Cut publishes Move intent through
-the clipboard capture contract above. Cut itself removes nothing. Copy remains
-available where Move is unsupported, without silent fallback.
-Copy supports files and ordinary directories; special files are rejected.
+Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent through the
+ordinary Copy route is rejected. Explicit native Move accepts at most 64 ordinary
+file/directory roots with a conservative 4 MiB active proof-path reservation. Archive
+members, duplicate/overlapping sources and unsupported locations are rejected before
+mutation; links follow the link rules below. Qualified same-volume native Move uses held
+source/destination identities and no-replace rename without content reads, CRC or SHA
+computation. Whether a Move stays on one volume is one determination for the Copy/Move
+dialog, drops and Move jobs (`TransferLinkDestination::same_volume_as`): the same volume
+reached the same way, both locally or both through the same network location, so a share
+of a local drive (`\\localhost\D$`) counts as another volume, and an unknown volume is
+never the same. Whole-directory rename does not enumerate descendants. Same-volume
+errors never silently fall back to copying. Proven cross-volume moves and explicit
+directory merges use the per-file proof and postorder directory contract below, with
+explicit live-namespace and durability limits. F6 consumes native tree captures as well
+as flat selections; native tree Cut publishes Move intent through the clipboard capture
+contract above. Cut itself removes nothing. Copy remains available where Move is
+unsupported, without silent fallback. Copy supports files and ordinary directories;
+special files are rejected.
 
-Links. The Copy/Move dialog's **Links** choice is the same on both platforms and for
-Copy and Move: copy the files links point to (`FollowLinks`) or keep links as links
+Links. The Copy/Move dialog's link choice (named **Links** for screen readers) is the
+same on both platforms and for Copy and Move: copy the files links point to
+(`FollowLinks`) or keep links as links
 (`Preserve`); its default comes from what the destination's volume reports (statfs type
 and sysfs on Linux, `GetVolumeInformationByHandleW`, drive type and the disk's storage
 descriptor on Windows), never from a probe file. A Move that copies what a link points
@@ -865,23 +898,23 @@ xattrs, sparse allocation, timestamps or links. Windows file sync does not promi
 power-loss durability of the parent entry; Linux separately reports parent-sync
 failure even if publication succeeded.
 
-Explicit RequireModifiedTime (**Preserve exact modified time**) accepts only distinct
-native regular-file roots. The Copy/Move dialog offers it for 1 to 64 of them; the
-backend itself takes up to the 4,096-item transfer limit for Copy and 64 roots for Move,
-within the Move's 4 MiB proof-path reservation. It captures metadata from retained
-source handles before data reads and preflights every source pin and owned destination
-stage before content writes. After the selected content-verification gate, the exact
-stage modified time is set, synced and independently read back without rounding
-tolerance. Value-specific precision failures happen on unpublished stages after data
-verification; earlier completed files may remain, but such a failure prevents removal of
-that source and stops subsequent Move work. Unsupported directories, links and virtual
-sources never silently downgrade to ContentOnly. Source write attributes are not
-requested; Windows adds WRITE_ATTRIBUTES only to owned required-metadata stages.
-Source/destination times supplement, never replace, the selected content checks and
-fresh native read guards. Published targets are never rewritten to hide a mismatch; late
-pre-deletion errors restore originals without replacement. Access/creation time,
-attributes, permissions, ACLs, xattrs, streams and link preservation remain separate
-features.
+Explicit RequireModifiedTime (**Preserve exact modified time**) accepts at most 64
+distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`), for Copy and Move
+alike: the dialog offers it only for 1 to 64 of them, and the backend refuses a larger
+request before a job starts, never falling back to content-only, within the Move's 4 MiB
+proof-path reservation. It captures metadata from retained source handles before data
+reads and preflights every source pin and owned destination stage before content writes.
+After the selected content-verification gate, the exact stage modified time is set,
+synced and independently read back without rounding tolerance. Value-specific precision
+failures happen on unpublished stages after data verification; earlier completed files
+may remain, but such a failure prevents removal of that source and stops subsequent Move
+work. Unsupported directories, links and virtual sources never silently downgrade to
+ContentOnly. Source write attributes are not requested; Windows adds WRITE_ATTRIBUTES
+only to owned required-metadata stages. Source/destination times supplement, never
+replace, the selected content checks and fresh native read guards. Published targets are
+never rewritten to hide a mismatch; late pre-deletion errors restore originals without
+replacement. Access/creation time, attributes, permissions, ACLs, xattrs, streams and
+link preservation remain separate features.
 
 Copy-fallback Move preflight obtains source mutation authority separately from Copy,
 retains every actual source reader and empty stage, and verifies native source
@@ -1318,34 +1351,41 @@ classifications.
   still refused. Reads are bounded to 256 KiB and use u64 offsets. Four live sessions
   share the host limits; decoded pages, wire items, retained service replies and raster
   surfaces have separate explicit budgets. Selection/copy is limited to the loaded page.
-- Markdown returns semantic text blocks and inert link metadata. The host does not
-  execute HTML/scripts or load remote images, styles, fonts or links. Source syntax
-  definitions are packaged code, never executable configuration from the opened folder.
+- Markdown returns semantic text blocks and inert link metadata; a link is followed only
+  on an explicit action, through the host link policy described above. The host does not
+  execute HTML/scripts or load remote images, styles or fonts. Source syntax definitions
+  are packaged code, never executable configuration from the opened folder.
 - Archive browsing is read-only. Names, links and declared sizes are untrusted.
-  Decompressed content has no artificial size ceiling: it is bounded by the free
-  space of the host's private spool volume, and disk-full or short writes discard
-  the staging and fail the request. Staging also stops with a disk-full error before
-  that volume's free space falls below max(1 GiB, 2% of capacity), so a
-  decompression bomb cannot fill the spool volume. The host queries the volume on
-  each stage's first append and at least every 64 MiB; writes by other programs
-  between two queries are not counted. A member whose declared length needs a spool
-  file claims that space when its staging begins, beside the space that stagings still
-  in progress have claimed: one that would not fit above the reserve is refused before
-  anything is written, and under protocol 3 the refusal keeps the enclosing worker and
-  session (an archive inside an archive stays at its enclosing folder).
-  Decoder dictionaries/windows, buffered metadata records, the raw 7z next header
-  (an eighth of the worker's memory) and retained verified 7z siblings have
-  explicit bounds inside the 1 GiB worker memory limit; the metadata index (no
-  member-count or name-bytes limit), 7z compressed-header decoding and ZIP
-  central-directory parsing (including the duplicate-record check) are bounded only
-  by that limit, and an index that outgrows it fails its archive. A failed read of
-  the source is reported as such, never as a corrupt archive. Listing never
-  extracts a member to its declared host pathname.
-  Copying out uses the common destination readback/SHA-256/publish contract.
-  Opaque provider IDs and raw member names are captured; names must be safe
-  single destination components, never joined archive display paths. Links,
-  cycles, stale identities and resource overflows fail explicitly. Existing
-  destination entries are not silently replaced. ZIP/GZIP/7z checksums do not
+  Decompressed content has no artificial size ceiling: it is bounded by the free space
+  of the host's private spool volume, and disk-full or short writes discard the staging
+  and fail the request. Staging also stops with a disk-full error before that volume's
+  free space falls below max(1 GiB, 2% of capacity), so a decompression bomb cannot fill
+  the spool volume. The host queries the volume on each stage's first append and at
+  least every 64 MiB; writes by other programs between two queries are not counted. A
+  member whose declared length needs a spool file claims that space when its staging
+  begins, beside the space that stagings still in progress have claimed: one that would
+  not fit above the reserve is refused before anything is written, and under protocol 3
+  the refusal keeps the enclosing worker and session (an archive inside an archive stays
+  at its enclosing folder). Decoder dictionaries/windows, buffered metadata records, the
+  raw 7z next header (an eighth of the worker's memory) and retained verified 7z
+  siblings have explicit bounds inside the 1 GiB worker memory limit; the metadata index
+  (no member-count or name-bytes limit), 7z compressed-header decoding and ZIP
+  central-directory parsing (including the duplicate-record check) are bounded only by
+  that limit, and an index that outgrows it fails its archive. A failed read of the
+  source is reported as such, never as a corrupt archive. Listing never extracts a
+  member to its declared host pathname. At most two archives opened from native files
+  run at once (`NativeAllowance` in
+  `crates/midnight-filesystem-host/src/session_allowance.rs`), beside two private Find
+  sessions and three archives inside archives; a third is refused and names the open
+  ones. A pane that opens another archive or Network lets go of the session it showed;
+  when both slots are taken and no other tab, panel or viewer holds that session, the
+  next archive waits, at most 10 seconds and without blocking a thread, for its teardown
+  to hand over the slot, which no other open can take meanwhile, so no more than two
+  workers run. Copying out uses the common destination
+  readback/SHA-256/publish contract. Opaque provider IDs and raw member names are
+  captured; names must be safe single destination components, never joined archive
+  display paths. Links, cycles, stale identities and resource overflows fail explicitly.
+  Existing destination entries are not silently replaced. ZIP/GZIP/7z checksums do not
   substitute for destination readback verification.
 - PDF parsing/rendering uses a separately installed restricted worker with
   bounded source length, page count, viewport and process memory/CPU. The host
@@ -1476,6 +1516,16 @@ closes; the 7z decoder keeps its own UTF-16 copy for the mount without wiping it
 operating-system pipe buffers are outside the process. A wrong password is refused by
 the worker's verifiers without unlocking anything; local password attempts are not
 rate-limited.
+
+Escape, Cancel or the dialog's × leave the archive locked and close the dialog without a
+notice: F3, Enter and a listing with encrypted names stop, and only a copy goes on
+without the password, skipping each encrypted member with that reason. The dialog's
+action (`PasswordAction` in `crates/midnight-ui/src/presenter/archive_password.rs`) is
+bound to the pane, to the archive session that the pane showed and to the target
+captured when the dialog opened (F3's viewer launch, Enter's member, F5's Copy draft or
+a locked listing's folder), never to the row under the cursor. If the pane has left that
+session meanwhile, for example through Find's Go to file, OK sends nothing, an accepted
+password opens nothing, and the status line says that the archive was left.
 
 ## Dependencies
 

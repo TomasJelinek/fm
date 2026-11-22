@@ -204,8 +204,8 @@ and each selected member holds one root source until it is copied. It keeps the
 identities it has met (a member listed twice, a cycle or a duplicate identity, fails
 the copy) and the listing of each folder on its current path. Resolving a selection of
 1,000,000 members grows the process by about 355 MiB, about 372 bytes per selected
-member (the ignored test `archive_selection_memory_per_member`, Linux, release build,
-21 November 2026; 375 bytes in a debug build).
+member (the ignored test `archive_selection_memory_per_member`, Linux, release build;
+375 bytes in a debug build).
 
 Archive folder sizes are a host backend service over these listing capabilities.
 Ctrl+Shift+S captures the exact committed mount/listing and opaque selected IDs;
@@ -270,8 +270,8 @@ violations and the idle watchdog always terminate the worker. Deadlines apply to
 blocking pipe reads as well as decoding. A request in flight when the worker ends,
 and every later request of that mount, reports why it ended: the failed exchange
 with its failure, or idle-deadline expiry. That report says to open the archive again
-and has the kind `InvalidData`, which Copy does not offer to retry (until 21 November
-`Other`, and a timeout for the watchdog); the request whose own exchange failed
+and has the kind `InvalidData` (`STOPPED` in `session.rs`), which Copy does not offer
+to retry; the request whose own exchange failed
 reports that failure with its own kind. A worker that ends by itself
 (its pipe closes mid-request) is reported as having ended unexpectedly, for example
 because the archive needs more than the worker's memory. Only a request's own
@@ -315,8 +315,7 @@ for a panel listing (its rows, collation keys and index) and 339 for the tree
 provider's capture (a million 16-byte names: `archive_folder_memory_per_member` in
 `crates/midnight-engine/src/providers/archive_tests.rs`), so a panel showing a folder
 of a million members holds about 610 MiB. That test uses stand-in collation keys; a
-real Linux en_US key of a 16-character name takes 108 bytes (312 before the keys'
-variable-length code of 21 November), about 192 bytes less per member
+real Linux en_US key of a 16-character name takes 108 bytes
 ([transfer and listing performance](../verification/2026-11-21-transfer-and-listing-performance.md)).
 The idle supervisor waits without polling; it observes startup cancellation every
 10 ms only while that exchange is active. A failed `release_on_worker` retains its
@@ -521,7 +520,7 @@ bounded source/spool call or decoder work interval can delay the next checkpoint
 CRC/length validation still gates every successful content publication. All existing
 memory, chunk, cache, process and decoder-window limits remain unchanged.
 
-## Protocol 4 passwords and member diagnostics (API 0.5, 21 November 2026)
+## Protocol 4 passwords and member diagnostics (API 0.5)
 
 `midnight-filesystem-api` 0.5.0 adds protocol 4 (wire details in the
 [reference](../../filesystem-api/PROTOCOL.md#protocol-4-passwords-and-member-diagnostics-api-05));
