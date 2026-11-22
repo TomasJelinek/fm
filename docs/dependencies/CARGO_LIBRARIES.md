@@ -516,7 +516,7 @@ captures and does not prove that old captures match today's source files.
 | [simd-adler32](https://crates.io/crates/simd-adler32/0.3.10) | 0.3.10 | MIT | api, app, archive, html-viewer, image-decoder, image-viewer, pdf-viewer, thumbnail-image | Linux, Windows | — |
 | [simd-adler32](https://crates.io/crates/simd-adler32/0.3.9) | 0.3.9 | MIT | renderer-tests | Linux, Windows | — |
 | [similar](https://crates.io/crates/similar/2.7.0) | 2.7.0 | Apache-2.0 | app | Linux, Windows | yes |
-| [simplecss](https://crates.io/crates/simplecss/0.2.2) | 0.2.2 | Apache-2.0 OR MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
+| [simplecss](https://crates.io/crates/simplecss/0.2.2) | 0.2.2 | Apache-2.0 OR MIT | app, image-decoder, image-viewer, renderer-tests, thumbnail-image | Linux, Windows | yes |
 | [siphasher](https://crates.io/crates/siphasher/1.0.3) | 1.0.3 | MIT/Apache-2.0 | renderer-tests | Linux, Windows | — |
 | [siphasher](https://crates.io/crates/siphasher/1.0.4) | 1.0.4 | MIT OR Apache-2.0 | app, image-decoder, image-viewer, pdf-viewer, thumbnail-image | Linux, Windows | — |
 | [skrifa](https://crates.io/crates/skrifa/0.40.0) | 0.40.0 | MIT OR Apache-2.0 | renderer-tests | Linux, Windows | — |

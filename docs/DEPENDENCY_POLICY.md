@@ -21,8 +21,11 @@ Check license files and notices in the pinned source, not just a crate's label.
    enabled optional components, including codec licenses where relevant.
 3. Keep independent plugins' dependency locks and tests in their own projects.
    Sharing this Git repository does not permit dependency on private host crates.
-4. Regenerate the [direct and complete inventories](THIRD_PARTY.md), and preserve
-   required copyright/license/source notices in each distributable artifact.
+   A plugin pins each registry dependency exactly (`=x.y.z`) to the version in its
+   own lock file; `scripts/tests/test_plugin_dependency_pins.py` checks this.
+4. Regenerate the [direct and complete inventories](THIRD_PARTY.md), update the
+   [lock file entries outside the inventory](dependencies/LOCKFILE_ONLY.md), and
+   preserve required copyright/license/source notices in each distributable artifact.
 5. Check maintenance and RustSec advisories for the affected target/features.
    Record unresolved findings; a clean scan is not proof of safety.
 6. Record the selected license branch and any concrete distribution obligations
@@ -57,8 +60,8 @@ and `release` jobs run this GitHub Action unmodified, pinned by commit, to cache
 compiled third-party dependencies of the root workspace. It is not linked into, built
 into or distributed with Midnight Explorer, its plugins or its public API/SDK, so the
 LGPL's conditions for conveying the library or a combined work do not arise; modifying
-or redistributing the action itself would bring them. It uses the GitHub Actions cache
-of this public repository, which has no fee. GitHub's own actions in the workflow are
+or redistributing the action itself would bring them. It uses the repository's GitHub
+Actions cache, which has no fee. GitHub's own actions in the workflow are
 MIT. See [CI time](verification/2026-11-21-ci-time.md).
 
 **Native runtimes:** Windows/system graphics libraries remain governed by their
@@ -101,8 +104,8 @@ codec of its own, so its packages stay royalty-free and carry no FFmpeg or GStre
 code for this path. They keep their distributions' licenses: FFmpeg LGPL-2.1-or-later,
 or GPL-2.0-or-later where the distribution enables GPL components (Debian's and
 Ubuntu's builds do); GStreamer core and base/good/bad/libav plugins LGPL-2.1-or-later;
-gst-plugins-ugly's ASF demuxer plugin (`asf`, listed since 22 November 2026 for `.wmv`
-and `.asf` files) LGPL-2.0-or-later (its sources' GNU Library General Public License,
+gst-plugins-ugly's ASF demuxer plugin (`asf`, listed for `.wmv` and `.asf` files)
+LGPL-2.0-or-later (its sources' GNU Library General Public License,
 version 2 or later, checked in `gstasf.c` and `gstasfdemux.c` of GStreamer's main
 branch); some listed plugins GPL-2.0-or-later (faad, dtsdec, a52dec) and some BSD
 (OpenH264, AOM, dav1d), with OpenH264 binaries under Cisco's binary license where

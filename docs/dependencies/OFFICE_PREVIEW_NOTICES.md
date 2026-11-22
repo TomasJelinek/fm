@@ -1,13 +1,14 @@
 # Office preview host dependency notices
 
-This records host-service use, not an independent plugin or completed Office support.
-MIT is selected where offered; foldhash retains Zlib. The following texts are
-copied unchanged from exact pinned sources. A distribution containing this service
-must retain these copyright/permission notices; the release collector also retains
-the complete upstream license files under `licenses/<crate>-<version>/`.
-
-Windows feature/lock provenance and security limitations are recorded in
-[THIRD_PARTY.md](../THIRD_PARTY.md). Actual host packaging remains unqualified.
+The Office contents preview (`midnight-office-preview`, used by the viewer engine)
+reads DOCX, XLSX, PPTX, ODT, ODS and ODP files with quick-xml 0.41.0, zip 8.6.0 and
+flate2 1.1.10. This file holds the selected license text of each of the 14 third-party
+packages in that service's own dependency graph: MIT where offered, Zlib for foldhash.
+The texts are copied unchanged from the pinned crates. A distribution must keep these
+notices; the release packager also copies each crate's complete license files to
+`licenses/NAME-VERSION/`. The enabled features are in
+[THIRD_PARTY.md](../THIRD_PARTY.md#office-preview), the open zip advisories under
+[known advisories](../THIRD_PARTY.md#known-advisories).
 
 ## adler2 2.0.1
 
