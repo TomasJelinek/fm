@@ -1,25 +1,24 @@
 # Internal filesystem registry
 
-`midnight-core` now supplies `ProviderId`, `ProviderInstanceId`, `MountRef`,
-`NodeToken`, `NodeRef` and `StoredLocation`. `midnight-engine::providers` supplies
-the transitional backend registry, Browse/Read contracts and adapters over current
-native services and captured archive mounts. These Rust contracts are internal;
+`midnight-core` supplies `ProviderId`, `ProviderInstanceId`, `MountRef`,
+`NodeToken`, `NodeRef` and `StoredLocation` (`vfs_identity.rs`). `midnight-engine::providers`
+supplies the backend registry, Browse/Read contracts and adapters over the native
+services and captured archive mounts. These Rust contracts are internal;
 independent plugins must continue to depend only on the released public API/SDK.
 They are not the missing generic filesystem C ABI.
 
-Production panels still use their existing native/archive routes. This increment
-does not replace `Entry`, selection indexes, settings addresses, watches, mutation
-capabilities or application service injection. See the
-[migration dependency map](FILESYSTEM_MIGRATION.md) before attempting that cutover.
-The native adapter is explicitly transitional, not an authorized static fallback
-after native plugins become mandatory.
+Flat panels list through their own native and archive routes; inline trees use this
+registry. `Entry`, selection indexes, settings addresses, watches, mutation capabilities
+and application service injection do not go through it (known limit; see the
+[migration dependency map](FILESYSTEM_MIGRATION.md)). The native adapter is not a static
+fallback for a missing native plugin.
 
 ## Identity and restore
 
 - Package IDs are validated ASCII identifiers, independent of captions.
 - Host-issued instance/mount/generation counters fail on exhaustion and are never
   persisted. The same opaque node bytes in different mounts cannot be interchanged.
-- Node tokens contain at most 256 opaque bytes. They are not paths; native adapters
+- Node tokens contain at most 256 opaque bytes (`NodeToken::MAX_BYTES`). They are not paths; native adapters
   retain full paths in bounded backend tables. The provider must never reuse a
   token for another node or kind during that mount's lifetime. A token stays
   valid for the mount's lifetime unless the mount's single lister opts in to
@@ -39,14 +38,14 @@ after native plugins become mandatory.
 Native address codec 1 belongs separately to `native.windows` (little-endian raw
 UTF-16) and `native.linux` (raw native bytes). It rejects NUL and nonabsolute paths;
 Windows also rejects odd-length UTF-16. Unpaired surrogates/non-UTF-8 bytes and long
-paths survive encoding without lossy conversion. macOS still needs its own native
-implementation and codec; it does not use the Linux adapter implicitly.
+paths survive encoding without lossy conversion. Known limit: macOS has no native
+address codec of its own, and it does not use the Linux adapter implicitly.
 
 ## Lifetimes, cancellation and budgets
 
 Registry methods run on backend workers, including final resource destruction.
 Provider calls run outside the registry lock. A blocked provider therefore does
-not prevent another registration from resolving a location. Current synchronous
+not prevent another registration from resolving a location. The synchronous
 contracts are called from the engine's bounded workers; they do not create threads
 or promise to interrupt an in-flight native call.
 
@@ -61,10 +60,12 @@ remain allocated while needed for safe cleanup, but successful late output is
 discarded. `Cancellation::linked` joins request and registration lifetimes without
 cancelling either parent or unrelated requests.
 
-Initial bounds are 128 registrations, 64 in-flight/open/retained mounts per
-registry, 50,000 entries/32 MiB charged payload per complete list, and 100,000
-issued nodes per mount. The native adapter separately accounts for 32 MiB of raw
-path storage and 100,000 cached tokens. Folder-only listings and presence probes
+The bounds are 128 registrations, 64 in-flight/open/retained mounts per registry
+(`MAX_PROVIDERS`, `MAX_MOUNTS` in `providers/registry.rs`), 50,000 entries/32 MiB
+charged payload per complete list, and 100,000 issued nodes per mount
+(`MAX_LIST_ENTRIES`, `MAX_LIST_BYTES`, `MAX_ISSUED_NODES` in `providers/lease.rs`). The
+native adapter separately accounts for 32 MiB of raw path storage and 100,000 cached
+tokens (`MAX_PATH_STORAGE`, `MAX_NODES` in `providers/native_nodes.rs`). Folder-only listings and presence probes
 let the native adapter skip regular files before metadata, name encoding and token
 binding, so those files never count; only `list_folders_observed` (below) reads the
 metadata of a skipped file whose enumeration lacks it. These are admission/cache
@@ -72,16 +73,15 @@ budgets, not an OS path limit or an exact process RSS promise. A failure returns
 explicit error.
 Native stored addresses are admitted before codec allocation, using the cache
 budget and that codec's worst-case expansion; native encoding checks its raw
-charge first. The production cutover must also align caches across mounts with
-the shared application budget, rather than treating each per-mount limit as RSS.
-The registry's complete-list adapter is not yet the production streaming panel
-projection. Folder-only listings (`list_folders`) use a separate bounded
+charge first. Known limits: per-mount caches are not aligned with a shared application
+budget, and the registry's complete-list adapter is not the panels' streaming listing.
+Folder-only listings (`list_folders`) use a separate bounded
 token-validation ledger, so irrelevant regular files do not consume the
 retained-folder quota; a generic provider's default `list_folders` still emits its
 complete listing, so every returned token is validated. `has_folders` answers a
 disclosure probe at the first folder without issuing references; the tokens it
 inspects before that folder are charged to the same 32 MiB token ledger and
-one-million-callback ceiling, so a generic provider's long file prefix fails as
+one-million-callback ceiling (`MAX_INSPECTED_ENTRIES`), so a generic provider's long file prefix fails as
 resource-limited instead of growing the probe's duplicate set. Entries a provider
 emits after the stop cannot change the answer. `list_folders_observed` returns the
 same rows plus the provider's full watch observation of the directory from that
@@ -89,11 +89,11 @@ enumeration: the native adapter adds every entry, files included, with the
 metadata a watch probe reads, still without encoding or binding files; other
 providers return none. A skipped file costs one metadata read where enumeration
 lacks it (the Linux platform filesystem; the installed provider's plugins return
-every entry's metadata with the enumeration). After 4,096 such reads the adapter
-stops observing and returns the rows without an observation, so a branch with
-more such files keeps the previous behavior: its first watch probe requests one
-maintenance pass. See [inline provider branches](INLINE_TREES.md) for the backend
-tree model, ownership, limits and pending production projection.
+every entry's metadata with the enumeration). After 4,096 such reads
+(`OBSERVED_METADATA_READS`) the adapter stops observing and returns the rows without an
+observation, so the first watch probe of a branch with more such files requests one
+maintenance pass. See [inline provider branches](INLINE_TREES.md) for the backend tree
+model, ownership, limits and projection.
 
 Without reclamation neither table evicts: every node a listing or `parent` issues,
 and every native record a listing or probe binds, counts until the mount closes.
@@ -123,12 +123,11 @@ tables hold the live model plus at most one reclamation threshold and the listin
 since the last settled completion (one listing, or one unpublished recursive
 batch), regardless of how long the mount lives.
 
-Plugin-backed native mounts cannot honour `retain_nodes` until the public ABI gains
-a node-release operation. The SDK's native helper keeps up to one million node
-records per mount within a 256 MiB cache budget that all mounts of one plugin
-instance share, so a churning tree on such a mount would also exhaust the
-instance's other mounts. That operation is a prerequisite for removing this
-transitional native adapter.
+Known limit: plugin-backed native mounts cannot honour `retain_nodes`, because the
+public ABI has no node-release operation. The SDK's native helper keeps up to one
+million node records per mount within a 256 MiB cache budget that all mounts of one
+plugin instance share (`native/state.rs` in the filesystem plugin SDK), so a churning
+tree on such a mount would also exhaust the instance's other mounts.
 
 Listings reject duplicate/self-referencing tokens, contradictory known kinds,
 oversized output and cancellation. A failed registry listing issues no partial
@@ -140,7 +139,7 @@ provider parent.
 ## Content and adapters
 
 `MountedLocation::open_content` accepts an issued regular-file node, obtains the
-provider's source and uses the existing `CapturedFile` broker to validate its
+provider's source and uses the `CapturedFile` broker to validate its
 captured length/version. The returned source also enforces the broker's bounded
 256 KiB exact reads, EOF clamping and before/after revision validation. It retains
 the mount owner and checks revocation around calls. Viewer consumers never receive
@@ -148,7 +147,7 @@ a fabricated native member path. This is LiveValidated content, not a claim of
 an immutable snapshot. Unknown-length/sequential sources need an additive API.
 `open_content` is compiled for tests only until a production consumer exists, and
 production `NativeProvider::audited` installs no capture, so native content through
-this route would be `Unsupported`; F3 viewers, thumbnails and copy keep their existing
+this route would be `Unsupported`; F3 viewers, thumbnails and copy use their own
 capture routes.
 Leased content does not give up a tainted reference yet: `LeasedContent` and
 `NativeContent` retain it, and a production consumer first needs a quarantined
@@ -171,8 +170,8 @@ open a container or discover/load plugins. Tokens retain archive mount/member
 identity; parent links come from the captured trail and validated listing records.
 It retains the source revision, rejects unknown-size/unreadable/link members for
 content, validates exact bounded reads, and installs list cache changes only after
-the complete successful callback sequence. Existing archive worker restrictions,
-source limits and publication/copy-out guarantees remain unchanged.
+the complete successful callback sequence. The archive worker's restrictions, source
+limits and publication and copy-out guarantees apply.
 
 `resolve_target` returns a retained backend context: an exact native path or an
 archive directory/member with its full captured raw ancestry. A file's archive
@@ -210,7 +209,7 @@ after cancellation.
 These are routing/lifetime checks, not immutable file identity, authorization
 to mutate, or proof that a row is still selected in the current panel snapshot.
 
-## Qualification and remaining migration
+## Tests and remaining migration
 
 Tests cover provider isolation, cancellation, late output, exhausted IDs, retained
 content and destruction order, malformed responses, unknown providers/codecs,
@@ -221,9 +220,7 @@ capacity, and resolved, watch, paste and drop targets after release). See
 `providers/*tests.rs`, `tree_reclaim_tests.rs`, `midnight-core/tests/vfs_identity.rs`
 and `midnight-core/tests/linked_cancellation.rs`.
 
-Before production use, migrate complete navigation → projection → selection → F3
-and native capability checks, qualify real worker adapters, publish the independent
-filesystem API/SDK, port every native operation through equivalent pinned handles,
-and remove static native browsing only after parity. Inline trees and network
-discovery remain subsequent consumers of these identities. Passing registry tests
-alone does not complete VFS-01, TREE-01 or NET-01.
+Not done yet (VFS-01, TREE-01 and NET-01 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md)): flat-panel navigation, projection, selection,
+F3 and native capability checks through these identities; every native operation through
+equivalent pinned handles; and network discovery as a consumer.

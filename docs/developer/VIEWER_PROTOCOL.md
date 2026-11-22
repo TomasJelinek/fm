@@ -89,7 +89,7 @@ whole-file buffer/map. Explicit search can traverse the source in cancellable
 bounded chunks. Optional [Locate](../../api/SOURCE_POSITION.md) may complete without
 a coordinate when its bounded work budget is exhausted; hosts retain this absence
 for the current page rather than repeatedly requesting it or permanently disabling
-coordinates for later pages. See the [10 GB qualification](../verification/2026-11-10-large-text-viewers.md).
+coordinates for later pages. Evidence: [large text viewers record](../verification/2026-11-10-large-text-viewers.md).
 
 ## Events
 
@@ -118,22 +118,12 @@ that does not negotiate support for a new output model.
 
 ## Optional Source preparation (0.2 source contract)
 
-The frozen public API/SDK source passed API **10** and SDK **39** targeted tests.
-Immutable local0.2 packages are published beside byte-unchanged0.1. Basic and
-Markdown still resolve their exact0.1 pins, and an independent consumer resolves
-registry API/SDK0.2; this is local release availability, not complete Source
-plugin recovery or a new app. C/Rust ABI1.0 sizes, alignments and offsets match.
-The scoped host/engine gate compiled with 453 source hashes/zero drift and passed
-98 selected checks (26 new +72 direct boundary); app f311 remained unchanged.
-The later canonical packager passed 9/0/0 and strict Clippy/format0, preserving
-exact old 0.1 and reproducing issued 0.2 archives. Relocated upload payload resolves
-Basic/Markdown0.1 and Source0.2 in a fresh sparse Cargo cache without app/API
-sources. That is dependency resolution, not plugin execution or new remote CI.
-Source post-review64 closes its two measured P2 cases on that snapshot;
-prior 99 is not rerun/additive. Combined integration, final UI/native and app
-qualification remain separate.
+Source preparation is part of the viewer API/SDK 0.2. The 0.1 packages stay as
+released, byte for byte; the Basic and Markdown plugins pin SDK `=0.1.0` and the Source
+plugin pins `=0.2.0`. The C and Rust layouts of ABI 1.0 (sizes, alignments and offsets)
+agree.
 
-Prepare uses the existing request/session/generation identity, zero flags and
+Prepare uses the request/session/generation identity, zero flags and
 empty raw content after Open in Source mode. It binds the captured revision and
 **full** ordinary Viewport. Its model validates that Viewport and requires
 `max_scan_bytes` from 1 through 262144 inclusive. The session owner checks revision,
@@ -147,14 +137,10 @@ lexer/decoder state for the matching next ordinary Viewport within its foregroun
 bounds; frontier is decoded walk progress, not retained coverage or readiness.
 `PROGRESS_SOURCE_SYNTAX = 2` is advisory and never authorizes refresh.
 
-The accepted host/plugin contract reserves the exact target resume until consumed,
-superseded or closed and keeps preparation separate from bounded foreground reads.
-Typed host tracking/validation and shared admission now have the scoped host
-gate above; Source0.2 bounded recovery now has the separate post-review64 receipt,
-with no unresolved owner failure in that authorized scope.
-Only UNSUPPORTED
-disables optional preparation; QueueFull remains retryable. Older hosts dropping
-unknown events do not negotiate support or qualify the new transaction.
+The host and plugin reserve the exact target resume until it is consumed, superseded
+or closed, and keep preparation separate from bounded foreground reads. Only
+UNSUPPORTED disables optional preparation; QueueFull remains retryable. Older hosts drop
+unknown events, which does not negotiate support for the transaction.
 
 ## Modes and semantic models
 
@@ -279,8 +265,7 @@ cells. A table can span bounded pages; no whole-document load is required.
 Host queue accounting charges decoded vector/string capacity, including table
 cell vectors and strikethrough vectors, in addition to block storage, text,
 anchors, spans, links and link targets. Compact CBOR size does not replace these
-retained-allocation charges. The existing page, wire and transport limits all
-continue to apply.
+retained-allocation charges. The page, wire and transport limits all apply too.
 
 `Link` has `0: start u32`, `1: end u32`, `2: target String`. Link ranges are ordered,
 nonempty, disjoint UTF-8 boundaries in their block text. Targets are bounded and
@@ -293,7 +278,8 @@ plugin behaviors, not HTML/browser facilities in the public API.
 
 ## Limits
 
-All byte limits are UTF-8 or raw byte counts, not character counts. Per-field
+All byte limits are UTF-8 or raw byte counts, not character counts. The constants are
+in `midnight-plugin-api` (`wire.rs`, `viewer.rs`, `document.rs`). Per-field
 limits and aggregate CBOR limits apply together; a model at every individual
 maximum can exceed the overall item/byte budget and fail encoding.
 

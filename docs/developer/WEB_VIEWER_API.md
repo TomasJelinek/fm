@@ -112,10 +112,9 @@ it before executing Chromium. An eligible ancestor is detected automatically;
 The application does not enable controllers or change its own cgroup membership.
 Tree-wide cancellation uses `cgroup.kill`. These limits supplement Chromium's
 sandbox. Failure to establish containment is an error, never an unsandboxed
-fallback. Native Linux rendering and containment were qualified on Ubuntu 24.04
-under WSLg XWayland; see the [Linux report](../verification/2026-11-10-html-linux.md).
-That qualification did not cover AppArmor's user-namespace restriction, which WSLg
-does not apply: on Ubuntu 23.10+ desktops the browser needs the
+fallback. Native Linux rendering and containment were verified on Ubuntu 24.04
+under WSLg XWayland ([Linux record](../verification/2026-11-10-html-linux.md)). That
+does not cover AppArmor's user-namespace restriction, which WSLg does not apply: on Ubuntu 23.10+ desktops the browser needs the
 `midnight-explorer-html-viewer` profile that `scripts/install-html-viewer-apparmor.sh`
 installs, or a setuid-root `chrome-sandbox` (see
 [system requirements](../SYSTEM_REQUIREMENTS.md)). The Linux launcher checks for this
@@ -156,10 +155,9 @@ nothing. A browser that reported Ready keeps its own error, and Windows reports 
 reason.
 IME composition/commit pass CEF's required invalid replacement range (a synthetic
 commit is covered by the opt-in native fixture); physical IME input, native Chromium
-Wayland and other display/system policies still need their own qualification. Windows measurements do not establish Linux frame pacing.
-The event-driven host session was qualified with real Chromium on Windows only: an idle
-open document caused about 174 host context switches per second before and under 1
-after. While a document is open, the provider still waits at most 2 ms for a command
+Wayland and other display/system policies are not verified, and Windows measurements do
+not establish Linux frame pacing. The host session is event-driven (verified with real
+Chromium on Windows only). While a document is open, the provider still waits at most 2 ms for a command
 before it pumps CEF again. On Linux that is about every 2 ms (not measured). On an idle
 Windows document it is about 64 times per second, because the wait rounds up to the
 timer period (15.6 ms when measured). CEF's external message pump measured only about 3x
@@ -180,7 +178,7 @@ Alt+Left/Right are arbitrated inside Chromium using its actual editable focus, s
 typing into an HTML input does not change the viewed file. Clipboard text returns through the host's explicit
 clipboard command.
 
-Find, Copy and zoom use the existing user key resolver before browser forwarding.
+Find, Copy and zoom use the user key resolver before browser forwarding.
 HTML file cycling is restricted to browser-arbitrated Space/Shift+Space, Backspace
 and Alt+Left/Right. Assigning Previous/Next file to another chord (for example Q
 or Ctrl+J) works in other viewer modes; in HTML that chord remains page input.
@@ -191,7 +189,7 @@ Browser-arbitrated keys are resolved again against the current configured action
 an unbound Space scrolls instead of cycling files. Backspace/Alt arrows require
 the explicit `physical-v1` host launch opt-in from public API/SDK 0.2. The host
 adds it to a cleared environment, and the provider never emits new tags without
-it. Existing MWV1 packets and manifests remain compatible. New physical-key
+it. MWV1 packets and manifests stay compatible. New physical-key
 replies are ignored after viewer content loses focus; unbound keys are not replayed. Copy preserves an explicit
 overflow state: a selection exceeding 48 KiB of UTF-8 reports a budget error
 without publishing a partial or empty clipboard replacement. A later smaller
@@ -208,15 +206,13 @@ scrolling jumps at once too. Chromium reports no scroll position: once the page 
 painted since a glide or touchpad stream began (or a second has passed), the glide or
 momentum stops 120 ms after the page stops painting new frames, at its top or bottom
 edge. A wheel with
-Ctrl, Alt or Super acts once, unglided, with the previous 40 px line, so Chromium's
-Ctrl+wheel zoom keeps its rate. The public API and wire are unchanged. See
-[HTML pages](SCROLLING.md#html-pages) for the measurements; Windows is not yet
-qualified.
+Ctrl, Alt or Super acts once, unglided, with a 40 px line, so Chromium's Ctrl+wheel
+zoom keeps its rate. See [HTML pages](SCROLLING.md#html-pages); the timing was measured
+on Linux only.
 
 The provider's own dev package uses `opt-level = 2` for its image conversion and
-composition loops. Other dev dependencies and the host's iteration profile are
-unchanged. Native test measurements and platform limitations are recorded in the
-[verification report](../verification/2026-11-10-html-viewer.md).
+composition loops. Native test measurements and platform limitations are recorded in
+the [HTML viewer record](../verification/2026-11-10-html-viewer.md).
 
 See the [design](../superpowers/specs/2026-11-09-html-viewer-design.md),
 [implementation plan](../superpowers/plans/2026-11-09-html-viewer.md), and the

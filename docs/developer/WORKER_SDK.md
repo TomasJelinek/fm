@@ -2,8 +2,8 @@
 
 `midnight-worker-sdk` 0.2.0 is the public startup contract for independent
 executable providers. `midnight-worker-platform` is the host-owned launcher;
-plugins never depend on it or application internals. Released viewer API/SDK
-0.1.0 package bytes and checksums are unchanged.
+plugins never depend on it or application internals. The released viewer API/SDK
+0.1.0 packages keep their bytes and checksums.
 
 ## Startup and containment
 
@@ -18,8 +18,8 @@ discarded stderr. Version 0.2.0 supports both startup forms:
 Before reading content, the helper calls
 `midnight_worker_sdk::enter(input, output)`. It consumes the selected startup
 version and acknowledges that version only after installing/checking restrictions.
-The provider-specific protocol then begins. Legacy bytes remain unchanged;
-an explicit-policy host cannot accept the legacy acknowledgement in its place.
+The provider-specific protocol then begins. The `MWS1` form keeps its bytes; an
+explicit-policy host cannot accept the `MWR1` acknowledgement in place of `MWR2`.
 `NoAdditionalLimit` adds no aggregate CPU ceiling; it does not raise inherited OS
 limits or disable memory/process isolation, host deadlines or cancellation. See
 the [startup implementation](../../worker-api/midnight-worker-sdk/src/startup.rs)
@@ -80,11 +80,10 @@ that single call. `midnight_worker_platform::spawn_command` spawns such a comman
 under the lock, which it holds for the creation call only, never while the child
 runs or while its output or exit status is awaited. The application starts external
 editors, Custom Command programs and the software-rendering restart through it, so
-worker and browser creation waits while such a program is being created: about 4 ms
-per launch (median 3.5-4.7 ms, 90th percentile 4-6 ms) and about 20-32 ms for a
-program's first start in the process, measured on Windows 11 with Microsoft
-Defender, and longer for a program on a network share or one that antivirus software
-scans. This short wait is accepted instead of starting these programs with a
+worker and browser creation waits while such a program is being created: a few
+milliseconds per launch, longer for a program's first start in the process, for a
+program on a network share and for one that antivirus software scans. This short wait
+is accepted instead of starting these programs with a
 separate `CreateProcessW` call and an explicit handle list. Tests in
 `midnight-platform-windows` observe the editor and
 Custom Command launches waiting for the lock; no test observes this for the restart.
@@ -113,10 +112,9 @@ the name (`Get-RestrictedWorkerSid`: SHA-256 of the lowercase name in UTF-16LE).
 must not ask `DeriveAppContainerSidFromAppContainerName` inside PowerShell: PowerShell
 7 from the Microsoft Store is a packaged app, and there that call returns a child
 AppContainer SID of the PowerShell package
-(`S-1-15-2-3474344596-…-1118814998`). Packages built or deployed that way before
-21 November 2026 grant that SID, and both video helpers then fail to load FFmpeg
-(the loader's access to `avcodec-63.dll` is denied and reported as not found);
-rebuild and redeploy them. `scripts/tests/test_restricted_worker_identity.py` checks
+(`S-1-15-2-3474344596-…-1118814998`); a package granted that SID leaves both video
+helpers unable to load FFmpeg (the loader's access to `avcodec-63.dll` is denied and
+reported as not found). `scripts/tests/test_restricted_worker_identity.py` checks
 both scripts' function under PowerShell 7 and Windows PowerShell 5.1 against the
 SID Windows assigns an unpackaged caller, and the build and deployment tests check
 the granted ACEs.
@@ -136,11 +134,10 @@ library behaviours that the allowlist would otherwise break are settled before
 lockdown: GLib's first shared thread pool reads the scheduler settings (after lockdown
 it would try to start a thread and abort), and GStreamer buffer pools, which cannot
 create their wake-up descriptors later, are never waited on by a graph on one thread.
-The allowlist itself is unchanged.
 
 Native containment fixtures attempt an unrelated private file read and a live
 localhost TCP connection after ready. A deliberately unresponsive helper tests
-deadline termination. Cross-compilation alone does not qualify a platform.
+deadline termination. Cross-compilation alone does not show that a platform works.
 
 ## Thumbnail protocol and backend
 
@@ -152,7 +149,8 @@ whose revision is checked. Native sources use `CapturedFile`; the host's
 generic content adapter can support future virtual providers.
 
 Reads are at most 256 KiB and must return the exact checked length. RGBA output
-is bounded to 512 by 512 (1 MiB), with six sample indices. Host limits also cover
+is bounded to 512 by 512 (1 MiB), with six sample indices (`MAX_READ_BYTES`,
+`MAX_EDGE`, `MAX_FRAME_BYTES`, `MAX_ANIMATION_FRAMES` in `midnight-thumbnail-api`). Host limits also cover
 total traffic, read count, deadline, generation and dimensions. The service asks
 for the DPI-scaled resolution bucket (96, 128, 192, 256, 384 or 512 px) that
 covers the displayed thumbnail edge and admits two decoders. The shared I/O gate
@@ -161,9 +159,11 @@ reads, releasing permits before decoding, hashing and waiting.
 
 Videos use one static sample normally. Hover or selection admits five more;
 hover has priority while every visible selected video progresses in rotation.
-Offscreen jobs cancel. Decode failures retry after 30 seconds, including an
-interruption the view did not request (for example a stopped archive mount);
-only cancellations the view requested are abandoned without backoff. Every accepted
+Offscreen jobs cancel. A failure that may pass, including an interruption the view
+did not request (for example a stopped archive mount), is retried after 2 and then 8
+seconds (`RETRY_DELAYS` in `midnight-thumbnail-host`'s `scheduler.rs`); a failure that
+will not pass, or whose retries are spent, is not tried again while the item stays in
+view. Only cancellations the view requested are abandoned without backoff. Every accepted
 sample must persist before presentation. Private atomic cache records include
 opaque identity, revision, decoder version and dimensions. Clear-cache waits
 for cancelled workers, removes old records and starts a new visible generation
@@ -180,11 +180,10 @@ bundle containing the worker, thumbnail, filesystem and image-viewer APIs/SDKs; 
 fails if any of them is missing. Its
 `.cargo/registry.toml` declares the registry without redirecting third-party
 dependencies. Independent plugins pin registry versions and have no host path
-dependencies. Existing viewer registry artifacts remain unchanged. Since 21 November
-the bundle packages `midnight-filesystem-api` 0.5.0 (protocol 4: archive passwords and
-member diagnostics, see [the filesystem API](FILESYSTEM_API.md)), which now depends on
-crates.io `zeroize`; the archive plugin pins `=0.5.0`, so its lockfile checksum changes
-with a rebuilt bundle. The worker SDK itself stays 0.2.0.
+dependencies. The bundle packages `midnight-filesystem-api` 0.5.0 (protocol 4: archive
+passwords and member diagnostics, see [the filesystem API](FILESYSTEM_API.md)), which
+depends on crates.io `zeroize`; the archive plugin pins `=0.5.0`, so its lockfile
+checksum changes with a rebuilt bundle. The worker SDK is 0.2.0.
 
 `scripts/build-thumbnailers.ps1` and `.sh` use that config with `--locked --offline`.
 Supply `-NoticesRoot` on Windows or the fourth positional argument on Linux,
@@ -227,5 +226,4 @@ platform helpers and on what the user's system installed (see the
 every file with these extensions is not implied.
 
 See [filesystem API](FILESYSTEM_API.md), [thumbnail design](../superpowers/specs/2026-11-05-panel-views-thumbnails-design.md)
-and [dependency inventory](../THIRD_PARTY.md). The verification ledger records
-actual native qualification separately from this contract.
+and [dependency inventory](../THIRD_PARTY.md).

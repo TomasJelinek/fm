@@ -28,9 +28,9 @@ the library through instances, calls, resources and retained reply buffers.
 Native packages are trusted in-process code, without a sandbox claim.
 
 Build and test output belongs under `_build/`; inspect each pinned dependency's
-license/features and ship its notices. The project's own license is undecided.
-See [independent package evidence and limits](../verification/2026-11-07-native-filesystem-packages.md).
-The host consumer now lives in
+license and features and ship its notices. Package evidence:
+[native filesystem packages](../verification/2026-11-07-native-filesystem-packages.md).
+The host consumer is
 [`midnight-native-filesystem-host`](../../crates/midnight-native-filesystem-host/src/lib.rs).
 `Catalog::discover` performs bounded manifest discovery; `NativeProvider::open`
 revalidates the complete package and the native descriptor before creating an
@@ -41,16 +41,15 @@ file's path in the path bar opens its folder (`Event::ListingNotAFolder`): the h
 finds it from the resolved node's kind before any listing request, and a plugin
 failure that carries the operating system's "not a directory" code (`ENOTDIR`,
 Windows `ERROR_DIRECTORY`, which `Failure::from_io` keeps) maps the same way. The ABI
-has no error code for it and is unchanged; any other failure maps by its error code,
-so an invalid reply stays `InvalidData`. Tests: the host's
+has no error code for it; any other failure maps by its error code, so an invalid
+reply stays `InvalidData`. Tests: the host's
 `a_listing_of_a_node_that_is_no_directory_is_not_a_directory` and the engine's opt-in
-`a_path_that_names_a_file_names_its_folder_through_the_installed_native_provider`,
-which failed before the change (`ListingFailed`, `InvalidData`; run on Windows) and
-passes with the in-tree Windows package on Windows and the in-tree Linux package on
-Linux (WSL), where a link to a file, which only the plugin's directory open refuses
-(`ENOTDIR`), names its folder too.
+`a_path_that_names_a_file_names_its_folder_through_the_installed_native_provider`
+(`tests/navigation_not_a_folder.rs`, which CI's `check` job runs against the installed
+package), which also covers a link to a file on Linux: only the plugin's directory open
+refuses it (`ENOTDIR`), and it names its folder too.
 The manifest may include an optional friendly `name` of at most 128 UTF-8 bytes,
-nonblank and without control characters. Missing names preserve old packages.
+nonblank and without control characters. A package without a name stays valid.
 The host retains the declared native/network kind separately from that display
 name; neither names nor captions grant provider or native-path authority.
 
@@ -99,32 +98,34 @@ For a persisted native content reference, `InstalledProvider::capture_matching`
 also accepts an optional expected revision. It captures an archive file through the
 same installed provider and checks cancellation before returning. Current v1 tokens
 and their documented Windows/Linux legacy equivalents are accepted only when every
-identity/revision field but the change time agrees (since 21 November; the archive
-capture accepts a change time that alone moved, VIEW-05); mismatches return
+identity/revision field but the change time agrees (the archive capture accepts a
+change time that alone moved, VIEW-05); mismatches return
 `SourceChanged`. This is a
 host-side migration adapter, not a new wire operation or permission to reinterpret
 arbitrary provider tokens. Archive restoration uses it before launching the decoder
-and stores the current validated token. See [archive capture qualification](../verification/2026-11-09-archive-native-capture.md).
+and stores the current validated token. Evidence:
+[archive capture record](../verification/2026-11-09-archive-native-capture.md).
 
-[Host qualification](../verification/2026-11-08-native-filesystem-host.md) includes
-actual DLL/SO loading, missing/duplicate/incompatible packages, removed-library
-refusal, cancellation cleanup and the reader-budget regression. The application
-composition now uses this installed service for browsing, storage queries, native
+The application uses this installed service for browsing, storage queries, native
 F3, comparison/thumbnail capture, command-icon artwork capture and native
 archive-container capture. Root build helpers install the matching native package
-under `filesystems/native.<platform>/`; direct Cargo builds need the
-`scripts/build-native-filesystem.ps1` or `.sh` helper before launching.
-Missing/incompatible packages have no static browsing or viewer-read fallback.
-Composition qualification is tracked in the
-[cutover report](../verification/2026-11-08-native-filesystem-cutover.md). Watch/mutation
-contracts and generic provider identities remain separate migration gates.
+under `filesystems/native.<platform>/` (`scripts/build-filesystem-package.ps1`/`.sh`);
+direct Cargo builds need the `scripts/build-native-filesystem.ps1` or `.sh` helper
+before launching. Missing/incompatible packages have no static browsing or viewer-read
+fallback. Watches and file operations use the platform crates, not this plugin
+([filesystem migration](FILESYSTEM_MIGRATION.md)). Evidence:
+[host record](../verification/2026-11-08-native-filesystem-host.md) (DLL/SO loading,
+missing, duplicate and incompatible packages, removed-library refusal, cancellation
+cleanup, the reader budget) and
+[cutover record](../verification/2026-11-08-native-filesystem-cutover.md).
 
 ## Prepared Rename core/host lifecycle
 
-The core and native host implement this prepared-Rename lifecycle. Engine/UI
-integration with the contract remains unimplemented. Installed-provider/runtime
-qualification and deployment are tracked in [Active work](../ACTIVE_WORK.md#provider-increments-from-the-architect-review).
-This internal Rust contract does not change the public plugin ABI/SDK.
+The core and native host implement this prepared-Rename lifecycle
+(`midnight_core::RenameService`, implemented in `midnight-native-filesystem-host`'s
+`rename.rs`). Known limit: the engine and UI do
+not use it yet; Rename runs through the platform crates. This internal Rust contract does
+not change the public plugin ABI/SDK.
 Rename preparation requires native-address/prepared-Rename capabilities;
 unsupported providers do not fall back to host path mutation.
 

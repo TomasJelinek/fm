@@ -27,13 +27,14 @@ action, and cannot be previewed or executed. Runtime admission and preparation
 both reject them before native capture or launch, including stale shortcut requests.
 They never become `UserCommandProcessInvocation` values.
 
-Schema 17 uses the existing strict, bounded, atomic settings service and native
-path codec. Older settings default to an empty command list. A schema17 payload
-includes checksum algorithms even when SHA-256 is the default, preserving the
-schema16 contract. Default preferences still encode as version10. Invalid/null/
-unknown fields, duplicates and malformed templates fail validation instead of
-being silently dropped. Separators serialize as an invocation with only
-`mode: "separator"`; existing Program/Terminal records remain readable. On load,
+Commands are stored from settings schema 17, through the strict, bounded, atomic
+settings service and native path codec (`settings/user_commands.rs` in
+`midnight-platform-common`). Older settings load an empty command list. A schema 17
+payload includes checksum algorithms even when SHA-256 is the default, as schema 16
+does. Default preferences encode as version 10. Invalid/null/unknown fields,
+duplicates and malformed templates fail validation instead of being silently dropped.
+Separators serialize as an invocation with only `mode: "separator"`; Program and
+Terminal records keep their format. On load,
 stale shortcuts pointing to known separators are pruned before final preference
 validation without removing unrelated overrides. No real user preference file is
 used by backend tests.
@@ -76,7 +77,7 @@ uses an owned, sorted Unicode child environment, including per-drive cwd records
 cwd yields its root). Hidden process-private records inherited from a launching
 Command Prompt or the Shell, such as `=ExitCode`, `=ExitCodeAscii` and `=::`, are
 dropped; caller-supplied records are never exempt from validation.
-Linux uses native environment values on the existing terminal builder. Parent
+Linux uses native environment values on the terminal builder. Parent
 environment and process cwd are never changed. Script text is not automatically
 added to command history or logs; process debug output redacts source/argv/env.
 
@@ -88,7 +89,8 @@ Its source is one literal command line: use explicit Cmd operators between
 commands, or choose PowerShell for multiline scripts. CR/LF in source is rejected
 because native command-string mode otherwise ignores subsequent physical lines.
 This restriction does not affect control characters inside captured data.
-The ordinary command-bar Cmd profile remains unchanged with `/V:OFF`.
+The ordinary command-bar Cmd profile uses `/V:OFF` (`desktop.rs` in
+`midnight-platform-windows`).
 
 Each declared raw `ME_*` value also receives a backend-created `ME_*_ARG` companion.
 The picker inserts an unquoted delayed reference such as `!ME_FILE_PATH_ARG!` as
@@ -103,7 +105,7 @@ This is an external-argv contract, not universal Cmd quoting. Builtins such as
 `type "!ME_FILE_PATH!"`. Empty raw references follow Cmd's own behavior; companions
 preserve an empty native argument. Do not pass companions through `CALL`, a batch
 file or another shell that parses expanded text again. `CALL` can re-expand percent
-variables and alter carets; arbitrary pipeline/grouped reparsing is not qualified.
+variables and alter carets; arbitrary pipeline/grouped reparsing is not supported.
 Keep delayed expansion enabled. Program mode is preferable when shell syntax is
 unnecessary.
 
@@ -118,9 +120,10 @@ The adapter refuses initial Cmd command lines, declared/encoded environment
 records and the conservative expansion of literal fixed references above 8191
 UTF-16 units. The reference budget is ASCII case-insensitive and includes repeated
 occurrences; it does not rewrite or parse shell syntax. Dynamically constructed
-script variables remain subject to Cmd's own limits. The existing aggregate
-8 MiB child environment limit remains; no value is truncated. See the
-[native qualification](../verification/2026-11-12-cmd-custom-commands.md). Windows loader errors use a scoped thread error
+script variables remain subject to Cmd's own limits. The aggregate 8 MiB child
+environment limit applies (`MAX_UNITS` in `user_command_environment.rs`); no value is
+truncated. Evidence: [Cmd record](../verification/2026-11-12-cmd-custom-commands.md).
+Windows loader errors use a scoped thread error
 mode, restored on return, to report errors without blocking loader dialogs.
 
 ## Inline-tree activation
@@ -141,7 +144,7 @@ regular-file size/mtime checks remain, and later launches revalidate the retaine
 native identity and revision for directories as well as files.
 Per-process revalidation uses immutable captured entry IDs for that process's pin
 scope, including an unmarked focus when Once uses it. Provider ownership survives
-through the native launch call and uses the existing worker retirement domain.
+through the native launch call and uses the backend retirement domain.
 See [the tree contract](TREE_PANEL.md#native-custom-commands).
 
 ## Engine protocol and lifecycle
@@ -181,30 +184,34 @@ or killing programs already started.
 Cancellation stops preparation and future spawns. Both launch/process permits
 and metadata pins stay owned through an in-flight blocking native call. Normal
 engine shutdown signals cancellation immediately and awaits actual native cleanup
-before aborting unrelated tasks. The existing desktop reaper retains each direct
+before aborting unrelated tasks. The desktop reaper retains each direct
 child's slot until confirmed exit; an uncertain wait error retains the child and
 slot for another timed poll, including when the normal reaper has closed. Normal
 runtime shutdown retains external-child ownership through the bounded native
 tracker until exit is observed; it does not kill those children. Terminals, external
-editors and Custom Commands share eight direct-child slots. Associations retain
+editors and Custom Commands share eight direct-child slots (`MAX_PROCESSES` in
+`user_command_process_tracker.rs`). Associations retain
 their separate helper pool.
 
 ## Bounds and practical limits
 
 Configuration is bounded by 128 commands, 64 stored Program templates and 1 MiB
-aggregate command data inside the existing 4 MiB settings envelope. Captures
-contain at most 4096 targets. Expanded argv is separately capped at 4160 entries;
+aggregate command data (`MAX_USER_COMMANDS`, `MAX_USER_COMMAND_ARGUMENTS`,
+`MAX_USER_COMMAND_CONFIG_BYTES`) inside the 4 MiB settings envelope. Captures contain at
+most 4096 targets. Expanded argv is separately capped at 4160 entries
+(`MAX_USER_COMMAND_EXPANDED_ARGUMENTS`);
 expansion cardinality is checked before allocating an oversized vector. Native
-vector storage and raw data count toward the 8 MiB expanded-process/plan budget.
+vector storage and raw data count toward the 8 MiB expanded-process/plan budget
+(`MAX_PLAN_BYTES` in `user_command_prepare.rs`).
 Native Windows command-line and Linux ARG_MAX/per-string limits are additionally
 validated; these OS limits can reject a workload below the application ceiling.
 The limits are workload policies, not path truncation or RSS guarantees.
 
 The actor has at most 32 admitted/retained work leases and a 64 MiB target/result
-budget. Each request conservatively reserves 16 MiB for bounded pins/plans before
+budget (`MAX_JOBS`, `MEMORY_BUDGET` in the engine's `user_commands.rs`). Each request conservatively reserves 16 MiB for bounded pins/plans before
 queueing; four retained previews can therefore exhaust memory admission first.
 Full admission returns a visible rejection. One preparation/activation worker
-uses existing shared I/O/process admission, rather than creating a private pool.
+uses the shared I/O and process admission, rather than creating a private pool.
 PerItem checks its own relevant guards before spawn, avoiding quadratic whole-job
 metadata revalidation.
 
@@ -214,7 +221,7 @@ modified time, and a flat panel selection compares its listed file size and
 whether the row was a directory (a file replaced by a directory, or the reverse,
 is rejected; links keep their target-independent tolerance). The first backend
 open establishes native identity. One plan holds at most 256 native pins at a
-time (each is an open descriptor on Linux, whose common soft limit is 1024).
+time (`MAX_HELD_PINS`) (each is an open descriptor on Linux, whose common soft limit is 1024).
 Later targets/directories are pinned once to capture their identity and facts,
 released, and pinned again for each revalidation. A released target must find the
 same native identity, kind, size, modification time, native attributes and Unix
@@ -226,8 +233,7 @@ before the check goes undetected for a released target. Preparation pins and
 checks every target once; the actor then runs one complete revalidation after
 native preflight, and each process revalidates only its own scope before
 spawning. Neither panel listings
-nor arbitrary external tools are promised immutable path snapshots. Archive/provider argument exports and
-native macOS implementation/validation remain outside this backend increment.
+nor arbitrary external tools are promised immutable path snapshots. Known limits:
+archive and provider arguments are not exported, and there is no macOS implementation.
 
-Implementation and evidence are recorded in
-[backend verification](../verification/2026-11-07-user-commands-backend.md).
+Evidence: [backend record](../verification/2026-11-07-user-commands-backend.md).
