@@ -135,7 +135,7 @@ fn admit_volumes<'a>(
     destination: &Path,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
-    match crate::transfer_destination::move_refusal(service, sources, destination, cancel) {
+    match crate::transfer_destination::move_refusal(service, sources, destination, cancel)? {
         Some(refusal) => Err(unsupported(destination, &refusal)),
         None => Ok(()),
     }

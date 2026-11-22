@@ -158,6 +158,30 @@ fn a_move_drop_is_refused_up_front_beyond_64_items_or_across_drives_to_a_refusin
     internal::admit_move(None, &files(64), &share, &cancel).unwrap();
 }
 
+/// A drop that moves from a folder whose drive cannot be read, to a place that refuses a
+/// Move from another drive, reports that read's error rather than the other-drive refusal;
+/// a check cancelled while it reads the selection's folder or the destination ends
+/// cancelled instead of refusing or admitting the Move.
+#[test]
+fn a_move_drop_reports_an_unreadable_folder_and_a_cancelled_check_as_they_are() {
+    use crate::transfer_destination::places::{Places, place, source_folder};
+    let from = |folder: std::path::PathBuf| FileClipboard {
+        paths: vec![folder.join("report.txt")],
+        intent: FileClipboardIntent::Move,
+    };
+    let share = place("server").join("inbox");
+    let admit = |files: &FileClipboard, destination: &Path| {
+        internal::admit_move(Some(&Places), files, destination, &Cancellation::default())
+            .unwrap_err()
+    };
+    let unreadable = admit(&from(place("unreadable").join("work")), &share);
+    assert_eq!(unreadable.kind, io::ErrorKind::NotFound, "{unreadable:?}");
+    let cancelled = admit(&from(place("cancelled").join("work")), &share);
+    assert_eq!(cancelled.kind, io::ErrorKind::Interrupted, "{cancelled:?}");
+    let cancelled = admit(&from(source_folder()), &place("cancelled").join("inbox"));
+    assert_eq!(cancelled.kind, io::ErrorKind::Interrupted, "{cancelled:?}");
+}
+
 /// A drop that moves and the Copy/Move dialog decide alike wherever a Move from a folder
 /// on D: can go (`transfer_destination::places`), so the dialog never offers a Move that
 /// a drop's admission refuses, nor the reverse: the drive's own loopback share, which

@@ -3,7 +3,8 @@
 //! FAT32 stick, the drive's own loopback share (`\\localhost\D$`, which reports D:'s
 //! volume serial number although a rename from D: cannot reach it) and a share on
 //! another computer. The paths are made under the temporary folder, so they are absolute
-//! on every platform; the first component below it names the place.
+//! on every platform; the first component below it names the place. Reading "cancelled"
+//! cancels the check, and any other place cannot be read.
 use midnight_core::{
     Cancellation, CopyLinkPolicy, FsError, PreparedTransferMoveEntry, TransferDirectory,
     TransferLinkDestination, TransferLinkStorage, TransferRevisionPolicy, TransferService,
@@ -90,7 +91,7 @@ impl TransferService for Places {
     fn link_destination(
         &self,
         path: &Path,
-        _: &Cancellation,
+        cancel: &Cancellation,
     ) -> Result<TransferLinkDestination, FsError> {
         let local = |volume| TransferLinkDestination {
             storage: TransferLinkStorage::Supported,
@@ -118,6 +119,15 @@ impl TransferService for Places {
             // The loopback share reports the serial number of the drive it shares.
             Some("loopback-d") => Ok(share(DRIVE_D)),
             Some("server") => Ok(share(SERVER)),
+            // The check is cancelled while this place is read: the read fails as reads do.
+            Some("cancelled") => {
+                cancel.cancel();
+                Err(FsError::from_io(
+                    "inspect links",
+                    path,
+                    io::ErrorKind::PermissionDenied.into(),
+                ))
+            }
             _ => Err(FsError::from_io(
                 "inspect links",
                 path,

@@ -47,15 +47,21 @@ fn recorder() -> (Rc<RefCell<Vec<Command>>>, impl Fn(Command) -> bool) {
 
 /// The right panel shows x.7z (session 77).
 fn show_right(p: &mut Presenter) {
+    show_in_right(p, RIGHT, "x.7z");
+}
+
+/// The right panel opens archive `name` from its native file, as session `session`: the
+/// tab lets go of the archive it showed.
+fn show_in_right(p: &mut Presenter, session: u64, name: &str) {
     let location = ArchiveLocation {
-        mount: Some(Arc::new(Shown(RIGHT))),
-        address: address("x.7z"),
+        mount: Some(Arc::new(Shown(session))),
+        address: address(name),
         directory: 1,
-        trail: vec![(1, "x.7z".into())],
+        trail: vec![(1, name.into())],
     };
     assert!(p.archive_navigate(
         PaneId::Right,
-        ArchiveAction::List(location.clone()),
+        ArchiveAction::List(ArchiveLocation::unavailable(address(name))),
         &|_| true
     ));
     p.apply(Event::ArchiveListed {
@@ -131,13 +137,13 @@ fn archive_navigations(commands: &RefCell<Vec<Command>>) -> Vec<(PaneId, Option<
 fn a_refused_open_offers_to_close_what_a_tab_or_viewer_shows() {
     let mut p = super::archives::archive_pane();
     show_right(&mut p);
-    // The left tab let go of sample.zip for b.7z, but a job still reads sample.zip.
+    // The left tab let go of sample.zip for b.7z, but it is still closing or a job reads it.
     refuse(&mut p, open_b(), &[(LEFT, "sample.zip"), (RIGHT, "x.7z")]);
     let (title, body) = p.desktop.notice.clone().expect("the offer is shown");
     assert_eq!(title, "Two archives are already open");
     assert_eq!(
         body,
-        "Close one of them to open b.7z.\nsample.zip is in use by a running job."
+        "Close one of them to open b.7z.\nsample.zip is still closing or in use."
     );
     assert_eq!(p.desktop.notice_choices, ["Close x.7z (right panel)"]);
     assert!(p.desktop.notice_cancel, "Close cancels the offer");
@@ -256,14 +262,14 @@ fn cancel_closes_nothing_and_opens_nothing() {
 }
 
 #[test]
-fn archives_that_only_jobs_hold_are_named_without_an_action() {
+fn archives_that_no_tab_or_viewer_shows_are_named_without_an_action() {
     let mut p = super::archives::archive_pane();
     refuse(&mut p, open_b(), &[(LEFT, "sample.zip"), (99, "z.7z")]);
     let (_, body) = p.desktop.notice.clone().unwrap();
     assert_eq!(
         body,
-        "sample.zip and z.7z are in use by running jobs. Wait for them to finish or stop \
-         them, then open b.7z again."
+        "sample.zip and z.7z are still closing or in use, for example by running jobs. Open \
+         b.7z again once one of them has closed."
     );
     assert!(p.desktop.notice_choices.is_empty());
     assert!(!p.desktop.notice_cancel, "Close is the only answer");
@@ -300,4 +306,76 @@ fn an_old_offer_cannot_be_chosen() {
     assert!(!p.choose_notice(old, 0, &send));
     assert!(commands.borrow().is_empty());
     assert!(p.panes[1].archive.is_some());
+}
+
+/// Go to file in Find moves the right panel out of x.7z while the notice shows.
+fn move_right_to_a_folder(p: &mut Presenter) {
+    let directory = test_root().join("elsewhere");
+    let elsewhere = begin(p, PaneId::Right, &directory.to_string_lossy());
+    finish(p, PaneId::Right, elsewhere, vec![]);
+    assert!(p.panes[1].archive.is_none());
+    assert_eq!(p.panes[1].path, directory);
+}
+
+#[test]
+fn an_offer_does_not_move_a_panel_that_went_to_a_folder_meanwhile() {
+    let mut p = super::archives::archive_pane();
+    show_right(&mut p);
+    refuse(&mut p, open_b(), &[(LEFT, "sample.zip"), (RIGHT, "x.7z")]);
+    let generation = p.desktop.notice_generation;
+    move_right_to_a_folder(&mut p);
+    let (commands, send) = recorder();
+    assert!(!p.choose_notice(generation, 0, &send), "the offer is stale");
+    p.flush_selection(&send);
+    assert!(
+        commands.borrow().is_empty(),
+        "the right panel stays and b.7z is not retried"
+    );
+    assert_eq!(p.panes[1].path, test_root().join("elsewhere"));
+}
+
+#[test]
+fn an_offer_does_not_move_a_panel_that_went_into_another_archive_meanwhile() {
+    let mut p = super::archives::archive_pane();
+    show_right(&mut p);
+    refuse(&mut p, open_b(), &[(LEFT, "sample.zip"), (RIGHT, "x.7z")]);
+    let generation = p.desktop.notice_generation;
+    // d.7z opened in x.7z's place.
+    show_in_right(&mut p, 88, "d.7z");
+    let (commands, send) = recorder();
+    assert!(!p.choose_notice(generation, 0, &send), "the offer is stale");
+    p.flush_selection(&send);
+    assert!(commands.borrow().is_empty());
+    assert!(p.panes[1].archive.as_ref().unwrap().holds_session(88));
+}
+
+#[test]
+fn a_viewer_that_still_shows_the_chosen_archive_closes_without_moving_the_panel() {
+    let mut p = super::archives::archive_pane();
+    show_right(&mut p);
+    let closed = Rc::new(RefCell::new(Vec::new()));
+    let observed = closed.clone();
+    p.set_viewer_archives(Rc::new(|| vec![RIGHT]));
+    p.set_archive_viewer_closer(Rc::new(move |session| observed.borrow_mut().push(session)));
+    refuse(&mut p, open_b(), &[(LEFT, "sample.zip"), (RIGHT, "x.7z")]);
+    assert_eq!(
+        p.desktop.notice_choices,
+        ["Close x.7z (right panel and a viewer)"]
+    );
+    let generation = p.desktop.notice_generation;
+    move_right_to_a_folder(&mut p);
+    let (commands, send) = recorder();
+    assert!(p.choose_notice(generation, 0, &send));
+    assert_eq!(*closed.borrow(), [RIGHT], "its viewer closes");
+    assert!(
+        !commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Navigate { .. })),
+        "the right panel stays"
+    );
+    assert_eq!(
+        archive_navigations(&commands),
+        [(PaneId::Left, Some(RIGHT), "b.7z".to_owned())]
+    );
 }

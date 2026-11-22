@@ -1197,6 +1197,53 @@ fn an_archive_that_cannot_be_reopened_returns_to_its_native_folder() {
     assert_eq!(p.panes[0].cursor, Some(EntryId(9)));
 }
 
+/// A re-open that the two-archive limit refuses is reported like any failed re-open: the
+/// panel returns to the folder that contains the archive and offers nothing to close.
+#[test]
+fn a_reopen_refused_for_want_of_a_slot_is_reported_and_offers_nothing() {
+    let mut p = nested_archive_pane();
+    let sent = RefCell::new(Vec::new());
+    assert!(p.up(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    }));
+    listed(&mut p, Err(stopped_session()), &sent);
+    let reopened = last_listing(&sent);
+    assert!(reopened.mount.is_none(), "re-opened once");
+    p.apply(Event::ArchiveSessionsFull {
+        pane: PaneId::Left,
+        navigation: NavigationId(p.panes[0].generation),
+        sessions: ["sample.zip", "x.7z"]
+            .into_iter()
+            .zip([42, 77])
+            .map(|(name, id)| ArchiveSession {
+                id,
+                container: test_root().join(name),
+            })
+            .collect(),
+        retry: ArchiveAction::List(reopened),
+    });
+    let full = FsError::from_io(
+        "open archive",
+        &test_root().join("sample.zip"),
+        io::Error::other("Two archives are already open; close one of them first"),
+    );
+    listed(&mut p, Err(full), &sent);
+    let (title, body) = p.desktop.notice.clone().expect("a notice");
+    assert_eq!(title, "Archive unavailable");
+    assert!(body.contains("Two archives are already open"), "{body}");
+    assert!(p.desktop.notice_choices.is_empty(), "nothing to choose");
+    let native = sent
+        .borrow()
+        .iter()
+        .rev()
+        .find_map(|command| match command {
+            Command::Navigate { path, .. } => Some(path.clone()),
+            _ => None,
+        });
+    assert_eq!(native, Some(test_root()), "the panel leaves the archive");
+}
+
 #[test]
 fn refresh_reopens_the_shown_folder_of_a_stopped_archive_session() {
     let mut p = nested_archive_pane();

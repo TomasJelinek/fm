@@ -777,8 +777,10 @@ drive's volume, a Move there from the drive is refused up front and a drag there
 Copy; on Linux the volume is the mount (`statx` `STATX_MNT_ID`,
 `transfer_native_location.rs`), since bind mounts share a device number but no rename. A
 Move on the destination's own volume renames and is not refused; where the destination's
-facts cannot be read, the job decides, and a selection's folder whose facts cannot be read
-is not known to share the volume. Native permission errors do not authorize a cross-device
+facts cannot be read, the job decides. A selection's folder whose facts cannot be read is
+not known to share the volume: the dialog shows the refusal, while a drag and the Move
+job's admission report that read's own error, and a check cancelled while it reads ends
+as cancelled. Native permission errors do not authorize a cross-device
 fallback. Recursive Move uses ContentOnly;
 required modified time still
 accepts only distinct regular-file roots. Under `Preserve` links move as links on Windows

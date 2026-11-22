@@ -216,16 +216,24 @@ pub(crate) fn move_facts(
 /// Copy/Move dialog says it (`move_facts`): the folder of one of them is not on the
 /// destination's volume, and the destination refuses a Move from another volume. None
 /// where the Move may start, and where the destination's facts cannot be read (the job
-/// then decides). Each folder's facts are read once.
+/// then decides). Each folder's facts are read once. A folder whose facts cannot be read
+/// is not taken for another drive: its read error is the answer. A cancelled check ends
+/// as cancelled.
 pub(crate) fn move_refusal<'a>(
     transfers: &dyn TransferService,
     sources: impl IntoIterator<Item = &'a std::path::Path>,
     destination: &std::path::Path,
     cancel: &Cancellation,
-) -> Option<String> {
-    let destination = transfers.link_destination(destination, cancel).ok()?;
+) -> Result<Option<String>, FsError> {
+    let facts = transfers.link_destination(destination, cancel);
+    admission_current(cancel, destination, &facts)?;
+    let Ok(destination) = facts else {
+        return Ok(None);
+    };
     // Only a destination that refuses such a Move can refuse this one.
-    destination.cross_volume_move_refusal()?;
+    if destination.cross_volume_move_refusal().is_none() {
+        return Ok(None);
+    }
     let mut folders: Vec<&std::path::Path> = Vec::new();
     for source in sources {
         let folder = source.parent().unwrap_or(source);
@@ -233,13 +241,32 @@ pub(crate) fn move_refusal<'a>(
             continue;
         }
         folders.push(folder);
-        let facts = transfers.link_destination(folder, cancel).ok();
-        let refusal = TransferLinkFacts::new(destination.clone(), facts.as_ref()).move_refusal();
+        let facts = transfers.link_destination(folder, cancel);
+        admission_current(cancel, folder, &facts)?;
+        let refusal = TransferLinkFacts::new(destination.clone(), Some(&facts?)).move_refusal();
         if refusal.is_some() {
-            return refusal;
+            return Ok(refusal);
         }
     }
-    None
+    Ok(None)
+}
+
+/// A cancelled read during a Move's admission ends the admission as cancelled, whatever
+/// the read answered.
+fn admission_current<T>(
+    cancel: &Cancellation,
+    path: &std::path::Path,
+    read: &Result<T, FsError>,
+) -> Result<(), FsError> {
+    let interrupted = matches!(read, Err(error) if error.kind == io::ErrorKind::Interrupted);
+    if cancel.is_cancelled() || interrupted {
+        return Err(FsError::from_io(
+            "admit Move",
+            path,
+            io::Error::new(io::ErrorKind::Interrupted, "Move cancelled."),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

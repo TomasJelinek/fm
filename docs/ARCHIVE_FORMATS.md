@@ -260,13 +260,19 @@ When an archive opened from a native file is refused because two are open, the p
 asks instead of showing an error line. The notice "Two archives are already open" offers
 to close each open archive that tabs or viewers show, for example "Close
 some-release.7z (right panel)" or "Close data.zip (left panel, tab 2 and a viewer)".
-Choosing one takes those tabs to the folder that contains the archive, with the cursor
-on the archive file, closes those viewers, and then opens the refused archive once more
-in that archive's place. An archive that only a running job reads, such as a copy, is
-named as in use by a running job, without an action; when nothing can be closed, the
-notice says to wait for the job or stop it, then open the archive again. Cancel or
-Escape changes nothing. Tab and Shift+Tab move between the notice's buttons, and Enter
-or Space presses one.
+Choosing one takes the tabs that still show that archive to the folder that contains
+it, with the cursor on the archive file, closes the viewers that still show it, and then
+opens the refused archive once more in that archive's place. When nothing named in the
+choice shows that archive any more, for example because Find's Go to file moved the
+panel elsewhere meanwhile, the choice changes nothing. An archive that no tab or viewer
+shows, because it is still closing or only a running job such as a copy reads it, is
+named as still closing or in use, without an action; when nothing can be closed, the
+notice says to open the archive again once that one has closed. Cancel or Escape
+changes nothing. Tab and Shift+Tab move between the notice's buttons, and Enter or
+Space presses one. A panel that opens its archive again by itself, after a listing
+through the archive's session failed, does not ask: when that open is refused, the
+notice "Archive unavailable" says why and the panel returns to the folder that contains
+the archive.
 
 ZIP support is Stored/Deflate, including password-protected members (below); other
 codecs, encrypted Office containers, DRM and corrupt archives fail explicitly, and the

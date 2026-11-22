@@ -430,7 +430,7 @@ pub(super) fn admit_move(
         files.paths.iter().map(|path| path.as_path()),
         destination,
         cancel,
-    ) {
+    )? {
         Some(refusal) => Err(error(io::ErrorKind::Unsupported, refusal)),
         None => Ok(()),
     }

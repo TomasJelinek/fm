@@ -174,6 +174,11 @@ impl ArchivePane {
             .chain(recovery)
             .filter(|location| location.mount.is_some())
     }
+    /// Whether this tab's listing in flight re-opens its archive after a failed listing
+    /// (`Recovery::Reopening`).
+    pub(super) fn reopening(&self) -> bool {
+        matches!(self.recovery, Recovery::Reopening)
+    }
     /// The session of the archive opened from a native file that this tab holds.
     pub(super) fn native_session(&self) -> Option<u64> {
         self.held()

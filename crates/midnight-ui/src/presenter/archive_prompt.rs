@@ -1,8 +1,8 @@
 //! When every archive opened from a native file that may be open is open, the panel
 //! offers to close one instead of only reporting the refusal: one action per archive that
 //! tabs or viewers show, then the refused archive opens once more in its place
-//! (`Command::ArchiveNavigate::replaces`). Archives that only a running job holds are
-//! named without an action.
+//! (`Command::ArchiveNavigate::replaces`). Archives that no tab or viewer shows (still
+//! closing, or held by a running job or another reader) are named without an action.
 use super::*;
 use std::rc::Rc;
 
@@ -95,7 +95,9 @@ impl Presenter {
     }
 
     /// An open was refused because every archive that may be open is open
-    /// (`Event::ArchiveSessionsFull`); its failed listing follows.
+    /// (`Event::ArchiveSessionsFull`); its failed listing follows. A background re-open
+    /// after a failed listing offers nothing: its failure is reported, and the panel
+    /// returns to the folder that contains the archive.
     pub(super) fn archive_sessions_full(
         &mut self,
         pane: PaneId,
@@ -103,7 +105,12 @@ impl Presenter {
         sessions: Vec<ArchiveSession>,
         retry: ArchiveAction,
     ) {
-        if self.panes[pane.index()].generation != navigation.0 {
+        let p = &self.panes[pane.index()];
+        if p.generation != navigation.0
+            || p.archive
+                .as_ref()
+                .is_some_and(archives::ArchivePane::reopening)
+        {
             self.retired.push(Box::new((sessions, retry)));
             return;
         }
@@ -172,13 +179,13 @@ impl Presenter {
             match in_use.len() {
                 0 => format!("Open {target} again once one of them is closed."),
                 1 => format!(
-                    "{} is in use by a running job. Wait for it to finish or stop it, then \
-                     open {target} again.",
+                    "{} is still closing or in use, for example by a running job. Open \
+                     {target} again once it has closed.",
                     in_use[0]
                 ),
                 _ => format!(
-                    "{} are in use by running jobs. Wait for them to finish or stop them, \
-                     then open {target} again.",
+                    "{} are still closing or in use, for example by running jobs. Open \
+                     {target} again once one of them has closed.",
                     joined(&in_use)
                 ),
             }
@@ -187,7 +194,7 @@ impl Presenter {
         };
         if !closable.is_empty() {
             for name in &in_use {
-                body.push_str(&format!("\n{name} is in use by a running job."));
+                body.push_str(&format!("\n{name} is still closing or in use."));
             }
         }
         self.desktop.inform("Two archives are already open", body);
@@ -241,7 +248,19 @@ impl Presenter {
             self.retired.push(Box::new(offer));
             return false;
         }
-        let chosen = offer.closable.swap_remove(index);
+        let mut chosen = offer.closable.swap_remove(index);
+        // Only what still shows the chosen archive leaves it: a panel that went elsewhere
+        // while the notice showed (Find is modeless) stays where it is.
+        let holding = self.archive_tabs(chosen.session);
+        chosen
+            .tabs
+            .retain(|(pane, tab)| holding.iter().any(|(p, _, t)| p == pane && t == tab));
+        chosen.viewers &= self.viewer_archive_sessions().contains(&chosen.session);
+        // Nothing that the notice named still shows it: the offer is out of date.
+        if chosen.tabs.is_empty() && !chosen.viewers {
+            self.retired.push(Box::new(offer));
+            return false;
+        }
         let mut after = Vec::new();
         for (pane, tab) in &chosen.tabs {
             if *tab == self.active_tab(*pane) {
