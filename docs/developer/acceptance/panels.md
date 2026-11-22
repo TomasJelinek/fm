@@ -102,7 +102,7 @@ combinations. Helpers of these scenarios are in
 | N-41 | Shift+letter switches the drive | not on Linux | SKIP: Windows only |
 | N-42 | F11/F12 network drive dialogs | not on Linux | SKIP: Windows only; the footer hides them |
 | N-43 | The Trash location opens the desktop Trash | not installed headless | SKIP: the harness installs no desktop opener |
-| N-50 | Without a desktop service the "Command shell" chooser and the terminal button ("Open … in this folder", since b2184fb2) are disabled; the command history picker lists the saved commands newest first ("<shell> · <command>") and choosing one runs nothing and leaves the command line as it was ("Command shell unavailable"); Enter in the command line reports "Terminal unavailable" | `files_navigation` › command line | PASS (Windows `20261122-164746`; Linux re-run pending) |
+| N-50 | Without a desktop service the "Command shell" chooser and the terminal button ("Open … in this folder", since b2184fb2) are disabled; the command history picker lists the saved commands newest first ("<shell> · <command>") and choosing one runs nothing and leaves the command line as it was ("Command shell unavailable"); Enter in the command line reports "Terminal unavailable" | `files_navigation` › command line | PASS (Windows `20261122-164746`, Linux `20261122-200640`) |
 | N-51 | The chooser lists the platform's shells; choosing one changes the hint to "Run with <shell>"; on Windows a switch between PowerShell and cmd with a draft is refused; a recalled command fills the draft without running | `files_navigation` › command line | SKIP: the shell and the terminal come from the desktop service (DesktopContext), which the harness does not install (it also launches terminals) |
 | N-52 | The watch fallback line "Live updates are unavailable for this folder; it is checked for changes regularly instead." | `files_busy_folder` (noted) | SKIP: no seam makes a watch registration fail (decision A5) |
 
@@ -214,14 +214,14 @@ of milliseconds without drawing.
 | F-03 | Case sensitive | `panels_search_filter` | PASS |
 | F-04 | The indicator above the list names the filter and opens it with its draft | `panels_search_filter` | PASS |
 | F-05 | The indicator's × turns the filter off, keeps the expression and the keyboard in the list | `panels_search_filter` | PASS |
-| F-06 | Down in the filter's expression line lists the recent filters, newest first (27189334); a click on one fills the line, its mode and its case and applies nothing until OK, which applies it | `panels_search_filter` › recent filters | PASS (Windows `20261122-164746`; Linux re-run pending) |
+| F-06 | Down in the filter's expression line lists the recent filters, newest first (27189334); a click on one fills the line, its mode and its case and applies nothing until OK, which applies it | `panels_search_filter` › recent filters | PASS (Windows `20261122-164746`, Linux `20261122-200640`) |
 | F-07 | Cancel keeps the applied filter | `panels_search_filter` | PASS |
 | F-08 | An invalid regular expression is refused in the dialog; the listing stays | `panels_search_filter` | PASS |
 | F-09 | Ctrl+A, Ctrl+Shift+A, sorting and search inside a filtered list | `panels_search_filter` | PASS |
 | F-10 | Each panel has its own filter | `panels_search_filter` | PASS |
 | F-11 | A filtered tree keeps a match's ancestor as context that cannot be marked | `panels_tree_keys` | PASS |
 | F-12 | The filter's Help and F1 show the syntax; Escape closes only the help | `panels_search_filter` | PASS |
-| F-13 | The applied filter and the recent filters come back after a restart; Down and Enter choose one by keyboard (mode, line and case filled); the other panel stays unfiltered | `panels_search_filter` › restart | PASS (Windows `20261122-164746`; Linux re-run pending) |
+| F-13 | The applied filter and the recent filters come back after a restart; Down and Enter choose one by keyboard (mode, line and case filled); the other panel stays unfiltered | `panels_search_filter` › restart | PASS (Windows `20261122-164746`, Linux `20261122-200640`) |
 
 ## Inline folder branches
 
@@ -327,8 +327,9 @@ in its own folder. The statuses of the rows WP2 added or changed come from these
 | `20261122-153059` | Windows 11 | the 32 WP2 scenarios and `tools_folder_sizes` (`folder_sizes` selects it too); `panels_root_keys` staged with the release packages built at d7ff8860 | 31 PASS, 2 FAIL: test errors since fixed (`files_navigation` looked for the terminal button's old name; `panels_search_filter` read the filter's draft from the presenter's view, which a recent filter does not change before OK) |
 | `20261122-152841` | Linux (WSL 2, Ubuntu 24.04, ext4) | the same; staged with the shared packages built at b1b89343; the shared Cargo target's workspace artifacts cleaned first | 31 PASS, 2 FAIL: the same two test errors |
 | `20261122-164746` | Windows 11 | `panels_search_filter`, `files_navigation` with the two fixes | 2 PASS |
-| pending | Linux | the same, queued | pending |
-| `20261122-161323` | Linux | a red variant: 28 breaks, one per new or strengthened check, over the 16 scenarios they touch | 16 FAIL, each break with its own message, but for the recent-filters choice (F-06): that check then read the presenter's view; its fixed version's red run is queued |
+| `20261122-200640` | Linux | the same | 2 PASS |
+| `20261122-161323` | Linux | a red variant: 28 breaks, one per new or strengthened check, over the 16 scenarios they touch | 16 FAIL, each break with its own message, but for the recent-filters choice (F-06): that check then read the presenter's view |
+| `20261122-200713` | Linux | the red variant over `panels_search_filter`, with the fixed recent-filters check | FAIL: the recent-filters break (F-06) and the filter history, F6 and Enter breaks, each with its own message |
 
 Commands, Windows (from the source tree):
 
