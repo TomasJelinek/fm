@@ -21,6 +21,8 @@ mod metadata;
 mod removal_confirmation;
 #[path = "move_restore_tests.rs"]
 mod restoration;
+#[path = "move_volume_admission_tests.rs"]
+mod volume_admission;
 pub(super) use cross_device::CrossDeviceService;
 
 fn decide_failure(job: &mut worker::Job, failure: &CopyFailure) {

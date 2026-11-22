@@ -9,9 +9,21 @@ use std::time::SystemTime;
 pub enum TransferMetadataPolicy {
     #[default]
     ContentOnly,
-    /// Exact modified time; first slice accepts at most64 native regular-file roots.
+    /// Exact modified time, for at most `MAX_REQUIRED_METADATA_ROOTS` distinct native
+    /// regular-file roots.
     RequireModifiedTime,
 }
+
+/// The most roots one transfer under `TransferMetadataPolicy::RequireModifiedTime` takes:
+/// each is pinned and staged before anything is copied. The backend refuses more
+/// itself, before any source is captured, whatever the dialog offered.
+pub const MAX_REQUIRED_METADATA_ROOTS: usize = 64;
+
+/// Why a Copy under `TransferMetadataPolicy::RequireModifiedTime` of more than
+/// `MAX_REQUIRED_METADATA_ROOTS` roots does not start. A Move of as many gives
+/// `MOVE_ROOTS_REFUSAL`, the sentence every Move entry point gives.
+pub const REQUIRED_METADATA_ROOTS_REFUSAL: &str = "Required modified time accepts at most 64 \
+     distinct native regular files; choose content-only Copy for larger selections.";
 
 /// Provider-owned source handle and pre-read revision. No pathname reopening.
 pub trait TransferModifiedTimePin: Send {
@@ -30,8 +42,9 @@ pub enum MetadataTransferInput {
 }
 
 /// Explicit optional policy without changing existing request constructors or defaults.
-/// Required modified time accepts at most64 native regular-file roots. Folders,
-/// links and virtual sources are refused; there is no silent policy downgrade.
+/// Required modified time accepts at most `MAX_REQUIRED_METADATA_ROOTS` native
+/// regular-file roots. More roots, folders, links and virtual sources are refused;
+/// there is no silent policy downgrade.
 #[derive(Clone, Debug)]
 pub struct MetadataTransferRequest {
     pub input: MetadataTransferInput,

@@ -51,15 +51,21 @@ impl TransferService for crate::WindowsFileSystem {
         let link = Native::of(&file, attributes)
             .map_err(|e| error(path, e))?
             .link();
-        // Advisory: the volume alone, also on filesystems that Copy/Move then refuse.
+        // Advisory: the volume alone, also on filesystems that Copy/Move then refuse. A
+        // share is a volume of its own, as for the link facts: a drag from a drive to its
+        // own share (`\\localhost\D$`, which reports the drive's serial number) proposes
+        // Copy, as a Move there is refused.
         let device = if link {
             None
         } else {
-            Some(
-                native::local_identity(&file)
-                    .map_err(|e| error(path, e))?
-                    .volume,
-            )
+            let volume = native::local_identity(&file)
+                .map_err(|e| error(path, e))?
+                .volume;
+            Some(if crate::storage_kind::network(path) {
+                link_destination::share_volume(&file, volume)
+            } else {
+                volume
+            })
         };
         checked(cancel, path)?;
         Ok(device)

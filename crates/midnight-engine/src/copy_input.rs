@@ -180,6 +180,32 @@ pub(super) fn check_native_roots(
     Ok(())
 }
 
+/// Required modified time pins and stages every root before anything is copied: the
+/// backend takes at most `MAX_REQUIRED_METADATA_ROOTS` of them, whatever the dialog
+/// offered, and refuses more before any source is captured, never as a content-only
+/// transfer. A Copy says so in the policy's words, a Move in the sentence every Move
+/// entry point gives.
+fn check_required_metadata_roots(
+    destination: &std::path::Path,
+    intent: TransferIntent,
+    metadata: TransferMetadataPolicy,
+    count: usize,
+) -> Result<(), FsError> {
+    if metadata == TransferMetadataPolicy::RequireModifiedTime
+        && count > midnight_core::MAX_REQUIRED_METADATA_ROOTS
+    {
+        return Err(error(
+            destination,
+            io::ErrorKind::Unsupported,
+            match intent {
+                TransferIntent::Copy => midnight_core::REQUIRED_METADATA_ROOTS_REFUSAL,
+                TransferIntent::Move => midnight_core::MOVE_ROOTS_REFUSAL,
+            },
+        ));
+    }
+    Ok(())
+}
+
 fn metadata_id(request: &MetadataTransferRequest) -> OperationId {
     match &request.input {
         MetadataTransferInput::Paths(request) => request.id,
@@ -420,6 +446,12 @@ impl CopyInput {
                         "Captured transfer intent changed.",
                     ));
                 }
+                check_required_metadata_roots(
+                    &self.destination,
+                    self.intent,
+                    self.metadata,
+                    expected,
+                )?;
                 let prepared = sources.prepare_with_links(service, links, cancel)?;
                 let count = match &prepared {
                     PreparedCapturedTransfer::Copy(roots)
@@ -483,6 +515,12 @@ impl CopyInput {
             }
         };
         clipboard.validate()?;
+        check_required_metadata_roots(
+            &self.destination,
+            self.intent,
+            self.metadata,
+            clipboard.paths.len(),
+        )?;
         let request = CopyRequest {
             verification: self.verification,
             start_policy: self.start_policy,

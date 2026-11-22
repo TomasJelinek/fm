@@ -406,9 +406,10 @@ mod retirement_tests;
 
 /// Whether a drop that moves may start: not with more than `MAX_MOVE_ROOTS` items, and not
 /// from another drive to a destination that refuses such a Move (a network location, a
-/// drive that cannot keep a replaced file recoverable). Decided before the drop is
-/// accepted, so no job starts; the Move job still refuses both itself. Where the volume
-/// facts or devices are unknown, the job decides.
+/// drive that cannot keep a replaced file recoverable), decided as the Copy/Move dialog
+/// and a Move job decide it (`transfer_destination::move_refusal`). Decided before the
+/// drop is accepted, so no job starts. Where the destination's facts are unknown, the job
+/// decides.
 pub(super) fn admit_move(
     service: Option<&dyn TransferService>,
     files: &FileClipboard,
@@ -424,25 +425,15 @@ pub(super) fn admit_move(
     let Some(service) = service else {
         return Ok(());
     };
-    let Some(refusal) = service
-        .link_destination(destination, cancel)
-        .ok()
-        .and_then(|facts| facts.cross_volume_move_refusal())
-    else {
-        return Ok(());
-    };
-    let device = |path: &Path| service.native_drop_device(path, cancel).ok().flatten();
-    let Some(target) = device(destination) else {
-        return Ok(());
-    };
-    if files
-        .paths
-        .iter()
-        .any(|source| device(source) != Some(target))
-    {
-        return Err(error(io::ErrorKind::Unsupported, refusal));
+    match crate::transfer_destination::move_refusal(
+        service,
+        files.paths.iter().map(|path| path.as_path()),
+        destination,
+        cancel,
+    ) {
+        Some(refusal) => Err(error(io::ErrorKind::Unsupported, refusal)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 pub(super) fn resolve_intent(

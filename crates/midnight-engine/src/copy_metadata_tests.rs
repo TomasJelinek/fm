@@ -224,6 +224,62 @@ async fn required_modified_time_preparation_failure_offers_no_skip() {
     }
 }
 
+/// Required modified time pins and stages every root before anything is copied, so the
+/// backend itself takes at most 64 distinct native regular files: 65 are refused before
+/// anything is copied, captured or moved, a Copy in words that name the policy and a
+/// Move in the sentence every Move gives, never as a content-only transfer; 64 still go.
+#[tokio::test]
+async fn required_modified_time_takes_at_most_64_files_for_copy_and_move() {
+    for intent in [TransferIntent::Copy, TransferIntent::Move] {
+        for count in [65usize, 64] {
+            let (_temp, parent) = protected_fixture();
+            let destination = parent.join("destination");
+            fs::create_dir(&destination).unwrap();
+            let sources: Vec<PathBuf> = (0..count)
+                .map(|index| {
+                    let path = parent.join(format!("file {index:02}.txt"));
+                    fs::write(&path, format!("file {index}")).unwrap();
+                    path
+                })
+                .collect();
+            let mut harness = Harness::native();
+            harness
+                .controller
+                .enqueue_metadata(MetadataTransferRequest {
+                    input: MetadataTransferInput::Paths(request(1, &sources, &destination)),
+                    intent,
+                    metadata: TransferMetadataPolicy::RequireModifiedTime,
+                })
+                .await;
+            let done = harness.terminal(1).await;
+            let case = format!("{intent:?} of {count} files");
+            if count > 64 {
+                assert_eq!(done.state, CopyOperationState::Failed, "{case}: {done:?}");
+                let refusal = match intent {
+                    TransferIntent::Copy => {
+                        "Required modified time accepts at most 64 distinct native regular \
+                         files; choose content-only Copy for larger selections."
+                    }
+                    TransferIntent::Move => midnight_core::MOVE_ROOTS_REFUSAL,
+                };
+                assert_eq!(done.errors[0].message, refusal, "{case}: {done:?}");
+                assert_eq!(done.files_completed, 0, "{case}");
+                assert_eq!(done.source_names_staged, 0, "{case}");
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 0, "{case}");
+                assert!(sources.iter().all(|source| source.exists()), "{case}");
+            } else {
+                assert_eq!(
+                    done.state,
+                    CopyOperationState::Completed,
+                    "{case}: {done:?}"
+                );
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), count, "{case}");
+            }
+            harness.close().await;
+        }
+    }
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;

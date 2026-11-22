@@ -125,6 +125,21 @@ pub(super) fn check_root_bounds<'a>(
     }
     Ok(())
 }
+/// A Move from another volume to a destination that refuses one does not start: the
+/// admission decides as the Copy/Move dialog and a drop do
+/// (`transfer_destination::move_refusal`), so the dialog never offers a Move that this
+/// refuses, and refuses in the dialog's words, before any source is captured.
+fn admit_volumes<'a>(
+    service: &dyn TransferService,
+    sources: impl IntoIterator<Item = &'a Path>,
+    destination: &Path,
+    cancel: &Cancellation,
+) -> Result<(), FsError> {
+    match crate::transfer_destination::move_refusal(service, sources, destination, cancel) {
+        Some(refusal) => Err(unsupported(destination, &refusal)),
+        None => Ok(()),
+    }
+}
 pub(super) fn prepare_with_metadata(
     request: CopyRequest,
     service: &dyn TransferService,
@@ -151,6 +166,12 @@ pub(super) fn prepare_with_options(
     links: CopyLinkPolicy,
 ) -> Result<Job, FsError> {
     check_bounds(&request)?;
+    admit_volumes(
+        service,
+        request.clipboard.paths.iter().map(|path| path.as_path()),
+        &request.destination,
+        &cancel,
+    )?;
     let links = move_links(&request.destination, metadata, links)?;
     let permit = permit(&cancel, &request.destination)?;
     let mut prepared_roots = VecDeque::new();
@@ -210,6 +231,14 @@ pub(super) fn prepare_entries(
     metadata: TransferMetadataPolicy,
     links: CopyLinkPolicy,
 ) -> Result<Job, FsError> {
+    admit_volumes(
+        service,
+        prepared_roots
+            .iter()
+            .map(|root| root.source().entry().item.path.as_path()),
+        &destination_path,
+        &cancel,
+    )?;
     let links = move_links(&destination_path, metadata, links)?;
     let permit = permit(&cancel, &destination_path)?;
     let job = ownership::Armed::new(prepare_sources_inner(

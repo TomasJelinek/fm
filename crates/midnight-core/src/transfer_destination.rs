@@ -52,8 +52,10 @@ pub struct TransferLinkDestination {
     pub network: bool,
     /// Removable media, or a drive on a removable bus such as USB or an SD card reader.
     pub removable: bool,
-    /// The volume's native identity (Linux device number, Windows volume serial
-    /// number), to tell whether a selection is on the same drive.
+    /// The volume's native identity, to tell whether a selection is on the same drive
+    /// (`same_volume_as`): on Linux the mount (a bind mount is another one), on Windows
+    /// the volume serial number, and for a network location its share's (the server
+    /// volume's number with the share's name, so that two shares are two volumes).
     pub volume: Option<u64>,
     /// A Move from another drive cannot end here. Such a Move copies each item, verifies
     /// the copy and only then removes the original, which needs a destination that keeps
@@ -84,6 +86,19 @@ impl TransferLinkDestination {
              there before removing the originals. Copy them instead."
         ))
     }
+
+    /// Whether a Move from the folder these facts describe to the folder `other`
+    /// describes stays on one volume, where it renames its items, rather than copying
+    /// them to another: the same volume, reached the same way, both locally or both
+    /// through a network location. A share of a local drive (`\\localhost\D$`) can report
+    /// the drive's own volume, yet a rename cannot pass between the drive and the share,
+    /// so a Move there is a Move from another drive. An unknown volume is not the same.
+    /// The one determination: the Copy/Move dialog's facts, a drop's admission and a Move
+    /// job's admission all decide by it, so the dialog never offers a Move that an
+    /// admission then refuses.
+    pub fn same_volume_as(&self, other: &Self) -> bool {
+        self.volume.is_some() && self.volume == other.volume && self.network == other.network
+    }
 }
 
 /// Why the Copy/Move dialog copies the files links point to by default.
@@ -101,12 +116,27 @@ pub enum TransferLinkDefaultReason {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransferLinkFacts {
     pub destination: TransferLinkDestination,
-    /// The selection's folder is on the destination's volume. A Move there renames and
-    /// a link already lives on that drive, so a removable drive keeps links by default.
+    /// The selection's folder is on the destination's volume, reached the same way
+    /// (`TransferLinkDestination::same_volume_as`). A Move there renames and a link
+    /// already lives on that drive, so a removable drive keeps links by default.
     pub same_volume: bool,
 }
 
 impl TransferLinkFacts {
+    /// The facts of `destination` for a selection in the folder that `source` describes:
+    /// None where no one folder holds the selection or its facts cannot be read, and the
+    /// selection is then not known to share the destination's volume.
+    pub fn new(
+        destination: TransferLinkDestination,
+        source: Option<&TransferLinkDestination>,
+    ) -> Self {
+        let same_volume = source.is_some_and(|source| source.same_volume_as(&destination));
+        Self {
+            destination,
+            same_volume,
+        }
+    }
+
     /// Why the default is to copy the files links point to; None keeps links as links.
     /// A destination that cannot store links copies the files; so does a removable
     /// drive, where links would point back to the computer the files came from, unless
@@ -241,6 +271,52 @@ mod tests {
             None,
             "on its own drive a Move renames"
         );
+    }
+
+    /// A Move stays on one volume only where both folders name the same volume and reach
+    /// it the same way: the loopback share of a drive reports the drive's own volume
+    /// serial number, and a Move there from the drive is still a Move from another drive.
+    #[test]
+    fn a_share_of_the_selections_drive_is_another_volume() {
+        let drive = TransferLinkDestination {
+            storage: TransferLinkStorage::Supported,
+            volume: Some(0xd0d0),
+            ..Default::default()
+        };
+        let share = TransferLinkDestination {
+            storage: TransferLinkStorage::Unsupported,
+            network: true,
+            volume: Some(0xd0d0),
+            refuses_cross_volume_move: true,
+            ..Default::default()
+        };
+        assert!(drive.same_volume_as(&drive));
+        assert!(
+            share.same_volume_as(&share),
+            "within one share a Move renames"
+        );
+        assert!(!drive.same_volume_as(&share) && !share.same_volume_as(&drive));
+        let other = TransferLinkDestination {
+            volume: Some(0xe0e0),
+            ..drive.clone()
+        };
+        assert!(!drive.same_volume_as(&other));
+        let unknown = TransferLinkDestination {
+            volume: None,
+            ..drive.clone()
+        };
+        assert!(!unknown.same_volume_as(&unknown), "unknown is not the same");
+        let to_share = TransferLinkFacts::new(share.clone(), Some(&drive));
+        assert!(!to_share.same_volume);
+        assert_eq!(
+            to_share.move_refusal().as_deref(),
+            Some(
+                "Items from another drive cannot be moved to a network location: Move cannot \
+                 verify their copies there before removing the originals. Copy them instead."
+            )
+        );
+        assert!(TransferLinkFacts::new(share.clone(), Some(&share)).same_volume);
+        assert!(!TransferLinkFacts::new(share, None).same_volume);
     }
 
     #[test]

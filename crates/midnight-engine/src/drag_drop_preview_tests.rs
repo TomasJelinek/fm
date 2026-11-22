@@ -32,14 +32,23 @@ impl TransferService for Service {
             1
         }))
     }
+    /// Every folder is a network location (the destination one that may refuse a Move from
+    /// another drive), on the volumes `native_drop_device` gives.
     fn link_destination(
         &self,
-        _: &Path,
+        path: &Path,
         _: &Cancellation,
     ) -> Result<midnight_core::TransferLinkDestination, FsError> {
+        let destination = path == self.destination;
         Ok(midnight_core::TransferLinkDestination {
             network: true,
-            refuses_cross_volume_move: self.refuses_moves.load(std::sync::atomic::Ordering::SeqCst),
+            volume: Some(if self.different_device && destination {
+                2
+            } else {
+                1
+            }),
+            refuses_cross_volume_move: destination
+                && self.refuses_moves.load(std::sync::atomic::Ordering::SeqCst),
             ..Default::default()
         })
     }

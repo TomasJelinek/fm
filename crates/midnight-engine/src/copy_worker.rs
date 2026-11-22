@@ -539,11 +539,13 @@ impl Job {
         let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
         job.links = links;
         if metadata != TransferMetadataPolicy::ContentOnly {
-            if job.roots.len() > 64 {
+            // Input resolution refuses more roots before any capture (`copy_input`); the
+            // job keeps its own guard, in the same words.
+            if job.roots.len() > midnight_core::MAX_REQUIRED_METADATA_ROOTS {
                 let error = error(
                     &path,
                     io::ErrorKind::Unsupported,
-                    "Required modified time accepts at most 64 roots.",
+                    midnight_core::REQUIRED_METADATA_ROOTS_REFUSAL,
                 );
                 drop(job.into_inner());
                 return Err(error);

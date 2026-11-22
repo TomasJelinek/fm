@@ -185,32 +185,61 @@ fn link_facts(
     transfers: Option<&dyn TransferService>,
     request: &TransferLinksRequest,
 ) -> Result<TransferLinkFacts, FsError> {
+    move_facts(
+        transfers,
+        request.source.as_deref(),
+        &request.destination,
+        &request.cancel,
+    )
+}
+
+/// What `destination` does with links, and whether the folder `source` is on its volume
+/// as a rename sees it (`TransferLinkDestination::same_volume_as`): the one determination
+/// that the Copy/Move dialog's facts (O-1), a drop's admission and a Move job's admission
+/// share (`move_refusal`). A source folder that cannot be read is not known to share the
+/// volume.
+pub(crate) fn move_facts(
+    transfers: Option<&dyn TransferService>,
+    source: Option<&std::path::Path>,
+    destination: &std::path::Path,
+    cancel: &Cancellation,
+) -> Result<TransferLinkFacts, FsError> {
     let Some(transfers) = transfers else {
         return Ok(TransferLinkFacts::default());
     };
-    let destination = transfers.link_destination(&request.destination, &request.cancel)?;
-    let same_volume = match (&request.source, destination.volume) {
-        (Some(source), Some(volume)) => {
-            source_volume(transfers, source, &request.cancel) == Some(volume)
-        }
-        _ => false,
-    };
-    Ok(TransferLinkFacts {
-        destination,
-        same_volume,
-    })
+    let destination = transfers.link_destination(destination, cancel)?;
+    let source = source.and_then(|source| transfers.link_destination(source, cancel).ok());
+    Ok(TransferLinkFacts::new(destination, source.as_ref()))
 }
 
-/// The volume of the selection's folder; unknown when it cannot be read.
-fn source_volume(
+/// Why a Move of the items at `sources` to `destination` must not start, as the
+/// Copy/Move dialog says it (`move_facts`): the folder of one of them is not on the
+/// destination's volume, and the destination refuses a Move from another volume. None
+/// where the Move may start, and where the destination's facts cannot be read (the job
+/// then decides). Each folder's facts are read once.
+pub(crate) fn move_refusal<'a>(
     transfers: &dyn TransferService,
-    source: &std::path::Path,
+    sources: impl IntoIterator<Item = &'a std::path::Path>,
+    destination: &std::path::Path,
     cancel: &Cancellation,
-) -> Option<u64> {
-    transfers
-        .link_destination(source, cancel)
-        .ok()
-        .and_then(|facts| facts.volume)
+) -> Option<String> {
+    let destination = transfers.link_destination(destination, cancel).ok()?;
+    // Only a destination that refuses such a Move can refuse this one.
+    destination.cross_volume_move_refusal()?;
+    let mut folders: Vec<&std::path::Path> = Vec::new();
+    for source in sources {
+        let folder = source.parent().unwrap_or(source);
+        if folders.contains(&folder) {
+            continue;
+        }
+        folders.push(folder);
+        let facts = transfers.link_destination(folder, cancel).ok();
+        let refusal = TransferLinkFacts::new(destination.clone(), facts.as_ref()).move_refusal();
+        if refusal.is_some() {
+            return refusal;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -426,3 +455,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transfer_places_fixture.rs"]
+pub(crate) mod places;
+
+#[cfg(test)]
+#[path = "transfer_destination_volume_tests.rs"]
+mod volume_tests;

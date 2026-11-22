@@ -53,7 +53,15 @@ pub(super) fn link_destination(
         .map_err(|failure| error(&path, failure))?
         .dev();
     let mut facts = classify(filesystem);
-    facts.volume = Some(device);
+    // The mount, as for a drop's device: a rename passes no mount's boundary, and bind
+    // mounts of one filesystem share its device number. The device number stands in where
+    // the kernel names no mount.
+    facts.volume = Some(
+        super::native_location::mount(&folder, &path)
+            .ok()
+            .flatten()
+            .unwrap_or(device),
+    );
     // The same check that a Move from another drive makes before it removes anything.
     facts.refuses_cross_volume_move = !super::destination::recovery::supported_type(filesystem);
     facts.removable = !facts.network
@@ -202,11 +210,11 @@ mod tests {
     fn the_temporary_folder_reports_its_volume_and_cancellation_stops_the_query() {
         let temp = std::env::temp_dir();
         let facts = link_destination(&temp, &Cancellation::default()).unwrap();
-        assert_eq!(
-            facts.volume,
-            Some(std::fs::metadata(&temp).unwrap().dev()),
-            "{facts:?}"
-        );
+        // Its mount, or its device number where the kernel names no mount.
+        let mount = super::super::native_location::mount(&File::open(&temp).unwrap(), &temp)
+            .unwrap()
+            .unwrap_or(std::fs::metadata(&temp).unwrap().dev());
+        assert_eq!(facts.volume, Some(mount), "{facts:?}");
         let cancel = Cancellation::default();
         cancel.cancel();
         assert_eq!(
