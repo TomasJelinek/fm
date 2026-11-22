@@ -404,17 +404,50 @@ fn assert_pdf_page(frame: &ViewerFrame, page: u32) {
         &*frame.accessible_text,
         format!("Document page {page} of 2")
     );
-    assert_eq!(
-        frame.pixels.len(),
-        (frame.width * frame.height * 4) as usize
-    );
-    let center = ((frame.height / 2 * frame.width + frame.width / 2) * 4) as usize;
     let expected = if page == 1 {
         [255, 0, 0, 255]
     } else {
         [0, 0, 255, 255]
     };
-    assert_eq!(&frame.pixels[center..center + 4], &expected);
+    assert_eq!(
+        view_pixel(frame, frame.width / 2, frame.height / 2),
+        expected,
+        "the view's centre shows the page turned to"
+    );
+}
+
+/// The tile of `frame` that covers view pixel `x`, `y`, if one is published yet (a document
+/// arrives as retained tiles, progressively).
+fn covering_tile(frame: &ViewerFrame, x: u32, y: u32) -> Option<&midnight_core::ViewerTile> {
+    let point = [f64::from(x), f64::from(y)];
+    frame.tiles.as_ref()?.iter().find(|tile| {
+        let size = [tile.width, tile.height];
+        (0..2).all(|axis| {
+            let low = f64::from(tile.position[axis]);
+            (low..low + f64::from(size[axis])).contains(&point[axis])
+        })
+    })
+}
+
+/// Whether a published tile covers the view's centre.
+fn centre_published(frame: &ViewerFrame) -> bool {
+    covering_tile(frame, frame.width / 2, frame.height / 2).is_some()
+}
+
+/// The pixel at raster position `x`, `y` of the view `frame` shows. A document is published
+/// as retained tiles at the exact zoom, never as a whole-view raster: the tile that covers
+/// the point supplies it (premultiplied RGBA, equal to RGBA for the opaque pixels checked).
+fn view_pixel(frame: &ViewerFrame, x: u32, y: u32) -> [u8; 4] {
+    assert!(
+        frame.pixels.is_empty(),
+        "a document frame carries tiles, not a whole-view raster"
+    );
+    let tile = covering_tile(frame, x, y)
+        .unwrap_or_else(|| panic!("no published tile covers view pixel {x}, {y}"));
+    let column = (f64::from(x) - f64::from(tile.position[0])) as usize;
+    let row = (f64::from(y) - f64::from(tile.position[1])) as usize;
+    let index = (row * tile.width as usize + column) * 4;
+    tile.pixels.rgba()[index..index + 4].try_into().unwrap()
 }
 
 #[test]
@@ -500,6 +533,7 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
     let mut pdf = wait_frame(&session, "PDF first page", |frame| {
         frame.caption.contains("pages.pdf")
             && frame.image.as_ref().is_some_and(|image| image.page == 1)
+            && centre_published(frame)
     });
     assert_pdf_page(&pdf, 1);
     assert!(session.send(ViewerInput::Image {
@@ -520,6 +554,7 @@ fn native_plugin_feeds_selected_source_markdown_image_and_pdf() {
         pdf = wait_frame(&session, "PDF page navigation at manual zoom", |frame| {
             frame.revision > pdf.revision
                 && frame.image.as_ref().is_some_and(|image| image.page == page)
+                && centre_published(frame)
         });
         assert_pdf_page(&pdf, page);
         assert_eq!(pdf.image.as_ref().unwrap().zoom, 1.0);

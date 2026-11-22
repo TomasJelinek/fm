@@ -385,7 +385,9 @@ fn create_native(
     }
 }
 
-/// `path` as a NUL-terminated verbatim (`\\?\`) path, which has no length limit.
+/// `path` as a NUL-terminated verbatim (`\\?\`) path, which has no length limit. The system
+/// does not parse a verbatim path, so the `/` separators Windows accepts elsewhere become
+/// `\` first (a `/` inside a verbatim name is invalid).
 fn verbatim(path: &Path) -> io::Result<Vec<u16>> {
     use std::os::windows::ffi::OsStrExt;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -395,6 +397,11 @@ fn verbatim(path: &Path) -> io::Result<Vec<u16>> {
     match path.components().next() {
         Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim() => {}
         Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_)) => {
+            for unit in &mut wide {
+                if *unit == u16::from(b'/') {
+                    *unit = SEPARATOR;
+                }
+            }
             wide.splice(0..0, r"\\?\".encode_utf16());
         }
         _ => return Err(io::ErrorKind::InvalidInput.into()),

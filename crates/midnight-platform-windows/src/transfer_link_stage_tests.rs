@@ -273,6 +273,21 @@ fn an_unpublished_stage_is_removed_and_an_existing_name_is_never_replaced() {
 }
 
 #[test]
+fn a_verbatim_link_path_uses_backslashes_only() {
+    // CreateSymbolicLinkW gets the verbatim spelling, which the system does not parse: a `/`
+    // left in it (a destination typed with `/`, a TEMP set with `/`) is an invalid name.
+    let text = |wide: Vec<u16>| String::from_utf16(&wide[..wide.len() - 1]).unwrap();
+    let mixed = verbatim(Path::new(r"C:\work/tree\links/.me-0123")).unwrap();
+    assert_eq!(mixed.last(), Some(&0));
+    assert_eq!(text(mixed), r"\\?\C:\work\tree\links\.me-0123");
+    assert_eq!(
+        text(verbatim(Path::new(r"\\?\C:\work\tree")).unwrap()),
+        r"\\?\C:\work\tree"
+    );
+    assert!(verbatim(Path::new("relative/name")).is_err());
+}
+
+#[test]
 fn relative_targets_resolve_name_by_name_and_never_above_the_drive() {
     let base = Path::new(r"D:\dest\sub");
     let text = |relative: &str| {
