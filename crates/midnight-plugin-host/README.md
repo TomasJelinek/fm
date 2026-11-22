@@ -121,11 +121,11 @@ Normal host tests use the public API and generic native boundaries. Real-library
 tests are opt-in so an application checkout does not build a concrete plugin:
 
 ```powershell
-$env:HOST_TEST_INSTALL_ROOT = 'D:\absolute\_build\private-viewer-qa'
+$env:HOST_TEST_INSTALL_ROOT = Join-Path $PWD '_build\private-viewer-qa'
 .\scripts\cargo.ps1 test --offline -p midnight-plugin-host
 .\scripts\cargo.ps1 build --offline --manifest-path crates/midnight-plugin-host/tests/fixtures/bad-descriptor/Cargo.toml --target-dir _build/qa/viewer-implementation/host/bad-descriptor
-$env:HOST_TEST_PLUGIN = 'D:\absolute\package\midnight_viewer_basic.dll'
-$env:HOST_BAD_PLUGIN = 'D:\absolute\_build\qa\viewer-implementation\host\bad-descriptor\debug\midnight_host_bad_descriptor.dll'
+$env:HOST_TEST_PLUGIN = '<basic viewer package folder>\midnight_viewer_basic.dll'
+$env:HOST_BAD_PLUGIN = Join-Path $PWD '_build\qa\viewer-implementation\host\bad-descriptor\debug\midnight_host_bad_descriptor.dll'
 .\scripts\cargo.ps1 test --offline -p midnight-plugin-host '--' --include-ignored
 .\scripts\cargo.ps1 clippy --offline -p midnight-plugin-host --all-targets '--' -D warnings
 ```

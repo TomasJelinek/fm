@@ -12,8 +12,7 @@ are preserved.
 
 `native::NativeFilesystem<A>` provides shared mount, node, cursor, reader and
 prepared-rename policy around an OS-specific `NativeAdapter`. Native operations
-remain the adapter's responsibility; the helper does not establish platform
-qualification or application host/provider cutover. `NativeAdapter::next` returns
+remain the adapter's responsibility. `NativeAdapter::next` returns
 `NotFound` for an entry removed between enumeration and inspection, which the
 helper skips; after 1024 such results in a row within one page, the next one fails
 that page with `Io` and closes the cursor.

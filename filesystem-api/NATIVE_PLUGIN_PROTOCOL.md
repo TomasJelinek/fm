@@ -1,9 +1,10 @@
 # Native filesystem protocol 1 (ABI 1.4)
 
-This is an additive in-process filesystem service. The existing archive worker
-protocol 1 and viewer ABI are unchanged. Native packages are trusted code; loading
-them is not sandboxing. The host must use its existing package trust, canonical
-path and restricted library-loading checks before calling the entry point.
+This is an additive in-process filesystem service. The archive worker protocol
+(`midnight-filesystem-api`) and the viewer plugin ABI are separate contracts. Native
+packages are trusted code; loading them is not sandboxing. The host must use its
+existing package trust, canonical path and restricted library-loading checks before
+calling the entry point.
 
 The public Rust model/codec is `midnight-filesystem-plugin-api`; Rust authors can
 use `midnight-filesystem-plugin-sdk`. Both use only the standard library. Their
@@ -42,7 +43,7 @@ handlers and, for non-effectful requests, before reply encoding; adapters poll
 between bounded OS calls and chunks. Cancellation does not interrupt an arbitrary
 kernel call. Close operations and GetRenameState ignore cancellation. Rename has
 an initial cancellation check, but a late flag never rewrites its actual result.
-Its adapter must finish required recovery after the commit gate; see ABI 1.3 below.
+Its adapter must finish required recovery after the commit gate; see prepared Rename below.
 The caller must adopt a successful late response before dropping it, then close
 its resources if the result has become obsolete. A cancel flag cannot revoke a
 published buffer, close a reader or undo a completed namespace change.
@@ -280,12 +281,12 @@ updates in one clock tick; malicious writers can defeat stamp-only validation.
 These handles/revisions grant no mutation authority and cannot replace the
 application's stronger verified-copy/remove protocols.
 
-Browse/Read capabilities grant no mutation authority. The separate ABI 1.3
-PreparedRename extension defines only prepared same-parent Rename; this protocol
+Browse/Read capabilities grant no mutation authority. The separate PreparedRename
+extension (ABI minor 3) defines only prepared same-parent Rename; this protocol
 does not define generic writes, Watch, delete, recursive traversal, authentication,
 executable launch or UI callbacks. Host composition must route listing and native
 F3 capture through loaded packages and disable those capabilities when a package
-is absent; independent conformance tests alone do not establish host cutover.
+is absent.
 
 ## Local storage kind, ABI minor 4
 
@@ -343,10 +344,11 @@ These capabilities also require host minor at least 2; no old operation is repur
 
 `CAP_PREPARED_RENAME = 1024` adds operations 20–23 and response tags 15–16.
 The C descriptor layout, entry symbol, wire prefix and older operation/response
-tags are unchanged. An advertising descriptor must set ABI minor at least 3 and
-`minimum_host_minor = 3`; the current API validator rejects a larger host minimum.
-The SDK entry helper sets this minimum automatically. Package metadata must also
-require host minor 3. Adapters that do not implement the extension inherit
+tags are unchanged. An advertising descriptor must set ABI minor and
+`minimum_host_minor` to at least 3; a provider that may also report the Local storage
+kind needs host minor 4 (see ABI minor 4 above). The SDK entry helper raises the
+minimum to 3 automatically. Package metadata must require the same host minor as the
+descriptor. Adapters that do not implement the extension inherit
 Unsupported from `NativeAdapter::prepare_rename` and must not advertise support.
 
 ### Preparation and mutation authority
@@ -498,7 +500,6 @@ resources retain it. Query/replay recovery is limited to a live, known handle
 in a healthy instance, not a durable journal: close, destruction, poisoning or
 process failure do not promise retrieval or automatic rollback.
 
-This section specifies the public API and implemented SDK policy. Capability
-availability, platform adapter qualification and host routing require separate
-integration; these declarations do not establish Windows/Linux provider support
-or host cutover.
+This section specifies the public API and the SDK's policy. The native Windows and
+Linux packages implement and advertise the extension. The application's own Rename
+uses its platform services and does not call it.

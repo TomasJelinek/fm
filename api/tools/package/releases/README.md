@@ -2,9 +2,9 @@
 
 `0.1.0/` preserves the exact previously released API and SDK archives, registry
 records, C header and provenance receipt. Clean checkouts need these small inputs
-because independent Basic and Markdown plugins retain released `=0.1.0` pins while
-Source uses released `=0.2.0`. Sparse CI plugin jobs receive the resulting bundle
-without application or unpublished public API sources.
+because the independent Basic and Markdown viewers and the viewer conformance project
+pin the released `=0.1.0` SDK, while the Source viewer pins `=0.2.0`. Sparse CI plugin
+jobs receive the resulting bundle without application or unpublished public API sources.
 
 The original release records identify commit
 `a93557d4fc650c6dd8d83ad4ddd66003841a3e5a`. Frozen SHA-256 identities are checked in

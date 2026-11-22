@@ -37,12 +37,11 @@ makes anyway, so sniffing adds no host round trip.
 - The host's limits for every thumbnail worker still apply: 512 MiB of memory,
   8 CPU seconds, a 10-second deadline and 256 MiB of brokered reads per request.
 
-The provider version changes whenever decoding policy changes, invalidating old
-thumbnail cache identities. Adding PDF support changed it (it now names Hayro), so
-cached image thumbnails are regenerated once after the update. Revision `r6` (21
-November) draws SVG markers, patterns, clip paths, masks, filters and embedded images
-that `r5` refused, so SVG thumbnails are regenerated too. AVIF shares the
-viewer's pinned static dav1d decoder,
+The provider version in `thumbnailer.json`
+(`image-0.25.10-moxcms-0.8.1-resvg-0.48.1-dav1d-1.5.4-hayro-0.9.0-r6`) names the pinned
+decoders and a policy revision. It changes whenever decoding policy changes, which
+invalidates the cached thumbnails' identities, so they are regenerated once. AVIF
+shares the viewer's pinned static dav1d decoder,
 32 MiB encoded-container cap, and primary/alpha native frame limits. HEIC/HEIF is
 not enabled. The root thumbnail build scripts prepare pinned native tools/static
 code and copy the full shared notice set, including the MPL parser source archive.

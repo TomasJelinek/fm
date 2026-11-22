@@ -3,8 +3,9 @@
 This separate Cargo workspace implements the existing public filesystem ABI/SDK
 as `libmidnight_filesystem_native_macos.dylib`. It has no dependency on application
 or private platform crates. The only third-party dependency is pinned libc
-0.2.191 with `std`, under its inspected MIT alternative; retain THIRD-PARTY.md in
-every package. The project's own license remains undecided.
+0.2.191 with `std`, under its MIT alternative; retain THIRD-PARTY.md in every
+package. The package is version 0.1.0 and requires host minor 1: it reports no
+`Local` storage and does not offer prepared Rename.
 
 The source provides paged directory browsing, no-follow metadata, captured regular
 file reads, mounted roots, capacity and optional volume details. Native Unix bytes
@@ -38,14 +39,14 @@ presented as its label.
 Known network filesystem types are Network. All other storage is Unknown until
 positive native physical SSD evidence is implemented; APFS alone is not SSD proof.
 
-Build and native qualification, from the repository root on a Mac:
+Build and test from the repository root on a Mac:
 
 ```sh
 export CARGO_HOME="$PWD/.tools/cargo"
 export RUSTUP_HOME="$PWD/.tools/rustup"
-export CARGO_TARGET_DIR="$PWD/_build/goal/native-macos"
-export MIDNIGHT_NATIVE_FIXTURE_ROOT="$PWD/_build/goal/native-macos/fixtures"
-export TMPDIR="$PWD/_build/goal/native-macos/tmp"
+export CARGO_TARGET_DIR="$PWD/_build/native-macos"
+export MIDNIGHT_NATIVE_FIXTURE_ROOT="$PWD/_build/native-macos/fixtures"
+export TMPDIR="$PWD/_build/native-macos/tmp"
 mkdir -p "$TMPDIR"
 cargo fmt --manifest-path plugins/midnight-filesystem-native-macos/Cargo.toml -- --check
 cargo build --locked --manifest-path plugins/midnight-filesystem-native-macos/Cargo.toml
@@ -64,10 +65,10 @@ Non-UTF-8 creation is exercised where the fixture filesystem permits it; the
 portable raw-byte policy test does not depend on filesystem acceptance.
 
 `plugin.toml` describes an Apple Silicon build. For Intel, package
-`plugin.x86_64.toml` as `plugin.toml` beside the matching dylib. Do not combine
-incompatible architectures or label an unqualified deployment as supported.
-Host Darwin loading/trust, worker containment, application adapters, build/release
-integration and supported macOS versions remain separate work.
+`plugin.x86_64.toml` as `plugin.toml` beside the matching dylib; do not combine
+architectures in one package. The application has no macOS platform implementation:
+Darwin plugin loading and trust, worker containment, application adapters and release
+packaging are not implemented, and no macOS version is supported.
 
 Primary API references consulted for this implementation:
 
@@ -78,5 +79,5 @@ Primary API references consulted for this implementation:
 
 The public declarations come from pinned libc, not copied Apple implementation
 code. Apple system libraries are platform prerequisites; the MIT Rust binding
-license does not relicense macOS. Verification results and outstanding native
-qualification are recorded in VERIFICATION.md.
+license does not relicense macOS. Verification results and open items are in
+[VERIFICATION.md](VERIFICATION.md).

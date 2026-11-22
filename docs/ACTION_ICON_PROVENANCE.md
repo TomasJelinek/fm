@@ -34,4 +34,4 @@ glyph tints its host artwork the same way. Dialog header icons keep the colored
 variants and native artwork; the application logo, shell icons, custom-command
 icons and file, archive and compression artwork keep their own colors.
 
-No dependency, feature, third-party notice or project license changed.
+The artwork adds no dependency, feature or third-party notice.

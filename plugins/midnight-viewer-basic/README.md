@@ -14,17 +14,18 @@ patches or network access are needed for these commands.
 ```powershell
 ./scripts/ci.ps1 -SdkConfig ../sdk/.cargo/config.toml -BuildRoot ./_build
 ./scripts/build.ps1 -SdkConfig ../sdk/.cargo/config.toml -BuildRoot ./_build `
-    -OutputDirectory C:/disposable-install/viewers/midnight-viewer-basic
+    -OutputDirectory <install>/viewers/midnight-viewer-basic
 ```
 
 ```sh
 bash scripts/ci.sh ../sdk/.cargo/config.toml ./_build
 bash scripts/build.sh ../sdk/.cargo/config.toml ./_build \
-    /disposable-install/viewers/midnight-viewer-basic
+    <install>/viewers/midnight-viewer-basic
 ```
 
-When working in the shared repository pass its `_build/qa/viewer-implementation/basic`
-as `BuildRoot`. The scripts change only that build directory and the exact output
+In the repository, `scripts/build-viewers.ps1` and `scripts/build-viewers.sh` build
+every viewer below `_build/viewers/`; for a manual build, pass a folder below the
+repository's `_build` as `BuildRoot`. The scripts change only that build directory and the exact output
 package directory. `build` discovers the native Rust target and writes the matching
 DLL/SO manifest. The checked-in manifest is the Windows template. The default
 output is `BUILD_ROOT/package/midnight-viewer-basic`; copy that directory under

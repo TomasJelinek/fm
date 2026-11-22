@@ -22,8 +22,9 @@ pixels on either edge and 4,194,304 pixels total. The host independently caps
 process memory at 512 MiB and cumulative CPU at 60 seconds, with cancellation
 and per-operation wall deadlines. Hayro's render caches (parsed fonts, glyph
 outlines and bitmaps, decoded images) are kept for the two pages rendered last at
-their scale, so the bands of one page reuse them (18-25% less time per page in
-`examples/render_probe.rs` runs); any other page or scale replaces the older entry. The
+their scale, so the bands of one page reuse them (about a fifth less time per page;
+[measurements](../../docs/verification/2026-11-21-pdf-scrolling.md)); any other page or
+scale replaces the older entry. The
 parsed document lives as long as the worker process, which serves one document.
 Source identity validation remains host-owned before/after opening and rendering.
 
@@ -35,8 +36,8 @@ decrypt them. Hayro is experimental: some PDF constructs and nonembedded fonts
 may render differently or be unsupported. Reported missing-font/image/annotation
 warnings reject the page; the plugin does not promise complete PDF fidelity.
 
-Since 0.2.0 its error texts reach the viewer's status line through the SDK's failure
-reason, after the host's sentence: an empty file, an invalid or incomplete structure,
+Its error texts reach the viewer's status line through the SDK's failure reason,
+after the host's sentence: an empty file, an invalid or incomplete structure,
 a password or unsupported encryption, a document over 128 MiB or 4,096 pages, an
 oversized or invalid page, and a page with content Hayro cannot draw each have their
 own short, path-free text (for example "This document is damaged or incomplete: the

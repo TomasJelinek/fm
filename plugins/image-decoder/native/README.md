@@ -51,8 +51,8 @@ On Windows, the renames of fresh downloads, the tool receipt and the dav1d build
 fixes are retried for about 2 s while endpoint protection holds a file just written
 (WinError 5, 32 or 33), and then fail with the first error. The rename that
 publishes an extracted tool directory waits up to 12.7 s instead, because it holds
-new executables, which Defender's first-sight cloud check keeps for up to 10 s by
-default. Other errors, other platforms and deletions are never retried. On reuse,
+new executables, which an endpoint protection's first-sight cloud check can keep for
+up to 10 s. Other errors, other platforms and deletions are never retried. On reuse,
 immutable tool contents are compared with the verified archive, including rejection
 of unexpected files. Verified source timestamps are retained, and NASM build recipes
 are regenerated from the pinned source before object reuse.
@@ -107,9 +107,6 @@ explicit cache, the integration test is skipped; offline unit guards still run.
 On Windows the suite also runs both PowerShell wrappers below a non-ASCII
 directory from a console set to code page 850; the bootstrap-windows.ps1 case
 needs PowerShell 7 (pwsh) and is skipped without it.
-See the
-[native qualification evidence](../../../docs/verification/2026-11-12-native-av1.md)
-for exact hashes and limits. A compiled library and C lifecycle probe do not
-qualify AVIF decoding: actual pixels/alpha, dimension and memory budgets,
-malformed input, cancellation, restricted worker and packaging checks must pass
-before AVIF is advertised in plugin manifests.
+The [native AV1 record](../../../docs/verification/2026-11-12-native-av1.md) has the
+exact hashes and limits. AVIF decoding itself is described in the
+[decoder README](../README.md).

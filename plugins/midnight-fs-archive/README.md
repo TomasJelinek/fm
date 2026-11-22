@@ -203,7 +203,7 @@ content lease; F5 captures the archive selection and queues copy-out through the
 host's ordinary 32-job FIFO, with exclusive staging, SHA-256 source hashing,
 independent complete destination readback, and no-replace publication. The worker
 never receives a destination path and never writes files. Native clipboard
-export, external editing, shell launch, and archive mutations
-operations are unavailable for archive members.
+export, external editing, shell launch and archive mutations are unavailable for
+archive members.
 Copy-out uses raw member names and fails on names that cannot be represented
 losslessly by the target platform; it never substitutes display labels.

@@ -3,10 +3,9 @@
 This separate Cargo workspace builds `libmidnight_filesystem_native_linux.so`.
 Dependencies are the public filesystem API/SDK and pinned `libc` with `std` only.
 The MIT branch and complete attribution are retained in `THIRD-PARTY.md`.
-The repository's own license remains undecided.
 
 ```sh
-export CARGO_TARGET_DIR="$PWD/_build/goal/native-plugin/native-linux"
+export CARGO_TARGET_DIR="$PWD/_build/native-filesystems/linux"
 cargo test --locked --offline --manifest-path plugins/midnight-filesystem-native-linux/Cargo.toml
 cargo build --locked --offline --release --manifest-path plugins/midnight-filesystem-native-linux/Cargo.toml
 ```
@@ -74,6 +73,11 @@ the stage is used leave nothing behind. NFS mounts and FUSE mounts without
 rename flags cannot use this Rename: the kernel NFS client refuses every
 `renameat2` flag, so preparation is refused on NFS, and a FUSE server's refusal
 of `RENAME_NOREPLACE` is reported as Unsupported after the unused stage is
-removed. This package is optional and needs compatible host routing; x86-64
-GNU/Linux is qualified, aarch64 and macOS are not. See
-[protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md).
+removed. See [protocol](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md).
+
+`plugin.toml` describes the `filesystem-native` package for `x86_64-unknown-linux-gnu`
+(ABI 1, minimum host minor 4). The application loads it from
+`filesystems/native.linux/` beside its executable and browses and reads local files
+only through it, with no built-in fallback when the package is absent or
+incompatible. `scripts/build-native-filesystem.sh` builds and installs it. macOS has
+its own [package](../midnight-filesystem-native-macos/README.md).

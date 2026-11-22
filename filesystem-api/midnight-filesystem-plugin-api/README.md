@@ -1,9 +1,9 @@
 # Native filesystem API
 
 Public, standard-library-only C ABI model and bounded binary codec for independent
-filesystem plugins. Crate version 0.2.0 exposes ABI **1.3**; the FSBR payload format
-remains version 1, with unchanged entry symbol and C descriptor layout. Browse/Read
-and optional volume/activation services remain alongside optional prepared Rename.
+filesystem plugins. Crate version 0.2.0 exposes ABI **1.4**; the FSBR payload format
+remains version 1, with unchanged entry symbol and C descriptor layout. It covers
+Browse/Read, optional volume and activation services and optional prepared Rename.
 
 See [the protocol](../NATIVE_PLUGIN_PROTOCOL.md), [C header](../include/midnight_filesystem.h),
 [ABI definitions](src/abi.rs), [request/response model](src/model.rs) and
@@ -16,7 +16,10 @@ are INCOMPATIBLE, as is an extension advertised by a descriptor whose ABI minor 
 below the minor that defines it (1 for VolumeDetails; 2 for Activate, Refresh and
 ResolveText; 3 for PreparedRename). Those minor-2 and minor-3 extensions also need
 that minimum host minor; VolumeDetails may keep 0 because older hosts reject its
-manifest capability before loading.
+manifest capability before loading. Minor 4 defines storage kind 4,
+`StorageKind::Local`, without a capability bit: a provider that may report it
+requires host minor 4 (`abi::LOCAL_STORAGE_HOST_MINOR`) in its descriptor and
+manifest, because an older host rejects the value.
 
 ## Optional prepared Rename
 
@@ -52,9 +55,9 @@ them. The [SDK](../midnight-filesystem-plugin-sdk/README.md) provides a bounded
 native-author helper. See the [complete prepared Rename contract](../NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3)
 for receipt states, limits and lifecycle rules.
 
-These public types and helpers do not establish platform implementation,
-capability advertisement, host/UI cutover or native qualification. Archive worker
-protocol 1 and the viewer ABI remain separate.
+The independent native Windows and Linux packages implement prepared Rename and
+require host minor 4. The archive worker protocol (`midnight-filesystem-api`) and the
+viewer plugin ABI are separate contracts.
 
 ## Development
 

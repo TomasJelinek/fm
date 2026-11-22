@@ -56,13 +56,13 @@ sources. All build/test output must lie below a `_build` directory: this project
 junction; the folders above it may be links or hidden, such as `AppData`:
 
 ```powershell
-./scripts/ci.ps1 -SdkConfig C:/sdk/.cargo/registry.toml -BuildRoot ./_build/check
-./scripts/build.ps1 -SdkConfig C:/sdk/.cargo/registry.toml -BuildRoot ./_build/build
+./scripts/ci.ps1 -SdkConfig <sdk>/.cargo/registry.toml -BuildRoot ./_build/check
+./scripts/build.ps1 -SdkConfig <sdk>/.cargo/registry.toml -BuildRoot ./_build/build
 ```
 
 ```sh
-bash scripts/ci.sh /sdk/.cargo/registry.toml ./_build/check
-bash scripts/build.sh /sdk/.cargo/registry.toml ./_build/build
+bash scripts/ci.sh <sdk>/.cargo/registry.toml ./_build/check
+bash scripts/build.sh <sdk>/.cargo/registry.toml ./_build/build
 ```
 
 Install the resulting package directory under the application's `viewers/` root.
@@ -79,6 +79,5 @@ on PowerShell or `MIDNIGHT_IMAGE_NATIVE_OFFLINE=1` on Bash to require cached nat
 archives as well. An existing native C compiler is required; no system packages
 are silently installed. The package contains no extra decoder DLL/shared object.
 
-The native package tooling is qualified for Windows x64 and Linux x86-64, matching
-the application's current system requirements. ARM64 image-package build tooling
-is deferred; accepting a target string in older scripts was not qualification.
+The native package tooling supports Windows x64 and Linux x86-64; ARM64 is not
+supported.

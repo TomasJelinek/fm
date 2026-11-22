@@ -341,15 +341,15 @@ once with network access before the offline CI command.
 Windows PowerShell:
 
 ```powershell
-./scripts/ci.ps1 -SdkConfig C:/sdk/.cargo/config.toml -BuildRoot C:/qa/source/_build
-./scripts/build.ps1 -SdkConfig C:/sdk/.cargo/config.toml -BuildRoot C:/qa/source/_build -OutputDirectory C:/app/viewers/source
+./scripts/ci.ps1 -SdkConfig <sdk>/.cargo/config.toml -BuildRoot <folder>/_build
+./scripts/build.ps1 -SdkConfig <sdk>/.cargo/config.toml -BuildRoot <folder>/_build -OutputDirectory <install>/viewers/source
 ```
 
 Linux:
 
 ```sh
-bash scripts/ci.sh /sdk/.cargo/config.toml /qa/source/_build
-bash scripts/build.sh /sdk/.cargo/config.toml /qa/source/_build /app/viewers/source
+bash scripts/ci.sh <sdk>/.cargo/config.toml <folder>/_build
+bash scripts/build.sh <sdk>/.cargo/config.toml <folder>/_build <install>/viewers/source
 ```
 
 CI runs formatting, every independent test, strict Clippy and a native release
@@ -362,15 +362,12 @@ XML coverage includes tags/attributes, comments, CDATA, processing instructions,
 multiline/Unicode state, UTF-16 projects, short reads, cancellation, token/depth
 limits, huge logical lines and bounded seeks in a virtual 10 GB source.
 
-## Dependency review and licensing
+## Dependencies
 
 `regex = 1.13.1` is pinned with default features disabled, retaining `std` and
 `perf`. Its [documented automata bounds](https://docs.rs/regex/1.13.1/regex/)
 avoid backtracking and backreferences. Only a fixed anchored ASCII token rule
 is compiled, with 128 KiB compilation/DFA limits; file content never supplies
 a regex. The rest of the scanner advances by Unicode scalar or bounded
-delimiter. Dependency source, manifest and licence were reviewed locally.
-
-Plugin-owned code is MIT. See THIRD-PARTY.md and notices/ for external licences.
-The public project API/SDK release currently has no declared licence; the
-plugin's MIT licence does not grant rights over that separate dependency.
+delimiter. See [THIRD-PARTY.md](THIRD-PARTY.md) and `notices/` for the external
+licenses, and [LICENSE](LICENSE).

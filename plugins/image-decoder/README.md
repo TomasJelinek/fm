@@ -92,17 +92,7 @@ bound adds the reference pass's tree estimate (measured 0.6 to 0.9 KiB per conve
 element and 3.5 bytes per byte of path data) to the buffers, leaving 64 MiB of the
 workers' 512 MiB for code, fonts and allocator slack.
 
-Measured on 21 November (release build, Windows development machine while other builds
-ran): the largest real-world-like case, a 4000 × 3000 flowchart of 1,200 boxes with a
-gradient and a shared drop-shadow filter, 2,400 text spans, arrow markers, a patterned
-background and a clipped page group (399 KB), takes 1.3 to 2.7 s and 175 to 225 MiB at
-full size, 0.16 s at a 256-pixel thumbnail; its estimates are 20,408 elements (8% of
-the tree bound), 163 MiB of drawing memory and 0.86 billion work units (a tenth of
-the bound). A 3000 × 2000 map of 20,000 clipped polygons, a 50,000-point marker chart
-and a 6-megapixel embedded photo take 0.2 to 1.1 s and 60 to 120 MiB. Hostile files
-just under a bound take about 27 s (blur layers at the work bound), 1 s and 200 MiB
-(262,000 elements) and 4 s and 235 MiB (64 MiB of path data); 200 full-canvas blurred
-layers, which took 113 s with the first weights, are now refused in 2 ms. A DOCTYPE without an internal subset (`<!DOCTYPE svg PUBLIC …>`) is
+A DOCTYPE without an internal subset (`<!DOCTYPE svg PUBLIC …>`) is
 blanked before parsing, keeping line numbers; an internal subset, where entities are
 declared, is refused, so entities are never expanded. SVGZ is not supported. The SVG
 root must use its standard namespace. The worker's memory/CPU limits and host
@@ -144,8 +134,6 @@ See [native build instructions](native/README.md) and the recorded
 [image-rs patch](../../vendor/image/MIDNIGHT_PATCH.md). The MIT bindings,
 BSD-2-Clause native decoder and MPL-2.0 parser notices are distributed with both
 workers; the exact unmodified mp4parse source archive accompanies its license.
-HEIC/HEIF remains unsupported: this project has no qualified packaged HEVC decoder
-or royalty-free distribution determination.
+HEIC/HEIF is not supported: no royalty-free HEVC decoder is packaged.
 
-Native package qualification covers Windows x64 and Linux x86-64. ARM64 tooling
-is deferred under the application's current system requirements.
+Native packages are built for Windows x64 and Linux x86-64; ARM64 is not supported.

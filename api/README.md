@@ -7,11 +7,11 @@ no application crates. Concrete plugins belong in independent workspaces under
 another plugin, or a source-tree patch. The SDK's ownership/runtime adapters are
 implemented and tested, including an independently exported DLL/SO conformance
 fixture on Windows and Linux. The application loader, LiveValidated content
-broker, viewer window and independent Basic, Source and Markdown viewers are now
-implemented and integrated. ABI 1.0 and package version 0.1.0 remain a versioned
+broker, viewer window and independent Basic, Source and Markdown viewers are
+implemented and integrated. ABI 1.0 and package version 0.2.0 remain a versioned
 draft, not a long-term compatibility promise. This ABI's `KIND_FILESYSTEM` constant
 stays reserved and unused: filesystem providers are implemented through separate
-public contracts, the native filesystem ABI 1.3 (`midnight_filesystem_entry_v1`, see
+public contracts, the native filesystem ABI 1.4 (`midnight_filesystem_entry_v1`, see
 [the protocol](../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md)) and the restricted
 archive worker protocol (`midnight-filesystem-api`).
 
@@ -36,7 +36,7 @@ cargo run --manifest-path api/Cargo.toml -p midnight-api-headergen --locked
 Generated and intermediate files stay under the shared `_build` root. Running
 Cargo from `api/` uses `../_build/api`; running from the repository root uses its
 `_build` configuration. Explicit `CARGO_TARGET_DIR` can select another directory
-under that root. `include/midnight_plugin_v1.h` is an intentional generated public
+under that root. `midnight-plugin-api/include/midnight_plugin_v1.h` is an intentional generated public
 source artifact; the maintainer generator derives it from `src/abi.rs` using
 [cbindgen](https://github.com/mozilla/cbindgen). Plugin consumers do not need to
 build the generator or access application sources.

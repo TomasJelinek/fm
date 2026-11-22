@@ -68,8 +68,9 @@ rejected.
 The Windows platform helpers decode with the Media Foundation components that
 Windows itself includes or that the user installed from the Microsoft Store:
 H.264, MPEG-4 Part 2, VC-1 and Windows Media Video, Motion JPEG and H.263 video;
-AAC, MP3 and Windows Media Audio; and with the free Store extensions HEVC (HEVC
-Video Extensions), AV1 (AV1 Video Extension), VP9 and MPEG-2. Containers are those
+AAC, MP3 and Windows Media Audio; and with the Store extensions HEVC (HEVC Video
+Extensions, which may be a paid Store item or come with the PC), AV1 (AV1 Video
+Extension), VP9 and MPEG-2. Containers are those
 Media Foundation reads: MP4/M4V/MOV/3GP, ASF/WMV, AVI, Matroska and others. Nothing
 here encodes, and no codec is bundled; Microsoft licenses these decoders with Windows
 or the extension.
@@ -193,11 +194,8 @@ Primary sources checked 6 November 2026:
 - [FFmpeg license terms](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/LICENSE.md)
 - [ffmpeg-next 9.0.0 manifest and features](https://github.com/zmwangx/rust-ffmpeg/blob/v9.0.0/Cargo.toml)
 
-The earlier thumbnail profile passed sampled AVI decoding through restricted
-workers on Windows MSVC and Linux x86-64. The playback profile requires fresh
-native qualification on both targets. Test an eligible VP9 and Opus MP4 through
-both installed executables, then check playback, pause, seek, source revocation,
-EOF and retirement through F3. Bind the run to the single installed FFmpeg
-library set and the package manifest.
+After a change to the bundled profile, check an eligible VP9 and Opus MP4 on Windows
+and Linux through both installed bundled helpers: its thumbnail, then playback, pause,
+seek, source revocation, end of file and closing through F3.
 
 [FFmpeg license and configuration guidance](https://ffmpeg.org/legal.html)

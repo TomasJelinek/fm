@@ -79,5 +79,5 @@ system components, not bundled by this package. A desktop session's D-Bus/GVfs
 services and provider configuration also affect availability. Minimal/headless
 systems can correctly report Unavailable/Unsupported rather than an empty list.
 See [THIRD-PARTY.md](THIRD-PARTY.md) for pinned crate licenses, runtime provenance
-and redistribution obligations. Live SMB/FUSE interoperability has not been
-qualified in the current fixture-only environment.
+and redistribution obligations. The tests use fixtures; live SMB and FUSE
+interoperability is not tested.

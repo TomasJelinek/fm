@@ -1,12 +1,11 @@
 # Asset provenance
 
-This record describes where assets came from; it is not a legal clearance opinion
-or a change to the repository's license.
+This record describes where assets came from; it is not a legal clearance opinion.
 
 | Asset | Origin | External reference or copied artwork |
 | --- | --- | --- |
 | `crates/midnight-ui/ui/icons/checksums.svg` | Hash and check-mark strokes authored directly as SVG for this project, 8 November 2026; viewBox 24×24. | No external artwork or icon set used; conventional checksum/verification symbols. |
-| Tokyo Night, One Dark, Rosé Pine/Dawn, Catppuccin Latte, Norton Commander, Amber Terminal and Verdant Light theme colors | Semantic palette adaptations and original retro/green color combinations added 8–9 November 2026. Amber Terminal replaces DOS Commander. | [Exact modern palette sources, licenses and modifications](THEME_PROVENANCE.md); retained license files accompany distributions. Original palettes include no copied product code, screenshot pixels, fonts, logos or icons. |
+| Tokyo Night, One Dark, Rosé Pine/Dawn, Catppuccin Latte, Norton Commander, Amber Terminal and Verdant Light theme colors | Semantic palette adaptations and original retro/green color combinations added 8–9 November 2026. | [Exact modern palette sources, licenses and modifications](THEME_PROVENANCE.md); retained license files accompany distributions. Original palettes include no copied product code, screenshot pixels, fonts, logos or icons. |
 | Slate Blue, Slate Teal and Slate Violet theme colors | Original neutral charcoal palettes with blue, teal and violet accents, authored for this project on 11 November 2026. | The user-supplied screenshot informed the surface hierarchy and blue accent. No screenshot pixels, external palette, theme code, artwork, fonts or icons were copied. [Palette provenance](THEME_PROVENANCE.md#slate-variants-11-november-2026). |
 | `crates/midnight-ui/ui/icons/find.svg` | Circle and handle authored directly as SVG for this project, 7 November 2026; viewBox 24×24. | No external artwork or icon set used; conventional magnifying-glass symbol. |
 | `crates/midnight-ui/ui/icons/filter.svg` | Funnel outline authored directly as SVG for this project, 8 November 2026. | No external artwork or icon set used; conventional filter symbol. |
@@ -18,7 +17,7 @@ or a change to the repository's license.
 | Windows file, drive, folder and action icons | Loaded at runtime through Windows Shell APIs, including `SHGetFileInfoW` and `SHGetStockIconInfo`. | Operating-system assets; they are not original project artwork. |
 | Linux file, drive, folder and action icons | Loaded at runtime from installed, trusted desktop icon themes. | Theme authors' assets, under their respective terms. |
 
-The new archive asset is embedded as vector artwork and used when an archive has
+The archive asset is embedded as vector artwork and used when an archive has
 only a generic document icon. Associated application icons retain precedence.
 Existing project assets not individually listed above have not been retroactively
 certified as original by this record. Third-party library and bundled asset

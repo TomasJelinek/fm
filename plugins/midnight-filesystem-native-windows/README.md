@@ -3,10 +3,10 @@
 This separate Cargo workspace builds `midnight_filesystem_native_windows.dll`.
 It depends on the public filesystem API/SDK and pinned MIT-licensed Windows
 bindings; no application/private crate is linked. Retain `THIRD-PARTY.md` in
-distributed packages. The repository's own license remains undecided.
+distributed packages.
 
 ```powershell
-$env:CARGO_TARGET_DIR = "$PWD/_build/goal/native-plugin/native-windows"
+$env:CARGO_TARGET_DIR = "$PWD/_build/native-filesystems/windows"
 ./scripts/cargo.ps1 test --locked --offline --manifest-path plugins/midnight-filesystem-native-windows/Cargo.toml
 ./scripts/cargo.ps1 build --locked --offline --release --manifest-path plugins/midnight-filesystem-native-windows/Cargo.toml
 ```
@@ -14,9 +14,11 @@ $env:CARGO_TARGET_DIR = "$PWD/_build/goal/native-plugin/native-windows"
 Tests include actual restricted DLL loading, callback origin, native selected
 bytes, raw unpaired-surrogate names, long paths, trailing-dot/space siblings,
 cancellation and stale content revisions. Junction fixtures are created
-in-process; no shell is spawned. `plugin.toml` describes an optional
-`filesystem-native` package for a compatible trusted host. The package cannot
-add functionality before the host composition loads and routes through it.
+in-process; no shell is spawned. `plugin.toml` describes the `filesystem-native`
+package (ABI 1, minimum host minor 4). The application loads it from
+`filesystems/native.windows/` beside its executable and browses and reads local
+files only through it, with no built-in fallback when the package is absent or
+incompatible. `scripts/build-native-filesystem.ps1` builds and installs it.
 
 Listing/read/stat/volumes/storage-space, optional raw labels/rich volume
 information and optional prepared same-parent Rename are provided. Listing rows

@@ -1,7 +1,7 @@
 # Thumbnail executable API 0.1.0
 
-This workspace is separate from the already published viewer API/SDK 0.1.0.
-It neither changes those packages nor extends their binary viewer ABI.
+This workspace is separate from the viewer plugin API/SDK and does not extend
+their binary viewer ABI. `midnight-thumbnail-sdk` is at 0.2.0.
 `midnight-thumbnail-sdk` and `midnight-worker-sdk` are the only Midnight
 dependencies an independent decoder needs; neither references application crates.
 
@@ -35,6 +35,5 @@ there is no in-process decoder fallback.
 registry and vendored SDK bundle under an explicit `_build` directory. It always
 packages the worker, thumbnail, filesystem and image-viewer APIs/SDKs and fails if
 any of them is missing. Existing viewer release archives and checksums remain
-unchanged. Plugin manifests must pin the released SDK version and registry before
-independent distribution; repository path overrides are development-only until that
-bundle is generated and verified.
+unchanged. The image and video thumbnail plugins pin the released SDK versions from
+the `midnight` registry that this bundle provides.
