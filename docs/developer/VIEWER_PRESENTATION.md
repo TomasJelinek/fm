@@ -92,6 +92,56 @@ plugin can decline the optional feature for the session. Obsolete
 requests are cancelled, and replies must match the active request and page range.
 No complete-file line table is built or retained by the host.
 
+## Whole-file selection and Copy
+
+Ctrl+A (`viewer.select-page`) in a Text, Source or Markdown view selects the whole file
+(`crates/midnight-viewer-engine/src/worker_whole.rs`). Every page the view shows is painted
+selected while the selection lasts, through scrolling, resizing, wrapping and font changes, and
+the status line ends with **Whole file selected** and the file's size. A click, a drag, a
+Find match, another file or mode, or Ctrl+A again replaces it. The hex view's Ctrl+A
+selects the rows the window shows; the HTML viewer passes Ctrl+A to Chromium, which
+selects all in the page; image and PDF views have no text selection. Painting is
+unchanged: the renderer gets the rows a raster shows, as for a selection of those rows,
+and nothing is computed per frame without a selection.
+
+Copy (Ctrl+C) of the whole file reads it on the viewer's backend worker, never on the
+UI thread. The worker asks the shown plugin session for forward Viewport pages of the
+protocol's largest size (256 KiB, 4096 lines) from the start of the file, one at a time,
+and joins each page once its request completed (`whole_copy.rs`):
+
+- **Text and Source pages** join end to end. The text is the decoded text the view
+  shows: the file's encoding decoded (UTF-8, UTF-16 with its byte-order mark), CR, LF
+  and CRLF as LF, controls and malformed bytes in the decoders' visible forms. Wrapping
+  is layout alone and adds no line break; a long line arrives as partial fragments of
+  one line and stays one line. A page that starts before the copied end continues at
+  its exact anchor for that end; one that starts after it ends the copy.
+- **Markdown pages** join block by block as a page shows them: a blank line between
+  blocks and the list, quote and rule marks. A block the previous page already holds is
+  skipped (pages keep whole table rows around their anchor), and the rest of a block a
+  page cut at its end continues that block without a break.
+
+The clipboard gets the text once, whole, after the last page, as `ViewerOutput::CopyText`,
+with LF line endings on every platform, as the selection Copy gives them; the window
+moves it on to the clipboard service without copying it again. A copy that does not end
+copies nothing and leaves the clipboard as it was. It ends with:
+
+- **Esc** while the copy runs (`ViewerInput::CancelCopy`; the window knows from
+  `ViewerOutput::Copying`, and the next Esc closes the window), another selection,
+  another file or mode, or closing the window;
+- **the limit:** at most 64 MiB of UTF-8 text (`whole_copy::LIMIT`). Windows keeps
+  clipboard text as UTF-16 in one movable global allocation (at most twice the UTF-8
+  size), and X11 serves a long text in incremental transfers, so both hold it, but every
+  paste copies all of it again into the receiving program. Text and Source decoders
+  give at least one text byte for four source bytes, so a file over 256 MiB is refused
+  at once; otherwise the read stops when the text passes the limit. The notice suggests
+  copying the file itself (F5);
+- **a changed file:** the session reads the revision captured when the file opened. A
+  read after the file changed on disk fails, and so does a page of another revision;
+  the copy then says that nothing was copied.
+
+A copy taking longer than 300 ms shows its progress ("Copying the whole file… 42%") and
+how much text it holds. An empty file copies empty text.
+
 ## First display and raster geometry
 
 A viewer opened from the application captures its parent's physical bounds and

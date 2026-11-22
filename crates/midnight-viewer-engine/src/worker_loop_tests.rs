@@ -384,9 +384,12 @@ fn source_gutter_shapes_only_numbers_near_the_painted_rows() {
 }
 
 #[test]
-fn select_page_selects_the_visible_rows_without_retained_pixels() {
+fn select_page_in_the_hex_view_selects_the_visible_rows_without_retained_pixels() {
     let (mut worker, output) = worker();
     complete_page(&mut worker, &output, 80);
+    // Text, Source and Markdown views select the whole file (`worker_whole.rs`).
+    worker.binary = true;
+    worker.mode = viewer::MODE_BINARY;
     worker.origin[1] = 200.0;
     let revision = frame(&mut worker, &output).revision;
     worker.input(ViewerInput::SelectPage { frame: revision }, &output);

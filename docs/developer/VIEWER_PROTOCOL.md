@@ -86,7 +86,11 @@ Text/code viewport work is demand-driven. The basic, source and Markdown plugins
 read only bounded visible windows plus decoding/parser context; first view and
 random seeks do not authorize scanning an unindexed prefix or allocating a
 whole-file buffer/map. Explicit search can traverse the source in cancellable
-bounded chunks. Optional [Locate](../../api/SOURCE_POSITION.md) may complete without
+bounded chunks, and so can an explicit whole-file Copy: the host reads the document from
+its start in forward Viewport requests of the largest size (256 KiB, 4096 lines), one at
+a time and cancellable, and joins their text at exact anchors
+([whole-file selection](VIEWER_PRESENTATION.md#whole-file-selection-and-copy)).
+Optional [Locate](../../api/SOURCE_POSITION.md) may complete without
 a coordinate when its bounded work budget is exhausted; hosts retain this absence
 for the current page rather than repeatedly requesting it or permanently disabling
 coordinates for later pages. Evidence: [large text viewers record](../verification/2026-11-10-large-text-viewers.md).

@@ -76,6 +76,13 @@ pub(super) struct Snapshot {
 }
 
 impl Retained {
+    /// Forget the captured selection: Copy has nothing of it to return.
+    pub fn forget_selection(&mut self) {
+        self.selected_source = None;
+        self.selected_text = None;
+        self.selection_valid = false;
+    }
+
     pub fn reset(&mut self, origin: [f32; 2]) {
         self.surface = self
             .surface
@@ -306,7 +313,9 @@ impl Worker {
             // raster. Every other input needs the current retained surface.
             let copy = matches!(input, ViewerRasterInput::Copy)
                 && self.frames.accepts_surface_copy(surface.0);
-            if copy && !self.copy_raster_selection(output) {
+            if copy && self.whole.selected() {
+                self.copy_whole_file(output);
+            } else if copy && !self.copy_raster_selection(output) {
                 self.copy_page_selection(output);
             }
             return;
@@ -357,7 +366,8 @@ impl Worker {
                     )
                 {
                     let start = if extend {
-                        self.selection.map_or(index, |selection| selection.0)
+                        self.shown_selection()
+                            .map_or(index, |selection| selection.0)
                     } else {
                         index
                     };
@@ -372,7 +382,9 @@ impl Worker {
                     return;
                 }
                 self.raster.rebase_ack = None;
-                if let Some(page) = &self.shaped {
+                if self.select_whole_file() {
+                    self.raster.invalidate();
+                } else if let Some(page) = &self.shaped {
                     // Added guard rows are not part of the page the user can see.
                     let rows = visible_rows(page, self.origin[1], self.geometry);
                     self.set_selection(Some(rows));
@@ -383,7 +395,9 @@ impl Worker {
             }
             ViewerRasterInput::Copy => {
                 self.raster.rebase_ack = None;
-                if self.raster.selection_valid
+                if self.whole.selected() {
+                    self.copy_whole_file(output);
+                } else if self.raster.selection_valid
                     && let Some(text) = &self.raster.selected_text
                 {
                     output.put(ViewerOutput::CopyText(text.clone()));

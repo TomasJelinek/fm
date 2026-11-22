@@ -104,7 +104,12 @@ fn status(session: &WindowSession, needles: &[&str]) {
 
 #[track_caller]
 fn copied(session: &WindowSession) -> String {
-    await_output(session, Duration::from_secs(5), |output| match output {
+    copied_within(session, Duration::from_secs(5))
+}
+
+/// The next copied text, which a whole-file Copy hands over after reading the file.
+fn copied_within(session: &WindowSession, timeout: Duration) -> String {
+    await_output(session, timeout, |output| match output {
         ViewerOutput::CopyText(text) => Some(text),
         _ => None,
     })
@@ -344,11 +349,24 @@ fn real_plugins_render_search_copy_cycle_modes_and_reject_changed_files() {
         frame: initial.revision
     }));
     let selected = frame(&session, |f| f.revision > initial.revision);
-    // Selection may repaint before the UI presents that new frame.
+    // Selection may repaint before the UI presents that new frame. Ctrl+A selected the
+    // whole file: Copy reads all of its 22 MB through the plugin and copies exactly it.
     assert!(session.send(ViewerInput::Copy {
         frame: initial.revision
     }));
-    assert!(copied(&session).starts_with("FIRST Žluťoučký"));
+    let copying = Instant::now();
+    let whole = copied_within(&session, Duration::from_secs(120));
+    eprintln!("Copy of the whole file: {:?}", copying.elapsed());
+    assert!(
+        whole
+            == format!(
+                "FIRST Žluťoučký\n{}LAST needle",
+                "line café\n".repeat(4000 * 512)
+            ),
+        "the whole file's text, {} bytes",
+        whole.len()
+    );
+    drop(whole);
     let mut renderer = midnight_viewer_render::TextRenderer::default();
     let shaped = renderer
         .layout_with_options(

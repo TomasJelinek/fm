@@ -33,8 +33,8 @@ const SEARCHING: &str = "Searching…";
 /// Status while an opening waits only for its file identity.
 const PREPARING: &str = "Preparing file identity…";
 
-/// Text rows intersecting the viewport. Ctrl+A selects what the window shows, never rows
-/// of the loaded page that lie outside it (including retained guard rows).
+/// Text rows intersecting the viewport. Ctrl+A in the hex view selects what the window
+/// shows, never rows of the loaded page that lie outside it (including retained guard rows).
 fn visible_rows(page: &TextPage, origin: f32, geometry: ViewerGeometry) -> (usize, usize) {
     let first = page.line_at_y(origin).map_or(0, |(range, _)| range.start);
     let last = page
@@ -128,6 +128,8 @@ mod unsent {
 mod text;
 #[path = "worker_web.rs"]
 mod web;
+#[path = "worker_whole.rs"]
+mod whole;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MotionOwner {
@@ -315,6 +317,8 @@ struct Worker {
     frames: crate::interaction::Frames,
     /// Hover, click, focus and history of links (`worker_links.rs`).
     links: links::Links,
+    /// Ctrl+A's whole-file selection and its Copy (`worker_whole.rs`).
+    whole: whole::WholeFile,
 }
 
 pub(crate) struct Services {
@@ -488,6 +492,7 @@ pub(crate) fn run(
         dirty: false,
         frames: Default::default(),
         links,
+        whole: Default::default(),
     };
     drop(launch);
     worker.open(output);
@@ -537,6 +542,7 @@ pub(crate) fn run(
         worker.poll_web(output);
         worker.poll_sandbox(output);
         worker.poll_links(output);
+        worker.poll_whole(output);
         worker.poll_video(output);
         if worker.dirty {
             worker.dirty = false;
@@ -689,6 +695,7 @@ impl Worker {
     fn open(&mut self, output: &Mailbox) {
         self.clear_sandbox_notice(output);
         self.links_reset(output);
+        self.reset_whole_file(output);
         if self.video.is_some() || self.mode == VIEWER_MODE_VIDEO {
             output.discard_pending_video();
         }
@@ -1061,6 +1068,10 @@ impl Worker {
             self.install_sandbox_permission(output);
             return;
         }
+        if matches!(input, ViewerInput::CancelCopy) {
+            self.cancel_whole_copy(output);
+            return;
+        }
         // Links work the same whatever shows the document (`worker_links.rs`).
         self.end_link_work_on(&input);
         match input {
@@ -1223,7 +1234,8 @@ impl Worker {
                     )
                 {
                     let start = if extend {
-                        self.selection.map_or(index, |selection| selection.0)
+                        self.shown_selection()
+                            .map_or(index, |selection| selection.0)
                     } else {
                         index
                     };
@@ -1236,7 +1248,9 @@ impl Worker {
                 }
             }
             ViewerInput::SelectPage { frame } if self.frames.accepts(frame) => {
-                if let Some(page) = &self.shaped {
+                if self.select_whole_file() {
+                    self.cancel_raster_rebase();
+                } else if let Some(page) = &self.shaped {
                     // Same rows as the retained path: what the window shows of the page.
                     let rows = visible_rows(page, self.origin[1], self.geometry);
                     self.set_selection(Some(rows));
@@ -1249,6 +1263,10 @@ impl Worker {
             }
             ViewerInput::Copy { frame } if self.frames.accepts_copy(frame) => {
                 self.cancel_raster_rebase();
+                if self.whole.selected() {
+                    self.copy_whole_file(output);
+                    return;
+                }
                 if self.copy_raster_selection(output) {
                     return;
                 }
@@ -1389,6 +1407,10 @@ impl Worker {
                 );
             }
             // SOURCE_COMPLETION_OBSERVATION_V2_END event_source_handled
+            return;
+        }
+        if self.whole.copying(id) {
+            self.whole_copy_event(event, output);
             return;
         }
         // SOURCE_COMPLETION_OBSERVATION_V2_BEGIN event_normal_route
@@ -1993,6 +2015,10 @@ impl Worker {
                 .find(|a| a.source_offset == found.offset + found.length)?;
             Some((first.text_offset as usize, last.text_offset as usize))
         });
+        if self.found.is_some() {
+            // A match Find shows replaces the whole file's selection.
+            self.end_whole_selection();
+        }
         self.scroll_map = if let Some((map, _)) = resolved_position {
             map
         } else {
@@ -2043,7 +2069,9 @@ impl Worker {
     /// Replace the selection on the shown page. A different one cannot be copied by
     /// naming a frame or retained surface that showed the previous one.
     fn set_selection(&mut self, selection: Option<(usize, usize)>) {
-        if selection != self.selection {
+        if self.end_whole_selection() {
+            self.selection = selection;
+        } else if selection != self.selection {
             self.selection = selection;
             self.frames.selection_changed();
         }
@@ -2060,6 +2088,9 @@ impl Worker {
 
     /// The selection's source range on the shown page.
     fn selected(&self) -> crate::interaction::Selected {
+        if self.whole.selected() {
+            return crate::interaction::Selected::Whole;
+        }
         let anchors = self.page.as_ref().map_or(&[][..], |page| &page.anchors[..]);
         crate::interaction::Selected::on(anchors, self.selection)
     }
@@ -2113,6 +2144,13 @@ impl Worker {
             // Painted in place and moved into the frame without another copy.
             let mut pixels = raster::shared_pixels(width, height)?;
             let rgba = raster::unique(&mut pixels)?;
+            let painted = whole::painted(
+                self.whole.selected(),
+                self.selection,
+                shaped,
+                self.origin[1],
+                height as f32,
+            );
             self.renderer
                 .rasterize_into(
                     shaped,
@@ -2124,7 +2162,7 @@ impl Worker {
                         selection_color: self.appearance.selection,
                         selection_text: self.appearance.selection_text,
                     },
-                    self.selection.map(|(a, b)| a.min(b)..a.max(b)),
+                    painted,
                     rgba,
                 )
                 .map_err(|e| format!("Cannot render page: {e:?}"))?;
@@ -2202,7 +2240,7 @@ impl Worker {
                 page.start,
                 page.end,
                 self.length,
-                self.status
+                self.status_note()
             ),
         });
         self.acknowledge_palette(output, Some(frame.revision));

@@ -1633,9 +1633,14 @@ content. A single-file view, such as a Find result, reopens the same captured
 file instead, so a change to that file is not loaded.
 Ctrl+F opens search; F3/Shift+F3 find the next/previous match. Scrollbars, the
 wheel, arrows, Page Up/Down and Ctrl+Home/End navigate without loading the
-complete file. Drag selects text; Ctrl+A selects the visible text
-of the loaded page and Ctrl+C copies the selection. These shortcuts are configurable
-in Options → Keyboard.
+complete file. Drag selects text and Ctrl+C copies the selection. In a text, source or
+Markdown viewer, Ctrl+A selects the whole file, and the status line shows "Whole file
+selected" with the file's size; Ctrl+C then copies the file's text as the viewer shows
+it, read in the background with progress in the status line. Escape stops a long copy,
+and nothing is copied unless the copy finishes. Copy takes up to 64 MiB of text; for a
+larger file, copy the file itself with F5 instead. In the hex view, Ctrl+A selects the
+rows shown, and in an HTML page it selects all in the page. These shortcuts are
+configurable in Options → Keyboard.
 Text and source modes support word wrap using the Wrap control or Ctrl+W. Binary
 files open with byte offsets, hexadecimal bytes and a printable character column;
 their columns remain fixed when wrapping is enabled for text.

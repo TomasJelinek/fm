@@ -1,7 +1,10 @@
 //! Selecting and copying viewed text, and how selected text reads. Ctrl+A selects the
-//! rows the loaded page shows and Ctrl+C hands exactly that text to the clipboard
-//! (source without its line numbers, Markdown as rendered text, the hex view as its
-//! hex rows); a mouse drag and a Shift+click select a range of lines.
+//! whole file in text, source and Markdown views, the status line says so, and Ctrl+C
+//! hands the whole file's text to the clipboard, read page by page (plain text and source
+//! exactly as the file, several pages long, without line numbers; Markdown as rendered
+//! text to its last section). In the hex view Ctrl+A selects the rows the page shows and
+//! Ctrl+C copies them as hex rows. A mouse drag and a Shift+click select a range of
+//! lines.
 //!
 //! In every theme the selection is painted in the theme's selection colour and every
 //! selected glyph, measured at its solid core right of the line-number gutter, in the
@@ -48,10 +51,11 @@ const DECORATION: usize = 24;
 /// What a copied selection must look like.
 #[derive(Clone, Copy)]
 enum Copied {
-    /// A prefix of the file of at least this many lines (the page opens at its top).
-    Prefix(usize),
-    /// Rendered Markdown: contains the first fragment, none of the markup.
-    Rendered(&'static str, &'static [&'static str]),
+    /// The whole file's text, exactly.
+    Whole,
+    /// Rendered Markdown of the whole document: contains every fragment (its first and
+    /// last sections), none of the markup.
+    Rendered(&'static [&'static str], &'static [&'static str]),
     /// The hex view: these bytes in hex, whitespace ignored.
     Hex(&'static str),
 }
@@ -71,13 +75,13 @@ const EVERY_THEME: &[Sample] = &[
     Sample {
         file: "sample.rs",
         label: "Rust source",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "table.csv",
         label: "CSV columns",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
 ];
@@ -87,19 +91,25 @@ const REPRESENTATIVE: &[Sample] = &[
     Sample {
         file: "plain.txt",
         label: "plain text",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "doc.md",
         label: "Markdown",
-        copied: Copied::Rendered("Long document", &["# Long", "| ---", "```"]),
+        copied: Copied::Rendered(
+            &["Long document", "Paragraph s000", "s005-r19", "Quote s005"],
+            &["# Long", "| ---", "```"],
+        ),
         struck: false,
     },
     Sample {
         file: "links.md",
         label: "Markdown links and struck text",
-        copied: Copied::Rendered("Midnight link one", &["# Links", "](", "~~"]),
+        copied: Copied::Rendered(
+            &["Midnight link one", "Paragraph 0", "Paragraph 11"],
+            &["# Links", "](", "~~"],
+        ),
         struck: true,
     },
     Sample {
@@ -111,37 +121,37 @@ const REPRESENTATIVE: &[Sample] = &[
     Sample {
         file: "sample.py",
         label: "Python",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "sample.json",
         label: "JSON",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "sample.xml",
         label: "XML",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "sample.yaml",
         label: "YAML",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "sample.css",
         label: "CSS",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
     Sample {
         file: "sample.sql",
         label: "SQL",
-        copied: Copied::Prefix(20),
+        copied: Copied::Whole,
         struck: false,
     },
 ];
@@ -333,7 +343,7 @@ fn inactive_pair(
     }
 }
 
-/// Open `sample`, select its page with Ctrl+A and check the selected text's contrast
+/// Open `sample`, select it with Ctrl+A and check the selected text's contrast
 /// and what Ctrl+C copies; returns the lowest contrast found.
 fn contrast(
     app: &mut App,
@@ -373,6 +383,14 @@ fn select_page(
     viewing.wait(app, "Ctrl+A to paint a selection", STEP, |_| {
         viewing.canvas().fingerprint() != whole.fingerprint()
     })?;
+    if !matches!(sample.copied, Copied::Hex(_)) {
+        viewing.wait(
+            app,
+            "the status line to say what Ctrl+A selected",
+            STEP,
+            |window| window.get_status().contains("Whole file selected"),
+        )?;
+    }
     let selected = probe::still_canvas(app, viewing, STEP)?;
     // The text right of the line-number gutter: the gutter's numbers are not selected.
     let before = probe::right_of_gutter(viewing, &whole, GUTTER_MARGIN);
@@ -630,23 +648,38 @@ fn decoration_runs(canvas: &Canvas, around: [u8; 3], page: [u8; 3]) -> Vec<([u8;
 
 fn check_copy(root: &Path, sample: &Sample, copied: &str) -> Result<(), String> {
     match sample.copied {
-        Copied::Prefix(lines) => {
+        Copied::Whole => {
             let file = std::fs::read_to_string(root.join(sample.file))
                 .map_err(|error| error.to_string())?;
-            let copied_lines = copied.trim_end_matches('\n').lines().count();
-            if !file.starts_with(copied.trim_end_matches('\n')) || copied_lines < lines {
+            if copied != file {
+                let same = file
+                    .bytes()
+                    .zip(copied.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                let mut from = same.min(copied.len());
+                while !copied.is_char_boundary(from) {
+                    from -= 1;
+                }
                 return Err(format!(
-                    "Ctrl+C copied {copied_lines} line(s) that are not the start of the file \
-                     (want at least {lines}): {:?}",
-                    clip(copied, 160)
+                    "Ctrl+C copied {} bytes ({} lines), not the file's {} bytes ({} lines); \
+                     they part at byte {same}: {:?}",
+                    copied.len(),
+                    copied.lines().count(),
+                    file.len(),
+                    file.lines().count(),
+                    clip(&copied[from..], 160)
                 ));
             }
         }
-        Copied::Rendered(fragment, markup) => {
-            if !copied.contains(fragment) || markup.iter().any(|mark| copied.contains(mark)) {
+        Copied::Rendered(fragments, markup) => {
+            if fragments.iter().any(|fragment| !copied.contains(fragment))
+                || markup.iter().any(|mark| copied.contains(mark))
+            {
                 return Err(format!(
-                    "Ctrl+C copied {:?}, expected rendered text with {fragment:?} and none of \
-                     {markup:?}",
+                    "Ctrl+C copied {} bytes, expected rendered text with all of {fragments:?} \
+                     and none of {markup:?}: {:?}",
+                    copied.len(),
                     clip(copied, 200)
                 ));
             }

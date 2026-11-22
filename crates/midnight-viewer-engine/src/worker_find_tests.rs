@@ -596,6 +596,9 @@ fn find_copy_outlives_a_later_refinement_but_not_a_later_selection() {
         "that frame showed no match"
     );
 
+    // The hex view's Ctrl+A selects the rows it shows; Text, Source and Markdown views
+    // select the whole file (`worker_whole.rs`).
+    worker.binary = true;
     // Ctrl+A names the shown frame, which can copy the rows before showing them.
     worker.input(
         ViewerInput::SelectPage {
@@ -653,6 +656,9 @@ fn retained_find_copy_names_a_replaced_surface_that_showed_the_match() {
         "that surface showed no match"
     );
 
+    // The hex view's Ctrl+A selects the rows it shows; Text, Source and Markdown views
+    // select the whole file (`worker_whole.rs`).
+    worker.binary = true;
     worker.input(
         ViewerInput::Raster {
             surface: info.surface,

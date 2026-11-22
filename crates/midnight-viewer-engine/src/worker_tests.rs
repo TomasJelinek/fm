@@ -233,6 +233,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         dirty: false,
         frames: Default::default(),
         links: super::links::Links::new(crate::capture::native(), None, None, true),
+        whole: Default::default(),
     };
     (worker, Mailbox::default())
 }

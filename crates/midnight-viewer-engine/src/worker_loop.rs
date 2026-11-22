@@ -331,6 +331,7 @@ impl Worker {
         self.search_request = None;
         self.search_cursor.cancel_candidate();
         self.text.locate_request = None;
+        self.reset_whole_file(output);
         self.motion = RelativeMotion::default();
         self.continuation = None;
         self.position_context(output);

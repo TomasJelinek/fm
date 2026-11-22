@@ -473,7 +473,7 @@ Viewer windows have their own configurable shortcut context:
 
 | Keys | Viewer action |
 | --- | --- |
-| Escape | Close the viewer, including when search has focus |
+| Escape | Close the viewer, including when search has focus; while a whole-file copy runs, the first Escape stops it instead |
 | Space / Alt+Right in content | Next regular file in captured panel order, wrapping at the end; in very large folders the order is a window around the opened file |
 | Backspace / Alt+Left in content | Previous regular file in the same captured order, wrapping at the beginning |
 | Tab / Shift+Tab in content | Next / previous link of the shown Markdown page, with a focus ring; Tab starts at the first link in view (`viewer.next-link`, `viewer.previous-link`). From the last link Tab moves on to the window's controls, and so does Shift+Tab without a focused link. HTML pages keep these keys |
@@ -482,8 +482,8 @@ Viewer windows have their own configurable shortcut context:
 | Ctrl+F | Focus search |
 | Enter in search / F3 | Next match |
 | Shift+F3 | Previous match |
-| Ctrl+A in content | Select the visible rows of the loaded page (bounded copy) |
-| Ctrl+C in content | Copy selected displayed text |
+| Ctrl+A in content | Select the whole file in Text, Source and Markdown views (`viewer.select-page`); the status line says "Whole file selected" with the file's size. In the hex view, the rows shown. HTML pages select all in the page. A click, a drag, a Find match or another file replaces the selection; scrolling keeps it |
+| Ctrl+C in content | Copy selected displayed text. With the whole file selected, the viewer reads the file in the background and copies its text whole, with progress in the status line, up to 64 MiB of text; a larger file is not copied, and its notice suggests copying the file itself (F5) |
 | Arrows / PageUp / PageDown | Scroll content |
 | Ctrl+Home / Ctrl+End | Beginning / end of the file (the first / last page of a PDF); an image larger than the window goes to its top / bottom (left / right edge when it is only wider) |
 | Ctrl+W | Toggle word wrap in Text or Source mode |

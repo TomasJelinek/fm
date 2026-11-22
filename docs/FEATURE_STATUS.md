@@ -206,8 +206,10 @@ How to read it:
   source code with syntax highlighting, HTML in embedded Chromium (offline, with
   scripts off until allowed), the Office preview of DOCX, XLSX, PPTX, ODT, ODS and ODP
   contents (shown through the HTML viewer), video playback, and the basic text and hex
-  viewer. Alt+F3 forces text. Viewers search (Ctrl+F), wrap, select and copy the loaded
-  page, zoom images and PDFs, and step through the panel's files with Space and
+  viewer. Alt+F3 forces text. Viewers search (Ctrl+F), wrap, select and copy text (Ctrl+A
+  selects the whole file in text, source and Markdown views, and Ctrl+C copies up to
+  64 MiB of its text, read in the background with progress; the hex view selects the
+  rows shown), zoom images and PDFs, and step through the panel's files with Space and
   Backspace. Viewer choices persist. Options › Plugins assigns file types to viewers.
 - **Links:** Markdown and HTML documents follow a link when it is clicked: a fragment
   scrolls to its heading, a file that a viewer shows opens in the same window, a folder

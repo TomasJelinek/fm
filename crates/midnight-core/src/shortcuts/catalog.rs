@@ -280,7 +280,7 @@ fn build() -> Vec<ShortcutDefinition> {
     );
     add(
         "viewer.select-page",
-        "Select loaded viewer page",
+        "Select whole viewed file",
         ViewerContent,
         &["Ctrl+A"],
     );

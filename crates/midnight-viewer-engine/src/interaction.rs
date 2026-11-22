@@ -82,6 +82,8 @@ pub(crate) enum Selected {
     Source([u64; 2]),
     /// An end without a source anchor; never provably the same as another selection.
     Unmapped,
+    /// The whole file (Ctrl+A), the same on every page that shows part of it.
+    Whole,
 }
 
 impl Selected {

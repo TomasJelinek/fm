@@ -64,6 +64,8 @@ mod web_popup_tests;
 #[cfg(test)]
 mod web_wheel_tests;
 mod wheel_setting;
+#[cfg(test)]
+mod whole_copy_tests;
 mod zoom_entry;
 #[cfg(test)]
 mod zoom_entry_ui_tests;
@@ -145,6 +147,8 @@ struct OpenWindow {
     input: RefCell<InputSender>,
     timer: Timer,
     closed: Cell<bool>,
+    /// A whole-file Copy runs on the backend (`ViewerOutput::Copying`): Escape stops it.
+    copying: Cell<bool>,
     ready: RefCell<Option<OpenReady>>,
     opening_succeeded: Cell<bool>,
     preparation: RefCell<Option<pixel_preparation::Preparation>>,
@@ -519,6 +523,7 @@ impl ViewerWindows {
             })),
             timer: Timer::default(),
             closed: Cell::new(false),
+            copying: Cell::new(false),
             ready: RefCell::new(Some(ready)),
             opening_succeeded: Cell::new(false),
             preparation: RefCell::new(None),
@@ -1206,6 +1211,15 @@ fn present_controlled_outputs(
             service.retire(output);
             continue;
         }
+        // Copied text moves on to the clipboard service: a whole file's is not copied
+        // again on this thread.
+        let output = match output {
+            ViewerOutput::CopyText(text) => {
+                copy(text);
+                continue;
+            }
+            output => output,
+        };
         match &output {
             ViewerOutput::LayoutSelected { .. }
             | ViewerOutput::PaletteApplied { .. }
@@ -1463,7 +1477,8 @@ fn present_controlled_outputs(
                     window.set_status(midnight_core::visible_name(message).as_ref().into());
                 }
             }
-            ViewerOutput::CopyText(text) => copy(text.clone()),
+            ViewerOutput::CopyText(_) => {}
+            ViewerOutput::Copying(running) => open.copying.set(*running),
             ViewerOutput::WebShortcut(shortcut) => web_input::received(open, *shortcut),
             ViewerOutput::WebState {
                 generation,
@@ -1784,6 +1799,8 @@ fn dispatch_key(open: &OpenWindow, action: &str) -> bool {
         return result;
     }
     let input = match action {
+        // Escape first stops a whole-file Copy in progress; the next one closes.
+        "viewer.close" if open.copying.replace(false) => ViewerInput::CancelCopy,
         "viewer.close" => {
             close(open);
             return true;

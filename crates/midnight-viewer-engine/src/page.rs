@@ -113,6 +113,16 @@ impl Palette {
     }
 }
 
+/// What a document page shows before a block's own text: list, quote and rule marks.
+pub(crate) fn block_prefix(kind: u16) -> &'static str {
+    match kind {
+        document::BLOCK_LIST_ITEM => "• ",
+        document::BLOCK_QUOTE => "│ ",
+        document::BLOCK_RULE => "────────────",
+        _ => "",
+    }
+}
+
 impl Page {
     pub fn recolor(&mut self, appearance: &ViewerAppearance) {
         let palette = Palette::new(appearance);
@@ -314,12 +324,7 @@ impl Page {
             if !text.is_empty() {
                 text.push_str("\n\n");
             }
-            let prefix = match block.kind {
-                document::BLOCK_LIST_ITEM => "• ",
-                document::BLOCK_QUOTE => "│ ",
-                document::BLOCK_RULE => "────────────",
-                _ => "",
-            };
+            let prefix = block_prefix(block.kind);
             let block_start = text.len();
             text.push_str(prefix);
             let start = text.len();

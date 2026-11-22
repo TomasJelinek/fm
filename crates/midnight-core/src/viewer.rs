@@ -390,12 +390,19 @@ pub enum ViewerInput {
         y: f32,
         extend: bool,
     },
+    /// Ctrl+A: the whole file in Text, Source and Markdown views, the shown rows in the
+    /// hex view.
     SelectPage {
         frame: u64,
     },
+    /// Copy the selection. A whole-file selection is read on the backend first, in
+    /// bounded pages, while [`ViewerOutput::Copying`] says so.
     Copy {
         frame: u64,
     },
+    /// Stop a whole-file Copy in progress (Escape while it runs); the clipboard stays as
+    /// it was. Always answered with `ViewerOutput::Copying(false)`.
+    CancelCopy,
     /// Install the permission that the shown `ViewerSandboxNotice` offers, with
     /// administrator authorization, then open the document again.
     InstallSandboxPermission,
@@ -555,5 +562,8 @@ pub enum ViewerOutput {
     LinkRequest(ViewerLinkRequest),
     Status(String),
     CopyText(String),
+    /// A whole-file Copy started (true) or ended (false). While one runs, Escape stops it
+    /// (`ViewerInput::CancelCopy`) instead of closing the window.
+    Copying(bool),
     Closed,
 }

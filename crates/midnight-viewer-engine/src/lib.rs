@@ -52,6 +52,7 @@ mod tests;
 mod video_actor;
 mod video_discovery;
 mod viewport;
+mod whole_copy;
 mod window_worker;
 mod worker;
 

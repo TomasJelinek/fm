@@ -486,6 +486,9 @@ fn retained_page_rebase_keeps_continuous_origin_and_rejects_old_pixel_selection(
     assert!(worker.set_page(fragment(&source, 0, starts[60]), &output));
     let first = paint(&mut worker, &output);
     let info = first.raster.as_ref().unwrap();
+    // The hex view's Ctrl+A selects the rows it shows; Text, Source and Markdown views
+    // select the whole file (`worker_whole.rs`).
+    worker.binary = true;
     worker.input(
         ViewerInput::Raster {
             surface: info.surface,
@@ -775,6 +778,9 @@ fn retained_no_match_context_and_reflow_keep_the_existing_selection_copyable() {
     let (mut worker, output) = retained(viewer::MODE_TEXT);
     let first = paint(&mut worker, &output);
     let info = first.raster.as_ref().unwrap();
+    // The hex view's Ctrl+A selects the rows it shows; Text, Source and Markdown views
+    // select the whole file (`worker_whole.rs`).
+    worker.binary = true;
     worker.input(
         ViewerInput::Raster {
             surface: info.surface,

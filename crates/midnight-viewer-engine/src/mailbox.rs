@@ -196,6 +196,7 @@ impl Mailbox {
                 }
                 ViewerOutput::LinkRequest(_) => false,
                 ViewerOutput::CopyText(_) => matches!(pending[index], ViewerOutput::CopyText(_)),
+                ViewerOutput::Copying(_) => matches!(pending[index], ViewerOutput::Copying(_)),
                 ViewerOutput::WebState { .. } => {
                     matches!(pending[index], ViewerOutput::WebState { .. })
                 }
@@ -234,13 +235,17 @@ impl Mailbox {
         let media_retired = matches!(output, ViewerOutput::MediaRetired { .. });
         // The latest link hover and focus, and every followed link's request, are
         // admitted like the notice: the window waits for the hover's answer, and a
-        // request is what the user asked for.
+        // request is what the user asked for. So are the latest copied text, which may
+        // have taken a whole-file read, and whether such a read runs, which decides what
+        // Escape does in the window.
         let notice = matches!(
             output,
             ViewerOutput::SandboxNotice(_)
                 | ViewerOutput::LinkHover(_)
                 | ViewerOutput::LinkFocus { .. }
                 | ViewerOutput::LinkRequest(_)
+                | ViewerOutput::CopyText(_)
+                | ViewerOutput::Copying(_)
         );
         let reserved = usize::from(
             !frame
@@ -947,3 +952,36 @@ mod layout_tests {
 #[cfg(test)]
 #[path = "mailbox_palette_tests.rs"]
 mod palette_tests;
+
+/// The text a (whole-file) Copy produced and whether one runs reach the window however
+/// busy it is, the latest of each only.
+#[cfg(test)]
+#[test]
+fn copied_text_and_the_copy_state_survive_full_event_pressure() {
+    let mailbox = Mailbox::default();
+    mailbox.put(ViewerOutput::Copying(true));
+    for _ in 0..100 {
+        mailbox.put(ViewerOutput::WebShortcut(
+            midnight_core::viewer_web::HostShortcut::Find,
+        ));
+    }
+    mailbox.put(ViewerOutput::CopyText("whole file".into()));
+    mailbox.put(ViewerOutput::Copying(false));
+    let output = mailbox.take();
+    let copies: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event {
+            ViewerOutput::CopyText(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copies, ["whole file"]);
+    let states: Vec<_> = output
+        .iter()
+        .filter_map(|event| match event {
+            ViewerOutput::Copying(running) => Some(*running),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(states, [false], "the latest state replaces the earlier one");
+}

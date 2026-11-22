@@ -248,10 +248,16 @@ impl Worker {
                 local[1],
             ],
         );
-        let selection = self.selection.map(|(a, b)| a.min(b)..a.max(b));
         let Some(shaped) = &self.shaped else {
             return Ok(None);
         };
+        let selection = crate::worker::whole::painted(
+            self.whole.selected(),
+            self.selection,
+            shaped,
+            viewport.origin[1],
+            BAND as f32,
+        );
         let mut pixels = shared_pixels(column.width, BAND)?;
         self.renderer
             .rasterize_into(shaped, viewport, selection, unique(&mut pixels)?)
@@ -409,7 +415,7 @@ impl Worker {
                     .hash(&mut hasher);
             }
         }
-        if let Some((a, b)) = self.selection
+        if let Some((a, b)) = self.shown_selection()
             && let Some(range) = clip(&(a.min(b)..a.max(b)))
         {
             range.hash(&mut hasher);
