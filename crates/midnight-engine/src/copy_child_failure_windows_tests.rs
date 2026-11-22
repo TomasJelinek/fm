@@ -309,8 +309,18 @@ async fn a_move_out_of_a_protected_folder_offers_skip_and_skip_leaves_the_item()
         io::ErrorKind::PermissionDenied,
         "{failure:?}"
     );
-    // The question's text, for the acceptance check (shown with --nocapture).
-    eprintln!("T-E06 question: {}", failure.error);
+    // In words, as on Linux; never the system's "Access is denied. (os error 5)".
+    assert!(
+        failure
+            .error
+            .message
+            .starts_with("Permission denied: it cannot be moved out of its folder"),
+        "{failure:?}"
+    );
+    assert!(
+        !failure.error.to_string().contains("os error"),
+        "{failure:?}"
+    );
     decide(&h, &failure, CopyChoice::Skip).await;
     let done = h.terminal(1).await;
     drop(denied);

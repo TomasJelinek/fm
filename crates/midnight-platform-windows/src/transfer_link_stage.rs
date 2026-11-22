@@ -36,6 +36,81 @@ const SEPARATOR: u16 = b'\\' as u16;
 /// `\??\`, the prefix of an absolute NT path in a link's substitute name.
 const NT_PREFIX: [u16; 4] = [SEPARATOR, 63, 63, SEPARATOR];
 
+/// What planning a link reads from the system, read once per job: whether this process may
+/// create symbolic links (the Developer Mode setting and the token's privilege), and each
+/// destination volume's facts, keyed by its serial number. The destination folder a job
+/// starts from holds it, and every folder the job creates or merges into below it shares
+/// it (`Directory::below`).
+#[derive(Default)]
+pub(in crate::transfer) struct LinkFacts {
+    symbolic_links: std::sync::OnceLock<bool>,
+    volumes: std::sync::Mutex<Vec<(u64, VolumeLinks)>>,
+}
+
+/// A destination volume's link facts.
+#[derive(Clone)]
+struct VolumeLinks {
+    network: bool,
+    reparse_points: bool,
+    filesystem: String,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often this thread read link facts from the system, whichever job's folder
+    /// asked: (symbolic-link rights, volume facts).
+    static LINK_FACT_READS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Counts one read of the system's link facts on this thread (tests).
+#[cfg(test)]
+fn count_read(symbolic_links: usize, volumes: usize) {
+    LINK_FACT_READS.with(|reads| {
+        let (known, read) = reads.get();
+        reads.set((known + symbolic_links, read + volumes));
+    });
+}
+
+impl LinkFacts {
+    fn symbolic_links_allowed(&self) -> bool {
+        *self.symbolic_links.get_or_init(|| {
+            #[cfg(test)]
+            count_read(1, 0);
+            symbolic_links_allowed()
+        })
+    }
+
+    /// The facts of the volume `serial` that holds `directory`, read once. A query that
+    /// fails is not kept: the next link asks again.
+    fn volume(&self, serial: u64, directory: &Directory) -> Result<VolumeLinks, FsError> {
+        let mut volumes = self.volumes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, facts)) = volumes.iter().find(|(known, _)| *known == serial) {
+            return Ok(facts.clone());
+        }
+        #[cfg(test)]
+        count_read(0, 1);
+        // A network location says so before anything is asked of its volume.
+        let facts = if crate::storage_kind::network(&directory.path) {
+            VolumeLinks {
+                network: true,
+                reparse_points: false,
+                filesystem: String::new(),
+            }
+        } else {
+            let (_, flags, filesystem) =
+                super::super::link_destination::volume_facts(&directory.file)
+                    .map_err(|e| error(&directory.path, e))?;
+            VolumeLinks {
+                network: false,
+                reparse_points: flags & FILE_SUPPORTS_REPARSE_POINTS != 0,
+                filesystem,
+            }
+        };
+        volumes.push((serial, facts.clone()));
+        Ok(facts)
+    }
+}
+
 impl Directory {
     /// The link this folder creates for `representation` (`TransferDirectory::plan_link`).
     pub(super) fn plan_link_representation(
@@ -45,18 +120,20 @@ impl Directory {
     ) -> Result<TransferLinkPlan, FsError> {
         checked(cancel, &self.path)?;
         self.revalidate(cancel)?;
-        if crate::storage_kind::network(&self.path) {
+        let volume = self.links.volume(self.identity.device, self)?;
+        if volume.network {
             return Err(unsupported(
                 &self.path,
                 "No links are created at a network location, so this link is left out",
             ));
         }
-        let (_, flags, filesystem) = super::super::link_destination::volume_facts(&self.file)
-            .map_err(|e| error(&self.path, e))?;
-        if flags & FILE_SUPPORTS_REPARSE_POINTS == 0 {
+        if !volume.reparse_points {
             return Err(unsupported(
                 &self.path,
-                &format!("This drive cannot store links ({filesystem}), so this link is left out"),
+                &format!(
+                    "This drive cannot store links ({}), so this link is left out",
+                    volume.filesystem
+                ),
             ));
         }
         let (substitute, _) = representation
@@ -79,7 +156,7 @@ impl Directory {
             kind @ (TransferLinkKind::WindowsDirectorySymbolicLink
             | TransferLinkKind::WindowsFileSymbolicLink) => {
                 let target = symbolic_target(representation, &self.path)?;
-                if symbolic_links_allowed() {
+                if self.links.symbolic_links_allowed() {
                     // `CreateSymbolicLinkW` writes the target as given for its print name.
                     let planned = TransferLinkRepresentation::windows_symbolic_link(
                         kind == TransferLinkKind::WindowsDirectorySymbolicLink,

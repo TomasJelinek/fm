@@ -163,6 +163,50 @@ fn a_directory_symbolic_link_is_recreated_or_becomes_a_junction_with_the_reason(
 }
 
 #[test]
+fn a_job_reads_symbolic_link_rights_once_and_each_volume_once() {
+    // A job's folders: the one it starts from, folders it creates below it and one it
+    // merges into, with many links planned in each. Every read of the system's link facts
+    // on this thread is counted, whichever folder made it.
+    let reads = || LINK_FACT_READS.with(std::cell::Cell::get);
+    LINK_FACT_READS.with(|reads| reads.set((0, 0)));
+    let temp = build_temp("link-stage-facts");
+    let out = temp.path().join("out");
+    fs::create_dir_all(out.join("existing")).unwrap();
+    let root = destination(&out);
+    let cancel = Cancellation::default();
+    let created = root.create_directory(OsStr::new("a"), &cancel).unwrap();
+    let nested = created.create_directory(OsStr::new("b"), &cancel).unwrap();
+    let existing = root
+        .prepare_target(OsStr::new("existing"), &cancel)
+        .unwrap()
+        .unwrap();
+    let merged = root
+        .open_merge_directory(OsStr::new("existing"), existing.entry(), &cancel)
+        .unwrap();
+    let absolute = format!(r"\??\{}", temp.path().join("target").display());
+    let junction =
+        TransferLinkRepresentation::windows_junction(&wide(&absolute), &wide(&absolute[4..]))
+            .unwrap();
+    let symbolic =
+        TransferLinkRepresentation::windows_symbolic_link(true, 1, &wide(r"..\x"), &wide(r"..\x"))
+            .unwrap();
+    for folder in [&root, &created, &nested, &merged] {
+        for _ in 0..25 {
+            folder.plan_link(&junction, &cancel).unwrap();
+            folder.admit_link(&symbolic, &cancel).unwrap();
+        }
+    }
+    assert_eq!(
+        reads(),
+        (1, 1),
+        "200 links in four folders of one job on one volume: each fact was read once"
+    );
+    // Another job reads them anew.
+    destination(&out).plan_link(&symbolic, &cancel).unwrap();
+    assert_eq!(reads(), (2, 2));
+}
+
+#[test]
 fn a_file_symbolic_link_or_a_network_target_needs_symbolic_link_rights() {
     let temp = build_temp("link-stage-file");
     let folder = destination(temp.path());

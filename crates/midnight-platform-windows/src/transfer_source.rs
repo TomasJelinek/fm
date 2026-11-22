@@ -1106,16 +1106,37 @@ fn open_ordinary(
             ));
         }
     };
-    let access = FILE_READ_ATTRIBUTES
+    let rights = FILE_READ_ATTRIBUTES
         | SYNCHRONIZE
         | match access {
             Access::Move(_) => DELETE | (directory_access & FILE_TRAVERSE),
             Access::Copy(_) => FILE_READ_DATA | directory_access,
             Access::Discover(_) => directory_access,
         };
-    native::open_relative(parent, name, access, held_sharing(kind), FILE_OPEN, options)
-        .map_err(|e| error(path, e))
+    native::open_relative(parent, name, rights, held_sharing(kind), FILE_OPEN, options).map_err(
+        |failure| match access {
+            // Windows grants a Move's DELETE when the item's own permissions or its
+            // folder's allow removing it. Without either the item stays (T-E06); the
+            // question says so in words, as on Linux, not with the system's text.
+            Access::Move(_)
+                if failure.raw_os_error()
+                    == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32) =>
+            {
+                FsError::from_io(
+                    "move",
+                    path,
+                    io::Error::new(io::ErrorKind::PermissionDenied, MOVE_DENIED),
+                )
+            }
+            _ => error(path, failure),
+        },
+    )
 }
+
+/// A Move that may not take an item out of its folder (T-E06), in the words Linux uses.
+const MOVE_DENIED: &str = "Permission denied: it cannot be moved out of its folder: the \
+                           permissions of the item and of its folder do not allow removing \
+                           it. It stays there; copy it instead.";
 
 /// The sharing of a source handle that guards an entry while it is transferred. A file
 /// denies write and delete sharing: its content and name cannot change while it is read

@@ -284,7 +284,7 @@ pub(super) fn open_merge(
     {
         return Err(invalid(&path, "merge destination identity or type changed"));
     }
-    Ok(Arc::new(Directory::from_file(file, path)?))
+    Ok(Arc::new(Directory::from_file(file, path)?.below(directory)))
 }
 
 pub(in crate::transfer) fn supported(directory: &Directory) -> bool {

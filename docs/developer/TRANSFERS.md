@@ -591,8 +591,9 @@ error and its skip (`Preparation::is_last_root`). Nothing was copied for it, so 
 no verified copy to account for. Windows needs nothing here: a folder's read-only
 attribute does not keep entries from leaving it. A folder whose access list denies
 deleting its entries stops the item the same way, at its preparation, with the same
-Retry, Skip and Skip all; that question still shows the system's text ("Access is
-denied").
+Retry, Skip and Skip all, and says so in words ("Permission denied: it cannot be moved out
+of its folder: the permissions of the item and of its folder do not allow removing it.
+…"), not with the system's "Access is denied" text.
 
 Optional contracts default to Unsupported:
 
@@ -1210,7 +1211,11 @@ this, a selected link that a destination refused failed the whole job's preparat
   needs Developer Mode or administrator rights" (and that a relative target became
   absolute); a file symbolic link, or one to a network share, is reported with that reason
   and left out. A volume without reparse points (FAT32, exFAT) or a network location
-  refuses every link with that reason. Decision: the `midnight-elevation` helper is not
+  refuses every link with that reason. What planning reads from the system is read once
+  per job and kept for its folders (`LinkFacts`, held by the folder the job starts from
+  and shared with every folder it creates or merges into): whether symbolic links may be
+  created, and each destination volume's facts (network location, reparse points,
+  filesystem name), keyed by the volume's serial number. Decision: the `midnight-elevation` helper is not
   used to create links; it is a one-shot elevated directory reader (and the AppArmor
   installer on Linux), and letting an elevated process create links at destinations the
   unelevated application chooses would widen its authority beyond reading.

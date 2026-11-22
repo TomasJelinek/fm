@@ -25,6 +25,8 @@ pub(super) struct Directory {
     file: Arc<File>,
     path: PathBuf,
     identity: TransferIdentity,
+    /// What planning links reads once per job, shared with the folders below this one.
+    links: Arc<link_stage::LinkFacts>,
     // Last: the final Directory clone closes its native Arc<File> before certification.
     _namespace_owner: super::namespace::NativeOwner,
 }
@@ -32,6 +34,7 @@ impl Directory {
     pub(in crate::transfer) fn native_file(&self) -> &File {
         &self.file
     }
+    /// A folder a job starts from: link facts are read anew for it.
     pub(super) fn from_file(file: File, path: PathBuf) -> Result<Self, FsError> {
         if !file.metadata().map_err(|e| error(&path, e))?.is_dir() {
             return Err(invalid(&path, "destination is not a directory"));
@@ -42,8 +45,15 @@ impl Directory {
             identity,
             file: Arc::new(file),
             path,
+            links: Arc::default(),
             _namespace_owner: namespace_owner,
         })
+    }
+    /// This folder as one of the same job as `parent` (created or merged into below it),
+    /// sharing the link facts `parent` already read.
+    pub(super) fn below(mut self, parent: &Directory) -> Self {
+        self.links = parent.links.clone();
+        self
     }
 }
 impl TransferDirectory for Directory {
@@ -243,7 +253,7 @@ impl TransferDirectory for Directory {
                 .map_err(|e| error(&path, e))
         })?;
         Self::from_file(file, path)
-            .map(|directory| Arc::new(directory) as Arc<dyn TransferDirectory>)
+            .map(|directory| Arc::new(directory.below(self)) as Arc<dyn TransferDirectory>)
     }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.make_stage(false, cancel)
