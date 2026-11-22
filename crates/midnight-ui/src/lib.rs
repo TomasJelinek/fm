@@ -3,6 +3,8 @@
 #[cfg(test)]
 extern crate self as midnight_ui;
 mod about_licenses;
+#[cfg(feature = "acceptance-seams")]
+pub mod acceptance_seams;
 mod action_icons;
 mod archive_options;
 mod argument_rows;
@@ -98,6 +100,11 @@ pub fn system_reduces_motion() -> bool {
     !motion_preference::animations_enabled()
 }
 mod presenter;
+// Without the `acceptance-seams` feature the acceptance seam does not exist.
+#[cfg_attr(
+    not(feature = "acceptance-seams"),
+    doc = "```compile_fail,E0432\nuse midnight_ui::acceptance_seams;\n```"
+)]
 mod scroll_input;
 mod search_input;
 mod selection_bridge;

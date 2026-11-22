@@ -15,6 +15,9 @@ mod fling_measure;
 mod kinetic_tests;
 #[path = "scroll_input_rows_tests.rs"]
 mod rows_tests;
+#[cfg(feature = "acceptance-seams")]
+#[path = "scroll_input_seam_tests.rs"]
+mod seam_tests;
 #[path = "scroll_input_toolbar_tests.rs"]
 mod toolbar_tests;
 
@@ -43,6 +46,9 @@ struct Harness {
     /// Frames are software-rendered into `pixels`; otherwise they only lay the window
     /// out, for tests that read geometry alone.
     render: bool,
+    /// Frames also reach this fixture's observer (`input`). The acceptance seam's tests
+    /// turn that off: their frames reach only the window's stored observer.
+    fixture_frames: Cell<bool>,
 }
 
 impl Harness {
@@ -65,7 +71,9 @@ impl Harness {
             // Folder-size/metadata acknowledgements redraw visible rows. They
             // must not reveal an unchanged cursor or reset the scroll offset.
             crate::refresh(&self.window, &self.presenter.borrow());
-            self.input(WindowEvent::RedrawRequested);
+            if self.fixture_frames.get() {
+                self.input(WindowEvent::RedrawRequested);
+            }
             self.draw();
         }
     }
@@ -253,6 +261,7 @@ fn harness_entries(render: bool, momentum: bool, entries: impl Fn() -> Arc<[Entr
         kinetic_shown: Cell::new(false),
         pixels: RefCell::new(vec![slint::Rgb8Pixel::default(); 1340 * 820]),
         render,
+        fixture_frames: Cell::new(true),
     };
     h.draw();
     h

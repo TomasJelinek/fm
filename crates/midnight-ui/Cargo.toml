@@ -7,6 +7,12 @@ publish.workspace = true
 # All tests/*.rs files are modules of one binary; see tests/integration.rs.
 autotests = false
 
+[features]
+# Native-equivalent input for the acceptance harness's software windows
+# (src/acceptance_seams.rs). Only midnight-acceptance enables it; the application and
+# every other package build without it (docs/developer/SCROLLING.md).
+acceptance-seams = []
+
 [dependencies]
 midnight-core.workspace = true
 midnight-ui-bindings = { path = "../midnight-ui-bindings" }

@@ -23,6 +23,8 @@ acceptance = [
     "dep:midnight-engine",
     "dep:midnight-platform",
     "dep:midnight-ui",
+    # The panels' acceptance-only native input seam (wheel notches, focus, system settings).
+    "midnight-ui/acceptance-seams",
     "dep:slint",
     "dep:i-slint-core",
     "dep:tokio",

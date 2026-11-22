@@ -402,6 +402,12 @@ fn now(window: &MainWindow) -> Duration {
         .duration_since_start()
 }
 
+/// The panels' native input observer: the closure `on_winit_window_event` calls for
+/// every native event. The acceptance seam (feature `acceptance-seams`) delivers its
+/// native-equivalent events to this same closure.
+pub(crate) type NativeObserver =
+    Rc<RefCell<dyn FnMut(&slint::Window, &WindowEvent) -> EventResult>>;
+
 pub(crate) fn install(window: &MainWindow) {
     let weak = window.as_weak();
     let state = Rc::new(RefCell::new(InputState::default()));
@@ -422,7 +428,9 @@ pub(crate) fn install(window: &MainWindow) {
     let mut shortcuts = crate::native_shortcuts::ShortcutState::default();
     let mut kinetic_shown = false;
     let mut settings_read = false;
-    window.window().on_winit_window_event(move |_, event| {
+    // Whether a real Winit adapter backs the window, which then delivers native keys.
+    let mut winit_adapter = None;
+    let observe = move |_: &slint::Window, event: &WindowEvent| -> EventResult {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;
         };
@@ -482,13 +490,28 @@ pub(crate) fn install(window: &MainWindow) {
             replaced,
             &mut kinetic_shown,
         );
-        // This callback runs only for a real Winit adapter. Software-window
-        // tests retain the Slint logical-key fallback.
-        window.set_native_shortcuts_authoritative(true);
+        // Native keys arrive only through a real Winit adapter. Software windows (tests,
+        // and the acceptance seam's native-equivalent input) retain the Slint
+        // logical-key fallback.
+        if *winit_adapter.get_or_insert_with(|| window.window().with_winit_window(|_| ()).is_some())
+        {
+            window.set_native_shortcuts_authoritative(true);
+        }
         if shortcuts.handle(&window, event) || replaced || auxiliary_replaced {
             return EventResult::PreventDefault;
         }
         EventResult::Propagate
+    };
+    let observer: NativeObserver = Rc::new(RefCell::new(observe));
+    #[cfg(feature = "acceptance-seams")]
+    crate::acceptance_seams::store(window, observer.clone());
+    window.window().on_winit_window_event(move |native, event| {
+        // Slint takes this hook out while it runs it, so it is not re-entered.
+        observer
+            .try_borrow_mut()
+            .map_or(EventResult::Propagate, |mut observe| {
+                (*observe)(native, event)
+            })
     });
 }
 

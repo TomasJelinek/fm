@@ -362,6 +362,46 @@ of claiming smoothness solely from average FPS.
 See [native measurements](../NATIVE_SCROLL_VERIFICATION.md) for reproducible
 commands, local evidence and remaining performance limitations.
 
+### Acceptance seam
+
+The acceptance suite renders the application in software windows, where no Winit
+adapter delivers native events, and the panels take a wheel notch, the system's
+lines per notch and its animation setting only from native events. `midnight-ui`
+therefore has an acceptance-only seam: the feature `acceptance-seams`, which only
+`midnight-acceptance` enables. The application and every other package build
+without it (`cargo tree -p midnight-explorer -e features -i midnight-ui` lists no
+`acceptance-seams`). Its module `midnight_ui::acceptance_seams` has:
+
+- `wheel(&MainWindow, at, NativeWheel) -> Option<bool>`: a `CursorMoved` to `at`,
+  then the `MouseWheel` (`NativeWheel::Lines` for a mouse wheel or a Windows
+  precision touchpad, fractions allowed; `NativeWheel::Pixels` with a `NativePhase`
+  for a pixel touchpad), handed to the observer closure that `on_winit_window_event`
+  calls. `scroll_input::install` stores that closure for the seam, so there is no
+  second path. What the observer leaves alone reaches Slint as Winit's backend
+  converts it: a pointer move, then a wheel of lines × 60 or physical pixels ÷
+  scale, with its phase. It returns whether the observer consumed the wheel, or
+  `None` for a hidden window.
+- `focus(&MainWindow, bool) -> Option<()>`: `Focused` through the same closure, then
+  `WindowActiveChanged` when the window's activation changes.
+- `override_settings(SystemSettings { wheel, reduce_motion }) -> SettingsGuard`: the
+  lines per notch (`WheelSetting::Lines(n)` or `Page`) and the request for less
+  motion that the panels read, for the whole test process until the guard drops.
+  The panels read them with their first native event and on each focus gain, as in
+  production, so a scenario calls `focus(window, true)` after overriding.
+
+Winit sends `RedrawRequested` before each frame it presents, and the panels advance
+their wheel glide and touchpad momentum on it. The seam sends one through the same
+closure every wheel frame (8 ms) while scroll interaction lasts and for 250 ms after
+its last event, so the harness's ordinary waits see the motion. The observer marks
+native shortcuts authoritative only when a real Winit adapter backs the window, so
+the harness's Slint key events keep working after seam input.
+
+Tests: `scroll_input::pane_tests::seam_tests` (with the feature: a seam notch moves a
+panel frame for frame like the native-observer fixture, one notch per wheel setting
+and with reduced motion, focus changes, input left to Slint, hidden windows) and
+`acceptance_seams::tests` (nested overrides); without the feature a `compile_fail`
+doctest shows that the module does not exist.
+
 ## Fluent scrollbar and command-strip input
 
 The main window's `ScrollView` and `ListView` come from
