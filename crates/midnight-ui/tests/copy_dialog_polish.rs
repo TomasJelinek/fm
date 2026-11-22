@@ -2,10 +2,11 @@
 //! texts the presenter composes: one file, several items, a destination where no links
 //! are created, a Move from another drive to a network location (refused) and a Move of
 //! 65 items (refused). Its layout fits the minimum window and 32 px fonts in both
-//! densities with nothing cut, the options start at one edge, Tab follows the order the
-//! controls are shown in, Enter in the destination confirms, and at most one note shows,
-//! under the control it concerns. The capture tests render each state for review; they
-//! are ignored and write only with `MIDNIGHT_UI_RENDER_DIR` set.
+//! densities with nothing cut, the options start at one edge, the link choice shows no
+//! caption but keeps its accessible name, Tab follows the order the controls are shown
+//! in, Enter in the destination confirms, and at most one note shows, under the control
+//! it concerns. The capture tests render each state for review; they are ignored and
+//! write only with `MIDNIGHT_UI_RENDER_DIR` set.
 #[path = "support/embedded_form.rs"]
 mod form;
 #[path = "support/owned_commands.rs"]
@@ -14,7 +15,7 @@ mod owned_commands;
 mod polish;
 #[path = "support/selection.rs"]
 mod selection;
-use crate::support::{modeless, ui};
+use crate::support::{link_option, modeless, ui};
 
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
@@ -666,37 +667,161 @@ fn every_state_fits_touch_density_with_32_px() {
     fits(UiDensity::Touch, 32);
 }
 
-/// The options grid in `density` at `font` px: the link choice and both check boxes start
-/// at one edge, after the "Links" caption where they fit beside it (at the regular size),
-/// and at the form's left edge where the caption sits above its box (`narrow`: at the
-/// minimum window size with these fonts on every platform). Exact modified time is left
-/// out, not shown disabled, where it cannot apply (a folder among the items).
-fn controls_start_at_one_edge(density: UiDensity, font: u16, narrow: bool) {
+/// The link choice in `density` at `font` px, at the regular size and at the minimum
+/// window size: both its entries name links ("Copy the files links point to", "Keep links
+/// as links"), so the dialog draws no "Links" caption for it; a screen reader still reads
+/// the box by that name, with the entry shown as its value.
+fn link_choice_without_caption(density: UiDensity, font: u16) {
+    let h = Harness::new(PreferenceTheme::Light, density, font);
+    h.show(State::OneFile);
+    // The keyboard in the box, so that a small window's scrolled middle shows it.
+    h.tab(false);
+    for (width, height) in [(1340, 820), (320, 200)] {
+        let case = format!("{density:?} {font} px {width}x{height}");
+        h.layout(width, height);
+        assert_eq!(
+            h.focused(),
+            Some((AccessibleRole::Combobox, link_option::LABEL.to_owned())),
+            "{case}"
+        );
+        let texts = h.drawn();
+        assert!(
+            texts.iter().any(|text| text == link_option::KEEP_LINKS),
+            "{case}: the link choice is in view: {texts:?}"
+        );
+        if width == 1340 {
+            assert!(
+                texts.iter().any(|text| text == "Options"),
+                "{case}: the Options group is drawn: {texts:?}"
+            );
+        }
+        assert!(
+            !texts.iter().any(|text| text == link_option::LABEL),
+            "{case}: the dialog draws a {:?} caption: {texts:?}",
+            link_option::LABEL
+        );
+        let links = h.item(AccessibleRole::Combobox, link_option::LABEL);
+        assert_eq!(
+            links
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .as_deref(),
+            Some(link_option::KEEP_LINKS),
+            "{case}: the box is read as Links with its entry"
+        );
+    }
+    h.close();
+}
+
+#[test]
+fn the_link_choice_shows_no_caption() {
+    link_choice_without_caption(UiDensity::Desktop, 12);
+}
+
+#[test]
+fn the_link_choice_shows_no_caption_with_32_px_touch_fonts() {
+    link_choice_without_caption(UiDensity::Touch, 32);
+}
+
+/// Without a caption the link choice keeps what it says to a screen reader and in its
+/// tooltip: its accessible name "Links"; as its description why the destination's default
+/// was chosen, or, once keeping links cannot work there, what keeping them does; and as
+/// its tooltip that reason, a blank line and what each entry does. The note about keeping
+/// links, and the hold of the first confirmation that keeps them, sit under the box.
+#[test]
+fn the_link_choice_keeps_its_name_description_and_tooltip() {
+    let h = Harness::new(PreferenceTheme::Dark, UiDensity::Desktop, 12);
+    let form = h.main.global::<OperationPresentation>();
+    let description = |item: &ItemRc| {
+        item.accessible_string_property(AccessibleStringProperty::Description)
+            .map(|text| text.to_string())
+    };
+    h.focus(PaneId::Left, "Q3 report.pdf");
+    h.open(Key::F5, network());
+    h.layout(1340, 820);
+    let reason = form.get_link_reason().to_string();
+    assert!(reason.starts_with("Network location: "), "{reason}");
+    let links = h.item(AccessibleRole::Combobox, link_option::LABEL);
+    assert_eq!(description(&links).as_deref(), Some(reason.as_str()));
+    let hint = form.get_link_hint().to_string();
+    let entries = hint
+        .strip_prefix(&format!("{reason}\n\n"))
+        .unwrap_or_else(|| panic!("the tooltip starts with the reason and a blank line: {hint:?}"));
+    assert!(
+        entries.starts_with(&format!("{}: ", link_option::COPY_FILES))
+            && entries.contains(&format!("\n{}: ", link_option::KEEP_LINKS)),
+        "then what each entry does: {entries:?}"
+    );
+    // Keeping links where none are created: the box describes what that does, and the
+    // note says it under the box, from the box's left edge.
+    h.choose_links(1);
+    h.layout(1340, 820);
+    let warning = form.get_link_warning().to_string();
+    assert!(!warning.is_empty(), "keeping links cannot work there");
+    let links = h.item(AccessibleRole::Combobox, link_option::LABEL);
+    assert_eq!(description(&links).as_deref(), Some(warning.as_str()));
+    let under = |text: &str| {
+        let edges = modeless::edges(&links);
+        let note = modeless::edges(&h.item(AccessibleRole::Text, text));
+        assert!(
+            note.1 >= edges.3
+                && note.1 < edges.3 + 24.0
+                && note.0 > edges.0
+                && note.0 < edges.0 + 48.0,
+            "{text:?} sits under the link choice: {note:?} under {edges:?}"
+        );
+    };
+    under(&warning);
+    // Enter holds the Copy once, with what keeping links does, still under the box.
+    h.key(Key::Return);
+    h.layout(1340, 820);
+    assert!(form.get_active(), "the first Enter holds");
+    let held = form.get_warning().to_string();
+    assert!(held.starts_with(&warning), "{held:?}");
+    assert!(form.get_warning_about_links(), "the hold is about links");
+    under(&held);
+    h.close();
+}
+
+/// The options in `density` at `font` px, at the regular size and at the minimum window
+/// size: one column under the "Options" heading. The link choice and both check boxes
+/// start at the heading's left edge, which is the destination's; with the default font the
+/// link choice is as wide as its longest entry, not as the form. Exact modified time is
+/// left out, not shown disabled, where it cannot apply (a folder among the items).
+fn controls_start_at_one_edge(density: UiDensity, font: u16) {
     let h = Harness::new(PreferenceTheme::Light, density, font);
     h.show(State::OneFile);
     for (width, height) in [(1340, 820), (320, 200)] {
         let case = format!("{density:?} {font} px {width}x{height}");
         h.layout(width, height);
-        let left = modeless::edges(&h.item(AccessibleRole::Combobox, "Links")).0;
-        for label in ["Preserve exact modified time", "Wait for earlier transfers"] {
-            let edge = modeless::edges(&h.item(AccessibleRole::Checkbox, label)).0;
+        let links = modeless::edges(&h.item(AccessibleRole::Combobox, link_option::LABEL));
+        let field = modeless::edges(&h.item(AccessibleRole::TextInput, "Destination folder"));
+        let edge = |role, label: &str| modeless::edges(&h.item(role, label)).0;
+        for (label, left) in [
+            ("the Options heading", edge(AccessibleRole::Text, "Options")),
+            ("the destination", field.0),
+            (
+                "Preserve exact modified time",
+                edge(AccessibleRole::Checkbox, "Preserve exact modified time"),
+            ),
+            (
+                "Wait for earlier transfers",
+                edge(AccessibleRole::Checkbox, "Wait for earlier transfers"),
+            ),
+        ] {
             assert!(
-                (edge - left).abs() < 0.5,
-                "{case}: {label} starts at {edge}, the link choice at {left}"
+                (left - links.0).abs() < 0.5,
+                "{case}: {label} starts at {left}, the link choice at {}",
+                links.0
             );
         }
-        let field = modeless::edges(&h.item(AccessibleRole::TextInput, "Destination folder"));
-        if width == 1340 {
+        assert!(
+            links.2 <= field.2 + 0.5,
+            "{case}: the link choice ends within the form: {links:?} {field:?}"
+        );
+        if width == 1340 && font < 16 {
             assert!(
-                left > field.0 + 20.0,
-                "{case}: the controls start after the Links caption ({left}, {})",
-                field.0
-            );
-        } else if narrow {
-            assert!(
-                (left - field.0).abs() < 0.5,
-                "{case}: a narrow grid starts its controls at the form's edge ({left}, {})",
-                field.0
+                links.2 - links.0 >= 159.5 && links.2 < field.2 - 40.0,
+                "{case}: the link choice is as wide as its longest entry: {links:?} {field:?}"
             );
         }
     }
@@ -717,12 +842,12 @@ fn controls_start_at_one_edge(density: UiDensity, font: u16, narrow: bool) {
 
 #[test]
 fn the_option_controls_start_at_one_edge() {
-    controls_start_at_one_edge(UiDensity::Desktop, 12, false);
+    controls_start_at_one_edge(UiDensity::Desktop, 12);
 }
 
 #[test]
-fn the_option_controls_start_at_one_edge_in_a_narrow_grid() {
-    controls_start_at_one_edge(UiDensity::Touch, 32, true);
+fn the_option_controls_start_at_one_edge_with_32_px_touch_fonts() {
+    controls_start_at_one_edge(UiDensity::Touch, 32);
 }
 
 /// Tab follows the order the controls are shown in: the destination, the options top to

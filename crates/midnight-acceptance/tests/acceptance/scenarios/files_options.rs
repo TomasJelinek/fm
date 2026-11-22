@@ -114,7 +114,8 @@ fn tab_order(app: &mut App, verb: &str) -> Result<(), String> {
 
 /// The open dialog's Links choice on a fixed local folder, once the folder's link facts
 /// arrived (after the trace `before`): "Keep links as links" of exactly its two entries,
-/// labelled "Links", without a reason or a warning (shown or read).
+/// without a reason or a warning (shown or read), and without a visible caption (both
+/// entries name links), yet named "Links" for a screen reader.
 fn check_links(app: &mut App, before: &[String], what: &str, failures: &mut Vec<String>) {
     if !support::wait_link_facts(app, before) {
         failures.push(format!(
@@ -127,11 +128,20 @@ fn check_links(app: &mut App, before: &[String], what: &str, failures: &mut Vec<
         return;
     };
     let mut differences = view.plain_default();
-    if !inspect::visible_texts(app.slint())
+    if inspect::find(app.slint(), AccessibleRole::Combobox, support::LINKS_LABEL).is_none() {
+        differences.push(format!(
+            "no box is named {:?} for a screen reader",
+            support::LINKS_LABEL
+        ));
+    }
+    if inspect::visible_texts(app.slint())
         .iter()
-        .any(|text| text == "Links")
+        .any(|text| text == support::LINKS_LABEL)
     {
-        differences.push("its label \"Links\" is not shown".into());
+        differences.push(format!(
+            "it still shows the caption {:?}, which its entries repeat",
+            support::LINKS_LABEL
+        ));
     }
     if !differences.is_empty() {
         failures.push(format!(

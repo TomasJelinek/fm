@@ -83,15 +83,15 @@ measurement.
   draft captured with its selection, nothing is read; a size counts files only and is
   left out where folders are counted; where the items come from is the line's tooltip,
   "From: <folder>"); the destination field, full width, with the keyboard and the
-  accessible name "Destination folder"; and an **Options** group. In that group the
-  link choice's caption "Links" forms the label column, and the Links box and the
-  check boxes ("Preserve exact modified time", offered only where it can apply, at
-  most 64 native regular files, and left out rather than disabled elsewhere; "Wait for
-  earlier transfers") start at one edge after it. Where the caption and the box do not
-  fit side by side, the caption sits above the box and every control starts at the
-  form's left edge. Spacing: 16 px padding, 6 px inside a block (the line and the field,
+  accessible name "Destination folder"; and an **Options** group: one
+  column under its heading, every control at the form's left edge. The Links box (as
+  wide as its longest entry, at least 160 px) has no visible caption, since both its
+  entries name links; a screen reader reads it as "Links". The check boxes follow
+  ("Preserve exact modified time", offered only where it can apply, at most 64 native
+  regular files, and left out rather than disabled elsewhere; "Wait for earlier
+  transfers"). Spacing: 16 px padding, 6 px inside a block (the line and the field,
   a control and its note, the options' rows), 16 px between the destination and the
-  options, 12 px between the columns; the compact layout (under 280 px high) uses 8, 4
+  options; the compact layout (under 280 px high) uses 8, 4
   and 8 px, keeps the header and the actions fixed and scrolls the rest. At most one
   note shows, a glyph and its text under the control it concerns, first of: Enter's
   request for a destination; a refusal (a destination that is not an existing folder, a

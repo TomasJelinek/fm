@@ -96,12 +96,10 @@ export component OperationDialog inherits Rectangle {
         return max(1px, root.width - 2 * root.form-padding(is-compact) - FluentScrollMetrics.overlay-size - 16px);
     }
     // The Copy/Move form's spacing: 6 px inside a block (the first line and the field, a
-    // control and its note, the options' rows), 16 px between the destination and the
-    // options and 12 px between the options' columns; the compact layout tightens the
-    // first two to 4 and 8 px.
+    // control and its note, the options' rows) and 16 px between the destination and the
+    // options; the compact layout tightens them to 4 and 8 px.
     private property <length> block-gap: root.compact ? 4px : 6px;
     private property <length> section-gap: root.compact ? 8px : 16px;
-    private property <length> column-gap: 12px;
     // The width of the form's content: inside the form padding on both sides and the
     // scroll bar's column, which the form's scroll view leaves free.
     pure function content-width(is-compact: bool) -> length {
@@ -115,20 +113,6 @@ export component OperationDialog inherits Rectangle {
     private property <length> combo-width: max(160px,
         max(first-choice-measure.preferred-width, second-choice-measure.preferred-width) + 54px);
     private property <length> combo-height: max(32px, Theme.control-height);
-    // The options grid: the link choice's caption is the label column, and every control
-    // (the link box and the check boxes) starts at one edge after it. Where the caption
-    // and the box do not fit side by side, the caption sits above the box and every
-    // control starts at the left edge.
-    pure function options-narrow(width: length) -> bool {
-        return root.links-visible
-            && links-caption-measure.preferred-width + root.column-gap + root.combo-width > width;
-    }
-    pure function control-x(width: length) -> length {
-        return root.links-visible && !root.options-narrow(width)
-            ? links-caption-measure.preferred-width + root.column-gap : 0px;
-    }
-    private property <bool> narrow: root.options-narrow(options.width);
-    private property <length> drawn-control-x: root.control-x(options.width);
     // The one note the Copy/Move form shows, first of: why Enter with an empty
     // destination did nothing, why the form does not start (`warning`), and what keeping
     // links does where none can be stored.
@@ -151,10 +135,10 @@ export component OperationDialog inherits Rectangle {
         if root.transfer && root.note-text != "" {
             if root.note-under-links {
                 root.reveal-middle(options.y + links-box.y,
-                    links-box.height + root.block-gap + links-note-measure.preferred-height + 12px);
+                    links-box.height + root.block-gap + note-measure.preferred-height + 12px);
             } else {
                 root.reveal-middle(name.y,
-                    name.height + root.block-gap + field-note-measure.preferred-height + 12px);
+                    name.height + root.block-gap + note-measure.preferred-height + 12px);
             }
             // The keyboard stays where it was: Slint drops the focus of a control
             // scrolled out of view at the next key.
@@ -258,7 +242,6 @@ export component OperationDialog inherits Rectangle {
         + (root.has-name ? max(Theme.control-height, name.preferred-height) + root.regular-row-spacing : 0px)
         + (root.has-name && root.input-label != "" ? Theme.font-size * 1.5 + root.regular-row-spacing : 0px)
         + max(32px, confirm-button.preferred-height) + 36px, 220px, 640px);
-    private property <length> regular-control-x: root.control-x(root.content-width(false));
     // The Copy/Move form in its regular layout, block by block as the form lays it out:
     // the padding, the header and the gaps around the middle; the first line and its
     // gap, the field and its note; the options' heading after its gap, then each shown
@@ -267,11 +250,10 @@ export component OperationDialog inherits Rectangle {
         2 * root.form-padding(false) + header.regular-height + 2 * root.regular-row-spacing
         + first-line-measure.preferred-height + 6px + root.name-height
         + (root.transfer && root.note-text != "" && !root.links-note
-            ? 6px + max(root.note-glyph, field-note-measure.preferred-height) + 12px : 0px)
+            ? 6px + max(root.note-glyph, note-measure.preferred-height) + 12px : 0px)
         + (root.any-option ? 16px + options-heading-measure.preferred-height : 0px)
         + (root.links-visible ? 6px + root.combo-height
-            + (root.options-narrow(root.content-width(false)) ? links-caption-measure.preferred-height + 4px : 0px)
-            + (root.links-note ? 6px + max(root.note-glyph, links-note-measure.preferred-height) + 12px : 0px) : 0px)
+            + (root.links-note ? 6px + max(root.note-glyph, note-measure.preferred-height) + 12px : 0px) : 0px)
         + (root.option-visible ? 6px + max(Theme.control-height, option-caption-measure.preferred-height) : 0px)
         + (root.wait-visible ? 6px + max(Theme.control-height, wait-caption-measure.preferred-height) : 0px)
         + max(32px, Theme.control-height, cancel-button.min-height, confirm-button.preferred-height),
@@ -294,29 +276,21 @@ export component OperationDialog inherits Rectangle {
         font-size: Theme.font-size; wrap: word-wrap;
     }
     // The Copy/Move form's texts at the regular layout's width (a note's glyph and
-    // insets take `note-chrome` of it).
+    // insets take `note-chrome` of it; a note under the destination and one under the
+    // link box are equally wide).
     first-line-measure := Text {
         visible: false; accessible-role: none;
         width: root.content-width(false);
         text: root.body; font-size: Theme.font-size; wrap: word-wrap;
     }
-    field-note-measure := Text {
+    note-measure := Text {
         visible: false; accessible-role: none;
         width: max(1px, root.content-width(false) - root.note-chrome);
-        text: root.note-text; font-size: Theme.font-size; wrap: word-wrap;
-    }
-    links-note-measure := Text {
-        visible: false; accessible-role: none;
-        width: max(1px, root.content-width(false) - root.regular-control-x - root.note-chrome);
         text: root.note-text; font-size: Theme.font-size; wrap: word-wrap;
     }
     options-heading-measure := Text {
         visible: false; accessible-role: none;
         text: "Options"; font-size: Theme.font-size; font-weight: 600;
-    }
-    links-caption-measure := Text {
-        visible: false; accessible-role: none;
-        text: "Links"; font-size: Theme.font-size;
     }
     first-choice-measure := Text {
         visible: false; accessible-role: none;
@@ -329,12 +303,12 @@ export component OperationDialog inherits Rectangle {
     // A check box's caption wraps beside its 24 px box and 6 px gap.
     option-caption-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.content-width(false) - root.regular-control-x - 30px);
+        width: max(1px, root.content-width(false) - 30px);
         text: root.option-label; font-size: Theme.font-size; wrap: word-wrap;
     }
     wait-caption-measure := Text {
         visible: false; accessible-role: none;
-        width: max(1px, root.content-width(false) - root.regular-control-x - 30px);
+        width: max(1px, root.content-width(false) - 30px);
         text: root.wait-label; font-size: Theme.font-size; wrap: word-wrap;
     }
     background: Theme.surface; border-color: Theme.active-frame; border-width: 1px; border-radius: 6px;
@@ -441,7 +415,9 @@ export component OperationDialog inherits Rectangle {
                         padding-top: root.block-gap;
                         FormNote { text: root.note-text; error: root.note-error; }
                     }
-                    // Copy/Move: the options grid, as one group under its heading. A
+                    // Copy/Move: the options, one group in one column under its heading,
+                    // every control at the form's left edge. The link box has no caption:
+                    // both its entries name links, and its accessible name is "Links". A
                     // form without options keeps no room for it.
                     options := VerticalLayout {
                         // Each row carries the gap above it, so a row left out keeps
@@ -454,19 +430,10 @@ export component OperationDialog inherits Rectangle {
                         }
                         links-box := Rectangle {
                             visible: root.links-visible;
-                            height: !root.links-visible ? 0px : root.block-gap + root.combo-height
-                                + (root.narrow ? links-caption.preferred-height + 4px : 0px);
-                            links-caption := Text {
-                                x: 0px; y: root.block-gap;
-                                width: root.narrow ? parent.width : self.preferred-width;
-                                height: root.narrow ? self.preferred-height : root.combo-height;
-                                text: "Links"; color: Theme.text; font-size: Theme.font-size;
-                                vertical-alignment: center; accessible-role: none;
-                            }
+                            height: root.links-visible ? root.block-gap + root.combo-height : 0px;
                             follow-links := HintedComboBox {
-                                x: root.drawn-control-x;
-                                y: root.block-gap + (root.narrow ? links-caption.preferred-height + 4px : 0px);
-                                width: min(root.combo-width, max(0px, parent.width - self.x));
+                                x: 0px; y: root.block-gap;
+                                width: min(root.combo-width, parent.width);
                                 height: root.combo-height;
                                 model: root.link-choices;
                                 current-index <=> root.link-choice;
@@ -478,22 +445,16 @@ export component OperationDialog inherits Rectangle {
                                 changed has-focus => { if self.has-focus { root.reveal-middle(options.y + links-box.y + self.y, self.height); } }
                             }
                         }
-                        // Positioned at the controls' edge: an indent from the form's
-                        // width must stay out of the form's own width constraints.
-                        if root.note-under-links : Rectangle {
-                            height: root.block-gap + under-links.height;
-                            under-links := FormNote {
-                                x: root.drawn-control-x; y: root.block-gap;
-                                width: max(0px, parent.width - self.x);
-                                text: root.note-text; error: false;
-                            }
+                        if root.note-under-links : VerticalLayout {
+                            padding-top: root.block-gap;
+                            FormNote { text: root.note-text; error: false; }
                         }
                         option-box := Rectangle {
                             visible: root.option-visible;
                             height: root.option-visible ? root.block-gap + option.height : 0px;
                             option := WrappingCheckBox {
-                                x: root.drawn-control-x; y: root.block-gap;
-                                width: max(0px, parent.width - self.x);
+                                x: 0px; y: root.block-gap;
+                                width: parent.width;
                                 text: root.option-label; hint: root.option-hint;
                                 enabled: root.option-visible && root.option-enabled;
                                 checked <=> root.option-checked;
@@ -504,8 +465,8 @@ export component OperationDialog inherits Rectangle {
                             visible: root.wait-visible;
                             height: root.wait-visible ? root.block-gap + wait-option.height : 0px;
                             wait-option := WrappingCheckBox {
-                                x: root.drawn-control-x; y: root.block-gap;
-                                width: max(0px, parent.width - self.x);
+                                x: 0px; y: root.block-gap;
+                                width: parent.width;
                                 text: root.wait-label;
                                 hint: "Start only after the Copy and Move jobs that are unfinished when you confirm. Later jobs and Delete do not hold it back.";
                                 enabled: root.wait-visible;
@@ -515,7 +476,8 @@ export component OperationDialog inherits Rectangle {
                         }
                     }
                 }
-            }            HorizontalLayout {
+            }
+            HorizontalLayout {
                 spacing: 8px;
                 cancel-button := HintedActionButton { text: "Cancel"; hint: "Leave files unchanged (Escape)."; clicked => { root.cancel(); } }
                 Rectangle {
