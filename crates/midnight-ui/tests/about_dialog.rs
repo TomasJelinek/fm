@@ -1,7 +1,8 @@
 //! The About dialog lives inside the main window, can be dragged by its sky and
 //! lists the third-party libraries; a library's notices come from the backend. Its
-//! night sky loops every 72 s, and Saturn and the other scenes keep clear of the
-//! title and of each other at every size.
+//! night sky loops every 72 s and holds still while the system asks for less motion,
+//! Saturn and the other scenes keep clear of the title and of each other at every
+//! size, and the version pill holds its text at every font size.
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
 #[path = "support/render.rs"]
@@ -13,7 +14,7 @@ use i_slint_core::{
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{
         AccessibleRole, BuiltInMouseCursor, ClippedImage, ComplexText, Flickable, ImageItem, Item,
-        Path, SimpleText, TouchArea,
+        Opacity, Path, SimpleText, TouchArea,
     },
     layout::Orientation,
     lengths::LogicalRect,
@@ -1324,6 +1325,165 @@ fn the_author_and_copyright_stay_readable_at_the_smallest_size_and_large_fonts()
                     "{case}: {name:?} needs {needs:.1} px, has {has:.1}"
                 ));
             }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// How opaque an item is drawn: its own and its ancestors' opacity together.
+fn opacity(item: &ItemRc) -> f32 {
+    let mut shown = 1.0;
+    let mut current = Some(item.clone());
+    while let Some(next) = current {
+        if let Some(layer) = next.downcast::<Opacity>() {
+            shown *= layer.as_pin_ref().opacity();
+        }
+        current = next.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    shown
+}
+
+/// The opacity of every layer inside `item` that sets one.
+fn layer_opacities(item: &ItemRc) -> Vec<f32> {
+    let mut found = Vec::new();
+    visit(item, &mut |inner| {
+        if inner.downcast::<Opacity>().is_some() {
+            found.push(opacity(inner));
+        }
+    });
+    found
+}
+
+/// Where every item of the sky is and the sky's pixels, drawn afresh.
+fn sky_pose(about: &mut About) -> (Vec<LogicalRect>, Vec<slint::Rgb8Pixel>) {
+    draw_afresh(&mut about.ui);
+    let sky = about_sky(about.window());
+    let mut places = Vec::new();
+    visit(&sky, &mut |item| places.push(bounds(item)));
+    (places, pixels(&about.ui, bounds(&sky)))
+}
+
+#[test]
+fn the_sky_holds_still_while_the_system_asks_for_less_motion() {
+    let mut about = About::open(1000, 800);
+    ui::advance(&about.clock, Duration::from_secs(3));
+    let moving = sky_pose(&mut about);
+    // The setting changes while About is open: the sky stops at once and stays still.
+    about.window().set_reduce_motion(true);
+    let still = sky_pose(&mut about);
+    assert!(
+        still != moving,
+        "the sky did not stop when the setting changed"
+    );
+    for _ in 0..4 {
+        ui::advance(&about.clock, Duration::from_secs(7));
+        assert!(
+            sky_pose(&mut about) == still,
+            "the sky moves while the system asks for less motion"
+        );
+    }
+    // Every scene shows in the still sky, a shooting star and the satellite among them,
+    // and the title and the version stay readable in front of them.
+    let image = |label: &str| ui::popup_item(about.window(), label, AccessibleRole::Image);
+    for scene in [
+        "Cassiopeia",
+        "Owl",
+        "Satellite",
+        "Saturn",
+        "Midnight Explorer icon",
+    ] {
+        assert!(image(scene).is_visible(), "{scene} in the still sky");
+    }
+    for text in ["Midnight Explorer", "Version 1.2.3"] {
+        let item = ui::popup_item(about.window(), text, AccessibleRole::Text);
+        assert!(
+            item.is_visible() && opacity(&item) > 0.99,
+            "{text} in the still sky"
+        );
+    }
+    let sky = about_sky(about.window());
+    let mut meteors = Vec::new();
+    visit(&sky, &mut |item| {
+        if is_streak(item) {
+            meteors.push(opacity(item));
+        }
+    });
+    assert!(
+        meteors.iter().any(|&shown| shown > 0.5),
+        "no shooting star shows in the still sky: {meteors:?}"
+    );
+    let satellite = layer_opacities(&image("Satellite"));
+    assert!(
+        satellite.iter().any(|&shown| shown > 0.5),
+        "the satellite is faded out in the still sky: {satellite:?}"
+    );
+    let mut lines = Vec::new();
+    visit(&image("Cassiopeia"), &mut |item| {
+        if item.downcast::<Path>().is_some() {
+            lines.push((item.is_visible(), opacity(item)));
+        }
+    });
+    assert!(
+        !lines.is_empty() && lines.iter().all(|&(drawn, shown)| drawn && shown > 0.3),
+        "Cassiopeia's lines are not drawn in the still sky: {lines:?}"
+    );
+    // It is the moving sky's pose in the middle of its loop, which goes on from there
+    // when motion is allowed again, still without reopening About.
+    about.window().set_reduce_motion(false);
+    ui::advance(
+        &about.clock,
+        Duration::from_secs(36).saturating_sub(about.clock.get()),
+    );
+    assert!(
+        sky_pose(&mut about) == still,
+        "the still sky is not the loop's middle"
+    );
+    ui::advance(&about.clock, Duration::from_secs(2));
+    assert!(
+        sky_pose(&mut about) != still,
+        "the sky stays still after the setting is cleared"
+    );
+}
+
+#[test]
+fn the_version_pill_holds_its_text_at_every_font_size() {
+    let mut about = About::open(1000, 800);
+    let mut problems = Vec::new();
+    // Each density's default font, then the largest font Options accepts (32 px).
+    for (density, font) in [(0, 12), (1, 15), (0, 32), (1, 32)] {
+        about.window().set_density_index(density);
+        about.window().invoke_apply_fonts("".into(), font, font);
+        about.ui.draw();
+        let case = format!("density {density}, font {font}");
+        render::snapshot(
+            &about.ui,
+            &format!("about-pill-density-{density}-font-{font}"),
+        );
+        let text = ui::popup_item(about.window(), "Version 1.2.3", AccessibleRole::Text);
+        let pill = text
+            .parent_item(ParentItemTraversalMode::StopAtPopups)
+            .expect("the version pill");
+        let (pill_area, sky_area) = (bounds(&pill), bounds(&about_sky(about.window())));
+        // The text's line with 2 px above and below it.
+        let needs = preferred(&text, Orientation::Vertical, -1.0) + 4.0;
+        if pill_area.height() + 0.5 < needs {
+            problems.push(format!(
+                "{case}: the pill is {:.1} px tall, its text needs {needs:.1}",
+                pill_area.height()
+            ));
+        }
+        if !within(&pill_area, &sky_area) {
+            problems.push(format!(
+                "{case}: the sky {sky_area:?} cuts the pill {pill_area:?}"
+            ));
+        }
+        // The default desktop font keeps the 20 px pill and the 176 px sky.
+        if (density, font) == (0, 12)
+            && ((pill_area.height() - 20.0).abs() > 0.5 || (sky_area.height() - 176.0).abs() > 0.5)
+        {
+            problems.push(format!(
+                "{case}: the pill {pill_area:?} or the sky {sky_area:?} changed"
+            ));
         }
     }
     assert!(problems.is_empty(), "{problems:#?}");

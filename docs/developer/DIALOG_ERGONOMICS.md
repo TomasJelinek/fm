@@ -142,6 +142,17 @@ separately; this document is not a claim that every item is already released.
   preserves the Options save lock without changing other dialogs' default.
   [Compact-footer verification](../verification/2026-11-10-tree-prefix-search.md#options-footer-follow-up)
   records the Windows/Linux scope separately from native-window migration.
+- About's version pill is its text's line with 2 px above and below, at least 20 px,
+  so the 32 px fonts Options allows do not clip it; the sky grows by what the pill
+  adds, and a sky too short for the icon, title and pill shows only the title. When
+  the system asks for less motion (the main window's `reduce-motion`: Windows'
+  animation effects off) the sky holds still in the middle of its loop, where
+  Cassiopeia, the satellite and a shooting star show, and it follows a change of
+  the setting while About is open. Verified with software-window tests built from
+  `b1b89343` plus this change (`about_dialog`:
+  `the_version_pill_holds_its_text_at_every_font_size`,
+  `the_sky_holds_still_while_the_system_asks_for_less_motion`); Windows' setting
+  itself and the application window were not exercised.
 - Filename colors offer a reusable visual color picker: hue, saturation/value,
   numeric RGB/hex, sample colors, and reset to the theme. Existing automatic
   focused/selected color derivation and contrast adjustment remain in force.

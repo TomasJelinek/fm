@@ -930,8 +930,9 @@ editor scope and shortcuts reserved for later stages.
   Checksums, Folder Sizes, Properties, Hot Paths, view mode and sort. Drives,
   paths and tabs remain per-panel. Narrow windows scroll the shared toolbar.
   The Options gear stays fixed at its right end; the moon button immediately
-  beside it opens About with the application version, author and copyright. The
-  bottom bar keeps F1–F12 and Jobs.
+  beside it opens About with the application version, author and copyright. Its
+  night sky holds still while Windows animation effects are off. The bottom bar
+  keeps F1–F12 and Jobs.
   Switching panels or locations invalidates an open context-dependent popup.
 - Custom Commands has a dedicated toolbar above the command editor whenever at
   least one command is configured. At compact window sizes, the shared toolbar's

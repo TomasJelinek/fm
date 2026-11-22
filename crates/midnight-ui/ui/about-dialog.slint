@@ -250,9 +250,12 @@ component Sky inherits Rectangle {
     in property <image> logo;
     in property <string> version;
     callback dragged(length, length);
+    // The version pill: its text's line with 2 px above and below, at least 20 px.
+    out property <length> pill-height: max(20px, pill.preferred-height + 4px);
     // 0..1 over the whole 72 s loop: slow drift that wraps without a jump.
     private property <float> drift: root.phase / 18.8496;
-    private property <bool> compact: root.height < 170px;
+    // Too short for the icon, the title and the version pill under it: a title strip.
+    private property <bool> compact: root.height < 150px + root.pill-height;
     // Wide enough for the extra scenes to keep clear of the shooting stars.
     private property <bool> roomy: !root.compact && root.width >= 464px;
     background: @linear-gradient(180deg, #050820 0%, #101645 50%, #3b2a72 100%);
@@ -481,7 +484,7 @@ component Sky inherits Rectangle {
     Rectangle {
         visible: !root.compact;
         x: (parent.width - self.width) / 2; y: 144px;
-        width: pill.preferred-width + 20px; height: 20px; border-radius: 10px;
+        width: pill.preferred-width + 20px; height: root.pill-height; border-radius: self.height / 2;
         background: #ffffff26; border-width: 1px; border-color: #ffffff3a;
         pill := Text {
             text: "Version " + root.version; color: #e6e9ff; font-size: Theme.small-font;
@@ -509,10 +512,20 @@ component Sky inherits Rectangle {
 export component AboutDialog inherits Rectangle {
     in property <string> application-version;
     in property <image> application-icon;
+    // The system asks for less motion (Windows: animation effects off). The sky then
+    // holds still in the middle of its loop, where Cassiopeia, the satellite and a
+    // shooting star show, and follows a change at once while About is open.
+    in property <bool> reduce-motion;
     callback close();
     callback move-dialog(length, length);
     in-out property <int> tab: 0;
-    private property <float> phase: 0;
+    // When About opened: the sky's loop counts from then.
+    private property <duration> opened;
+    // A calm 72 s loop, three cycles of the phase. Reading the animation tick redraws
+    // the sky every frame, so the loop's length sets only how far a scene moves per
+    // frame; a still sky does not read it and asks for no frames.
+    private property <float> phase: root.reduce-motion ? 18.8496 / 2
+        : Math.mod((animation-tick() - root.opened) / 1ms, 72000) / 72000 * 18.8496;
     // Showing or leaving a library destroys the focused control (the filter, the
     // list or Back), and Slint keeps focus on the dead item. Focus the dialog
     // instead, so Escape still reaches it.
@@ -530,10 +543,7 @@ export component AboutDialog inherits Rectangle {
     // Hosted by the main window's embedded dialog frame; the sky moves it.
     background: Theme.surface;
     clip: true;
-    init => { self.phase = 6.2832 * 3; close-button.focus(); }
-    // A calm 72 s loop. The phase is computed for every frame drawn, so the loop's
-    // length sets only how far each scene moves per frame, never the frame rate.
-    animate phase { duration: 72s; iteration-count: -1; easing: linear; }
+    init => { self.opened = animation-tick(); close-button.focus(); }
     keys := FocusScope { focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
@@ -544,9 +554,10 @@ export component AboutDialog inherits Rectangle {
         }
         VerticalLayout {
             spacing: 0px;
-            // A short dialog keeps the title strip, so Close and the tab stay in view.
+            // A short dialog keeps the title strip, so Close and the tab stay in view. A
+            // large font's taller version pill makes the sky taller by as much.
             Sky {
-                height: clamp(root.height - 250px, 40px, 176px);
+                height: clamp(root.height - 250px, 40px, 176px + max(0px, self.pill-height - 20px));
                 phase: root.phase; logo: root.application-icon; version: root.application-version;
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }

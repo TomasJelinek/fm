@@ -1452,6 +1452,7 @@ export component MainWindow inherits Window {
             AboutDialog {
                 application-version: root.application-version;
                 application-icon: root.icon;
+                reduce-motion: root.reduce-motion;
                 move-dialog(dx, dy) => { about-frame.move-by(dx, dy); }
                 close => { root.about-open = false; }
             }
