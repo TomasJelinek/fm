@@ -37,13 +37,12 @@ solid 7z block do stay there, up to 128 MiB with later members first: members re
 within that window need no further block decode, while a larger block or a read
 outside the window decodes the whole block again. Each mount keeps
 recently read members for repeated reads (at most 16 members within 512 MiB of
-spool storage). Worker startup and indexing remain part of opening time. These
-changes do not remove resource limits, source revision validation or sandbox
-isolation. Copy-out still independently verifies destination bytes with SHA-256;
-archive CRC checks do not replace that verification. The
-[measured opening results](verification/2026-11-08-archive-opening-performance.md)
-record the fixture sizes, cold-start limitation and regression coverage of that
-earlier in-memory design.
+spool storage). Worker startup and indexing remain part of opening time. Streaming
+keeps the resource limits, the source revision checks and the sandbox. Copy-out still
+independently verifies destination bytes with SHA-256; archive CRC checks do not
+replace that verification. The dated
+[streaming record](verification/2026-11-09-archive-streaming.md) has the
+measurements.
 
 Inside an archive the path bar shows the native folders that hold the archive as
 separate parts, as on a native path, then the archive's name and its folders, each a
@@ -211,15 +210,15 @@ archives cannot be read either. RAR is not supported.
 
 ## Current operation limits
 
-The independent archive worker currently supports browsing, sorting/filtering,
-selection and F3 member reads. **F5 copy out / extraction is implemented** through
-the bounded background transfer queue, with progress, conflict handling, safe
-destination traversal and independent SHA-256 destination readback. See the
-[archive-copy evidence](verification/2026-11-07-archive-copy.md).
-Copying into an archive and moving archive members are not implemented. Copy-out
-validates the archive file as each exchange with its worker begins and around each read
-of the file, not for every chunk; small members copied at 118–198 files/s through the
-copy actor on 22 November (debug build), where they had copied at 62–72 ([measurements](verification/2026-11-22-archive-copy-out.md)).
+Inside an archive, browsing, sorting, filters, selection, F3, Find, folder sizes,
+previews and Hot Paths work. F5 copies members out through the bounded background
+transfer queue, with progress, conflict handling, safe destination traversal and
+independent SHA-256 destination readback. Copying into an archive and moving archive
+members are not implemented. Copy-out validates the archive file as each exchange
+with its worker begins and around each read of the file, not for every chunk, and
+Cancel or Pause takes effect without waiting for the rest of a large selection. The
+dated [copy-out record](verification/2026-11-22-archive-copy-out.md) has the
+measured rates and Cancel times.
 
 Archive Hot Paths persist typed container/provider/member locations and the exact
 decoder, and display `archive.zip@path` with native separators. The display string
@@ -234,9 +233,7 @@ still opens it, as long as its identity, length and modification time are the sa
 ([change-time drift](developer/CONTENT_READS.md#change-time-drift-view-05)). A Copy
 out of an archive that did change offers Skip but no Retry, which could not succeed.
 Missing providers remain an
-explicit unavailable location, with native file operations disabled. Core/codec
-and presenter tests cover this implementation; final integrated UI qualification
-is tracked in the [current extension](superpowers/specs/2026-11-07-panel-viewer-followups.md#archive-hot-paths).
+explicit unavailable location, with native file operations disabled.
 
 A failed listing in an archive panel can mean that the archive's worker was
 stopped, for example by its 20-second idle watchdog while a viewer read a member;

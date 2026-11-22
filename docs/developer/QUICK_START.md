@@ -36,7 +36,12 @@ source identity, not a service to contact. Keep the entire bundle together when
 relocating it between machines/operating systems.
 
 An independent plugin declares its own workspace and lockfile, with version-only
-public dependencies. For example:
+public dependencies. The current SDK is 0.2.0, and a new plugin should depend on it
+(`midnight-plugin-sdk = { version = "=0.2.0", registry = "midnight" }`); plugins built
+on 0.1.0 keep loading. The example below and the
+[tiny viewer](examples/tiny-viewer/) still pin 0.1.0; nothing builds the example in
+CI or validation yet (SDK-05 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). For
+example:
 
 ```toml
 [workspace]

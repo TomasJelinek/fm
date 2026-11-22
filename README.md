@@ -1139,9 +1139,13 @@ current keys.
   their password. It is asked once, when F3, Enter or F5 first needs it, and kept in
   memory only until the archive is closed: when no panel tab, viewer or copy uses the
   archive any more, or when the application exits. An archive inside an archive asks
-  for its own password. A padlock marks encrypted members, and the status line names a
-  member's encryption or why it cannot be read
-  ([details](docs/ARCHIVE_FORMATS.md#password-protected-archives)).
+  for its own password. Cancel or Escape closes the dialog without a message and
+  leaves the archive locked; a copy then skips the protected members and names them
+  in its results. After OK, the action that asked goes on with its own target (the
+  member F3 was pressed on, the archive Enter opened, the selection F5 copies); if the
+  panel has left the archive meanwhile, nothing opens and the status line says so. A
+  padlock marks encrypted members, and the status line names a member's encryption or
+  why it cannot be read ([details](docs/ARCHIVE_FORMATS.md#password-protected-archives)).
 - Ctrl+F2 or the shared toolbar's attributes button opens **Attributes, times and
   case**. Ctrl+F7 opens the same editor with case conversion enabled. Other edits
   start as Leave unchanged. **Review changes** shows the captured selection and the
@@ -1572,6 +1576,11 @@ its enclosing archive (in memory when small, otherwise in a private spool file),
 progress in the status bar and cancellation by navigating away; such archives are
 opened for the session only, so tabs and Hot Paths keep the outermost archive's folder.
 Details and limits are in [archives inside archives](docs/ARCHIVE_FORMATS.md#archives-inside-archives).
+At most two archives opened from native files are open at a time; tabs and viewers
+that show the same archive share it. A tab that moves on to another archive hands its
+own archive over; while two archives are still in use elsewhere, opening a third is
+refused with "Two archives are already open; close one of them first"
+([details](docs/ARCHIVE_FORMATS.md#current-operation-limits)).
 Decoded content has no artificial size ceiling; the free space of the private spool
 volume bounds it, and staging stops before that volume falls below a free-space
 reserve of max(1 GiB, 2% of its capacity). Full
@@ -1659,6 +1668,24 @@ never run a copy that your account can change with sudo. Without a trusted
 `/usr/bin/pkexec` the viewer only explains this, naming the command only for a
 root-owned installation; Chromium never runs without its sandbox. See
 [system requirements](docs/SYSTEM_REQUIREMENTS.md).
+
+Links in Markdown and HTML pages and in Office previews follow one policy, decided
+before anything opens; a link never runs a program:
+
+- `#name` scrolls within the document;
+- a relative path, or a `file:` URL without a host, resolves against the document's
+  folder: a file that a viewer shows opens in the same viewer window, a folder opens
+  in the active panel, and any other file is shown in the active panel with the
+  cursor on it;
+- `http`, `https` and `mailto` links go to the system's default handler;
+- other schemes are refused, and the status line names the scheme.
+
+Pointing at a link shows its target on the status line, and a click follows it. In a
+Markdown page, Tab and Shift+Tab move a focus ring through the links and Enter follows
+the focused one; an HTML page keeps these keys. Alt+Shift+Left and Alt+Shift+Right,
+or the mouse's Back and Forward buttons, go back to the document a link was followed
+from and forward again, in Markdown and HTML alike; Alt+Left and Alt+Right still
+cycle files ([keyboard map](docs/KEYBOARD_SHORTCUTS.md)).
 
 Plugins are independent Cargo projects in `plugins/`, with their own tests and locks.
 Only built packages under `viewers/<package>/plugin.toml` (text/source/Markdown),
