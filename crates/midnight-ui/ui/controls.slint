@@ -114,6 +114,30 @@ export component CompactPicker inherits Rectangle {
     callback opening();
     height: root.control-height;
     caption-metrics := Text { visible: false; text: root.label; font-size: root.font-size; }
+    // The height of a menu row's text; a row with an icon needs at least the icon's.
+    line-metrics := Text { visible: false; text: "Ag"; font-size: root.font-size; }
+    // Menu rows are as tall as the control, or as their content where that is taller (a
+    // large desktop font): the text or icon, and 4 px above it in a row with a separator.
+    // Slint moves a popup back into its window but never shrinks it, so a menu is at
+    // most the window's height less 16 px. A menu too tall for that lowers its rows, down
+    // to their text or icon and 4 px, when every row then shows (the panels' Sort menu
+    // at 320 × 200 with touch density); otherwise its rows keep their height and it
+    // scrolls.
+    private property <length> popup-room: max(1px, TooltipPlacement.surface-height - 16px);
+    private property <bool> row-icons: root.show-row-icons
+        && (root.choices.length > 0 || root.icons.length > 0);
+    private property <bool> separators: root.separator-before-index > 0
+        || root.separator-before-key != "" || root.group-separators;
+    private property <length> row-content: max(line-metrics.preferred-height,
+        root.row-icons ? Theme.picker-location-icon-size : 0px);
+    private property <length> least-row: root.row-content + 4px;
+    private property <length> full-row: max(root.control-height,
+        root.separators ? root.least-row : root.row-content);
+    private property <length> row-height: root.fill-available-height
+        || root.item-count * root.full-row + 10px <= root.popup-room
+        || root.item-count * root.least-row + 10px > root.popup-room
+        ? root.full-row
+        : max(root.least-row, floor((root.popup-room - 10px) / root.item-count / 1px) * 1px);
     popup-metrics := Rectangle {
         visible: false;
         preferred-width: measured-labels.preferred-width;
@@ -333,7 +357,7 @@ export component CompactPicker inherits Rectangle {
         private property <length> below: PopupList.room-below(root.absolute-position.y, root.height);
         private property <length> above: PopupList.room-above(root.absolute-position.y);
         private property <bool> opens-above: root.popup-above
-            || (root.fill-available-height && self.below < root.item-count * root.control-height + 10px && self.above > self.below);
+            || (root.fill-available-height && self.below < root.item-count * root.row-height + 10px && self.above > self.below);
         x: clamp(root.absolute-position.x + (root.popup-align-right ? root.width - self.width : 0px),
             8px, max(8px, TooltipPlacement.surface-width - self.width - 8px)) - root.absolute-position.x;
         y: self.opens-above ? -self.height : root.height;
@@ -343,7 +367,7 @@ export component CompactPicker inherits Rectangle {
                 + (root.show-row-icons ? Theme.picker-location-icon-size : 0px) : 0px),
             max(1px, TooltipPlacement.surface-width - 16px));
         height: min(root.fill-available-height ? (self.opens-above ? self.above : self.below) : 360px,
-            root.item-count * root.control-height + 10px);
+            root.item-count * root.row-height + 10px, root.popup-room);
         close-policy: close-on-click-outside;
         forward-focus: popup-focus;
         popup-focus := FocusScope {
@@ -386,15 +410,15 @@ export component CompactPicker inherits Rectangle {
                     x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
                     // Direct ListView children stay virtualized even for a full
                     // installed-font catalog. The host keeps the committed index.
-                    content-y: PopupList.reveal(root.pending-index, root.item-count, root.control-height, self.visible-height);
+                    content-y: PopupList.reveal(root.pending-index, root.item-count, root.row-height, self.visible-height);
                     // Wheel and scrollbar input assign content-y, which detaches the
                     // binding above; keyboard browsing must still reveal its row.
                     private property <int> browsed-index: root.pending-index;
                     changed browsed-index => {
-                        self.content-y = PopupList.reveal(self.browsed-index, root.item-count, root.control-height, self.visible-height);
+                        self.content-y = PopupList.reveal(self.browsed-index, root.item-count, root.row-height, self.visible-height);
                     }
                     for value[index] in root.item-count : Rectangle {
-                        height: root.control-height;
+                        height: root.row-height;
                         background: index == root.pending-index || row-area.has-hover
                             ? Theme.hover : transparent;
                         accessible-role: button;

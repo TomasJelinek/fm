@@ -656,13 +656,19 @@ component TimeField inherits HorizontalLayout {
 }
 
 // One timestamp row: change checkbox, date and time with pickers, UTC offset, Now. Its
-// fields always show a value and take input; only a ticked row is applied.
+// fields always show a value and take input; only a ticked row is applied. Narrow, the
+// fields go on a line of their own below the checkbox and Now; stacked, the date and the
+// time share that line and the offset goes below the time.
 export component MetadataTime inherits GridLayout {
     in property <string> label;
     // 0 created, 1 modified, 2 accessed.
     in property <int> index;
     in property <bool> enabled;
     in property <bool> narrow;
+    in property <bool> stacked;
+    // The width the date, the time and the offset need on one line.
+    out property <length> line-width: date-field.min-width + time-field.min-width
+        + offset-field.min-width + 12px;
     in property <MetadataTimeValue> default;
     in-out property <MetadataTimeDraft> value;
     callback edited();
@@ -688,17 +694,21 @@ export component MetadataTime inherits GridLayout {
         hint: "Ticked rows are applied. Unticking keeps the current timestamp, and the fields keep what you typed for later.";
         toggled => { root.value.mode = self.checked ? 1 : 0; root.edited(); }
     }
-    HorizontalLayout {
+    // A grid, so that the offset can move below the time without being made again: the
+    // fields keep their text, caret and selection when the window is resized.
+    GridLayout {
         row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 3 : 1;
         spacing: 6px;
-        DateField {
+        date-field := DateField {
+            row: 0; col: 0;
             label: root.label; enabled: root.enabled; text <=> root.value.date;
             placeholder: root.default.date; fallback: root.default.date;
             horizontal-stretch: 3;
             edited => { root.change(); }
             pointer-edit => { root.select(); }
         }
-        TimeField {
+        time-field := TimeField {
+            row: 0; col: 1;
             label: root.label; enabled: root.enabled; text <=> root.value.time;
             placeholder: root.default.time; fallback: root.default.time;
             horizontal-stretch: 2;
@@ -711,7 +721,8 @@ export component MetadataTime inherits GridLayout {
                 }
             }
         }
-        SegmentField {
+        offset-field := SegmentField {
+            row: root.stacked ? 1 : 0; col: root.stacked ? 1 : 2;
             field: 2; label: root.label + " UTC offset"; enabled: root.enabled;
             text <=> root.value.offset;
             placeholder: root.default.offset; fallback: root.default.offset;

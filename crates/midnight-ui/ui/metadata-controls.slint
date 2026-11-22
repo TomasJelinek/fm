@@ -79,7 +79,9 @@ export component MetadataDialog inherits Rectangle {
     private property <bool> reviewing;
     private property <string> reviewed-revision;
     private property <bool> narrow-fields: root.width < max(500px, Theme.font-size * 24);
-    // A timestamp row holds a label, three fields, two pickers and Now.
+    // A timestamp row holds a label, three fields, two pickers and Now. Narrow, its fields
+    // go below the label and Now; where the form is narrower than the fields need on one
+    // line, the UTC offset also goes below the time (each row's `stacked`).
     private property <bool> narrow-times: root.width < max(560px, Theme.font-size * 34);
     // A compact viewport can fully clip the focused page field. Keep Escape
     // reachable; Slint drops keyboard events aimed at an invisible item. Act
@@ -179,7 +181,12 @@ export component MetadataDialog inherits Rectangle {
             if !root.reviewing : editor-scroll := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: as-needed;
-                content-width: max(self.visible-width, Theme.font-size * 18);
+                // The form's width: the view's, or what a large font needs, scrolled sideways.
+                // The time rows read it to stack their fields. Reading the content width
+                // instead is a binding loop: the compiler's check follows its default, the
+                // rows' minimum width.
+                property <length> form-width: max(self.visible-width, Theme.font-size * 18);
+                content-width: self.form-width;
                 content-height: max(self.visible-height, fields.preferred-height);
                 fields := VerticalLayout {
                     height: editor-scroll.content-height;
@@ -230,9 +237,9 @@ export component MetadataDialog inherits Rectangle {
                     if root.topic == 1 : VerticalLayout {
                         spacing: 14px; alignment: start;
                         Text { text: "Only ticked timestamps are applied. Clicking or changing a date, time or offset ticks its row; Up/Down change the part under the cursor."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
-                        MetadataTime { narrow: root.narrow-times; label: "Modified"; index: 1; enabled: root.can-modified; default: MetadataTimeCodec.modified-default; value <=> root.draft.modified; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-times; label: "Created"; index: 0; enabled: root.can-created; default: MetadataTimeCodec.created-default; value <=> root.draft.created; edited => { root.edited(); } }
-                        MetadataTime { narrow: root.narrow-times; label: "Accessed"; index: 2; enabled: root.can-accessed; default: MetadataTimeCodec.accessed-default; value <=> root.draft.accessed; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; stacked: root.narrow-times && editor-scroll.form-width < self.line-width; label: "Modified"; index: 1; enabled: root.can-modified; default: MetadataTimeCodec.modified-default; value <=> root.draft.modified; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; stacked: root.narrow-times && editor-scroll.form-width < self.line-width; label: "Created"; index: 0; enabled: root.can-created; default: MetadataTimeCodec.created-default; value <=> root.draft.created; edited => { root.edited(); } }
+                        MetadataTime { narrow: root.narrow-times; stacked: root.narrow-times && editor-scroll.form-width < self.line-width; label: "Accessed"; index: 2; enabled: root.can-accessed; default: MetadataTimeCodec.accessed-default; value <=> root.draft.accessed; edited => { root.edited(); } }
                         Text { text: "Times start from the current value, and Now fills in the current one. The UTC offset is used exactly as shown: after moving a date into or out of daylight-saving time, change the offset too. Review notes any offset that differs from local time."; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap; min-height: self.preferred-height; vertical-stretch: 0; }
                     }
                     if root.topic == 2 : VerticalLayout {

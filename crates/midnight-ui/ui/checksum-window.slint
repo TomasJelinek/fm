@@ -93,6 +93,11 @@ export component ChecksumWindow inherits ToolWindow {
     private property <bool> has-algorithm: root.draft.md5 || root.draft.sha1 || root.draft.sha256 || root.draft.sha512 || root.draft.crc32;
     private property <bool> can-save: root.has-output && !root.running && !root.saving && !root.picker-busy && root.save-prompt == "" && root.output-available[root.output-algorithm];
     private property <bool> compact: root.height < 360px;
+    // What the list says while it has no row.
+    private property <bool> note-shown: root.page == 0 && root.rows.length == 0 && !root.show-details;
+    private property <string> note: root.running
+        ? (root.verifying ? "Verifying files…" : root.progress-listing ? "Listing files…" : "Calculating checksums…")
+        : "Choose the checksums in the list above, then press Calculate.";
     callback calculate(ChecksumDraft);
     callback stop();
     // The results' selection: a click (index, Ctrl, Shift), a cursor key (index, Shift,
@@ -209,9 +214,17 @@ export component ChecksumWindow inherits ToolWindow {
         Rectangle {
             vertical-stretch: 1; min-height: 18px; clip: true;
             background: Theme.pane-background; border-width: 1px; border-color: Theme.frame;
+            // The note's lines at its width, to tell whether they fit below the headings.
+            note-metrics := Text {
+                visible: false; x: 12px; width: parent.width - 24px;
+                text: root.note; wrap: word-wrap;
+            }
             results := ChecksumResults {
                 visible: root.page == 0 && !root.show-details;
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                // The empty list's note goes below the headings; where its lines do not fit
+                // there (a short window), the headings make way for it.
+                headings: !root.note-shown || self.height - Theme.column-height >= note-metrics.preferred-height;
                 surface-width: root.width; surface-height: root.height;
                 rows: root.rows; algorithms: root.output-available;
                 generation-token: root.generation-token; output-algorithm: root.output-algorithm;
@@ -227,11 +240,13 @@ export component ChecksumWindow inherits ToolWindow {
                 copy-result(token, algorithm, whole, selection) => { root.copy-result(token, algorithm, whole, selection); }
                 activate => { root.start-page-action(); }
             }
-            if root.page == 0 && root.rows.length == 0 && !root.show-details: Text {
-                text: root.running ? (root.verifying ? "Verifying files…" : root.progress-listing ? "Listing files…" : "Calculating checksums…")
-                    : "Choose the checksums in the list above, then press Calculate.";
-                color: Theme.muted-text; wrap: word-wrap;
+            // Never over the headings. Lines that do not fit even the whole frame (large
+            // fonts in a short window) end in an ellipsis; the full text stays its label.
+            if root.note-shown: Text {
+                text: root.note;
+                color: Theme.muted-text; wrap: word-wrap; overflow: elide;
                 x: 12px; width: parent.width - 24px;
+                y: results.y + results.rows-top; height: max(0px, parent.height - 1px - self.y);
                 horizontal-alignment: center; vertical-alignment: center;
             }
             // The keyboard focus in the results: a ring over their frame, as a focused

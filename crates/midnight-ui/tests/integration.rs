@@ -46,6 +46,7 @@ mod commander_dialogs;
 mod commander_edges;
 mod compact_controls;
 mod compact_feedback;
+mod compact_surfaces;
 mod comparator_options;
 mod comparator_transaction;
 mod comparison_toolbar;

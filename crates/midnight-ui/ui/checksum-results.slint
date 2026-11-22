@@ -121,6 +121,10 @@ export component ChecksumResults inherits FocusScope {
     in property <[bool]> algorithms;
     in property <string> generation-token;
     in property <int> output-algorithm;
+    // False leaves the column headings out, for the window's note while the list is empty.
+    in property <bool> headings: true;
+    // Where the rows begin: below the column headings while they show.
+    out property <length> rows-top: root.header-height;
     // The keyboard's row (-1: none), as the presenter keeps it.
     in property <int> cursor-row: -1;
     // Selected rows with a checksum to copy, and that number as text.
@@ -150,7 +154,8 @@ export component ChecksumResults inherits FocusScope {
     private property <bool> compact-rows: root.height < Theme.column-height + (Theme.small-font * 2 + 12px) * 2;
     private property <length> row-height: root.compact-rows ? Theme.small-font + 4px : Theme.small-font * 2 + 12px;
     // Keep a complete result plus scrollbar available before allocating a header.
-    private property <length> header-height: root.height >= Theme.column-height + root.row-height + FluentScrollMetrics.overlay-size ? Theme.column-height : 0px;
+    private property <length> header-height: root.headings
+        && root.height >= Theme.column-height + root.row-height + FluentScrollMetrics.overlay-size ? Theme.column-height : 0px;
     hash-metrics := Text { visible: false; text: "00000000"; font-family: "monospace"; font-size: Theme.small-font; }
     private property <length> hash-width: hash-metrics.preferred-width
         * (root.output-algorithm == 1 ? 16 : root.output-algorithm == 0 ? 8 : root.output-algorithm == 2 ? 4 : root.output-algorithm == 3 ? 5 : 1) + 8px;

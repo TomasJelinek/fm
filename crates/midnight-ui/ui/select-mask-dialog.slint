@@ -2,6 +2,7 @@ import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { TipBody } from "controls.slint";
 import { ThemedLineEdit } from "content-controls.slint";
+import { VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogHeader } from "dialog-frame.slint";
@@ -54,28 +55,39 @@ export component MaskSelectionDialog inherits Rectangle {
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
             }
-            Text {
-                text: PanelChoices.mask-select ? "Select the shown entries whose names match:"
-                    : "Deselect the shown entries whose names match:";
-                color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+            // The header and the footer stay; the rest scrolls where the dialog is short
+            // (320 × 200 with touch density or large fonts), as in Compare directories.
+            body := VScrollView {
+                min-height: 0px; vertical-stretch: 1;
+                // A body too short for the field opens scrolled to it, and follows a resize
+                // until the user scrolls: the field has the keyboard, and Slint 1.18.1 sends
+                // no key to a focused control scrolled out of view, Escape included.
+                viewport-y: min(0px, self.visible-height - pattern.y - pattern.height);
+                VerticalLayout {
+                    spacing: root.compact ? 4px : 8px; alignment: start;
+                    Text {
+                        text: PanelChoices.mask-select ? "Select the shown entries whose names match:"
+                            : "Deselect the shown entries whose names match:";
+                        color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                    }
+                    pattern := ThemedLineEdit {
+                        enabled: root.input-enabled; accessible-label: "Selection mask";
+                        min-height: root.field-height; preferred-height: root.field-height;
+                        min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
+                        placeholder-text: "*.txt;*.md";
+                        accepted => { root.apply(pattern.text, folders.checked); }
+                        Tooltip { TipBody {
+                            text: "Masks: * matches any text, ? one character, ; separates masks, | starts exclusions, ;; means a literal semicolon. Example: *.txt;*.md|draft*. Letter case is ignored.";
+                        } }
+                    }
+                    folders := WrappingCheckBox {
+                        text: "Include folders"; enabled: root.input-enabled;
+                        min-height: Theme.control-height;
+                        hint: "Folders whose names match change too. Keypad * then inverts folders as well as files.";
+                    }
+                    if PanelChoices.mask-error != "": ErrorNotice { text: PanelChoices.mask-error; }
+                }
             }
-            pattern := ThemedLineEdit {
-                enabled: root.input-enabled; accessible-label: "Selection mask";
-                min-height: root.field-height; preferred-height: root.field-height;
-                min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
-                placeholder-text: "*.txt;*.md";
-                accepted => { root.apply(pattern.text, folders.checked); }
-                Tooltip { TipBody {
-                    text: "Masks: * matches any text, ? one character, ; separates masks, | starts exclusions, ;; means a literal semicolon. Example: *.txt;*.md|draft*. Letter case is ignored.";
-                } }
-            }
-            folders := WrappingCheckBox {
-                text: "Include folders"; enabled: root.input-enabled;
-                min-height: Theme.control-height;
-                hint: "Folders whose names match change too. Keypad * then inverts folders as well as files.";
-            }
-            if PanelChoices.mask-error != "": ErrorNotice { text: PanelChoices.mask-error; }
-            Rectangle { vertical-stretch: 1; }
             footer := DialogFooter {
                 compact-height: root.compact;
                 dismiss-enabled: root.input-enabled;

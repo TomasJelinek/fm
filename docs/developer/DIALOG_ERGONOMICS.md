@@ -179,6 +179,31 @@ separately; this document is not a claim that every item is already released.
   preserves the Options save lock without changing other dialogs' default.
   [Compact-footer verification](../verification/2026-11-10-tree-prefix-search.md#options-footer-follow-up)
   records the Windows/Linux scope separately from native-window migration.
+- At 320 × 200 these surfaces show nothing over anything else, nothing cut by a
+  container that does not scroll and nothing beyond what a scroll view reaches, in Dark
+  Touch and Light Touch with 15, 24 and 32 px fonts and in Light Desktop with a 32 px
+  font (U-D27 of the UI polish gate). Verified with software-window tests built from
+  `22f46eab` plus this change (`tests/compact_surfaces.rs`, judged as the gate's layout
+  checks judge a surface by `tests/support/minimum_layout.rs`); the gate itself has not
+  been run again.
+  - A picker's menu (`CompactPicker`) has rows as tall as the control, or as their text
+    or icon where that is taller (large desktop fonts), with 4 px above it in a menu with
+    separators. The menu is at most its window's height less 16 px: Slint moves a popup
+    back into its window but never shrinks it. A menu too tall for that lowers its rows,
+    down to their text or icon and 4 px, when every row then shows (the panels' Sort
+    menu with a 15 px touch font shows its five rows whole); otherwise its rows keep
+    their height and it scrolls.
+  - Select files and Deselect files keep their header and footer, and the explanation,
+    the mask field, Include folders and an error scroll between them, as in Compare
+    directories. A body too short for the field opens scrolled to it: the field has the
+    keyboard, and Slint 1.18.1 sends no key to a focused control scrolled out of view.
+  - Checksums: an empty list's note sits below the column headings. While its lines do
+    not fit there, the headings are left out (there is no row to head); lines that do
+    not fit even the whole frame end in an ellipsis, and the note's accessible label
+    keeps the whole text.
+  - Attributes › Times: a row too narrow for the date, the time and the UTC offset on one
+    line puts the offset below the time. The fields stay the same instances, so a resize
+    keeps their text, caret and selection; Now and both pickers then show whole.
 - About's version pill is its text's line with 2 px above and below, at least 20 px,
   so the 32 px fonts Options allows do not clip it; the sky grows by what the pill
   adds, and a sky too short for the icon, title and pill shows only the title. When
