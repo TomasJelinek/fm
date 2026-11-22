@@ -444,7 +444,10 @@ Deliberate differences from the application, to keep runs hermetic and headless:
   deadline (`app::SETTINGS_DEADLINE`, from `startup.rs`): past it the window shows the
   defaults and its status says "Settings are still loading; defaults are shown."
   (`App::settings_late`), and the read applies when it arrives. Then it waits for both
-  listings; a start that is not ready within 60 s panics with the presenter's state.
+  listings: each panel shows its folder, or was seen loading and has stopped (a panel
+  that has not started its first listing is not loading either, which once let a staged
+  child start with no folder); a start that is not ready within 60 s panics with the
+  presenter's state.
   `Config::settings_delay` makes every read of whichever settings store answer that
   late, as from a slow profile folder.
 - Browsing uses the engine's host-native `LocalFileSystem` service, not the installed

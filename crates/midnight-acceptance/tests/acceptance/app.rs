@@ -487,6 +487,8 @@ pub struct App {
     /// The startup deadline passed before the first settings read applied: the window
     /// showed the defaults, as production's does ([`SETTINGS_DEADLINE`]).
     pub settings_late: bool,
+    /// Whether each panel was seen loading since the start (`App::start`'s ready check).
+    started_loading: [bool; 2],
     /// The last pointer click on a panel row (double-click protection).
     pub last_click: Option<(Instant, slint::LogicalPosition)>,
     /// The Slint clock of this thread ([`App::hold_clock`]).
@@ -676,6 +678,7 @@ impl App {
             settings_reads: 0,
             launches,
             settings_late: false,
+            started_loading: [false; 2],
             last_click: None,
             clock,
             trace,
@@ -697,11 +700,24 @@ impl App {
             } else {
                 app.settings_late
             };
-            revealed && !app.window.get_left_loading() && !app.window.get_right_loading()
+            // A panel that has not started its first listing is not loading either: each
+            // must show its folder, or have listed (loaded and stopped) without one.
+            let listed = |pane: PaneId| {
+                app.location(pane).is_some()
+                    || (app.started_loading[pane.index()] && !app.loading(pane))
+            };
+            revealed
+                && !app.window.get_left_loading()
+                && !app.window.get_right_loading()
+                && listed(PaneId::Left)
+                && listed(PaneId::Right)
         };
         let deadline = Instant::now() + WAIT;
         loop {
             app.settle();
+            for pane in [PaneId::Left, PaneId::Right] {
+                app.started_loading[pane.index()] |= app.loading(pane);
+            }
             if app.settings_reads == 0
                 && !app.settings_late
                 && app.clock.now() >= started + SETTINGS_DEADLINE

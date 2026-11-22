@@ -1,5 +1,7 @@
 //! Checks of the harness itself, so that the scenarios built on it can trust it:
 //!
+//! 0. `App::start` returns with both panels showing their folders, never before a
+//!    panel started its first listing.
 //! 1. The Slint clock: held, it stands still while real time passes; a timer started on
 //!    it fires exactly when the clock is advanced to its timeout, not before; resumed,
 //!    it runs on from where it stood.
@@ -72,6 +74,7 @@ fn checks(context: &mut Context) -> Result<(), String> {
     {
         let mut app = App::start(Config::new(&root, &other));
         for (what, result) in [
+            ("the start", start_folders(&app, &root, &other)),
             ("the held clock", clock(&mut app)),
             ("pump against idle", frames(&mut app)),
             ("a closed tool window", closed_window(&mut app, context)),
@@ -595,5 +598,24 @@ fn pruning(context: &mut Context) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("left {left:?}, expected {wanted:?}"))
+    }
+}
+
+/// `App::start` returns once both panels show the folders it was given: a panel that has
+/// not started its first listing is not loading either, which once let a staged child
+/// start with no folder at all.
+fn start_folders(app: &App, left: &Path, right: &Path) -> Result<(), String> {
+    let shown = [app.location(PaneId::Left), app.location(PaneId::Right)];
+    let same = |shown: &Option<std::path::PathBuf>, wanted: &Path| {
+        shown.as_ref().is_some_and(|path| {
+            std::fs::canonicalize(path).ok() == std::fs::canonicalize(wanted).ok()
+        })
+    };
+    if same(&shown[0], left) && same(&shown[1], right) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the panels show {shown:?} when App::start returned"
+        ))
     }
 }
