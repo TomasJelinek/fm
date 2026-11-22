@@ -151,26 +151,28 @@ fn a_copy_of_more_than_four_mebibytes_is_built() {
     assert_eq!(copy.report().unwrap().copied, count);
 }
 
-/// A copy that finds too little memory for its text fails with a plain error, keeps
-/// nothing and never ends the process.
+/// A copy that finds too little memory for its text fails with a plain error that counts
+/// its rows in the singular and plural, keeps nothing and never ends the process.
 #[test]
 fn a_copy_short_of_memory_fails_with_an_error() {
     let base = Path::new(if cfg!(windows) { "C:\\data" } else { "/data" });
-    let copy = ChecksumCopyText::new(
-        rows(base, 10, &[]),
-        bits(&[1, 2, 3], &[]),
-        ChecksumCopyKind::Hashes(ChecksumAlgorithm::Sha256),
-        base.to_path_buf(),
-    );
     let refused = |text: &mut String, _: usize| text.try_reserve(usize::MAX);
-    let error = copy.build(&Cancellation::default(), &refused).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
-    assert_eq!(
-        error.to_string(),
-        "There is not enough memory to copy 3 rows."
-    );
-    assert!(copy.take_text().is_none());
-    assert!(copy.report().is_none());
+    for (ids, message) in [
+        (&[1, 2, 3][..], "There is not enough memory to copy 3 rows."),
+        (&[2][..], "There is not enough memory to copy 1 row."),
+    ] {
+        let copy = ChecksumCopyText::new(
+            rows(base, 10, &[]),
+            bits(ids, &[]),
+            ChecksumCopyKind::Hashes(ChecksumAlgorithm::Sha256),
+            base.to_path_buf(),
+        );
+        let error = copy.build(&Cancellation::default(), &refused).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+        assert_eq!(error.to_string(), message);
+        assert!(copy.take_text().is_none());
+        assert!(copy.report().is_none());
+    }
 }
 
 /// A copy that adds nothing fails (the clipboard keeps what it holds) but says why;

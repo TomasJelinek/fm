@@ -281,6 +281,7 @@ impl Presenter {
         algorithm: ChecksumAlgorithm,
         send: &dyn Fn(Command) -> bool,
     ) {
+        let locale = &self.number_locale;
         let Some(s) = self.checksums.session_mut(id) else {
             return;
         };
@@ -309,14 +310,24 @@ impl Presenter {
                 acknowledged: Some(counts),
                 overwrite: false,
                 message: format!(
-                    "{} files were excluded{}. Save the {} completed checksums anyway?",
-                    counts.excluded,
+                    "{} excluded{}. Save the {} anyway?",
+                    crate::job_presentation::counted(
+                        counts.excluded,
+                        "file was",
+                        "files were",
+                        locale
+                    ),
                     if counts.incomplete_discovery {
                         " and discovery is incomplete"
                     } else {
                         ""
                     },
-                    counts.included
+                    crate::job_presentation::counted(
+                        counts.included,
+                        "completed checksum",
+                        "completed checksums",
+                        locale
+                    )
                 ),
             });
             return;

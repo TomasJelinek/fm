@@ -358,7 +358,8 @@ bits, shares the run's row chunks and sends a `ChecksumCopyText` to the clipboar
 reserves fallibly, and writes it; the result brings the note back. A newer copy of the
 window supersedes a pending one and closing the window cancels it. A copy has no size
 limit; one that does not fit in memory fails with "There is not enough memory to copy N
-rows." and the clipboard keeps what it held, as it does for a copy that adds nothing. With several
+rows." ("1 row." for one) and the clipboard keeps what it held, as it does for a copy that
+adds nothing. With several
 calculated rows selected its caption counts them ("Copy 3 SHA-256"); below 460 px it is
 "Copy". The footer fits its actions from their measured captions (`FooterActions` in
 `dialog-footer.slint`): one that does not fit whole beside Close moves into More…,

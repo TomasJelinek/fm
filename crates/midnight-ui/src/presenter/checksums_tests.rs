@@ -1184,3 +1184,59 @@ fn written(p: &mut Presenter, commands: &std::cell::RefCell<Vec<Command>>) -> Ve
     let sent = std::mem::take(&mut *commands.borrow_mut());
     p.run_checksum_copies(&sent)
 }
+
+/// The question before a partial save counts in the singular and the plural: "1 file was
+/// excluded … the 1 completed checksum", "3 files were excluded … the 2 completed
+/// checksums" (acceptance finding O-6).
+#[test]
+fn the_partial_save_question_counts_files_and_checksums_in_singular_and_plural() {
+    let question = |calculated: u64, cancelled: u64, completion: ChecksumCompletion| {
+        let send = |_| true;
+        let (mut p, id) = setup(&send);
+        let root = std::env::temp_dir();
+        let rows: Vec<_> = (1..=calculated + cancelled)
+            .map(|index| {
+                let path = root.join(format!("f{index}.bin"));
+                if index <= calculated {
+                    result_row(
+                        index,
+                        &path,
+                        ChecksumRowState::Calculated,
+                        &[(ChecksumAlgorithm::Sha256, &[0x42; 32])],
+                    )
+                } else {
+                    result_row(index, &path, ChecksumRowState::Cancelled, &[])
+                }
+            })
+            .collect();
+        finished_run(
+            &mut p,
+            id,
+            ChecksumAlgorithms::default(),
+            vec![chunk(&root, rows)],
+            ChecksumSummary {
+                completion,
+                progress: ChecksumProgress {
+                    calculated,
+                    ..Default::default()
+                },
+                diagnostics: vec![],
+            },
+        );
+        p.begin_checksum_save(id, ChecksumAlgorithm::Sha256, &send);
+        p.checksums.sessions[&id]
+            .save_prompt
+            .as_ref()
+            .expect("a partial save is asked about first")
+            .message
+            .clone()
+    };
+    assert_eq!(
+        question(1, 1, ChecksumCompletion::CompletedWithErrors),
+        "1 file was excluded. Save the 1 completed checksum anyway?"
+    );
+    assert_eq!(
+        question(2, 3, ChecksumCompletion::Cancelled),
+        "3 files were excluded and discovery is incomplete. Save the 2 completed checksums anyway?"
+    );
+}

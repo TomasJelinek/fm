@@ -98,7 +98,10 @@ pub type ChecksumCopyReserve = dyn Fn(&mut String, usize) -> Result<(), TryReser
 fn short_of_memory(rows: u64) -> io::Error {
     io::Error::new(
         io::ErrorKind::OutOfMemory,
-        format!("There is not enough memory to copy {rows} rows."),
+        format!(
+            "There is not enough memory to copy {rows} {}.",
+            if rows == 1 { "row" } else { "rows" }
+        ),
     )
 }
 
