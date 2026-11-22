@@ -549,11 +549,16 @@ shown archive on request; it has no menu entry or shortcut yet. OK sends
 `Command::UnlockArchive` to a backend worker, which answers `Event::ArchiveUnlocked`;
 a wrong password keeps the dialog open with "Wrong password — try again." After
 `Unlocked` the action runs (F3 through `take_archive_view`, which the UI turns into its
-ordinary view request once the dialog has closed); Cancel leaves the mount locked and
-the action goes on without the password: F3 and Enter report that the member is
-password-protected, and a copy skips each encrypted member with that reason in its
+ordinary view request once the dialog has closed). Escape, Cancel and the dialog's ×
+(`Presenter::cancel_archive_password`; the main window's close request sends Escape to
+an open dialog) leave the mount locked and close the dialog silently, because the user
+chose to: F3, Enter and a listing with encrypted names stop with no notice or status
+text, and the file list gets the keyboard back with its cursor unchanged. Only a copy
+goes on without the password: it skips each encrypted member with that reason in its
 results, without asking again (the copy job skips every `is_archive_password_required`
-failure itself). Background consumers never open the dialog: Find's private archive
+failure itself). The dialog closes without the user's dismissal only on the worker's
+answer: `Unsupported` and a failed unlock close it with a notice that says why, and
+nothing opens. Background consumers never open the dialog: Find's private archive
 sessions skip encrypted and other unreadable members with their reason, and archive
 previews fail like any read until the user has unlocked the mount in the panel.
 

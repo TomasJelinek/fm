@@ -1,5 +1,7 @@
 //! The archive password dialog: asked once before F3, Enter or F5 needs it; OK sends
-//! the password to a backend worker, Cancel lets the action go on without it.
+//! the password to a backend worker. Escape, Cancel or the header's × close it without
+//! a word: F3 and Enter open nothing, and a copy goes on without the password. A closure
+//! the user did not choose says why.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -113,18 +115,88 @@ fn submit(p: &mut Presenter, password: &str) -> Vec<Command> {
 }
 
 fn answer(p: &mut Presenter, request: DesktopRequestId, result: ArchiveUnlock) -> Vec<Command> {
+    answer_with(p, request, Ok(result))
+}
+
+/// The worker's answer, or its failure, collecting the commands that follow it.
+fn answer_with(
+    p: &mut Presenter,
+    request: DesktopRequestId,
+    result: Result<ArchiveUnlock, FsError>,
+) -> Vec<Command> {
     let sent = RefCell::new(Vec::new());
-    p.apply_with_sender(
-        Event::ArchiveUnlocked {
-            request,
-            result: Ok(result),
-        },
-        &|command| {
-            sent.borrow_mut().push(command);
-            true
-        },
-    );
+    p.apply_with_sender(Event::ArchiveUnlocked { request, result }, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
     sent.into_inner()
+}
+
+/// `share.zip` holding an encrypted member and an encrypted archive, which the installed
+/// ZIP provider opens: Enter on it asks for `share.zip`'s password first.
+fn nested_share() -> (Presenter, Arc<LockedMount>) {
+    let mount = Arc::new(LockedMount::default());
+    let mut p = share_pane(
+        mount.clone(),
+        vec![
+            member(3, "balcony.emc", EntryKind::File, ArchiveEncryption::Aes256),
+            member(
+                5,
+                "inner.zip",
+                EntryKind::File,
+                ArchiveEncryption::ZipCrypto,
+            ),
+        ],
+    );
+    p.apply(Event::ArchiveAvailability(vec![ArchiveFormat::Zip]));
+    (p, mount)
+}
+
+/// Enter on the focused row, collecting the commands it sends.
+fn enter(p: &mut Presenter) -> Vec<Command> {
+    let sent = RefCell::new(Vec::new());
+    p.activate_focused(PaneId::Left, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    sent.into_inner()
+}
+
+/// Everything the window could say once the dialog has gone: a notice, the status,
+/// error and background lines, and the panel's own error line.
+#[derive(Debug, PartialEq)]
+struct Said {
+    notice: Option<(String, String)>,
+    notices: i32,
+    status: String,
+    error: String,
+    background: Option<String>,
+    panel: String,
+}
+
+fn said(p: &Presenter) -> Said {
+    Said {
+        notice: p.desktop.notice.clone(),
+        notices: p.desktop.notice_generation,
+        status: p.desktop.status.clone(),
+        error: p.desktop.error.clone(),
+        background: p.desktop.background.clone(),
+        panel: p.panes[0].error.clone(),
+    }
+}
+
+/// The left panel is still the active one, its cursor on member `id`: the row whose list
+/// the UI gives the keyboard back to once the dialog has closed.
+fn assert_on_row(p: &Presenter, id: u64) {
+    assert_eq!(p.active, PaneId::Left);
+    assert_eq!(p.panes[0].cursor, Some(EntryId(id)));
+    assert!(!p.panes[0].parent_cursor);
+}
+
+/// Escape, Cancel or the dialog's × (each reaches `cancel_archive_password`, through
+/// `ArchivePasswords.dismiss`).
+fn dismiss(p: &mut Presenter) {
+    p.cancel_archive_password(&|command| panic!("a dismissal sends nothing: {command:?}"));
 }
 
 fn unlock_request(commands: &[Command], expected: &str) -> DesktopRequestId {
@@ -191,20 +263,99 @@ fn f3_on_a_plain_member_or_folder_never_asks() {
     assert!(!p.archive_password.open);
 }
 
+/// The user chose not to enter the password for F3 or Alt+F3: the dialog closes without
+/// a word. No viewer opens, the member stays locked, and the cursor stays on its row.
 #[test]
-fn cancel_keeps_the_member_locked_and_says_it_was_not_opened() {
-    let (mut p, _) = share();
-    focus(&mut p, 3);
-    assert!(p.view_needs_archive_password(PaneId::Left, true));
-    p.cancel_archive_password(&|_| panic!("cancel sends nothing"));
-    assert!(!p.archive_password.open);
-    assert_eq!(p.take_archive_view(), None);
-    let (title, message) = p.desktop.notice.clone().unwrap();
-    assert_eq!(title, "Archive member");
+fn dismissing_the_password_for_f3_opens_nothing_and_says_nothing() {
+    for basic in [false, true] {
+        let (mut p, mount) = share();
+        focus(&mut p, 3);
+        let before = said(&p);
+        assert!(p.view_needs_archive_password(PaneId::Left, basic));
+        dismiss(&mut p);
+        assert!(!p.archive_password.open);
+        assert_eq!(p.take_archive_view(), None, "no viewer opens");
+        assert_eq!(p.desktop.notice, None, "no notice follows the dismissal");
+        assert_eq!(said(&p), before, "nothing else is said either");
+        assert_on_row(&p, 3);
+        assert!(!mount.unlocked(), "the member stays locked");
+        // The next F3 asks again.
+        assert!(p.view_needs_archive_password(PaneId::Left, basic));
+    }
+}
+
+/// The user chose not to enter the password that Enter on an encrypted archive inside
+/// the archive needs: the dialog closes without a word, the inner archive does not open
+/// and the panel stays where it was, its cursor on that archive.
+#[test]
+fn dismissing_the_password_for_enter_on_an_inner_archive_opens_nothing_and_says_nothing() {
+    let (mut p, mount) = nested_share();
+    focus(&mut p, 5);
+    let before = said(&p);
     assert!(
-        message.contains("balcony.emc is password-protected"),
-        "{message}"
+        enter(&mut p).is_empty(),
+        "Enter asks before it opens anything"
     );
+    assert!(p.archive_password.open);
+    assert_eq!(
+        p.archive_password.purpose,
+        "Enter its password to open inner.zip."
+    );
+    dismiss(&mut p);
+    assert!(!p.archive_password.open);
+    assert_eq!(p.desktop.notice, None, "no notice follows the dismissal");
+    assert_eq!(said(&p), before, "nothing else is said either");
+    let shown = p.panes[0]
+        .archive
+        .as_ref()
+        .map(|archive| (archive.location.mount_id(), archive.location.trail.len()));
+    assert_eq!(shown, Some((Some(42), 1)), "share.zip stays shown");
+    assert_on_row(&p, 5);
+    assert!(!mount.unlocked(), "the archive stays locked");
+    // The next Enter asks again.
+    assert!(enter(&mut p).is_empty());
+    assert!(p.archive_password.open);
+}
+
+/// A closure the user did not choose still says why, and opens nothing: the archive's
+/// worker cannot decrypt the members, or the archive failed while it checked the
+/// password (its worker was stopped).
+#[test]
+fn a_closure_the_user_did_not_choose_says_why_and_opens_nothing() {
+    let stopped = || {
+        FsError::from_io(
+            "archive password",
+            Path::new(""),
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Archive worker made no progress for 20 seconds and was stopped; open the \
+                 archive again",
+            ),
+        )
+    };
+    for id in [3, 5] {
+        for (result, reason) in [
+            (Ok(ArchiveUnlock::Unsupported), "cannot decrypt"),
+            (Err(stopped()), "was stopped; open the archive again"),
+        ] {
+            let (mut p, _) = nested_share();
+            focus(&mut p, id);
+            if id == 3 {
+                assert!(p.view_needs_archive_password(PaneId::Left, false));
+            } else {
+                assert!(enter(&mut p).is_empty());
+            }
+            let request = unlock_request(&submit(&mut p, "Kyrandia"), "Kyrandia");
+            let sent = answer_with(&mut p, request, result);
+            assert!(!p.archive_password.open, "{reason}: the dialog closes");
+            assert!(sent.is_empty(), "{reason}: nothing opens: {sent:?}");
+            assert_eq!(p.take_archive_view(), None, "{reason}: no viewer opens");
+            let (title, message) = p.desktop.notice.clone().expect("a notice says why");
+            assert_eq!(title, "Archive password");
+            assert!(message.contains(reason), "{message}");
+            assert_on_row(&p, id);
+        }
+    }
 }
 
 #[test]

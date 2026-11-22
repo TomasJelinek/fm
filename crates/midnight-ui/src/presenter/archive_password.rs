@@ -130,8 +130,9 @@ impl Presenter {
         }
     }
 
-    /// Cancel, Escape or the close button: the members stay locked, and the action goes
-    /// on without the password (a copy skips the protected members).
+    /// Escape, Cancel or the header's × (the main window's close request sends Escape to an
+    /// open dialog): the user chose to go on without the password. The members stay locked
+    /// and the dialog closes without a message (`after_archive_password`).
     pub(crate) fn cancel_archive_password(&mut self, send: &dyn Fn(Command) -> bool) {
         if !self.archive_password.open {
             return;
@@ -206,40 +207,27 @@ impl Presenter {
         }
     }
 
-    /// Carry out `action` once the dialog has closed, with or without the password.
+    /// Carry out `action` once the dialog has closed: `unlocked`, or dismissed by the user
+    /// (`cancel_archive_password`), the only closure without the password that reaches
+    /// this. A dismissal says nothing: F3, Enter, a locked listing and Enter archive
+    /// password… stop, and the file list gets the keyboard back on the same row; only a
+    /// copy goes on. A closure the user did not choose says why where it happens
+    /// (`apply_archive_unlocked`).
     fn after_archive_password(
         &mut self,
         action: PasswordAction,
         unlocked: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
-        let skipped = |presenter: &mut Self, what: &str| {
-            presenter.desktop.report(
-                "Archive member",
-                format!("{what} is password-protected; it was not opened, since no password was entered."),
-            );
-        };
         match action {
             PasswordAction::View { pane, basic } if unlocked => {
                 self.archive_password.view.set(Some((pane, basic)));
             }
-            PasswordAction::View { pane, .. } => {
-                let name = self.panes[pane.index()]
-                    .cursor
-                    .and_then(|id| self.panes[pane.index()].entry_by_id(id))
-                    .map_or_else(
-                        || "The member".to_owned(),
-                        |entry| midnight_core::visible_name(&entry.display_name).into_owned(),
-                    );
-                skipped(self, &name);
-            }
             PasswordAction::OpenMember { pane, node, format } if unlocked => {
                 self.open_member_archive(pane, *node, format, send);
             }
-            PasswordAction::OpenMember { node, .. } => {
-                let name = midnight_core::visible_name(&node.display_name).into_owned();
-                skipped(self, &name);
-            }
+            // Dismissed: the user knows that the member stays closed.
+            PasswordAction::View { .. } | PasswordAction::OpenMember { .. } => {}
             // Without the password the copy goes on and skips the protected members.
             PasswordAction::Copy { pane } => self.request_archive_copy_dialog_unchecked(pane),
             PasswordAction::List { pane, location } => {

@@ -3,9 +3,9 @@
 //! `encode::zip_entries`. Their listing marks only the encrypted rows; the details name
 //! the method or why a member cannot be read. F3 on an encrypted member asks for the
 //! archive's password first: an empty field and a wrong password are refused in the
-//! dialog, Escape and Cancel open nothing and say so, and the right (non-ASCII)
-//! password, by keyboard or pointer, opens the viewer. The password is asked once per
-//! archive and kept until the archive is closed: the other members then open without
+//! dialog, Escape and Cancel close it without a notice and open nothing, and the right
+//! (non-ASCII) password, by keyboard or pointer, opens the viewer. The password is asked
+//! once per archive and kept until the archive is closed: the other members then open without
 //! asking, and leaving and entering the archive again asks again. An encrypted archive
 //! inside an encrypted archive asks for the outer password to open it and for its own to
 //! view its members. A 7-Zip archive with encrypted names asks before it lists (made with
@@ -34,7 +34,7 @@ pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "viewers_passwords",
         area: "viewers",
-        summary: "Archive passwords through the installed archive plugin: ZipCrypto and WinZip AES-128/192/256 members marked Encrypted in the listing and the details; F3 asks for the archive's password (empty and wrong refused in the dialog, Escape and Cancel open nothing and say so); the right non-ASCII password by Enter or OK opens the viewer and the other members without asking until the archive is closed; an AES archive inside a ZipCrypto archive asks for each password; unreadable members (Implode, an unsafe name, a link, strong encryption) say why; a 7-Zip archive with encrypted names asks before listing (host 7z); the password reaches no settings, clipboard, event trace or console.",
+        summary: "Archive passwords through the installed archive plugin: ZipCrypto and WinZip AES-128/192/256 members marked Encrypted in the listing and the details; F3 asks for the archive's password (empty and wrong refused in the dialog, Escape and Cancel close it without a notice and open nothing); the right non-ASCII password by Enter or OK opens the viewer and the other members without asking until the archive is closed; an AES archive inside a ZipCrypto archive asks for each password; unreadable members (Implode, an unsafe name, a link, strong encryption) say why; a 7-Zip archive with encrypted names asks before listing (host 7z); the password reaches no settings, clipboard, event trace or console.",
         run: passwords,
         timeout: TIMEOUT,
     }]
@@ -332,7 +332,8 @@ fn ask(app: &mut App, member: &str, basic: bool) -> Result<PasswordDialog, Strin
 
 /// F3 on an encrypted member: the dialog's sentence names the archive and the member; an
 /// empty field says what is missing; a wrong password says so and keeps the dialog; and
-/// Escape opens nothing, which a notice explains.
+/// Escape closes it without a notice, opens nothing and gives the keyboard back to the
+/// member's row.
 fn refusals(app: &mut App, context: &mut Context, home: &Path) -> Result<(), String> {
     open_row(app, "zipcrypto.zip")?;
     wait_listing(app, "zipcrypto.zip", &["a.txt", "b.txt", "plain.txt"])?;
@@ -355,45 +356,43 @@ fn refusals(app: &mut App, context: &mut Context, home: &Path) -> Result<(), Str
         ));
     }
     support::dismiss_password(app, Dismiss::Escape)?;
-    let notice = wait_notice(app)?;
-    let expected = (
-        "Archive member".to_owned(),
-        "a.txt is password-protected; it was not opened, since no password was entered.".to_owned(),
-    );
-    files::dismiss_all(app);
-    if support::viewers_opened(app) != before {
-        return Err("a refused or cancelled password opened a viewer".into());
-    }
-    if notice != expected {
-        return Err(format!(
-            "Escape left the notice {notice:?}, not {expected:?}"
-        ));
-    }
+    dismissed_quietly(app, "a.txt", before)?;
     context.note(format!(
         "F3 on an encrypted member: {:?}; empty field: {:?}; wrong password: {:?} (attempt \
-         {}); Escape: {}: {}",
+         {}); Escape: closed without a notice",
         dialog.sentence(),
         empty.error,
         wrong.error,
-        wrong.attempt,
-        notice.0,
-        notice.1
+        wrong.attempt
     ));
     back_to(app, home, 1, "zipcrypto.zip")
 }
 
-fn wait_notice(app: &mut App) -> Result<(String, String), String> {
-    let deadline = Instant::now() + LIMIT;
-    loop {
-        app.settle();
+/// How long a dismissal is watched for a notice.
+const QUIET: Duration = Duration::from_millis(500);
+
+/// After Escape or Cancel in the password dialog: for `QUIET` no notice appears, no viewer
+/// opened (`viewers` were open before), and the keyboard is back in the left list on `member`.
+fn dismissed_quietly(app: &mut App, member: &str, viewers: usize) -> Result<(), String> {
+    let deadline = Instant::now() + QUIET;
+    while Instant::now() < deadline {
+        app.idle(Duration::from_millis(20));
         if let Some(notice) = app.notice() {
-            return Ok(notice);
+            files::dismiss_all(app);
+            return Err(format!("a notice followed the dismissal: {notice:?}"));
         }
-        if Instant::now() >= deadline {
-            return Err(format!("no notice within {LIMIT:?}"));
-        }
-        app.idle(Duration::from_millis(10));
     }
+    if support::viewers_opened(app) != viewers {
+        return Err("a refused or cancelled password opened a viewer".into());
+    }
+    let focused = app.window.get_focused_pane();
+    let cursor = files::cursor_name(app, PaneId::Left);
+    if focused != 0 || cursor.as_deref() != Some(member) {
+        return Err(format!(
+            "after the dismissal the keyboard is in pane {focused}, its cursor on {cursor:?}, not on {member}"
+        ));
+    }
+    Ok(())
 }
 
 /// The member's text in the viewer, which then closes.
@@ -444,15 +443,9 @@ fn asked_once(app: &mut App, context: &mut Context, home: &Path) -> Result<(), S
     wait_listing(app, "zipcrypto.zip again", &["a.txt", "b.txt", "plain.txt"])?;
     let dialog = ask(app, "b.txt", false)?;
     expect_sentence(&dialog, &view_sentence("zipcrypto.zip", "b.txt"))?;
+    let before = support::viewers_opened(app);
     support::dismiss_password(app, Dismiss::Cancel)?;
-    let notice = wait_notice(app)?;
-    files::dismiss_all(app);
-    if !notice
-        .1
-        .starts_with("b.txt is password-protected; it was not opened")
-    {
-        return Err(format!("Cancel left the notice {notice:?}"));
-    }
+    dismissed_quietly(app, "b.txt", before)?;
     panel::select_row(app, PaneId::Left, "b.txt")?;
     let (_, viewing) = support::view_unlocking(app, false, PASSWORD, Submit::Enter, LIMIT)?;
     shows(app, viewing, "Secret B, deflated.")?;
@@ -571,17 +564,11 @@ fn nested(app: &mut App, context: &mut Context, home: &Path) -> Result<(), Strin
     open_row(app, "nested.zip")?;
     wait_listing(app, "nested.zip again", &["inner.zip", "outer.txt"])?;
     panel::select_row(app, PaneId::Left, "inner.zip")?;
+    let before = support::viewers_opened(app);
     input::key(app.slint(), Key::Return);
     support::wait_password_dialog(app, LIMIT)?;
     support::dismiss_password(app, Dismiss::Escape)?;
-    let notice = wait_notice(app)?;
-    files::dismiss_all(app);
-    if !notice
-        .1
-        .starts_with("inner.zip is password-protected; it was not opened")
-    {
-        return Err(format!("Escape at the outer password left {notice:?}"));
-    }
+    dismissed_quietly(app, "inner.zip", before)?;
     if shown(app).len() != 2 {
         return Err(format!(
             "after Escape the panel shows {:?}, not nested.zip",

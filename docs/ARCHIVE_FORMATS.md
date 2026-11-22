@@ -282,12 +282,14 @@ encrypted archive inside the archive, F5 of a selection that holds encrypted mem
 (or folders that contain some), or opening a 7z archive whose file names are
 encrypted. Type the password (Show password reveals it) and press Enter or OK; a wrong
 password keeps the dialog open with "Wrong password — try again." Escape, Cancel or
-the close button leave the archive locked: F3 and Enter then say the member is
-password-protected, a copy goes on and skips each protected member, naming that
-reason in its results, without asking again, and the next action that needs the
-password asks for it again. Find's search inside archives never asks: it skips
-protected members with that reason, and previews of protected members appear once the
-archive has been unlocked in its panel.
+the close button leave the archive locked and close the dialog without a further
+message: F3 and Enter open nothing, and the keyboard is back in the file list with the
+cursor on the same row. A copy goes on and skips each protected member, naming that
+reason in its results, without asking again. The next action that needs the password
+asks for it again. If the archive plugin cannot decrypt the members, or the archive
+fails while the password is checked, the dialog closes and a message says why. Find's
+search inside archives never asks: it skips protected members with that reason, and
+previews of protected members appear once the archive has been unlocked in its panel.
 
 Once accepted, the password is remembered until the archive is closed, and F3, Enter
 and F5 use it without asking. The archive is closed when nothing uses it any more:
