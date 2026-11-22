@@ -231,8 +231,12 @@ component LicenseList inherits Rectangle {
 component InfoRow inherits HorizontalLayout {
     in property <string> label;
     in property <string> value;
+    // The label column; About widens it for its widest label.
+    in property <length> label-width: 96px;
+    // What this row's label needs.
+    out property <length> label-needs: label-text.preferred-width;
     spacing: 12px;
-    Text { text: root.label; color: Theme.secondary-text; font-size: Theme.small-font; width: 96px; vertical-alignment: top; }
+    label-text := Text { text: root.label; color: Theme.secondary-text; font-size: Theme.small-font; width: root.label-width; vertical-alignment: top; }
     Text { text: root.value; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; horizontal-stretch: 1; }
 }
 
@@ -580,7 +584,12 @@ export component AboutDialog inherits Rectangle {
                 Rectangle { height: 1px; background: Theme.frame; }
                 Rectangle {
                     vertical-stretch: 1; min-height: 0px; clip: true;
-                    if !AboutView.detail-open && root.tab == 0 : VScrollView {
+                    if !AboutView.detail-open && root.tab == 0 : info := VScrollView {
+                        // The rows' label column: 96 px, or what the widest label needs
+                        // with a large font, so Copyright stays whole and the values
+                        // keep one column.
+                        property <length> labels: max(96px, version-row.label-needs, copyright-row.label-needs,
+                            built-row.label-needs, libraries-row.label-needs);
                         width: parent.width; height: parent.height;
                         VerticalLayout {
                             spacing: 10px; alignment: start; padding-right: 6px;
@@ -593,15 +602,12 @@ export component AboutDialog inherits Rectangle {
                                 color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
                             }
                             Rectangle { height: 1px; background: Theme.frame; }
-                            InfoRow { label: "Version"; value: root.application-version; }
-                            // The author, and the copyright line under the name: plain text
-                            // like the version. The project has no licence yet, so the line
-                            // names none. It has no label: "Copyright" would not fit the
-                            // label column with large fonts.
-                            InfoRow { label: "Author"; value: "Tomas Jelinek"; }
-                            InfoRow { label: ""; value: "© 2026 Tomas Jelinek"; }
-                            InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; }
-                            InfoRow { label: "Libraries"; value: "Every open-source library and bundled component this package ships is listed with its license on the Licenses tab."; }
+                            version-row := InfoRow { label: "Version"; value: root.application-version; label-width: info.labels; }
+                            // Plain text like the version. The project has no licence yet,
+                            // so the copyright line names none.
+                            copyright-row := InfoRow { label: "Copyright"; value: "© 2026 Tomas Jelinek"; label-width: info.labels; }
+                            built-row := InfoRow { label: "Built with"; value: "Rust, Slint and FemtoVG"; label-width: info.labels; }
+                            libraries-row := InfoRow { label: "Libraries"; value: "Every open-source library and bundled component this package ships is listed with its license on the Licenses tab."; label-width: info.labels; }
                             Rectangle { height: 1px; background: Theme.frame; }
                             // Slint's royalty-free license requires this attribution to stay
                             // visible. The covering TouchArea keeps a click from opening its

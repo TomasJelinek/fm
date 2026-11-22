@@ -389,9 +389,9 @@ Source directories are removed postorder only when their contents were moved;
 skips and failures preserve unfinished sources. Platform and metadata limits
 remain explicit in the transfer contract.
 Options is the gear at the right end of the top toolbar. The application moon
-icon immediately to its right opens About, including the application version,
-author and copyright; Escape or Close dismisses it. Both controls remain fixed
-when panel tools scroll.
+icon immediately to its right opens About, including the application version and
+copyright; Escape or Close dismisses it. Both controls remain fixed when panel
+tools scroll.
 In About, Left and Right switch between its tabs. In the library list, Up, Down,
 Page Up, Page Down, Home and End move the selection, and Enter or a double-click
 opens the selected library; Down moves from the filter field into the list.

@@ -17,7 +17,7 @@ use i_slint_core::{
         Opacity, Path, SimpleText, TouchArea,
     },
     layout::Orientation,
-    lengths::LogicalRect,
+    lengths::{LogicalRect, LogicalSize},
     window::{WindowInner, WindowKind},
 };
 use midnight_core::{Command, Event, LicenseNotice, LicenseNoticeRequest};
@@ -1113,11 +1113,11 @@ fn saturn_is_drawn_the_same_in_every_theme() {
     }
 }
 
-/// What the About tab shows under the version: the author's label and name, and the
-/// copyright line under the name.
-const AUTHOR: &str = "Author";
-const AUTHOR_NAME: &str = "Tomas Jelinek";
+/// The row the About tab shows under the version: its label and its exact text.
+const COPYRIGHT_LABEL: &str = "Copyright";
 const COPYRIGHT: &str = "© 2026 Tomas Jelinek";
+/// The labels of the About tab's rows, Copyright the widest of them.
+const ROW_LABELS: [&str; 4] = ["Version", COPYRIGHT_LABEL, "Built with", "Libraries"];
 
 /// A text's colour.
 fn text_color(item: &ItemRc) -> slint::Color {
@@ -1183,12 +1183,26 @@ fn scroll_view(item: &ItemRc) -> Option<ItemRc> {
     None
 }
 
-/// Scroll `item` into its scroll view with the wheel, as a user does.
-fn reveal(about: &mut About, item: &ItemRc) {
+/// The part of a text's box that holds its lines: all of a wrapped text's box, the
+/// top line of a single-line label, whose box spans its whole row.
+fn text_area(item: &ItemRc, wraps: bool) -> LogicalRect {
+    let area = bounds(item);
+    if wraps {
+        return area;
+    }
+    let line = area
+        .height()
+        .min(preferred(item, Orientation::Vertical, -1.0));
+    LogicalRect::new(area.origin, LogicalSize::new(area.width(), line))
+}
+
+/// Scroll `area`, a part of `item`, into the item's scroll view with the wheel, as a
+/// user does.
+fn reveal(about: &mut About, item: &ItemRc, area: LogicalRect) {
     let Some(view) = scroll_view(item) else {
         return;
     };
-    let (shown, area) = (bounds(&view), bounds(item));
+    let shown = bounds(&view);
     let delta = if area.min_y() < shown.min_y() {
         shown.min_y() - area.min_y()
     } else if area.max_y() > shown.max_y() {
@@ -1210,50 +1224,52 @@ fn reveal(about: &mut About, item: &ItemRc) {
 }
 
 #[test]
-fn the_about_tab_names_its_author_and_copyright_in_every_theme() {
+fn the_about_tab_shows_its_copyright_row_in_every_theme() {
     let mut about = About::open(1000, 800);
     let text =
         |about: &About, name: &str| ui::popup_item(about.window(), name, AccessibleRole::Text);
+    // No author row any more: only the copyright row names the author.
+    for gone in ["Author", "Tomas Jelinek"] {
+        assert!(
+            ui::try_popup_item(about.window(), gone, AccessibleRole::Text).is_none(),
+            "About still shows {gone:?}"
+        );
+    }
     let (version_label, version_value) = (text(&about, "Version"), text(&about, "1.2.3"));
-    let (label, name, line) = (
-        bounds(&text(&about, AUTHOR)),
-        bounds(&text(&about, AUTHOR_NAME)),
-        bounds(&text(&about, COPYRIGHT)),
+    let line = text(&about, COPYRIGHT);
+    assert_eq!(
+        ui::text_values(line.clone()),
+        [COPYRIGHT],
+        "the copyright row's text"
     );
-    // Under the version: the author's label beside the name, in the version's columns,
-    // then the copyright line under the name, then Built with.
+    let (label, line) = (bounds(&text(&about, COPYRIGHT_LABEL)), bounds(&line));
+    // Under the version: Copyright beside its line, in the version's columns, then
+    // Built with.
     let version = bounds(&version_label);
     assert!(
         label.min_y() > version.max_y() - 0.5,
-        "{AUTHOR} {label:?} is not below the version {version:?}"
+        "{COPYRIGHT_LABEL} {label:?} is not below the version {version:?}"
     );
     assert!(
-        (label.min_y() - name.min_y()).abs() < 0.5,
-        "{AUTHOR} {label:?} and {AUTHOR_NAME} {name:?} are not one row"
+        (label.min_y() - line.min_y()).abs() < 0.5,
+        "{COPYRIGHT_LABEL} {label:?} and {COPYRIGHT} {line:?} are not one row"
     );
-    let value_column = bounds(&version_value).min_x();
     assert!(
         (label.min_x() - version.min_x()).abs() < 0.5
-            && (name.min_x() - value_column).abs() < 0.5
-            && (line.min_x() - value_column).abs() < 0.5,
-        "the author's rows leave the version's columns"
-    );
-    assert!(
-        line.min_y() > name.max_y() - 0.5,
-        "{COPYRIGHT} {line:?} is not under {AUTHOR_NAME} {name:?}"
+            && (line.min_x() - bounds(&version_value).min_x()).abs() < 0.5,
+        "the copyright row leaves the version's columns"
     );
     let next = bounds(&text(&about, "Built with"));
     assert!(
         next.min_y() > line.max_y() - 0.5,
         "Built with {next:?} is above {COPYRIGHT} {line:?}"
     );
-    // In every theme they take the version's colours and contrast at least as well.
+    // In every theme it takes the version's colours and contrasts at least as well.
     for theme in 0..midnight_core::PreferenceTheme::ALL.len() as i32 {
         about.window().set_theme_index(theme);
         draw_afresh(&mut about.ui);
         for (shown, like) in [
-            (AUTHOR, &version_label),
-            (AUTHOR_NAME, &version_value),
+            (COPYRIGHT_LABEL, &version_label),
             (COPYRIGHT, &version_value),
         ] {
             let item = text(&about, shown);
@@ -1273,16 +1289,18 @@ fn the_about_tab_names_its_author_and_copyright_in_every_theme() {
 }
 
 #[test]
-fn the_author_and_copyright_stay_readable_at_the_smallest_size_and_large_fonts() {
+fn the_copyright_row_and_its_labels_stay_readable_at_the_smallest_size_and_large_fonts() {
     let mut about = About::open(1000, 800);
     let mut problems = Vec::new();
     // Density, desktop and touch font sizes and the drag of the dialog's corner: the
-    // dialog at its smallest (280 × 180) with each density's default font, and at its
-    // narrowest (280 × 660) with the largest font.
+    // dialog at its smallest (280 × 180) with each density's default font, and 340 px
+    // wide with a 26 px font. Narrower, the label column that holds Copyright and the
+    // Libraries row's longest word ("component", 127 px in Segoe UI) need more than the
+    // tab's width with wider fonts.
     for (density, desktop, touch, (dx, dy)) in [
         (0, 12, 15, (-280.0, -480.0)),
         (1, 12, 15, (-280.0, -480.0)),
-        (0, 26, 26, (-280.0, 0.0)),
+        (0, 26, 26, (-220.0, 0.0)),
     ] {
         // Reopened, About starts at its default size.
         about.window().set_about_open(false);
@@ -1296,16 +1314,20 @@ fn the_author_and_copyright_stay_readable_at_the_smallest_size_and_large_fonts()
         let case = format!("density {density}, fonts {desktop}/{touch}");
         render::snapshot(
             &about.ui,
-            &format!("about-author-density-{density}-fonts-{desktop}-{touch}"),
+            &format!("about-copyright-density-{density}-fonts-{desktop}-{touch}"),
         );
-        // A label holds one line; the values wrap.
-        for (name, wraps) in [(AUTHOR, false), (AUTHOR_NAME, true), (COPYRIGHT, true)] {
+        // A label holds one line, the widest Copyright included; the values wrap.
+        let texts = ROW_LABELS
+            .into_iter()
+            .map(|label| (label, false))
+            .chain([(COPYRIGHT, true)]);
+        for (name, wraps) in texts {
             let Some(item) = ui::try_popup_item(about.window(), name, AccessibleRole::Text) else {
                 problems.push(format!("{case}: no {name:?}"));
                 continue;
             };
-            reveal(&mut about, &item);
-            let area = bounds(&item);
+            reveal(&mut about, &item, text_area(&item, wraps));
+            let area = text_area(&item, wraps);
             if let Some(view) = scroll_view(&item)
                 && !within(&area, &bounds(&view))
             {

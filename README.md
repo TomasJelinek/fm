@@ -930,9 +930,9 @@ editor scope and shortcuts reserved for later stages.
   Checksums, Folder Sizes, Properties, Hot Paths, view mode and sort. Drives,
   paths and tabs remain per-panel. Narrow windows scroll the shared toolbar.
   The Options gear stays fixed at its right end; the moon button immediately
-  beside it opens About with the application version, author and copyright. Its
-  night sky holds still while Windows animation effects are off. The bottom bar
-  keeps F1–F12 and Jobs.
+  beside it opens About with the application version and copyright. Its night sky
+  holds still while Windows animation effects are off. The bottom bar keeps F1–F12
+  and Jobs.
   Switching panels or locations invalidates an open context-dependent popup.
 - Custom Commands has a dedicated toolbar above the command editor whenever at
   least one command is configured. At compact window sizes, the shared toolbar's
@@ -1411,7 +1411,7 @@ Compact controls and volume tooltips have a
 [verification record](docs/verification/compact-tooltips.md).
 Salamander sources supplied separately are behavioral reference only; this
 implementation does not copy its source, assets or resource strings. The About
-dialog names the author and copyright holder and includes Slint attribution. A
+dialog shows the copyright line and includes Slint attribution. A
 project distribution license has not yet been selected. macOS adapters and
 distribution are later work.
 The [asset provenance record](docs/ASSET_PROVENANCE.md) distinguishes project-created
