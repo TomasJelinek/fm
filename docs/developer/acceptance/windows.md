@@ -193,6 +193,10 @@ extended (J2, J4, J5).
 | `journeys_keyboard_only` | PASS. Wave 2 adds conflicts answered by keys, Jobs and Resolve by keys, and the Links choice by keys on a directory junction | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
 | `journeys_pointer_only` | PASS: on the held Slint clock a drop 250 ms after the press is cancelled with "Drag cancelled: released within 0.4 s" and one 450 ms after it moves the folder; a wheel of 1.5 rows rests on a whole row (44.0 px with 22 px rows) | increment 2 `20261122-073649`; wave 2 `20261122-141148` |
 
+Rerun on main be2d2dea, after the Copy dialog's polish and the Panel filter's shared
+edit line: `20261122-173839`, every scenario of the table as above (ten passed,
+`journeys_links_readonly` SKIP).
+
 The red runs of the new checks failed as each red case was meant to: `20261122-090108`
 (harness checks and the quick drop), `20261122-121748` (J2's conflicts and Links, J4's
 refusal and F3, J5's palette and page order), `20261122-122433` (J4's copy after Escape,

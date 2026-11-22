@@ -95,6 +95,14 @@ checks as pending until they are promoted to ordinary checks:
 
 ## Host runs
 
+Rerun on main be2d2dea, after the Copy dialog's polish (142aa74b) and the Panel filter's
+shared edit line (27189334), smoke scale, debug test builds with `--only
+harness_checks,startup,journeys`: Linux run `20261122-195747` passed all eleven
+scenarios (198.6 s) and Windows run 20261122-173839 ten, `journeys_links_readonly`
+reporting SKIP (251.5 s). `journeys_keyboard_only` filtered with Ctrl+F12 and Enter in
+the new edit line and chose "Copy the files links point to" by Tab, Up and Enter in the
+polished Copy dialog; the other journeys' steps held as below.
+
 Runs of 22 November for wave 2, smoke scale, debug test builds of 41adbb86 with WP1's
 wave 2 (`--only harness_checks,startup,journeys`): Linux run `20261122-142728` (WSL 2,
 Ubuntu 24.04 on ext4, packages of b1b89343) passed all eleven scenarios; Windows run
