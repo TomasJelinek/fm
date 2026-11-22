@@ -3,8 +3,10 @@
 The integration target `operations_real_windows` exercises the production Engine,
 LocalFileSystem, and VerifiedFileCopy services on real files. It creates fresh,
 uniquely named directories beneath `_build/qa/operations-find/transfer-real-*`.
-Fixtures and per-case `EVIDENCE.txt` files remain available for inspection. A test
-failure leaves its evidence on disk too; the presence of a directory is not a pass.
+A passing case removes its directory. A failing case keeps it with its per-case
+`EVIDENCE.txt` for inspection, and `MIDNIGHT_KEEP_TEST_FIXTURES=1` keeps the directories
+of passing cases too ([test fixtures](TEST_EXECUTION.md#test-fixtures-under-_buildqa)).
+The presence of a directory is not a pass.
 
 ## Recorded execution, 2026-11-10
 

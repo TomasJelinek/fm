@@ -1,5 +1,7 @@
 #[path = "../src/find_worker.rs"]
 mod find_worker;
+#[path = "support/qa_fixture.rs"]
+mod qa_fixture;
 
 use midnight_core::*;
 use midnight_platform::LocalFileSystem;
@@ -123,10 +125,8 @@ impl FindSource for Source {
 }
 
 fn run(failure: Failure) -> (FindSummary, Vec<Arc<FindResult>>, u64) {
-    let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/operations-find/failures");
-    fs::create_dir_all(&root).unwrap();
-    let fixture = tempfile::tempdir_in(fs::canonicalize(root).unwrap()).unwrap();
+    // Removed when the search returns, kept if it panics.
+    let fixture = qa_fixture::Folder::new(&qa_fixture::operations_find(), "find-failures-");
     for name in ["a.bin", "b.bin", "broken.bin"] {
         fs::write(fixture.path().join(name), vec![0xff; 128 * 1024 + 3]).unwrap();
     }

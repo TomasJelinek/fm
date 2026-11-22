@@ -1,10 +1,12 @@
 #![cfg(windows)]
 #[path = "../src/find_worker.rs"]
 mod find_worker;
+#[path = "support/qa_fixture.rs"]
+mod qa_fixture;
 
 use midnight_core::*;
 use midnight_platform::LocalFileSystem;
-use std::{fs, os::windows::fs::OpenOptionsExt, path::Path, sync::Arc, time::SystemTime};
+use std::{fs, os::windows::fs::OpenOptionsExt, sync::Arc, time::SystemTime};
 
 fn run(query: &FindRequest) -> (FindSummary, Vec<Arc<FindResult>>) {
     let mut rows = Vec::new();
@@ -41,10 +43,7 @@ fn run(query: &FindRequest) -> (FindSummary, Vec<Arc<FindResult>>) {
 
 #[test]
 fn actual_windows_read_sharing_failure_is_incomplete_and_a_new_search_recovers() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../_build/qa/operations-find/native-read-error");
-    fs::create_dir_all(&root).unwrap();
-    let fixture = tempfile::tempdir_in(fs::canonicalize(root).unwrap()).unwrap();
+    let fixture = qa_fixture::Folder::new(&qa_fixture::operations_find(), "find-read-error-");
     let locked = fixture.path().join("locked.txt");
     fs::write(&locked, b"needle").unwrap();
     fs::write(fixture.path().join("readable.txt"), b"needle").unwrap();

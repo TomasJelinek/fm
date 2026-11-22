@@ -1,5 +1,7 @@
 #[path = "../src/find_worker.rs"]
 mod find_worker;
+#[path = "support/qa_fixture.rs"]
+mod qa_fixture;
 
 use midnight_core::*;
 use midnight_platform::LocalFileSystem;
@@ -10,11 +12,9 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-fn fixture() -> tempfile::TempDir {
-    let root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/operations-find/backend");
-    fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(fs::canonicalize(root).unwrap()).unwrap()
+/// A native folder below `_build/qa/operations-find`, removed when the test passes.
+fn fixture() -> qa_fixture::Folder {
+    qa_fixture::Folder::new(&qa_fixture::operations_find(), "find-backend-")
 }
 
 fn request(root: &Path) -> FindRequest {

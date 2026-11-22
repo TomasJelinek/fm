@@ -1,8 +1,10 @@
-//! End-to-end Windows engine operations on retained, owned QA fixtures.
+//! End-to-end Windows engine operations on owned QA fixtures, kept only when a test fails.
 #![cfg(windows)]
 
 #[path = "operations_real_windows/native.rs"]
 mod native;
+#[path = "support/qa_fixture.rs"]
+mod qa_fixture;
 #[path = "operations_real_windows/support.rs"]
 mod support;
 

@@ -1,4 +1,6 @@
-//! Real disk fixtures deliberately retained under the repository QA directory.
+//! Real disk fixtures under the repository QA directory: removed when their test passes,
+//! kept with their `EVIDENCE.txt` when it fails or while `MIDNIGHT_KEEP_TEST_FIXTURES=1`
+//! is set (`qa_fixture::finish`).
 use midnight_core::{
     Command, CopyChoice, CopyConflict, CopyDecision, CopyEvent, CopyFailure, CopyOperationState,
     CopyProgress, CopyRequest, Event, FileClipboard, FileClipboardIntent, OperationId,
@@ -23,7 +25,7 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(label: &str) -> Self {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/operations-find");
+        let parent = super::qa_fixture::operations_find();
         fs::create_dir_all(&parent).unwrap();
         let root = tempfile::Builder::new()
             .prefix(&format!("transfer-real-{label}-"))
@@ -49,6 +51,12 @@ impl Fixture {
             .unwrap();
         writeln!(file, "{line}").unwrap();
         eprintln!("{line}");
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        super::qa_fixture::finish(&self.root);
     }
 }
 

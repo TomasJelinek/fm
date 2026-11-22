@@ -4,6 +4,8 @@
 mod command_reclaim;
 #[path = "modeless.rs"]
 mod modeless;
+#[path = "../../../midnight-engine/tests/support/qa_fixture.rs"]
+mod qa_fixture;
 #[path = "engine_startup.rs"]
 mod startup;
 #[path = "engine_teardown.rs"]
@@ -25,7 +27,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tokio::{runtime::Runtime, sync::mpsc, task::JoinHandle};
 
@@ -125,31 +127,9 @@ impl Harness {
 
     fn build(watched: Option<usize>) -> Self {
         let parent = std::env::var_os("MIDNIGHT_NATIVE_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../_build/qa/operations-find")
-            });
-        fs::create_dir_all(&parent).unwrap();
-        let parent = parent.canonicalize().unwrap();
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        // Parallel tests can read the same clock tick: number the collisions.
-        let root = (0..64)
-            .find_map(|attempt| {
-                let root = parent.join(format!(
-                    "native-ui-{}-{stamp}-{attempt}",
-                    std::process::id()
-                ));
-                match fs::create_dir(&root) {
-                    Ok(()) => Some(root),
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
-                    Err(error) => panic!("cannot create {}: {error}", root.display()),
-                }
-            })
-            .expect("a unique native fixture name");
-        assert_eq!(root.parent(), Some(parent.as_path()));
+            .map_or_else(qa_fixture::operations_find, PathBuf::from);
+        // `native-ui-<process>-<time>-<n>`, ended by `Drop` (see `qa_fixture::finish`).
+        let root = qa_fixture::create_in(&parent, "native-ui-");
         let left = root.join("source");
         let right = root.join("destination");
         fs::create_dir_all(left.join("inside")).unwrap();
@@ -623,14 +603,8 @@ impl Drop for Harness {
     fn drop(&mut self) {
         self.shutdown();
         // Tests may inspect the files after an explicit shutdown; the owned fixture
-        // is removed only when the harness goes away, and kept when a test failed.
-        if !std::thread::panicking()
-            && let Err(error) = fs::remove_dir_all(&self.root)
-        {
-            eprintln!(
-                "could not remove native UI fixture {}: {error}",
-                self.root.display()
-            );
-        }
+        // is removed only when the harness goes away, and kept when a test failed or
+        // MIDNIGHT_KEEP_TEST_FIXTURES=1 is set.
+        qa_fixture::finish(&self.root);
     }
 }

@@ -1,4 +1,6 @@
 //! Actual comparison actions must remain reachable at minimum size.
+#[path = "../../midnight-engine/tests/support/qa_fixture.rs"]
+mod qa_fixture;
 #[path = "support/resident.rs"]
 mod resident;
 #[path = "support/mod.rs"]
@@ -108,7 +110,9 @@ fn draw(
     pixels
 }
 
-fn fixture_directory(name: &str) -> std::path::PathBuf {
+/// A new fixture folder `<name>-...`, removed when the test passes and kept when it
+/// fails or while `MIDNIGHT_KEEP_TEST_FIXTURES=1` is set.
+fn fixture_directory(name: &str) -> qa_fixture::Folder {
     // Native capture accepts only literal absolute paths without `.` or `..` steps,
     // so the default root is the checkout's own _build, named without dot steps.
     let root = std::env::var_os("ME_COMPARE_POLISH_SCREENSHOTS")
@@ -122,11 +126,9 @@ fn fixture_directory(name: &str) -> std::path::PathBuf {
                 .join("qa")
                 .join("native-dialogs")
         });
-    let directory = root.join(format!("{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
-    // The optional screenshot root may itself contain relative/dot components.
-    // Normalize only the fixture this test just created, never production source paths.
-    directory.canonicalize().unwrap()
+    // The optional screenshot root may itself contain relative/dot components: the
+    // folder is created below its canonical path, never below production source paths.
+    qa_fixture::Folder::new(&root, &format!("{name}-"))
 }
 
 fn wait_until(condition: impl Fn() -> bool) {

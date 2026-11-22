@@ -497,3 +497,17 @@ created afterwards, and other software then gets no 8.3 names on that volume). R
 (including Dev Drive) and FAT volumes never qualify. `MIDNIGHT_TEST_NAMESPACE_LOOKUP`
 forces a lookup mode only in `midnight-platform-windows`'s own test build, not for
 engine tests.
+
+### Test fixtures under `_build/qa`
+
+Tests that need real files on the checkout's volume create them below `_build/qa`: the
+real Windows Copy, Move and Delete operations (`transfer-real-*`), Find (`find-*`) and the
+native UI harness (`native-ui-*`) below `_build/qa/operations-find`, the comparator's
+polish fixtures below `_build/qa/native-dialogs`. A passing test removes its fixture. A
+failing test keeps it, with its `EVIDENCE.txt` where it records one, and prints
+`kept test fixture <path>`. Set `MIDNIGHT_KEEP_TEST_FIXTURES=1` to keep the fixtures of
+passing tests too. A fixture that still cannot be removed after its read-only
+attributes are cleared and a short wait for closing handles is named on stderr
+(`could not remove test fixture <path>`); the test does not fail for it. The other tests
+that write there use a temporary folder inside a fixed one, removed when the test ends,
+and the ignored manual performance fixtures reuse a fixed tree.
