@@ -814,11 +814,13 @@ async fn captured_browsed_directory_link_preserves_original_occurrence_and_relea
     let mut completed = vec![];
     loop {
         match h.next().await {
-            CopyEvent::RootCompleted {
-                source: CompletedCopySource::Tree(value),
-                ..
-            } => {
-                completed.push(value);
+            CopyEvent::RootsCompleted { sources, .. } => {
+                for source in sources {
+                    let CompletedCopySource::Tree(value) = source else {
+                        panic!("a tree copy reported another identity: {source:?}")
+                    };
+                    completed.push(value);
+                }
             }
             CopyEvent::Progress(done) if done.state.is_terminal() => {
                 assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");

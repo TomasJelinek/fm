@@ -355,3 +355,71 @@ async fn terminal_closure_keeps_file_totals_unknown_for_root_only_discovery() {
     );
     delivery.await.unwrap();
 }
+
+/// A job's root notices wait while the UI takes no events (WIN-8: it refreshed a panel
+/// of 100,001 members after every 16): they reach it joined, at most
+/// `MAX_ROOTS_PER_NOTICE` roots each, in order, and all before the terminal progress, so
+/// the end of a cancelled selection is a few events away instead of thousands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn waiting_root_notices_reach_the_ui_joined_and_before_the_terminal_progress() {
+    const UI_EVENTS: usize = 32;
+    const ROOTS: u64 = 4_000;
+    let (sender, mut receiver) = mpsc::channel(UI_EVENTS);
+    let outbox = CopyOutbox::pending(Outbox {
+        sender,
+        wakeup: Arc::new(|| {}),
+    });
+    let (terminal, finished) = oneshot::channel();
+    let delivery = tokio::spawn(
+        outbox
+            .clone()
+            .deliver(progress(CopyOperationState::Queued), finished),
+    );
+    assert_eq!(
+        event_state(receiver.recv().await.unwrap()),
+        CopyOperationState::Queued
+    );
+    for entry in 0..ROOTS {
+        outbox
+            .send(Event::Copy(CopyEvent::RootsCompleted {
+                id: OperationId(1),
+                sources: vec![CompletedCopySource::Archive(VirtualEntryId {
+                    mount: 7,
+                    entry,
+                })],
+            }))
+            .await;
+    }
+    terminal
+        .send(progress(CopyOperationState::Cancelled))
+        .unwrap();
+    let (mut events, mut roots) = (0, Vec::new());
+    loop {
+        match receiver.recv().await.unwrap() {
+            Event::Copy(CopyEvent::RootsCompleted { sources, .. }) => {
+                events += 1;
+                assert!(sources.len() <= MAX_ROOTS_PER_NOTICE, "{}", sources.len());
+                roots.extend(sources.into_iter().map(|source| match source {
+                    CompletedCopySource::Archive(id) => id.entry,
+                    _ => unreachable!(),
+                }));
+            }
+            Event::Copy(CopyEvent::Progress(progress)) => {
+                assert_eq!(progress.state, CopyOperationState::Cancelled);
+                break;
+            }
+            _ => panic!("unexpected event"),
+        }
+    }
+    assert_eq!(
+        roots,
+        (0..ROOTS).collect::<Vec<_>>(),
+        "every root, in order"
+    );
+    let bound = UI_EVENTS + 2 * (ROOTS as usize).div_ceil(MAX_ROOTS_PER_NOTICE);
+    assert!(
+        events <= bound,
+        "{events} events for {ROOTS} roots before the terminal progress; at most {bound}"
+    );
+    delivery.await.unwrap();
+}

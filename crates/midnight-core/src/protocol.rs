@@ -133,6 +133,8 @@ pub enum Command {
         entries: Arc<[Entry]>,
         view: Arc<DirectoryIndex>,
         selected: Arc<std::collections::HashSet<EntryId>>,
+        /// The totals of `selected`, which a removal updates member by member.
+        totals: crate::ArchiveSelectionTotals,
         action: crate::ArchiveSelectionAction,
     },
     ArchiveNavigate {

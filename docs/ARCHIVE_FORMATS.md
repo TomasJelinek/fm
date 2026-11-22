@@ -216,7 +216,10 @@ selection and F3 member reads. **F5 copy out / extraction is implemented** throu
 the bounded background transfer queue, with progress, conflict handling, safe
 destination traversal and independent SHA-256 destination readback. See the
 [archive-copy evidence](verification/2026-11-07-archive-copy.md).
-Copying into an archive and moving archive members are not implemented.
+Copying into an archive and moving archive members are not implemented. Copy-out
+validates the archive file as each exchange with its worker begins and around each read
+of the file, not for every chunk; small members copied at 118–198 files/s through the
+copy actor on 22 November (debug build), where they had copied at 62–72 ([measurements](verification/2026-11-22-archive-copy-out.md)).
 
 Archive Hot Paths persist typed container/provider/member locations and the exact
 decoder, and display `archive.zip@path` with native separators. The display string

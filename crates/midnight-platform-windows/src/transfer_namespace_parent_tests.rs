@@ -136,3 +136,80 @@ fn successful_query_without_disabled_flag_remains_unqualified() {
         assert!(!persistent_short_names_disabled(1, 16, &response));
     }
 }
+
+/// Manual measurement for the WIN-8 namespace design note: one check of a pinned folder's
+/// ancestry by opening each level, against the handle proof of a qualified folder and its
+/// parts, each outside a refresh batch.
+#[test]
+#[ignore = "manual measurement"]
+fn measure_final_path_against_ancestry_opens() {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_NAME_OPENED, VOLUME_NAME_NT};
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/tmp");
+    std::fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir_in(base).unwrap();
+    let path = temp.path().join("level0").join("level1").join("level2");
+    std::fs::create_dir_all(&path).unwrap();
+    let directory = metadata_directory(&path).unwrap();
+    let cancel = Cancellation::default();
+    let parent = capture(&directory, &path, &cancel).unwrap();
+    let levels = parent.chain.len();
+    println!(
+        "PERF lookup rules {:?}, handle proof {}",
+        parent.mode,
+        if parent.pinned.is_some() { "on" } else { "off" }
+    );
+    const N: u32 = 4000;
+    let time = |name: &str, check: &dyn Fn()| {
+        for _ in 0..100 {
+            check();
+        }
+        let started = std::time::Instant::now();
+        for _ in 0..N {
+            check();
+        }
+        let micros = started.elapsed().as_secs_f64() * 1e6 / f64::from(N);
+        println!("PERF {name}: {micros:.1} us per call, {levels} levels ({path:?})");
+    };
+    time(
+        "validate (the handle proof when on, and the lookup rules)",
+        &|| parent.validate(&cancel).unwrap(),
+    );
+    time(
+        "per-level check, each level opened (validate_levels)",
+        &|| parent.validate_levels(&cancel).unwrap(),
+    );
+    if parent.pinned.is_some() {
+        time("handle proof alone (proven)", &|| {
+            assert!(parent.proven(&cancel).unwrap())
+        });
+    }
+    time("lookup rules alone (check_rules)", &|| {
+        parent.check_rules().unwrap()
+    });
+    time("link of one level (FileHardLinkInformation)", &|| {
+        assert!(linked(&parent.chain[0], &parent.chain[1]))
+    });
+    time(
+        "delete state of the held folder (FileStandardInfo)",
+        &|| assert_eq!(delete_pending(&directory), Some(false)),
+    );
+    time(
+        "capture of a pooled parent (identity + final path, no check)",
+        &|| {
+            capture(&directory, &path, &cancel).unwrap();
+        },
+    );
+    time("GetFinalPathNameByHandleW normalized, volume GUID", &|| {
+        physical_path(&directory).unwrap();
+    });
+    time("GetFinalPathNameByHandleW normalized, volume NT", &|| {
+        crate::transfer::destination::final_path(&directory, VOLUME_NAME_NT).unwrap();
+    });
+    time("GetFinalPathNameByHandleW opened name, volume NT", &|| {
+        crate::transfer::destination::final_path(&directory, VOLUME_NAME_NT | FILE_NAME_OPENED)
+            .unwrap();
+    });
+    time("identity of the held folder (one handle query)", &|| {
+        identity(&directory, &path).unwrap();
+    });
+}

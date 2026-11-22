@@ -408,9 +408,11 @@ and ask for an application restart instead of waiting.
 Turns of a job without a granted peer refresh only the pins they announced (no other
 claim can observe its facts, and every grant re-probes all planned records). Its
 untouched pins are revalidated by the next grant and once more before the job's
-owners close, so an external change to any pinned binding (for example a renamed
-source or destination parent) is still latched and reported as a job error, as for
-jobs with peers. See the
+owners close, so an external change to a pinned binding of an item the job started
+(for example a renamed source or destination parent) is still latched and reported as
+a job error, as for jobs with peers. Since 22 November that final revalidation leaves
+out the pins of selected items that a job stopped by Cancel or an error never started
+(WIN-8, [Windows namespace pins](TRANSFERS.md#windows-namespace-pins)). See the
 [admission and safety contract](../superpowers/specs/2026-11-07-copy-predecessor-fence.md).
 
 ## Discovery and truthful progress

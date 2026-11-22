@@ -114,20 +114,22 @@ async fn tree_move_root_feedback_waits_for_native_rename_and_skip_retains_later_
     let mut completed = Vec::new();
     loop {
         match h.next().await {
-            CopyEvent::RootCompleted {
-                source: CompletedCopySource::Tree(occurrence),
-                ..
-            } => {
-                assert!(
-                    !first.exists(),
-                    "root feedback must follow directory removal and stage cleanup"
-                );
-                assert_eq!(
-                    fs::read(destination.join("a-tree/nested/file")).unwrap(),
-                    b"tree bytes"
-                );
-                assert!(destination.join("a-tree/nested/empty").is_dir());
-                completed.push(occurrence);
+            CopyEvent::RootsCompleted { sources, .. } => {
+                for source in sources {
+                    let CompletedCopySource::Tree(occurrence) = source else {
+                        panic!("a tree move reported another identity: {source:?}")
+                    };
+                    assert!(
+                        !first.exists(),
+                        "root feedback must follow directory removal and stage cleanup"
+                    );
+                    assert_eq!(
+                        fs::read(destination.join("a-tree/nested/file")).unwrap(),
+                        b"tree bytes"
+                    );
+                    assert!(destination.join("a-tree/nested/empty").is_dir());
+                    completed.push(occurrence);
+                }
             }
             CopyEvent::Conflict(conflict) => {
                 assert_eq!(completed.len(), 1);

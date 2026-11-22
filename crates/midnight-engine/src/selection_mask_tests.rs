@@ -101,7 +101,8 @@ fn archive_masks_match_displayed_member_captions_only() {
     let result = crate::archive_selection::apply(
         &rows,
         &view,
-        &selected,
+        Arc::new(selected.clone()),
+        ArchiveSelectionTotals::default(),
         ArchiveSelectionAction::Mask(Arc::new(MaskSelection {
             pattern: "*.TXT".into(),
             select: true,
@@ -116,7 +117,8 @@ fn archive_masks_match_displayed_member_captions_only() {
     let result = crate::archive_selection::apply(
         &rows,
         &view,
-        &result.selected,
+        result.selected.clone(),
+        ArchiveSelectionTotals::default(),
         ArchiveSelectionAction::Mask(Arc::new(MaskSelection {
             pattern: "*.txt".into(),
             select: false,

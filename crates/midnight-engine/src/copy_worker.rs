@@ -113,6 +113,9 @@ pub(super) struct Job {
     cancel: Cancellation,
     destination: Arc<dyn TransferDirectory>,
     roots: VecDeque<Box<dyn TransferSource>>,
+    /// The namespace claim's count of `roots` not taken yet: the job's close probes only
+    /// the pins of the roots it took (`copy_namespace::Claim::revalidate_before_close`).
+    unstarted: Option<crate::copy_namespace::Unstarted>,
     protected_roots: HashSet<TransferIdentity>,
     stack: Vec<Frame>,
     /// The name of a child that the top folder's enumeration reached but could not
@@ -152,6 +155,37 @@ pub(super) struct Job {
     // through actual cleanup and every stage/source/provider destruction.
     link_retirement: Arc<link_job::LinkRetirement>,
 }
+/// The longest one call of `Job::steps` continues an entry before it returns to the copy
+/// actor. A small file's steps take well under it, so they cost one blocking hop instead
+/// of 6-8 (WIN-8); a large file's chunks still return to the actor every 5 ms. Cancel and
+/// pause end a call at the next step boundary, so the limit adds nothing to their latency;
+/// what it bounds is how long one job keeps the disk slot before the actor checks it.
+const STEP_BUDGET: std::time::Duration = std::time::Duration::from_millis(5);
+
+#[cfg(test)]
+thread_local! {
+    /// Steps `Job::step` began on this thread, for the tests of `Job::steps`.
+    pub(super) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The copy actor's wait for its job's blocking calls (`Job::steps`). Dropped with the
+/// actor, or by its abort, it ends a running batch after the step in flight.
+pub(super) struct Awaited(Arc<std::sync::atomic::AtomicBool>);
+impl Awaited {
+    pub(super) fn new() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
+    /// The flag a blocking call checks between steps.
+    pub(super) fn flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.0.clone()
+    }
+}
+impl Drop for Awaited {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 pub(super) fn check_move_bounds<'a>(
     destination: &Path,
     paths: impl IntoIterator<Item = &'a Path>,
@@ -587,6 +621,7 @@ impl Job {
             cancel,
             destination,
             roots,
+            unstarted: None,
             protected_roots,
             stack: vec![],
             failed_child: None,
@@ -619,6 +654,12 @@ impl Job {
 
     pub(super) fn attach_tracker(&mut self, tracker: Arc<Mutex<Tracker>>) {
         self.tracker = tracker;
+    }
+
+    /// From now on, keep the namespace claim's count of the roots this job has not taken.
+    pub(super) fn report_unstarted(&mut self, unstarted: crate::copy_namespace::Unstarted) {
+        unstarted.set(self.roots.len());
+        self.unstarted = Some(unstarted);
     }
 
     fn start_verification_pass(&mut self) -> Result<(), FsError> {
@@ -675,7 +716,41 @@ impl Job {
     pub(super) fn take_namespace_busy(&mut self) -> Option<crate::copy_namespace::Blockers> {
         self.namespace_busy.take()
     }
+    /// Steps of the current entry for at most `STEP_BUDGET`, while `awaited` holds: the
+    /// copy actor runs each call on a blocking worker and checks pause, Cancel and the
+    /// disk slot between calls, so a small file's 6-8 quick steps take one hop instead
+    /// of one each (WIN-8). Returns at every boundary the actor acts on, as each step
+    /// does, and after the step in flight once the actor no longer awaits the call
+    /// (`awaited` cleared when it is dropped or aborted), as a single step would.
+    pub(super) fn steps(&mut self, awaited: &std::sync::atomic::AtomicBool) -> Step {
+        self.steps_within(awaited, STEP_BUDGET)
+    }
+    /// `steps` with another time limit: the tests of its boundaries use one that no
+    /// batch reaches, so that only the boundaries end it.
+    pub(super) fn steps_within(
+        &mut self,
+        awaited: &std::sync::atomic::AtomicBool,
+        budget: std::time::Duration,
+    ) -> Step {
+        let started = std::time::Instant::now();
+        loop {
+            let step = self.step();
+            if !matches!(step, Step::Continue)
+                || self.completed_root.is_some()
+                || self.namespace_busy.is_some()
+                || self.current.is_none()
+                || self.cancel.is_cancelled()
+                || self.cancel.pause_requested()
+                || !awaited.load(std::sync::atomic::Ordering::Acquire)
+                || started.elapsed() >= budget
+            {
+                return step;
+            }
+        }
+    }
     pub(super) fn step(&mut self) -> Step {
+        #[cfg(test)]
+        STEPS.with(|steps| steps.set(steps.get() + 1));
         crate::copy_namespace::clear_peer_refusal();
         self.namespace_busy = None;
         let step = self.advance();
@@ -1051,6 +1126,11 @@ impl Job {
                     {
                         self.record_decided_error(error);
                     }
+                    // The job stages nothing more in this folder.
+                    let frame = self.stack.last().expect("completed traversal frame");
+                    if let Err(error) = frame.destination.finish_staging() {
+                        self.record_cleanup_error(error);
+                    }
                     if completed_before == (self.progress.failed, self.progress.skipped) {
                         self.progress.completed_directories += 1;
                     }
@@ -1068,6 +1148,9 @@ impl Job {
             }
         } else {
             self.roots.pop_front().map(|source| {
+                if let Some(unstarted) = &self.unstarted {
+                    unstarted.set(self.roots.len());
+                }
                 self.active_root = Some(RootCompletion {
                     source: source
                         .tree_copy_occurrence()
@@ -1291,8 +1374,8 @@ impl Job {
                     io::ErrorKind::InvalidInput,
                     "This entry's source was already consumed and cannot be prepared again.",
                 )
-            })?
-            .revalidate(&self.cancel)?;
+            })
+            .and_then(|source| source.revalidate(&self.cancel))?;
         self.reject_followed_ancestor(work)?;
         // Copy recreates a link from its representation. Move moves the link itself
         // through its own capture (a rename, or a recreation across volumes).
@@ -1488,7 +1571,7 @@ impl Job {
                                 )
                             })?
                     } else {
-                        work.destination.stage_file(&self.cancel)?
+                        work.destination.stage_job_file(&self.cancel)?
                     }
                 };
                 let source = work.source.take().expect("regular source");
@@ -1969,6 +2052,18 @@ impl Job {
                 self.record_cleanup_error(error);
             }
             drop(move_work.into_inner());
+        }
+        // The unpublished stages are gone: remove the staging folders they were in.
+        let staging: Vec<_> = self
+            .stack
+            .iter()
+            .rev()
+            .map(|frame| frame.destination.finish_staging())
+            .chain([self.destination.finish_staging()])
+            .filter_map(Result::err)
+            .collect();
+        for error in staging {
+            self.record_cleanup_error(error);
         }
         if let Some(error) = current_cleanup {
             self.record_cleanup_error(error);

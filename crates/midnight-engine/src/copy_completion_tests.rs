@@ -18,19 +18,21 @@ async fn completed_move_root_is_reported_only_after_native_source_relocation() {
     let mut completed = Vec::new();
     let conflict = loop {
         match h.next().await {
-            CopyEvent::RootCompleted {
-                source: CompletedCopySource::Native(path),
-                ..
-            } => {
-                assert!(
-                    !first.exists(),
-                    "Move feedback arrived before source removal"
-                );
-                assert_eq!(
-                    fs::read(destination.join("first")).unwrap(),
-                    b"verified move"
-                );
-                completed.push(path);
+            CopyEvent::RootsCompleted { sources, .. } => {
+                for source in sources {
+                    let CompletedCopySource::Native(path) = source else {
+                        panic!("wrong provider")
+                    };
+                    assert!(
+                        !first.exists(),
+                        "Move feedback arrived before source removal"
+                    );
+                    assert_eq!(
+                        fs::read(destination.join("first")).unwrap(),
+                        b"verified move"
+                    );
+                    completed.push(path);
+                }
             }
             CopyEvent::Conflict(conflict) => break conflict,
             CopyEvent::Progress(p) => assert!(!p.state.is_terminal(), "{p:?}"),
@@ -47,7 +49,7 @@ async fn completed_move_root_is_reported_only_after_native_source_relocation() {
         .await;
     loop {
         match h.next().await {
-            CopyEvent::RootCompleted { .. } => panic!("Cancelled move reported complete"),
+            CopyEvent::RootsCompleted { .. } => panic!("Cancelled move reported complete"),
             CopyEvent::Progress(p) if p.state.is_terminal() => {
                 assert_eq!(p.state, CopyOperationState::Cancelled);
                 assert_eq!(p.source_files_removed, 0);
@@ -80,10 +82,12 @@ async fn partially_skipped_folder_is_not_reported_complete() {
     let (mut merged, mut skipped) = (0, 0);
     loop {
         match h.next().await {
-            CopyEvent::RootCompleted {
-                source: CompletedCopySource::Native(path),
-                ..
-            } => completed.push(path),
+            CopyEvent::RootsCompleted { sources, .. } => {
+                completed.extend(sources.into_iter().map(|source| match source {
+                    CompletedCopySource::Native(path) => path,
+                    other => panic!("wrong provider: {other:?}"),
+                }));
+            }
             CopyEvent::Conflict(c) => {
                 let choice = if c.can_merge {
                     merged += 1;
@@ -184,12 +188,14 @@ async fn completed_copy_roots_are_reported_before_the_next_conflict() {
     let mut completed = Vec::new();
     let conflict = loop {
         match h.next().await {
-            CopyEvent::RootCompleted {
-                id,
-                source: CompletedCopySource::Native(path),
-            } => {
+            CopyEvent::RootsCompleted { id, sources } => {
                 assert_eq!(id, OperationId(1));
-                completed.push(path);
+                for source in sources {
+                    let CompletedCopySource::Native(path) = source else {
+                        panic!("native copy reported a virtual identity")
+                    };
+                    completed.push(path);
+                }
             }
             CopyEvent::Conflict(conflict) => break conflict,
             CopyEvent::Progress(p) => assert!(!p.state.is_terminal(), "{p:?}"),
@@ -217,7 +223,7 @@ async fn completed_copy_roots_are_reported_before_the_next_conflict() {
         .await;
     loop {
         match h.next().await {
-            CopyEvent::RootCompleted { .. } => panic!("Skipped root reported complete"),
+            CopyEvent::RootsCompleted { .. } => panic!("Skipped root reported complete"),
             CopyEvent::Progress(p) if p.state.is_terminal() => {
                 assert_eq!(p.skipped, 1);
                 break;

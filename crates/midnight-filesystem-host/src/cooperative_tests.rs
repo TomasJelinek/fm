@@ -9,6 +9,11 @@ struct Source {
     token: Cancellation,
     validations: AtomicUsize,
     cancel_on_validation: AtomicUsize,
+    /// Cancel at this checkpoint: the source's cleanup status, which the session reads
+    /// as an exchange begins (with the validation) and as it completes (WIN-8: no longer
+    /// with a validation).
+    cancel_on_checkpoint: AtomicUsize,
+    checkpoints: AtomicUsize,
     change_on_validation: AtomicUsize,
     stop_on_validation: AtomicUsize,
     supervision: Mutex<std::sync::Weak<Supervision>>,
@@ -42,6 +47,14 @@ impl ContentSource for Source {
             return Err(Error("fixture source changed".into()));
         }
         Ok(())
+    }
+    fn cleanup_unconfirmed(&self) -> bool {
+        let count = self.checkpoints.fetch_add(1, Ordering::SeqCst) + 1;
+        if count == self.cancel_on_checkpoint.load(Ordering::SeqCst) {
+            self.cancelled.store(true, Ordering::Release);
+            self.token.cancel();
+        }
+        false
     }
     fn read_at(&self, _: u64, length: u32) -> Result<Vec<u8>, Error> {
         self.cancelled.store(true, Ordering::Release);
@@ -99,6 +112,7 @@ impl Fixture {
         let source = Arc::new(Source::default());
         let captured = CapturedFile::from_source(source.clone()).unwrap();
         source.validations.store(0, Ordering::SeqCst);
+        source.checkpoints.store(0, Ordering::SeqCst);
         let mut output = tempfile::tempfile().unwrap();
         for reply in replies {
             api::write_message_with_protocol(&mut output, protocol, &reply).unwrap();
@@ -421,7 +435,7 @@ fn cooperative_terminal_race_does_not_insert_new_cache_content() {
     );
     fixture
         .source
-        .cancel_on_validation
+        .cancel_on_checkpoint
         .store(2, Ordering::SeqCst);
     assert_eq!(fixture.read().unwrap_err().kind, io::ErrorKind::Interrupted);
     assert!(
@@ -691,7 +705,7 @@ fn cooperative_terminal_scratch_race_preserves_verified_scratch() {
     }
     fixture
         .source
-        .cancel_on_validation
+        .cancel_on_checkpoint
         .store(2, Ordering::SeqCst);
     assert_eq!(fixture.read().unwrap_err().kind, io::ErrorKind::Interrupted);
     assert!(!fixture.mount.supervision.stop.load(Ordering::Acquire));

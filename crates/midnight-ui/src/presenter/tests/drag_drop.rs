@@ -250,9 +250,9 @@ fn late_internal_acceptance_cannot_clear_marks_from_a_new_source_navigation() {
         &|_| true,
     );
     let operation = p.copies.progress[0].id;
-    p.apply(Event::Copy(CopyEvent::RootCompleted {
+    p.apply(Event::Copy(CopyEvent::RootsCompleted {
         id: operation,
-        source: CompletedCopySource::Native(base.join("one")),
+        sources: vec![CompletedCopySource::Native(base.join("one"))],
     }));
     let sent = RefCell::new(Vec::new());
     p.flush_copy_selection(&|command| {

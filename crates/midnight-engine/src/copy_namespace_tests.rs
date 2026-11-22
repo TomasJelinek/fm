@@ -2227,6 +2227,214 @@ fn final_revalidation_reports_an_untouched_pin_change_of_a_lone_job() {
     job.close();
 }
 
+/// A transfer job planned as copies plan one: a (source, destination) pair per selected
+/// item. Item `i` reads `s{i}` in folder 1 and writes `names[i]` in folder 2. Returns the
+/// job, the controls of its roots in planned order (item `i`: `2i` and `2i + 1`) and its
+/// destination pins.
+fn items(
+    registry: &Registry,
+    sequence: u64,
+    names: &[&str],
+) -> (Job, Vec<Arc<Control>>, Vec<Arc<dyn TransferNamespacePin>>) {
+    let mut controls = Vec::new();
+    let mut outputs = Vec::new();
+    let mut endpoints = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        let (read, source) = pin(vec![entry(
+            parent(1, &[1, 0]),
+            format!("s{index}").as_bytes(),
+            Some(100 + index as u64),
+            false,
+        )]);
+        let (written, output) = pin(vec![entry(
+            parent(2, &[2, 0]),
+            name.as_bytes(),
+            None,
+            false,
+        )]);
+        controls.extend([read, written]);
+        endpoints.extend([(Read, Some(source)), (Write, Some(output.clone()))]);
+        outputs.push(output);
+    }
+    let (claim, owners) = registry.new_job(sequence).unwrap();
+    let io = Arc::new(
+        registry
+            .inner
+            .io
+            .acquire(midnight_work_budget::Admission::Shared, || false)
+            .unwrap(),
+    );
+    claim
+        .plan_transfer(endpoints, io.clone(), &Cancellation::default())
+        .unwrap();
+    let job = Job {
+        claim: Some(claim),
+        owners: Some(owners),
+        io: Some(io),
+    };
+    (job, controls, outputs)
+}
+/// One opted-in turn that announces the item's own destination pin, as a native
+/// publication of the item announces it.
+fn publish(job: &Job, output: &Arc<dyn TransferNamespacePin>) {
+    let mut turn = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    assert!(
+        turn.reserve_private_child(Some(output.clone()), &Cancellation::default())
+            .unwrap()
+    );
+    turn.finish().unwrap();
+}
+fn calls(controls: &[Arc<Control>]) -> Vec<usize> {
+    controls
+        .iter()
+        .map(|control| control.calls.load(Ordering::SeqCst))
+        .collect()
+}
+/// The roots whose pins were refreshed since `before`.
+fn probed_since(controls: &[Arc<Control>], before: &[usize]) -> Vec<usize> {
+    (0..controls.len())
+        .filter(|root| controls[*root].calls.load(Ordering::SeqCst) != before[*root])
+        .collect()
+}
+fn changed(name: &str) -> Result<TransferNamespaceProbe, FsError> {
+    Err(FsError::from_io(
+        "transfer namespace",
+        Path::new(name),
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "original namespace leaf binding changed",
+        ),
+    ))
+}
+
+/// WIN-8: a job stopped before its last item (cancelled, or stopped by an error) probes
+/// as it closes the pins of the items it started, the current one included, and every
+/// root its turns touched: here item 4's destination, which has item 1's name, so
+/// publishing item 1 touched it. The pins of the items it never started are not probed.
+#[test]
+fn a_stopped_job_closes_with_the_items_it_started_and_the_roots_its_turns_touched() {
+    let registry = registry();
+    let names = ["d0", "same", "d2", "d3", "same", "d5"];
+    let (job, controls, outputs) = items(&registry, 1, &names);
+    assert!(job.grant());
+    let unstarted = job.claim().unstarted();
+    unstarted.set(6);
+    unstarted.set(5);
+    publish(&job, &outputs[0]);
+    unstarted.set(4);
+    publish(&job, &outputs[1]);
+    // Item 2 is the current item when the job stops.
+    unstarted.set(3);
+    let before = calls(&controls);
+    job.claim().revalidate_before_close();
+    assert_eq!(probed_since(&controls, &before), [0, 1, 2, 3, 4, 5, 9]);
+    let closes = registry.closes_for_test();
+    assert_eq!(closes.len(), 1);
+    assert_eq!(
+        (
+            closes[0].sequence,
+            closes[0].roots.as_slice(),
+            closes[0].aliases,
+            closes[0].refreshed
+        ),
+        (1, [0, 1, 2, 3, 4, 5, 9].as_slice(), 0, 7)
+    );
+    assert!(job.claim().take_diagnostics().is_empty());
+    assert_eq!(registry.state(1), FactsState::Stable);
+}
+
+/// WIN-8: as a stopped job closes, an external change to the binding of an item it
+/// started (a copied file renamed) is still latched and reported; one of an item it
+/// never started (its name created by another program) is neither probed nor reported.
+#[test]
+fn a_change_is_reported_at_close_for_a_started_item_and_not_for_an_unstarted_one() {
+    let registry = registry();
+    let (job, controls, outputs) = items(&registry, 1, &["d0", "d1", "d2", "d3"]);
+    assert!(job.grant());
+    let unstarted = job.claim().unstarted();
+    unstarted.set(3);
+    publish(&job, &outputs[0]);
+    unstarted.set(2);
+    publish(&job, &outputs[1]);
+    let unstarted_calls = controls[7].calls.load(Ordering::SeqCst);
+    *controls[7].probe.lock().unwrap() = changed("d3");
+    job.claim().revalidate_before_close();
+    let diagnostics = job.claim().take_diagnostics();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(registry.state(1), FactsState::Stable);
+    *controls[3].probe.lock().unwrap() = changed("d1");
+    job.claim().revalidate_before_close();
+    let diagnostics = job.claim().take_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].path, Path::new("d1"));
+    assert_eq!(registry.state(1), FactsState::Opaque);
+    assert_eq!(controls[7].calls.load(Ordering::SeqCst), unstarted_calls);
+}
+
+/// WIN-8: a job that completed every item touched every root, so its close probes every
+/// pin, as before; so does the close of a job that reported no progress.
+#[test]
+fn a_completed_job_or_one_without_progress_probes_every_pin_at_close() {
+    for unstarted in [Some(0), None] {
+        let registry = registry();
+        let (job, controls, outputs) = items(&registry, 1, &["d0", "d1", "d2"]);
+        assert!(job.grant());
+        if let Some(unstarted) = unstarted {
+            job.claim().unstarted().set(unstarted);
+        }
+        publish(&job, &outputs[0]);
+        let before = calls(&controls);
+        job.claim().revalidate_before_close();
+        assert_eq!(
+            probed_since(&controls, &before),
+            (0..6).collect::<Vec<_>>(),
+            "{unstarted:?}"
+        );
+    }
+}
+
+/// WIN-8: a turn that did not announce every binding it changed (here a fresh private
+/// pin only) may have changed any pin without recording it. Its own finish refreshes
+/// every pin, and the job's close then probes every pin too, whatever items it started.
+#[test]
+fn after_a_turn_that_did_not_announce_every_change_the_close_probes_every_pin() {
+    let registry = registry();
+    let (job, controls, _) = items(&registry, 1, &["d0", "d1", "d2", "d3"]);
+    assert!(job.grant());
+    job.claim().unstarted().set(3);
+    let mut turn = job
+        .claim()
+        .changes()
+        .begin(&Cancellation::default())
+        .unwrap();
+    let (_, fresh) = pin(vec![entry(parent(2, &[2, 0]), b"stage", None, false)]);
+    assert!(
+        turn.reserve_private_child(Some(fresh), &Cancellation::default())
+            .unwrap()
+    );
+    let before = calls(&controls);
+    turn.finish().unwrap();
+    assert_eq!(
+        probed_since(&controls, &before),
+        (0..8).collect::<Vec<_>>(),
+        "the turn's finish refreshes every pin"
+    );
+    let before = calls(&controls);
+    job.claim().revalidate_before_close();
+    assert_eq!(probed_since(&controls, &before), (0..8).collect::<Vec<_>>());
+    let closes = registry.closes_for_test();
+    assert_eq!(closes.len(), 1);
+    assert_eq!(
+        (closes[0].aliases, closes[0].refreshed),
+        (1, 9),
+        "the alias the turn created is probed too"
+    );
+}
+
 #[test]
 fn intersecting_announcement_is_not_coverage_of_a_larger_alias() {
     let registry = registry();

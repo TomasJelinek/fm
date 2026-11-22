@@ -598,6 +598,15 @@ pub(in crate::transfer) fn source_stage_in(
 ) -> Result<Directory, FsError> {
     create_named_directory_in(directory, cancel, ".midnight-move-", DELETE, mutation)
 }
+/// A Copy job's private staging folder in `directory` (`staging`): DELETE lets the job
+/// remove it, empty, through this handle.
+pub(super) fn staging_folder_in(
+    directory: &Directory,
+    cancel: &Cancellation,
+    mutation: &mut super::super::namespace::Mutation<'_>,
+) -> Result<Directory, FsError> {
+    create_named_directory_in(directory, cancel, ".midnight-stage-", DELETE, mutation)
+}
 fn create_named_directory_in(
     directory: &Directory,
     cancel: &Cancellation,

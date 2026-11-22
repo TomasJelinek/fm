@@ -121,12 +121,12 @@ fn enqueued() -> (Presenter, TreeViewStamp, OperationId) {
 }
 
 fn complete(p: &mut Presenter, stamp: TreeViewStamp, id: OperationId) {
-    p.apply(Event::Copy(CopyEvent::RootCompleted {
+    p.apply(Event::Copy(CopyEvent::RootsCompleted {
         id,
-        source: CompletedCopySource::Tree(TreeCopyOccurrence {
+        sources: vec![CompletedCopySource::Tree(TreeCopyOccurrence {
             stamp,
             row: TreeRowId(11),
-        }),
+        })],
     }));
 }
 
@@ -496,12 +496,12 @@ fn tree_copy_after_a_rejected_selection_uses_last_acknowledged_selection() {
 fn tree_copy_completion_removes_only_completed_occurrence_and_retries_refusal() {
     let (mut p, stamp, id) = enqueued();
     let cursor = p.panes[0].cursor;
-    p.apply(Event::Copy(CopyEvent::RootCompleted {
+    p.apply(Event::Copy(CopyEvent::RootsCompleted {
         id,
-        source: CompletedCopySource::Tree(TreeCopyOccurrence {
+        sources: vec![CompletedCopySource::Tree(TreeCopyOccurrence {
             stamp,
             row: TreeRowId(11),
-        }),
+        })],
     }));
     p.flush_selection(&|_| false);
     let sent = RefCell::new(None);

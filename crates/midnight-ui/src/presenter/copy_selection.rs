@@ -25,6 +25,10 @@ impl Origin {
     }
 }
 
+/// Most copied archive members one flush removes from a panel's own selection
+/// (`deselect_archive_locally`): a bounded edit, a hash removal each.
+pub(super) const LOCAL_DESELECTION: usize = 4096;
+
 /// Freeze the panel contexts at the gesture, before delayed drag admission.
 pub(super) struct CapturedOrigins([Origin; 2]);
 
@@ -83,7 +87,13 @@ impl Presenter {
         self.track_captured_copy_selection(id, self.capture_copy_origins());
     }
 
-    pub(super) fn complete_copy_selection(&mut self, id: OperationId, source: CompletedCopySource) {
+    /// The roots of one notice: each panel's origin is taken once per notice, and each
+    /// root costs a lookup by its identity and an insert, so a notice costs O(roots).
+    pub(super) fn complete_copy_selection(
+        &mut self,
+        id: OperationId,
+        sources: Vec<CompletedCopySource>,
+    ) {
         let Some(origins) = self.copies.selection.origins.get(&id) else {
             return;
         };
@@ -94,32 +104,41 @@ impl Presenter {
             if origin != origins[slot] {
                 continue;
             }
-            let item = match &source {
-                CompletedCopySource::Tree(occurrence)
-                    if occurrence.stamp.pane == pane
-                        && origin.tree
-                            == Some((occurrence.stamp.navigation, occurrence.stamp.session))
-                        && p.tree_view().is_some_and(|view| {
-                            view.index.row_positions.contains_key(&occurrence.row)
-                        }) =>
-                {
-                    Item::Tree(occurrence.row)
-                }
-                CompletedCopySource::Native(path)
-                    if p.archive.is_none() && path.parent() == Some(origin.path.as_path()) =>
-                {
-                    Item::Native(path.clone())
-                }
-                CompletedCopySource::Archive(id)
-                    if origin.archive.is_some_and(|(mount, _)| mount == id.mount)
-                        && p.entry_by_id(EntryId(id.entry))
-                            .and_then(|e| e.virtual_node.as_ref())
-                            .is_some_and(|node| node.id == *id) =>
-                {
-                    Item::Archive(EntryId(id.entry))
-                }
-                _ => continue,
-            };
+            let items: Vec<Item> = sources
+                .iter()
+                .filter_map(|source| match source {
+                    CompletedCopySource::Tree(occurrence)
+                        if occurrence.stamp.pane == pane
+                            && origin.tree
+                                == Some((
+                                    occurrence.stamp.navigation,
+                                    occurrence.stamp.session,
+                                ))
+                            && p.tree_view().is_some_and(|view| {
+                                view.index.row_positions.contains_key(&occurrence.row)
+                            }) =>
+                    {
+                        Some(Item::Tree(occurrence.row))
+                    }
+                    CompletedCopySource::Native(path)
+                        if p.archive.is_none() && path.parent() == Some(origin.path.as_path()) =>
+                    {
+                        Some(Item::Native(path.clone()))
+                    }
+                    CompletedCopySource::Archive(id)
+                        if origin.archive.is_some_and(|(mount, _)| mount == id.mount)
+                            && p.entry_by_id(EntryId(id.entry))
+                                .and_then(|e| e.virtual_node.as_ref())
+                                .is_some_and(|node| node.id == *id) =>
+                    {
+                        Some(Item::Archive(EntryId(id.entry)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if items.is_empty() {
+                continue;
+            }
             let pending = &mut self.copies.selection.pending[slot];
             if pending
                 .as_ref()
@@ -132,7 +151,7 @@ impl Presenter {
                 items: HashSet::new(),
                 sent: None,
             });
-            pending.items.insert(item);
+            pending.items.extend(items);
         }
     }
 
@@ -182,6 +201,54 @@ impl Presenter {
         }
     }
 
+    /// Copied archive members leave a panel's own selection here, at most
+    /// `LOCAL_DESELECTION` per call, as a row toggle changes it: in place and with the
+    /// totals adjusted member by member, O(batch) (WIN-8). Only a selection that nothing
+    /// else shares (no edit in flight, no copy that captured it): a shared one goes to
+    /// the backend, which copies it once. False when this panel cannot do that.
+    fn deselect_archive_locally(&mut self, slot: usize, pending: &mut Pending) -> bool {
+        let p = &self.panes[slot];
+        let Some(a) = p.archive.as_ref().filter(|a| {
+            p.tree_view().is_none() && !a.selection_pending && Arc::strong_count(&a.selected) == 1
+        }) else {
+            return false;
+        };
+        let Some(revision) = a.selection_revision.0.checked_add(1).map(SelectionRevision) else {
+            return false;
+        };
+        let mut members = Vec::new();
+        for item in pending.items.iter().take(LOCAL_DESELECTION) {
+            let Item::Archive(id) = item else {
+                return false;
+            };
+            // Every member's kind and length, or the backend recounts the totals.
+            let Some(entry) = p.entry_by_id(*id) else {
+                return false;
+            };
+            members.push((item.clone(), *id, entry.kind, entry.metadata.size));
+        }
+        if members.is_empty() {
+            return false;
+        }
+        let a = self.panes[slot]
+            .archive
+            .as_mut()
+            .expect("archive panel checked above");
+        let selected = Arc::make_mut(&mut a.selected);
+        let mut changed = false;
+        for (item, id, kind, size) in members {
+            if selected.remove(&id) {
+                a.totals.change(kind, size, false);
+                changed = true;
+            }
+            pending.items.remove(&item);
+        }
+        if changed {
+            a.selection_revision = revision;
+        }
+        true
+    }
+
     pub(super) fn flush_copy_selection(&mut self, send: &dyn Fn(Command) -> bool) {
         for pane in [PaneId::Left, PaneId::Right] {
             let slot = pane.index();
@@ -211,6 +278,13 @@ impl Presenter {
                 self.copies.selection.pending[slot] = Some(pending);
                 continue;
             }
+            if self.deselect_archive_locally(slot, &mut pending) {
+                if !pending.items.is_empty() {
+                    self.copies.selection.pending[slot] = Some(pending);
+                }
+                continue;
+            }
+            let p = &self.panes[slot];
             // Bound each edit and its immediate row feedback independently of folder size.
             let mut batch: HashSet<_> = pending.items.iter().take(64).cloned().collect();
             if let Some(view) = p.tree_view() {

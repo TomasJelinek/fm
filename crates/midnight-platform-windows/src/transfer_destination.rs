@@ -19,6 +19,10 @@ mod link_stage;
 mod preservation;
 #[path = "transfer_recovery.rs"]
 pub(super) mod recovery;
+#[path = "transfer_destination_security.rs"]
+mod security;
+#[path = "transfer_destination_staging.rs"]
+mod staging;
 
 #[derive(Clone)]
 pub(super) struct Directory {
@@ -27,6 +31,9 @@ pub(super) struct Directory {
     identity: TransferIdentity,
     /// What planning links reads once per job, shared with the folders below this one.
     links: Arc<link_stage::LinkFacts>,
+    /// This folder's private staging folder of the job (`stage_job_file`), shared by the
+    /// clones of this folder only.
+    staging: Arc<staging::Staging>,
     // Last: the final Directory clone closes its native Arc<File> before certification.
     _namespace_owner: super::namespace::NativeOwner,
 }
@@ -46,6 +53,7 @@ impl Directory {
             file: Arc::new(file),
             path,
             links: Arc::default(),
+            staging: Arc::default(),
             _namespace_owner: namespace_owner,
         })
     }
@@ -261,6 +269,18 @@ impl TransferDirectory for Directory {
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.make_stage(false, cancel)
     }
+    fn stage_job_file(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        match staging::stage(self, cancel)? {
+            Some(stage) => Ok(Box::new(stage)),
+            None => self.stage_file(cancel),
+        }
+    }
+    fn finish_staging(&self) -> Result<(), FsError> {
+        staging::finish(self)
+    }
     fn stage_file_with_metadata(
         &self,
         policy: midnight_core::TransferMetadataPolicy,
@@ -287,16 +307,7 @@ impl Directory {
         preserved: Option<preservation::Snapshot>,
         cancel: &Cancellation,
     ) -> Result<Stage, FsError> {
-        self.create_stage_named(metadata, preserved, cancel, || {
-            let mut random = [0u8; 8];
-            getrandom::fill(&mut random)
-                .map_err(|e| error(&self.path, io::Error::other(e.to_string())))?;
-            let suffix = random
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            Ok(OsString::from(format!(".me-{suffix}")))
-        })
+        self.create_stage_named(metadata, preserved, cancel, || stage_name(&self.path))
     }
 
     fn create_stage_named(
@@ -372,9 +383,24 @@ impl Directory {
     }
 }
 
+/// A stage's basename: `.me-` and sixteen random hex characters.
+fn stage_name(folder: &Path) -> Result<OsString, FsError> {
+    let mut random = [0u8; 8];
+    getrandom::fill(&mut random).map_err(|e| error(folder, io::Error::other(e.to_string())))?;
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(OsString::from(format!(".me-{suffix}")))
+}
+
 #[cfg(test)]
 #[path = "transfer_stage_tests.rs"]
 mod stage_tests;
+
+#[cfg(test)]
+#[path = "transfer_destination_staging_tests.rs"]
+mod staging_tests;
 
 struct Stage {
     metadata: bool,

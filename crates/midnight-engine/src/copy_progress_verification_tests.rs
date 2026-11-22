@@ -253,7 +253,7 @@ impl Observed {
                     self.record(&progress);
                     return progress;
                 }
-                CopyEvent::RootCompleted { id, .. } => assert_eq!(id, OperationId(1)),
+                CopyEvent::RootsCompleted { id, .. } => assert_eq!(id, OperationId(1)),
                 event => panic!("unexpected copy decision: {event:?}"),
             }
         }

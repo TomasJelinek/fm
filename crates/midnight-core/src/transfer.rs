@@ -772,6 +772,26 @@ pub trait TransferDirectory: Send + Sync {
         cancel: &Cancellation,
     ) -> Result<Arc<dyn TransferDirectory>, FsError>;
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError>;
+    /// `stage_file` for one file of a Copy job, whose caller calls `finish_staging` once
+    /// the job stages nothing more in this folder. A provider may keep the stages of this
+    /// folder in one private staging folder of the job, created before the first of them
+    /// and removed by `finish_staging`; a staged file is no more accessible than a file
+    /// created in this folder, and gets the same security once published. The default is
+    /// `stage_file`.
+    fn stage_job_file(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        self.stage_file(cancel)
+    }
+    /// Remove the private staging folder that `stage_job_file` created in this folder: after
+    /// the folder's copy, and at the job's end once its unpublished stages are cleaned up.
+    /// Only an empty folder is removed, through its own handle: one that still holds an entry
+    /// is kept, never listed or emptied, and the error names its exact path. A later
+    /// `stage_job_file` creates a new one. The default has nothing to remove.
+    fn finish_staging(&self) -> Result<(), FsError> {
+        Ok(())
+    }
 }
 
 /// Actual publication and retained-recovery facts. Never delete a published target or

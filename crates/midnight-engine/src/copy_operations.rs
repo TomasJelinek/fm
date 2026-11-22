@@ -1023,14 +1023,16 @@ async fn execute_input(
         .resources_mut()
         .namespace()
         .map(crate::copy_namespace::Claim::watch);
+    let awaited = worker::Awaited::new();
     loop {
         if !ready_for_io(&io, &cancel, &status, outbox, throughput).await {
             break;
         }
         // Cancellation cannot abort an OS call or relinquish its permit early.
+        let flag = awaited.flag();
         let executed = tokio::task::spawn_blocking(move || {
             let step = ownership::run(&mut job, |job| {
-                let step = job.step();
+                let step = job.steps(&flag);
                 let completed = job.take_completed_root();
                 (step, completed, job.take_namespace_busy())
             });
@@ -1054,7 +1056,15 @@ async fn execute_input(
         };
         if let Some(source) = completed {
             let id = snapshot(&status).id;
-            announce_root(outbox, &io, CopyEvent::RootCompleted { id, source }).await;
+            announce_root(
+                outbox,
+                &io,
+                CopyEvent::RootsCompleted {
+                    id,
+                    sources: vec![source],
+                },
+            )
+            .await;
         }
         if let Some(blockers) = busy {
             // Granted peers refused this change: only this item waits (holding no disk

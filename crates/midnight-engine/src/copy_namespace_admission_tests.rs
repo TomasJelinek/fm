@@ -139,8 +139,8 @@ fn a_whole_job_wait_tells_an_unknown_footprint_from_shared_items() {
 
 fn deferred(registry: &Registry, sequence: u64) -> Vec<usize> {
     registry.inner.state.lock().unwrap().records[&sequence]
-        .deferred
-        .clone()
+        .exclusions
+        .deferred()
 }
 
 /// One turn of `job` that announces its selected root, as a native publication inside

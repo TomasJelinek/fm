@@ -740,9 +740,11 @@ async fn accepted_drop(
                     copies.decide(CopyDecision { id: conflict.id, version: conflict.version, choice: CopyChoice::ReplaceRecoverable { all: false } }).await;
                     continue;
                 }
-                if let CopyEvent::RootCompleted { id, source } = event {
+                if let CopyEvent::RootsCompleted { id, sources } = event {
                     assert_eq!(id, OperationId(1));
-                    if captured_tree { assert!(matches!(source, CompletedCopySource::Tree(found) if found == occurrence), "nested drop lost its exact tree occurrence: {source:?}"); }
+                    for source in sources {
+                        if captured_tree { assert!(matches!(source, CompletedCopySource::Tree(found) if found == occurrence), "nested drop lost its exact tree occurrence: {source:?}"); }
+                    }
                     completed = true;
                     continue;
                 }

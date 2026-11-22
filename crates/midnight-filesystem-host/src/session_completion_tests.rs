@@ -2,9 +2,12 @@ use super::*;
 use midnight_plugin_host::{ContentSource, Error};
 use std::io::{Seek, SeekFrom};
 
+/// Stops or cancels the exchange at its `stop_on`-th checkpoint: the source's cleanup
+/// status, which the session reads as an exchange begins (with the validation), as it
+/// completes and after it reads a staged member (WIN-8: no longer with a validation).
 struct CompletionSource {
     supervision: Arc<Supervision>,
-    validations: AtomicUsize,
+    checkpoints: AtomicUsize,
     stop_on: usize,
     cancel: Option<Cancellation>,
 }
@@ -28,7 +31,10 @@ impl ContentSource for CompletionSource {
         vec![1]
     }
     fn validate(&self) -> Result<(), Error> {
-        if self.validations.fetch_add(1, Ordering::SeqCst) + 1 == self.stop_on {
+        Ok(())
+    }
+    fn cleanup_unconfirmed(&self) -> bool {
+        if self.checkpoints.fetch_add(1, Ordering::SeqCst) + 1 == self.stop_on {
             if let Some(cancel) = &self.cancel {
                 cancel.cancel();
             } else {
@@ -36,7 +42,7 @@ impl ContentSource for CompletionSource {
                 self.supervision.request_stop(Stop::Expired);
             }
         }
-        Ok(())
+        false
     }
     fn read_at(&self, _: u64, _: u32) -> Result<Vec<u8>, Error> {
         panic!("completion fixtures do not read source payload")
@@ -93,12 +99,12 @@ fn verify_completion(
     let supervision = Arc::new(Supervision::new(None));
     let source = Arc::new(CompletionSource {
         supervision: supervision.clone(),
-        validations: AtomicUsize::new(0),
+        checkpoints: AtomicUsize::new(0),
         stop_on,
         cancel: cancelled.then(|| cancel.clone()),
     });
     let captured = CapturedFile::from_source(source.clone()).unwrap();
-    source.validations.store(0, Ordering::SeqCst);
+    source.checkpoints.store(0, Ordering::SeqCst);
     let mut output = tempfile::tempfile().unwrap();
     let mut staging = (protocol == Protocol::V2)
         .then(|| crate::staging::Staging::open(&temporary.path().join("private")).unwrap());
@@ -154,7 +160,7 @@ fn verify_completion(
     } else {
         mount.read(2, 0, 4, &cancel).map(|bytes| bytes.len())
     };
-    assert!(source.validations.load(Ordering::SeqCst) >= stop_on);
+    assert!(source.checkpoints.load(Ordering::SeqCst) >= stop_on);
     let error = result.unwrap_err();
     if cancelled {
         assert_eq!(error.kind, io::ErrorKind::Interrupted);

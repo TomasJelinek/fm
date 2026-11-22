@@ -1,17 +1,24 @@
-//! Pooled metadata-only directory authority and explicitly qualified native lookup rules.
+//! Pooled metadata-only directory authority, explicitly qualified native lookup rules and
+//! the checks that a pinned folder's ancestry is unchanged.
 use super::*;
 use midnight_platform_common::transfer_namespace::current_transfer_namespace_refresh_batch;
 use std::{
     cell::RefCell,
     fs::OpenOptions,
-    mem::size_of,
+    mem::{offset_of, size_of},
     os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
 };
-use windows_sys::Win32::System::{
-    IO::DeviceIoControl,
-    Ioctl::{
-        FILE_FS_PERSISTENT_VOLUME_INFORMATION, FSCTL_QUERY_PERSISTENT_VOLUME_STATE,
-        PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED,
+use windows_sys::{
+    Wdk::Storage::FileSystem::{
+        FILE_LINK_ENTRY_INFORMATION, FILE_LINKS_INFORMATION, FileHardLinkInformation,
+        NtQueryInformationFile,
+    },
+    Win32::System::{
+        IO::{DeviceIoControl, IO_STATUS_BLOCK},
+        Ioctl::{
+            FILE_FS_PERSISTENT_VOLUME_INFORMATION, FSCTL_QUERY_PERSISTENT_VOLUME_STATE,
+            PERSISTENT_VOLUME_STATE_SHORT_NAME_CREATION_DISABLED,
+        },
     },
 };
 
@@ -69,6 +76,10 @@ pub(super) struct Parent {
     pub(super) snapshot: Arc<TransferNamespaceParent>,
     pub(super) mode: LookupMode,
     volume: Option<Arc<Volume>>,
+    /// The held folder's normalized final path with its NT volume name, pinned at capture
+    /// when `validate` proves this ancestry by handle (`Parent::proven`): qualified lookup
+    /// rules only. Otherwise None, and `validate` opens each level (`validate_levels`).
+    pinned: Option<PathBuf>,
 }
 type Pool<T> = Mutex<HashMap<TransferIdentity, Weak<T>>>;
 static ANCHORS: OnceLock<Pool<Anchor>> = OnceLock::new();
@@ -78,7 +89,7 @@ static VOLUMES: OnceLock<Pool<Volume>> = OnceLock::new();
 /// What this thread's current refresh batch (`TransferNamespaceRefreshBatch`) has already
 /// checked. A batch changes no names, so a check that held once in it holds for the rest
 /// of it: the pins and the stage or output of one change share their folders' ancestry,
-/// and checking each of them would otherwise open every ancestor again. An external rename
+/// and checking each of them would otherwise probe every ancestor again. An external rename
 /// during a batch is seen by the next batch, as by a check that ran just before the rename.
 /// The weak references keep each checked allocation's address unique while it is recorded
 /// without keeping its handle open.
@@ -89,6 +100,11 @@ struct BatchChecks {
     anchors: Vec<Weak<Anchor>>,
     /// Child and parent anchors whose name binding was checked.
     edges: Vec<(Weak<Anchor>, Weak<Anchor>)>,
+    /// Held folders that still had their pinned path and identity and no pending delete.
+    /// An anchor's pinned path follows from its physical path, so the anchor identifies it.
+    folders: Vec<Weak<Anchor>>,
+    /// Child and parent anchors whose link (parent reference and exact name) still held.
+    links: Vec<(Weak<Anchor>, Weak<Anchor>)>,
     /// Roots whose volume path still opened them.
     roots: Vec<Weak<Anchor>>,
     /// Folders whose lookup rules were read, the volume they were read through and the
@@ -106,8 +122,11 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
-    /// Native ancestor-binding opens made by `Parent::validate` on this thread, for tests.
+    /// Native ancestor-binding probes made by `Parent::validate` on this thread, for tests:
+    /// an open by name (`validate_levels`) or a link query (`proven`) per binding.
     pub(super) static EDGE_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Proofs of a held folder's path, identity and delete state made on this thread.
+    pub(super) static FOLDER_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Run `check` on this thread's record of its current refresh batch; None outside a batch.
@@ -232,7 +251,8 @@ pub(super) fn capture(
     }
     let first = chain
         .first()
-        .ok_or_else(|| invalid(path, "native parent has no root"))?;
+        .ok_or_else(|| invalid(path, "native parent has no root"))?
+        .clone();
     if first.identity != expected {
         return Err(invalid(
             path,
@@ -253,14 +273,28 @@ pub(super) fn capture(
             .collect::<Vec<_>>()
             .into(),
     });
-    let candidate = Arc::new(Parent {
-        anchor: first.clone(),
+    let mut candidate = Parent {
+        anchor: first,
         chain,
         snapshot,
         mode,
         volume,
-    });
-    candidate.validate(cancel)?;
+        pinned: None,
+    };
+    // A qualified folder proves its ancestry by handle from the path pinned here. Where
+    // that proof does not hold at once (a change meanwhile, or link information that this
+    // filesystem reports otherwise), the folder keeps the per-level check.
+    if matches!(mode, LookupMode::ShortNamesDisabled { .. }) {
+        candidate.pinned = nt_path(candidate.file()).ok();
+        if !candidate.proven(cancel)? {
+            candidate.pinned = None;
+        }
+    }
+    match candidate.pinned {
+        Some(_) => candidate.check_rules()?,
+        None => candidate.validate_levels(cancel)?,
+    }
+    let candidate = Arc::new(candidate);
     let mut pool = pool.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(found) = pool
         .get(&expected)
@@ -277,7 +311,7 @@ impl Parent {
     pub(super) fn file(&self) -> &File {
         &self.anchor.file
     }
-    /// The ancestor bindings that a check of this folder opens.
+    /// The ancestor bindings that a check of this folder probes.
     #[cfg(test)]
     pub(super) fn edges(&self) -> usize {
         self.chain.len() - 1
@@ -285,10 +319,91 @@ impl Parent {
     pub(super) fn physical(&self) -> &Path {
         &self.anchor.physical
     }
-    /// Check the whole pinned ancestry: each held anchor's identity, each ancestor's name
-    /// binding in its parent, the root's volume path and this folder's lookup rules.
-    /// Within a refresh batch each of these checks is made once (`BatchChecks`).
+    /// Check that the pinned ancestry is unchanged, and this folder's lookup rules. A
+    /// qualified folder proves it by handle (`proven`); every other folder opens each level
+    /// (`validate_levels`). Within a refresh batch each check is made once (`BatchChecks`).
     pub(super) fn validate(&self, cancel: &Cancellation) -> Result<(), FsError> {
+        if self.pinned.is_none() {
+            return self.validate_levels(cancel);
+        }
+        if self.proven(cancel)? {
+            return self.check_rules();
+        }
+        // The per-level check reports the change as it always has. A change that it does
+        // not see (a case-only rename in a case-insensitive folder) still counts.
+        Err(match self.validate_levels(cancel) {
+            Err(error) => error,
+            Ok(()) => invalid(
+                self.physical(),
+                "original namespace ancestor binding changed",
+            ),
+        })
+    }
+
+    /// The handle proof of a qualified folder's pinned ancestry (see "Windows namespace
+    /// pins" in `docs/developer/TRANSFERS.md`): the held folder keeps its pinned
+    /// normalized NT path and identity and no delete is pending on it, and each held level
+    /// is still linked, under exactly its pinned name, in the held level above it. Nothing
+    /// is opened by name. A failed query or any unexpected reply counts as a change.
+    /// Within a refresh batch each part that held is not repeated (`BatchChecks`).
+    fn proven(&self, cancel: &Cancellation) -> Result<bool, FsError> {
+        let Some(pinned) = &self.pinned else {
+            return Ok(false);
+        };
+        checked(cancel, self.physical())?;
+        let known = batch_checks(|checks| {
+            checks
+                .folders
+                .iter()
+                .any(|recorded| same(recorded, &self.anchor))
+        });
+        if known != Some(true) {
+            #[cfg(test)]
+            FOLDER_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
+            let file = self.file();
+            let held = (skipped("final-path")
+                || nt_path(file).is_ok_and(|path| path.as_os_str() == pinned.as_os_str()))
+                && identity(file, self.physical()).is_ok_and(|found| found == self.anchor.identity)
+                && (skipped("delete-pending") || delete_pending(file) == Some(false));
+            if !held {
+                return Ok(false);
+            }
+            remember(|checks| &mut checks.folders, Arc::downgrade(&self.anchor));
+        }
+        if skipped("links") {
+            return Ok(true);
+        }
+        // The root has no held level above it: its binding to the volume is the pinned
+        // path's volume name, and the lookup rules check its volume path.
+        for edge in self.chain.windows(2) {
+            let child = &edge[0];
+            let parent = &edge[1];
+            let known = batch_checks(|checks| {
+                checks
+                    .links
+                    .iter()
+                    .any(|(recorded, above)| same(recorded, child) && same(above, parent))
+            });
+            if known == Some(true) {
+                continue;
+            }
+            #[cfg(test)]
+            EDGE_PROBES.with(|probes| probes.set(probes.get() + 1));
+            if !linked(child, parent) {
+                return Ok(false);
+            }
+            remember(
+                |checks| &mut checks.links,
+                (Arc::downgrade(child), Arc::downgrade(parent)),
+            );
+        }
+        Ok(true)
+    }
+
+    /// The per-level check of the whole pinned ancestry: each held anchor's identity, each
+    /// ancestor's name binding in its parent (opened by name), the root's volume path and
+    /// this folder's lookup rules.
+    fn validate_levels(&self, cancel: &Cancellation) -> Result<(), FsError> {
         for anchor in &self.chain {
             checked(cancel, &anchor.physical)?;
             let known =
@@ -357,6 +472,12 @@ impl Parent {
             }
             remember(|checks| &mut checks.roots, Arc::downgrade(root));
         }
+        self.check_rules()
+    }
+
+    /// This folder's case and 8.3 rules are still the pinned ones. Within a refresh batch
+    /// they are read once per folder and volume (`BatchChecks`).
+    fn check_rules(&self) -> Result<(), FsError> {
         let recorded = batch_checks(|checks| {
             checks
                 .modes
@@ -612,6 +733,134 @@ pub(super) fn physical_path(file: &File) -> io::Result<PathBuf> {
     final_path(file, VOLUME_NAME_GUID).or_else(|_| final_path(file, VOLUME_NAME_DOS))
 }
 
+/// The held entry's normalized final path with its NT volume name: what a qualified
+/// folder's handle proof pins and compares (`Parent::proven`).
+fn nt_path(file: &File) -> io::Result<PathBuf> {
+    super::super::destination::final_path(file, FILE_NAME_NORMALIZED | VOLUME_NAME_NT)
+}
+
+/// Whether a delete is pending on the held entry; None when the query fails.
+fn delete_pending(file: &File) -> Option<bool> {
+    let mut standard = FILE_STANDARD_INFO::default();
+    // SAFETY: live handle and a writable structure of its exact native size.
+    let queried = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            (&mut standard as *mut FILE_STANDARD_INFO).cast(),
+            size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    (queried != 0).then_some(standard.DeletePending)
+}
+
+/// Room for one `FileHardLinkInformation` entry with the longest NTFS name (255 units).
+const LINKS_BYTES: usize = 768;
+#[repr(C, align(8))]
+struct Links([u8; LINKS_BYTES]);
+
+/// Whether the held directory `child` is still linked, under exactly its pinned name
+/// (case-sensitive), in the held directory `parent`. A directory has one link, and
+/// `FileHardLinkInformation` names the file reference of the directory that holds it;
+/// more than one entry, a reply that does not fit or a failed query is no proof.
+fn linked(child: &Anchor, parent: &Anchor) -> bool {
+    let (Some(name), Some(reference)) =
+        (child.physical.file_name(), file_reference(parent.identity))
+    else {
+        return false;
+    };
+    if child.identity.device != parent.identity.device {
+        return false;
+    }
+    let mut links = Links([0; LINKS_BYTES]);
+    let mut status = IO_STATUS_BLOCK::default();
+    // SAFETY: live handle; the writable 8-byte-aligned buffer and the status block outlive
+    // this synchronous query, which writes at most the given length.
+    let result = unsafe {
+        NtQueryInformationFile(
+            child.file.as_raw_handle(),
+            &mut status,
+            links.0.as_mut_ptr().cast(),
+            LINKS_BYTES as u32,
+            FileHardLinkInformation,
+        )
+    };
+    // Also STATUS_BUFFER_OVERFLOW, a warning: the names did not fit.
+    if result < 0 {
+        return false;
+    }
+    let reply = &links.0[..status.Information.min(LINKS_BYTES)];
+    let entry = offset_of!(FILE_LINKS_INFORMATION, Entry);
+    let entries =
+        field(reply, offset_of!(FILE_LINKS_INFORMATION, EntriesReturned)).map(u32::from_le_bytes);
+    let found = field(
+        reply,
+        entry + offset_of!(FILE_LINK_ENTRY_INFORMATION, ParentFileId),
+    )
+    .map(i64::from_le_bytes);
+    let units = field(
+        reply,
+        entry + offset_of!(FILE_LINK_ENTRY_INFORMATION, FileNameLength),
+    )
+    .map(u32::from_le_bytes);
+    let (Some(1), Some(found), Some(units)) = (entries, found, units) else {
+        return false;
+    };
+    let start = entry + offset_of!(FILE_LINK_ENTRY_INFORMATION, FileName);
+    let Some(stored) = reply.get(start..start + 2 * units as usize) else {
+        return false;
+    };
+    found == reference
+        && stored
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|unit| u16::from_le_bytes(*unit))
+            .eq(name.encode_wide())
+}
+
+/// `N` bytes of a native reply at `offset`, if the reply has them.
+fn field<const N: usize>(reply: &[u8], offset: usize) -> Option<[u8; N]> {
+    reply.get(offset..offset + N)?.try_into().ok()
+}
+
+/// The 64-bit NTFS file reference in a `FileIdInfo` identity, which NTFS extends to 128
+/// bits with zeros; None for any other identity.
+fn file_reference(identity: TransferIdentity) -> Option<i64> {
+    let (reference, extension) = identity.object.split_at(8);
+    if extension.iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    reference.try_into().ok().map(i64::from_le_bytes)
+}
+
+/// Test seam for red runs of the proof tests (`transfer_namespace_proof_tests.rs`): a
+/// comma-separated list of the parts of the handle proof to leave out: `final-path`,
+/// `delete-pending` or `links`. Process-wide, read once.
+#[cfg(test)]
+const TEST_PROOF_SKIP_ENV: &str = "MIDNIGHT_TEST_NAMESPACE_PROOF_SKIP";
+
+/// Whether a red test run leaves this part of the handle proof out; never outside tests.
+fn skipped(part: &str) -> bool {
+    #[cfg(test)]
+    {
+        static SKIPPED: OnceLock<String> = OnceLock::new();
+        SKIPPED
+            .get_or_init(|| std::env::var(TEST_PROOF_SKIP_ENV).unwrap_or_default())
+            .split(',')
+            .any(|skipped| skipped == part)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = part;
+        false
+    }
+}
+
 #[cfg(test)]
 #[path = "transfer_namespace_parent_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transfer_namespace_proof_tests.rs"]
+mod proof_tests;

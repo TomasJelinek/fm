@@ -179,7 +179,26 @@ impl Harness {
         service: Option<crate::transfer_composition::QualifiedTransferInstallation>,
         slots: u8,
     ) -> Self {
-        let (sender, events) = mpsc::channel(256);
+        Self::configured_with_events(service, slots, 256)
+    }
+    /// The native service, with the UI event channel the application uses (32).
+    fn native_with_events(capacity: usize) -> Self {
+        Self::configured_with_events(
+            Some(
+                crate::transfer_composition::QualifiedTransferInstallation::audited(Arc::new(
+                    midnight_platform::LocalFileSystem::new(None),
+                )),
+            ),
+            1,
+            capacity,
+        )
+    }
+    fn configured_with_events(
+        service: Option<crate::transfer_composition::QualifiedTransferInstallation>,
+        slots: u8,
+        capacity: usize,
+    ) -> Self {
+        let (sender, events) = mpsc::channel(capacity);
         let mut tasks = JoinSet::new();
         let mutation = crate::transfer_leases::namespace_gate();
         let io = IoBudget::new(Arc::new(midnight_work_budget::Gate::new(slots)));

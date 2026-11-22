@@ -959,7 +959,7 @@ impl EngineServices {
                                 self.outbox.send(Event::FindResultValidated(Box::new(midnight_core::FindValidationResult { request, result: Err(error) }))).await;
                             }
                         }
-                        Some(Command::ArchiveSelect { pane, navigation, revision, entries, view, selected, action }) => {
+                        Some(Command::ArchiveSelect { pane, navigation, revision, entries, view, selected, totals, action }) => {
                             let permit = match archive_selection_budget.clone().try_acquire_owned() {
                                 Ok(permit) => permit,
                                 Err(_) => {
@@ -971,7 +971,7 @@ impl EngineServices {
                             tasks.spawn(async move {
                                 let _permit = permit;
                                 let source = view.clone();
-                                let result = tokio::task::spawn_blocking(move || archive_selection::apply(&entries, &source, &selected, action))
+                                let result = tokio::task::spawn_blocking(move || archive_selection::apply(&entries, &source, selected, totals, action))
                                     .await.unwrap_or_else(|error| Err(archive_selection::error(error.to_string())));
                                 outbox.send(Event::ArchiveSelection { pane, navigation, revision, view, result }).await;
                             });

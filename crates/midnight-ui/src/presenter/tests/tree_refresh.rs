@@ -311,10 +311,10 @@ fn refresh_waits_for_successful_root_deselection_acknowledgement() {
     p.track_copy_selection(operation);
     p.complete_copy_selection(
         operation,
-        CompletedCopySource::Tree(TreeCopyOccurrence {
+        vec![CompletedCopySource::Tree(TreeCopyOccurrence {
             stamp: view.stamp,
             row: TreeRowId(7),
-        }),
+        })],
     );
     p.panes[0].queue_native_tree_refresh(&mut p.retired);
     assert!(flush(&mut p, true).is_empty());

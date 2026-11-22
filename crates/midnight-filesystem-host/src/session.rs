@@ -676,6 +676,11 @@ impl Mount {
     ) -> Result<Message, FsError> {
         self.exchange_observed(cancel, cancelled, None, message)
     }
+    /// Record the source's cached cleanup status, as `validate` does, without I/O.
+    fn observe_source(&self) {
+        self.close
+            .observe_cleanup(self.source().cleanup_unconfirmed());
+    }
     /// `exchange_read` that also reports a staged member's progress and keeps its
     /// lease (`Observer`).
     fn exchange_observed(
@@ -731,8 +736,10 @@ impl Mount {
                     if let Some(observer) = observer.as_mut() {
                         *observer.kept = Some(lease.clone());
                     }
+                    // The archive was validated as this exchange began; the staged copy
+                    // is the member's verified content, so reading it needs no other.
                     let bytes = lease.read(offset, length).map_err(fail)?;
-                    self.validate()?;
+                    self.observe_source();
                     self.ensure_active(cancel, cancelled).map_err(fail)?;
                     if is_cancelled() {
                         canceled_safely = true;
@@ -903,7 +910,10 @@ impl Mount {
                                 .map_err(fail)?;
                                 continue;
                             }
-                            self.validate()?;
+                            // Validated as the exchange began, and around each source
+                            // read the worker made since: the member's content is
+                            // the captured archive's.
+                            self.observe_source();
                             self.ensure_active(cancel, cancelled).map_err(fail)?;
                             let lease = if cancelled.is_some() {
                                 staging.terminal_with_cache(&operation, &other, false)
@@ -912,7 +922,7 @@ impl Mount {
                                 (lease, &operation)
                             {
                                 let bytes = lease.read(*offset, *length).map_err(fail)?;
-                                self.validate()?;
+                                self.observe_source();
                                 self.ensure_active(cancel, cancelled).map_err(fail)?;
                                 if is_cancelled() {
                                     staging.abandon_member(request).map_err(fail)?;

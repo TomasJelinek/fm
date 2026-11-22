@@ -364,7 +364,8 @@ impl AuthoritySeal {
         Ok(())
     }
     /// After the job's last native work and before its pins close: report an external
-    /// change to any pinned binding as a job diagnostic (`Claim::revalidate_before_close`).
+    /// change to a pinned binding of a root the job took, or of one its changes touched,
+    /// as a job diagnostic (`Claim::revalidate_before_close`).
     fn revalidate_namespace(&self) -> Result<(), Quarantined> {
         let Some(claim) = self
             .resources
@@ -878,7 +879,7 @@ pub(super) fn handoff_job<T: CheckedRetirement + 'static>(
     value: Owned<T>,
     job: worker::Job,
 ) -> Result<Owned<worker::Job>, Quarantined> {
-    let job = Armed::new(job);
+    let mut job = Armed::new(job);
     let (mut scope, lease) = value.into_parts();
     if scope.quarantined
         || scope
@@ -918,6 +919,11 @@ pub(super) fn handoff_job<T: CheckedRetirement + 'static>(
         // Link cleanup shares this SAME actual admitted permit. No new slot is
         // acquired, and no step can detach it before checked native destruction.
         seal.native_call(|| job.attach_io_permit(permit))?;
+    }
+    // The job's close probes only the pins of the roots it took (and of what its turns
+    // touched), so its claim follows how many it has not taken.
+    if let Some(claim) = seal.resources_mut().namespace() {
+        job.report_unstarted(claim.unstarted());
     }
     let completion = job.completion();
     Ok(lease.own(Scope {

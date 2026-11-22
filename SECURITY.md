@@ -14,7 +14,14 @@ file encoding/writes execute in backend workers.
 
 Copy stages are owned temporary objects on the destination filesystem: Windows uses
 an exclusive, directory-handle-relative `.me-` plus sixteen random hex characters;
-Linux uses unnamed `O_TMPFILE` inodes. Names are not operation authority. Cancellation
+Linux uses unnamed `O_TMPFILE` inodes. On local fixed NTFS a Copy job keeps each
+destination folder's stages in one private `.midnight-stage-` plus 32 random hex
+characters folder of its own (owner-only DACL). Each stage is created there through the
+folder's handle with the security descriptor that a file created directly in the
+destination folder would get, computed from that folder's current descriptor for every
+stage. An empty staging folder is removed through its handle, and one holding another
+entry is kept and reported, never listed or emptied ([Windows stages](docs/developer/TRANSFERS.md)).
+Names are not operation authority. Cancellation
 waits for in-flight native I/O, then explicitly removes unpublished partial data
 before terminal progress. Cleanup failures must remain visible with their residual
 path, including when cancellation or construction failure was the original cause.

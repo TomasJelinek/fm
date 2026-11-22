@@ -382,9 +382,12 @@ async fn a_root_announcement_waiting_for_the_ui_returns_the_disk_slot() {
         sender,
         wakeup: Arc::new(|| {}),
     });
-    let root = |entry| CopyEvent::RootCompleted {
+    let root = |entry| CopyEvent::RootsCompleted {
         id: OperationId(1),
-        source: CompletedCopySource::Archive(VirtualEntryId { mount: 7, entry }),
+        sources: vec![CompletedCopySource::Archive(VirtualEntryId {
+            mount: 7,
+            entry,
+        })],
     };
     for entry in 0..MAX_NATIVE_TRANSFER_ROOTS as u64 + 2 {
         outbox.send(Event::Copy(root(entry))).await;

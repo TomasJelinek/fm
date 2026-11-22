@@ -24,6 +24,7 @@ mod about_dialog;
 mod action_button_states;
 mod action_icon_colors;
 mod archive_badges;
+mod archive_copy_refresh;
 mod archive_options;
 mod archive_password_dialog;
 mod archive_path_bar;

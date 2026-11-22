@@ -293,8 +293,13 @@ impl TransferSource for Source {
     fn native_identity(&self) -> Option<TransferIdentity> {
         None
     }
+    /// The archive file is validated by each exchange with its worker (before it starts)
+    /// and around each read of the file's bytes (`midnight_filesystem_host::Mount`), so a
+    /// member's copy, which reads only through those exchanges, checks Stop here and
+    /// leaves the file to them: reopening it for every chunk and step cost up to six
+    /// opens of the archive per copied member (WIN-8). A Retry still validates it.
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
-        check(&*self.mount, cancel)
+        stopped(&*self.mount, cancel)
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.revalidate(cancel)?;
@@ -332,7 +337,7 @@ impl TransferSource for Source {
         self.member.kind == EntryKind::File
     }
     fn retry_read_from(&mut self, offset: u64, cancel: &Cancellation) -> Result<(), FsError> {
-        self.revalidate(cancel)?;
+        check(&*self.mount, cancel)?;
         if !self.supports_read_retry() || self.member.size.is_none_or(|size| offset > size) {
             return Err(failure("Invalid archive member retry offset."));
         }
@@ -349,8 +354,10 @@ impl TransferSource for Source {
             return Err(failure("Archive file has no children."));
         }
         if self.children.is_none() {
-            // The host pages the listing and ends it between pages when the copy is
-            // cancelled, however many members the folder holds.
+            // A folder is listed once, from the validated archive file. The host pages
+            // the listing and ends it between pages when the copy is cancelled, however
+            // many members the folder holds.
+            check(&*self.mount, cancel)?;
             let children = self.mount.list(self.member.id.entry, cancel);
             crate::copy_nested_retirement::observe_archive(&*self.mount);
             self.children = Some(children?.into());
@@ -375,15 +382,21 @@ impl TransferSource for Source {
     }
 }
 
-fn check(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), FsError> {
+/// Stop, without validating the archive file.
+fn stopped(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), FsError> {
+    crate::copy_nested_retirement::observe_archive(mount);
     if cancel.is_cancelled() {
-        crate::copy_nested_retirement::observe_archive(mount);
         return Err(error(
             Path::new(""),
             io::ErrorKind::Interrupted,
             "Archive copy cancelled.",
         ));
     }
+    Ok(())
+}
+/// Stop, then the archive file itself (`ArchiveMount::validate`).
+fn check(mount: &dyn ArchiveMount, cancel: &Cancellation) -> Result<(), FsError> {
+    stopped(mount, cancel)?;
     let result = mount.validate();
     crate::copy_nested_retirement::observe_archive(mount);
     result

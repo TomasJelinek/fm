@@ -409,11 +409,13 @@ pub enum CopyEvent {
     Progress(Arc<CopyProgress>),
     Conflict(Arc<CopyConflict>),
     Failure(Arc<CopyFailure>),
-    /// One requested root completed, including all descendants, with no skips or errors.
-    /// Copy requires verified publication; Move also requires source removal.
-    RootCompleted {
+    /// Requested roots completed, in completion order, each including all descendants,
+    /// with no skips or errors. Copy requires verified publication; Move also requires
+    /// source removal. A job announces each root as a batch of one; its delivery joins
+    /// the announcements that wait for the UI into larger batches.
+    RootsCompleted {
         id: OperationId,
-        source: CompletedCopySource,
+        sources: Vec<CompletedCopySource>,
     },
 }
 

@@ -189,6 +189,19 @@ pub(super) fn try_owner_for(file: &File, path: &Path) -> Result<NativeOwner, FsE
     }
     identity(file, path).map(|identity| owner(&[identity]))
 }
+/// A folder's pooled parent authority, kept while a job changes names in it: each change
+/// there finds it pooled instead of capturing the folder's ancestry again (a Copy job's
+/// staging folder, whose stages are published out of it one by one).
+pub(super) struct HeldParent {
+    _parent: Arc<parent::Parent>,
+}
+pub(super) fn hold_parent(
+    file: &File,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<HeldParent, FsError> {
+    parent::capture(file, path, cancel).map(|parent| HeldParent { _parent: parent })
+}
 // The address is only a private cache bucket, never operation authority. Weak::ptr_eq
 // verifies the actual Arc allocation, including when a retired address is reused.
 static JOBS: OnceLock<Mutex<HashMap<usize, Weak<Job>>>> = OnceLock::new();

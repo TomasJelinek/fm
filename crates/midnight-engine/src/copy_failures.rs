@@ -314,6 +314,10 @@ impl Job {
                         {
                             self.record(error);
                         }
+                        // The job stages nothing more in the skipped folder.
+                        if let Err(error) = frame.destination.finish_staging() {
+                            self.record_cleanup_error(error);
+                        }
                         drop(frame.into_inner());
                         self.progress.skipped += 1;
                     }

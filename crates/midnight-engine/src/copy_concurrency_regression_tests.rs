@@ -570,7 +570,7 @@ async fn both_default_copies_enter_native_io(directory_roots: bool, point: HoldA
                         completed[index] = Some(progress);
                     }
                 }
-                Event::Copy(CopyEvent::RootCompleted { id, .. }) => {
+                Event::Copy(CopyEvent::RootsCompleted { id, .. }) => {
                     assert!(matches!(id, OperationId(1) | OperationId(2)));
                 }
                 Event::Copy(event) => {

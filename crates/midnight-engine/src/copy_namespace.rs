@@ -18,21 +18,26 @@ use midnight_platform_common::transfer_namespace::{
     TransferNamespaceChange, TransferNamespaceChanges, TransferNamespaceRefreshBatch,
 };
 use midnight_work_budget::{Gate, Permit};
+use roots::{Exclusions, RootSet, probed};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::Path,
     sync::{
         Arc, Condvar, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
+#[path = "copy_namespace_roots.rs"]
+mod roots;
 
 const POLL: Duration = Duration::from_millis(10);
 const DIAGNOSTICS: usize = 16;
 const READ: u8 = 1;
 const WRITE: u8 = 2;
+/// `Unstarted` before the job reports: every selected item counts as started.
+const UNKNOWN: usize = usize::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FactsState {
@@ -53,6 +58,21 @@ struct Inner {
     /// Wakes async waiters (refused grants, refused namespace changes) without polling.
     notify: tokio::sync::Notify,
     io: Arc<Gate>,
+    /// What each job's close probed (`Claim::revalidate_before_close`), for tests.
+    #[cfg(test)]
+    closes: Mutex<Vec<ClosingProbe>>,
+}
+/// What one close set out to probe: the roots with a native pin, in order, and how many
+/// aliases; how many native refreshes it made (fewer only when one failed: the first
+/// failure ends the probe), and how long the whole close took.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct ClosingProbe {
+    pub(crate) sequence: u64,
+    pub(crate) roots: Vec<usize>,
+    pub(crate) aliases: usize,
+    pub(crate) refreshed: usize,
+    pub(crate) elapsed: Duration,
 }
 #[derive(Default)]
 struct State {
@@ -237,16 +257,20 @@ struct Record {
     /// Per planned root: whether the job reads it (a source) rather than only changing it
     /// through announced changes (a destination).
     reads: Vec<bool>,
-    /// Selected roots that a granted job claimed or reserved at this grant. They are not
-    /// claims yet: each becomes one with its first change that no earlier job refuses.
-    deferred: Vec<usize>,
+    /// Planned roots per selected item: a transfer plans a source and a destination.
+    per_item: usize,
+    /// Roots that the job's turns touched, which its close revalidates whether or not
+    /// the job started their item (`closing_roots`).
+    touched: HashSet<usize>,
+    /// A turn did not announce every binding it changed, so `touched` may miss some: the
+    /// close revalidates every root.
+    untracked: bool,
+    /// Roots deferred at the grant and not claimed yet, and unprotected reads: the job's
+    /// refreshes leave them out.
+    exclusions: Exclusions,
     reserved_pins: Vec<PinFact>,
     /// Facts of the deferred roots, which later jobs respect as if claimed.
     reserved: Option<Arc<Facts>>,
-    /// Roots the job only reads whose geometry is unknown (a followed link, a provider
-    /// without native geometry). They are never written, so they are left unclaimed
-    /// instead of making the whole job exclusive; reads through them are unprotected.
-    unprotected: Vec<usize>,
     opaque_latched: bool,
     facts: Arc<Facts>,
     native: Weak<PinStore>,
@@ -256,18 +280,67 @@ struct Record {
     quarantined: Arc<AtomicBool>,
     diagnostics: Arc<Mutex<Vec<FsError>>>,
 }
+impl Record {
+    /// The roots whose pins the job's close probes (`Claim::revalidate_before_close`):
+    /// those of every selected item the job started, with `unstarted` items left, and
+    /// every root its turns touched. None: every root, as when the job completed every
+    /// item, reported no progress, or ran a turn that did not record all it changed.
+    fn closing_roots(&self, unstarted: usize) -> Option<Vec<usize>> {
+        let roots = self.reads.len();
+        if self.untracked
+            || unstarted == UNKNOWN
+            || self.per_item == 0
+            || !roots.is_multiple_of(self.per_item)
+        {
+            return None;
+        }
+        // The job takes its items in planned order and only ever leaves some out (one
+        // skipped while it was prepared, a repeated path), so the items it started are
+        // among the first `items - unstarted` planned ones. An item left out before them
+        // is probed too, as before.
+        let started = (roots / self.per_item)
+            .checked_sub(unstarted)?
+            .checked_mul(self.per_item)?;
+        if started == roots {
+            return None;
+        }
+        let mut closing: Vec<_> = (0..started)
+            .chain(
+                self.touched
+                    .iter()
+                    .copied()
+                    .filter(|root| (started..roots).contains(root)),
+            )
+            .collect();
+        closing.sort_unstable();
+        Some(closing)
+    }
+}
 struct Context {
     registry: Arc<Inner>,
     sequence: u64,
     native: Weak<PinStore>,
     quarantined: Arc<AtomicBool>,
     diagnostics: Arc<Mutex<Vec<FsError>>>,
+    /// The job's selected items it has not started (`Unstarted`), or `UNKNOWN`.
+    unstarted: Arc<AtomicUsize>,
 }
 
 /// Pure host ownership. Dropping an uncommitted claim never releases authority.
 pub(crate) struct Claim {
     context: Arc<Context>,
     completed: AtomicBool,
+}
+/// How many of its selected items a job has not started yet. The job takes them in
+/// planned order; it reports the count before it takes the first and again as it takes
+/// each one. Its close then leaves the pins of the items it never started unprobed
+/// (`Claim::revalidate_before_close`). Until the job reports, every item counts as started.
+#[derive(Clone)]
+pub(crate) struct Unstarted(Arc<AtomicUsize>);
+impl Unstarted {
+    pub(crate) fn set(&self, items: usize) {
+        self.0.store(items, Ordering::Release);
+    }
 }
 /// The only persistent strong pin store. Install under the Copy seal immediately.
 pub(crate) struct NativeOwners {
@@ -725,6 +798,8 @@ impl Registry {
                 changed: Condvar::new(),
                 notify: tokio::sync::Notify::new(),
                 io,
+                #[cfg(test)]
+                closes: Mutex::default(),
             }),
         }
     }
@@ -736,6 +811,7 @@ impl Registry {
             native: Arc::downgrade(&store),
             quarantined: Arc::default(),
             diagnostics: Arc::default(),
+            unstarted: Arc::new(AtomicUsize::new(UNKNOWN)),
         });
         let mut state = self
             .inner
@@ -761,10 +837,12 @@ impl Registry {
                 granted: false,
                 granted_at: 0,
                 reads: Vec::new(),
-                deferred: Vec::new(),
+                per_item: 1,
+                touched: HashSet::new(),
+                untracked: false,
+                exclusions: Exclusions::default(),
                 reserved_pins: Vec::new(),
                 reserved: None,
-                unprotected: Vec::new(),
                 opaque_latched: false,
                 facts: Arc::default(),
                 native: Arc::downgrade(&store),
@@ -802,6 +880,11 @@ impl Registry {
             .filter(|(_, record)| record.granted)
             .map(|(sequence, _)| *sequence)
             .collect()
+    }
+    /// What the closes of this registry's jobs probed so far, in order.
+    #[cfg(test)]
+    pub(crate) fn closes_for_test(&self) -> Vec<ClosingProbe> {
+        self.inner.closes.lock().unwrap().clone()
     }
     /// Latch a claim opaque as a failed refresh would, without charging it a diagnostic.
     #[cfg(test)]
@@ -1036,6 +1119,10 @@ impl Claim {
     pub(crate) fn changes(&self) -> Arc<dyn TransferNamespaceChanges> {
         self.context.clone()
     }
+    /// Where the job reports how many of its selected items it has not started.
+    pub(crate) fn unstarted(&self) -> Unstarted {
+        Unstarted(self.context.unstarted.clone())
+    }
     pub(crate) fn configured_io(&self) -> Arc<Gate> {
         self.context.registry.io.clone()
     }
@@ -1067,7 +1154,7 @@ impl Claim {
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
         let reads = vec![true; pins.len()];
-        self.plan(pins, reads, io, cancel)
+        self.plan(pins, reads, 1, io, cancel)
     }
     /// Plan a transfer's endpoints, given as a (source, destination) pair per selected
     /// root. A source is read by the job; a destination is only changed through the job's
@@ -1082,8 +1169,9 @@ impl Claim {
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
         let reads = (0..pins.len()).map(|index| index % 2 == 0).collect();
-        self.plan(pins, reads, io, cancel)
+        self.plan(pins, reads, 2, io, cancel)
     }
+    /// `per_item`: planned roots per selected item, in item order.
     fn plan(
         &self,
         pins: Vec<(
@@ -1091,6 +1179,7 @@ impl Claim {
             Option<Arc<dyn TransferNamespacePin>>,
         )>,
         reads: Vec<bool>,
+        per_item: usize,
         io: Arc<Permit>,
         cancel: &Cancellation,
     ) -> Result<(), FsError> {
@@ -1150,6 +1239,7 @@ impl Claim {
             record.io = Arc::downgrade(&io);
             record.planned = true;
             record.reads = reads;
+            record.per_item = per_item;
             Inner::bump(&mut state, self.context.sequence)?;
         }
         drop(store);
@@ -1224,7 +1314,7 @@ impl Claim {
             }
             let mut batch = ProbeBatch::reserve(registry, &mut state, vec![sequence])?;
             // Admission probes every own pin, unclaimed ones too, so their errors surface.
-            batch.snapshots[0].excluded.clear();
+            batch.snapshots[0].excluded = Arc::default();
             batch
         };
         let refreshed = admitted(registry, &io, || {
@@ -1301,9 +1391,10 @@ impl Claim {
                 return Ok(Grant::Conflict(seen, hold));
             }
         };
+        let exclusions = Exclusions::new(&deferred, &unprotected);
         let (reserved_pins, claimed): (Vec<_>, Vec<_>) = pins
             .into_iter()
-            .partition(|pin| pin.root.is_some_and(|root| deferred.contains(&root)));
+            .partition(|pin| pin.root.is_some_and(|root| exclusions.is_deferred(root)));
         let claims = if deferred.is_empty() {
             facts
         } else {
@@ -1324,10 +1415,9 @@ impl Claim {
         let retired = std::mem::replace(&mut record.facts, Arc::new(claims));
         record.granted = true;
         record.granted_at = granted_at;
-        record.deferred = deferred;
+        record.exclusions = exclusions;
         record.reserved_pins = reserved_pins;
         record.reserved = reserved;
-        record.unprotected = unprotected;
         Inner::bump(&mut state, sequence)?;
         Inner::restructure(&mut state);
         registry.signal();
@@ -1335,36 +1425,62 @@ impl Claim {
         drop(retired);
         Ok(Grant::Granted)
     }
-    /// The final full revalidation of a granted job's own pins, after its last native work
-    /// and before its owners close. Opted-in turns refresh only what they announced, so an
-    /// external change to an untouched pinned binding (a renamed source or destination
+    /// The final revalidation of a granted job's pins, after its last native work and
+    /// before its owners close: the pins of every selected item the job started
+    /// (completed, failed, skipped or current), every root its turns touched and every
+    /// alias it still holds. Opted-in turns refresh only what they announced, so an external
+    /// change to an untouched binding of a started item (a renamed source or destination
     /// parent) surfaces here: it is latched and reported as a job diagnostic, as it would
-    /// have been by a full turn refresh. Never fails the teardown.
+    /// have been by a full turn refresh. The pins of items the job never started (it was
+    /// cancelled or stopped by an error first) are released unprobed: the job never acted
+    /// on those bindings, their facts leave the registry with this claim, and no job
+    /// outcome depends on them. A job that completed every item, that reported no
+    /// progress (`Unstarted`), or that ran a turn which may have changed pins it did not
+    /// record probes every pin, as before. Never fails the teardown.
     pub(crate) fn revalidate_before_close(&self) {
         let registry = &self.context.registry;
         let sequence = self.context.sequence;
-        let granted = registry
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .records
-            .get(&sequence)
-            .is_some_and(|record| record.granted && record.state != FactsState::Quarantined);
-        if !granted {
-            return;
-        }
-        let prepared = self
-            .context
-            .io_witness()
-            .and_then(|io| Ok((io, ProbeBatch::single(registry, sequence)?)));
-        let result = prepared.and_then(|(io, batch)| {
-            // `refresh` latches and records its own probe failures.
+        #[cfg(test)]
+        let (started, recorded) = (
+            std::time::Instant::now(),
+            registry.closes.lock().unwrap().len(),
+        );
+        let unstarted = self.context.unstarted.load(Ordering::Acquire);
+        let batch = {
+            let mut state = registry
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let roots = match state.records.get(&sequence) {
+                Some(record) if record.granted && record.state != FactsState::Quarantined => {
+                    record.closing_roots(unstarted)
+                }
+                _ => return,
+            };
+            ProbeBatch::reserve(registry, &mut state, vec![sequence]).map(|mut batch| {
+                batch.snapshots[0].roots = roots;
+                batch.snapshots[0].closing = true;
+                batch
+            })
+        };
+        let result = batch.and_then(|batch| {
+            let io = self.context.io_witness()?;
+            // `refresh` latches and records its own probe and validation failures. Its
+            // facts cover the probed pins only (`Facts::revalidated` keeps the admission
+            // index for the others) and are discarded: nothing compares them any more.
             admitted(registry, &io, || {
                 let _ = batch.refresh(&Cancellation::default(), true);
             })
         });
         if let Err(error) = result {
             registry.opaque(sequence, error);
+        }
+        #[cfg(test)]
+        if let Some(close) = registry.closes.lock().unwrap()[recorded..]
+            .iter_mut()
+            .find(|close| close.sequence == sequence)
+        {
+            close.elapsed = started.elapsed();
         }
     }
     pub(crate) fn begin_closing(&self) -> Result<(), FsError> {
@@ -1577,9 +1693,11 @@ struct Snapshot {
     roots: Option<Vec<usize>>,
     aliases: Option<Vec<u64>>,
     /// Roots that are not part of this job's facts: deferred at grant and not claimed
-    /// yet, or unprotected reads of unknown geometry.
-    excluded: Vec<usize>,
+    /// yet, or unprotected reads of unknown geometry (`Exclusions`, shared, not copied).
+    excluded: Arc<RootSet>,
     prior: Arc<Facts>,
+    /// The job's final revalidation (`Claim::revalidate_before_close`).
+    closing: bool,
 }
 struct ProbeBatch {
     registry: Arc<Inner>,
@@ -1603,13 +1721,9 @@ impl ProbeBatch {
                 io: record.io.clone(),
                 roots: None,
                 aliases: None,
-                excluded: record
-                    .deferred
-                    .iter()
-                    .chain(&record.unprotected)
-                    .copied()
-                    .collect(),
+                excluded: record.exclusions.excluded(),
                 prior: record.facts.clone(),
+                closing: false,
             });
         }
         Ok(Self {
@@ -1668,28 +1782,13 @@ impl ProbeBatch {
         let store = snapshot.native.upgrade().ok_or_else(unconfirmed)?;
         let pins: Vec<_> = {
             let data = store.data.lock().unwrap_or_else(|error| error.into_inner());
-            let excluded = |root: &usize| snapshot.excluded.contains(root);
-            let mut pins = match &snapshot.roots {
-                Some(roots) => roots
-                    .iter()
-                    .filter(|root| !excluded(root))
-                    .map(|root| {
-                        data.roots
-                            .get(*root)
-                            .cloned()
-                            .map(|pin| (Some(*root), None, pin))
-                            .ok_or_else(unconfirmed)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                None => data
-                    .roots
-                    .iter()
-                    .cloned()
-                    .enumerate()
-                    .filter(|(root, _)| !excluded(root))
-                    .map(|(root, pin)| (Some(root), None, pin))
-                    .collect(),
-            };
+            let roots = snapshot.roots.as_deref();
+            let mut pins = probed(roots, data.roots.len(), &snapshot.excluded)
+                .map(|root| {
+                    let pin = data.roots.get(root).cloned().ok_or_else(unconfirmed)?;
+                    Ok((Some(root), None, pin))
+                })
+                .collect::<Result<Vec<_>, FsError>>()?;
             match &snapshot.aliases {
                 Some(aliases) => {
                     for alias in aliases {
@@ -1705,6 +1804,19 @@ impl ProbeBatch {
             }
             pins
         };
+        #[cfg(test)]
+        let close = snapshot.closing.then(|| {
+            let native = pins.iter().filter(|(_, _, pin)| pin.pin.is_some());
+            let mut closes = self.registry.closes.lock().unwrap();
+            closes.push(ClosingProbe {
+                sequence: snapshot.sequence,
+                roots: native.clone().filter_map(|(root, _, _)| *root).collect(),
+                aliases: native.filter(|(_, alias, _)| alias.is_some()).count(),
+                refreshed: 0,
+                elapsed: Duration::ZERO,
+            });
+            closes.len() - 1
+        });
         // One batch: an adapter walks an ancestry shared by several pins once.
         let _batch = TransferNamespaceRefreshBatch::begin();
         let mut facts = Vec::with_capacity(pins.len());
@@ -1713,6 +1825,10 @@ impl ProbeBatch {
                 None => TransferNamespaceProbe::Unknown,
                 Some(native) => match checked(|| {
                     let result = native.refresh(&Cancellation::default());
+                    #[cfg(test)]
+                    if let Some(close) = close {
+                        self.registry.closes.lock().unwrap()[close].refreshed += 1;
+                    }
                     #[cfg(test)]
                     if root.is_some()
                         && std::env::var_os("MIDNIGHT_TEST_TRACE_COPY_NAMESPACE").is_some()
@@ -1862,10 +1978,36 @@ impl Context {
             native: self.native.clone(),
             quarantined: self.quarantined.clone(),
             diagnostics: self.diagnostics.clone(),
+            unstarted: self.unstarted.clone(),
         }
     }
 }
 impl Transaction {
+    /// Whether this turn announced every binding it changed (opted in), so that `touched`
+    /// holds every root it changed and its finish refreshes only those.
+    fn announced_all(&self) -> bool {
+        self.incremental && !self.full_refresh
+    }
+    /// Add the roots this turn touched to its job's record, before its refresh can fail:
+    /// the job's close revalidates them whether or not their item was started. A turn that
+    /// did not announce every binding it changed may have changed any pin without
+    /// recording it, so the close then revalidates every root, as this turn's own finish
+    /// refreshes every pin; which pins it changed cannot be told apart from what it read.
+    fn record_touched(&self) {
+        let mut state = self
+            .context
+            .registry
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(record) = state.records.get_mut(&self.context.sequence) {
+            if self.announced_all() {
+                record.touched.extend(self.touched.iter().copied());
+            } else {
+                record.untracked = true;
+            }
+        }
+    }
     fn remove_aliases(&self, aliases: &[u64]) -> Result<(), FsError> {
         if aliases.is_empty() {
             return Ok(());
@@ -2145,12 +2287,14 @@ impl TransferNamespaceChange for Transaction {
                 .ok_or_else(unconfirmed)?;
             let claimed: Vec<_> = root_access
                 .iter()
-                .filter(|(root, _)| record.deferred.contains(root))
+                .filter(|(root, _)| record.exclusions.is_deferred(*root))
                 .copied()
                 .collect();
             if !claimed.is_empty() {
                 let claimed_root = |root: &usize| claimed.iter().any(|(claim, _)| claim == root);
-                record.deferred.retain(|root| !claimed_root(root));
+                for (root, _) in &claimed {
+                    record.exclusions.claim(*root);
+                }
                 record
                     .reserved_pins
                     .retain(|pin| !pin.root.as_ref().is_some_and(claimed_root));
@@ -2177,7 +2321,8 @@ impl TransferNamespaceChange for Transaction {
             // EVERY affected original/private binding before mutation, including
             // displaced/recovery bindings. Intersection locates affected roots; it is
             // never a substitute for full coverage. Grants compare these committed facts
-            // without probing this job again; untouched pins are revalidated before close.
+            // without probing this job again; the untouched pins of the items the job
+            // started are revalidated before close (`Claim::revalidate_before_close`).
             if !registered.is_empty() && !candidate.is_opaque() {
                 self.incremental = true;
             }
@@ -2250,6 +2395,7 @@ impl TransferNamespaceChange for Transaction {
         result
     }
     fn finish(mut self: Box<Self>) -> Result<(), FsError> {
+        self.record_touched();
         let result = (|| {
             let io = self.context.io_witness()?;
             admitted(&self.context.registry, &io, || {
@@ -2257,9 +2403,10 @@ impl TransferNamespaceChange for Transaction {
                 // probing this job, so they must cover everything this turn changed. A
                 // turn that announced every affected binding (opted in) refreshes only
                 // those, not every pin the job has accumulated; any other turn refreshes
-                // all of them. An external change to an untouched pin is reported by the
-                // job's final revalidation (`Claim::revalidate_before_close`).
-                let incremental = self.incremental && !self.full_refresh;
+                // all of them. An external change to an untouched pin of an item the job
+                // started, or of a root a turn touched, is reported by the job's final
+                // revalidation (`Claim::revalidate_before_close`).
+                let incremental = self.announced_all();
                 let batch = if incremental {
                     ProbeBatch::touched(
                         &self.context.registry,

@@ -250,7 +250,7 @@ impl Presenter {
             return Some(event);
         };
         match event {
-            CopyEvent::RootCompleted { id, source } => self.complete_copy_selection(id, source),
+            CopyEvent::RootsCompleted { id, sources } => self.complete_copy_selection(id, sources),
             CopyEvent::Conflict(conflict) => {
                 if self.accept_copy_decision(conflict.id, conflict.version) {
                     self.copies.conflicts.push(conflict);

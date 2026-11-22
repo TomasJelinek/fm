@@ -51,7 +51,8 @@ fn disjoint_archive_rectangle_preserves_duplicate_names_and_opaque_ids() {
         let result = archive_selection::apply(
             &entries,
             &view,
-            &prior,
+            std::sync::Arc::new(prior.clone()),
+            ArchiveSelectionTotals::default(),
             ArchiveSelectionAction::Ranges {
                 ranges: ranges.clone(),
                 mode,
@@ -79,7 +80,8 @@ fn changed_archive_extent_fails_without_silent_partial_selection() {
         archive_selection::apply(
             &entries,
             &view,
-            &HashSet::new(),
+            std::sync::Arc::default(),
+            ArchiveSelectionTotals::default(),
             ArchiveSelectionAction::Ranges {
                 ranges,
                 mode: SelectionMode::Replace
@@ -120,7 +122,8 @@ fn clear_files_only_preserves_selected_archive_folders_links_and_hidden_marks() 
         let result = archive_selection::apply(
             &entries,
             &view,
-            &prior,
+            std::sync::Arc::new(prior.clone()),
+            ArchiveSelectionTotals::default(),
             ArchiveSelectionAction::Bulk(SelectionOperation::ClearFilesOnly),
         )
         .unwrap();

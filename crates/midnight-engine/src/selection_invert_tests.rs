@@ -144,11 +144,12 @@ fn invert_all_archive_entries_preserves_marks_outside_the_visible_view() {
         rows[5].clone(),
     ];
     let view = DirectoryIndex::from_entries(&visible);
-    let selected = [rows[0].id, rows[2].id, rows[3].id].into_iter().collect();
+    let selected: HashSet<EntryId> = [rows[0].id, rows[2].id, rows[3].id].into_iter().collect();
     let result = crate::archive_selection::apply(
         &rows,
         &view,
-        &selected,
+        Arc::new(selected.clone()),
+        ArchiveSelectionTotals::default(),
         ArchiveSelectionAction::Bulk(SelectionOperation::InvertAll),
     )
     .unwrap();
@@ -171,7 +172,8 @@ fn select_files_only_replaces_archive_selection_with_visible_files() {
     let all = crate::archive_selection::apply(
         &rows,
         &view,
-        &HashSet::new(),
+        Arc::default(),
+        ArchiveSelectionTotals::default(),
         ArchiveSelectionAction::Bulk(SelectionOperation::All),
     )
     .unwrap();
@@ -186,7 +188,8 @@ fn select_files_only_replaces_archive_selection_with_visible_files() {
     let files = crate::archive_selection::apply(
         &rows,
         &view,
-        &selected,
+        Arc::new(selected.clone()),
+        ArchiveSelectionTotals::default(),
         ArchiveSelectionAction::Bulk(SelectionOperation::FilesOnly),
     )
     .unwrap();
@@ -243,11 +246,12 @@ fn invert_files_in_archive_preserves_folders_and_respects_filtered_view() {
         rows[5].clone(),
     ];
     let index = DirectoryIndex::from_entries(&visible);
-    let selected = [rows[0].id, rows[2].id, rows[3].id].into_iter().collect();
+    let selected: HashSet<EntryId> = [rows[0].id, rows[2].id, rows[3].id].into_iter().collect();
     let result = crate::archive_selection::apply(
         &rows,
         &index,
-        &selected,
+        Arc::new(selected.clone()),
+        ArchiveSelectionTotals::default(),
         ArchiveSelectionAction::Bulk(SelectionOperation::Invert),
     )
     .unwrap();

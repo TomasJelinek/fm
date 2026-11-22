@@ -13,6 +13,40 @@ struct DeliveryState {
     closed: bool,
 }
 
+/// Most completed roots that one delivered notice carries. A job queues a notice per
+/// completed root (up to `MAX_NATIVE_TRANSFER_ROOTS + 2` wait for the UI), and the UI
+/// takes a few events per frame: joined, a full queue reaches it as 9 events instead of
+/// 4,098, so a cancelled selection's terminal progress no longer waits minutes behind
+/// them. The bound keeps one notice's work in the UI (a lookup and an insert per root)
+/// to a fraction of a frame.
+pub(super) const MAX_ROOTS_PER_NOTICE: usize = 512;
+
+/// `first`, joined with the root notices of the same job that already wait behind it,
+/// up to `MAX_ROOTS_PER_NOTICE`, and the first waiting notice that could not join.
+/// Joining takes only what is queued: it never waits for more, and keeps the order.
+fn join_roots(first: Event, notices: &mut mpsc::Receiver<Event>) -> (Event, Option<Event>) {
+    let Event::Copy(CopyEvent::RootsCompleted { id, mut sources }) = first else {
+        return (first, None);
+    };
+    let mut held = None;
+    while sources.len() < MAX_ROOTS_PER_NOTICE {
+        match notices.try_recv() {
+            Ok(Event::Copy(CopyEvent::RootsCompleted {
+                id: next,
+                sources: more,
+            })) if next == id && sources.len() + more.len() <= MAX_ROOTS_PER_NOTICE => {
+                sources.extend(more);
+            }
+            Ok(other) => {
+                held = Some(other);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    (Event::Copy(CopyEvent::RootsCompleted { id, sources }), held)
+}
+
 #[derive(Clone)]
 pub(super) struct Sender {
     sender: mpsc::Sender<Event>,
@@ -165,7 +199,7 @@ impl CopyOutbox {
             tokio::select! {
                 notice = notices.recv() => {
                     if let Some(notice) = notice
-                        && !self.forward(notice).await
+                        && !self.forward_joined(notice, &mut notices).await
                     {
                         return;
                     }
@@ -182,9 +216,9 @@ impl CopyOutbox {
         // reserve output capacity. Later stale snapshots are explicitly refused.
         self.sender.close_intermediates();
         // Native work enqueues every root notice before sending its terminal.
-        // Drain those immutable notices before terminal delivery.
+        // Drain those immutable notices before terminal delivery, joined.
         while let Ok(notice) = notices.try_recv() {
-            if !self.forward(notice).await {
+            if !self.forward_joined(notice, &mut notices).await {
                 return;
             }
         }
@@ -197,6 +231,19 @@ impl CopyOutbox {
         progress.closure = closure(&progress);
         self.forward(Event::Copy(CopyEvent::Progress(Arc::new(progress))))
             .await;
+    }
+    /// Forward `notice` joined with the root notices waiting behind it (`join_roots`),
+    /// then the waiting notice that could not join.
+    async fn forward_joined(&self, notice: Event, notices: &mut mpsc::Receiver<Event>) -> bool {
+        let mut next = Some(notice);
+        while let Some(notice) = next {
+            let (joined, held) = join_roots(notice, notices);
+            if !self.forward(joined).await {
+                return false;
+            }
+            next = held;
+        }
+        true
     }
     async fn forward(&self, event: Event) -> bool {
         tokio::select! {

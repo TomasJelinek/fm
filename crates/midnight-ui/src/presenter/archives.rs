@@ -11,7 +11,7 @@ pub(super) struct ArchivePane {
     requested_history: Option<usize>,
     pub(super) wanted_cursor: Option<VirtualEntryId>,
     pub(super) selected: Arc<HashSet<EntryId>>,
-    totals: ArchiveSelectionTotals,
+    pub(super) totals: ArchiveSelectionTotals,
     pub(super) selection_pending: bool,
     pub(super) selection_revision: SelectionRevision,
     /// The mounted folder of the listing in flight, kept for its recovery.
@@ -1010,6 +1010,7 @@ impl Presenter {
             entries: p.entries.clone(),
             view: p.display_index().clone(),
             selected: a.selected.clone(),
+            totals: a.totals,
             action,
         }) {
             self.panes[pane.index()]
