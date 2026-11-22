@@ -25,6 +25,9 @@ export global SettingsFileView {
     // The latest result in this Options session; empty when there is none.
     in property <string> message;
     in property <bool> error;
+    // What the footer's Reset to defaults last did; empty when there is nothing to
+    // report. The line above the footer shows it while no Export or Import result does.
+    in property <string> reset-status;
     // The chosen export destination already exists: Replace or Keep.
     in property <bool> replace-pending;
     callback export-file();

@@ -51,11 +51,13 @@ enum Step {
 }
 
 impl State {
+    /// An Export or Import is choosing its file or still working: another one and
+    /// Reset to defaults wait.
     pub(crate) fn busy(&self) -> bool {
         self.pending.is_some()
     }
 
-    /// OK and Reset wait while an import can still change the session.
+    /// OK waits while an import can still change the session.
     pub(crate) fn importing(&self) -> bool {
         self.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -243,6 +245,8 @@ impl Presenter {
         state.replace = None;
         state.message.clear();
         state.error = false;
+        // The footer reports one outcome at a time.
+        self.preferences.options.reset_status.clear();
         self.request_settings_picker(target, owner, send);
     }
 

@@ -90,7 +90,10 @@ export component KeyboardEditor inherits VerticalLayout {
     command-frame := Rectangle {
         height: Theme.control-height * max(1, min(KeyboardEditorView.commands.length,
             clamp(floor((root.available-height - 240px) / Theme.control-height), 2, 6))) + 2px;
-        background: Theme.pane-background; border-width: 1px; border-color: Theme.frame; clip: true;
+        // The list is one Tab stop: its frame takes the active colour while it has the
+        // keyboard, as the Colors page's rule list does (arrows move the selection).
+        background: Theme.pane-background; border-width: 1px; clip: true;
+        border-color: command-focus.has-focus ? Theme.active-frame : Theme.frame;
         command-focus := FocusScope {
             key-pressed(event) => {
                 if event.text == Key.DownArrow { KeyboardEditorView.move-selection(1); return accept; }
@@ -101,6 +104,7 @@ export component KeyboardEditor inherits VerticalLayout {
             }
             commands := ListView {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                accessible-label: "Commands"; accessible-item-count: KeyboardEditorView.commands.length;
                 changed visible-height => { root.reveal-selection(); }
                 for command in KeyboardEditorView.commands : CommandRow {
                     width: commands.visible-width; command: command;
@@ -159,16 +163,30 @@ export component KeyboardEditor inherits VerticalLayout {
                 font-family: Theme.effective-font-family; font-size: Theme.font-size;
             }
             capture := FocusScope {
+                // Reached with Tab, the field lets Tab and Shift+Tab pass on without
+                // recording them, so that walking through the page changes nothing. Once
+                // clicked, or after it recorded another key, Tab records like any key.
+                private property <bool> armed;
+                focus-gained(reason) => { self.armed = reason != FocusReason.tab-navigation; }
                 changed has-focus => { KeyboardEditorView.capturing = self.has-focus; }
                 key-pressed(event) => {
+                    if !self.armed && (event.text == Key.Tab || event.text == Key.Backtab) { return reject; }
+                    // A modifier alone records nothing and arms nothing: Shift on its way
+                    // to Shift+Tab must not make the field record that Tab.
+                    if event.text != Key.Shift && event.text != Key.ShiftR
+                        && event.text != Key.Control && event.text != Key.ControlR
+                        && event.text != Key.Alt && event.text != Key.AltGr
+                        && event.text != Key.Meta && event.text != Key.MetaR {
+                        self.armed = true;
+                    }
                     KeyboardEditorView.capture-key(event);
-                    if event.text == Key.Tab { return reject; }
+                    if event.text == Key.Tab || event.text == Key.Backtab { return reject; }
                     if event.text == Key.Escape { command-focus.focus(); }
                     accept
                 }
                 TouchArea {
                     mouse-cursor: text; clicked => { capture.focus(); }
-                    Tip { text: "Press the desired combination. Tab or Escape records that key and leaves this field. Captured keys never run application commands."; }
+                    Tip { text: "Click, then press the desired combination. Tab or Escape records that key and leaves this field; reached with Tab, the field lets Tab pass. Captured keys never run application commands."; }
                 }
             }
         }

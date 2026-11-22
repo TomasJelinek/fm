@@ -23,6 +23,10 @@ export global OptionsTopics {
 export component OptionsNavigation inherits Rectangle {
     in-out property <int> selected;
     private property <int> focus-request: -1;
+    // The entry the keyboard is on, or on its way to: the arrows, Home and End move
+    // from here (U-D29), not from the page shown, which Tab leaves behind. A key that
+    // comes before the focus has moved continues from where the last one went.
+    private property <int> current: -1;
     private property <length> row-height: max(Theme.control-height, Theme.font-size * 1.5 + 10px);
     background: Theme.secondary-surface; border-radius: 4px;
     changed selected => { root.reveal-selected(); }
@@ -58,16 +62,23 @@ export component OptionsNavigation inherits Rectangle {
                 font-weight: root.selected == OptionsTopics.topic(index) ? 600 : 400; vertical-alignment: center;
             }
             tab-focus := FocusScope {
+                // However the entry got the keyboard (Tab, Shift+Tab, a click, a key).
+                focus-gained(reason) => { root.current = index; root.focus-request = index; }
                 key-pressed(event) => {
                     if event.text == Key.Return || event.text == Key.Space { root.selected = OptionsTopics.topic(index); return accept; }
-                    if event.text == Key.DownArrow || event.text == Key.RightArrow
-                        || event.text == Key.UpArrow || event.text == Key.LeftArrow {
-                        root.focus-request = clamp(OptionsTopics.index(root.selected)
-                            + (event.text == Key.DownArrow || event.text == Key.RightArrow ? 1 : -1), 0, OptionsTopics.titles.length - 1);
-                        root.selected = OptionsTopics.topic(root.focus-request);
-                        return accept;
-                    }
-                    reject
+                    let from = root.current >= 0 ? root.current : index;
+                    let last = OptionsTopics.titles.length - 1;
+                    let to = event.text == Key.DownArrow || event.text == Key.RightArrow ? min(from + 1, last)
+                        : event.text == Key.UpArrow || event.text == Key.LeftArrow ? max(from - 1, 0)
+                        : event.text == Key.Home ? 0
+                        : event.text == Key.End ? last
+                        : -1;
+                    if to < 0 { return reject; }
+                    // The focus and the page shown move together.
+                    root.current = to;
+                    root.focus-request = to;
+                    root.selected = OptionsTopics.topic(to);
+                    accept
                 }
                 area := TouchArea { clicked => { tab-focus.focus(); root.focus-request = index; root.selected = OptionsTopics.topic(index); } }
             }

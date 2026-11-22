@@ -25,6 +25,10 @@ pub(crate) fn refresh(window: &MainWindow, p: &Presenter) {
     }
     view.set_error(state.error);
     view.set_replace_pending(state.replace_pending());
+    let reset_status = crate::shown_text(&p.preferences.options.reset_status);
+    if view.get_reset_status() != reset_status {
+        view.set_reset_status(reset_status);
+    }
     let kept = &p.preferences.values.foreign_settings;
     if let Some(setting) = kept.first() {
         let (system, current) = (setting.system.name(), PathSystem::CURRENT.name());

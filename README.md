@@ -906,7 +906,9 @@ editor scope and shortcuts reserved for later stages.
   previewed theme, spacing and fonts. Validation or save errors keep Options open.
   **Reset to defaults** resets all Options pages while preserving tabs, command
   history, hot paths and custom commands. It is a preview until OK; Cancel undoes
-  the reset too.
+  the reset too. A line above the footer says what it did, also when every page
+  already showed its defaults, until the next change. It waits while a page's file
+  chooser, an export or an import is open.
   **Export configuration…** saves all settings, including tabs, hot paths and
   window placement, to a versioned JSON file. **Import configuration…** checks a
   whole file first and previews it in Options; OK saves it and then applies its
@@ -921,7 +923,9 @@ editor scope and shortcuts reserved for later stages.
   previewed together. Matching runs on backend workers in every panel view.
   Color swatches open a movable, resizable picker popup. Its controls scroll in
   small windows while Use color / Cancel stay visible; Escape cancels just the
-  picker, and the outer Options OK / Cancel still controls saving.
+  picker, and the outer Options OK / Cancel still controls saving. Its preset
+  swatches name their color and hex value in a tooltip and show hover and keyboard
+  focus.
   Desktop uses denser rows/toolbars; compact Touch uses 40px base targets. The active folder
   appears in full beside the command input in the same single row, without
   elision or a fixed path-width cap. Extreme paths remain fully accessible in a

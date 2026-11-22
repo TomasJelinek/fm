@@ -20,6 +20,9 @@ pub(crate) struct State {
     pub(crate) saving: bool,
     pub(crate) error_topic: Option<i32>,
     pub(crate) feedback_revision: u64,
+    /// What the last Reset to defaults did, shown until the next preference edit,
+    /// Export or Import, or the end of the session.
+    pub(crate) reset_status: String,
     plugin_extension_panel: Option<PluginExtensionPanel>,
     pub(super) baseline: Option<Box<UserPreferences>>,
     commit_revision: Option<PreferencesRevision>,
@@ -172,6 +175,7 @@ impl Presenter {
         }
         self.preferences.options.open = true;
         self.preferences.options.error_topic = None;
+        self.preferences.options.reset_status.clear();
         self.preferences
             .settings_file
             .next_session(&mut self.retired);
@@ -209,10 +213,25 @@ impl Presenter {
             || self.preferences.options.accepting
             || self.preferences.options.saving
             || self.settings_picker.busy()
-            || self.preferences.settings_file.importing()
+            // As the footer disables it: an Export takes its values when its file is
+            // chosen, and an Import can still replace the session.
+            || self.preferences.settings_file.busy()
         {
             return;
         }
+        // Whether a page shows anything but the defaults: a staged import, an unfinished
+        // page edit or its error, or a previewed setting (compared below).
+        let drafts = self.preferences.settings_file.staged.is_some()
+            || self.editor.dirty
+            || !self.editor.error.is_empty()
+            || self.comparators.dirty
+            || !self.comparators.error.is_empty()
+            || self.colors.editor.dirty
+            || !self.colors.error.is_empty()
+            || self.viewer_plugins.extension_draft.is_some()
+            || self.viewer_plugins.thumbnailer_extension_draft.is_some()
+            || self.keyboard.editor.candidate.is_some()
+            || !self.keyboard.error.is_empty();
         // Reset keeps the current session state, including over a staged import.
         self.preferences
             .settings_file
@@ -227,6 +246,7 @@ impl Presenter {
         let mut values = self.preferences.values.clone();
         restore_fields(&mut values, &defaults);
         values.file_list.reset_options();
+        let changed = drafts || values != self.preferences.values;
         self.discard_editor_draft();
         self.discard_comparator_draft();
         self.discard_viewer_association_draft();
@@ -238,7 +258,22 @@ impl Presenter {
         self.preferences.options.error_topic = None;
         // Preserve the custom-command draft too. It is user content, even before
         // OK, and resetting application preferences must not silently delete it.
-        self.update_preferences(values, send);
+        self.update_preferences(values.clone(), send);
+        // Every click says what it did, also when every page already showed its
+        // defaults: Reset never looks like a button that does nothing.
+        self.preferences.options.reset_status = if self.preferences.values != values {
+            // The keyboard map is what can refuse the defaults; it says why.
+            match self.keyboard.error.trim().trim_end_matches('.') {
+                "" => "Reset to defaults did not apply.".into(),
+                reason => format!("Reset to defaults did not apply: {reason}."),
+            }
+        } else if changed {
+            "Reset to defaults: every page now shows its defaults. OK saves them; Cancel \
+             keeps your settings."
+                .into()
+        } else {
+            "Reset to defaults changed nothing: every page already showed its defaults.".into()
+        };
     }
 
     pub(crate) fn cancel_options(&mut self, send: &dyn Fn(Command) -> bool) {
@@ -277,6 +312,7 @@ impl Presenter {
         self.preferences.options.open = false;
         self.preferences.options.accepting = false;
         self.preferences.options.error_topic = None;
+        self.preferences.options.reset_status.clear();
         self.preferences
             .settings_file
             .next_session(&mut self.retired);
@@ -431,6 +467,7 @@ impl Presenter {
         self.preferences.options.saving = false;
         self.preferences.options.commit_revision = None;
         self.preferences.options.error_topic = None;
+        self.preferences.options.reset_status.clear();
         self.retired
             .push(Box::new(self.preferences.options.baseline.take()));
         self.apply_staged_settings();

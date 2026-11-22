@@ -1,5 +1,6 @@
 import { Slider, SpinBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
 
 // Sliders and spin boxes assign their own value on input, which detaches a
 // one-way binding for good. Every control below therefore restores the shared
@@ -94,21 +95,40 @@ export component ColorPickerControls inherits VerticalLayout {
     Channel { label: "B"; value: root.current.blue; edited(value) => { root.set-color(Colors.rgb(root.current.red, root.current.green, value)); } }
     HorizontalLayout {
         spacing: 4px;
-        for swatch in [#000000, #ffffff, #ef4444, #f59e0b, #22c55e, #06b6d4, #3b82f6, #a855f7] : Rectangle {
+        for swatch in [
+            { color: #000000, name: "Black #000000" }, { color: #ffffff, name: "White #FFFFFF" },
+            { color: #ef4444, name: "Red #EF4444" }, { color: #f59e0b, name: "Amber #F59E0B" },
+            { color: #22c55e, name: "Green #22C55E" }, { color: #06b6d4, name: "Cyan #06B6D4" },
+            { color: #3b82f6, name: "Blue #3B82F6" }, { color: #a855f7, name: "Purple #A855F7" }
+        ] : Rectangle {
             height: Theme.control-height; min-width: 24px; horizontal-stretch: 1;
-            border-width: 1px; border-color: swatch-focus.has-focus ? Theme.active-frame : Theme.frame;
-            background: swatch;
+            // Focused, the frame takes the theme's active frame and doubles, as a button's.
+            border-width: swatch-focus.has-focus ? 2px : 1px;
+            border-color: swatch-focus.has-focus ? Theme.active-frame : Theme.frame;
+            background: swatch.color;
             accessible-role: button;
-            accessible-label: "RGB " + swatch.red + ", " + swatch.green + ", " + swatch.blue;
-            accessible-action-default => { root.set-color(swatch); }
+            accessible-label: "RGB " + swatch.color.red + ", " + swatch.color.green + ", " + swatch.color.blue;
+            accessible-description: swatch.name;
+            accessible-action-default => { root.set-color(swatch.color); }
             forward-focus: swatch-focus;
+            // Hovered, a ring in the theme's active frame surrounds the swatch outside it,
+            // as on the Colors page's swatches, so the colour keeps its place. Hidden
+            // instead of conditional: an `if` is one more generated component.
+            Rectangle {
+                visible: swatch-area.has-hover;
+                x: -2px; y: -2px; width: parent.width + 4px; height: parent.height + 4px;
+                border-width: 2px; border-radius: 2px; border-color: Theme.active-frame;
+            }
             swatch-focus := FocusScope {
                 key-pressed(event) => {
-                    if event.text == Key.Return || event.text == Key.Space { root.set-color(swatch); return accept; }
+                    if event.text == Key.Return || event.text == Key.Space { root.set-color(swatch.color); return accept; }
                     reject
                 }
-                TouchArea { clicked => { swatch-focus.focus(); root.set-color(swatch); } }
+                swatch-area := TouchArea { clicked => { swatch-focus.focus(); root.set-color(swatch.color); } }
             }
+            // The swatch shows a colour, no caption. Last, so that it sees the pointer
+            // before the input area.
+            Tip { text: swatch.name + ": click or press Enter to use it."; }
         }
     }
 }

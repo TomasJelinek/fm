@@ -165,6 +165,16 @@ pub(crate) fn install(
 ) {
     crate::filename_colors::install(window);
     let weak = window.as_weak();
+    // A swatch's tooltip would outlive the picker: closing a popup leaves the tooltips
+    // shown from it open (U-D23).
+    window
+        .global::<ColorOptionsView>()
+        .on_picker_closing(move || {
+            if let Some(window) = weak.upgrade() {
+                crate::tooltip::dismiss(window.window());
+            }
+        });
+    let weak = window.as_weak();
     window
         .global::<ColorOptionsView>()
         .on_choose_color(move |field, chosen| {

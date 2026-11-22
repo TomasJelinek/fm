@@ -34,121 +34,144 @@ export global ArchiveOptionsView {
     callback show-builtin();
 }
 
-export component ArchiveOptions inherits VerticalLayout {
-    spacing: 8px; alignment: start;
+export component ArchiveOptions inherits FocusScope {
+    // Never a Tab stop of its own: it only passes two Tab steps to the search field.
+    // Slint 1.18.1 moves the keyboard by Tab only into a line edit that is at least
+    // partly in view: the field clips its text, and an item clipped away counts as
+    // hidden unless only a Flickable hides it. Shift+Tab from the first file type, or
+    // Tab from the format in a small window, would skip the search whenever the page
+    // has scrolled it out of view. These focus it themselves, which scrolls it into view.
+    focus-on-click: false; focus-on-tab-navigation: false;
     private property <int> selected-format: ArchiveOptionsView.format-index;
+    private property <bool> first-type-focused;
     changed selected-format => { ArchiveOptionsView.adding = false; }
-    Text {
-        text: "Open these file types as folders";
-        color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
-    }
-    HintedComboBox {
-        accessible-label: "Archive format";
-        model: ArchiveOptionsView.formats;
-        current-index <=> ArchiveOptionsView.format-index;
-        hint: "Choose the decoder family whose built-in and custom extensions you want to change.";
-        selected(value) => { ArchiveOptionsView.choose-format(self.current-index); }
-    }
-    Text {
-        text: ArchiveOptionsView.availability; color: Theme.secondary-text;
-        font-size: Theme.font-size; wrap: word-wrap;
-    }
-    HintedLineEdit {
-        text <=> ArchiveOptionsView.filter; accessible-label: "Search archive associations";
-        // Short enough to show whole at 320×200 with 24 px fonts in Linux's wider
-        // default font; the tooltip says what it matches.
-        placeholder-text: "Filter file types";
-        hint: "Filter this format's built-in file types by extension or description. Matching ignores letter case.";
-        edited => { ArchiveOptionsView.search(self.text); }
-    }
-    for association in ArchiveOptionsView.rows : HorizontalLayout {
-        spacing: 10px; cross-axis-alignment: center;
-        // Repeated rows must report the wrapped label's height at its allocated width.
-        height: max(Theme.control-height, checkbox.preferred-height, description.preferred-height);
-        checkbox := HintedCheckBox {
-            text: "." + association.extension;
-            accessible-label: "." + association.extension + " · " + association.label;
-            checked: association.enabled; min-height: Theme.control-height;
-            width: max(90px, Theme.font-size * 6);
-            font-size: Theme.font-size;
-            hint: "Open ." + association.extension + " files as folders. Unchecked files open in their usual application. OK saves this choice; Cancel restores it.";
-            toggled => { ArchiveOptionsView.toggle(association.extension, self.checked); }
+    key-pressed(event) => {
+        if event.modifiers.control || event.modifiers.alt || event.modifiers.meta { return reject; }
+        if (event.text == Key.Tab && !event.modifiers.shift && format.has-focus)
+            || ((event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift))
+                && root.first-type-focused) {
+            search.focus();
+            // As Tab into a line edit selects its text.
+            search.select-all();
+            return accept;
         }
-        description := Text {
-            text: association.label; color: Theme.text; font-size: Theme.font-size;
-            wrap: word-wrap; horizontal-stretch: 1;
+        reject
+    }
+    VerticalLayout {
+        spacing: 8px; alignment: start;
+        Text {
+            text: "Open these file types as folders";
+            color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
         }
-    }
-    // Captions wrap, as the descriptions do: at 320 px a large font is wider than the page.
-    if ArchiveOptionsView.rows.length == 0 : Text {
-        text: "No matching built-in file types"; color: Theme.secondary-text; font-size: Theme.font-size;
-        wrap: word-wrap;
-    }
-    Text {
-        text: "Custom extensions";
-        color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
-        min-height: Theme.control-height; vertical-alignment: center;
-    }
-    for extension in ArchiveOptionsView.custom-extensions : Rectangle {
-        horizontal-stretch: 1; min-width: 0px; height: chip.height;
-        chip := ArchiveExtensionChip {
-            x: 0px; y: 0px;
-            extension: extension; available-width: parent.width;
-            enabled: ArchiveOptionsView.ready;
-            remove => { ArchiveOptionsView.remove(extension); }
+        format := HintedComboBox {
+            accessible-label: "Archive format";
+            model: ArchiveOptionsView.formats;
+            current-index <=> ArchiveOptionsView.format-index;
+            hint: "Choose the decoder family whose built-in and custom extensions you want to change.";
+            selected(value) => { ArchiveOptionsView.choose-format(self.current-index); }
         }
-    }
-    Rectangle {
-        height: ArchiveOptionsView.adding ? extension-input.preferred-height : Theme.control-height + 4px;
-        // Stays in the tree while hidden, so a cancelled edit can return focus here
-        // instead of leaving it on the hidden field.
-        add-extension := NavigationButton {
-            x: 0px; y: 0px;
-            icon: @image-url("icons/add.svg"); accessible-label: "Add custom archive extension";
-            width: Theme.control-height + 4px; height: Theme.control-height + 4px;
-            rest-border: Theme.frame;
-            visible: !ArchiveOptionsView.adding;
-            enabled: ArchiveOptionsView.ready && !ArchiveOptionsView.adding;
-            hint: "Add an extension for this archive format.";
-            clicked => { ArchiveOptionsView.adding = true; }
+        Text {
+            text: ArchiveOptionsView.availability; color: Theme.secondary-text;
+            font-size: Theme.font-size; wrap: word-wrap;
         }
-        // Not a component of its own: one that inherits the hinted LineEdit is
-        // compiled as another copy of the LineEdit.
-        extension-input := HintedLineEdit {
-            accessible-label: "Custom archive extension";
-            placeholder-text: "Extension, then Enter";
-            hint: "Enter a literal extension, such as backup or backup.tar. Press Enter to add it, or Escape to cancel.";
-            key-pressed(event) => {
-                if event.text == Key.Escape && ArchiveOptionsView.adding {
-                    ArchiveOptionsView.draft = "";
-                    ArchiveOptionsView.adding = false;
-                    add-extension.focus();
-                    return accept;
-                }
-                reject
+        search := HintedLineEdit {
+            text <=> ArchiveOptionsView.filter; accessible-label: "Search archive associations";
+            // Short enough to show whole at 320×200 with 24 px fonts in Linux's wider
+            // default font; the tooltip says what it matches.
+            placeholder-text: "Filter file types";
+            hint: "Filter this format's built-in file types by extension or description. Matching ignores letter case.";
+            edited => { ArchiveOptionsView.search(self.text); }
+        }
+        for association[index] in ArchiveOptionsView.rows : HorizontalLayout {
+            spacing: 10px; cross-axis-alignment: center;
+            // Repeated rows must report the wrapped label's height at its allocated width.
+            height: max(Theme.control-height, checkbox.preferred-height, description.preferred-height);
+            checkbox := HintedCheckBox {
+                text: "." + association.extension;
+                accessible-label: "." + association.extension + " · " + association.label;
+                checked: association.enabled; min-height: Theme.control-height;
+                width: max(90px, Theme.font-size * 6);
+                font-size: Theme.font-size;
+                hint: "Open ." + association.extension + " files as folders. Unchecked files open in their usual application. OK saves this choice; Cancel restores it.";
+                toggled => { ArchiveOptionsView.toggle(association.extension, self.checked); }
+                changed has-focus => { if index == 0 { root.first-type-focused = self.has-focus; } }
             }
-            visible: ArchiveOptionsView.adding; enabled: ArchiveOptionsView.adding && ArchiveOptionsView.ready;
-            width: parent.width;
-            text <=> ArchiveOptionsView.draft;
-            changed visible => { if self.visible { self.focus(); } }
-            accepted => {
-                if ArchiveOptionsView.ready && ArchiveOptionsView.draft != "" {
-                    ArchiveOptionsView.add();
-                    if ArchiveOptionsView.error == "" && ArchiveOptionsView.draft == "" {
+            description := Text {
+                text: association.label; color: Theme.text; font-size: Theme.font-size;
+                wrap: word-wrap; horizontal-stretch: 1;
+            }
+        }
+        // Captions wrap, as the descriptions do: at 320 px a large font is wider than the page.
+        if ArchiveOptionsView.rows.length == 0 : Text {
+            text: "No matching built-in file types"; color: Theme.secondary-text; font-size: Theme.font-size;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Custom extensions";
+            color: Theme.strong-text; font-size: Theme.font-size; wrap: word-wrap;
+            min-height: Theme.control-height; vertical-alignment: center;
+        }
+        for extension in ArchiveOptionsView.custom-extensions : Rectangle {
+            horizontal-stretch: 1; min-width: 0px; height: chip.height;
+            chip := ArchiveExtensionChip {
+                x: 0px; y: 0px;
+                extension: extension; available-width: parent.width;
+                enabled: ArchiveOptionsView.ready;
+                remove => { ArchiveOptionsView.remove(extension); }
+            }
+        }
+        Rectangle {
+            height: ArchiveOptionsView.adding ? extension-input.preferred-height : Theme.control-height + 4px;
+            // Stays in the tree while hidden, so a cancelled edit can return focus here
+            // instead of leaving it on the hidden field.
+            add-extension := NavigationButton {
+                x: 0px; y: 0px;
+                icon: @image-url("icons/add.svg"); accessible-label: "Add custom archive extension";
+                width: Theme.control-height + 4px; height: Theme.control-height + 4px;
+                rest-border: Theme.frame;
+                visible: !ArchiveOptionsView.adding;
+                enabled: ArchiveOptionsView.ready && !ArchiveOptionsView.adding;
+                hint: "Add an extension for this archive format.";
+                clicked => { ArchiveOptionsView.adding = true; }
+            }
+            // Not a component of its own: one that inherits the hinted LineEdit is
+            // compiled as another copy of the LineEdit.
+            extension-input := HintedLineEdit {
+                accessible-label: "Custom archive extension";
+                placeholder-text: "Extension, then Enter";
+                hint: "Enter a literal extension, such as backup or backup.tar. Press Enter to add it, or Escape to cancel.";
+                key-pressed(event) => {
+                    if event.text == Key.Escape && ArchiveOptionsView.adding {
+                        ArchiveOptionsView.draft = "";
                         ArchiveOptionsView.adding = false;
                         add-extension.focus();
+                        return accept;
+                    }
+                    reject
+                }
+                visible: ArchiveOptionsView.adding; enabled: ArchiveOptionsView.adding && ArchiveOptionsView.ready;
+                width: parent.width;
+                text <=> ArchiveOptionsView.draft;
+                changed visible => { if self.visible { self.focus(); } }
+                accepted => {
+                    if ArchiveOptionsView.ready && ArchiveOptionsView.draft != "" {
+                        ArchiveOptionsView.add();
+                        if ArchiveOptionsView.error == "" && ArchiveOptionsView.draft == "" {
+                            ArchiveOptionsView.adding = false;
+                            add-extension.focus();
+                        }
                     }
                 }
             }
         }
-    }
-    if ArchiveOptionsView.adding && ArchiveOptionsView.error != "" : Text {
-        text: ArchiveOptionsView.error; color: Theme.error-text;
-        font-size: Theme.font-size; wrap: word-wrap;
-    }
-    if ArchiveOptionsView.adding && ArchiveOptionsView.conflict-extension != "" : HintedActionButton {
-        text: "Show built-in checkbox";
-        hint: "Select the format and existing checkbox for this built-in extension.";
-        clicked => { ArchiveOptionsView.show-builtin(); }
+        if ArchiveOptionsView.adding && ArchiveOptionsView.error != "" : Text {
+            text: ArchiveOptionsView.error; color: Theme.error-text;
+            font-size: Theme.font-size; wrap: word-wrap;
+        }
+        if ArchiveOptionsView.adding && ArchiveOptionsView.conflict-extension != "" : HintedActionButton {
+            text: "Show built-in checkbox";
+            hint: "Select the format and existing checkbox for this built-in extension.";
+            clicked => { ArchiveOptionsView.show-builtin(); }
+        }
     }
 }

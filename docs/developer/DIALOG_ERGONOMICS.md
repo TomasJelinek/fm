@@ -520,3 +520,113 @@ identities, so they open the same page in any order. No setting stores a page, s
 nothing needs migrating. Options has no page for toolbar buttons or Hot Paths (Hot
 Paths has its own manager), and the internal viewers have none of their own: their
 extensions and priority are on Plugins › Viewers.
+
+## Options feedback and Tab order, 22 November follow-up
+
+The UI polish gate's findings U-D23 to U-D26 and U-D29 on Options, with what caused
+them.
+
+**Colour picker swatches (U-D23).** The picker's eight preset swatches had no name
+beyond `RGB r, g, b` and no hover or focus feedback. Each swatch keeps that accessible
+label and now carries its colour's name and hex value as its accessible description
+and in its tooltip ("Red #EF4444: click or press Enter to use it."). Hovering draws the
+2 px active-frame ring that the Colors page's own swatches use, and keyboard focus
+draws the swatch's frame 2 px wide in the active colour. Closing the picker with
+Escape or Use color while a swatch's tooltip shows closes only the picker and leaves
+no tooltip behind: Slint closes a popup's sub-menus with it but not its tooltips, so
+the picker retires them first (`ColorOptionsView.picker-closing`, `tooltip::dismiss`).
+
+**Reset to defaults (U-D24).** Reset itself was deterministic; two things made it
+look like it did nothing. On pages that already showed their defaults it computed the
+same values, the preview had nothing to update and nothing said so. Whether a click
+showed an effect therefore depended on what was changed before it, which is the likely
+source of the intermittent result (an inference: the reset path has no timing or
+race). And while a page's own file chooser was open (an editor or comparator program,
+a Custom Command program or folder), the button stayed enabled but the click was
+ignored. Now the button is enabled exactly when a click applies: not while a page's
+file chooser, an Export or an Import is outstanding, and the presenter refuses in the
+same cases (an Export takes its values when its file is chosen). Every applied click
+says what it did in one line above the footer, which screen readers find as **Options
+status**:
+
+- "Reset to defaults: every page now shows its defaults. OK saves them; Cancel keeps
+  your settings." when anything changed, unfinished page edits included;
+- "Reset to defaults changed nothing: every page already showed its defaults."
+  otherwise;
+- "Reset to defaults did not apply: …" with the reason, when the keyboard map could
+  not be restored.
+
+The line wraps instead of eliding behind a tooltip (a tip destroyed while it shows
+inside a popup is what Slint 1.18.1 cannot take). It goes with the next change of a
+setting, an Export or Import, OK, Cancel or the next Options session, and a settings
+file message takes its place while that shows.
+
+**Archives Tab order (U-D25).** Tab already reached everything. From the Archives
+entry it visits the page entries below it, the format, the association search, the
+built-in association check boxes, the custom extension field's Add, then Reset to
+defaults, Export configuration…, Import configuration…, OK, Cancel, the header's close
+and the page list from General, every control in visual order, and wraps to Archives.
+The gate missed Import and OK because its walk ends after twice the controls shown
+when it starts, plus six: the check boxes scrolled out of view are not counted, yet
+the cycle passes through all of them. Recommendation for the acceptance gate: bound
+the walk by all operable controls, those scrolled out of view included, or walk until
+the first stop comes back.
+
+Shift+Tab, though, skipped the search: from the first file type it went straight to
+the format. Slint 1.18.1 moves the keyboard by Tab only into a line edit that is at
+least partly in view, because the field clips its text and an item clipped away counts
+as hidden unless only a Flickable hides it; with the check boxes reached from below,
+the page had scrolled the search out of view. The Archives page (`ArchiveOptions`, now
+a `FocusScope` that never takes the focus itself) passes Shift+Tab from the first file
+type, and Tab from the format, to the search: it focuses the field, which scrolls it
+into view, and selects its text as Tab does. Any other line edit in a scrolled page has
+the same limitation; at the default size no other Options page scrolls one out of view
+on the way (the every-page test below).
+
+**Keyboard page focus (U-D26).** Two causes. The command list is one Tab stop (the
+arrows, Home and End move its selection), and its focus scope showed nothing: its
+frame now takes the active colour while it has the keyboard, as the Colors rule list
+does, and the list has an accessible name and item count. And tabbing through **Press
+shortcut keys** recorded Tab as a shortcut: Clear and Assign became enabled, an error
+notice appeared with a Dismiss button (a new Tab stop, which the gate saw as the focus
+leaving the dialog) and pushed the Restore buttons down. Reached with Tab or
+Shift+Tab, the field now lets those keys pass without recording them; clicked, or once
+it has recorded another key, it records Tab and Escape and leaves, as before. A
+modifier pressed on its own records nothing and does not count as that other key, so
+Shift on its way to Shift+Tab leaves the field without recording Shift+Tab.
+
+**Page list keys (U-D29).** The arrows moved from the page shown instead of from the
+focused entry. Tab moves the focus from entry to entry without changing the page, so
+after a Tab, Down showed the page after the one shown, and the focus and the page
+disagreed. The arrows (Up and Down, Left and Right) now move from the focused entry,
+as in any list, Home and End go to the first and the last page, and the focus and the
+page shown move together, so they agree after each of these keys; the ends clamp and
+the order stays the list's. A key that comes before the focus has moved, as with key
+repeat, goes on from where the last one went (`current` in
+`options-navigation.slint`).
+
+**Tab order on every page.** `crates/midnight-ui/tests/options.rs` (`tab_walk`) walks
+each page's Tab cycle at the default 1340×820 window with default settings. Every
+stop stays inside Options on something that was there before the walk, never on a
+hidden (`visible: false`, or clipped away where no scrolling brings it back) or
+disabled control; it scrolls into view and changes by at least 3:1, the gate's
+measure. (A check box drawn by its own indicator keeps its native control transparent
+on top; the 3:1 change is what tells that its focus shows.) Every control a
+user can scroll to is reached, in visual order: the header's close, the page list from
+the top, the page row by row (or column by column) and the footer from the left. The
+cycle wraps, Shift+Tab retraces it, and the walk changes no control and records no
+shortcut.
+
+Tests: `colour_picker_swatches_name_their_colour_and_show_hover_and_focus`
+(`tests/form_polish.rs`, U-D23);
+`reset_always_reports_what_it_did_until_the_next_edit_or_session`
+(`src/presenter/preferences/options_tests.rs`), `reset_waits_for_a_pending_export`
+(`src/presenter/preferences/settings_file_tests.rs`) and
+`reset_defaults_says_what_it_did_even_when_nothing_changes`
+(`tests/options_transaction.rs`), U-D24;
+`archives_tab_cycle_reaches_the_footer_and_wraps_in_visual_order` (U-D25),
+`keyboard_tab_cycle_shows_the_command_list_and_records_no_shortcut` (U-D26),
+`page_list_keys_move_from_the_focused_entry_and_keep_focus_and_page_together` (U-D29)
+and `every_options_page_tab_cycle_keeps_to_shown_enabled_controls`
+(`tests/options.rs`); the page order and the clamps at both ends stay covered by
+`options_pages_list_in_reading_order_and_keep_their_topic_identities`.

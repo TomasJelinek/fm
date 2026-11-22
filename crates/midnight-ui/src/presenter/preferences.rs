@@ -869,6 +869,10 @@ impl Presenter {
             edited.panel_view_modes[slot] |=
                 preferences.panel_view_modes[slot] != previous.panel_view_modes[slot];
         }
+        // A later edit makes what the last Reset to defaults reported out of date.
+        if preferences != self.preferences.values {
+            self.preferences.options.reset_status.clear();
+        }
         self.retired.push(Box::new(mem::replace(
             &mut self.preferences.values,
             preferences,

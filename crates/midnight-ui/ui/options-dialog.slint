@@ -524,6 +524,16 @@ export component OptionsBody inherits Rectangle {
             Tip { text: root.fixed-page-error != "" ? root.fixed-page-error : root.preferences-save-status; }
         }
         if SettingsFileView.message != "" : SettingsFileFeedback { }
+        // What Reset to defaults did, also when it changed nothing. Wrapped instead of
+        // elided with a tooltip: the line goes at the next edit, and a tip destroyed
+        // while it shows inside a popup is what Slint 1.18.1 cannot take.
+        if SettingsFileView.reset-status != "" && SettingsFileView.message == "" : Text {
+            accessible-label: "Options status";
+            accessible-value: self.text;
+            text: SettingsFileView.reset-status;
+            min-width: 0px; wrap: word-wrap; font-size: Theme.small-font;
+            color: Theme.text;
+        }
         footer := DialogFooter {
             compact-height: root.compact;
             fill-actions: true;
@@ -538,7 +548,9 @@ export component OptionsBody inherits Rectangle {
                 text: root.narrow ? "" : "Reset to defaults";
                 native-icon: root.action-icons.refresh; fallback-icon: FallbackIcons.refresh;
                 min-height: Theme.control-height;
-                enabled: root.footer-ready && !SettingsFileView.importing;
+                // Enabled exactly when Reset applies: not while a file chooser of a page or
+                // an Export or Import is outstanding (SettingsFileView.busy covers both).
+                enabled: root.footer-ready && !SettingsFileView.busy;
                 hint: "Reset all Options settings. Keep tabs, history, hot paths and custom commands. OK saves; Cancel restores your previous settings.";
                 clicked => { UserCommandSettingsView.drag-cancel(); root.reset(); }
             }

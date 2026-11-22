@@ -19,6 +19,10 @@ foreground/background controls and previews are compact. Previews use two column
 when width or font size needs more room, and each card fits its wrapped text. The
 color chooser remains a separate popup. The surrounding Options page scrolls
 independently of the priority list; OK and Cancel stay in the dialog footer.
+The chooser's eight preset swatches keep their `RGB r, g, b` accessible labels and
+name their color and hex value in their accessible description and tooltip (for
+example "Red #EF4444"). Hovering one draws the 2 px active-frame ring of the page's
+own swatches; keyboard focus draws its frame 2 px wide in the active color.
 
 Selection and reordering do not persist preferences. Apply colors runs backend
 validation and updates the current Options preview. OK validates pending changes

@@ -33,6 +33,9 @@ export global ColorOptionsView {
     callback edit(FilenameColorDraft);
     callback action(int);
     callback choose-color(int, color);
+    // The picker is about to close: retire the tooltip a swatch may show. Closing a
+    // popup closes its sub-menus but not its tooltips, which would stay behind.
+    callback picker-closing();
 }
 
 component ColorPriorityList inherits Rectangle {

@@ -483,6 +483,33 @@ fn ok_and_reset_wait_for_a_pending_import_and_reset_drops_a_staged_one() {
     assert_eq!(h.p.preferences.values.bookmarks, current().bookmarks);
 }
 
+/// U-D24: Reset waits for an Export too, as the footer shows it disabled: a click the
+/// footer offers always applies.
+#[test]
+fn reset_waits_for_a_pending_export() {
+    let mut h = Harness::new();
+    let request = h.choose(true, &native("saved.json"));
+    h.p.reset_options(&sender(&h.sent));
+    assert_eq!(h.p.preferences.values.theme, PreferenceTheme::Dark);
+    assert!(h.p.preferences.options.reset_status.is_empty());
+    h.event(Event::PreferencesExported {
+        request,
+        result: Ok(PreferencesExportReceipt {
+            path: native("saved.json"),
+            bytes: 1,
+            recovery: Vec::new(),
+        }),
+    });
+    h.p.reset_options(&sender(&h.sent));
+    assert_eq!(h.p.preferences.values.theme, PreferenceTheme::default());
+    assert!(
+        h.p.preferences
+            .options
+            .reset_status
+            .starts_with("Reset to defaults: every page now shows its defaults.")
+    );
+}
+
 fn with_kept(foreign_hot_paths: Vec<ForeignHotPath>, foreign: Vec<ForeignSetting>) -> Presenter {
     let mut p = Presenter::new(native("left"), native("right"));
     p.apply(Event::PreferencesLoaded(Ok(Box::new(

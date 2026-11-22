@@ -63,8 +63,9 @@ as a notice if it failed.
 ## Import configuration
 
 Choose **Import configuration…** and pick a settings file. The whole file is read
-and checked before anything changes. **OK** and **Reset to defaults** wait while
-it is being read.
+and checked before anything changes. **OK** waits while it is being read.
+**Reset to defaults** waits from choosing the file until an import or an export has
+finished: an export saves the values shown when its file is chosen.
 
 A file is refused, with the reason shown above the footer, when:
 

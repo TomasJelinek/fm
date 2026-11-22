@@ -43,7 +43,10 @@ export component OptionsPopups {
                 : (ColorOptionsView.preview-background-set ? ColorOptionsView.preview-background : Theme.pane-background);
             root.picker-generation += 1;
             color-picker-popup.show();
-        } else { color-picker-popup.close(); }
+        } else {
+            ColorOptionsView.picker-closing();
+            color-picker-popup.close();
+        }
         PopupFocus.update();
     }
     shortcut-replacement-popup := PopupWindow {

@@ -44,7 +44,9 @@ The table lists default bindings. **Options → Keyboard** can change, disable, 
 restore each application action, including navigation, selection, command editing,
 drive letters, numbered tabs/Hot Paths, and the drive dropdown's As Other Panel action.
 Search commands by name or command ID, select a command, then focus **Press shortcut
-keys** and press a combination. **Assign** adds it while preserving the command's
+keys** and press a combination. The command list is one Tab stop: its frame takes the
+active color while it has the keyboard, and the arrow keys, Home and End select a
+command. **Assign** adds it while preserving the command's
 other aliases; choose an existing alias and use **Remove** to remove just that one.
 An action accepts up to four alternate single chords. The editor displays the
 effective context and current owners before assignment. An overlapping assignment
@@ -57,8 +59,10 @@ only when that would change something: the command's saved shortcuts differ from
 its defaults give beside the other commands, or a captured shortcut waits in **Press
 shortcut keys** (restoring discards it). When the defaults cannot return beside the
 other commands' shortcuts, it is enabled and says why. **Restore all
-defaults** asks before resetting the complete map. Tab or Escape records that key
-and leaves the capture field without running an application command.
+defaults** asks before resetting the complete map. In a clicked capture field, Tab
+or Escape records that key and leaves the field without running an application
+command; reached with Tab or Shift+Tab, the field lets those keys pass without
+recording them, so tabbing through the page changes nothing.
 Changes preview immediately; **OK** saves them with the other preferences and
 closes Options. **Cancel**, X or Escape outside capture discard the entire Options
 session, restoring previous mappings and previewed appearance. An open inline
@@ -402,6 +406,10 @@ Options is the gear at the right end of the top toolbar. The application moon
 icon immediately to its right opens About, including the application version and
 copyright; Escape or Close dismisses it. Both controls remain fixed when panel
 tools scroll.
+In the Options page list, Up and Down (or Left and Right) show the page before or
+after the focused entry and move the focus with it, stopping at the first and the
+last page; Home and End show the first and the last page. Tab moves the focus from
+entry to entry without changing the page, and Enter or Space shows the focused one.
 In About, Left and Right switch between its tabs. In the library list, Up, Down,
 Page Up, Page Down, Home and End move the selection, and Enter or a double-click
 opens the selected library; Down moves from the filter field into the list.

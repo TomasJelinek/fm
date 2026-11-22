@@ -410,6 +410,120 @@ fn color_swatches_and_discard_changes_name_their_action_in_a_tooltip() {
 }
 
 // ---------------------------------------------------------------------------------
+// U-D23: the colour picker's swatches name their colour and show hover and focus.
+
+fn tooltips_shown(test: &ui::TestUi) -> usize {
+    WindowInner::from_pub(test.window.window())
+        .active_popups()
+        .iter()
+        .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip))
+        .count()
+}
+
+#[test]
+fn colour_picker_swatches_name_their_colour_and_show_hover_and_focus() {
+    let (mut test, clock) = ui::TestUi::with_virtual_clock();
+    let _state = presenter_ui(&test);
+    test.window.invoke_show_options();
+    test.window.set_options_topic_index(8);
+    test.draw();
+    let choose = reveal(&mut test, "Choose Foreground", AccessibleRole::Button);
+    point_at(&test, bounds(&choose));
+    ui::click_popup(&test.window, "Choose Foreground", AccessibleRole::Button);
+    test.draw();
+    assert_eq!(
+        test.window.global::<ColorOptionsView>().get_picker_field(),
+        0
+    );
+    let missing = icon_only_without_tooltip(&dialog_root(test.window.window()));
+    assert!(
+        missing.is_empty(),
+        "colour picker: icon-only buttons without a tooltip: {missing:#?}"
+    );
+    for (label, name) in [
+        ("RGB 0, 0, 0", "Black #000000"),
+        ("RGB 255, 255, 255", "White #FFFFFF"),
+        ("RGB 239, 68, 68", "Red #EF4444"),
+        ("RGB 245, 158, 11", "Amber #F59E0B"),
+        ("RGB 34, 197, 94", "Green #22C55E"),
+        ("RGB 6, 182, 212", "Cyan #06B6D4"),
+        ("RGB 59, 130, 246", "Blue #3B82F6"),
+        ("RGB 168, 85, 247", "Purple #A855F7"),
+    ] {
+        let swatch = ui::popup_item(&test.window, label, AccessibleRole::Button);
+        assert_eq!(
+            swatch
+                .accessible_string_property(AccessibleStringProperty::Description)
+                .as_deref(),
+            Some(name),
+            "{label}"
+        );
+        let tip = tooltip_of(&mut test, &clock, &swatch);
+        assert!(
+            tip.iter().any(|text| text.contains(name)),
+            "{label}: tooltip {tip:?}"
+        );
+        assert!(
+            answers_hovering(&mut test, &clock, &swatch),
+            "{label} does not change when hovered"
+        );
+        // Keyboard focus changes how the swatch looks, as the Tab check sees it.
+        let area = bounds(&swatch);
+        test.draw();
+        let unfocused = region(&test, area);
+        let mut scope = None;
+        let mut child = swatch.first_child();
+        while let Some(item) = child {
+            if item.downcast::<FocusScope>().is_some() {
+                scope = Some(item.clone());
+            }
+            child = item.next_sibling();
+        }
+        WindowInner::from_pub(test.window.window()).set_focus_item(
+            &scope.expect("the swatch's focus scope"),
+            true,
+            i_slint_core::items::FocusReason::TabNavigation,
+        );
+        test.draw();
+        assert_ne!(region(&test, area), unfocused, "{label} shows no focus");
+    }
+    // Closing the picker while a swatch's tooltip shows keeps Options open and leaves
+    // no tooltip behind (Slint 1.18.1 must not destroy a shown tip inside a popup).
+    for close in ["Escape", "Use color"] {
+        if test.window.global::<ColorOptionsView>().get_picker_field() < 0 {
+            ui::click_popup(&test.window, "Choose Foreground", AccessibleRole::Button);
+            test.draw();
+        }
+        let swatch = ui::popup_item(&test.window, "RGB 239, 68, 68", AccessibleRole::Button);
+        pointer_out(&mut test, &clock);
+        point_at(&test, bounds(&swatch));
+        ui::advance(&clock, Duration::from_millis(1200));
+        test.draw();
+        assert_eq!(tooltips_shown(&test), 1, "the swatch's tooltip shows");
+        if close == "Escape" {
+            ui::key(&test.window, Key::Escape);
+        } else {
+            ui::popup_item(&test.window, close, AccessibleRole::Button)
+                .accessible_action(&i_slint_core::accessibility::AccessibilityAction::Default);
+        }
+        for _ in 0..3 {
+            ui::advance(&clock, Duration::from_millis(50));
+            test.draw();
+        }
+        assert_eq!(
+            test.window.global::<ColorOptionsView>().get_picker_field(),
+            -1
+        );
+        assert!(
+            test.window.get_options_open(),
+            "{close} closes only the picker"
+        );
+        assert_eq!(tooltips_shown(&test), 0, "{close} leaves no tooltip behind");
+        pointer_out(&mut test, &clock);
+    }
+}
+
+// ---------------------------------------------------------------------------------
 // U-D05: the Options topics answer hovering.
 
 fn flag(item: &ItemRc, property: AccessibleStringProperty) -> bool {

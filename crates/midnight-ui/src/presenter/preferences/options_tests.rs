@@ -851,3 +851,39 @@ fn archive_and_disk_early_callbacks_merge_independently_with_late_preferences() 
         assert!(writes[0].1.thumbnails_network);
     }
 }
+
+#[test]
+fn reset_always_reports_what_it_did_until_the_next_edit_or_session() {
+    let unchanged = "Reset to defaults changed nothing: every page already showed its defaults.";
+    let applied = "Reset to defaults: every page now shows its defaults. OK saves them; \
+                   Cancel keeps your settings.";
+    let mut p = loaded();
+    let send = |_| true;
+    p.begin_options();
+    assert_eq!(p.preferences.options.reset_status, "");
+    // Every page shows its defaults: the click still says what it did.
+    p.reset_options(&send);
+    assert_eq!(p.preferences.options.reset_status, unchanged);
+    p.reset_options(&send);
+    assert_eq!(
+        p.preferences.options.reset_status, unchanged,
+        "again, the same"
+    );
+    // A previewed setting: the next edit retires the report, Reset applies.
+    p.change_preferences(1, 0, 0, &send);
+    assert_eq!(p.preferences.values.theme.index(), 1);
+    assert_eq!(p.preferences.options.reset_status, "", "an edit retires it");
+    p.reset_options(&send);
+    assert_eq!(p.preferences.values.theme, PreferenceTheme::default());
+    assert_eq!(p.preferences.options.reset_status, applied);
+    // Only an unfinished page edit differs: Reset discards it and says so.
+    p.capture_editor_shortcut(ShortcutChord::parse("ctrl+alt+y").unwrap());
+    p.reset_options(&send);
+    assert!(p.keyboard.editor.candidate.is_none());
+    assert_eq!(p.preferences.options.reset_status, applied);
+    // Cancel ends the session and its report; the next session starts without one.
+    p.cancel_options(&send);
+    assert_eq!(p.preferences.options.reset_status, "");
+    p.begin_options();
+    assert_eq!(p.preferences.options.reset_status, "");
+}

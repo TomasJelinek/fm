@@ -534,3 +534,75 @@ fn color_validation_error_selects_colors_page_and_preserves_draft() {
     assert!(h.saves().is_empty());
     assert!(ui::has_popup(&h.ui.window));
 }
+
+/// The text of the line above the Options footer that says what Reset to defaults did.
+fn reset_status(h: &Harness) -> Option<String> {
+    use i_slint_core::accessibility::AccessibleStringProperty;
+    ui::try_popup_item(&h.ui.window, "Options status", AccessibleRole::Text).map(|item| {
+        item.accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+// U-D24: Reset to defaults has a visible effect on every click, also when every page
+// already shows its defaults, and says what it did.
+#[test]
+fn reset_defaults_says_what_it_did_even_when_nothing_changes() {
+    let mut h = Harness::new();
+    h.ui.window.invoke_show_options();
+    h.ui.draw();
+    assert_eq!(reset_status(&h), None);
+    let reset = ui::popup_item(&h.ui.window, "Reset to defaults", AccessibleRole::Button);
+    let enabled = || {
+        reset
+            .accessible_string_property(
+                i_slint_core::accessibility::AccessibleStringProperty::Enabled,
+            )
+            .is_some_and(|enabled| enabled == "true")
+    };
+    assert!(enabled());
+    // Offered only when a click applies: not while a page's file chooser, an Export or
+    // an Import is outstanding, when the presenter would ignore the click.
+    for busy in [true, false] {
+        h.ui.window
+            .global::<midnight_ui::SettingsFileView>()
+            .set_busy(busy);
+        h.ui.draw();
+        assert_eq!(
+            enabled(),
+            !busy,
+            "Reset waits for a file chooser, an Export or an Import"
+        );
+    }
+    ui::click_popup(&h.ui.window, "Reset to defaults", AccessibleRole::Button);
+    h.ui.draw();
+    assert_eq!(
+        reset_status(&h).as_deref(),
+        Some("Reset to defaults changed nothing: every page already showed its defaults.")
+    );
+    // A preview edit retires the report; Reset then applies the defaults and says so.
+    h.ui.window.invoke_preferences_changed(1, 0, 0);
+    h.ui.draw();
+    assert_eq!(reset_status(&h), None);
+    ui::click_popup(&h.ui.window, "Reset to defaults", AccessibleRole::Button);
+    h.ui.draw();
+    assert_eq!(h.ui.window.get_theme_index(), 0);
+    assert_eq!(
+        reset_status(&h).as_deref(),
+        Some(
+            "Reset to defaults: every page now shows its defaults. OK saves them; Cancel \
+             keeps your settings."
+        )
+    );
+    assert!(h.saves().is_empty(), "Reset is not a save action");
+    ui::click_popup(&h.ui.window, "Cancel", AccessibleRole::Button);
+    h.ui.draw();
+    h.ui.window.invoke_show_options();
+    h.ui.draw();
+    assert_eq!(
+        reset_status(&h),
+        None,
+        "a new session starts without a report"
+    );
+}
