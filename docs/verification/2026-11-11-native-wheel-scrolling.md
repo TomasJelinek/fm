@@ -21,7 +21,7 @@ positions. Same-direction impulses accumulate only undelivered pixels; reversal
 discards the previous direction's residual. The existing 2,400 px pending bound
 prevents an unbounded backlog. Pixel and phased touchpad input follows the finger;
 Linux momentum after the fingers lift is synthesised separately (see
-[kinetic scrolling](developer/SCROLLING.md#touchpad-momentum-kinetic-scrolling)).
+[kinetic scrolling](../developer/SCROLLING.md#touchpad-momentum-kinetic-scrolling)).
 Row snapping waits until the motion finishes and the list becomes idle.
 
 Each discrete vertical notch travels at least one layout band. Detailed and
@@ -466,7 +466,7 @@ Evidence is `final-deployment.log`, `final-{backend,ui-software,ui-native}.*.log
 and `ui-{software,native}-startup.png` in the same ignored QA directory.
 
 The high-DPI text/source viewer and idle-restart limits remain open as detailed
-in [the viewer verification report](verification/2026-11-11-viewer-pixel-scroll.md).
+in [the viewer verification report](2026-11-11-viewer-pixel-scroll.md).
 The panel result must not be generalized into a claim that every viewer now
 maintains 60 Hz or that all first-input delays have been removed.
 
@@ -513,7 +513,7 @@ sampling metadata share the `viewer-idle-stacks2` prefix.
 
 This evidence led to a bounded vertex/uniform upload pool in the vendored
 renderer; its ownership and fallback rules are documented in
-[the vendor patch notes](../vendor/README.md). Four lifecycle regressions first
+[the vendor patch notes](../../vendor/README.md). Four lifecycle regressions first
 failed against the no-reuse stub. The implemented pool then passed those four
 and all three existing binding/pixel GPU regressions on Intel Iris Xe/DX12
 (`viewer-upload-green1.log`, 7 passed). Two further cases verify deferred
@@ -915,7 +915,7 @@ collects the small comparison table. The baseline4 artifacts remain intact.
 
 The panels now draw the rows cut by their edges and settle Details and Brief on the
 nearest row only after the wheel glide, the touchpad's fingers and momentum and any
-held button have ended ([file panels](developer/SCROLLING.md#file-panels)). The
+held button have ended ([file panels](../developer/SCROLLING.md#file-panels)). The
 probe's `--check` again expects each isolated notch to rest on a row, and a notch
 now moves the whole rows nearest to the viewers' notch distance.
 

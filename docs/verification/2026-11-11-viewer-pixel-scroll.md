@@ -268,7 +268,7 @@ consistent improvement. Vulkan reduced some idle delays but roughly doubled warm
 frame intervals to 31 ms. The high-performance preference selected the available
 discrete laptop GPU, yet still showed moving-frame stalls up to 1.07 s.
 Neither experiment changes the shipped adapter/backend policy. Full metadata,
-limitations and artifact names are in [native verification](../NATIVE_SCROLL_VERIFICATION.md).
+limitations and artifact names are in [native verification](2026-11-11-native-wheel-scrolling.md).
 
 The later automatic page-handoff correction is tested separately: its new
 regressions first fail on speculative publication/lost motion, then pass for
@@ -328,7 +328,7 @@ release. Wheel moving-gap medians are approximately 16-17 ms. Individual late ga
 still reach 66.519 ms, so uniform 60 Hz is not established. Raw native wheel input,
 Slint-dispatched drag input, CPU crop evidence, separate earlier GPU pixel proof
 and foreground samples are distinguished in the
-[complete measurement record](../NATIVE_SCROLL_VERIFICATION.md#exact-user-jsonxml-candidate-eight-cases-pass).
+[complete measurement record](2026-11-11-native-wheel-scrolling.md#exact-user-jsonxml-candidate-eight-cases-pass).
 No compiler/linker overlapped any timed run.
 
 Final Windows verification passes **1,217 tests, 20 explicit opt-ins ignored,

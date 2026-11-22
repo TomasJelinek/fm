@@ -59,7 +59,7 @@ NASM_LINUX = Artifact('nasm-2.16.03-linux', 'nasm-2.16.03.tar.xz',
     '1412a1c760bbd05db026b6c0d1657affd6631cd0a63cddb6f73cc6d4aa616148', 'tar.xz', 'BSD-2-Clause')
 
 
-# Link rule of the build scripts (BUILD-02). Folders above a checkout or above a _build
+# Link rule of the build scripts. Folders above a checkout or above a _build
 # outside it may be links, a subst drive or hidden folders: Fedora Silverblue's /home ->
 # /var/home, a linked parent folder or AppData. From that _build down nothing may be a
 # link, a junction or another reparse point, and no path may contain '..'.

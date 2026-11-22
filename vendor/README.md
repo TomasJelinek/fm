@@ -184,5 +184,5 @@ Upstream font tests requiring the excluded example assets need the upstream
 checkout; they are not claimed as part of this focused GPU validation.
 
 Performance and native image invalidation checks are documented in
-[the scrolling investigation](../docs/NATIVE_SCROLL_VERIFICATION.md). This patch
+[the scrolling investigation](../docs/verification/2026-11-11-native-wheel-scrolling.md). This patch
 is retained only with functional GPU checks and a measured native improvement.

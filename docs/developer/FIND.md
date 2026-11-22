@@ -100,7 +100,7 @@ Duplicate results use the same explicit navigation, View, Edit and Open actions 
 ordinary results, with no original/redundant-file or reclaimable-space designation
 and no automatic deletion.
 
-`files.find` defaults to Alt+F7 and appears in the configurable command catalogue.
+`files.find` defaults to Ctrl+F and Alt+F7 and appears in the configurable command catalogue.
 An existing explicit Alt+F7 assignment takes precedence over this new default;
 the magnifier and configurable action remain available without resetting settings.
 The magnifier opens a movable native window; both panels remain usable. Lazy
@@ -420,8 +420,9 @@ archive panel. Archive search has unit and integration coverage with a fake prov
 session (`crates/midnight-engine/tests/find_archives.rs`), including 1,001 archives
 and an archive with over 100,000 members searched completely, waiting folders charged
 to retained memory, and Stop while a slow provider opens, lists or stages a member;
-the acceptance harness has no archive plugin, so it verifies only the explained
-"unavailable" outcome. The plugin host's tests list a folder of 100,001 members across
+the acceptance scenario `find_archives` searches many and large archives through the
+installed archive plugin, and `tools_find_results` checks the explained "unavailable"
+outcome without one ([Find record](acceptance/find.md)). The plugin host's tests list a folder of 100,001 members across
 pages, the plugin's tests open ZIP, TAR and 7z archives of 100,001 members, and an
 ignored host test (`real_sandboxed_worker_lists_archives_of_millions_of_members`)
 lists generated archives of millions of members through the sandboxed worker.

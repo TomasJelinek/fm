@@ -212,7 +212,8 @@ measurement.
   `the_sky_holds_still_while_the_system_asks_for_less_motion` cover both with
   software windows; they do not change the Windows setting itself.
 - Filename colors offer a reusable visual color picker: hue, saturation/value,
-  numeric RGB/hex, sample colors, and reset to the theme. Existing automatic
+  numeric RGB values, sample colors, and reset to the theme; each color's hex value
+  is edited in its field on the Colors page. Existing automatic
   focused/selected color derivation and contrast adjustment remain in force.
   Its footer stays fixed and the palette scrolls above it. A short picker keeps
   at least one whole row of sample colors visible: it first narrows its gaps

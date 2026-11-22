@@ -110,7 +110,7 @@ installed, so a passing smoke test does not prove complete Unicode rendering. Fo
 diagnostics, `SLINT_WGPU_CPU=1` allows a CPU adapter while keeping the WGPU renderer;
 it is distinct from `--software` and says nothing about GPU performance. See the
 [scrolling contract](developer/SCROLLING.md) and the
-[native scrolling measurements](NATIVE_SCROLL_VERIFICATION.md).
+[native scrolling measurements](verification/2026-11-11-native-wheel-scrolling.md).
 
 **Windows:** install the Microsoft Visual C++ x64 runtime if it is not already
 present; the MSVC release executable uses `VCRUNTIME140.dll` and the Windows Universal

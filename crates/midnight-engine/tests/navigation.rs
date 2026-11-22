@@ -15,7 +15,7 @@ use tokio::sync::{Notify, mpsc};
 /// the next event, or a retired Engine cancelling its listing. Each wait ends as soon as
 /// that progress happens, so the deadline elapses only in a failing test; it is long
 /// because a worker can wait seconds for a CPU while other test suites saturate the
-/// machine (3 s expired once that way, TEST-03).
+/// machine (3 s expired once that way; docs/verification/2026-11-18-test-timeout-races.md).
 const PROGRESS: Duration = Duration::from_secs(30);
 
 struct ControlledFileSystem {

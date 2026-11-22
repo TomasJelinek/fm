@@ -45,7 +45,7 @@ def plain_metadata(path):
     return metadata
 
 
-# Link rule of every collector and output (BUILD-02). Folders above a caller-named
+# Link rule of every collector and output. Folders above a caller-named
 # package root, the checkout or its _build may be links: Fedora Silverblue's
 # /home -> /var/home, a linked parent folder, a subst drive or an 8.3 spelling.
 # Nothing below that root or below _build may be a link, a reparse point or '..'.

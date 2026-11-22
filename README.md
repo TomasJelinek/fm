@@ -1280,7 +1280,7 @@ describes confirmations and cancellation. The
 computers and shares through separate Windows and Linux adapters; macOS support is
 planned.
 The [pixel-scrolling contract](docs/developer/SCROLLING.md) and the
-[native scrolling measurements](docs/NATIVE_SCROLL_VERIFICATION.md) cover list and
+[native scrolling measurements](docs/verification/2026-11-11-native-wheel-scrolling.md) cover list and
 viewer input, renderer optimizations and the measured performance limits. Selection
 and resize performance is measured by the ignored `interaction_performance` test
 (`midnight-ui` integration tests), the ignored `interaction_selection_cpu` test
@@ -1578,8 +1578,9 @@ opened for the session only, so tabs and Hot Paths keep the outermost archive's 
 Details and limits are in [archives inside archives](docs/ARCHIVE_FORMATS.md#archives-inside-archives).
 At most two archives opened from native files are open at a time; tabs and viewers
 that show the same archive share it. A tab that moves on to another archive hands its
-own archive over; while two archives are still in use elsewhere, opening a third is
-refused with "Two archives are already open; close one of them first"
+own archive over; while two archives are still in use elsewhere, opening a third asks
+"Two archives are already open" and offers to close one of them (the tabs that show it
+go to its folder and its viewers close), then opens the archive
 ([details](docs/ARCHIVE_FORMATS.md#current-operation-limits)).
 Decoded content has no artificial size ceiling; the free space of the private spool
 volume bounds it, and staging stops before that volume falls below a free-space

@@ -43,7 +43,7 @@ BASELINE_OPTIONS = (
 FRESH_FILE_HOLDS = (5, 32, 33) if os.name == 'nt' else ()
 
 
-# Link rule of the build scripts (BUILD-02). Folders above the checkout, above a _build
+# Link rule of the build scripts. Folders above the checkout, above a _build
 # outside it or above an input root that the caller names may be links, a subst drive
 # or hidden folders: Fedora Silverblue's /home -> /var/home, a linked parent folder or
 # AppData. Below such a root, and from _build down, nothing may be a link, a junction

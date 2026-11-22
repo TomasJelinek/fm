@@ -152,7 +152,7 @@ capture routes.
 Leased content does not give up a tainted reference yet: `LeasedContent` and
 `NativeContent` retain it, and a production consumer first needs a quarantined
 give-up for content sources in the plugin host
-([ARCH-06](../IMPLEMENTATION_BACKLOG.md#deliberate-later-capabilities-and-current-limits)).
+([ARCH-06](../IMPLEMENTATION_BACKLOG.md#archives)).
 
 The native adapter delegates directory enumeration to an injected `FileSystem`.
 `NativeProvider::new` and production `NativeProvider::audited` are browse-only; the

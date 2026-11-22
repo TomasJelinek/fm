@@ -117,9 +117,11 @@ How to read it:
   folder metadata and hard links are not preserved (COPY-03); a Windows cross-volume
   Move refuses read-only, multi-link and named-stream sources, and providers have no
   Move (MOVE-01); Copy and Move take at most 4,096 selected native items at once
-  (COPY-04); a job runs one native step at a time (IO-01); one namespace turn serves
-  all jobs (IO-02); the shared disk-I/O gate can stall behind one hung call (IO-03);
-  Linux syncs the folder after each copied file (PERF-05).
+  (COPY-04), and admitting a large selection takes time per item: about 20 s before the
+  first of 100,001 archive members is written (COPY-06); a job runs one native step at a
+  time (IO-01); one namespace turn serves all jobs (IO-02); the shared disk-I/O gate can
+  stall behind one hung call (IO-03); Linux syncs the folder after each copied file
+  (PERF-05).
 - **Documents:** [transfers](developer/TRANSFERS.md),
   [transfer options](developer/TRANSFER_OPTIONS.md),
   [disk operations](DISK_OPERATIONS.md),
@@ -282,16 +284,19 @@ How to read it:
   verified queue, archives inside archives open up to four levels deep, and
   password-protected ZIP and 7z archives ask for their password. Archives are
   read-only, and RAR is not supported.
-- **Open:** ARCH-01 to ARCH-08 (content limits, nested archives, writes, Copy permits
+- **Open:** ARCH-01 to ARCH-09 (content limits, nested archives, writes, Copy permits
   of failed sessions, provider content leases, solid 7z decoding, stopped workers
-  during a Copy). Archive copy-out performance and the mount limit are changing now;
-  see [active work](ACTIVE_WORK.md).
+  during a Copy, validation of the held archive file). The archive mount work is in
+  flight; see [active work](ACTIVE_WORK.md).
 - **Documents:** [archive formats](ARCHIVE_FORMATS.md),
   [archive API](developer/FILESYSTEM_API.md),
   [security requirements](../SECURITY.md#archive-passwords).
 - **Verified:** `viewers_archives`, `viewers_passwords`, `files_archive_transfers`,
   `journeys_archive_roundtrip`, `find_archives`, `options_archives`; statuses in the
   [viewers record](developer/acceptance/viewers.md) (Archives, Archive passwords).
+  Dated measurement: [archive copy-out](verification/2026-11-22-archive-copy-out.md)
+  (Windows only: about 165–200 small members per second in a release build, and Cancel
+  of a copy of 100,001 members ends the job in about half a second).
 
 ## Network Neighborhood
 
@@ -403,10 +408,13 @@ How to read it:
 ## Internal engine contracts
 
 - **Implemented:** backend work runs off the UI thread with bounded queues,
-  cancellation and owned cleanup.
-- **Open:** not every spawned engine task is audited for retirement (LIFE-01); a
-  quarantined clipboard or drop capture keeps its permits (LIFE-02); a temporary folder
-  on an unresponsive network filesystem can block report logs (SPOOL-01); on Linux a
-  listed link into a stalled network mount holds its listing page (LINK-01).
+  cancellation and owned cleanup. Each engine reserves one retirement domain for the
+  owners its capacity table lists, and the test
+  `lifetime_document_states_the_domain_capacity_and_its_breakdown` keeps that table
+  equal to the code.
+- **Open:** a quarantined clipboard or drop capture keeps its permits until exit
+  (LIFE-02); a temporary folder on an unresponsive network filesystem can block report
+  logs (SPOOL-01); on Linux a listed link into a stalled network mount holds its
+  listing page (LINK-01).
 - **Documents:** [engine lifetime](developer/ENGINE_LIFETIME.md),
   [security requirements](../SECURITY.md).

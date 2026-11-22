@@ -8,8 +8,10 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 22 November 2026: the source of `5cc55222` with the documentation pass, which
-made the current documents true to that source.
+Main of 22 November 2026 at `ad91634e`, with the documentation pass that made the
+current documents true to the source. Since `5cc55222` it also carries link following
+in the HTML and Markdown viewers, faster archive copy-out with a quick Cancel, the
+first archive mount-limit fixes and the archive password-dialog fixes.
 
 - **Acceptance.** The last runs of the whole suite are Windows `20261121-144422` and
   Linux `20261121-144246`, both at `3f6fff8a`. On 22 November the acceptance work
@@ -32,16 +34,16 @@ made the current documents true to that source.
 These changes are being made now. The documents named describe the current behaviour
 until they land.
 
-- **Archives:** faster copy and extraction, a limit on open archive mounts with an
-  offer to close one, and Cancel in the password question without a notice
-  ([archive formats](ARCHIVE_FORMATS.md), [archive API](developer/FILESYSTEM_API.md),
-  [transfers](developer/TRANSFERS.md), [engine lifetime](developer/ENGINE_LIFETIME.md);
-  backlog ARCH-01 to ARCH-08).
-- **Fixes without a backlog row:** the folder permission check of the HTML viewer's
-  AppArmor installer, the link commands of three engine test fixtures, and the
-  restored limit of "Preserve exact modified time".
+- **Archive mount-limit prompt:** an offer to close an open archive when two are
+  already open, beyond the refusal that asks for it ([archive formats](ARCHIVE_FORMATS.md),
+  [archive API](developer/FILESYSTEM_API.md),
+  [engine lifetime](developer/ENGINE_LIFETIME.md); backlog ARCH-01 to ARCH-09).
+- **Security fixes without a backlog row:** the folder permission check of the HTML
+  viewer's AppArmor installer, and the link commands of three engine test fixtures.
 - **Acceptance:** reruns that the area records mark as pending, and the scenarios they
   list as not yet written.
+- **Final builds and release:** the release builds and packages
+  ([release build](RELEASE_BUILD.md)).
 
 ## Where evidence lives
 

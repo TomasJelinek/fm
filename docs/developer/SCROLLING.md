@@ -356,7 +356,7 @@ and can cause extra shader compilation. Dispatch/submission duration is not GPU
 completion or monitor scanout. Report median, p95 and worst frame gaps instead
 of claiming smoothness solely from average FPS.
 
-See [native measurements](../NATIVE_SCROLL_VERIFICATION.md) for reproducible
+See [native measurements](../verification/2026-11-11-native-wheel-scrolling.md) for reproducible
 commands, local evidence and remaining performance limitations.
 
 ### Acceptance seam
@@ -593,7 +593,7 @@ source I/O.
 Viewer measurements: [pixel-scroll record](../verification/2026-11-11-viewer-pixel-scroll.md).
 Backend and camera tests and a correct transform do not show native 60 Hz
 performance; that needs native measurements of sustained refills, idle restart and
-rendered pixels ([native measurements](../NATIVE_SCROLL_VERIFICATION.md)).
+rendered pixels ([native measurements](../verification/2026-11-11-native-wheel-scrolling.md)).
 
 ### Row groups
 

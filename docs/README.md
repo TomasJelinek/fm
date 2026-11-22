@@ -65,7 +65,7 @@ show that a feature exists.
 | Location | Purpose |
 | --- | --- |
 | [verification/](verification/) | Dated verification records; each describes the commit and environment it names. |
-| [Native wheel scrolling investigation](NATIVE_SCROLL_VERIFICATION.md) | Measurements of the native wheel scrolling work of 11 and 21 November (a dated record). |
+| [Native wheel scrolling investigation](verification/2026-11-11-native-wheel-scrolling.md) | Measurements of the native wheel scrolling work of 11 and 21 November (a dated record). |
 | [superpowers/specs/](superpowers/specs/) and [superpowers/plans/](superpowers/plans/) | Dated designs and implementation plans; later accepted requirements supersede them. The [main architecture](superpowers/specs/2026-11-04-dual-pane-file-manager-design.md) is the first. |
 | [Main-branch audit](verification/main-audit.md) | The audit of 10–11 November with its CSV measurements; the [dependency capture](third-party-inventory.csv) belongs to it and is not the current inventory. |
 | [screenshots/](screenshots/) | Windows screenshots of early dated records. |

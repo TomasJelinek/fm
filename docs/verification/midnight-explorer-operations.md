@@ -38,7 +38,7 @@ its application build was not repeated for this filename-only change.
   prefix-highlight and wheel-notch regressions; final results belong below.
 - Native detailed scrolling passed rendered-frame checks: 7, 8, 7 and 7 moving
   frames per notch, first step 14.93 px with 22 px rows, idle row alignment and
-  ordinary/selection/theme pixel checks. See [measurement method](../NATIVE_SCROLL_VERIFICATION.md).
+  ordinary/selection/theme pixel checks. See [measurement method](2026-11-11-native-wheel-scrolling.md).
 
 Independent review identified and prompted fixes for Trash infrastructure identity,
 unnecessary Windows content-read permissions, bounded network feedback and missing
@@ -71,7 +71,7 @@ were retained. Strict Linux workspace/all-target Clippy also passed after replac
 one equivalent cloned singleton-slice assertion in the Unix-only test fixture.
 
 All three native mode checks and the seeded mode screenshot passed; see
-[native scroll verification](../NATIVE_SCROLL_VERIFICATION.md). The optimized
+[native scroll verification](2026-11-11-native-wheel-scrolling.md). The optimized
 Windows release built successfully: **30,022,144 bytes** for `midnight-explorer.exe`.
 Its 24 native creation/mutation tests and 9 engine-operation tests passed under
 the release profile. The actual EXE passed filesystem and native UI smoke checks

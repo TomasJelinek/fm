@@ -489,9 +489,9 @@ get a 2.5-second grace of their own.
 
 This protects the outer run, command inbox, Copy/Move/mutation handoffs, shared
 snapshots, drag-owned captures and the actor paths above. It is not a blanket
-guarantee for every independently spawned engine task; other actors still need
-individual lifetime audits (LIFE-01 in the
-[backlog](../IMPLEMENTATION_BACKLOG.md#lifecycle-follow-up-found-on-12-november)).
+guarantee for every independently spawned engine task. Its known retained-owner
+residuals are LIFE-02, ARCH-05 and ARCH-06 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md).
 One-time service admission before ownership prevents builder replacement
 ([configuration record](../verification/2026-11-12-engine-service-configuration.md));
 [archive and mailbox ownership](../verification/2026-11-12-native-mailboxes.md) and

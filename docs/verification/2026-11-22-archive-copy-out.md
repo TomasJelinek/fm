@@ -8,9 +8,9 @@ job ([Windows acceptance record](../developer/acceptance/windows.md), WIN-8). Th
 measured each layer of a small member's copy, removed what it found, and records the
 numbers before and after.
 
-All of it is in an isolated `git archive` export of `0a6d5a4a` (D:\fmb\archive-perf).
+All of it is in an isolated `git archive` export of `0a6d5a4a`.
 Builds used their own target directory, the debug test profile and
-`CARGO_INCREMENTAL=0`. Test runs had TEMP on D:, which creates no 8.3 names. Other
+`CARGO_INCREMENTAL=0`. Test runs had TEMP on a volume that creates no 8.3 names. Other
 agents' builds kept the machine at 30–100 % CPU throughout, so before and after runs were
 interleaved and each table gives every run. All runs were Windows; Linux was not
 measured.
@@ -102,7 +102,7 @@ in 496–523 ms in release (release profile without fat LTO, 16 codegen units).
 
 Admission still probes every root's pin, so the first file comes 17–42 s after the
 enqueue in debug and 21–22 s in release. Its breakdown (about 400 µs per member) and a
-proposal are COPY-05 in the [backlog](../IMPLEMENTATION_BACKLOG.md).
+proposal are COPY-06 in the [backlog](../IMPLEMENTATION_BACKLOG.md).
 
 ### Release run (release profile without fat LTO, 16 codegen units)
 
