@@ -17,9 +17,11 @@ agents' builds were running (individual runs, not confidence intervals).
   lists per section, an 8 × 4 table with 0.5-point borders and a 64 × 64 RGB logo on
   every page, with the standard fonts the plugin embeds. It times in-process rendering
   (no sandbox, pipe or host) and `--write DIR` stores the files.
-- `crates/midnight-viewer-engine/src/pdf_scroll_probe_tests.rs` (ignored test) opens a
-  fixture through the real sandboxed plugin in a protected private installation
-  (`MIDNIGHT_PDF_VIEWER_TEST_APPLICATION`), switches to Continuous, sets the zoom, and
+- `crates/midnight-viewer-engine/src/pdf_scroll_probe_tests.rs` (ignored test; without
+  `MIDNIGHT_PDF_SCROLL_FIXTURES` it returns at once, as in CI's pass over the ignored
+  tests) opens a fixture through the real sandboxed plugin in a protected private
+  installation (`MIDNIGHT_PDF_VIEWER_TEST_APPLICATION`), switches to Continuous, sets
+  the zoom, and
   paces input at 60 Hz for 1.5 s: a wheel flick of 1,200 logical px/s, then a thumb drag
   from 10% to 60% of the document. Former whole-view frames are counted as they arrive;
   with retained tiles the probe plays the UI's tiled camera, which moves to the wanted

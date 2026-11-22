@@ -1,7 +1,8 @@
-//! Native PDF scrolling measurement over the sandboxed plugin; ignored by default.
-//! `MIDNIGHT_PDF_VIEWER_TEST_APPLICATION` names a trusted private installation and
-//! `MIDNIGHT_PDF_SCROLL_FIXTURES` a directory holding `report-3.pdf` and `report-300.pdf`
-//! (written by the PDF plugin's `render_probe --write`). See docs/developer/VIEWER_SCROLLING.md.
+//! Native PDF scrolling measurement over the sandboxed plugin; ignored by default, and
+//! without both variables it returns at once. `MIDNIGHT_PDF_VIEWER_TEST_APPLICATION` names
+//! a trusted private installation and `MIDNIGHT_PDF_SCROLL_FIXTURES` a directory holding
+//! `report-3.pdf` and `report-300.pdf` (written by the PDF plugin's `render_probe
+//! --write`). See docs/developer/VIEWER_SCROLLING.md.
 //!
 //! A wheel flick and a scrollbar drag are paced at 60 Hz for 1.5 s each. With retained
 //! tiles the probe plays the UI's tiled camera: the view moves to the wanted position on a
@@ -240,12 +241,22 @@ fn paced_camera(
 }
 
 #[test]
-#[ignore = "requires MIDNIGHT_PDF_VIEWER_TEST_APPLICATION and MIDNIGHT_PDF_SCROLL_FIXTURES"]
+#[ignore = "measurement with MIDNIGHT_PDF_SCROLL_FIXTURES; see the module documentation"]
 fn pdf_scroll_probe() {
-    let application =
-        std::path::PathBuf::from(std::env::var_os("MIDNIGHT_PDF_VIEWER_TEST_APPLICATION").unwrap());
-    let fixtures =
-        std::path::PathBuf::from(std::env::var_os("MIDNIGHT_PDF_SCROLL_FIXTURES").unwrap());
+    // A measurement, not a check: a pass over the ignored tests without its fixtures (CI's)
+    // has nothing to measure, so it returns without opening anything.
+    let (Some(application), Some(fixtures)) = (
+        std::env::var_os("MIDNIGHT_PDF_VIEWER_TEST_APPLICATION"),
+        std::env::var_os("MIDNIGHT_PDF_SCROLL_FIXTURES"),
+    ) else {
+        eprintln!(
+            "pdf_scroll_probe measured nothing: set MIDNIGHT_PDF_SCROLL_FIXTURES and \
+             MIDNIGHT_PDF_VIEWER_TEST_APPLICATION to run it"
+        );
+        return;
+    };
+    let application = std::path::PathBuf::from(application);
+    let fixtures = std::path::PathBuf::from(fixtures);
     let executor = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

@@ -39,6 +39,36 @@ fn two_page_pdf() -> Vec<u8> {
     bytes
 }
 
+/// The pixel at raster position `x`, `y` of the view that `frame` shows. A document is
+/// published as retained tiles at the exact zoom, never as a whole-view raster: the tile
+/// that covers the point supplies it (premultiplied RGBA, which equals RGBA for the opaque
+/// and the empty pixels checked here).
+fn view_pixel(frame: &ViewerFrame, x: u32, y: u32) -> [u8; 4] {
+    assert!(
+        frame.pixels.is_empty(),
+        "a document frame carries tiles, not a whole-view raster"
+    );
+    let tiles = frame
+        .tiles
+        .as_ref()
+        .expect("a document frame carries its retained tiles");
+    let point = [f64::from(x), f64::from(y)];
+    let tile = tiles
+        .iter()
+        .find(|tile| {
+            let size = [tile.width, tile.height];
+            (0..2).all(|axis| {
+                let low = f64::from(tile.position[axis]);
+                (low..low + f64::from(size[axis])).contains(&point[axis])
+            })
+        })
+        .unwrap_or_else(|| panic!("no published tile covers view pixel {x}, {y}"));
+    let column = (point[0] - f64::from(tile.position[0])) as usize;
+    let row = (point[1] - f64::from(tile.position[1])) as usize;
+    let index = (row * tile.width as usize + column) * 4;
+    tile.pixels.rgba()[index..index + 4].try_into().unwrap()
+}
+
 fn change_page(session: &WindowSession, previous: &ViewerFrame, delta: i32) -> ViewerFrame {
     let page = previous.image.as_ref().unwrap().page as i32 + delta;
     assert!(session.send(ViewerInput::DocumentPage {
@@ -170,9 +200,11 @@ fn pdf_page_navigation_retains_manual_zoom_and_fit_mode() {
             } else {
                 [0, 0, 255, 255]
             };
-            let center =
-                ((displayed.height / 2 * displayed.width + displayed.width / 2) * 4) as usize;
-            assert_eq!(&displayed.pixels[center..center + 4], &expected);
+            let center = view_pixel(&displayed, displayed.width / 2, displayed.height / 2);
+            assert_eq!(
+                center, expected,
+                "the view's centre shows the page turned to"
+            );
         }
     }
     assert!(session.send(ViewerInput::Image {
@@ -263,15 +295,11 @@ fn pdf_continuous_composes_native_mixed_pages_and_survives_rapid_camera_replacem
     assert_eq!(image.zoom, 1.0);
     assert_eq!(image.page, 2);
     assert_eq!((image.width, image.height), (1000, 400));
-    assert!(displayed.tiles.is_none());
     assert!((image.origin[1] - 550.0).abs() < 0.00001);
-    fn pixel(frame: &ViewerFrame, x: u32, y: u32) -> &[u8] {
-        let index = ((y * frame.width + x) * 4) as usize;
-        &frame.pixels[index..index + 4]
-    }
-    assert_eq!(pixel(&displayed, 200, 10), [255, 0, 0, 255]);
-    assert_eq!(pixel(&displayed, 200, 60), [0, 0, 0, 0]);
-    assert_eq!(pixel(&displayed, 200, 100), [0, 0, 255, 255]);
+    // The view's tiles at that camera: the end of page one, the gap, page two.
+    assert_eq!(view_pixel(&displayed, 200, 10), [255, 0, 0, 255]);
+    assert_eq!(view_pixel(&displayed, 200, 60), [0, 0, 0, 0]);
+    assert_eq!(view_pixel(&displayed, 200, 100), [0, 0, 255, 255]);
     // These replace demand while page crops may be active; they must not hard-cancel the worker.
     for index in 0..32 {
         assert!(session.send(ViewerInput::Seek(f64::from(index) / 32.0)));

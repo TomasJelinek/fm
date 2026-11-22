@@ -113,6 +113,15 @@ class WorkflowTests(unittest.TestCase):
                 for step in ("image-decoder/native", "fmt", "test", "clippy", "-D", "warnings", "build", "--release"):
                     self.assertIn(step, text)
 
+    def test_clippy_receives_the_sdk_configuration(self):
+        # Cargo does not pass options given before the subcommand to an external
+        # subcommand: `cargo --config X clippy` resolves without X (the video platform
+        # helpers' job then found no `midnight` SDK package).
+        for name, job in self.jobs.items():
+            with self.subTest(job=name):
+                self.assertNotRegex(job, r"cargo\s+(?:\+\S+\s+)?--config\s+\S+\s+clippy\b")
+        self.assertIn("cargo clippy --config $sdk", self.jobs["thumbnail-video-platform"])
+
     def test_public_protocol_workspaces_and_conformance_have_ci(self):
         sdk = self.jobs["public-worker-sdk"]
         for workspace in ("worker-api", "thumbnail-api", "filesystem-api", "image-viewer-api", "web-viewer-api"):

@@ -373,9 +373,11 @@ jobs:
           $features = @('--no-default-features', '--features', 'system,playback-worker')
           cargo --config $sdk fetch --manifest-path $manifest --locked
           if ($LASTEXITCODE -ne 0) { throw 'Video thumbnailer dependency fetch failed' }
-          cargo --config $sdk clippy --manifest-path $manifest @features --all-targets --locked --offline -- -D warnings
+          # `--config` after the subcommand: Cargo does not pass its own options to an
+          # external subcommand such as clippy.
+          cargo clippy --config $sdk --manifest-path $manifest @features --all-targets --locked --offline -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Platform helper lints failed' }
-          cargo --config $sdk test --manifest-path $manifest @features --all-targets --locked --offline
+          cargo test --config $sdk --manifest-path $manifest @features --all-targets --locked --offline
           if ($LASTEXITCODE -ne 0) { throw 'Platform helper tests failed' }
 
   archive-filesystem:
