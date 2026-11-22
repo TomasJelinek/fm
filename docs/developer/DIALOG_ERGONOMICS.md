@@ -1,7 +1,9 @@
 # Dialog ergonomics and viewer responsiveness
 
-Accepted follow-up, 7 November 2026. Implementation and verification are tracked
-separately; this document is not a claim that every item is already released.
+This document describes how dialogs, settings forms and their keyboard handling
+behave, and the review rules they follow. Items stated as requirements (such as the
+performance requirements below) are rules for every change, not claims about a
+measurement.
 
 ## Settings and dialogs
 
@@ -33,10 +35,9 @@ separately; this document is not a claim that every item is already released.
   Embedded dialogs have a top-right close button with the same behavior as Cancel;
   its tooltip names Escape. Help, Jobs and the job and decision windows are framed
   by their own title bar and have none.
-  Under the [11 November policy](../superpowers/plans/2026-11-11-dialog-polish-followup.md),
-  only modeless working windows require free movement outside the main window.
-  Attributes / Times / Case remains embedded. Do not migrate other embedded modal
-  forms to satisfy the superseded all-native-window requirement.
+  Only modeless working windows move freely outside the main window; Attributes /
+  Times / Case and the other modal forms stay embedded
+  ([dialog policy](../superpowers/plans/2026-11-11-dialog-polish-followup.md)).
 - Ordinary confirmations and settings are modal popups embedded in the main
   window: Options, Rename/Create/Delete, Copy/Move drafts, notices, Make File
   List, Panel Filter, Hot Paths, Compare directories, About and Attributes /
@@ -74,8 +75,8 @@ separately; this document is not a claim that every item is already released.
   too, until a name is typed. The FocusScopes that only route keys (Escape, a
   dialog's shortcuts) in dialogs, the colour picker, shortcut replacement, Select by
   mask and the main menu are not Tab stops.
-- The Copy/Move dialog (22 November polish; `OperationDialog` in its Copy/Move form,
-  which `EmbeddedOperation` selects with `kind < 0`) reads top to bottom: the title;
+- The Copy/Move dialog (`OperationDialog` in its Copy/Move form, which
+  `EmbeddedOperation` selects with `kind < 0`) reads top to bottom: the title;
   one line that names what is copied and ends where the destination field takes over
   ("Copy “report.pdf” (1.2 MiB) to:", "Copy 3 files (12.4 MiB) to:", "Move 2 files and
   1 folder to:", "Move 3 items from the clipboard to:"; from the counts and sizes the
@@ -103,14 +104,12 @@ separately; this document is not a claim that every item is already released.
   Move button's tooltip; neither is a paragraph of the dialog. Tab goes through the
   destination, the options top to bottom, Cancel, the primary action and the header's
   close button, and wraps; Enter in the destination field, an option or the Links box
-  confirms. Verified on Windows with software-window tests (`copy_dialog_polish`: every
-  state at 320 × 200 and 1340 × 820, in both densities, with the density's default font
-  and with 32 px, finds nothing in the UI polish gate's layout checks and scrolls nothing
-  at the regular size; the options' edges; the Tab cycle; Enter in the destination; one
-  note at a time; the first line; a long first line and a note at every width from 320
-  to 600 px), with `copy_dialog`, `native_operation_windows`, `file_actions_ui` and
-  `tree_copy` updated to the new order and texts; Linux and the application window were
-  not exercised.
+  confirms. `tests/copy_dialog_polish.rs` (software-window tests) checks every state at
+  320 × 200 and 1340 × 820 in both densities, with the density's default font and
+  32 px, against the UI polish gate's layout checks, plus the options' edges, the Tab
+  cycle, Enter in the destination, one note at a time, the first line, and a long first
+  line with a note at every width from 320 to 600 px. These tests run on Windows; the
+  application window on Linux is not covered.
 - Compare directories compares on Enter from an option or its tolerance field, as
   other dialogs confirm from their options; Space ticks an option, and a held Enter or
   one during a comparison does nothing. In Checksums, Enter in the results or on the
@@ -182,10 +181,8 @@ separately; this document is not a claim that every item is already released.
 - At 320 × 200 these surfaces show nothing over anything else, nothing cut by a
   container that does not scroll and nothing beyond what a scroll view reaches, in Dark
   Touch and Light Touch with 15, 24 and 32 px fonts and in Light Desktop with a 32 px
-  font (U-D27 of the UI polish gate). Verified with software-window tests built from
-  `22f46eab` plus this change (`tests/compact_surfaces.rs`, judged as the gate's layout
-  checks judge a surface by `tests/support/minimum_layout.rs`); the gate itself has not
-  been run again.
+  font. `tests/compact_surfaces.rs` checks this with the UI polish gate's layout checks
+  (`tests/support/minimum_layout.rs`).
   - A picker's menu (`CompactPicker`) has rows as tall as the control, or as their text
     or icon where that is taller (large desktop fonts), with 4 px above it in a menu with
     separators. The menu is at most its window's height less 16 px: Slint moves a popup
@@ -210,11 +207,10 @@ separately; this document is not a claim that every item is already released.
   the system asks for less motion (the main window's `reduce-motion`: Windows'
   animation effects off) the sky holds still in the middle of its loop, where
   Cassiopeia, the satellite and a shooting star show, and it follows a change of
-  the setting while About is open. Verified with software-window tests built from
-  `b1b89343` plus this change (`about_dialog`:
-  `the_version_pill_holds_its_text_at_every_font_size`,
-  `the_sky_holds_still_while_the_system_asks_for_less_motion`); Windows' setting
-  itself and the application window were not exercised.
+  the setting while About is open. The `about_dialog` tests
+  `the_version_pill_holds_its_text_at_every_font_size` and
+  `the_sky_holds_still_while_the_system_asks_for_less_motion` cover both with
+  software windows; they do not change the Windows setting itself.
 - Filename colors offer a reusable visual color picker: hue, saturation/value,
   numeric RGB/hex, sample colors, and reset to the theme. Existing automatic
   focused/selected color derivation and contrast adjustment remain in force.
@@ -224,8 +220,7 @@ separately; this document is not a claim that every item is already released.
   padding, spacing and title size. Known limit: at 320 × 200 with touch density
   and a 32 px font, the title, the two stacked footer rows and one 46 px sample
   row need 9 px more than the window has, so the palette shows a 37 px viewport
-  and must be scrolled. Fixing it needs a product decision: smaller touch
-  samples, or a one-row footer at tiny sizes.
+  and must be scrolled.
 - File-valued settings have Browse actions. Choosing a file does not execute it;
   cancellation does not overwrite the draft. Native paths stay lossless through
   the backend and late results cannot overwrite a newer form or another item.
@@ -274,8 +269,8 @@ operations and copy actions (Copy details,
   A pointer press into a field, on its text or its padding, or a click on its
   calendar or clock button ticks the row, and so does any change of a value
   (typing, Up/Down, a picker step or choice, Now). Moving the keyboard into a
-  field with Tab does not tick it, because Tab only navigates (decided 21 November
-  2026): the field tells a press from Tab by its caret, which Tab selects the whole
+  field with Tab does not tick it, because Tab only navigates: the field tells a
+  press from Tab by its caret, which Tab selects the whole
   text with and a press sets down with no key held. Unticking keeps the shown
   values, so ticking again restores them. A row whose time the file system cannot
   set stays disabled: it shows its value greyed, and clicks neither tick it nor
@@ -404,19 +399,17 @@ request when cancelled. Native service absence is an actionable error; manual
 path entry remains available. Chooser output has a 4 MiB transport resource
 budget, distinct from platform/path-length policy.
 
-## Verification
+## Panel Filter, Archives and the command toolbar
 
-The November 8 polish keeps an explicit primary action and a separate dismissal.
+Dialogs keep an explicit primary action and a separate dismissal.
 Panel Filter has OK (validate and apply), Cancel (discard draft) and Show all
 (disable the applied filter, preserving its expression). It has no separate
 enable checkbox; panel indicators provide a direct × dismissal. Pending filter
-validation cannot re-enable a cleared filter. Since 22 November 2026 its expression
-is the shared edit line, as in Find, with that line's inline clear and focus
-underline, instead of a framed box with a Clear button and a history arrow beside
-it. Recent filters open from the line itself (`HistoryLineEdit`, Down or Alt+Down;
-Escape closes the list before the dialog), and any other edit line can use the same
-list. Compare and Jobs share the bounded
-scrolling footer; Jobs says Cancel job to distinguish it from Close.
+validation cannot re-enable a cleared filter. Its expression is the shared edit line,
+as in Find, with that line's inline clear and focus underline. Recent filters open
+from the line itself (`HistoryLineEdit`, Down or Alt+Down; Escape closes the list
+before the dialog), and any other edit line can use the same list. Compare and Jobs
+share the bounded scrolling footer; Jobs says Cancel job to distinguish it from Close.
 
 Archives retains built-in association checkboxes, but user-added extensions are
 removable values with a leading ×. A compact + opens their inline editor instead
@@ -432,6 +425,8 @@ and [tags](https://fluent2.microsoft.design/components/web/react/core/tag/usage)
 These inform action grouping and dismissal, while existing keyboard behavior,
 native paths, cancellation and settings transactions remain authoritative.
 
+## Review checklist
+
 Use isolated preferences and owned fixtures. Exercise mouse and keyboard,
 tab order, Escape, resize, scrolling, validation failures, save/reopen, picker
 cancellation and stale replies. Check wide and narrow windows in light/dark
@@ -440,7 +435,7 @@ verify that displayed argument choices match actual argv. Record measured viewer
 latencies; reduced CPU cost alone is not evidence of instant scrolling.
 
 
-## Settings and forms, 11 November follow-up
+## Settings and forms
 
 Options initially requests more vertical space and remains bounded by the current
 window/work area. The pages that fit their lists to the shown height (Comparators,
@@ -490,7 +485,7 @@ navigation in comparators, with separate user overrides and conflict checks.
 
 ## Options page order
 
-Since 22 November 2026 Options lists its pages in the order users look for settings:
+Options lists its pages in the order users look for settings:
 general behavior and appearance first, then how the panels show files, file
 handling, the programs that open and compare files, tools and keys, and the rarely
 changed plugin catalog last. Related pages sit next to each other, and the most used
@@ -521,32 +516,23 @@ nothing needs migrating. Options has no page for toolbar buttons or Hot Paths (H
 Paths has its own manager), and the internal viewers have none of their own: their
 extensions and priority are on Plugins › Viewers.
 
-## Options feedback and Tab order, 22 November follow-up
+## Options feedback and Tab order
 
-The UI polish gate's findings U-D23 to U-D26 and U-D29 on Options, with what caused
-them.
+**Colour picker swatches.** Each of the picker's eight preset swatches keeps its
+`RGB r, g, b` accessible label and carries its colour's name and hex value as its
+accessible description and in its tooltip ("Red #EF4444: click or press Enter to use
+it."). Hovering draws the 2 px active-frame ring that the Colors page's own swatches
+use, and keyboard focus draws the swatch's frame 2 px wide in the active colour.
+Closing the picker with Escape or Use color while a swatch's tooltip shows closes only
+the picker and leaves no tooltip behind: Slint closes a popup's sub-menus with it but
+not its tooltips, so the picker retires them first (`ColorOptionsView.picker-closing`,
+`tooltip::dismiss`).
 
-**Colour picker swatches (U-D23).** The picker's eight preset swatches had no name
-beyond `RGB r, g, b` and no hover or focus feedback. Each swatch keeps that accessible
-label and now carries its colour's name and hex value as its accessible description
-and in its tooltip ("Red #EF4444: click or press Enter to use it."). Hovering draws the
-2 px active-frame ring that the Colors page's own swatches use, and keyboard focus
-draws the swatch's frame 2 px wide in the active colour. Closing the picker with
-Escape or Use color while a swatch's tooltip shows closes only the picker and leaves
-no tooltip behind: Slint closes a popup's sub-menus with it but not its tooltips, so
-the picker retires them first (`ColorOptionsView.picker-closing`, `tooltip::dismiss`).
-
-**Reset to defaults (U-D24).** Reset itself was deterministic; two things made it
-look like it did nothing. On pages that already showed their defaults it computed the
-same values, the preview had nothing to update and nothing said so. Whether a click
-showed an effect therefore depended on what was changed before it, which is the likely
-source of the intermittent result (an inference: the reset path has no timing or
-race). And while a page's own file chooser was open (an editor or comparator program,
-a Custom Command program or folder), the button stayed enabled but the click was
-ignored. Now the button is enabled exactly when a click applies: not while a page's
-file chooser, an Export or an Import is outstanding, and the presenter refuses in the
-same cases (an Export takes its values when its file is chosen). Every applied click
-says what it did in one line above the footer, which screen readers find as **Options
+**Reset to defaults.** The button is enabled exactly when a click applies: not while a
+page's file chooser (an editor or comparator program, a Custom Command program or
+folder), an Export or an Import is outstanding, and the presenter refuses in the same
+cases (an Export takes its values when its file is chosen). Every applied click says
+what it did in one line above the footer, which screen readers find as **Options
 status**:
 
 - "Reset to defaults: every page now shows its defaults. OK saves them; Cancel keeps
@@ -556,77 +542,59 @@ status**:
 - "Reset to defaults did not apply: …" with the reason, when the keyboard map could
   not be restored.
 
-The line wraps instead of eliding behind a tooltip (a tip destroyed while it shows
-inside a popup is what Slint 1.18.1 cannot take). It goes with the next change of a
-setting, an Export or Import, OK, Cancel or the next Options session, and a settings
-file message takes its place while that shows.
+The line wraps instead of eliding behind a tooltip (Slint 1.18.1 cannot take a tooltip
+destroyed while it shows inside a popup). It goes with the next change of a setting,
+an Export or Import, OK, Cancel or the next Options session, and a settings file
+message takes its place while that shows.
 
-**Archives Tab order (U-D25).** Tab already reached everything. From the Archives
-entry it visits the page entries below it, the format, the association search, the
-built-in association check boxes, the custom extension field's Add, then Reset to
-defaults, Export configuration…, Import configuration…, OK, Cancel, the header's close
-and the page list from General, every control in visual order, and wraps to Archives.
-The gate missed Import and OK because its walk ends after twice the controls shown
-when it starts, plus six: the check boxes scrolled out of view are not counted, yet
-the cycle passes through all of them. Recommendation for the acceptance gate: bound
-the walk by all operable controls, those scrolled out of view included, or walk until
-the first stop comes back.
+**Archives Tab order.** From the Archives entry Tab visits the page entries below it,
+the format, the association search, the built-in association check boxes, the custom
+extension field's Add, then Reset to defaults, Export configuration…, Import
+configuration…, OK, Cancel, the header's close and the page list from General, every
+control in visual order, and wraps to Archives. Slint 1.18.1 moves the keyboard by Tab
+only into a line edit that is at least partly in view (the field clips its text, and
+an item clipped away counts as hidden unless only a Flickable hides it). The Archives
+page (`ArchiveOptions`, a `FocusScope` that never takes the focus itself) therefore
+passes Shift+Tab from the first file type, and Tab from the format, to the search: it
+focuses the field, which scrolls it into view, and selects its text as Tab does. Any
+other line edit in a scrolled page has the same limitation; at the default size no
+other Options page scrolls one out of view on the way (the every-page test below).
 
-Shift+Tab, though, skipped the search: from the first file type it went straight to
-the format. Slint 1.18.1 moves the keyboard by Tab only into a line edit that is at
-least partly in view, because the field clips its text and an item clipped away counts
-as hidden unless only a Flickable hides it; with the check boxes reached from below,
-the page had scrolled the search out of view. The Archives page (`ArchiveOptions`, now
-a `FocusScope` that never takes the focus itself) passes Shift+Tab from the first file
-type, and Tab from the format, to the search: it focuses the field, which scrolls it
-into view, and selects its text as Tab does. Any other line edit in a scrolled page has
-the same limitation; at the default size no other Options page scrolls one out of view
-on the way (the every-page test below).
-
-**Keyboard page focus (U-D26).** Two causes. The command list is one Tab stop (the
-arrows, Home and End move its selection), and its focus scope showed nothing: its
-frame now takes the active colour while it has the keyboard, as the Colors rule list
-does, and the list has an accessible name and item count. And tabbing through **Press
-shortcut keys** recorded Tab as a shortcut: Clear and Assign became enabled, an error
-notice appeared with a Dismiss button (a new Tab stop, which the gate saw as the focus
-leaving the dialog) and pushed the Restore buttons down. Reached with Tab or
-Shift+Tab, the field now lets those keys pass without recording them; clicked, or once
-it has recorded another key, it records Tab and Escape and leaves, as before. A
+**Keyboard page.** The command list is one Tab stop (the arrows, Home and End move its
+selection); its frame takes the active colour while it has the keyboard, as the Colors
+rule list does, and the list has an accessible name and item count. **Press shortcut
+keys** reached with Tab or Shift+Tab lets those keys pass without recording them;
+clicked, or once it has recorded another key, it records Tab and Escape and leaves. A
 modifier pressed on its own records nothing and does not count as that other key, so
 Shift on its way to Shift+Tab leaves the field without recording Shift+Tab.
 
-**Page list keys (U-D29).** The arrows moved from the page shown instead of from the
-focused entry. Tab moves the focus from entry to entry without changing the page, so
-after a Tab, Down showed the page after the one shown, and the focus and the page
-disagreed. The arrows (Up and Down, Left and Right) now move from the focused entry,
-as in any list, Home and End go to the first and the last page, and the focus and the
-page shown move together, so they agree after each of these keys; the ends clamp and
-the order stays the list's. A key that comes before the focus has moved, as with key
-repeat, goes on from where the last one went (`current` in
-`options-navigation.slint`).
+**Page list keys.** The arrows (Up and Down, Left and Right) move from the focused
+entry, as in any list, Home and End go to the first and the last page, and the focus
+and the page shown move together, so they agree after each of these keys; the ends
+clamp and the order stays the list's. Tab moves the focus from entry to entry without
+changing the page. A key that comes before the focus has moved, as with key repeat,
+goes on from where the last one went (`current` in `options-navigation.slint`).
 
 **Tab order on every page.** `crates/midnight-ui/tests/options.rs` (`tab_walk`) walks
 each page's Tab cycle at the default 1340×820 window with default settings. Every
 stop stays inside Options on something that was there before the walk, never on a
 hidden (`visible: false`, or clipped away where no scrolling brings it back) or
-disabled control; it scrolls into view and changes by at least 3:1, the gate's
-measure. (A check box drawn by its own indicator keeps its native control transparent
-on top; the 3:1 change is what tells that its focus shows.) Every control a
-user can scroll to is reached, in visual order: the header's close, the page list from
-the top, the page row by row (or column by column) and the footer from the left. The
-cycle wraps, Shift+Tab retraces it, and the walk changes no control and records no
+disabled control; it scrolls into view and changes by at least 3:1, the UI polish
+gate's measure. (A check box drawn by its own indicator keeps its native control
+transparent on top; the 3:1 change is what tells that its focus shows.) Every control
+a user can scroll to is reached, in visual order: the header's close, the page list
+from the top, the page row by row (or column by column) and the footer from the left.
+The cycle wraps, Shift+Tab retraces it, and the walk changes no control and records no
 shortcut.
 
 Tests: `colour_picker_swatches_name_their_colour_and_show_hover_and_focus`
-(`tests/form_polish.rs`, U-D23);
-`reset_always_reports_what_it_did_until_the_next_edit_or_session`
+(`tests/form_polish.rs`); `reset_always_reports_what_it_did_until_the_next_edit_or_session`
 (`src/presenter/preferences/options_tests.rs`), `reset_waits_for_a_pending_export`
 (`src/presenter/preferences/settings_file_tests.rs`) and
 `reset_defaults_says_what_it_did_even_when_nothing_changes`
-(`tests/options_transaction.rs`), U-D24;
-`archives_tab_cycle_reaches_the_footer_and_wraps_in_visual_order` (U-D25),
-`keyboard_tab_cycle_shows_the_command_list_and_records_no_shortcut` (U-D26),
-`page_list_keys_move_from_the_focused_entry_and_keep_focus_and_page_together` (U-D29)
-and `every_options_page_tab_cycle_keeps_to_shown_enabled_controls`
-(`tests/options.rs`); the page order and the clamps at both ends stay covered by
-`options_pages_list_in_reading_order_and_keep_their_topic_identities`.
+(`tests/options_transaction.rs`); `archives_tab_cycle_reaches_the_footer_and_wraps_in_visual_order`,
+`keyboard_tab_cycle_shows_the_command_list_and_records_no_shortcut`,
+`page_list_keys_move_from_the_focused_entry_and_keep_focus_and_page_together`,
+`every_options_page_tab_cycle_keeps_to_shown_enabled_controls` and, for the page order
+and the clamps at both ends, `options_pages_list_in_reading_order_and_keep_their_topic_identities`
+(`tests/options.rs`).

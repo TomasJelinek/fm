@@ -35,37 +35,33 @@ Capture, reading, validation and disposal remain backend work.
 ## Change-time drift (VIEW-05)
 
 A native revision includes the change time (NTFS ChangeTime, Linux ctime), which
-also moves on metadata-only updates: on the Windows development machine endpoint
-protection moves it on freshly written files one or two seconds after they are
-written, while the volume, file ID, length and LastWriteTime stay the same. Every
-capture therefore carries an explicit `RevisionPolicy`:
+also moves on metadata-only updates. Endpoint protection, for example, adds an
+alternate data stream to a file seconds or hours after it was written and may set its
+write time back, so that only the change time moves while the volume, file ID, length
+and LastWriteTime stay the same. Every capture therefore carries an explicit
+`RevisionPolicy` (`midnight-plugin-host/src/content.rs`):
 
 - `Exact`, the default of `CapturedFile::capture` and `InstalledProvider::capture`:
   every captured field must still match. Comparison, command-icon artwork import,
   manifest and package captures use it; the comparator's own content check for a
   moved change time is described in [file comparison](FILE_COMPARISON.md).
-- `AcceptChangeTimeOnly`, which viewers request through
-  `CapturedFile::capture_with` (the viewer engine's in-process capture) and
-  `InstalledProvider::capture_with` (the application's viewer capture): a revision
-  whose change time alone moved is unchanged. Windows still requires the same volume,
-  file ID, length and LastWriteTime; Linux the same device, inode, length and mtime.
-  Since 21 November archive files use it too: `InstalledProvider::capture_matching`
-  captures an archive for navigation, restored tabs and Hot Paths, and Find inside
-  archives, and compares a saved revision under it as well. Endpoint protection had
-  added an alternate data stream to a tar file two hours after it was written, and
-  every later read of the open archive failed
-  ([archive members as a source](TRANSFERS.md#archive-members-as-a-source)). The icon
-  check of user-command buttons shares the engine's archive capture callback, so it
-  accepts such a change too. Since 22 November thumbnails use it as well
-  (`midnight_thumbnail_host::service::NATIVE_REVISIONS`, which
-  `native_content::thumbnail_factory` and the acceptance harness's thumbnail pulse use;
-  WIN-11): Microsoft
-  Defender's data loss prevention writes a `sec.endpointdlp` alternate data stream to
-  new files and sets their write time back, so only the change time moves, and the
-  thumbnail cache, which revalidates a capture when it stores a frame and on every
-  hit, failed those files. A capture's cache key keeps its revision bytes, change
-  time included, so a new capture after such a change decodes the file once more
-  under a new key; a frame cached for the same capture stays a hit.
+- `AcceptChangeTimeOnly`: a revision whose change time alone moved is unchanged.
+  Windows still requires the same volume, file ID, length and LastWriteTime; Linux the
+  same device, inode, length and mtime. These captures use it:
+  - viewers, through `CapturedFile::capture_with` (the viewer engine's in-process
+    capture) and `InstalledProvider::capture_with` (the application's viewer capture);
+  - archive files: `InstalledProvider::capture_matching` captures an archive for
+    navigation, restored tabs and Hot Paths, and Find inside archives, and compares a
+    saved revision under it as well
+    ([archive members as a source](TRANSFERS.md#archive-members-as-a-source)). The
+    icon check of user-command buttons shares the engine's archive capture callback,
+    so it accepts such a change too;
+  - thumbnails: `midnight_thumbnail_host::service::NATIVE_REVISIONS`, which
+    `native_content::thumbnail_factory` and the acceptance harness's thumbnail pulse
+    use. The thumbnail cache revalidates a capture when it stores a frame and on every
+    hit. A capture's cache key keeps its revision bytes, change time included, so a new
+    capture after such a change decodes the file once more under a new key; a frame
+    cached for the same capture stays a hit.
 
 The revision bytes that a capture reports (`stable_version`) never change. The
 native filesystem plugin's reader keeps checking each read against its own revision,
@@ -90,8 +86,9 @@ Regression tests are in `midnight-plugin-host/src/checked_read_tests.rs`, with
 native adapter/cache tests in the native filesystem host. They cover both direct
 and retained readers, original metadata forwarding, bounds/EOF/counts, and
 detectable changes during a generic read. Archive captures are tested in
-`midnight-native-filesystem-host/src/installed_archive_capture_tests.rs`, through the
-installed provider's cache, with emulated plugin readers over fake revisions and over a
-real file that gets an alternate data stream with its LastWriteTime set back (Windows)
-or a mode change (Linux); the ignored `installed_archive_capture_reads_on_after_the_archive_was_tagged`
+`midnight-native-filesystem-host/src/installed_archive_capture_tests.rs` and its
+`_windows_tests.rs` and `_linux_tests.rs` companions, through the installed provider's
+cache, with emulated plugin readers over fake revisions and over a real file that gets
+an alternate data stream with its LastWriteTime set back (Windows) or a mode change
+(Linux); the ignored `installed_archive_capture_reads_on_after_the_archive_was_tagged`
 in `tests/native.rs` repeats that through the installed native plugin.

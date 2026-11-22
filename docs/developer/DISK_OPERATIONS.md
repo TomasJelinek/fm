@@ -1,14 +1,15 @@
 # Disk-I/O concurrency contract
 
-**Status:** implemented in source. Verification and remaining qualification are
-[below](#verification-and-remaining-qualification). The
-[user guide](../DISK_OPERATIONS.md) describes the implemented control.
+**Status:** implemented. Tests and what remains unqualified are
+[below](#tests-and-qualification). The [user guide](../DISK_OPERATIONS.md) describes
+the control.
 
 ## Meaning and storage policy
 
 `UserPreferences.disk_io_concurrency` uses
-`DiskIoConcurrency::{Automatic, Manual(u8)}`. Automatic resolves to the existing
-limit of **4**. Manual accepts **1..=32**; Core, UI and persistence reject invalid
+`DiskIoConcurrency::{Automatic, Manual(u8)}`. Automatic resolves to a limit of **4**
+(`midnight_work_budget::DEFAULT_IO_LIMIT`). Manual accepts **1..=32**
+(`MAX_IO_LIMIT`); Core, UI and persistence reject invalid
 values before saving, without assertion, wrapping or clamping. Missing older
 preference data means Automatic; existing codec version/error policy remains.
 
@@ -79,29 +80,23 @@ Each root has a **16 MiB frontier ceiling**, allocated lazily; this is neither
 preallocation nor a total process RSS bound. Higher concurrency can use more
 memory. Automatic preserves the existing four-lane behavior.
 
-## Verification and remaining qualification
+## Tests and qualification
 
-Windows **208 targeted cases passed**. The earlier **10-case work-budget gate**
-is retained as a separate receipt and is not added to that total. Linux
-**40 focused tests** and **two scoped strict Clippy checks** passed. Windows UI
-library/four integration targets compiled with zero diagnostics.
+Tests cover:
 
-The fresh private Windows application passed engine and native UI startup smokes:
-both exited **0**, without software fallback, and both owned process jobs closed
-cleanly. This is scoped startup qualification, not complete native workflow or
-performance qualification. Scoped Windows strict Clippy passed with zero errors
-or warnings. Native Ubuntu GUI launch is unqualified because no owned graphical
-session is available. Coverage is tracked against the checks below:
+- the gate (`midnight-work-budget/src/tests.rs`): shared shrink/grow with held
+  permits, exclusive holders and waiters across resizing, cancellation, FIFO order and
+  admission while older holders drain;
+- the setting (`midnight-platform-common/tests/disk_concurrency_preferences.rs`, the
+  engine's and UI's preference tests, the acceptance Options scenarios): invalid and
+  missing persisted values, OK, failure and Cancel, unrelated saves, Reset and
+  late-load merge with stale acknowledgements;
+- folder-size teams (`midnight-engine/src/folder_sizes/batched/fixtures.rs`): a new
+  team using Manual above four while an existing team keeps its size;
+- retained transfer slots (`midnight-engine/src/copy_io_slot_tests.rs`): a paused,
+  waiting or running transfer lets queued exclusive and later shared requests run;
+- conservative HDD, network and unknown admission, with the stricter copy, checksum
+  and thumbnail job bounds unchanged.
 
-- Shared shrink/grow with held permits, exclusive holders/waiters across resize,
-  cancellation/FIFO and actual I/O admission while older holders drain.
-- Invalid/missing persisted values, successful OK, failure/Cancel, unrelated
-  saves, Reset and late-load merge/stale-ACK handling.
-- A new folder-size team using Manual above four while an existing team retains
-  its size, including the physical-thread/frontier accounting above.
-- Conservative HDD/network/unknown admission and unchanged stricter copy,
-  checksum and thumbnail job bounds.
-
-Matching application/native GUI qualification and performance measurements
-require their own receipts. This setting does not establish a
-recursive-tree queue repair or scalable retained-tree support.
+Performance at higher limits has not been measured. The setting does not change
+recursive-tree queueing or the memory a retained tree uses.

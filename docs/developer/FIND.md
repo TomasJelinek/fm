@@ -7,7 +7,7 @@ separate content query is literal text or, with **Regular expression**, a bounde
 regular expression matched within each line (see
 [Content regular expressions](#content-regular-expressions)). **Search inside
 archives** also matches archive members, and **Feed to panel** shows the results as
-a list in a panel (see the sections at the end). See the current
+a list in a panel (see the sections at the end). The design record is
 [panel/viewer follow-up requirements](../superpowers/specs/2026-11-07-panel-viewer-followups.md).
 
 `midnight-core::FindService` is an internal Rust backend capability, not a stable
@@ -241,31 +241,19 @@ query page shows Find and More…; at 1000 px every action is a button. Where ev
 Linux, Find (or Back) shows its glyph alone, then Close does too, and in a footer too
 narrow even for that every action is in More… (the dialog ergonomics list the steps).
 
-The refactor has causal blocked-I/O, sorting, Stop-to-Sort and header-geometry
-RED/GREEN coverage. Windows and Linux software-window pointer/key/geometry checks
-pass, including the actual mode chooser, populated rows, all five headers and
-minimum-size views. See the [verification record](../verification/2026-11-08-find-refactor.md).
-Final application deployment/native OS-desktop qualification remains separate;
-native desktop/GPU validation must not be inferred from the software tests.
-The subsequent wildcard crash and extension parity follow-up is recorded in
-[Find crash and extension verification](../verification/2026-11-08-find-crash-extension.md).
-
-The 10 November backend follow-up has causal RED/GREEN coverage for relative
+Tests cover blocked I/O, sorting, Stop before a sort and header geometry, and
+software-window pointer, key and geometry checks on Windows and Linux (the mode
+chooser, populated rows, all five headers and minimum-size views); software tests do
+not establish native desktop or GPU behaviour. The backend tests cover relative
 minute/hour intervals, future/unknown times, same-size unequal content, binary and
-empty duplicates, hard links/overlapping roots, group-preserving sort, 70-member
-atomic publication, Stop/publication boundaries and explicit budgets. Native
-Windows fixtures provide the file contents, hard links and modification times;
-read denial, short reads, substituted captures, equal-hash/unequal comparison
-streams and late representative changes also have explicitly simulated coverage.
-Logs and performance fixtures are under `_build/qa/operations-find/`. These tests
-do not establish Linux runtime or installed desktop qualification for the new
-controls; the current task's separate qualification record governs those claims.
-
-The owned native duplicate performance fixture scanned 2,004 entries in 147 ms
-and read 40,960 bytes: 2,000 singleton sizes required no content I/O, while four
-identical 4 KiB files required hashing and exact comparison. This is one local
-debug-build observation, not a hardware-independent latency guarantee; see
-`_build/qa/operations-find/duplicates-performance.log`.
+empty duplicates, hard links and overlapping roots, group-preserving sort, 70-member
+atomic publication, Stop/publication boundaries and explicit budgets, with native
+Windows fixtures for contents, hard links and modification times and simulated read
+denial, short reads, substituted captures, equal-hash/unequal comparison streams and
+late representative changes. Dated evidence: the
+[refactor record](../verification/2026-11-08-find-refactor.md), the
+[crash and extension record](../verification/2026-11-08-find-crash-extension.md) and
+the [operations record](../verification/2026-11-10-operations-find.md).
 
 ## Selecting several results
 
@@ -320,15 +308,15 @@ otherwise on that row alone:
 - The Find window itself offers no delete and no copy or move: those go through Feed to
   panel. Results cannot be dragged, from the Find window or from the list fed to a panel.
 
-Measured on 21 November in a release build with 100,000 results (ten times the 10,000
-retained results a search keeps), on the Windows development machine, best of five: a
-click 1 µs; Ctrl+A 1.4 ms; a Shift+click range over every result 1.4 ms; a Ctrl+click in
-a full selection 1.1 ms (the status line's byte total is summed again); 100,000 mark
-lookups 89 µs; after Ctrl+A or such a range, the one notification and re-reading a
-visible page of 40 marks 1.6–1.7 ms in all, the 40 marks alone 0.6 µs (formatting those
-40 rows takes 48 µs and is not repeated); copying 100,000 full paths 21 ms and their row
-details 37 ms (`find_selection_measures_100k_results` and
-`find_window_marks_measure_100k_results`, ignored tests run with `--ignored`).
+Two ignored measurement tests, `find_selection_measures_100k_results` and
+`find_window_marks_measure_100k_results` (run with `--ignored`), time the selection with
+100,000 results, ten times what a search keeps. In a Windows release build, best of
+five: a click 1 µs; Ctrl+A 1.4 ms; a Shift+click range over every result 1.4 ms; a
+Ctrl+click in a full selection 1.1 ms (the status line's byte total is summed again);
+100,000 mark lookups 89 µs; after Ctrl+A or such a range, the one notification and
+re-reading a visible page of 40 marks 1.6–1.7 ms in all (formatting those 40 rows takes
+48 µs and is not repeated); copying 100,000 full paths 21 ms and their row details
+37 ms.
 
 The selection's presenter tests are `presenter/find_selection_tests.rs` (identity while
 results stream and re-sort, clicks and ranges, keys, Space and Insert, Ctrl+A and Ctrl+D,
@@ -338,8 +326,7 @@ Delete of exactly those results), the mark model's
 `find_window_order_tests.rs`, and the window tests in `tests/find_windows.rs`: pointer,
 keys, accessibility state and the status line, Ctrl+C, the menu by pointer and by
 keyboard and Feed to panel, all through the real presenter, and the selected and cursor
-rows told apart in every theme. Each of them fails with its part reverted (21 November,
-in an export of 2b901122 with the change). The footers' fit is
+rows told apart in every theme. The footers' fit is
 `find_footers_show_whole_evenly_spaced_actions_and_move_the_rest_into_more` in
 `tests/find_narrow_layout.rs` (320×200, 560×420 and 1000×620, both densities, a 32 px
 font at 320×200, More… by pointer and from the keyboard).

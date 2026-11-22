@@ -16,9 +16,9 @@ values and metadata are supplied explicitly by a backend worker. It never reads
 the filesystem or process environment itself. When a template uses `:max`, the
 worker measures every captured row before streaming rows; without `:max` it skips
 that pass, so a preview validates only the rows it shows while clipboard, viewer and
-file output still validate every row. Templates are bounded to 64 KiB and expanded
-individual
-rows to 8 MiB; there is no fixed total file-list length limit.
+file output still validate every row. Templates are bounded to 64 KiB
+(`MAX_FILE_LIST_TEMPLATE_BYTES`) and expanded individual rows to 8 MiB
+(`MAX_FILE_LIST_ROW_BYTES`); there is no fixed total file-list length limit.
 
 `FileListRequest` has a session ID and monotonically increasing generation.
 `RunFileList`, `ConfirmFileList` and `CancelFileList` are backend commands.
@@ -28,10 +28,11 @@ mechanism. Rejected admission must not cancel a previously accepted preview.
 
 ## Output lifetime and safety
 
-The controller admits two workers and at most four retained session jobs. A single
-UI session is currently exposed. Preview is capped at 12 rows/16 KiB. Full output
-streams through the existing private spool in 256 KiB chunks. `GeneratedTextSource`
-exposes immutable length and bounded random reads; it does not reveal a native path.
+The controller (`file_list_actor.rs`) admits two workers and at most four retained
+session jobs; the UI opens one session at a time. Preview is capped at 12 rows/16 KiB.
+Full output streams through the existing private spool in 256 KiB chunks
+(`spool::MAX_IO`). `GeneratedTextSource` exposes immutable length and bounded random
+reads; it does not reveal a native path.
 
 Clipboard output carries its own cancellation lease. The native clipboard worker
 checks it before reads and again before mutation, including after native session
@@ -70,8 +71,9 @@ storage/security metadata are refused instead of silently discarded.
 
 ## Preferences and UI
 
-Preferences schema 26 stores the last 30 unique accepted templates, output kind,
-native output path and append choice. Older settings migrate to defaults. Failed
+Preferences (schema 26 and later) store the last 30 unique accepted templates
+(`MAX_FILE_LIST_HISTORY`), output kind, native output path and append choice. Older
+settings migrate to defaults. Failed
 or cancelled drafts do not overwrite accepted choices. Output completed while
 Options is open saves independently without persisting other previewed settings;
 Options Cancel preserves that accepted history.
@@ -85,14 +87,11 @@ later Replace/Append confirmation.
 Input capture is immutable, and successful output clears selection only when the
 original panel/view/selection revision still matches.
 
-The reference inspected on 11 November is Salamander's
-`src/mainwnd4.cpp::CMainWindow::MakeFileList`: `CFileListDialog::Execute` returning
-OK gates output, while Cancel produces no export. Its
-`src/dialogs.cpp::CFileListDialog::Validate` rejects directory destinations and
-asks before replacing an existing file; `src/fileswn6.cpp::CFilesWindow::MakeFileList`
-uses selected entries or the focused fallback. The current implementation retains
-that modal admission behavior and adds pinned, versioned overwrite/append consent
-and recoverable publication. No reference code is copied.
+The modal admission follows the reference file manager's Make File List: OK gates
+output and Cancel exports nothing, a folder is refused as the destination, replacing
+an existing file is asked first, and the selected entries or the focused one are
+listed. This implementation adds pinned, versioned overwrite/append consent and
+recoverable publication. No reference code is copied.
 
 See [user workflow](../MAKE_FILE_LIST.md) and
 [design](../superpowers/specs/2026-11-09-make-file-list-design.md).

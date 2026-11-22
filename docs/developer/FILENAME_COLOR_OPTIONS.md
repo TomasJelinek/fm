@@ -30,11 +30,9 @@ and saves the displayed order; Cancel restores the session baseline. Options res
 uses the existing color-draft cancellation and refresh path so that the displayed
 list and selected editor agree with the restored preferences.
 
-The behavioral reference is the local Salamander source:
-`src/cfgdlg.h`, `CHighlightMasks::AgreeMasks` (line 53), returns the first matching
-item in ascending list order. `src/dialogs4.cpp`, `CCfgPageColors::DialogProc` /
-`EDTLBN_MOVEITEM2` (line 3930), repositions the selected rule. No source or visual
-assets are copied; Midnight Explorer keeps its own style and backend validation.
+The behaviour follows the reference file manager's color settings: the first matching
+rule in list order wins, and moving a rule repositions it. No source or visual assets
+are copied; Midnight Explorer keeps its own style and backend validation.
 
 `crates/midnight-ui/tests/color_priority_list.rs` exercises the real accessible
 list and rendered row geometry, pointer/accessibility/keyboard selection,
@@ -64,13 +62,10 @@ base colors:
 | Plain text, Markdown and README files | Blue `#3B82F6` |
 | Fonts | Brown `#92400E` |
 
-Since 22 November 2026 source code is cyan `#06A4C7`, and Word documents
-(`*.doc;*.docx;*.odt;*.rtf;*.epub`) and plain text with Markdown
-(`*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*`) have the blue `#3B82F6`
-that source code had before; until then the two document rules were light cool
-neutral `#C4CFE0`. A build of that day (`ebf11cff`) first gave all three rules cyan;
-it was then corrected to these colors. Only these three colors changed: the rules,
-their order and their masks are the same.
+The defaults are defined in `crates/midnight-core/src/filename_colors.rs` (at most 32
+rules, `MAX_FILENAME_COLOR_RULES`). Word documents (`*.doc;*.docx;*.odt;*.rtf;*.epub`) and
+plain text with Markdown (`*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*`)
+share the blue `#3B82F6`.
 
 The shared contrast policy preserves a readable base color or mixes it toward
 black or white by the smallest RGB change that reaches 4.5:1 against the actual
@@ -167,9 +162,9 @@ unadjusted). Every row shows it at 4.5:1 or more. Measured as above:
 Loading a saved document upgrades only an exact match for a historical shipped
 preset: the original five-rule list, the eleven-category slate/amber list, that
 list after archives became yellow, the eleven-rule palette with bright
-document/text colors, the twelve-category palette with blue source code and
-light cool neutral documents and text (shipped until 22 November 2026), or the
-interim twelve-category palette in which all three were cyan. These
+document/text colors, the previous twelve-category palette with blue source code and
+light cool neutral (`#C4CFE0`) documents and text, or the short-lived
+twelve-category palette in which all three were cyan. These
 earlier presets are kept as fixed copies in
 `crates/midnight-platform-common/src/settings/filename_colors.rs`, so a later change
 of the defaults cannot alter what they match. Customizations retain their order,
@@ -210,10 +205,4 @@ case-insensitive, no background, foreground `#64748B` or `#C4CFE0`) splits into
 a preceding PDF `#EF5A5A` rule and the remaining document rule. Position and
 enabled state are preserved; unrelated rules are not reset. Standalone gray PDF
 rules or changed match/target/style options remain intentional customizations.
-At the full32-rule limit no split/truncation occurs. No schema change is needed.
-
-The fresh full filename_colors suite passed 20/0/0 with strict Clippy/format0.
-An earlier 12/8 run used the old library because Copy-Item retained its timestamp;
-that attempt is not behavior-regression evidence. Fresh compilation of both
-library and harness established the result. Descendant-style transport and new
-app/native rendering qualification remain separate.
+At the full 32-rule limit no split/truncation occurs. No schema change is needed.

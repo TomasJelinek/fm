@@ -1,9 +1,7 @@
 # Checksum calculation, file verification and export
 
-Backend and engine qualification is recorded in
+Backend and engine test evidence is recorded in
 [checksum backend verification](../verification/2026-11-07-checksum-backend.md).
-The modeless presentation is being qualified separately; source implementation
-does not by itself establish release/native-desktop availability.
 
 `midnight-core::checksum` is an internal Rust API. It is not part of the viewer
 or filesystem plugin ABI. Independent plugins do not depend on host internals.
@@ -91,9 +89,9 @@ same volume and link rules, but opens no file and reads no contents:
 each folder's `TransferSource::next_listed_child` describes the children the walk does
 not open, from the directory records on Windows (attributes, reparse tag, length) and
 from a no-follow `statx` relative to the held folder on Linux, and opens only the
-folders it enters. A share or a disk therefore no longer pays one guarded open per file
-before the first digest. The reading walk opens each file it reads, and each link or
-special entry to report its refusal, as before. Unreadable entries are reported only by
+folders it enters, so a share or a disk pays no guarded open per file before the first
+digest. The reading walk opens each file it reads, and each link or special entry to
+report its refusal. Unreadable entries are reported only by
 the reading walk: a listed file that cannot be opened gets its error row in its planned
 place. Sources that cannot describe a child without opening it (archives, wrappers)
 keep the default, which opens every child as `next_child` does. Progress carries the listed
@@ -180,11 +178,11 @@ the UI permits four result windows. A job's slot is held by the run and by every
 of its rows, so a window that keeps results keeps its slot. Nothing limits a run's size:
 its memory follows its rows. A row keeps its name below the run's base folder, its
 digests at their fixed lengths in one allocation and an error only when it has one, in
-chunks of up to 64 rows with no per-row `Arc`: `ChecksumRow` is 104 bytes, and a
-SHA-256 row with a typical 25-byte name measured 198 bytes of process memory at 100,000
-rows (19.9 MB) and 196 bytes at 1,000,000 (196 MB), against 479 and 470 bytes for the
-former rows (a whole path, digests as separate vectors, the error inline, an `Arc` and
-an ownership handle per row; 47.9 MB and 470 MB), release build, Windows. During a
+chunks of up to 64 rows (`CHECKSUM_BATCH_SIZE`) with no per-row `Arc`: `ChecksumRow`
+is at most 104 bytes (a test asserts it), and a SHA-256 row with a typical 25-byte name
+measured 198 bytes of process memory at 100,000 rows (19.9 MB) and 196 bytes at
+1,000,000 (196 MB) in a Windows release build (the ignored measurement tests in
+`midnight-core/tests/checksum_verification.rs`). During a
 calculation the window also keeps the listed files (a name and a length each) until
 Finished. Generation tags reject late
 events. Close submits `ReleaseChecksums`, which cancels active calculation and
@@ -400,24 +398,19 @@ Preferences schema 16 stores a nonempty algorithm set as stable names `sha256`,
 empty and unexpected values are rejected; default-only preferences retain the
 older compatible encoding. Later schema 17 includes this field when storing
 Custom Commands. Every new window starts with SHA-256 alone, whatever that field
-holds: the algorithm set is chosen per window and a run no longer writes it back.
+holds: the algorithm set is chosen per window and a run does not write it back.
 The field stays readable for compatibility and travels unchanged through settings
 export and import. Recursion is off for every new window. The result columns (File / folder, Bytes read, Status
 and the shown checksum) resize by dragging the separator after each header, as in
 Find; the window keeps the widths for its session, and showing another algorithm
-fits its checksum column again. Persisting window geometry and column widths
-remains a follow-up.
+fits its checksum column again. Window geometry and column widths are not saved.
 
-Reference behavior was checked against Salamander's
-`src/plugins/checksum/dialogs.cpp` (`InitList`, `SaveSizes`, `GetSaveFileName`,
-`SaveHashes`, `OnContextMenu`, `CCalculateDialog::DialogProc`) and
-`help/hh/checksum/using_calcchecksum.htm`. The implementation uses independent
-Rust/Slint code and asynchronous cancellation; it does not copy reference code,
-assets, synchronous waits or ANSI filename conversions.
+The behaviour follows Salamander's checksum plugin (its list, saving, context menu and
+calculation dialog). The implementation uses independent Rust/Slint code and
+asynchronous cancellation; it does not copy reference code, assets, synchronous waits
+or ANSI filename conversions.
 
-The current native boundary is Windows/Linux. Different-device descendants are
-excluded (left out without Include subfolders, Skipped with it; see the calculation
-contract); same-filesystem Linux bind mounts require a future mount-ID capability.
-Read guards and hashes describe the observed streams, not an immutable snapshot or
-file authentication. Exact budgets, dependency licenses and native test evidence
-remain in the backend verification document.
+The native boundary is Windows/Linux. Different-device descendants are excluded (left
+out without Include subfolders, Skipped with it; see the calculation contract); a Linux
+bind mount of the same filesystem is not recognized as another volume. Read guards and
+hashes describe the observed streams, not an immutable snapshot or file authentication.

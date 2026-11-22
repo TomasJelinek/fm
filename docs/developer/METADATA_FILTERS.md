@@ -61,8 +61,8 @@ match the captured archive caption. Otherwise `missing(name)` is true; a lossy o
 decoded display caption never becomes an authoritative name. Size and kind
 predicates still work. Legacy Masks/Regex keep their existing archive behavior.
 
-Attributes mean the provider's reported native flags. Linux listings currently
-do not report these flags: a dot-name does not imply the `hidden` flag, and a
+Attributes mean the provider's reported native flags. Linux listings do not
+report these flags: a dot-name does not imply the `hidden` flag, and a
 permission mode is not translated into `readonly`. Modified values retain the
 listing timestamp's native precision. Refresh the panel to observe later
 metadata changes. Explicit offsets compare as UTC instants independently of
@@ -82,9 +82,8 @@ a 64 KiB compiled-regex limit, 64 KiB DFA cache limit and regex nesting limit
 memory limit or an allocation-free guarantee. Projection checks cancellation
 between bounded chunks and preserves raw entry identities and selection indices.
 
-Preferences use schema 18 when either panel has Expression mode, including a
-disabled expression. Required schema 16/17 checksum and command fields remain
-present and round-trip unchanged. Old defaults retain the earlier encoding;
-schemas before 18 reject Expression mode. Name-only consumers such as filename
+Preferences are written with schema 18 or later when either panel has Expression
+mode, a disabled expression included; schemas before 18 reject Expression mode
+(`crates/midnight-platform-common/src/settings.rs`). Name-only consumers such as filename
 colors continue to accept only their existing modes; Find additionally accepts
 typed Expression mode through the same compiler (see [Find](FIND.md)).
