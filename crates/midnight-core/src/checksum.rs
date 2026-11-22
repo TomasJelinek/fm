@@ -1,9 +1,20 @@
 //! Internal checksum contracts. Calculation/export are backend work, not viewer/plugin APIs.
+//! A run has no size limit: it holds any number of files at any depth, so its rows are
+//! compact (see [`ChecksumRow`]) and shared in chunks between the engine and the window.
 use crate::{EntryKind, FsError, TransferIdentity};
-use std::{fmt, path::PathBuf, sync::Arc, time::SystemTime};
+use std::{
+    borrow::Cow,
+    fmt,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::SystemTime,
+};
 
 pub const MAX_CHECKSUM_JOBS: usize = 32;
+/// Rows a worker sends together (sooner when they finish slowly); a batching size, not a
+/// limit.
 pub const CHECKSUM_BATCH_SIZE: usize = 64;
+/// Diagnostics a run's summary keeps for Details; every failed row keeps its own error.
 pub const MAX_CHECKSUM_DIAGNOSTICS: usize = 32;
 pub const CHECKSUM_BUFFER_BYTES: usize = 256 * 1024;
 
@@ -24,7 +35,6 @@ pub struct SelectedChecksumRequest {
     pub files: crate::SelectedFiles,
     pub algorithms: ChecksumAlgorithms,
     pub recursive: bool,
-    pub limits: ChecksumLimits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,43 +138,6 @@ impl From<PathBuf> for ChecksumTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct ChecksumLimits {
-    pub max_rows: usize,
-    pub max_depth: usize,
-    pub max_nodes: u64,
-    pub max_retained_bytes: usize,
-}
-impl Default for ChecksumLimits {
-    fn default() -> Self {
-        Self {
-            max_rows: 16_384,
-            max_depth: 64,
-            max_nodes: 1_000_000,
-            max_retained_bytes: 8 * 1024 * 1024,
-        }
-    }
-}
-impl ChecksumLimits {
-    pub fn validate(self) -> Result<(), &'static str> {
-        let max = Self::default();
-        if self.max_rows == 0
-            || self.max_rows > max.max_rows
-            || self.max_depth == 0
-            || self.max_depth > max.max_depth
-            || self.max_nodes == 0
-            || self.max_nodes > max.max_nodes
-            || self.max_retained_bytes == 0
-            || self.max_retained_bytes > max.max_retained_bytes
-        {
-            return Err(
-                "Checksum resource limits must be positive and no greater than their defaults.",
-            );
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct ChecksumRequest {
     pub job: ChecksumJobId,
@@ -172,7 +145,6 @@ pub struct ChecksumRequest {
     pub targets: Vec<ChecksumTarget>,
     pub algorithms: ChecksumAlgorithms,
     pub recursive: bool,
-    pub limits: ChecksumLimits,
 }
 impl ChecksumRequest {
     pub fn new(job: ChecksumJobId, generation: ChecksumGeneration, paths: Vec<PathBuf>) -> Self {
@@ -182,43 +154,35 @@ impl ChecksumRequest {
             targets: paths.into_iter().map(Into::into).collect(),
             algorithms: ChecksumAlgorithms::default(),
             recursive: false,
-            limits: ChecksumLimits::default(),
         }
     }
-    /// Request validation belongs to the backend admission path, not a UI callback.
-    pub fn validate(&self) -> Result<usize, &'static str> {
-        use std::path::Component;
-        if self.job.0 == 0
-            || self.generation.0 == 0
-            || self.targets.is_empty()
-            || self.targets.len() > 4096
-        {
-            return Err("Checksums require nonzero job/generation and 1 to 4096 captured targets.");
+    /// Request validation belongs to the backend admission path, not a UI callback. It
+    /// refuses malformed requests only: a request may name any number of targets.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.job.0 == 0 || self.generation.0 == 0 || self.targets.is_empty() {
+            return Err(
+                "Checksums require a nonzero job and generation and at least one captured target.",
+            );
         }
-        let bytes = self
+        if !self
             .targets
             .iter()
-            .try_fold(0usize, |total, target| {
-                if !target.path.is_absolute()
-                    || target.path.as_os_str().as_encoded_bytes().contains(&0)
-                    || target
-                        .path
-                        .components()
-                        .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-                {
-                    return None;
-                }
-                total
-                    .checked_add(target.path.as_os_str().as_encoded_bytes().len())?
-                    .checked_add(std::mem::size_of::<ChecksumTarget>())
-            })
-            .filter(|bytes| *bytes <= 8 * 1024 * 1024)
-            .ok_or(
-                "Checksum targets exceed the 8 MiB request budget or contain invalid native paths.",
-            )?;
-        self.limits.validate()?;
-        Ok(bytes.max(1))
+            .all(|target| native_absolute(&target.path))
+        {
+            return Err("Checksum targets must be absolute native paths without traversal or NUL.");
+        }
+        Ok(())
     }
+}
+
+/// An absolute native path without `.`/`..` steps or NUL.
+fn native_absolute(path: &Path) -> bool {
+    use std::path::Component;
+    path.is_absolute()
+        && !path.as_os_str().as_encoded_bytes().contains(&0)
+        && !path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
 }
 
 /// A captured native manifest. Expected digests are read and validated by the backend.
@@ -227,24 +191,22 @@ pub struct ChecksumVerifyRequest {
     pub job: ChecksumJobId,
     pub generation: ChecksumGeneration,
     pub manifest: PathBuf,
-    pub limits: ChecksumLimits,
 }
 impl ChecksumVerifyRequest {
     /// Validate without filesystem access; whole-request admission is backend-owned.
-    pub fn validate(&self) -> Result<usize, &'static str> {
-        let request = ChecksumRequest {
-            job: self.job,
-            generation: self.generation,
-            targets: vec![self.manifest.clone().into()],
-            algorithms: ChecksumAlgorithms::default(),
-            recursive: false,
-            limits: self.limits,
-        };
-        request.validate()
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.job.0 == 0 || self.generation.0 == 0 {
+            return Err("Checksum verification requires a nonzero job and generation.");
+        }
+        if !native_absolute(&self.manifest) {
+            return Err("Checksum manifest must be an absolute native path without traversal.");
+        }
+        Ok(())
     }
 }
 
-/// Opaque shared quota ownership retained by every published row/run until it is dropped.
+/// Opaque ownership of a job's slot, held by its run and by every chunk of its rows (wherever
+/// they are kept) until the last of them is dropped.
 pub struct ChecksumRetention {
     _owner: Arc<dyn Send + Sync>,
 }
@@ -261,23 +223,98 @@ impl fmt::Debug for ChecksumRetention {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChecksumDigest {
+/// One algorithm's digest, borrowed from the row that holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChecksumDigest<'a> {
     pub algorithm: ChecksumAlgorithm,
-    pub bytes: Vec<u8>,
+    pub bytes: &'a [u8],
 }
-impl ChecksumDigest {
-    /// Lowercase hexadecimal text, built in one allocation for row models.
+impl ChecksumDigest<'_> {
+    /// Lowercase hexadecimal text, built in one allocation.
     pub fn hex(&self) -> String {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
         let mut text = String::with_capacity(self.bytes.len().saturating_mul(2));
-        for byte in &self.bytes {
-            text.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-        }
+        self.push_hex(&mut text);
         text
     }
+    /// Append the lowercase hexadecimal text, without an allocation of its own.
+    pub fn push_hex(&self, text: &mut String) {
+        push_hex(text, self.bytes);
+    }
 }
+fn push_hex(text: &mut String, bytes: &[u8]) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    text.reserve(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+}
+
+/// A row's digests: each calculated algorithm's fixed-length value, in the order of
+/// [`ChecksumAlgorithm::ALL`], together in one allocation of exactly their length.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ChecksumDigests {
+    /// The algorithms present, as `ChecksumAlgorithms` bits; zero for none.
+    algorithms: u8,
+    bytes: Box<[u8]>,
+}
+impl ChecksumDigests {
+    /// These digests, in any order. None when a value does not have its algorithm's
+    /// length or an algorithm repeats.
+    pub fn new(values: &[(ChecksumAlgorithm, &[u8])]) -> Option<Self> {
+        let mut algorithms = 0u8;
+        let mut length = 0usize;
+        for (algorithm, value) in values {
+            if value.len() != algorithm.bytes() || algorithms & algorithm.bit() != 0 {
+                return None;
+            }
+            algorithms |= algorithm.bit();
+            length += value.len();
+        }
+        let mut bytes = Vec::with_capacity(length);
+        for algorithm in ChecksumAlgorithm::ALL {
+            if let Some((_, value)) = values.iter().find(|(known, _)| *known == algorithm) {
+                bytes.extend_from_slice(value);
+            }
+        }
+        Some(Self {
+            algorithms,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+    pub fn is_empty(&self) -> bool {
+        self.algorithms == 0
+    }
+    pub fn get(&self, algorithm: ChecksumAlgorithm) -> Option<ChecksumDigest<'_>> {
+        self.iter().find(|digest| digest.algorithm == algorithm)
+    }
+    /// Every digest, in [`ChecksumAlgorithm::ALL`] order.
+    pub fn iter(&self) -> impl Iterator<Item = ChecksumDigest<'_>> + '_ {
+        let mut offset = 0;
+        ChecksumAlgorithm::ALL
+            .into_iter()
+            .filter(|algorithm| self.algorithms & algorithm.bit() != 0)
+            .map(move |algorithm| {
+                let start = offset;
+                offset += algorithm.bytes();
+                ChecksumDigest {
+                    algorithm,
+                    bytes: &self.bytes[start..offset],
+                }
+            })
+    }
+}
+impl fmt::Debug for ChecksumDigests {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(
+                self.iter()
+                    .map(|digest| format!("{} {}", digest.algorithm.label(), digest.hex())),
+            )
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChecksumRowState {
     Calculated,
@@ -289,32 +326,145 @@ pub enum ChecksumRowState {
     Skipped,
     Cancelled,
 }
+/// One result row. A run has no size limit, so a row is compact: its name below its
+/// chunk's base folder, its digests in one fixed-length allocation, an error only when
+/// it has one, and no display text (the window formats what it shows on demand).
 #[derive(Clone, Debug)]
 pub struct ChecksumRow {
     pub id: ChecksumRowId,
-    pub path: PathBuf,
+    /// The path below its chunk's [`ChecksumChunk::base`]; a path that is not below it is
+    /// kept whole (joining it to the base gives it back unchanged).
+    pub name: Box<Path>,
     pub identity: Option<TransferIdentity>,
     pub kind: Option<EntryKind>,
     pub state: ChecksumRowState,
     pub bytes_read: u64,
     /// Complete actual digests for Calculated, Verified and Mismatch; empty on read failures.
-    pub digests: Vec<ChecksumDigest>,
-    pub error: Option<FsError>,
-    pub retention: Arc<ChecksumRetention>,
+    pub digests: ChecksumDigests,
+    pub error: Option<Box<FsError>>,
 }
 impl ChecksumRow {
-    pub fn digest(&self, algorithm: ChecksumAlgorithm) -> Option<&ChecksumDigest> {
+    pub fn digest(&self, algorithm: ChecksumAlgorithm) -> Option<ChecksumDigest<'_>> {
         matches!(
             self.state,
             ChecksumRowState::Calculated | ChecksumRowState::Verified | ChecksumRowState::Mismatch
         )
-        .then(|| {
-            self.digests
-                .iter()
-                .find(|digest| digest.algorithm == algorithm)
-        })
+        .then(|| self.digests.get(algorithm))
         .flatten()
     }
+}
+
+/// Rows a worker found together: one allocation for all of them, their base folder and
+/// the job's ownership, shared (never copied) by the engine's retained run and the window.
+#[derive(Debug)]
+pub struct ChecksumChunk {
+    /// The folder every row's name is below.
+    pub base: Arc<Path>,
+    pub rows: Box<[ChecksumRow]>,
+    /// The job's ownership, released once every chunk of its rows is gone.
+    pub retention: Arc<ChecksumRetention>,
+}
+
+/// A row with the base folder its name is below.
+#[derive(Clone, Copy, Debug)]
+pub struct ChecksumRowRef<'a> {
+    pub base: &'a Path,
+    pub row: &'a ChecksumRow,
+}
+impl ChecksumRowRef<'_> {
+    /// The row's whole native path.
+    pub fn path(&self) -> PathBuf {
+        self.base.join(&self.row.name)
+    }
+}
+impl std::ops::Deref for ChecksumRowRef<'_> {
+    type Target = ChecksumRow;
+    fn deref(&self) -> &ChecksumRow {
+        self.row
+    }
+}
+
+/// A run's rows in the order found, as shared chunks. Cloning shares the chunks.
+#[derive(Clone, Debug, Default)]
+pub struct ChecksumRows {
+    chunks: Vec<Arc<ChecksumChunk>>,
+    /// The index of each chunk's first row.
+    starts: Vec<usize>,
+    len: usize,
+}
+impl std::ops::Index<usize> for ChecksumRows {
+    type Output = ChecksumRow;
+    /// The row at `index`, as a slice gives it: there must be one.
+    fn index(&self, index: usize) -> &ChecksumRow {
+        match self.get(index) {
+            Some(row) => row.row,
+            None => panic!("row {index} of {} checksum rows", self.len),
+        }
+    }
+}
+impl From<Arc<ChecksumChunk>> for ChecksumRows {
+    fn from(chunk: Arc<ChecksumChunk>) -> Self {
+        let mut rows = Self::default();
+        rows.push(chunk);
+        rows
+    }
+}
+impl ChecksumRows {
+    pub fn push(&mut self, chunk: Arc<ChecksumChunk>) {
+        if chunk.rows.is_empty() {
+            return;
+        }
+        self.starts.push(self.len);
+        self.len += chunk.rows.len();
+        self.chunks.push(chunk);
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn chunks(&self) -> &[Arc<ChecksumChunk>] {
+        &self.chunks
+    }
+    /// The row at `index`, found without a scan.
+    pub fn get(&self, index: usize) -> Option<ChecksumRowRef<'_>> {
+        if index >= self.len {
+            return None;
+        }
+        let position = self.starts.partition_point(|start| *start <= index) - 1;
+        let chunk = &self.chunks[position];
+        Some(ChecksumRowRef {
+            base: &chunk.base,
+            row: chunk.rows.get(index - self.starts[position])?,
+        })
+    }
+    /// The row whose ID is `id`: a worker numbers its rows from one in the order found.
+    pub fn by_id(&self, id: u64) -> Option<ChecksumRowRef<'_>> {
+        let index = usize::try_from(id.checked_sub(1)?).ok()?;
+        self.get(index).filter(|row| row.id.0 == id)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = ChecksumRowRef<'_>> + '_ {
+        self.chunks.iter().flat_map(|chunk| {
+            chunk.rows.iter().map(|row| ChecksumRowRef {
+                base: &chunk.base,
+                row,
+            })
+        })
+    }
+}
+
+/// The name of `name` (below `base`) relative to a checksum file's `folder`, without an
+/// allocation when the folder is the base or below it. None when it is not below the folder.
+pub fn checksum_file_name<'a>(base: &Path, name: &'a Path, folder: &Path) -> Option<Cow<'a, Path>> {
+    if name.is_absolute() {
+        return name.strip_prefix(folder).ok().map(Cow::Borrowed);
+    }
+    if let Ok(below) = folder.strip_prefix(base) {
+        return name.strip_prefix(below).ok().map(Cow::Borrowed);
+    }
+    let above = base.strip_prefix(folder).ok()?;
+    Some(Cow::Owned(above.join(name)))
 }
 #[derive(Clone, Debug, Default)]
 pub struct ChecksumProgress {
@@ -338,6 +488,10 @@ pub struct ChecksumProgress {
     pub current_size: Option<u64>,
 }
 
+/// Why a file has no checksum-file line: it is not below the checksum file's folder.
+pub const CHECKSUM_NAME_NOT_BELOW: &str =
+    "Manifest sources must be below its containing directory on the same native volume.";
+
 /// One line of a checksum file for `path` below `directory`, exactly as a saved file
 /// has it: GNU binary style `<hex> *<name>`, with a leading backslash when the name
 /// escapes `\`, CR or LF, or SFV `<name>  <hex>` for CRC32. The name is relative to
@@ -345,87 +499,150 @@ pub struct ChecksumProgress {
 pub fn checksum_file_line(
     algorithm: ChecksumAlgorithm,
     hex: &str,
-    path: &std::path::Path,
-    directory: &std::path::Path,
+    path: &Path,
+    directory: &Path,
 ) -> Result<String, (std::io::ErrorKind, &'static str)> {
-    use std::{io::ErrorKind, path::Component};
-    let relative = path.strip_prefix(directory).map_err(|_| {
-        (
-            ErrorKind::InvalidInput,
-            "Manifest sources must be below its containing directory on the same native volume.",
-        )
-    })?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        let Component::Normal(component) = component else {
-            return Err((
-                ErrorKind::InvalidInput,
-                "Manifest names cannot contain traversal, roots or volume prefixes.",
-            ));
-        };
-        parts.push(component.to_str().ok_or((
-            ErrorKind::InvalidData,
-            "Native filename cannot round-trip through the UTF-8 GNU manifest format.",
-        ))?);
-    }
-    if parts.is_empty() {
-        return Err((ErrorKind::InvalidInput, "Empty relative manifest filename."));
-    }
-    let name = parts.join("/");
-    let is_sfv = algorithm == ChecksumAlgorithm::Crc32;
-    if is_sfv
-        && (name.contains(['\\', '\r', '\n', '\0'])
-            || name.trim_start().starts_with([';', '#'])
-            || name.starts_with(char::is_whitespace)
-            || name.ends_with([' ', '\t']))
-    {
-        return Err((
-            ErrorKind::InvalidInput,
-            "This filename cannot be represented unambiguously in SFV format.",
-        ));
-    }
-    let escaped = name.contains(['\\', '\r', '\n']);
-    let encoded = if escaped {
-        name.replace('\\', "\\\\")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-    } else {
-        name
-    };
-    Ok(if is_sfv {
-        format!("{encoded}  {hex}\n")
-    } else {
-        format!("{}{hex} *{encoded}\n", if escaped { "\\" } else { "" })
-    })
+    let relative = path
+        .strip_prefix(directory)
+        .map_err(|_| (std::io::ErrorKind::InvalidInput, CHECKSUM_NAME_NOT_BELOW))?;
+    let mut line = String::new();
+    write_checksum_file_line(&mut line, algorithm, |text| text.push_str(hex), relative)?;
+    Ok(line)
 }
 
-/// A file a calculation will read, listed before reading starts, in reading order.
+/// Append the checksum-file line of a file `name`d relative to the checksum file's
+/// folder (see [`checksum_file_name`]): the text [`checksum_file_line`] returns, written
+/// straight into `text`. On an error nothing is appended.
+pub fn push_checksum_file_line(
+    text: &mut String,
+    digest: ChecksumDigest<'_>,
+    name: &Path,
+) -> Result<(), (std::io::ErrorKind, &'static str)> {
+    write_checksum_file_line(text, digest.algorithm, |text| digest.push_hex(text), name)
+}
+
+fn write_checksum_file_line(
+    text: &mut String,
+    algorithm: ChecksumAlgorithm,
+    hex: impl Fn(&mut String),
+    name: &Path,
+) -> Result<(), (std::io::ErrorKind, &'static str)> {
+    let start = text.len();
+    let written = write_line(text, algorithm, hex, name);
+    if written.is_err() {
+        text.truncate(start);
+    }
+    written
+}
+
+fn write_line(
+    text: &mut String,
+    algorithm: ChecksumAlgorithm,
+    hex: impl Fn(&mut String),
+    name: &Path,
+) -> Result<(), (std::io::ErrorKind, &'static str)> {
+    use std::{io::ErrorKind, path::Component};
+    let traversal = (
+        ErrorKind::InvalidInput,
+        "Manifest names cannot contain traversal, roots or volume prefixes.",
+    );
+    let is_sfv = algorithm == ChecksumAlgorithm::Crc32;
+    // GNU marks a line whose name escapes `\`, CR or LF with a leading backslash.
+    let mut escaped = false;
+    let mut parts = 0usize;
+    for component in name.components() {
+        let Component::Normal(component) = component else {
+            return Err(traversal);
+        };
+        escaped |= component
+            .as_encoded_bytes()
+            .iter()
+            .any(|byte| matches!(byte, b'\\' | b'\r' | b'\n'));
+        parts += 1;
+    }
+    if parts == 0 {
+        return Err((ErrorKind::InvalidInput, "Empty relative manifest filename."));
+    }
+    let escaped = escaped && !is_sfv;
+    if !is_sfv {
+        if escaped {
+            text.push('\\');
+        }
+        hex(text);
+        text.push_str(" *");
+    }
+    let name_start = text.len();
+    for (index, component) in name.components().enumerate() {
+        let Component::Normal(component) = component else {
+            return Err(traversal);
+        };
+        let part = component.to_str().ok_or((
+            ErrorKind::InvalidData,
+            "Native filename cannot round-trip through the UTF-8 GNU manifest format.",
+        ))?;
+        if index > 0 {
+            text.push('/');
+        }
+        if escaped {
+            for character in part.chars() {
+                match character {
+                    '\\' => text.push_str("\\\\"),
+                    '\n' => text.push_str("\\n"),
+                    '\r' => text.push_str("\\r"),
+                    other => text.push(other),
+                }
+            }
+        } else {
+            text.push_str(part);
+        }
+    }
+    if is_sfv {
+        let written = &text[name_start..];
+        if written.contains(['\\', '\r', '\n', '\0'])
+            || written.trim_start().starts_with([';', '#'])
+            || written.starts_with(char::is_whitespace)
+            || written.ends_with([' ', '\t'])
+        {
+            return Err((
+                ErrorKind::InvalidInput,
+                "This filename cannot be represented unambiguously in SFV format.",
+            ));
+        }
+        text.push_str("  ");
+        hex(text);
+    }
+    text.push('\n');
+    Ok(())
+}
+
+/// A file a calculation will read, listed before reading starts, in reading order: its
+/// name below the listing's base folder, and its length when listed (reading checks it
+/// again).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChecksumPlannedFile {
-    pub path: PathBuf,
-    /// Its length when listed; reading checks it again.
+    pub name: Box<Path>,
     pub size: Option<u64>,
+}
+/// Files listed together, below one base folder (the base of the run's rows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChecksumPlanned {
+    pub base: Arc<Path>,
+    pub files: Box<[ChecksumPlannedFile]>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChecksumCompletion {
     Completed,
     CompletedWithErrors,
+    /// Some files could not be listed (an unreadable folder, a changed source), so the
+    /// run may have more files than it found.
     Incomplete,
     Cancelled,
     Failed,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChecksumBudget {
-    Rows,
-    Depth,
-    Nodes,
-    RetainedBytes,
 }
 #[derive(Clone, Debug)]
 pub struct ChecksumSummary {
     pub completion: ChecksumCompletion,
     pub progress: ChecksumProgress,
-    pub reached_budgets: Vec<ChecksumBudget>,
     pub diagnostics: Vec<FsError>,
 }
 #[derive(Clone, Debug)]
@@ -434,7 +651,7 @@ pub struct ChecksumRun {
     pub generation: ChecksumGeneration,
     pub algorithms: ChecksumAlgorithms,
     pub captured_roots: Arc<[PathBuf]>,
-    pub rows: Arc<[Arc<ChecksumRow>]>,
+    pub rows: ChecksumRows,
     pub summary: ChecksumSummary,
     pub retention: Arc<ChecksumRetention>,
 }
@@ -446,8 +663,9 @@ pub enum ChecksumUpdate {
     Verifying(ChecksumAlgorithm),
     /// Files a calculation will read, in batches before reading starts. Rows follow
     /// for each, in the same order, plus rows for entries that cannot be read.
-    Planned(Arc<[ChecksumPlannedFile]>),
-    Batch(Arc<[Arc<ChecksumRow>]>),
+    Planned(Arc<ChecksumPlanned>),
+    /// The next rows, shared with the run that finishes with them.
+    Batch(Arc<ChecksumChunk>),
     Progress(ChecksumProgress),
     Finished(Arc<ChecksumRun>),
 }

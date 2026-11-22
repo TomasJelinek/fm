@@ -4,9 +4,9 @@ use std::{ffi::OsString, os::windows::ffi::OsStringExt};
 #[test]
 fn unpaired_native_utf16_is_refused_without_replacement_characters() {
     let (mut run, request) = fixture("original");
-    let row = Arc::make_mut(&mut Arc::make_mut(&mut run.rows)[0]);
-    row.path
-        .set_file_name(OsString::from_wide(&[b'x' as u16, 0xd800]));
+    let mut row = run.rows[0].clone();
+    row.name = PathBuf::from(OsString::from_wide(&[b'x' as u16, 0xd800])).into();
+    set_rows(&mut run, vec![row]);
     assert_eq!(
         encode(
             &run,
@@ -28,7 +28,6 @@ fn escaped_literal_backslashes_from_unix_cannot_silently_select_windows_subdirec
         super::super::super::format::parse_manifest(
             bytes.as_bytes(),
             &request.destination,
-            ChecksumLimits::default(),
             &Cancellation::default()
         )
         .is_err()

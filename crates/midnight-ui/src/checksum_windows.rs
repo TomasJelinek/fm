@@ -1,6 +1,9 @@
 //! Modeless checksum presentation. Backend result owners survive native window cancellation.
 use crate::dialog_host::{CloseDisposition, DialogHost, DialogOwner, DialogSessions};
-use crate::presenter::checksums::{ChecksumSession, OUTPUT_ALGORITHMS};
+use crate::presenter::checksums::{
+    ChecksumSession, OUTPUT_ALGORITHMS,
+    selection::{listed_slot, row_slot},
+};
 use crate::tool_window_failure::Failures;
 use crate::{ChecksumDisplayRow, ChecksumDraft, ChecksumWindow, MainWindow, Presenter, Theme};
 use midnight_core::*;
@@ -37,19 +40,22 @@ impl Model for Rows {
         let p = state.borrow();
         let s = p.checksums.sessions.get(&self.job)?;
         let Some(row) = s.rows().get(index) else {
-            let file = s.pending_at(index - s.rows().len())?;
-            return Some(pending_row(s, file, index, &p.number_locale));
+            let (place, file) = s.pending_at(index - s.rows().len())?;
+            return Some(pending_row(s, place, file, &p.number_locale));
         };
+        // Display text is formatted here, for the shown rows only; rows keep none.
+        let path = row.path();
+        let selected = row_slot(row.id.0).is_some_and(|slot| s.selection.is_selected(slot));
         Some(ChecksumDisplayRow {
             token: format!("{}:{}", s.generation.0, row.id.0).into(),
             name: crate::shown_text(
-                &row.path
+                &path
                     .file_name()
-                    .unwrap_or(row.path.as_os_str())
+                    .unwrap_or(path.as_os_str())
                     .to_string_lossy(),
             ),
-            path: crate::shown_text(&row.path.parent().unwrap_or(&row.path).to_string_lossy()),
-            status: row_status(row).into(),
+            path: crate::shown_text(&path.parent().unwrap_or(&path).to_string_lossy()),
+            status: row_status(&row).into(),
             bytes: format!("{} B", p.number_locale.format_u64(row.bytes_read)).into(),
             digests: if !row.digests.is_empty() {
                 row.digests
@@ -61,11 +67,11 @@ impl Model for Rows {
             } else {
                 "".into()
             },
-            sha256: digest(row, ChecksumAlgorithm::Sha256),
-            sha512: digest(row, ChecksumAlgorithm::Sha512),
-            md5: digest(row, ChecksumAlgorithm::Md5),
-            sha1: digest(row, ChecksumAlgorithm::Sha1),
-            crc32: digest(row, ChecksumAlgorithm::Crc32),
+            sha256: digest(&row, ChecksumAlgorithm::Sha256),
+            sha512: digest(&row, ChecksumAlgorithm::Sha512),
+            md5: digest(&row, ChecksumAlgorithm::Md5),
+            sha1: digest(&row, ChecksumAlgorithm::Sha1),
+            crc32: digest(&row, ChecksumAlgorithm::Crc32),
             calculated: matches!(
                 row.state,
                 ChecksumRowState::Calculated
@@ -81,6 +87,7 @@ impl Model for Rows {
                     | ChecksumRowState::Missing
             ),
             current: false,
+            selected,
         })
     }
     fn model_tracker(&self) -> &dyn ModelTracker {
@@ -88,6 +95,15 @@ impl Model for Rows {
     }
 }
 impl Rows {
+    /// The shown rows whose marks changed: each one is read again where it is shown.
+    fn marks_changed(&self, changed: &[std::ops::Range<usize>]) {
+        let count = self.row_count();
+        for range in changed {
+            for row in range.start..range.end.min(count) {
+                self.notify.row_changed(row);
+            }
+        }
+    }
     fn update(&self, generation: u64, finished: usize, pending: usize) {
         let (old_generation, old_finished, old_pending) =
             self.structure.replace((generation, finished, pending));
@@ -114,14 +130,18 @@ impl Rows {
     }
 }
 
-/// A listed file without a row yet: waiting, or being read.
+/// A listed file without a row yet: waiting, or being read. Its token names its place in
+/// the listing, its identity until its row arrives.
 fn pending_row(
     s: &ChecksumSession,
+    place: usize,
     file: &ChecksumPlannedFile,
-    index: usize,
     locale: &NumberLocale,
 ) -> ChecksumDisplayRow {
-    let current = s.progress.current.as_deref() == Some(file.path.as_path());
+    let path = s
+        .pending_base()
+        .map_or_else(|| file.name.to_path_buf(), |base| base.join(&file.name));
+    let current = s.progress.current.as_deref() == Some(path.as_path());
     let status = if !current {
         "Waiting".to_owned()
     } else if let Some(size) = file.size.filter(|size| *size > 0) {
@@ -133,16 +153,14 @@ fn pending_row(
         "Reading".to_owned()
     };
     ChecksumDisplayRow {
-        // Not a row identity: copy actions ignore it.
-        token: format!("{}:listed:{index}", s.generation.0).into(),
+        token: format!("{}:listed:{place}", s.generation.0).into(),
         name: crate::shown_text(
-            &file
-                .path
+            &path
                 .file_name()
-                .unwrap_or(file.path.as_os_str())
+                .unwrap_or(path.as_os_str())
                 .to_string_lossy(),
         ),
-        path: crate::shown_text(&file.path.parent().unwrap_or(&file.path).to_string_lossy()),
+        path: crate::shown_text(&path.parent().unwrap_or(&path).to_string_lossy()),
         status: status.into(),
         bytes: if current {
             format!("{} B", locale.format_u64(s.progress.current_read)).into()
@@ -150,6 +168,7 @@ fn pending_row(
             Default::default()
         },
         current,
+        selected: listed_slot(place).is_some_and(|slot| s.selection.is_selected(slot)),
         ..Default::default()
     }
 }
@@ -295,7 +314,6 @@ fn refresh(
         record.revision = Some(s.revision);
         let changed = record.rows.structure.get().0 != s.generation.0;
         if changed {
-            w.set_selected_row(-1);
             w.set_draft(draft(s));
             let index = OUTPUT_ALGORITHMS
                 .iter()
@@ -379,6 +397,13 @@ fn refresh(
         record
             .rows
             .update(s.generation.0, s.rows().len(), s.pending_count());
+        publish_selection(w, s, &p.number_locale);
+        // The row being calculated: the earliest listed file without its row.
+        w.set_active_row(if s.running && s.pending_count() > 0 {
+            i32::try_from(s.rows().len()).unwrap_or(i32::MAX)
+        } else {
+            -1
+        });
         let shown = if record.shown {
             Ok(())
         } else {
@@ -511,12 +536,23 @@ fn create(
             }
         });
     }
-    callback!(on_copy_result, |p, send, token, index, whole| {
+    // The context menu: its row's token, captured when it opened, and whether it acts on
+    // the selection (the row was selected then).
+    callback!(on_copy_result, |p, send, token, index, whole, selection| {
         if let Some(&algorithm) = usize::try_from(index)
             .ok()
             .and_then(|i| OUTPUT_ALGORITHMS.get(i))
         {
-            p.copy_checksum(id, &token, algorithm, whole, send);
+            p.copy_checksum(id, &token, algorithm, whole, selection, send);
+        }
+    });
+    // Ctrl+C and Ctrl+Shift+C in the list.
+    callback!(on_copy_selection, |p, send, index, whole| {
+        if let Some(&algorithm) = usize::try_from(index)
+            .ok()
+            .and_then(|i| OUTPUT_ALGORITHMS.get(i))
+        {
+            p.copy_checksums(id, algorithm, whole, send);
         }
     });
     callback!(on_copy_checksum_file, |p, send, index| {
@@ -527,6 +563,7 @@ fn create(
             p.copy_checksum_file(id, algorithm, send);
         }
     });
+    install_selection(&window, &host, session, state, &rows, id);
     callback!(on_confirm_save, |p, send| {
         p.confirm_checksum_save(id, send);
     });
@@ -605,6 +642,79 @@ fn publish_outputs(w: &ChecksumWindow, algorithms: ChecksumAlgorithms) {
         .into(),
     );
 }
+/// The list's selection callbacks. A click or a selection key changes only the marks, the
+/// cursor and what Copy can do: the shown rows whose marks changed are read again and
+/// those few properties set, without a window refresh.
+fn install_selection(
+    window: &ChecksumWindow,
+    host: &Rc<DialogHost>,
+    session: crate::dialog_host::DialogSession,
+    state: &Rc<RefCell<Presenter>>,
+    rows: &Rc<Rows>,
+    id: ChecksumJobId,
+) {
+    type Change = dyn Fn(&mut ChecksumSession) -> Option<crate::list_selection::Changed>;
+    let select: Rc<dyn Fn(&Change)> = {
+        let (state, rows, host, weak) =
+            (state.clone(), rows.clone(), host.clone(), window.as_weak());
+        Rc::new(move |change: &Change| {
+            if !host.is_current(session) {
+                return;
+            }
+            let changed = {
+                let mut p = state.borrow_mut();
+                let Some(s) = p.checksums.sessions.get_mut(&id) else {
+                    return;
+                };
+                change(s)
+            };
+            let Some(changed) = changed else {
+                return;
+            };
+            // The model reads the presenter again: no borrow may be held here.
+            rows.marks_changed(&changed);
+            let p = state.borrow();
+            if let (Some(w), Some(s)) = (weak.upgrade(), p.checksums.sessions.get(&id)) {
+                publish_selection(&w, s, &p.number_locale);
+            }
+        })
+    };
+    let index = |value: i32| usize::try_from(value).ok();
+    let pick = select.clone();
+    window.on_pick_row(move |row, control, shift| {
+        if let Some(row) = index(row) {
+            pick(&move |s| s.click_row(row, control, shift));
+        }
+    });
+    let reach = select.clone();
+    window.on_move_cursor(move |row, extend, keep| {
+        if let Some(row) = index(row) {
+            reach(&move |s| s.move_cursor(row, extend, keep));
+        }
+    });
+    let toggle = select.clone();
+    window.on_toggle_row(move |advance| toggle(&move |s| s.toggle_cursor(advance)));
+    let all = select.clone();
+    window.on_select_all(move || all(&|s| Some(s.select_all_rows())));
+    window.on_deselect_all(move || select(&|s| Some(s.deselect_all_rows())));
+}
+
+/// The cursor and what the selection can copy: the lines Copy writes (selected calculated
+/// rows) and the rows with a checksum for Ctrl+C and the context menu.
+fn publish_selection(w: &ChecksumWindow, s: &ChecksumSession, locale: &NumberLocale) {
+    let int = |value: u64| i32::try_from(value).unwrap_or(i32::MAX);
+    w.set_cursor_row(
+        s.cursor_row()
+            .map_or(-1, |row| i32::try_from(row).unwrap_or(i32::MAX)),
+    );
+    w.set_selection_empty(s.selection.is_empty());
+    let (lines, hashes) = s.selection_counts();
+    w.set_copy_lines(int(lines));
+    w.set_copy_lines_text(locale.format_u64(lines).into());
+    w.set_selected_hashes(int(hashes));
+    w.set_selected_hashes_text(locale.format_u64(hashes).into());
+}
+
 fn digest(row: &ChecksumRow, algorithm: ChecksumAlgorithm) -> slint::SharedString {
     row.digest(algorithm)
         .map_or_else(Default::default, |d| d.hex().into())
@@ -791,6 +901,258 @@ mod tests {
         assert!(republished != published, "a new algorithm set republishes");
         let available: Vec<bool> = republished.iter().collect();
         assert_eq!(available, [false, false, true, false, false]);
+    }
+
+    /// The window learns which row is being calculated (the first listed file without a
+    /// row, none once the run ends), the cursor, and whether anything is selected and
+    /// what Copy can write; a selection change notifies only the rows it marks.
+    #[test]
+    fn the_window_follows_the_first_waiting_file_and_publishes_the_selection() {
+        let h = crate::test_harness::Harness::with_location(
+            UserPreferences::default(),
+            std::env::temp_dir(),
+        );
+        let state = h.presenter.clone();
+        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(|_| true);
+        state
+            .borrow_mut()
+            .request_checksums(PaneId::Left, send.as_ref());
+        let id = *state.borrow().checksums.sessions.keys().next().unwrap();
+        let windows: Windows = Rc::default();
+        let sessions = RefCell::new(DialogSessions::default());
+        let closing = Rc::new(Cell::new(false));
+        let failures = Failures::new(
+            &h.window,
+            &state,
+            &send,
+            &closing,
+            "Checksums",
+            Presenter::close_checksums,
+        );
+        let update = || refresh(&h.window, &windows, &sessions, &state, &send, &failures);
+        let window = || windows.borrow()[&id].window.clone_strong();
+        update();
+        assert_eq!(window().get_active_row(), -1, "nothing runs");
+        let algorithms = state.borrow().checksums.sessions[&id].algorithms;
+        assert!(
+            state
+                .borrow_mut()
+                .start_checksums(id, algorithms, false, send.as_ref())
+        );
+        let root = std::env::temp_dir();
+        let apply = |update| {
+            let generation = state.borrow().checksums.sessions[&id].generation;
+            state
+                .borrow_mut()
+                .apply(Event::Checksum(Box::new(ChecksumEvent {
+                    job: id,
+                    generation,
+                    update,
+                })));
+        };
+        apply(ChecksumUpdate::Planned(std::sync::Arc::new(
+            ChecksumPlanned {
+                base: root.as_path().into(),
+                files: ["a", "b", "c"]
+                    .map(|name| ChecksumPlannedFile {
+                        name: std::path::Path::new(name).into(),
+                        size: Some(1),
+                    })
+                    .into(),
+            },
+        )));
+        update();
+        assert_eq!(window().get_active_row(), 0);
+        let row = |id: u64, name: &str| ChecksumRow {
+            id: ChecksumRowId(id),
+            name: std::path::Path::new(name).into(),
+            identity: None,
+            kind: Some(EntryKind::File),
+            state: ChecksumRowState::Calculated,
+            bytes_read: 1,
+            digests: ChecksumDigests::new(&[(ChecksumAlgorithm::Sha256, &[1; 32])]).unwrap(),
+            error: None,
+        };
+        apply(ChecksumUpdate::Batch(std::sync::Arc::new(ChecksumChunk {
+            base: root.as_path().into(),
+            rows: vec![row(1, "a")].into_boxed_slice(),
+            retention: ChecksumRetention::new(()),
+        })));
+        update();
+        assert_eq!(window().get_active_row(), 1, "a's row is in; b is next");
+        assert!(window().get_selection_empty());
+        // Click the finished row: the window is told at once, without a refresh.
+        window().invoke_pick_row(0, false, false);
+        assert!(!window().get_selection_empty());
+        assert_eq!(window().get_cursor_row(), 0);
+        assert_eq!(
+            (window().get_copy_lines(), window().get_copy_lines_text()),
+            (1, "1".into())
+        );
+        let rows = state.borrow().checksums.sessions[&id].rows().clone();
+        // Read before `apply`, which borrows the presenter mutably.
+        let generation = state.borrow().checksums.sessions[&id].generation;
+        apply(ChecksumUpdate::Finished(std::sync::Arc::new(ChecksumRun {
+            job: id,
+            generation,
+            algorithms,
+            captured_roots: vec![root.clone()].into(),
+            rows,
+            summary: ChecksumSummary {
+                completion: ChecksumCompletion::Cancelled,
+                progress: ChecksumProgress::default(),
+                diagnostics: vec![],
+            },
+            retention: ChecksumRetention::new(()),
+        })));
+        update();
+        assert_eq!(window().get_active_row(), -1, "the run ended");
+        assert!(!window().get_selection_empty(), "the selection stays");
+    }
+
+    /// What the UI thread spends on a selection or a copy at `MIDNIGHT_CHECKSUM_ROWS` rows
+    /// (100,000 by default), through the window's own callbacks: the presenter, the model
+    /// notifications and the published properties. Reports timings without thresholds;
+    /// run alone, in release, with --ignored --nocapture.
+    #[test]
+    #[ignore = "explicit checksum selection benchmark; reports timings without pass thresholds"]
+    fn checksum_selection_benchmark() {
+        use std::time::Instant;
+        let count: u64 = std::env::var("MIDNIGHT_CHECKSUM_ROWS")
+            .ok()
+            .and_then(|rows| rows.parse().ok())
+            .unwrap_or(100_000);
+        let h = crate::test_harness::Harness::with_location(
+            UserPreferences::default(),
+            std::env::temp_dir(),
+        );
+        let state = h.presenter.clone();
+        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(|_| true);
+        state
+            .borrow_mut()
+            .request_checksums(PaneId::Left, send.as_ref());
+        let id = *state.borrow().checksums.sessions.keys().next().unwrap();
+        let algorithms = state.borrow().checksums.sessions[&id].algorithms;
+        assert!(
+            state
+                .borrow_mut()
+                .start_checksums(id, algorithms, false, send.as_ref())
+        );
+        let base: std::sync::Arc<std::path::Path> = std::env::temp_dir().into();
+        let retention = ChecksumRetention::new(());
+        let mut rows = ChecksumRows::default();
+        let mut batch = Vec::new();
+        for index in 0..count {
+            batch.push(ChecksumRow {
+                id: ChecksumRowId(index + 1),
+                name: std::path::Path::new(&format!("album {:02}/IMG_{index:07}.jpg", index % 40))
+                    .into(),
+                identity: None,
+                kind: Some(EntryKind::File),
+                state: ChecksumRowState::Calculated,
+                bytes_read: 4096,
+                digests: ChecksumDigests::new(&[(ChecksumAlgorithm::Sha256, &[index as u8; 32])])
+                    .unwrap(),
+                error: None,
+            });
+            if batch.len() == CHECKSUM_BATCH_SIZE || index + 1 == count {
+                rows.push(std::sync::Arc::new(ChecksumChunk {
+                    base: base.clone(),
+                    rows: std::mem::take(&mut batch).into_boxed_slice(),
+                    retention: retention.clone(),
+                }));
+            }
+        }
+        let generation = state.borrow().checksums.sessions[&id].generation;
+        state
+            .borrow_mut()
+            .apply(Event::Checksum(Box::new(ChecksumEvent {
+                job: id,
+                generation,
+                update: ChecksumUpdate::Finished(std::sync::Arc::new(ChecksumRun {
+                    job: id,
+                    generation,
+                    algorithms,
+                    captured_roots: vec![std::env::temp_dir()].into(),
+                    rows,
+                    summary: ChecksumSummary {
+                        completion: ChecksumCompletion::Completed,
+                        progress: ChecksumProgress {
+                            calculated: count,
+                            ..Default::default()
+                        },
+                        diagnostics: vec![],
+                    },
+                    retention,
+                })),
+            })));
+        let windows: Windows = Rc::default();
+        let sessions = RefCell::new(DialogSessions::default());
+        let closing = Rc::new(Cell::new(false));
+        let failures = Failures::new(
+            &h.window,
+            &state,
+            &send,
+            &closing,
+            "Checksums",
+            Presenter::close_checksums,
+        );
+        refresh(&h.window, &windows, &sessions, &state, &send, &failures);
+        let window = windows.borrow()[&id].window.clone_strong();
+        let time = |what: &str, action: &dyn Fn()| {
+            let mut samples: Vec<f64> = (0..5)
+                .map(|_| {
+                    let start = Instant::now();
+                    action();
+                    start.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect();
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "{what} at {count} rows: median {:.2} ms, worst {:.2} ms",
+                samples[2], samples[4]
+            );
+        };
+        time("select all (Ctrl+A)", &|| window.invoke_select_all());
+        time("click after select all (clears every mark)", &|| {
+            window.invoke_select_all();
+            window.invoke_pick_row(5, false, false);
+        });
+        let far = i32::try_from(count * 6 / 10).unwrap_or(i32::MAX);
+        time("Shift+click range over 60% of the rows", &|| {
+            window.invoke_pick_row(10, false, false);
+            window.invoke_pick_row(far, false, true);
+        });
+        time("Ctrl+D after select all", &|| {
+            window.invoke_select_all();
+            window.invoke_deselect_all();
+        });
+        window.invoke_select_all();
+        let copy = |kind: &str, copy: &dyn Fn(&mut Presenter)| {
+            time(kind, &|| copy(&mut state.borrow_mut()));
+        };
+        copy("copy as checksum file, every row selected", &|p| {
+            p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &|_| true)
+        });
+        copy("Ctrl+C checksums, every row selected", &|p| {
+            p.copy_checksums(id, ChecksumAlgorithm::Sha256, false, &|_| true)
+        });
+        time(
+            "Ctrl+A then a key move (cursor and marks published)",
+            &|| {
+                window.invoke_select_all();
+                window.invoke_move_cursor(7, false, false);
+            },
+        );
+        // A run's batch changes the session: the window is refreshed whole, the selection's
+        // counts included.
+        window.invoke_select_all();
+        time("window refresh after a change, every row selected", &|| {
+            if let Some(s) = state.borrow_mut().checksums.sessions.get_mut(&id) {
+                s.revision = s.revision.wrapping_add(1);
+            }
+            refresh(&h.window, &windows, &sessions, &state, &send, &failures);
+        });
     }
 
     /// "1 of 1 file", not "0 of 1 files": one listed file in the singular, and a file

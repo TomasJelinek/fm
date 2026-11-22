@@ -1,8 +1,8 @@
 //! Immutable native checksum inputs from acknowledged inline-tree occurrences.
 use crate::{
-    Cancellation, ChecksumAlgorithms, ChecksumGeneration, ChecksumJobId, ChecksumLimits,
-    ChecksumTarget, FsError, SelectionRevision, TreeProjection, TreeRequestId, TreeRowId,
-    TreeSelectionSnapshot, TreeViewStamp,
+    Cancellation, ChecksumAlgorithms, ChecksumGeneration, ChecksumJobId, ChecksumTarget, FsError,
+    SelectionRevision, TreeProjection, TreeRequestId, TreeRowId, TreeSelectionSnapshot,
+    TreeViewStamp,
 };
 use std::{path::PathBuf, sync::Arc};
 
@@ -40,5 +40,4 @@ pub struct CapturedChecksumRequest {
     pub sources: Arc<dyn CapturedChecksumFiles>,
     pub algorithms: ChecksumAlgorithms,
     pub recursive: bool,
-    pub limits: ChecksumLimits,
 }

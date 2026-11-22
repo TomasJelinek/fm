@@ -4,8 +4,9 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 #[test]
 fn raw_unix_names_are_refused_and_literal_backslashes_are_gnu_escaped() {
     let (mut run, request) = fixture("original");
-    let row = Arc::make_mut(&mut Arc::make_mut(&mut run.rows)[0]);
-    row.path.set_file_name(OsString::from_vec(vec![b'x', 0xff]));
+    let mut row = run.rows[0].clone();
+    row.name = PathBuf::from(OsString::from_vec(vec![b'x', 0xff])).into();
+    set_rows(&mut run, vec![row.clone()]);
     assert_eq!(
         encode(
             &run,
@@ -17,8 +18,8 @@ fn raw_unix_names_are_refused_and_literal_backslashes_are_gnu_escaped() {
         .kind,
         io::ErrorKind::InvalidData
     );
-    let row = Arc::make_mut(&mut Arc::make_mut(&mut run.rows)[0]);
-    row.path.set_file_name("literal\\name");
+    row.name = Path::new("literal\\name").into();
+    set_rows(&mut run, vec![row]);
     let (bytes, _) = encode(
         &run,
         &request,
@@ -45,13 +46,9 @@ fn escaped_literal_backslashes_round_trip_without_becoming_directories() {
     let parsed = super::super::super::format::parse_manifest(
         &bytes,
         &request.destination,
-        ChecksumLimits::default(),
         &Cancellation::default(),
     )
     .unwrap();
-    assert_eq!(parsed.entries[0].path, run.rows[0].path);
-    assert_ne!(
-        parsed.entries[0].path,
-        request.destination.parent().unwrap().join("literal/name")
-    );
+    assert_eq!(parsed.names[0], run.rows[0].name);
+    assert_ne!(&*parsed.names[0], Path::new("literal/name"));
 }

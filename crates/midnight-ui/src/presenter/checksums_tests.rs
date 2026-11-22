@@ -182,58 +182,117 @@ fn focused_checksum_sidecar_prefills_verification_without_hashing_the_manifest()
     assert!(commands.borrow().is_empty());
 }
 
-/// Finish the session's current run with one calculated SHA-256 row.
-pub(super) fn finish(p: &mut Presenter, id: ChecksumJobId, completion: ChecksumCompletion) {
-    finish_reporting(p, id, completion, Vec::new(), Vec::new());
-}
-
-/// [`finish`] with the backend's diagnostics and the limits the run reached.
-fn finish_reporting(
-    p: &mut Presenter,
-    id: ChecksumJobId,
-    completion: ChecksumCompletion,
-    diagnostics: Vec<FsError>,
-    reached_budgets: Vec<ChecksumBudget>,
-) {
-    let generation = p.checksums.sessions[&id].generation;
-    let retention = ChecksumRetention::new(());
-    let row = Arc::new(ChecksumRow {
-        id: ChecksumRowId(1),
-        path: p.checksums.sessions[&id].files.fallback.clone().unwrap(),
+/// A result row named `path` below its parent folder (the chunk's base, see `chunk`).
+pub(super) fn result_row(
+    id: u64,
+    path: &Path,
+    state: ChecksumRowState,
+    digests: &[(ChecksumAlgorithm, &[u8])],
+) -> ChecksumRow {
+    ChecksumRow {
+        id: ChecksumRowId(id),
+        name: Path::new(path.file_name().unwrap_or(path.as_os_str())).into(),
         identity: None,
         kind: Some(EntryKind::File),
-        state: ChecksumRowState::Calculated,
+        state,
         bytes_read: 3,
-        digests: vec![ChecksumDigest {
-            algorithm: ChecksumAlgorithm::Sha256,
-            bytes: vec![0x42; 32],
-        }],
+        digests: ChecksumDigests::new(digests).unwrap(),
         error: None,
-        retention: retention.clone(),
-    });
+    }
+}
+
+/// Rows in one chunk below `base`. A row's name is taken relative to `base` when it is
+/// a whole path below it.
+pub(super) fn chunk(base: &Path, rows: Vec<ChecksumRow>) -> Arc<ChecksumChunk> {
+    Arc::new(ChecksumChunk {
+        base: base.into(),
+        rows: rows.into_boxed_slice(),
+        retention: ChecksumRetention::new(()),
+    })
+}
+
+/// A finished run of these chunks.
+pub(super) fn finished_run(
+    p: &mut Presenter,
+    id: ChecksumJobId,
+    algorithms: ChecksumAlgorithms,
+    chunks: Vec<Arc<ChecksumChunk>>,
+    summary: ChecksumSummary,
+) {
+    let generation = p.checksums.sessions[&id].generation;
+    let mut rows = ChecksumRows::default();
+    for chunk in chunks {
+        rows.push(chunk);
+    }
     p.apply(Event::Checksum(Box::new(ChecksumEvent {
         job: id,
         generation,
         update: ChecksumUpdate::Finished(Arc::new(ChecksumRun {
             job: id,
             generation,
-            algorithms: ChecksumAlgorithms::default(),
-            captured_roots: vec![row.path.clone()].into(),
-            rows: vec![row].into(),
-            summary: ChecksumSummary {
-                completion,
-                progress: ChecksumProgress {
-                    discovered: 1,
-                    calculated: 1,
-                    bytes_read: 3,
-                    ..Default::default()
-                },
-                reached_budgets,
-                diagnostics,
-            },
-            retention,
+            algorithms,
+            captured_roots: vec![std::env::temp_dir()].into(),
+            rows,
+            summary,
+            retention: ChecksumRetention::new(()),
         })),
     })));
+}
+
+/// Files listed below `base`, each 3 bytes long.
+pub(super) fn listed(base: &Path, names: &[&str]) -> Arc<ChecksumPlanned> {
+    Arc::new(ChecksumPlanned {
+        base: base.into(),
+        files: names
+            .iter()
+            .map(|name| ChecksumPlannedFile {
+                name: Path::new(name).into(),
+                size: Some(3),
+            })
+            .collect(),
+    })
+}
+
+fn names(names: &[&str]) -> Vec<PathBuf> {
+    names.iter().map(PathBuf::from).collect()
+}
+
+/// Finish the session's current run with one calculated SHA-256 row.
+pub(super) fn finish(p: &mut Presenter, id: ChecksumJobId, completion: ChecksumCompletion) {
+    finish_reporting(p, id, completion, Vec::new());
+}
+
+/// [`finish`] with the backend's diagnostics.
+fn finish_reporting(
+    p: &mut Presenter,
+    id: ChecksumJobId,
+    completion: ChecksumCompletion,
+    diagnostics: Vec<FsError>,
+) {
+    let path = p.checksums.sessions[&id].files.fallback.clone().unwrap();
+    let row = result_row(
+        1,
+        &path,
+        ChecksumRowState::Calculated,
+        &[(ChecksumAlgorithm::Sha256, &[0x42; 32])],
+    );
+    let chunks = vec![chunk(path.parent().unwrap(), vec![row])];
+    finished_run(
+        p,
+        id,
+        ChecksumAlgorithms::default(),
+        chunks,
+        ChecksumSummary {
+            completion,
+            progress: ChecksumProgress {
+                discovered: 1,
+                calculated: 1,
+                bytes_read: 3,
+                ..Default::default()
+            },
+            diagnostics,
+        },
+    );
 }
 
 #[test]
@@ -253,27 +312,21 @@ fn a_verification_refused_for_mixed_algorithms_names_that_reason() {
             "Checksum manifest mixes different algorithms.",
         ),
     );
-    p.apply(Event::Checksum(Box::new(ChecksumEvent {
-        job: id,
-        generation,
-        update: ChecksumUpdate::Finished(Arc::new(ChecksumRun {
-            job: id,
-            generation,
-            algorithms: ChecksumAlgorithms::default(),
-            captured_roots: vec![manifest].into(),
-            rows: Arc::from([]),
-            summary: ChecksumSummary {
-                completion: ChecksumCompletion::Failed,
-                progress: ChecksumProgress {
-                    errors: 1,
-                    ..Default::default()
-                },
-                reached_budgets: vec![],
-                diagnostics: vec![refused],
+    let _ = (generation, manifest);
+    finished_run(
+        &mut p,
+        id,
+        ChecksumAlgorithms::default(),
+        Vec::new(),
+        ChecksumSummary {
+            completion: ChecksumCompletion::Failed,
+            progress: ChecksumProgress {
+                errors: 1,
+                ..Default::default()
             },
-            retention: ChecksumRetention::new(()),
-        })),
-    })));
+            diagnostics: vec![refused],
+        },
+    );
     let s = &p.checksums.sessions[&id];
     assert!(!s.running);
     assert_eq!(
@@ -314,7 +367,7 @@ fn checksum_recalculate_keeps_capture_and_old_row_tokens_cannot_copy_new_results
     let (mut p, id) = setup(&send);
     let captured = p.checksums.sessions[&id].files.fallback.clone();
     finish(&mut p, id, ChecksumCompletion::Completed);
-    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Sha256, false, &send);
+    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Sha256, false, false, &send);
     assert!(
         commands
             .borrow()
@@ -333,9 +386,9 @@ fn checksum_recalculate_keeps_capture_and_old_row_tokens_cannot_copy_new_results
     drop(sent);
     finish(&mut p, id, ChecksumCompletion::Completed);
     commands.borrow_mut().clear();
-    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Sha256, false, &send);
+    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Sha256, false, false, &send);
     assert!(commands.borrow().is_empty());
-    p.copy_checksum(id, "2:1", ChecksumAlgorithm::Md5, false, &send);
+    p.copy_checksum(id, "2:1", ChecksumAlgorithm::Md5, false, false, &send);
     assert!(
         commands.borrow().is_empty(),
         "uncalculated algorithm cannot be copied"
@@ -347,7 +400,7 @@ fn checksum_full_row_copy_ignores_uncalculated_output_selector() {
     let (mut p, id) = setup(&|_| true);
     finish(&mut p, id, ChecksumCompletion::Completed);
     let texts = std::cell::RefCell::new(Vec::new());
-    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Md5, true, &|command| {
+    p.copy_checksum(id, "1:1", ChecksumAlgorithm::Md5, true, false, &|command| {
         if let Command::CopyText { text, .. } = command {
             texts.borrow_mut().push(text);
         }
@@ -699,7 +752,7 @@ fn replacing_keeps_the_exact_native_destination_it_asked_about() {
 }
 
 #[test]
-fn the_window_text_names_a_refused_input_the_limits_and_a_kept_replaced_file() {
+fn the_window_text_names_a_refused_input_and_a_kept_replaced_file() {
     let sent = std::cell::RefCell::new(Vec::new());
     let send = |command| {
         sent.borrow_mut().push(command);
@@ -714,13 +767,7 @@ fn the_window_text_names_a_refused_input_the_limits_and_a_kept_replaced_file() {
             "Manifest entries must be relative names below the manifest's folder.",
         ),
     );
-    finish_reporting(
-        &mut p,
-        id,
-        ChecksumCompletion::Failed,
-        vec![refused],
-        vec![ChecksumBudget::Rows],
-    );
+    finish_reporting(&mut p, id, ChecksumCompletion::Failed, vec![refused]);
     let locale = NumberLocale::default();
     let s = &p.checksums.sessions[&id];
     assert_eq!(
@@ -729,10 +776,8 @@ fn the_window_text_names_a_refused_input_the_limits_and_a_kept_replaced_file() {
     );
     let details = s.details(&locale);
     assert!(details.contains("must be relative names"), "{details}");
-    assert!(
-        details.contains("Reached resource limits: result rows"),
-        "{details}"
-    );
+    // A run has no limits: nothing says it stopped at one.
+    assert!(!details.contains("limit"), "{details}");
     // A completed run saved over an existing file reports where that file is kept.
     let algorithms = p.checksums.sessions[&id].algorithms;
     assert!(p.start_checksums(id, algorithms, false, &send));
@@ -807,55 +852,44 @@ fn listed_files_wait_for_their_rows_in_reading_order_and_leave_with_the_run() {
             update,
         }))
     };
-    let listed: Arc<[ChecksumPlannedFile]> = ["a", "b 文档", "c"]
-        .iter()
-        .map(|name| ChecksumPlannedFile {
-            path: root.join(name),
-            size: Some(3),
-        })
-        .collect();
-    p.apply(event(ChecksumUpdate::Planned(listed.clone())));
+    p.apply(event(ChecksumUpdate::Planned(listed(
+        &root,
+        &["a", "b 文档", "c"],
+    ))));
     let pending = |p: &Presenter| -> Vec<PathBuf> {
         p.checksums.sessions[&id]
             .pending()
-            .map(|file| file.path.clone())
+            .map(|file| file.name.to_path_buf())
             .collect()
     };
-    assert_eq!(
-        pending(&p),
-        [root.join("a"), root.join("b 文档"), root.join("c")]
-    );
+    assert_eq!(pending(&p), names(&["a", "b 文档", "c"]));
     // A listed file's row takes its place; the others keep waiting in order. A row
     // for an entry that was not listed (an unreadable folder) waits for nothing.
-    let row = |path: PathBuf, id: u64| {
-        Arc::new(ChecksumRow {
-            id: ChecksumRowId(id),
-            path,
-            identity: None,
-            kind: Some(EntryKind::File),
-            state: ChecksumRowState::Calculated,
-            bytes_read: 3,
-            digests: Vec::new(),
-            error: None,
-            retention: ChecksumRetention::new(()),
-        })
-    };
-    let rows: Arc<[_]> = vec![row(root.join("b 文档"), 1), row(root.join("other"), 2)].into();
-    p.apply(event(ChecksumUpdate::Batch(rows)));
+    let row =
+        |name: &str, id: u64| result_row(id, Path::new(name), ChecksumRowState::Calculated, &[]);
+    p.apply(event(ChecksumUpdate::Batch(chunk(
+        &root,
+        vec![row("b 文档", 1), row("other", 2)],
+    ))));
     assert_eq!(p.checksums.sessions[&id].rows().len(), 2);
-    assert_eq!(pending(&p), [root.join("a"), root.join("c")]);
+    assert_eq!(pending(&p), names(&["a", "c"]));
     assert_eq!(p.checksums.sessions[&id].pending_count(), 2);
     let at = |p: &Presenter, k| {
         p.checksums.sessions[&id]
             .pending_at(k)
-            .map(|file| file.path.clone())
+            .map(|(_, file)| file.name.to_path_buf())
     };
-    assert_eq!(at(&p, 1), Some(root.join("c")), "past a file read early");
+    assert_eq!(
+        at(&p, 1),
+        Some(PathBuf::from("c")),
+        "past a file read early"
+    );
     // Back in listing order: a's row makes c the next file to read.
-    p.apply(event(ChecksumUpdate::Batch(
-        vec![row(root.join("a"), 3)].into(),
-    )));
-    assert_eq!(at(&p, 0), Some(root.join("c")));
+    p.apply(event(ChecksumUpdate::Batch(chunk(
+        &root,
+        vec![row("a", 3)],
+    ))));
+    assert_eq!(at(&p, 0), Some(PathBuf::from("c")));
     assert_eq!(at(&p, 1), None);
     // Only results remain once the run finishes.
     finish(&mut p, id, ChecksumCompletion::Cancelled);
@@ -872,6 +906,8 @@ fn copy_writes_the_lines_a_saved_checksum_file_has() {
     let (mut p, id) = setup(&send);
     finish(&mut p, id, ChecksumCompletion::Completed);
     commands.borrow_mut().clear();
+    // Copy takes the selected rows.
+    p.checksums.sessions.get_mut(&id).unwrap().select_all_rows();
     p.copy_checksum_file(id, ChecksumAlgorithm::Sha256, &send);
     let copied = |commands: &[Command]| {
         commands.iter().find_map(|command| match command {
@@ -934,52 +970,39 @@ fn copy_says_how_many_files_it_left_out_for_each_reason() {
         qa.join(" leading space.txt"),
         elsewhere.join("second.txt"),
     ];
-    let generation = p.checksums.sessions[&id].generation;
-    let retention = ChecksumRetention::new(());
+    // Rows below `qa` are named below it; the others keep their whole path.
     let rows: Vec<_> = paths
         .iter()
         .enumerate()
         .map(|(index, path)| {
-            Arc::new(ChecksumRow {
-                id: ChecksumRowId(index as u64 + 1),
-                path: path.clone(),
-                identity: None,
-                kind: Some(EntryKind::File),
-                state: ChecksumRowState::Calculated,
-                bytes_read: 3,
-                digests: vec![ChecksumDigest {
-                    algorithm: ChecksumAlgorithm::Crc32,
-                    bytes: vec![0x42; 4],
-                }],
-                error: None,
-                retention: retention.clone(),
-            })
+            let mut row = result_row(
+                index as u64 + 1,
+                path,
+                ChecksumRowState::Calculated,
+                &[(ChecksumAlgorithm::Crc32, &[0x42; 4])],
+            );
+            row.name = path.strip_prefix(&qa).unwrap_or(path).into();
+            row
         })
         .collect();
-    p.apply(Event::Checksum(Box::new(ChecksumEvent {
-        job: id,
-        generation,
-        update: ChecksumUpdate::Finished(Arc::new(ChecksumRun {
-            job: id,
-            generation,
-            algorithms: ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap(),
-            captured_roots: vec![qa.clone()].into(),
-            rows: rows.into(),
-            summary: ChecksumSummary {
-                completion: ChecksumCompletion::Completed,
-                progress: ChecksumProgress {
-                    discovered: 6,
-                    calculated: 6,
-                    ..Default::default()
-                },
-                reached_budgets: vec![],
-                diagnostics: vec![],
+    finished_run(
+        &mut p,
+        id,
+        ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap(),
+        vec![chunk(&qa, rows)],
+        ChecksumSummary {
+            completion: ChecksumCompletion::Completed,
+            progress: ChecksumProgress {
+                discovered: 6,
+                calculated: 6,
+                ..Default::default()
             },
-            retention,
-        })),
-    })));
+            diagnostics: vec![],
+        },
+    );
     p.checksums.sessions.get_mut(&id).unwrap().suggested = qa.join("checksums.sfv");
     commands.borrow_mut().clear();
+    p.checksums.sessions.get_mut(&id).unwrap().select_all_rows();
     p.copy_checksum_file(id, ChecksumAlgorithm::Crc32, &send);
     let copied: Vec<_> = commands
         .borrow()
@@ -1095,17 +1118,10 @@ fn ctrl_f8_on_the_parent_row_right_after_a_deselect_calculates_the_shown_folder(
 fn a_verification_starts_without_the_listed_files_of_an_earlier_calculation() {
     let (mut p, id) = setup(&|_| true);
     let generation = p.checksums.sessions[&id].generation;
-    let listed: Arc<[ChecksumPlannedFile]> = ["a", "b"]
-        .iter()
-        .map(|name| ChecksumPlannedFile {
-            path: std::env::temp_dir().join(name),
-            size: Some(3),
-        })
-        .collect();
     p.apply(Event::Checksum(Box::new(ChecksumEvent {
         job: id,
         generation,
-        update: ChecksumUpdate::Planned(listed),
+        update: ChecksumUpdate::Planned(listed(&std::env::temp_dir(), &["a", "b"])),
     })));
     // The calculation is refused after listing its files; they stay listed.
     p.apply(Event::ChecksumRejected(Box::new(ChecksumRejected {

@@ -1,8 +1,8 @@
 //! Manifest parsing and verification stay inside the existing serial checksum worker.
+//! A manifest of any size is read as a stream: memory follows its entries.
 use super::{format, worker};
 use midnight_core::*;
 use std::{
-    collections::HashMap,
     io,
     path::{Component, Path},
     sync::Arc,
@@ -25,7 +25,7 @@ pub(super) fn verify(
                 generation: request.generation,
                 algorithms: ChecksumAlgorithms::default(),
                 captured_roots: vec![request.manifest].into(),
-                rows: Arc::from([]),
+                rows: ChecksumRows::default(),
                 summary: ChecksumSummary {
                     completion: if cancel.is_cancelled() {
                         ChecksumCompletion::Cancelled
@@ -36,7 +36,6 @@ pub(super) fn verify(
                         errors: u64::from(!cancel.is_cancelled()),
                         ..Default::default()
                     },
-                    reached_budgets: vec![],
                     diagnostics: vec![error],
                 },
                 retention,
@@ -51,64 +50,32 @@ pub(super) fn verify(
         Ok(value) => value,
         Err(_) => unreachable!("a parsed algorithm is nonempty"),
     };
-    let targets = manifest
-        .entries
-        .iter()
-        .map(|entry| entry.path.clone().into())
-        .collect();
-    let expected: HashMap<_, _> = manifest
-        .entries
-        .into_iter()
-        .map(|entry| (entry.path, entry.digest))
-        .collect();
+    let folder: Arc<Path> = directory.path().into();
     let provider = Contained { directory };
-    let mut transformed = HashMap::new();
+    let mut transformed = ChecksumRows::default();
     let mut counts = ChecksumProgress::default();
+    let calculation = ChecksumRequest {
+        job: request.job,
+        generation: request.generation,
+        targets: Vec::new(),
+        algorithms,
+        recursive: false,
+    };
     let run = worker::calculate_for_verification(
-        ChecksumRequest {
-            job: request.job,
-            generation: request.generation,
-            targets,
-            algorithms,
-            recursive: false,
-            limits: request.limits,
-        },
+        &calculation,
+        folder,
+        &manifest.names,
+        request.manifest.clone(),
         &provider,
         // Every entry is confined to the manifest directory's volume.
         &worker::Known(ssd),
         cancel,
         retention,
         |update| match update {
-            ChecksumUpdate::Batch(rows) => {
-                let rows: Arc<[_]> = rows
-                    .iter()
-                    .map(|row| {
-                        let mut row = (**row).clone();
-                        if row.state == ChecksumRowState::Calculated {
-                            if row.digest(algorithm).is_some_and(|actual| {
-                                expected.get(&row.path) == Some(&actual.bytes)
-                            }) {
-                                row.state = ChecksumRowState::Verified;
-                                counts.verified += 1;
-                            } else {
-                                row.state = ChecksumRowState::Mismatch;
-                                counts.mismatched += 1;
-                            }
-                        } else if row.state == ChecksumRowState::ReadError
-                            && row
-                                .error
-                                .as_ref()
-                                .is_some_and(|error| error.kind == io::ErrorKind::NotFound)
-                        {
-                            row.state = ChecksumRowState::Missing;
-                            counts.missing += 1;
-                        }
-                        let row = Arc::new(row);
-                        transformed.insert(row.id, row.clone());
-                        row
-                    })
-                    .collect();
-                emit(ChecksumUpdate::Batch(rows))
+            ChecksumUpdate::Batch(chunk) => {
+                let chunk = Arc::new(compare(&chunk, &manifest, algorithm, &mut counts));
+                transformed.push(chunk.clone());
+                emit(ChecksumUpdate::Batch(chunk))
             }
             ChecksumUpdate::Progress(mut progress) => {
                 set_counts(&mut progress, &counts);
@@ -118,11 +85,8 @@ pub(super) fn verify(
         },
     );
     let mut run = (*run).clone();
-    run.rows = run
-        .rows
-        .iter()
-        .map(|row| transformed.remove(&row.id).unwrap_or_else(|| row.clone()))
-        .collect();
+    // Every row went out in a batch: the compared chunks are the run's rows.
+    run.rows = transformed;
     set_counts(&mut run.summary.progress, &counts);
     if run.summary.completion == ChecksumCompletion::Completed
         && (counts.mismatched > 0 || counts.missing > 0)
@@ -130,6 +94,57 @@ pub(super) fn verify(
         run.summary.completion = ChecksumCompletion::CompletedWithErrors;
     }
     Arc::new(run)
+}
+
+/// The chunk's rows with their verdicts. Each entry gives exactly one row, in file order,
+/// so a row's ID names its entry; a row whose name is not that entry's is a mismatch.
+fn compare(
+    chunk: &ChecksumChunk,
+    manifest: &format::ParsedManifest,
+    algorithm: ChecksumAlgorithm,
+    counts: &mut ChecksumProgress,
+) -> ChecksumChunk {
+    let rows = chunk
+        .rows
+        .iter()
+        .map(|row| {
+            let mut row = row.clone();
+            if row.state == ChecksumRowState::Calculated {
+                let entry = row
+                    .id
+                    .0
+                    .checked_sub(1)
+                    .and_then(|index| usize::try_from(index).ok());
+                let expected = entry.and_then(|index| {
+                    (manifest.names.get(index)? == &row.name)
+                        .then(|| manifest.digest(index))
+                        .flatten()
+                });
+                let actual = row.digest(algorithm).map(|digest| digest.bytes);
+                if expected.is_some() && expected == actual {
+                    row.state = ChecksumRowState::Verified;
+                    counts.verified += 1;
+                } else {
+                    row.state = ChecksumRowState::Mismatch;
+                    counts.mismatched += 1;
+                }
+            } else if row.state == ChecksumRowState::ReadError
+                && row
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.kind == io::ErrorKind::NotFound)
+            {
+                row.state = ChecksumRowState::Missing;
+                counts.missing += 1;
+            }
+            row
+        })
+        .collect();
+    ChecksumChunk {
+        base: chunk.base.clone(),
+        rows,
+        retention: chunk.retention.clone(),
+    }
 }
 
 fn set_counts(progress: &mut ChecksumProgress, counts: &ChecksumProgress) {
@@ -182,20 +197,16 @@ fn prepare(
             "Checksum manifest must be an ordinary native file.",
         ));
     }
-    let maximum = format::MAX_MANIFEST_BYTES.min(request.limits.max_retained_bytes);
-    let length = entry
-        .item
-        .metadata
-        .size
-        .filter(|length| *length <= maximum as u64)
-        .ok_or_else(|| {
-            worker::failure(
-                path,
-                io::ErrorKind::InvalidData,
-                "Manifest exceeds its encoded input budget or has no known length.",
-            )
-        })?;
-    let mut bytes = Vec::with_capacity(length as usize);
+    // The listed length detects a file that changes while it is read; it is no limit.
+    let length = entry.item.metadata.size.ok_or_else(|| {
+        worker::failure(
+            path,
+            io::ErrorKind::InvalidData,
+            "Manifest has no known length.",
+        )
+    })?;
+    let mut parser = format::ManifestParser::new(path, cancel)?;
+    let mut read = 0u64;
     let mut buffer = vec![0; CHECKSUM_BUFFER_BYTES];
     let revalidate = |source: &dyn TransferSource| {
         worker::with_io(admission, cancel, path, || {
@@ -216,7 +227,7 @@ fn prepare(
             }
             result => result?,
         };
-        if count > buffer.len() || count > (length as usize).saturating_sub(bytes.len()) {
+        if count > buffer.len() || count as u64 > length.saturating_sub(read) {
             return Err(worker::failure(
                 path,
                 io::ErrorKind::InvalidData,
@@ -226,20 +237,22 @@ fn prepare(
         if count == 0 {
             break;
         }
-        bytes.extend_from_slice(&buffer[..count]);
+        read += count as u64;
+        // Each chunk is parsed as it arrives: only the line being read is held.
+        parser.feed(&buffer[..count])?;
         if cadence.due() {
             revalidate(source.as_ref())?;
         }
     }
     revalidate(source.as_ref())?;
-    if bytes.len() != length as usize {
+    if read != length {
         return Err(worker::failure(
             path,
             io::ErrorKind::InvalidData,
             "Manifest length changed while reading.",
         ));
     }
-    let parsed = format::parse_manifest(&bytes, path, request.limits, cancel)?;
+    let parsed = parser.finish()?;
     revalidate(source.as_ref())?;
     Ok((directory, parsed, ssd))
 }

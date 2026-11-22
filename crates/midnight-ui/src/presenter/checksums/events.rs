@@ -29,6 +29,7 @@ impl Presenter {
                 s.running = false;
                 s.stopping = false;
                 s.progress = run.summary.progress.clone();
+                self.retired.push(Box::new(s.finish_selection()));
                 self.retired.push(Box::new(s.take_streamed()));
                 self.retired.push(Box::new(s.run.replace(run)));
             }

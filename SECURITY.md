@@ -100,13 +100,16 @@ and a program running as the user could ask polkit for any root command itself, 
 text gives such a program nothing beyond what the administrator authorizes. Unlike the
 script, the button does not remove other files that define the same profile.
 
-Checksum manifests are untrusted input. The checksum worker bounds encoded input,
-decoded text and retained rows, validates the whole document, and opens only named
-regular native files beneath the manifest's pinned directory. Absolute paths,
-parent traversal, aliases, malformed hashes and duplicate entries fail validation.
-Windows/Linux readers reject link ancestry and cross-device descendants and check
-file identity/revision around reads; changed or unreadable sources never become
-Verified. Calculation and verification remain cancellable, bounded background jobs.
+Checksum manifests are untrusted input. The checksum worker reads a manifest as a
+stream of lines (its memory follows the entries, a short name and a fixed-length digest
+each, never the file's size), validates every entry before opening any file, and opens
+only named regular native files beneath the manifest's pinned directory. Absolute
+paths, parent traversal, aliases, malformed hashes and duplicate entries fail
+validation. Windows/Linux readers reject link ancestry and cross-device descendants and
+check file identity/revision around reads; changed or unreadable sources never become
+Verified. Calculation and verification remain cancellable background jobs without size
+limits: a walk is iterative, enters a folder reached again (by identity) once, and
+keeps compact rows (about 200 bytes per SHA-256 row).
 A native Open choice only fills the Verify page's file field; choosing a Save destination
 requests that save. Saving uses exclusive staging and independent SHA-256 readback.
 It never silently replaces an existing manifest: only an explicit Replace answer

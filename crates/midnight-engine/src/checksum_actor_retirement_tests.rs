@@ -117,8 +117,7 @@ async fn checksum_retirement_covers_completed_unconsumed_preparation_output() {
     let (dropped, received) = channel::channel();
     let resolved = Arc::new(AtomicUsize::new(0));
     let request = captured(1, dropped, resolved.clone());
-    let reservation =
-        checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes).unwrap();
+    let reservation = checksum::reserve().unwrap();
     let start = lease.own(Start {
         capture: Some(Capture::Captured(request)),
         key: (ChecksumJobId(1), ChecksumGeneration(1)),
@@ -202,13 +201,13 @@ async fn checksum_retirement_keeps_rejected_capture_slot_and_quota_until_drop_fi
         "service and capture slots stay occupied"
     );
     let mut quota = Vec::new();
-    while let Ok(reservation) = checksum::reserve(0, 0) {
+    while let Ok(reservation) = checksum::reserve() {
         quota.push(reservation);
     }
     assert_eq!(
         quota.len(),
         MAX_CHECKSUM_JOBS - 1,
-        "capture retains its admitted quota"
+        "capture retains its admitted job slot"
     );
     gate.release();
     let error = tokio::time::timeout(Duration::from_secs(5), pending)
@@ -219,8 +218,8 @@ async fn checksum_retirement_keeps_rejected_capture_slot_and_quota_until_drop_fi
     assert_eq!(error.kind, io::ErrorKind::Unsupported);
     assert!(domain.try_reserve().is_ok(), "actual drop returns the slot");
     assert!(
-        checksum::reserve(0, 0).is_ok(),
-        "actual drop returns the checksum quota"
+        checksum::reserve().is_ok(),
+        "actual drop returns the checksum job slot"
     );
     drop(quota);
     drop(spare);

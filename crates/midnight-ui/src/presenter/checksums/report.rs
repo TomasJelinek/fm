@@ -4,9 +4,35 @@ use super::*;
 use crate::error_presentation::{append_path, describe};
 use crate::job_presentation::counted;
 
-/// Each reason `checksum_file_line` gives for a name it cannot write, as the words that
-/// follow a count of files, singular and plural. Other reasons keep their own text.
-const LEFT_OUT: [(&str, &str, &str); 3] = [
+/// Why a selected row adds nothing to a copy: it is a listed file not read yet, its file
+/// could not be read (or changed, or is missing), it was skipped or cancelled, it has no
+/// checksum of the chosen algorithm, or it is a verification's result (a checksum file
+/// takes calculated rows only).
+pub(super) const WAITING: &str = "not calculated yet";
+pub(super) const FAILED: &str = "failed";
+pub(super) const SKIPPED: &str = "skipped";
+pub(super) const CANCELLED: &str = "cancelled";
+pub(super) const NO_DIGEST: &str = "without the chosen checksum";
+pub(super) const VERIFICATION: &str = "verification result";
+
+/// Each reason a selected row is left out of a copy (above), and each reason
+/// `checksum_file_line` gives for a name it cannot write, as the words that follow a count
+/// of files, singular and plural. Other reasons keep their own text.
+const LEFT_OUT: [(&str, &str, &str); 9] = [
+    (
+        WAITING,
+        "file not calculated yet",
+        "files not calculated yet",
+    ),
+    (FAILED, "failed file", "failed files"),
+    (SKIPPED, "skipped file", "skipped files"),
+    (CANCELLED, "cancelled file", "cancelled files"),
+    (
+        NO_DIGEST,
+        "file without the chosen checksum",
+        "files without the chosen checksum",
+    ),
+    (VERIFICATION, "verification result", "verification results"),
     (
         "must be below its containing directory",
         "file not below the checksum file's folder",
@@ -27,12 +53,14 @@ const LEFT_OUT: [(&str, &str, &str); 3] = [
 impl CopyNote {
     /// What the copy did, then how many files it left out for each reason.
     pub(crate) fn text(&self, locale: &NumberLocale) -> String {
+        let (one, many) = if self.rows {
+            ("row", "rows")
+        } else {
+            ("checksum", "checksums")
+        };
         let copied = match self.copied {
             0 => "Nothing copied".to_owned(),
-            copied => format!(
-                "Copied {}",
-                counted(copied, "checksum", "checksums", locale)
-            ),
+            copied => format!("Copied {}", counted(copied, one, many, locale)),
         };
         let left_out = self
             .left_out
@@ -55,24 +83,17 @@ impl CopyNote {
 
 impl ChecksumSession {
     /// The attention line: the window's error, else the first backend diagnostic of the
-    /// finished run (a refused manifest, an unreadable source), else the limits it reached.
+    /// finished run (a refused manifest, an unreadable source).
     pub(crate) fn issue(&self) -> Option<String> {
         if let Some(line) = self.error.lines().find(|line| !line.trim().is_empty()) {
             return Some(line.to_owned());
         }
         let summary = &self.run.as_ref()?.summary;
-        if let Some(first) = summary.diagnostics.first() {
-            let line = first.message.lines().next().unwrap_or_default();
-            return Some(match summary.diagnostics.len() - 1 {
-                0 => line.to_owned(),
-                more => format!("{line} (and {more} more)"),
-            });
-        }
-        (!summary.reached_budgets.is_empty()).then(|| {
-            format!(
-                "Stopped at the limit for {}",
-                limits(&summary.reached_budgets)
-            )
+        let first = summary.diagnostics.first()?;
+        let line = first.message.lines().next().unwrap_or_default();
+        Some(match summary.diagnostics.len() - 1 {
+            0 => line.to_owned(),
+            more => format!("{line} (and {more} more)"),
         })
     }
 
@@ -161,32 +182,10 @@ impl ChecksumSession {
             ),
         );
         if let Some(summary) = self.run.as_ref().map(|run| &run.summary) {
-            if !summary.reached_budgets.is_empty() {
-                section(
-                    &mut text,
-                    &format!(
-                        "Reached resource limits: {}",
-                        limits(&summary.reached_budgets)
-                    ),
-                );
-            }
             for diagnostic in &summary.diagnostics {
                 section(&mut text, &describe(diagnostic));
             }
         }
         text
     }
-}
-
-fn limits(budgets: &[ChecksumBudget]) -> String {
-    budgets
-        .iter()
-        .map(|budget| match budget {
-            ChecksumBudget::Rows => "result rows",
-            ChecksumBudget::Depth => "folder depth",
-            ChecksumBudget::Nodes => "visited entries",
-            ChecksumBudget::RetainedBytes => "retained memory",
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }

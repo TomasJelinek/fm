@@ -234,28 +234,39 @@ fn listing_operations_on_one_hundred_thousand_rows() {
     );
     drop(localized);
     report_sorts("", &plain, &keyed(&plain));
-    let digests: Vec<ChecksumDigest> = (0..16_384_u32)
-        .flat_map(|row| {
-            [
+    let digests: Vec<ChecksumDigests> = (0..16_384_u32)
+        .map(|row| {
+            let values = [
                 (ChecksumAlgorithm::Crc32, 4),
                 (ChecksumAlgorithm::Md5, 16),
                 (ChecksumAlgorithm::Sha1, 20),
                 (ChecksumAlgorithm::Sha256, 32),
                 (ChecksumAlgorithm::Sha512, 64),
             ]
-            .map(|(algorithm, length)| ChecksumDigest {
-                algorithm,
-                bytes: (0..length)
+            .map(|(algorithm, length)| {
+                let bytes: Vec<u8> = (0..length)
                     .map(|byte| (row as u8).wrapping_add(byte))
-                    .collect(),
-            })
+                    .collect();
+                (algorithm, bytes)
+            });
+            let borrowed: Vec<_> = values
+                .iter()
+                .map(|(algorithm, bytes)| (*algorithm, bytes.as_slice()))
+                .collect();
+            ChecksumDigests::new(&borrowed).expect("valid digest lengths")
         })
         .collect();
     report(
         "ChecksumDigest::hex x81,920",
         best(
             || (),
-            |()| digests.iter().map(ChecksumDigest::hex).collect::<Vec<_>>(),
+            |()| {
+                digests
+                    .iter()
+                    .flat_map(ChecksumDigests::iter)
+                    .map(|digest| digest.hex())
+                    .collect::<Vec<_>>()
+            },
         ),
     );
     let preferences = UserPreferences::default();

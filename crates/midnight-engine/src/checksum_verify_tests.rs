@@ -192,7 +192,6 @@ fn run_on(fixture: Arc<Fixture>, storage: &dyn worker::Storage) -> Arc<ChecksumR
             job: ChecksumJobId(41),
             generation: ChecksumGeneration(7),
             manifest: fixture.path.join("files.md5"),
-            limits: ChecksumLimits::default(),
         },
         &Provider(fixture),
         storage,
@@ -264,7 +263,10 @@ fn actual_reads_are_bound_to_the_captured_manifest_and_generation() {
     let result = run(fixture.clone());
     assert_eq!(result.job, ChecksumJobId(41));
     assert_eq!(result.generation, ChecksumGeneration(7));
-    assert_eq!(result.rows[0].path, fixture.path.join("data"));
+    assert_eq!(
+        result.rows.get(0).unwrap().path(),
+        fixture.path.join("data")
+    );
     assert_eq!(result.rows[0].state, ChecksumRowState::Verified);
     assert_eq!(result.summary.progress.verified, 1);
     assert_eq!(fixture.data_reads.load(Ordering::Relaxed), 2);

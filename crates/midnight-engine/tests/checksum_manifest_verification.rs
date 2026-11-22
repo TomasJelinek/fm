@@ -45,7 +45,6 @@ async fn verify(path: &std::path::Path) -> Arc<ChecksumRun> {
             job: ChecksumJobId(1),
             generation: ChecksumGeneration(1),
             manifest: path.to_owned(),
-            limits: ChecksumLimits::default(),
         })
         .unwrap();
     let run = tokio::time::timeout(Duration::from_secs(10), async {
@@ -54,10 +53,12 @@ async fn verify(path: &std::path::Path) -> Arc<ChecksumRun> {
             let event = controller.next().await.unwrap();
             match event.update {
                 ChecksumUpdate::Verifying(algorithm) => advertised = Some(algorithm),
-                ChecksumUpdate::Batch(rows) => {
+                ChecksumUpdate::Batch(chunk) => {
                     assert!(advertised.is_some());
                     assert!(
-                        rows.iter()
+                        chunk
+                            .rows
+                            .iter()
                             .all(|row| row.state != ChecksumRowState::Calculated)
                     );
                 }
@@ -192,7 +193,6 @@ async fn malformed_manifest_fails_as_a_whole_and_cancelled_queue_never_reads_tar
             job: ChecksumJobId(1),
             generation: ChecksumGeneration(1),
             manifest,
-            limits: ChecksumLimits::default(),
         })
         .unwrap();
     controller.cancel(ChecksumJobId(1), ChecksumGeneration(1));

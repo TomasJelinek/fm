@@ -66,7 +66,18 @@ export component ChecksumWindow inherits ToolWindow {
     in-out property <string> manifest-path;
     in-out property <ChecksumDraft> draft;
     in-out property <int> output-algorithm;
-    in-out property <int> selected-row: -1;
+    // The results' cursor (-1: none) and selection, as the presenter keeps them: whether
+    // nothing is selected, the selected rows Copy writes (calculated ones) and those with a
+    // checksum to copy, each also as text.
+    in property <int> cursor-row: -1;
+    in property <bool> selection-empty: true;
+    in property <int> copy-lines;
+    in property <string> copy-lines-text;
+    in property <int> selected-hashes;
+    in property <string> selected-hashes-text;
+    // The row being calculated (-1: none); the results follow it while nothing is selected.
+    in property <int> active-row: -1;
+    out property <int> follow-scrolls: results.follow-scrolls;
     // Result column widths for this window's session.
     in-out property <ChecksumColumnWidths> column-widths <=> results.widths;
     // Calculate, Verify. The draft survives page switches.
@@ -81,12 +92,23 @@ export component ChecksumWindow inherits ToolWindow {
     private property <bool> save-status-dismissed;
     private property <bool> has-algorithm: root.draft.md5 || root.draft.sha1 || root.draft.sha256 || root.draft.sha512 || root.draft.crc32;
     private property <bool> can-save: root.has-output && !root.running && !root.saving && !root.picker-busy && root.save-prompt == "" && root.output-available[root.output-algorithm];
-    private property <bool> row-calculated: root.selected-row >= 0 && root.selected-row < root.rows.length && root.rows[root.selected-row].calculated;
     private property <bool> compact: root.height < 360px;
     callback calculate(ChecksumDraft);
     callback stop();
-    callback copy-result(string, int, bool);
-    // Copy the calculated checksums in checksum-file format (an output algorithm index).
+    // The results' selection: a click (index, Ctrl, Shift), a cursor key (index, Shift,
+    // Ctrl), Space or Insert, Ctrl+A and Ctrl+D.
+    callback pick-row(int, bool, bool);
+    callback move-cursor(int, bool, bool);
+    callback toggle-row(bool);
+    callback select-all();
+    callback deselect-all();
+    // The context menu: the row's token, an output algorithm index, full rows, and whether
+    // it acts on the whole selection.
+    callback copy-result(string, int, bool, bool);
+    // Ctrl+C and Ctrl+Shift+C: the selected rows' checksums (an output algorithm index)
+    // or full rows.
+    callback copy-selection(int, bool);
+    // Copy the selected rows in checksum-file format (an output algorithm index).
     callback copy-checksum-file(int);
     callback browse-manifest(bool, int);
     callback verify-manifest(string);
@@ -96,11 +118,18 @@ export component ChecksumWindow inherits ToolWindow {
     callback confirm-save();
     callback cancel-save-prompt();
     callback copy-details();
-    public function copy-current() {
-        if root.row-calculated && root.output-available[root.output-algorithm] {
-            root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, false);
-        }
-    }
+    private property <string> algorithm-label: ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm];
+    // Copy says how many lines it copies when several rows are selected; below 460px it is
+    // plain "Copy". The footer measures the caption: one that does not fit whole beside the
+    // other actions takes Copy into More….
+    private property <string> copy-caption: root.width < 460px ? "Copy"
+        : "Copy " + (root.copy-lines > 1 ? root.copy-lines-text + " " : "") + root.algorithm-label;
+    private property <string> copy-hint: root.copy-lines > 0
+        ? "Copy the " + (root.copy-lines > 1 ? root.copy-lines-text + " selected rows" : "selected row")
+            + " as a checksum file, in the list's order: the lines Save manifest… writes, named relative to the folder. Ctrl+C copies the selected checksums, Ctrl+Shift+C their full rows."
+        : root.verifying
+        ? "A verification's results are not copied as a checksum file. Select rows and press Ctrl+C to copy their checksums."
+        : "Nothing to copy: no selected row has a calculated checksum. Click rows to select them (Ctrl+click adds one, Shift+click a range), or press Ctrl+A to select all.";
     function submit-verify() {
         if !root.running && !root.saving && !root.picker-busy && root.manifest-path != "" {
             root.verify-manifest(root.manifest-path);
@@ -185,9 +214,17 @@ export component ChecksumWindow inherits ToolWindow {
                 x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                 surface-width: root.width; surface-height: root.height;
                 rows: root.rows; algorithms: root.output-available;
-                generation-token: root.generation-token;
-                selected-row <=> root.selected-row; output-algorithm: root.output-algorithm;
-                copy-result(token, algorithm, whole) => { root.copy-result(token, algorithm, whole); }
+                generation-token: root.generation-token; output-algorithm: root.output-algorithm;
+                cursor-row: root.cursor-row; selection-empty: root.selection-empty;
+                selected-hashes: root.selected-hashes; selected-hashes-text: root.selected-hashes-text;
+                active-row: root.active-row;
+                pick-row(row, control, shift) => { root.pick-row(row, control, shift); }
+                move-cursor(row, extend, keep) => { root.move-cursor(row, extend, keep); }
+                toggle-row(advance) => { root.toggle-row(advance); }
+                select-all => { root.select-all(); }
+                deselect-all => { root.deselect-all(); }
+                copy-selection(algorithm, whole) => { root.copy-selection(algorithm, whole); }
+                copy-result(token, algorithm, whole, selection) => { root.copy-result(token, algorithm, whole, selection); }
                 activate => { root.start-page-action(); }
             }
             if root.page == 0 && root.rows.length == 0 && !root.show-details: Text {
@@ -275,46 +312,61 @@ export component ChecksumWindow inherits ToolWindow {
             font-size: Theme.small-font; overflow: elide; min-width: 0px;
             height: max(18px, Theme.small-font + 4px);
         }
+        // Actions that do not fit whole beside Close move into More…: Copy details and Save…
+        // first, then Copy; Back, Calculate or Stop and Verify always stay. `hidden` keeps
+        // the conditions the buttons had.
         DialogFooter {
             dismiss-text: "Close"; dismiss-hint: "Close this checksum window (Escape). Running work is cancelled.";
             compact-height: root.compact; dismiss => { root.close-session(); }
-            if root.show-details: HintedActionButton {
-                text: "Back"; fallback-icon: FallbackIcons.checksums;
-                hint: "Return to the page.";
-                clicked => { root.show-details = false; root.focus-page(); }
-            }
-            if root.show-details: HintedActionButton {
-                text: "Copy details"; fallback-icon: FallbackIcons.copy;
-                hint: "Copy these details, including full paths, to the clipboard.";
-                clicked => { root.copy-details(); }
-            }
-            // Not the default look over a verification's results: Enter verifies again.
-            if root.running || (root.page == 0 && !root.show-details): HintedActionButton {
-                text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate"; primary: !root.running && !root.verifying;
-                fallback-icon: root.running ? FallbackIcons.close : FallbackIcons.checksums;
-                enabled: !root.stopping && !root.saving && !root.picker-busy && (root.running || (root.has-algorithm && root.has-captured-files));
-                hint: root.running ? "Stop calculation and keep completed results." : "Calculate the chosen checksums for the captured selection.";
-                clicked => { if root.running { root.stop(); } else { root.calculate(root.draft); root.page = 0; } }
-            }
-            if root.page == 0 && !root.show-details: HintedActionButton {
-                text: root.width < 460px ? "Copy" : "Copy " + ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm];
-                fallback-icon: FallbackIcons.copy;
-                enabled: root.has-output && !root.running && root.output-available[root.output-algorithm];
-                hint: "Copy the calculated checksums as a checksum file: the lines Save manifest… writes, one per file, named relative to the folder. Ctrl+C copies the selected hash and Ctrl+Shift+C its full row.";
-                clicked => { root.copy-checksum-file(root.output-algorithm); }
-            }
-            if root.page == 0 && !root.running && !root.show-details: HintedActionButton {
-                text: root.saving ? (root.save-stopping ? "Stopping…" : "Stop save") : root.width < 460px ? "Save…" : "Save manifest…";
-                fallback-icon: root.saving ? FallbackIcons.close : FallbackIcons.save-again;
-                enabled: root.saving ? !root.save-stopping : root.can-save;
-                hint: root.saving ? "Cancel writing the manifest." : "Choose a file and save the calculated checksums. An existing file is only replaced after you confirm.";
-                clicked => { if root.saving { root.stop-save(); } else { root.browse-manifest(false, root.output-algorithm); } }
-            }
-            if root.page == 1 && !root.running && !root.show-details: HintedActionButton {
-                text: "Verify"; primary: true; fallback-icon: FallbackIcons.checksums;
-                enabled: !root.saving && !root.picker-busy && root.manifest-path != "";
-                hint: "Read the checksum file and compare every listed file on background workers.";
-                clicked => { root.submit-verify(); }
+            // One property per glyph: Slint 1.18.1 moves a value read twice in one literal
+            // where one read is a branch of a condition, so the list reads each once.
+            property <image> back-glyph: FallbackIcons.checksums;
+            property <image> run-glyph: root.running ? FallbackIcons.close : FallbackIcons.checksums;
+            property <image> save-glyph: root.saving ? FallbackIcons.close : FallbackIcons.save-again;
+            property <image> verify-glyph: FallbackIcons.checksums;
+            footer-actions: [
+                { text: "Back", fallback-icon: self.back-glyph, hint: "Return to the page.",
+                    shortcut: "", enabled: true, primary: false, drop: 0, hidden: !root.show-details },
+                { text: "Copy details", fallback-icon: FallbackIcons.copy,
+                    hint: "Copy these details, including full paths, to the clipboard.",
+                    shortcut: "", enabled: true, primary: false, drop: 1, hidden: !root.show-details },
+                // Not the default look over a verification's results: Enter verifies again.
+                { text: root.stopping ? "Stopping…" : root.running ? "Stop" : "Calculate",
+                    primary: !root.running && !root.verifying, fallback-icon: self.run-glyph,
+                    enabled: !root.stopping && !root.saving && !root.picker-busy
+                        && (root.running || (root.has-algorithm && root.has-captured-files)),
+                    hint: root.running ? "Stop calculation and keep completed results."
+                        : "Calculate the chosen checksums for the captured selection.",
+                    shortcut: "", drop: 0, hidden: !(root.running || (root.page == 0 && !root.show-details)) },
+                // Copies the selected rows only, also while a calculation runs; disabled, its
+                // hint (also its accessible description) says why.
+                { text: root.copy-caption, fallback-icon: FallbackIcons.copy,
+                    enabled: root.copy-lines > 0 && root.output-available[root.output-algorithm],
+                    hint: root.copy-hint,
+                    shortcut: "", primary: false, drop: 2, hidden: !(root.page == 0 && !root.show-details) },
+                { text: root.saving ? (root.save-stopping ? "Stopping…" : "Stop save") : root.width < 460px ? "Save…" : "Save manifest…",
+                    fallback-icon: self.save-glyph,
+                    enabled: root.saving ? !root.save-stopping : root.can-save,
+                    hint: root.saving ? "Cancel writing the manifest."
+                        : "Choose a file and save every calculated checksum of this run, whatever rows are selected (Copy takes the selected ones). An existing file is only replaced after you confirm.",
+                    shortcut: "", primary: false, drop: 1,
+                    hidden: !(root.page == 0 && !root.running && !root.show-details) },
+                { text: "Verify", primary: true, fallback-icon: self.verify-glyph,
+                    enabled: !root.saving && !root.picker-busy && root.manifest-path != "",
+                    hint: "Read the checksum file and compare every listed file on background workers.",
+                    shortcut: "", drop: 0, hidden: !(root.page == 1 && !root.running && !root.show-details) },
+            ];
+            footer-action(index) => {
+                if index == 0 { root.show-details = false; root.focus-page(); }
+                else if index == 1 { root.copy-details(); }
+                else if index == 2 {
+                    if root.running { root.stop(); } else { root.calculate(root.draft); root.page = 0; }
+                }
+                else if index == 3 { root.copy-checksum-file(root.output-algorithm); }
+                else if index == 4 {
+                    if root.saving { root.stop-save(); } else { root.browse-manifest(false, root.output-algorithm); }
+                }
+                else if index == 5 { root.submit-verify(); }
             }
         }
     }

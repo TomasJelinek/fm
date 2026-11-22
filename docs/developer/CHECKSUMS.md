@@ -11,7 +11,8 @@ or filesystem plugin ABI. Independent plugins do not depend on host internals.
 ## Calculation contract
 
 `StartSelectedChecksums` receives a captured `SelectedFiles` view, selection and
-fallback, plus job/generation, algorithms, recursion and limits. The UI's existing
+fallback, plus job/generation, algorithms and recursion. A run has no size limit: any
+number of selected entries, files and folder levels. The UI's existing
 selection-action broker waits for the specific selection revision before opening
 the window. A nonempty selection is authoritative; no parent (`..`) row becomes
 a file target.
@@ -26,8 +27,8 @@ is selected (or nothing is), else, in a flat panel, the first selected checksum 
 in display order. A checksum file is a regular file named with a checksum format's
 extension, by the panel row's kind: a folder named like one (`photos.sfv`), focused,
 selected or shown on the parent row, is calculated, never verified. The UI finds it
-from the selection bitset and the displayed rows, looking at no more selected rows
-than one calculation could hold (16,384), never by scanning the folder's index.
+from the selection bitset and the displayed rows, looking only at selected rows (the
+bitset skips the others 64 at a time), never by scanning the folder's index.
 Neither action automatically verifies a manifest or follows its entries.
 A selected folder contributes its own files; Include subfolders adds the levels
 below it, whose folders are otherwise left out without rows and without being opened
@@ -36,7 +37,13 @@ volume (`~/nas`, `/media/<user>/stick`) or that cannot be read is left out too. 
 Include subfolders a walk does not cross into another volume: a folder on another
 device is never entered, it is a Skipped row and the run is Incomplete. Links and
 special entries are skipped; a Windows volume mount point is a directory link and is
-skipped as links are.
+skipped as links are. Include subfolders walks every level, however deep, without
+recursion: the walk keeps a stack of the open folders on its way down. A folder reached
+again (another target, or a link that is followed in a projected tree) is recognized by
+its native identity and walked once, so a walk always ends. A subfolder that cannot be
+read is its own error row and the run goes on (it ends Incomplete). Rows keep the
+walk's order: each folder's entries as the filesystem lists them (NTFS by name; ext4
+in its hash order), subfolders where they occur; they are not sorted again.
 Verification names files only, so a folder in a manifest entry's place stays a
 skipped entry. Provider/archive content is not silently interpreted as a native
 pathname.
@@ -77,10 +84,10 @@ in between at most every 250 ms, because each check reopens the parent and name
 (and every manifest ancestor). The intermediate checks only shorten how long a
 replaced or rewritten source keeps streaming; the final check decides the row.
 
-`ChecksumEvent` carries Queued, Started, Verifying, Planned, bounded Batch, Progress or
+`ChecksumEvent` carries Queued, Started, Verifying, Planned, Batch, Progress or
 Finished. A calculation first lists the files it will read and sends them in Planned
-batches, then reads them in the same order. The listing walks the same folders within
-the same depth, volume, link and size limits, but opens no file and reads no contents:
+batches, then reads them in the same order. The listing walks the same folders with the
+same volume and link rules, but opens no file and reads no contents:
 each folder's `TransferSource::next_listed_child` describes the children the walk does
 not open, from the directory records on Windows (attributes, reparse tag, length) and
 from a no-follow `statx` relative to the held folder on Linux, and opens only the
@@ -94,37 +101,85 @@ count and total length, whether listing is still going on, and the file being re
 with its bytes read so far. A finished file's row is sent at once unless many finish
 quickly, and then within 100 ms; progress also goes out every 100 ms. Each directory's
 storage class is queried once per run. Verification lists nothing: its manifest
-names its files. Rows are immutable shared objects with stable IDs; Finished retains
-the complete bounded `ChecksumRun`. While a run goes on, the window shows the rows so
+names its files. Rows are immutable and numbered from one in the order found. They are
+shared, never copied, in chunks (`ChecksumChunk`: the rows of one batch, the base folder
+their names are below and the job's ownership) between the engine's retained run and
+the window; Finished retains the complete `ChecksumRun` of the same chunks. While a run
+goes on, the window shows the rows so
 far followed by the listed files still to come: the one being read with its share
 read, then those waiting. A determinate bar shows bytes read of the listed total (an
 indeterminate one while listing), and the status line shows "N of M files · X of Y B
 read", where a file that could not be read counts as done, as for the bar (by files
 when every listed file is empty), and one file is "1 file". Details counts "1 error"
-the same way. The UI keeps streamed row references until Finished, then uses the run's
-shared rows directly and retires the temporary vector and the listed files on the
-backend.
-Only visible rows are formatted. Display text is never reconstructed into file
-authority. Row callbacks contain generation plus ID, validated before copying.
+the same way. The UI keeps the streamed chunks until Finished, then uses the run's
+chunks (the same ones) and retires its own list and the listed files on the backend.
+A listed file's row is matched to it by its name below the run's base folder, among the
+next 64 listed files that still wait: rows come in listing order except rows of entries
+the listing leaves out (an unreadable folder, a link), which match none.
+Only visible rows are formatted; rows keep no display text. Display text is never
+reconstructed into file authority. Row callbacks contain generation plus ID (a listed
+file's place in the listing while it waits), validated before copying.
 
 The result table follows Salamander's checksum workflow: filename/folder, bytes
 read, status and the chosen algorithm's hash. Other calculated algorithms are
 available in the selector and row context menu. The header follows horizontal
-scrolling; rows remain virtualized. Right-click or Shift+F10 offers each calculated
-hash and the full row. Ctrl+C uses the output algorithm (or the full-row option).
-Context menus capture the row token, close on generation changes, and cannot
-redirect an action to a recycled row. Accessible rows expose full identifying
-text, selection state and a default select action without starting file operations.
+scrolling; rows remain virtualized.
+
+Rows are selected as in other lists (`crates/midnight-ui/src/list_selection.rs`, shared
+with Find): a click selects a row alone and makes it the cursor and the anchor,
+Ctrl+click toggles it, Shift+click marks the range from the anchor (Ctrl+Shift+click
+adds it). Up, Down, Page Up, Page Down, Home and End select the row they reach; with
+Shift they mark the range from the anchor, with Ctrl they move the cursor alone. Space
+toggles the cursor's row and Insert toggles it and moves down; Ctrl+A selects every row
+and Ctrl+D none. Ctrl+Space is left to the input method. The presenter keeps the
+selection by row identity in a bitset (a finished row by its ID, a listed file by its
+place in the listing, its mark following it to its row), so a lookup is O(1), Select
+all is one pass and the marks survive rows that arrive or move. A selection change
+notifies only the rows whose marks changed (every shown row once when more than 4,096
+marks go). A new calculation of the same files (the same captured files with the same
+Include subfolders) selects the same files again, by name, as it lists and reads them;
+another run (Include subfolders changed, a verification, another checksum file) starts
+with none. Selected rows use the selection fill and text colour with a square mark;
+the cursor's row has a full-height stroke and an outline (and the cursor fill when not
+selected), so the two differ without colour in every theme. Accessible rows expose full
+identifying text, their selected state and a default action that selects the row
+alone, without starting file operations.
+
+Copy, Ctrl+C, Ctrl+Shift+C and the context menu act on the selection, in the order
+shown. Ctrl+C copies the selected rows' checksums of the shown algorithm, one per line;
+Ctrl+Shift+C their full rows (path, then every checksum), a blank line between rows.
+Right-click or Shift+F10 on a selected row offers each calculated algorithm and the
+full rows of the whole selection ("Copy 3 SHA-256"); on another row, that row alone,
+which becomes the cursor without changing the selection. Context menus capture the row
+token, close on generation changes, and cannot redirect an action to a recycled row.
+A selected row that adds nothing (still waiting, failed, skipped, cancelled, without
+the chosen checksum) is counted in the copy's note on the save line, by reason.
+
+While a calculation runs and nothing is selected, the list follows the row being
+calculated (the first listed file without its row): when it would leave the view, the
+list scrolls to show it as the last whole row at the bottom. Scrolling stops at a row's
+top, as the cursor's does: when the list jumps more than a screen and a half, Slint's
+ListView puts its first shown row at the top, which would cut a row placed exactly at
+the bottom edge. This runs only when that row
+changes (or the selection empties), in a Slint change handler, which runs once per
+frame with the latest value, so many files finishing between two frames scroll the list
+once. A selection stops following. A scroll by the user pauses it until the row being
+calculated is in view again with nothing selected, or until the next run.
 
 ## Ownership and cancellation
 
-The backend retains at most 32 admitted/result jobs under a process quota; the
-UI initially permits four visible result windows. Admission reserves worst-case
-memory from a shared 64 MiB budget: expanded targets plus rows (16 MiB for a
-selection) or, for verification, the request plus three row budgets (at least
-24 MiB). A finished run returns everything beyond its actual bounded rows, captured
-roots and diagnostics, so four retained result windows still leave room for a
-recalculation or a new window. Generation tags reject late
+The backend retains at most 32 admitted/result jobs (job slots, a count, not bytes);
+the UI permits four result windows. A job's slot is held by the run and by every chunk
+of its rows, so a window that keeps results keeps its slot. Nothing limits a run's size:
+its memory follows its rows. A row keeps its name below the run's base folder, its
+digests at their fixed lengths in one allocation and an error only when it has one, in
+chunks of up to 64 rows with no per-row `Arc`: `ChecksumRow` is 104 bytes, and a
+SHA-256 row with a typical 25-byte name measured 198 bytes of process memory at 100,000
+rows (19.9 MB) and 196 bytes at 1,000,000 (196 MB), against 479 and 470 bytes for the
+former rows (a whole path, digests as separate vectors, the error inline, an `Arc` and
+an ownership handle per row; 47.9 MB and 470 MB), release build, Windows. During a
+calculation the window also keeps the listed files (a name and a length each) until
+Finished. Generation tags reject late
 events. Close submits `ReleaseChecksums`, which cancels active calculation and
 associated manifest saves and releases the actor's retained result. A full command
 queue keeps the window and ownership visible with an error. Stop sends a separate
@@ -210,7 +265,7 @@ names the recovery path; it never removes the published file or the kept one.
 ## Verification from a file
 
 `VerifyChecksumManifest(ChecksumVerifyRequest)` captures a native manifest path,
-job/generation and resource limits. It uses the same serial bounded checksum
+job/generation. It uses the same serial checksum
 controller as calculation, with `CancelChecksums`/`ReleaseChecksums`. Parsing and
 all reads run on backend workers. `Verifying(algorithm)` reports content detection;
 the extension disambiguates overlapping SFV/GNU syntax and supplies a lone hash's
@@ -237,15 +292,18 @@ only calculation rows are eligible for manifest export. Counts of verified,
 mismatched and missing files are shown independently; interrupted or partially
 failed verification cannot be reported as complete success.
 
-Encoded input is bounded to 8 MiB and reserved separately. Decoded UTF-16 text
-and every entry share the 8 MiB retained-byte limit; an entry is charged like a
-calculated row, four bytes per absolute-path byte plus 1 KiB (about 5,900 entries
-of 100-byte paths), with at most 16,384 rows and 64 path components below the
-manifest's directory by default. A calculation also keeps the verifier's per-line
-headroom, so every completed or acknowledged partial run fits these limits when
-saved; a manifest saved far above deeply nested sources can still exceed the
-component limit and is refused before publication with that budget named. These
-resource budgets do not truncate filenames or impose MAX_PATH. Native Open/Save pickers run
+A manifest has no size, line-count, line-length or depth limit. It is read in chunks
+and parsed line by line as it arrives (`ManifestParser`): only the line being read and
+one read buffer are held besides the entries, each a name below the manifest's folder
+and a fixed-length digest, so memory follows the entries, never the file's size (UTF-16
+is decoded as it is read, a pair or surrogate split between chunks included). Case-only
+duplicates are found by the hash of each name's case-folded text, settled against the
+names already kept, without a second copy of them. Every entry is parsed before any
+listed file is opened, and the listed length detects a manifest that changes while it is
+read. The verifier then makes one read target at a time from the parsed names; each
+entry gives exactly one row, so a row's ID names its entry and expected digest. A save
+writes any number of lines in one pass and reads its own text back through the same
+parser before publication. Native Open/Save pickers run
 on their existing dedicated backend worker. Their replies are checked against the
 session/generation; closure cancels the picker, and a late reply cannot start work
 or overwrite another draft. On the Verify page, Browse only fills the field and Verify
@@ -284,24 +342,36 @@ work runs or on a held key. The
 shown algorithm controls the hash column, Copy and the format Save manifest… offers.
 File/bytes/status stay before the hash. The complete digest uses measured monospace
 width with horizontal scrolling when needed. The footer's Copy button copies the
-calculated checksums of the shown algorithm as a checksum file: exactly the lines Save
-manifest… writes to the suggested folder (`midnight_core::checksum_file_line`, shared
-with the manifest writer), named relative to that folder. A file it cannot name there
-is left out. A note on the save line, not an error, then says how many lines were
-copied and how many files were left out for each reason (not below the checksum
-file's folder; a name that is not valid Unicode; a name SFV cannot hold unambiguously,
-such as one starting with `#`, `;` or a space; any other reason in the encoder's own
-words), and Details repeats it. The note neither sets nor clears the window's error;
-the next copy, a save or a new run replaces it. Other algorithms and full-row
-copy remain in the row context menu. Ctrl+C copies the chosen digest of the selected
-row; Ctrl+Shift+C copies the full row in this window, while that chord continues to
-compare files in a main panel.
+selected rows' checksums of the shown algorithm as a checksum file, in the order shown:
+exactly the lines Save manifest… writes to the suggested folder
+(`midnight_core::push_checksum_file_line`, shared with the manifest writer), named
+relative to that folder, built in one pass into a text sized for them. With several
+calculated rows selected its caption counts them ("Copy 3 SHA-256"); below 460 px it is
+"Copy". The footer fits its actions from their measured captions (`FooterActions` in
+`dialog-footer.slint`): one that does not fit whole beside Close moves into More…,
+Copy details and Save… first, then Copy; Back, Calculate or Stop and Verify always stay
+buttons. A counted caption therefore moves Copy into More… rather than being cut. It is
+enabled when a
+selected row has a calculated checksum, also while a calculation runs; otherwise its
+tooltip (and accessible description) says why and that Ctrl+A selects all. Save
+manifest… still writes every calculated row of the run, whatever is selected (it is
+the job's manifest); its tooltip says so. A row Copy cannot name there, or that has no
+calculated checksum, is left out. A note on the save line, not an error, then says how
+many lines were copied and how many rows were left out for each reason (not calculated
+yet; failed; skipped; cancelled; without the chosen checksum; a verification's result;
+not below the checksum file's folder; a name that is not valid Unicode; a name SFV
+cannot hold unambiguously, such as one starting with `#`, `;` or a space; any other
+reason in the encoder's own words), and Details repeats it. Ctrl+C, Ctrl+Shift+C and
+the context menu report what they leave out the same way. The note neither sets nor
+clears the window's error; the next copy, a save or a new run replaces it. Ctrl+Shift+C
+copies full rows in this window, while that chord continues to compare files in a main
+panel.
 
 An issue line above the results names the window's error, else the first backend
 diagnostic of the finished run (for example a refused manifest: absolute path,
-parent traversal, malformed or duplicate line, a limit), else the resource limits
-the run reached. Its Details button, and the one on the save line, show every
-retained diagnostic, the limits reached in words, the counts, the checksum file
+parent traversal, malformed or duplicate line). Its Details button, and the one on the
+save line, show every retained diagnostic (the first 32; each failed row keeps its own
+error), the counts, the checksum file
 being verified, the last copy's note and the last save's full paths; Copy details
 copies that text with
 exact paths. Both lines can be dismissed; a new run closes Details. The footer

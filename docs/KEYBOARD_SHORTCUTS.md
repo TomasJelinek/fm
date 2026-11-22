@@ -21,9 +21,19 @@ files. **Save manifest…** asks for a file and saves at once; partial results a
 existing file are confirmed in the window first (**Save** / **Replace**).
 On the **Verify** page, **Browse** and then **Verify** read a manifest on background workers. Empty
 panels can also open it.
-Inside the checksum results list, **Ctrl+C** copies the chosen hash and
-**Ctrl+Shift+C** copies the full row. **Shift+F10** opens the per-algorithm copy
-menu; **Escape** closes that modeless window and requests cancellation of its work.
+Inside the checksum results list a click selects a row, **Ctrl+click** toggles one
+and **Shift+click** selects the range from the last clicked row (**Ctrl+Shift+click**
+adds it). **Up**, **Down**, **Page Up**, **Page Down**, **Home** and **End** select the
+row they reach; with **Shift** they extend the range, with **Ctrl** they move only the
+cursor. **Space** toggles the cursor's row and **Insert** toggles it and moves down;
+**Ctrl+A** selects every row and **Ctrl+D** none. **Copy** (the footer button) copies
+the selected rows as checksum-file lines, **Ctrl+C** their hashes of the shown
+algorithm, one per line, and **Ctrl+Shift+C** their full rows; Save manifest… still
+writes every calculated row. **Shift+F10** or a right click opens the per-algorithm copy
+menu, for the whole selection when its row is selected, else for that row; **Enter**
+starts the page's primary action; **Escape** closes that modeless window and requests
+cancellation of its work. These keys belong to that window: there Ctrl+D deselects
+result rows, as it deselects files in a panel, and leaves the panels alone.
 The [current follow-ups](superpowers/specs/2026-11-07-panel-viewer-followups.md)
 record pending changes separately: archive Hot Paths, Find modes/row layout,
 detailed drive information, Markdown presets and source-viewer position controls.

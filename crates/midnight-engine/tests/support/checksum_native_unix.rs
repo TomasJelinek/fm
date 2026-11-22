@@ -57,7 +57,8 @@ async fn native_raw_name_can_be_hashed_but_never_lossily_exported() {
             break run;
         }
     };
-    assert_eq!(run.rows[0].path, path);
+    // A row keeps its name below the run's base folder; `path` joins them.
+    assert_eq!(run.rows.get(0).unwrap().path(), path);
     assert_eq!(run.rows[0].state, ChecksumRowState::Calculated);
     let request = ChecksumManifestRequest {
         algorithm: ChecksumAlgorithm::Sha256,

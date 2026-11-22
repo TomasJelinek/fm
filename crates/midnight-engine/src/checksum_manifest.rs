@@ -1,6 +1,6 @@
 //! GNU binary checksum and SFV export. Only explicit backend callers may encode/save.
+//! A manifest of any size is saved: its text follows its rows.
 use super::super::verified_output;
-use super::format::MAX_MANIFEST_BYTES;
 use super::worker::{failure, with_io};
 use midnight_core::*;
 use std::{
@@ -63,9 +63,12 @@ pub fn save_manifest(
             "Manifest destination needs a filename.",
         )
     })?;
-    if run.captured_roots.iter().any(|source| source == path)
-        || run.rows.iter().any(|row| row.path == *path)
-    {
+    // Rows are named below their chunk's base: compare names, without a path per row.
+    let replaces_row = run.rows.chunks().iter().any(|chunk| {
+        let name = path.strip_prefix(&chunk.base).unwrap_or(path);
+        chunk.rows.iter().any(|row| *row.name == *name)
+    });
+    if run.captured_roots.iter().any(|source| source == path) || replaces_row {
         return Err(failure(
             path,
             io::ErrorKind::InvalidInput,
@@ -77,7 +80,7 @@ pub fn save_manifest(
     })?;
     let device = directory.identity().device;
     if run.rows.iter().any(|row| {
-        export_digest(row, request.algorithm).is_some()
+        export_digest(&row, request.algorithm).is_some()
             && !row
                 .identity
                 .is_some_and(|identity| identity.device == device)
@@ -202,7 +205,16 @@ pub(super) fn encode(
             ),
         ));
     }
-    let mut bytes = Vec::new();
+    // One pass, written straight into a buffer sized for the lines (each name is at most
+    // its path below the folder).
+    let capacity = run
+        .rows
+        .iter()
+        .filter(|row| export_digest(row, request.algorithm).is_some())
+        .fold(0usize, |total, row| {
+            total.saturating_add(request.algorithm.bytes() * 2 + 4 + row.name.as_os_str().len())
+        });
+    let mut text = String::with_capacity(capacity);
     for row in run.rows.iter() {
         if cancel.is_cancelled() {
             return Err(failure(
@@ -211,55 +223,39 @@ pub(super) fn encode(
                 "Manifest export cancelled.",
             ));
         }
-        let Some(digest) = export_digest(row, request.algorithm) else {
+        let Some(digest) = export_digest(&row, request.algorithm) else {
             continue;
         };
-        if digest.bytes.len() != request.algorithm.bytes() {
-            return Err(failure(
-                &row.path,
-                io::ErrorKind::InvalidData,
-                "Malformed completed digest length.",
-            ));
-        }
         // The same lines the window copies to the clipboard.
-        let line = checksum_file_line(request.algorithm, &digest.hex(), &row.path, parent)
-            .map_err(|(kind, message)| failure(&row.path, kind, message))?;
-        let length = bytes
-            .len()
-            .checked_add(line.len())
-            .filter(|length| *length <= MAX_MANIFEST_BYTES)
-            .ok_or_else(|| {
-                failure(
-                    path,
-                    io::ErrorKind::OutOfMemory,
-                    "Manifest exceeds its bounded 16 MiB encoding budget.",
-                )
-            })?;
-        bytes.try_reserve(length - bytes.len()).map_err(|_| {
+        let name = checksum_file_name(row.base, &row.name, parent).ok_or_else(|| {
             failure(
-                path,
-                io::ErrorKind::OutOfMemory,
-                "Cannot allocate bounded manifest buffer.",
+                &row.path(),
+                io::ErrorKind::InvalidInput,
+                CHECKSUM_NAME_NOT_BELOW,
             )
         })?;
-        bytes.extend_from_slice(line.as_bytes());
+        push_checksum_file_line(&mut text, digest, &name)
+            .map_err(|(kind, message)| failure(&row.path(), kind, message))?;
     }
+    let bytes = text.into_bytes();
     // Publication must not create a manifest that our verifier cannot read, or
-    // whose syntax would resolve to a different captured filename. This also
-    // applies the same entry, memory and alias limits before native staging.
-    let parsed = super::format::parse_manifest(&bytes, path, ChecksumLimits::default(), cancel)?;
-    let eligible = run
+    // whose syntax would resolve to a different captured filename, or that repeats a
+    // name in another letter case.
+    let parsed = super::format::parse_manifest(&bytes, path, cancel)?;
+    let mut eligible = run
         .rows
         .iter()
-        .filter(|row| export_digest(row, request.algorithm).is_some());
-    if parsed.algorithm != request.algorithm
-        || parsed.entries.len() as u64 != included
-        || parsed.entries.iter().zip(eligible).any(|(entry, row)| {
-            entry.path != row.path
-                || export_digest(row, request.algorithm)
-                    .is_none_or(|digest| entry.digest != digest.bytes)
-        })
-    {
+        .filter_map(|row| Some((export_digest(&row, request.algorithm)?, row)));
+    let mut matches = parsed.algorithm == request.algorithm;
+    for (name, expected) in parsed.entries() {
+        let Some((digest, row)) = eligible.next() else {
+            matches = false;
+            break;
+        };
+        matches &= checksum_file_name(row.base, &row.name, parent).as_deref() == Some(name)
+            && digest.bytes == expected;
+    }
+    if !matches || eligible.next().is_some() {
         return Err(failure(
             path,
             io::ErrorKind::InvalidInput,
@@ -269,9 +265,12 @@ pub(super) fn encode(
     Ok((bytes, counts))
 }
 
-fn export_digest(row: &ChecksumRow, algorithm: ChecksumAlgorithm) -> Option<&ChecksumDigest> {
-    (row.state == ChecksumRowState::Calculated)
-        .then(|| row.digest(algorithm))
+fn export_digest<'a>(
+    row: &ChecksumRowRef<'a>,
+    algorithm: ChecksumAlgorithm,
+) -> Option<ChecksumDigest<'a>> {
+    (row.row.state == ChecksumRowState::Calculated)
+        .then(|| row.row.digest(algorithm))
         .flatten()
 }
 

@@ -105,7 +105,6 @@ pub(crate) fn captured_gated(
         }),
         algorithms: ChecksumAlgorithms::default(),
         recursive: false,
-        limits: ChecksumLimits::default(),
     }
 }
 

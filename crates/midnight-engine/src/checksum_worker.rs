@@ -5,6 +5,7 @@ use midnight_work_budget::Admission;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 use std::{
+    borrow::Cow,
     collections::HashSet,
     io,
     path::{Path, PathBuf},
@@ -99,8 +100,6 @@ impl Cadence {
 
 #[derive(Clone, Copy)]
 struct Settings {
-    /// Calculated rows can be saved as a manifest; keep them within its verifier budget.
-    exportable: bool,
     revalidation: Duration,
     /// How often progress, listed files and finished rows reach the window.
     update: Duration,
@@ -112,7 +111,6 @@ struct Settings {
     folders: bool,
 }
 const CALCULATION: Settings = Settings {
-    exportable: true,
     revalidation: REVALIDATION_INTERVAL,
     update: UPDATE_INTERVAL,
     listing: true,
@@ -164,7 +162,7 @@ pub(super) fn calculate_captured(
                 .into_iter()
                 .map(|target| target.path)
                 .collect(),
-            rows: Arc::from([]),
+            rows: ChecksumRows::default(),
             summary: ChecksumSummary {
                 completion: if cancelled {
                     ChecksumCompletion::Cancelled
@@ -175,7 +173,6 @@ pub(super) fn calculate_captured(
                     errors: u64::from(!cancelled),
                     ..Default::default()
                 },
-                reached_budgets: vec![],
                 diagnostics: vec![error],
             },
             retention,
@@ -192,83 +189,142 @@ pub(super) fn calculate(
     retention: Arc<ChecksumRetention>,
     emit: impl FnMut(ChecksumUpdate) -> bool,
 ) -> Arc<ChecksumRun> {
-    run(
-        request,
-        service,
-        storage,
-        cancel,
-        retention,
-        CALCULATION,
-        emit,
-    )
+    let base = common_base(&request.targets);
+    let roots: Arc<[_]> = request
+        .targets
+        .iter()
+        .map(|target| target.path.clone())
+        .collect();
+    let targets = Targets::Request(&request.targets);
+    let pass = Pass {
+        request: &request,
+        targets: &targets,
+        base,
+        settings: CALCULATION,
+    };
+    run(pass, roots, service, storage, cancel, retention, emit)
 }
 
-/// Manifest entries are compared, never exported, so they use only the parsed
-/// manifest's own per-entry charge.
+/// Read a manifest's entries, named below its `folder`, one target at a time. They are
+/// compared, never exported or listed first.
+#[allow(clippy::too_many_arguments)] // A pass plus the worker's own inputs.
 pub(super) fn calculate_for_verification(
-    request: ChecksumRequest,
+    request: &ChecksumRequest,
+    folder: Arc<Path>,
+    names: &[Box<Path>],
+    manifest: PathBuf,
     service: &dyn TransferService,
     storage: &dyn Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
     emit: impl FnMut(ChecksumUpdate) -> bool,
 ) -> Arc<ChecksumRun> {
-    let settings = Settings {
-        exportable: false,
-        listing: false,
-        folders: false,
-        ..CALCULATION
+    let targets = Targets::Manifest {
+        folder: &folder,
+        names,
     };
-    run(request, service, storage, cancel, retention, settings, emit)
+    let pass = Pass {
+        request,
+        targets: &targets,
+        base: folder.clone(),
+        settings: Settings {
+            listing: false,
+            folders: false,
+            ..CALCULATION
+        },
+    };
+    run(
+        pass,
+        vec![manifest].into(),
+        service,
+        storage,
+        cancel,
+        retention,
+        emit,
+    )
+}
+
+/// What a run reads: the request's targets, or a manifest's entries made one at a time.
+pub(super) enum Targets<'a> {
+    Request(&'a [ChecksumTarget]),
+    Manifest {
+        folder: &'a Path,
+        names: &'a [Box<Path>],
+    },
+}
+impl Targets<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Request(targets) => targets.len(),
+            Self::Manifest { names, .. } => names.len(),
+        }
+    }
+    fn get(&self, index: usize) -> Option<Cow<'_, ChecksumTarget>> {
+        match self {
+            Self::Request(targets) => targets.get(index).map(Cow::Borrowed),
+            Self::Manifest { folder, names } => names
+                .get(index)
+                .map(|name| Cow::Owned(ChecksumTarget::from(folder.join(name)))),
+        }
+    }
+}
+
+/// What both passes of a run share.
+struct Pass<'a> {
+    request: &'a ChecksumRequest,
+    targets: &'a Targets<'a>,
+    /// Rows and listed files are named below this folder.
+    base: Arc<Path>,
+    settings: Settings,
+}
+
+/// The deepest folder that holds every target: rows are named below it, so most rows keep
+/// a short name. Targets with no common folder (other volumes) keep whole paths.
+pub(super) fn common_base(targets: &[ChecksumTarget]) -> Arc<Path> {
+    let mut base: Option<PathBuf> = None;
+    for target in targets {
+        let parent = target.path.parent().unwrap_or(&target.path);
+        base = Some(match base {
+            Some(base) if parent.starts_with(&base) => base,
+            Some(base) => base
+                .components()
+                .zip(parent.components())
+                .take_while(|(known, next)| known == next)
+                .map(|(known, _)| known)
+                .collect(),
+            None => parent.to_owned(),
+        });
+    }
+    base.unwrap_or_default().into()
 }
 
 fn run(
-    request: ChecksumRequest,
+    pass: Pass<'_>,
+    roots: Arc<[PathBuf]>,
     service: &dyn TransferService,
     storage: &dyn Storage,
     cancel: &Cancellation,
     retention: Arc<ChecksumRetention>,
-    settings: Settings,
     mut emit: impl FnMut(ChecksumUpdate) -> bool,
 ) -> Arc<ChecksumRun> {
-    let roots: Arc<[_]> = request
-        .targets
-        .iter()
-        .map(|target| target.path.clone())
-        .collect();
-    // First list every file the reading pass will read, in its order and within the
-    // same limits, so the window shows them all and the run's total. Entries that
-    // cannot be read are reported by the reading pass, which walks the same way.
+    let request = pass.request;
+    // First list every file the reading pass will read, in its order, so the window
+    // shows them all and the run's total. Entries that cannot be read are reported by
+    // the reading pass, which walks the same way.
     let mut planned = (0, 0);
     let mut admissions = std::collections::HashMap::new();
-    if settings.listing {
-        let mut listing = State::new(
-            &request,
-            settings,
-            cancel,
-            storage,
-            retention.clone(),
-            &mut emit,
-            true,
-        );
+    if pass.settings.listing {
+        let mut listing = State::new(&pass, cancel, storage, retention.clone(), &mut emit, true);
         listing.announce();
         listing.visit(service);
         listing.flush_planned();
         planned = (listing.progress.planned, listing.progress.planned_bytes);
         admissions = std::mem::take(&mut listing.admissions);
     }
-    let mut state = State::new(
-        &request,
-        settings,
-        cancel,
-        storage,
-        retention.clone(),
-        &mut emit,
-        false,
-    );
+    let mut state = State::new(&pass, cancel, storage, retention.clone(), &mut emit, false);
     (state.progress.planned, state.progress.planned_bytes) = planned;
     state.admissions = admissions;
-    if settings.listing {
+    if pass.settings.listing {
         state.announce();
     }
     state.visit(service);
@@ -290,12 +346,11 @@ fn run(
         generation: request.generation,
         algorithms: request.algorithms,
         captured_roots: roots,
-        rows: std::mem::take(&mut state.rows).into(),
+        rows: std::mem::take(&mut state.rows),
         retention,
         summary: ChecksumSummary {
             completion,
             progress: state.progress.clone(),
-            reached_budgets: std::mem::take(&mut state.budgets),
             diagnostics: std::mem::take(&mut state.diagnostics),
         },
     })
@@ -317,6 +372,9 @@ fn matches_capture(entry: &TransferEntry, target: &ChecksumTarget) -> bool {
 
 struct State<'a, F> {
     request: &'a ChecksumRequest,
+    targets: &'a Targets<'a>,
+    /// Rows and listed files are named below this folder.
+    base: Arc<Path>,
     settings: Settings,
     cancel: &'a Cancellation,
     storage: &'a dyn Storage,
@@ -326,14 +384,19 @@ struct State<'a, F> {
     /// the listing pass learned.
     admissions: std::collections::HashMap<PathBuf, Admission>,
     retention: Arc<ChecksumRetention>,
-    rows: Vec<Arc<ChecksumRow>>,
-    batch: Vec<Arc<ChecksumRow>>,
+    /// The rows sent so far, in chunks shared with the window.
+    rows: ChecksumRows,
+    batch: Vec<ChecksumRow>,
     progress: ChecksumProgress,
-    budgets: Vec<ChecksumBudget>,
     diagnostics: Vec<FsError>,
-    seen: HashSet<std::path::PathBuf>,
+    /// Folders entered, by identity: a folder reached again (through a link or another
+    /// target) is not walked twice, so a walk ends whatever the links.
     directories: HashSet<TransferIdentity>,
-    retained: usize,
+    /// Targets that another target can also reach (a selected file in a selected
+    /// folder), and those of them already counted. Empty when every target is in one
+    /// folder, which no target can then hold.
+    nested: HashSet<PathBuf>,
+    counted: HashSet<PathBuf>,
     incomplete: bool,
     last_progress: Instant,
     /// When listed files or rows last went to the window.
@@ -347,8 +410,7 @@ struct State<'a, F> {
 }
 impl<'a, F: FnMut(ChecksumUpdate) -> bool> State<'a, F> {
     fn new(
-        request: &'a ChecksumRequest,
-        settings: Settings,
+        pass: &Pass<'a>,
         cancel: &'a Cancellation,
         storage: &'a dyn Storage,
         retention: Arc<ChecksumRetention>,
@@ -356,24 +418,29 @@ impl<'a, F: FnMut(ChecksumUpdate) -> bool> State<'a, F> {
         listing: bool,
     ) -> Self {
         Self {
-            request,
-            settings,
+            request: pass.request,
+            targets: pass.targets,
+            base: pass.base.clone(),
+            settings: pass.settings,
             cancel,
             storage,
             admission: Admission::Exclusive,
             admissions: std::collections::HashMap::new(),
             retention,
-            rows: Vec::new(),
+            rows: ChecksumRows::default(),
             batch: Vec::new(),
             progress: ChecksumProgress {
                 listing,
                 ..ChecksumProgress::default()
             },
-            budgets: Vec::new(),
             diagnostics: Vec::new(),
-            seen: HashSet::new(),
             directories: HashSet::new(),
-            retained: 0,
+            nested: match pass.targets {
+                Targets::Request(targets) => nested_targets(targets),
+                // A manifest names each file once, below one folder.
+                Targets::Manifest { .. } => HashSet::new(),
+            },
+            counted: HashSet::new(),
             incomplete: false,
             last_progress: Instant::now(),
             last_flush: Instant::now(),
@@ -389,21 +456,41 @@ impl<'a, F: FnMut(ChecksumUpdate) -> bool> State<'a, F> {
         }
     }
 }
+
+/// The targets another target may also reach: none when every target is a distinct
+/// entry of one folder (a flat panel selection), otherwise all of them.
+fn nested_targets(targets: &[ChecksumTarget]) -> HashSet<PathBuf> {
+    let first = targets.first().and_then(|target| target.path.parent());
+    let mut distinct = HashSet::with_capacity(targets.len());
+    let flat = targets
+        .iter()
+        .all(|target| target.path.parent() == first && distinct.insert(target.path.as_path()));
+    if flat {
+        return HashSet::new();
+    }
+    targets.iter().map(|target| target.path.clone()).collect()
+}
+
 impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
-    /// Walk the request's targets: list their files, or read them.
+    /// Walk the run's targets: list their files, or read them.
     fn visit(&mut self, service: &dyn TransferService) {
         let request = self.request;
         let cancel = self.cancel;
-        for target in &request.targets {
+        let targets = self.targets;
+        for index in 0..targets.len() {
+            let Some(target) = targets.get(index) else {
+                break;
+            };
+            let target = target.as_ref();
             if self.stopped() {
                 break;
             }
-            if !self.charge(&target.path) {
-                if self.stopped() {
-                    break;
-                }
+            // A target that another target already reached, or the same one twice, is
+            // counted once.
+            if !self.first_time(&target.path) {
                 continue;
             }
+            self.discover();
             // An entry lives on its directory's volume.
             self.classify_parent(target.path.parent().unwrap_or(&target.path));
             let opened = with_io(self.admission, cancel, &target.path, || {
@@ -442,7 +529,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         }
     }
     fn stopped(&self) -> bool {
-        self.cancel.is_cancelled() || !self.budgets.is_empty()
+        self.cancel.is_cancelled()
     }
     fn admission_of(&mut self, path: &Path) -> Admission {
         if let Some(admission) = self.admissions.get(path) {
@@ -457,57 +544,22 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
     fn classify_parent(&mut self, directory: &Path) {
         self.admission = self.admission_of(directory);
     }
-    fn budget(&mut self, budget: ChecksumBudget) {
-        self.incomplete = true;
-        if !self.budgets.contains(&budget) {
-            self.budgets.push(budget);
-        }
+    /// Whether a target, or a path another target may also reach, is met for the first
+    /// time. Any other path is: a walk lists each name of a folder once.
+    fn first_time(&mut self, path: &Path) -> bool {
+        !self.nested.contains(path) || self.counted.insert(path.to_owned())
     }
-    fn charge(&mut self, path: &Path) -> bool {
-        if self.seen.contains(path) {
-            return false;
-        }
-        if self.progress.discovered >= self.request.limits.max_nodes {
-            self.budget(ChecksumBudget::Nodes);
-            return false;
-        }
-        // Charge retained path/index/diagnostic copies and bounded digest/style data, not file length.
-        let cost = path
-            .as_os_str()
-            .as_encoded_bytes()
-            .len()
-            .checked_mul(4)
-            .and_then(|bytes| bytes.checked_add(1024));
-        let Some(total) = cost.and_then(|cost| self.retained.checked_add(cost)) else {
-            self.budget(ChecksumBudget::RetainedBytes);
-            return false;
-        };
-        // The same per-entry charge is what the manifest verifier retains. Its
-        // transient check of one line's names may exceed that charge, so a row
-        // that can be exported also needs that headroom; otherwise a completed or
-        // budget-limited run could later fail to save (or the saved file to verify).
-        let headroom = if self.settings.exportable {
-            super::format::export_line_headroom(path, self.request.algorithms)
-        } else {
-            Some(0)
-        };
-        if total > self.request.limits.max_retained_bytes
-            || headroom
-                .and_then(|headroom| total.checked_add(headroom))
-                .is_none_or(|peak| peak > self.request.limits.max_retained_bytes)
-        {
-            self.budget(ChecksumBudget::RetainedBytes);
-            return false;
-        }
-        if self.rows.len() >= self.request.limits.max_rows {
-            self.budget(ChecksumBudget::Rows);
-            return false;
-        }
-        self.retained = total;
-        self.progress.discovered += 1;
-        self.seen.insert(path.to_owned());
-        true
+    /// One more entry found; there is no limit to how many.
+    fn discover(&mut self) {
+        self.progress.discovered = self.progress.discovered.saturating_add(1);
     }
+    /// A path's name below the run's base folder; the whole path when it is not below it.
+    fn name(&self, path: &Path) -> Box<Path> {
+        path.strip_prefix(&self.base).unwrap_or(path).into()
+    }
+    /// Walk one target without recursion: a stack of the open folders on the way down.
+    /// Every level is walked; a folder reached again (a link loop, another target) is
+    /// recognized by its identity and walked once.
     fn walk(&mut self, source: Box<dyn TransferSource>) {
         let root_device = source.entry().identity.device;
         let mut stack = Vec::<Box<dyn TransferSource>>::new();
@@ -558,7 +610,6 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                     EntryKind::File => self.file(child),
                     EntryKind::Directory if self.request.recursive
                         || (self.settings.folders && stack.is_empty()) => {
-                        if stack.len() >= self.request.limits.max_depth { self.budget(ChecksumBudget::Depth); break; }
                         let ListedChild::Source(source) = child else {
                             // A folder to enter is always opened (`open`); a source
                             // that only described it leaves its contents unread.
@@ -586,7 +637,8 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             });
             match next {
                 Ok(Some(child)) => {
-                    if self.charge(&child.entry().item.path) {
+                    if self.first_time(&child.entry().item.path) {
+                        self.discover();
                         current = Some(child);
                     }
                 }
@@ -596,10 +648,12 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                 Err(error) => {
                     let directory_failed = error.path == parent_path;
                     if directory_failed {
+                        // An unreadable folder fails alone; the run goes on.
                         self.open_failed(error, Some(EntryKind::Directory));
                         self.incomplete = true;
                         stack.pop();
-                    } else if self.charge(&error.path) {
+                    } else if self.first_time(&error.path) {
+                        self.discover();
                         self.open_failed(error, None);
                     }
                 }
@@ -610,7 +664,7 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         let entry = child.entry().clone();
         if self.listing {
             self.plan(ChecksumPlannedFile {
-                path: entry.item.path,
+                name: self.name(&entry.item.path),
                 size: entry.item.metadata.size,
             });
             return;
@@ -741,19 +795,19 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
                 if state != ChecksumRowState::Cancelled {
                     self.progress.errors += 1;
                 }
-                (state, Vec::new(), Some(error))
+                (state, ChecksumDigests::default(), Some(Box::new(error)))
             }
         };
+        let name = self.name(&entry.item.path);
         self.row(ChecksumRow {
-            id: ChecksumRowId(self.rows.len() as u64 + 1),
-            path: entry.item.path,
+            id: self.next_id(),
+            name,
             identity: Some(entry.identity),
             kind: Some(entry.item.kind),
             state,
             bytes_read: read,
             digests,
             error,
-            retention: self.retention.clone(),
         });
     }
     fn open_failed(&mut self, error: FsError, known_kind: Option<EntryKind>) {
@@ -794,16 +848,16 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         } else if state != ChecksumRowState::Cancelled {
             self.progress.errors += 1;
         }
+        let name = self.name(path);
         self.row(ChecksumRow {
-            id: ChecksumRowId(self.rows.len() as u64 + 1),
-            path: path.to_owned(),
+            id: self.next_id(),
+            name,
             identity: entry.map(|entry| entry.identity),
             kind: entry.map(|entry| entry.item.kind),
             state,
             bytes_read: 0,
-            digests: Vec::new(),
-            error: Some(error),
-            retention: self.retention.clone(),
+            digests: ChecksumDigests::default(),
+            error: Some(Box::new(error)),
         });
     }
     fn diagnostic(&mut self, error: &FsError) {
@@ -811,9 +865,11 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
             self.diagnostics.push(error.clone());
         }
     }
+    /// Rows are numbered from one in the order found.
+    fn next_id(&self) -> ChecksumRowId {
+        ChecksumRowId((self.rows.len() + self.batch.len()) as u64 + 1)
+    }
     fn row(&mut self, row: ChecksumRow) {
-        let row = Arc::new(row);
-        self.rows.push(row.clone());
         self.batch.push(row);
         // A finished file reaches the window at once, unless many finish quickly:
         // those wait at most the update interval (see `progress`).
@@ -824,13 +880,19 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
         }
         self.progress();
     }
+    /// Send the waiting rows as one chunk, which the run keeps too.
     fn flush_batch(&mut self) {
         self.last_flush = Instant::now();
-        if !self.batch.is_empty()
-            && !(self.emit)(ChecksumUpdate::Batch(
-                std::mem::take(&mut self.batch).into(),
-            ))
-        {
+        if self.batch.is_empty() {
+            return;
+        }
+        let chunk = Arc::new(ChecksumChunk {
+            base: self.base.clone(),
+            rows: std::mem::take(&mut self.batch).into_boxed_slice(),
+            retention: self.retention.clone(),
+        });
+        self.rows.push(chunk.clone());
+        if !(self.emit)(ChecksumUpdate::Batch(chunk)) {
             self.cancel.cancel();
         }
     }
@@ -850,9 +912,10 @@ impl<F: FnMut(ChecksumUpdate) -> bool> State<'_, F> {
     fn flush_planned(&mut self) {
         self.last_flush = Instant::now();
         if !self.planned.is_empty()
-            && !(self.emit)(ChecksumUpdate::Planned(
-                std::mem::take(&mut self.planned).into(),
-            ))
+            && !(self.emit)(ChecksumUpdate::Planned(Arc::new(ChecksumPlanned {
+                base: self.base.clone(),
+                files: std::mem::take(&mut self.planned).into_boxed_slice(),
+            })))
         {
             self.cancel.cancel();
         }
@@ -918,39 +981,39 @@ impl Hashers {
             hash.update(bytes);
         }
     }
-    fn finish(self) -> Vec<ChecksumDigest> {
-        let mut result = Vec::new();
-        if let Some(hash) = self.md5 {
-            result.push(ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Md5,
-                bytes: hash.finalize().to_vec(),
-            });
-        }
-        if let Some(hash) = self.sha1 {
-            result.push(ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Sha1,
-                bytes: hash.finalize().to_vec(),
-            });
-        }
-        if let Some(hash) = self.sha256 {
-            result.push(ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Sha256,
-                bytes: hash.finalize().to_vec(),
-            });
-        }
-        if let Some(hash) = self.sha512 {
-            result.push(ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Sha512,
-                bytes: hash.finalize().to_vec(),
-            });
-        }
-        if let Some(hash) = self.crc32 {
-            result.push(ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Crc32,
-                bytes: hash.finalize().to_be_bytes().to_vec(),
-            });
-        }
-        result
+    /// Every chosen algorithm's digest, kept at its fixed length in one allocation.
+    fn finish(self) -> ChecksumDigests {
+        let md5 = self.md5.map(Md5::finalize);
+        let sha1 = self.sha1.map(Sha1::finalize);
+        let sha256 = self.sha256.map(Sha256::finalize);
+        let sha512 = self.sha512.map(Sha512::finalize);
+        let crc32 = self.crc32.map(|hash| hash.finalize().to_be_bytes());
+        let values: Vec<(ChecksumAlgorithm, &[u8])> = [
+            (
+                ChecksumAlgorithm::Md5,
+                md5.as_ref().map(|value| value.as_slice()),
+            ),
+            (
+                ChecksumAlgorithm::Sha1,
+                sha1.as_ref().map(|value| value.as_slice()),
+            ),
+            (
+                ChecksumAlgorithm::Sha256,
+                sha256.as_ref().map(|value| value.as_slice()),
+            ),
+            (
+                ChecksumAlgorithm::Sha512,
+                sha512.as_ref().map(|value| value.as_slice()),
+            ),
+            (
+                ChecksumAlgorithm::Crc32,
+                crc32.as_ref().map(|value| value.as_slice()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(algorithm, value)| Some((algorithm, value?)))
+        .collect();
+        ChecksumDigests::new(&values).expect("each hash yields its algorithm's digest length")
     }
 }
 

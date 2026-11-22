@@ -59,26 +59,29 @@ impl TransferService for Provider {
 }
 fn retained(path: std::path::PathBuf) -> Arc<ChecksumRun> {
     let retention = ChecksumRetention::new(());
-    Arc::new(ChecksumRun {
-        job: ChecksumJobId(1),
-        generation: ChecksumGeneration(1),
-        algorithms: ChecksumAlgorithms::default(),
-        captured_roots: vec![path.clone()].into(),
-        rows: vec![Arc::new(ChecksumRow {
+    let base: Arc<Path> = path.parent().unwrap().into();
+    let rows = Arc::new(ChecksumChunk {
+        base,
+        rows: vec![ChecksumRow {
             id: ChecksumRowId(1),
-            path,
+            name: Path::new(path.file_name().unwrap()).into(),
             identity: None,
             kind: Some(EntryKind::File),
             state: ChecksumRowState::Calculated,
             bytes_read: 3,
-            digests: vec![ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Sha256,
-                bytes: vec![1; 32],
-            }],
+            digests: ChecksumDigests::new(&[(ChecksumAlgorithm::Sha256, &[1; 32])]).unwrap(),
             error: None,
-            retention: retention.clone(),
-        })]
+        }]
         .into(),
+        retention: retention.clone(),
+    })
+    .into();
+    Arc::new(ChecksumRun {
+        job: ChecksumJobId(1),
+        generation: ChecksumGeneration(1),
+        algorithms: ChecksumAlgorithms::default(),
+        captured_roots: vec![path].into(),
+        rows,
         summary: ChecksumSummary {
             completion: ChecksumCompletion::Completed,
             progress: ChecksumProgress {
@@ -86,7 +89,6 @@ fn retained(path: std::path::PathBuf) -> Arc<ChecksumRun> {
                 calculated: 1,
                 ..Default::default()
             },
-            reached_budgets: vec![],
             diagnostics: vec![],
         },
         retention,
@@ -240,11 +242,10 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
     };
     let path = std::env::current_dir().unwrap().join("_build/tmp/source");
     for id in 1..=32 {
-        let mut request =
+        let request =
             ChecksumRequest::new(ChecksumJobId(id), ChecksumGeneration(1), vec![path.clone()]);
-        request.limits.max_retained_bytes = 1;
-        // This test fills this actor's channel, independently of process-wide
-        // quota used concurrently by other tests. Global quota has its own tests.
+        // This test fills this actor's channel, independently of the process-wide
+        // job slots used concurrently by other tests. Slots have their own tests.
         controller
             .admit_plain(
                 Capture::Paths(request),
@@ -253,8 +254,7 @@ async fn full_queue_rejects_whole_request_without_superseding_an_admitted_genera
             )
             .unwrap();
     }
-    let mut request = ChecksumRequest::new(ChecksumJobId(1), ChecksumGeneration(2), vec![path]);
-    request.limits.max_retained_bytes = 1;
+    let request = ChecksumRequest::new(ChecksumJobId(1), ChecksumGeneration(2), vec![path]);
     assert_eq!(
         controller
             .admit_plain(
@@ -300,7 +300,6 @@ fn selected_capture_uses_captured_sizes_and_refuses_disappeared_entries_without_
         },
         algorithms: ChecksumAlgorithms::all(),
         recursive: false,
-        limits: ChecksumLimits::default(),
     };
     let captured = resolve(Capture::Selected(request.clone()), &Cancellation::default()).unwrap();
     assert_eq!(captured.targets.len(), 2);
@@ -476,7 +475,6 @@ fn selected(job: u64, generation: u64, path: &Path) -> SelectedChecksumRequest {
         },
         algorithms: ChecksumAlgorithms::default(),
         recursive: false,
-        limits: ChecksumLimits::default(),
     }
 }
 async fn finished(
@@ -551,11 +549,10 @@ async fn verification_admission_fits_alongside_retained_calculation_or_verificat
                 job: ChecksumJobId(1),
                 generation: ChecksumGeneration(1),
                 manifest: directory.join("previous.md5"),
-                limits: ChecksumLimits::default(),
             })
             .unwrap()
         } else {
-            checksum::reserve(8 * 1024 * 1024, 8 * 1024 * 1024).unwrap()
+            checksum::reserve().unwrap()
         };
         let mut previous = (*retained(directory.join("source"))).clone();
         previous.retention = held.retention();
@@ -572,7 +569,6 @@ async fn verification_admission_fits_alongside_retained_calculation_or_verificat
                 job: ChecksumJobId(1),
                 generation: ChecksumGeneration(2),
                 manifest: directory.join("captured.md5"),
-                limits: ChecksumLimits::default(),
             })
             .unwrap();
         assert_eq!(
@@ -592,7 +588,6 @@ async fn verification_admission_fits_alongside_retained_calculation_or_verificat
                     job: ChecksumJobId(1),
                     generation: ChecksumGeneration(3),
                     manifest: directory.join("other.md5"),
-                    limits: ChecksumLimits::default(),
                 })
                 .is_err()
         );

@@ -5,6 +5,7 @@ mod events;
 mod output;
 mod picker;
 mod report;
+pub(crate) mod selection;
 mod verification;
 
 pub(crate) const MAX_CHECKSUM_WINDOWS: usize = 4;
@@ -64,19 +65,35 @@ pub(crate) struct ChecksumSession {
     pub save_pending: Option<ChecksumAlgorithm>,
     /// A question the user must answer before a save goes ahead.
     pub save_prompt: Option<SavePrompt>,
-    streamed: Vec<Arc<ChecksumRow>>,
+    /// The running run's rows, as the chunks the engine sent; the finished run holds the
+    /// same chunks.
+    streamed: ChecksumRows,
     /// The running calculation's listed files, in reading order; those without a
     /// row yet show as waiting. Cleared when the run finishes.
     planned: Planned,
+    /// The result list's selection, cursor and anchor (see `selection`).
+    pub selection: crate::list_selection::ListSelection,
+    /// The previous run's selected files, while a run of the same files lists and reads
+    /// them again (see `selection`).
+    carried: Option<selection::Carried>,
 }
 
-/// Listed files and which of them already have a row. Rows normally arrive in
-/// listing order, so the waiting files are the tail after `first`.
+/// How far ahead of the next waiting file a row's file is looked for among the listed
+/// ones. Rows come in listing order, apart from rows of entries the listing leaves out
+/// (an unreadable folder, a link): those match no listed file, and a file listed but
+/// gone by the time it is read never gets a row. Only matching effort is bounded: an
+/// unmatched row is a result like any other.
+const LISTED_LOOKAHEAD: usize = 64;
+
+/// Listed files, as the engine sent them, and which of them already have a row. Rows
+/// normally arrive in listing order, so the waiting files are the tail after `first`.
 #[derive(Default)]
 pub(crate) struct Planned {
-    files: Vec<ChecksumPlannedFile>,
+    chunks: Vec<Arc<ChecksumPlanned>>,
+    /// The place of each chunk's first file.
+    starts: Vec<usize>,
+    len: usize,
     done: Vec<bool>,
-    by_path: std::collections::HashMap<PathBuf, usize>,
     finished: usize,
     /// No listed file before this one waits.
     first: usize,
@@ -85,56 +102,92 @@ pub(crate) struct Planned {
 }
 
 impl Planned {
-    fn add(&mut self, files: &[ChecksumPlannedFile]) {
-        use std::collections::hash_map::Entry;
-        let room = ChecksumLimits::default()
-            .max_rows
-            .saturating_sub(self.files.len());
-        for file in files.iter().take(room) {
-            if let Entry::Vacant(entry) = self.by_path.entry(file.path.clone()) {
-                entry.insert(self.files.len());
-                self.files.push(file.clone());
-                self.done.push(false);
-            }
+    /// Accept listed files; returns the places they take.
+    fn add(&mut self, planned: &Arc<ChecksumPlanned>) -> std::ops::Range<usize> {
+        let start = self.len;
+        if !planned.files.is_empty() {
+            self.starts.push(start);
+            self.len += planned.files.len();
+            self.chunks.push(planned.clone());
+            self.done.resize(self.len, false);
         }
+        start..self.len
     }
-    fn finished(&mut self, path: &Path) {
-        let Some(&index) = self.by_path.get(path) else {
-            return;
-        };
-        if std::mem::replace(&mut self.done[index], true) {
-            return;
+    pub(crate) fn file(&self, index: usize) -> Option<&ChecksumPlannedFile> {
+        if index >= self.len {
+            return None;
         }
+        let chunk = self.starts.partition_point(|start| *start <= index) - 1;
+        self.chunks[chunk].files.get(index - self.starts[chunk])
+    }
+    /// The listing's base folder (every name is below it).
+    pub(crate) fn base(&self) -> Option<&Path> {
+        self.chunks.first().map(|chunk| chunk.base.as_ref())
+    }
+    /// A row for `name` arrived: the place of the listed file it finishes, if any.
+    fn finished(&mut self, name: &Path) -> Option<usize> {
+        let index = (self.first..self.len.min(self.first + LISTED_LOOKAHEAD))
+            .filter(|index| !self.done[*index])
+            .find(|index| self.file(*index).is_some_and(|file| *file.name == *name))?;
+        self.done[index] = true;
         self.finished += 1;
-        if index >= self.first {
-            self.later_done += 1;
-        }
+        self.later_done += 1;
         while self.done.get(self.first).copied().unwrap_or(false) {
             self.first += 1;
             self.later_done -= 1;
         }
+        Some(index)
     }
-    /// The `k`th waiting file, without a scan when rows came in listing order.
-    fn waiting(&self, k: usize) -> Option<&ChecksumPlannedFile> {
+    pub(crate) fn waiting_count(&self) -> usize {
+        self.len - self.finished
+    }
+    /// The place of the `k`th waiting file, without a scan when rows came in order.
+    pub(crate) fn waiting_index(&self, k: usize) -> Option<usize> {
         if self.later_done == 0 {
-            return self.files.get(self.first + k);
+            let index = self.first.checked_add(k)?;
+            return (index < self.len).then_some(index);
         }
-        self.files[self.first..]
-            .iter()
-            .zip(&self.done[self.first..])
-            .filter(|(_, done)| !**done)
-            .map(|(file, _)| file)
+        (self.first..self.len)
+            .filter(|index| !self.done[*index])
             .nth(k)
+    }
+    /// Which waiting file the listed file at `index` is; none once it has a row.
+    pub(crate) fn waiting_position(&self, index: usize) -> Option<usize> {
+        if index >= self.len || self.done[index] || index < self.first {
+            return None;
+        }
+        let before = index - self.first;
+        if self.later_done == 0 {
+            return Some(before);
+        }
+        Some(
+            before
+                - self.done[self.first..index]
+                    .iter()
+                    .filter(|done| **done)
+                    .count(),
+        )
+    }
+    /// The places of the waiting files from the `k`th on, in order.
+    pub(crate) fn waiting_from(&self, k: usize) -> impl Iterator<Item = usize> + '_ {
+        let start = if self.later_done == 0 {
+            self.first.saturating_add(k).min(self.len)
+        } else {
+            self.waiting_index(k).unwrap_or(self.len)
+        };
+        (start..self.len).filter(|index| !self.done[*index])
     }
 }
 
-/// What a Copy of the checksums as a checksum file did when it had to leave files out:
-/// how many lines it copied, and each reason a file could not be named there with how
-/// many were not, in the order first met. The window shows it as a note, not an error.
+/// What a copy of selected rows did when it had to leave some out: how many lines (or,
+/// for full rows, rows) it copied, and each reason a row added nothing with how many
+/// did not, in the order first met. The window shows it as a note, not an error.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CopyNote {
     pub copied: u64,
     pub left_out: Vec<(&'static str, u64)>,
+    /// Full rows were copied, not checksums.
+    pub rows: bool,
 }
 
 impl CopyNote {
@@ -168,65 +221,55 @@ pub(crate) struct ChecksumSave {
 }
 
 impl ChecksumSession {
-    pub fn rows(&self) -> &[Arc<ChecksumRow>] {
+    /// The rows so far: the running run's streamed chunks, or the finished run's.
+    pub fn rows(&self) -> &ChecksumRows {
         self.run.as_ref().map_or(&self.streamed, |run| &run.rows)
     }
 
     /// Listed files of the running calculation that have no row yet, in reading order.
     #[cfg(test)]
     pub fn pending(&self) -> impl Iterator<Item = &ChecksumPlannedFile> {
-        let planned = &self.planned;
-        planned
-            .files
-            .iter()
-            .zip(&planned.done)
-            .filter(|(_, done)| !**done)
-            .map(|(file, _)| file)
+        self.planned
+            .waiting_from(0)
+            .filter_map(|index| self.planned.file(index))
     }
 
     pub fn pending_count(&self) -> usize {
-        self.planned.files.len() - self.planned.finished
+        self.planned.waiting_count()
     }
 
-    /// The `k`th listed file still to come; see [`Self::pending`].
-    pub fn pending_at(&self, k: usize) -> Option<&ChecksumPlannedFile> {
-        self.planned.waiting(k)
+    /// The `k`th listed file still to come, with its place in the listing (its identity
+    /// while it waits); see [`Self::pending`].
+    pub fn pending_at(&self, k: usize) -> Option<(usize, &ChecksumPlannedFile)> {
+        let index = self.planned.waiting_index(k)?;
+        Some((index, self.planned.file(index)?))
     }
 
-    /// Accept listed files and rows of the running calculation.
-    pub(super) fn plan(&mut self, files: &[ChecksumPlannedFile]) {
+    /// The folder the listed files are named below.
+    pub fn pending_base(&self) -> Option<&Path> {
+        self.planned.base()
+    }
+
+    /// Accept listed files of the running calculation.
+    pub(super) fn plan(&mut self, planned: &Arc<ChecksumPlanned>) {
         if self.run.is_none() {
-            self.planned.add(files);
+            let added = self.planned.add(planned);
+            self.select_carried_listed(added);
         }
     }
 
-    pub(super) fn stream(&mut self, rows: &[Arc<ChecksumRow>]) {
-        let remaining = ChecksumLimits::default()
-            .max_rows
-            .saturating_sub(self.streamed.len());
-        for row in rows.iter().take(remaining) {
-            self.planned.finished(&row.path);
-            self.streamed.push(row.clone());
+    /// Accept rows of the running run; a listed file's row takes its place.
+    pub(super) fn stream(&mut self, chunk: &Arc<ChecksumChunk>) {
+        for row in chunk.rows.iter() {
+            let listed = self.planned.finished(&row.name);
+            self.row_arrived(&chunk.base, row, listed);
         }
+        self.streamed.push(chunk.clone());
     }
 
     /// The run ended or a new one starts: the old rows and listed files go.
-    pub(super) fn take_streamed(&mut self) -> (Vec<Arc<ChecksumRow>>, Planned) {
+    pub(super) fn take_streamed(&mut self) -> (ChecksumRows, Planned) {
         (mem::take(&mut self.streamed), mem::take(&mut self.planned))
-    }
-
-    pub fn row(&self, token: &str) -> Option<&ChecksumRow> {
-        let (generation, row) = token.split_once(':')?;
-        if generation.parse::<u64>().ok()? != self.generation.0 {
-            return None;
-        }
-        let id = row.parse::<u64>().ok()?;
-        // The worker emits immutable sequential IDs starting at one. Check the
-        // identity too: no callback can substitute an arbitrary displayed index.
-        self.rows()
-            .get(usize::try_from(id.checked_sub(1)?).ok()?)
-            .filter(|row| row.id.0 == id)
-            .map(AsRef::as_ref)
     }
 
     /// A new run makes every answer about the previous one obsolete: its save
@@ -332,8 +375,7 @@ fn captured_kind(pane: &Pane, files: &SelectedFiles, path: &Path) -> Option<Entr
 
 /// The checksum file among the captured files, found from the selection itself and never
 /// by scanning the folder's index on the UI thread: the focused one, else the first
-/// selected one in display order. Only as many selected rows are looked at as one
-/// calculation could hold; the bitset skips unselected rows 64 at a time.
+/// selected one in display order. The bitset skips unselected rows 64 at a time.
 fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf> {
     let focused = files
         .fallback
@@ -358,7 +400,6 @@ fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf>
                 Some(word * 64 + bit)
             })
         })
-        .take(ChecksumLimits::default().max_rows)
         .filter_map(|position| pane.display_entry(position))
         .find(|entry| is_checksum_file(&entry.path, entry.kind))
         .map(|entry| entry.path.clone())
@@ -500,8 +541,10 @@ impl Presenter {
                 save_message: String::new(),
                 saved: None,
                 copy_note: None,
-                streamed: Vec::new(),
+                streamed: ChecksumRows::default(),
                 planned: Planned::default(),
+                selection: Default::default(),
+                carried: None,
             },
         );
         // Nothing is calculated until the user presses Calculate.
@@ -532,7 +575,6 @@ impl Presenter {
                 sources: sources.clone(),
                 algorithms,
                 recursive,
-                limits: ChecksumLimits::default(),
             }))
         } else {
             Command::StartSelectedChecksums(Box::new(SelectedChecksumRequest {
@@ -541,13 +583,16 @@ impl Presenter {
                 files: s.files.clone(),
                 algorithms,
                 recursive,
-                limits: ChecksumLimits::default(),
             }))
         };
         if !send(command) {
             s.error = "Checksum queue is busy. Try Calculate again.".into();
             return false;
         }
+        // The window's captured files never change: a calculation after one with the same
+        // Include subfolders reads the same files, and selects the same ones again.
+        let same_files = s.generation.0 > 0 && s.verification.is_none() && s.recursive == recursive;
+        s.restart_selection(same_files);
         s.generation = generation;
         s.verification = None;
         s.algorithms = algorithms;

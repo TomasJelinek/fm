@@ -29,6 +29,12 @@ mod native_fixture;
 #[path = "support/checksum_fixture_linux.rs"]
 mod native_fixture;
 use native_fixture::fixture;
+#[cfg(windows)]
+#[path = "support/checksum_verify_links_windows.rs"]
+mod links;
+#[cfg(target_os = "linux")]
+#[path = "support/checksum_verify_links_linux.rs"]
+mod links;
 
 #[tokio::test]
 async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified() {
@@ -175,7 +181,7 @@ async fn recursion_is_explicit_and_partial_manifests_require_exact_acknowledgeme
     };
     // A selected folder contributes its own files without Include subfolders.
     assert_eq!(own.rows.len(), 1);
-    assert_eq!(own.rows[0].path, directory.join("empty.txt"));
+    assert_eq!(own.rows.get(0).unwrap().path(), directory.join("empty.txt"));
     assert_eq!(own.rows[0].state, ChecksumRowState::Calculated);
     let mut recursive = request;
     recursive.generation = ChecksumGeneration(2);
@@ -298,45 +304,120 @@ async fn captured_metadata_change_is_not_silently_hashed_as_the_old_selection() 
     controller.shutdown().await;
 }
 
+/// The run of one recursive calculation of `root` (with all algorithms off but SHA-256).
+async fn recursive_run(
+    controller: &mut checksum::Controller,
+    job: u64,
+    root: &std::path::Path,
+) -> Arc<ChecksumRun> {
+    let mut request = ChecksumRequest::new(
+        ChecksumJobId(job),
+        ChecksumGeneration(1),
+        vec![root.to_owned()],
+    );
+    request.recursive = true;
+    controller.start(request).unwrap();
+    loop {
+        if let ChecksumUpdate::Finished(run) = controller.next().await.unwrap().update {
+            break run;
+        }
+    }
+}
+
+/// Include subfolders on the native filesystem (regression: the walk was already
+/// recursive): every nesting level is read, and a saved manifest names each file relative
+/// to its folder with `/`, whatever the platform's separator.
 #[tokio::test]
-async fn recursive_depth_node_and_memory_limits_report_incomplete_discovery() {
+async fn native_include_subfolders_reads_every_level_and_saves_relative_names() {
     let _quota_fixture = checksum::test_quota_fixture().await;
     let temp = fixture();
     let root = temp.path().join("root");
-    fs::create_dir_all(root.join("child/deeper")).unwrap();
-    fs::write(root.join("child/deeper/file"), b"unvisited").unwrap();
-    let mut controller = checksum::Controller::new(
-        checksum::Retirement::testing(),
-        Arc::new(midnight_platform::LocalFileSystem::new(None)),
+    fs::create_dir_all(root.join("one/two/three")).unwrap();
+    fs::write(root.join("top.txt"), b"abc").unwrap();
+    fs::write(root.join("one/a.txt"), b"abc").unwrap();
+    fs::write(root.join("one/two/b.txt"), b"abc").unwrap();
+    fs::write(root.join("one/two/three/c.txt"), b"abc").unwrap();
+    let provider = Arc::new(midnight_platform::LocalFileSystem::new(None));
+    let mut controller =
+        checksum::Controller::new(checksum::Retirement::testing(), provider.clone());
+    let run = recursive_run(&mut controller, 80, &root).await;
+    assert_eq!(run.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(run.summary.progress.calculated, 4);
+    let mut names: Vec<_> = run
+        .rows
+        .iter()
+        .map(|row| row.path().strip_prefix(&root).unwrap().to_owned())
+        .collect();
+    names.sort();
+    let expected: Vec<std::path::PathBuf> = vec![
+        ["one", "a.txt"].iter().collect(),
+        ["one", "two", "b.txt"].iter().collect(),
+        ["one", "two", "three", "c.txt"].iter().collect(),
+        "top.txt".into(),
+    ];
+    assert_eq!(names, expected);
+    let save = ChecksumManifestRequest {
+        algorithm: ChecksumAlgorithm::Sha256,
+        destination: root.join("files.sha256"),
+        acknowledge_partial: None,
+        overwrite: false,
+    };
+    checksum::save_manifest(&run, &save, provider.as_ref(), &Cancellation::default()).unwrap();
+    let mut lines: Vec<_> = fs::read_to_string(&save.destination)
+        .unwrap()
+        .lines()
+        .map(|line| line.split_once(" *").unwrap().1.to_owned())
+        .collect();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "one/a.txt",
+            "one/two/b.txt",
+            "one/two/three/c.txt",
+            "top.txt"
+        ]
     );
-    for (index, budget) in [
-        ChecksumBudget::Depth,
-        ChecksumBudget::Nodes,
-        ChecksumBudget::RetainedBytes,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut request = ChecksumRequest::new(
-            ChecksumJobId(60 + index as u64),
-            ChecksumGeneration(1),
-            vec![root.clone()],
-        );
-        request.recursive = true;
-        match budget {
-            ChecksumBudget::Depth => request.limits.max_depth = 1,
-            ChecksumBudget::Nodes => request.limits.max_nodes = 1,
-            _ => request.limits.max_retained_bytes = 1,
-        }
-        controller.start(request).unwrap();
-        let run = loop {
-            if let ChecksumUpdate::Finished(run) = controller.next().await.unwrap().update {
-                break run;
-            }
-        };
-        assert_eq!(run.summary.completion, ChecksumCompletion::Incomplete);
-        assert_eq!(run.summary.progress.calculated, 0);
-        assert!(run.summary.reached_budgets.contains(&budget));
-    }
+    controller.shutdown().await;
+}
+
+/// A link back to an ancestor (a junction on Windows, a symbolic link on Linux) is never
+/// followed: it is skipped as its own row and the walk ends.
+#[tokio::test]
+async fn native_link_loop_is_skipped_and_the_walk_ends() {
+    let _quota_fixture = checksum::test_quota_fixture().await;
+    let temp = fixture();
+    let root = temp.path().join("looped");
+    fs::create_dir_all(root.join("sub")).unwrap();
+    fs::write(root.join("a.txt"), b"abc").unwrap();
+    fs::write(root.join("sub/b.txt"), b"abc").unwrap();
+    links::create(&root.join("sub").join("back"), &root);
+    let provider = Arc::new(midnight_platform::LocalFileSystem::new(None));
+    let mut controller =
+        checksum::Controller::new(checksum::Retirement::testing(), provider.clone());
+    let run = recursive_run(&mut controller, 81, &root).await;
+    let mut rows: Vec<_> = run
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.path().strip_prefix(&root).unwrap().to_owned(),
+                row.state,
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        rows,
+        [
+            ("a.txt".into(), ChecksumRowState::Calculated),
+            (
+                ["sub", "b.txt"].iter().collect(),
+                ChecksumRowState::Calculated
+            ),
+            (["sub", "back"].iter().collect(), ChecksumRowState::Skipped),
+        ]
+    );
+    assert_eq!(run.summary.progress.calculated, 2);
     controller.shutdown().await;
 }

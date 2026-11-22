@@ -12,76 +12,195 @@ struct PlannedSave {
     overwrite: bool,
 }
 
+/// What a copy of rows writes for each of them.
+#[derive(Clone, Copy)]
+enum Copied {
+    /// The checksum of the algorithm, one per line.
+    Hashes(ChecksumAlgorithm),
+    /// The path and every checksum, with a blank line between rows.
+    Rows,
+    /// The checksum-file line, exactly as Save manifest… writes it.
+    Lines(ChecksumAlgorithm),
+}
+
+/// Why a row adds nothing to a copy of this kind; none when it does add something.
+fn left_out(row: &ChecksumRow, copied: Copied) -> Option<&'static str> {
+    use report::{CANCELLED, FAILED, NO_DIGEST, SKIPPED, VERIFICATION};
+    let digest = |algorithm| row.digest(algorithm).is_some();
+    match row.state {
+        ChecksumRowState::ReadError
+        | ChecksumRowState::SourceChanged
+        | ChecksumRowState::Missing => Some(FAILED),
+        ChecksumRowState::Skipped => Some(SKIPPED),
+        ChecksumRowState::Cancelled => Some(CANCELLED),
+        ChecksumRowState::Verified | ChecksumRowState::Mismatch
+            if matches!(copied, Copied::Lines(_)) =>
+        {
+            Some(VERIFICATION)
+        }
+        _ => match copied {
+            Copied::Hashes(algorithm) | Copied::Lines(algorithm) if !digest(algorithm) => {
+                Some(NO_DIGEST)
+            }
+            Copied::Rows if row.digests.is_empty() => Some(NO_DIGEST),
+            _ => None,
+        },
+    }
+}
+
 impl Presenter {
+    /// Ctrl+C (`whole_row` false) or Ctrl+Shift+C: the selected rows' checksums of
+    /// `algorithm`, one per line, or their full rows, in the order shown.
+    pub(crate) fn copy_checksums(
+        &mut self,
+        id: ChecksumJobId,
+        algorithm: ChecksumAlgorithm,
+        whole_row: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let copied = if whole_row {
+            Copied::Rows
+        } else {
+            Copied::Hashes(algorithm)
+        };
+        self.copy_rows(id, None, copied, send);
+    }
+
+    /// A row's context menu: the whole selection when `selection` is set and the row is
+    /// in it (file-manager convention), otherwise that row alone. The token is the row's,
+    /// captured when the menu opened.
     pub(crate) fn copy_checksum(
         &mut self,
         id: ChecksumJobId,
         token: &str,
         algorithm: ChecksumAlgorithm,
         whole_row: bool,
+        selection: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
-        let Some(row) = self.checksums.sessions.get(&id).and_then(|s| s.row(token)) else {
+        let Some(s) = self.checksums.sessions.get(&id) else {
             return;
         };
-        if !matches!(
-            row.state,
-            ChecksumRowState::Calculated | ChecksumRowState::Verified | ChecksumRowState::Mismatch
-        ) || row.digests.is_empty()
-        {
+        let Some(slot) = s.token_slot(token) else {
             return;
-        }
-        let text = if whole_row {
-            let hashes = row
-                .digests
-                .iter()
-                .map(|d| format!("{}: {}", d.algorithm.label(), d.hex()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("{}\n{}", row.path.display(), hashes)
+        };
+        let only = (!(selection && s.selection.is_selected(slot))).then_some(slot);
+        let copied = if whole_row {
+            Copied::Rows
         } else {
-            let Some(digest) = row.digest(algorithm) else {
-                return;
-            };
-            digest.hex()
+            Copied::Hashes(algorithm)
         };
-        self.copy_viewer_text(text, send);
+        self.copy_rows(id, only, copied, send);
     }
 
-    /// Copy the calculated checksums as the checksum file Save would write to the
-    /// suggested folder: the same lines, names relative to that folder. A file it
-    /// cannot name there is left out, and a note (not an error) says how many were,
-    /// for each reason.
+    /// Copy the selected rows as a checksum file, in the order shown: the lines Save
+    /// manifest… writes to the suggested folder, names relative to that folder. A row
+    /// with no calculated checksum, or one it cannot name there, is left out, and a note
+    /// (not an error) says how many were, for each reason.
     pub(crate) fn copy_checksum_file(
         &mut self,
         id: ChecksumJobId,
         algorithm: ChecksumAlgorithm,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.copy_rows(id, None, Copied::Lines(algorithm), send);
+    }
+
+    /// Copy the selected rows, or only the row in `only` (a slot), in one pass into a text
+    /// sized for them.
+    fn copy_rows(
+        &mut self,
+        id: ChecksumJobId,
+        only: Option<usize>,
+        copied: Copied,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        let Some(s) = self.checksums.sessions.get(&id) else {
+            return;
+        };
+        let (rows, waiting) = match only {
+            None => s.selected_rows(),
+            Some(slot) if slot % 2 == 1 => (Vec::new(), 1),
+            Some(slot) => (
+                s.rows()
+                    .by_id(slot as u64 / 2 + 1)
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                0,
+            ),
+        };
+        let folder = s.suggested.parent().unwrap_or(&s.directory);
+        let mut note = CopyNote {
+            rows: matches!(copied, Copied::Rows),
+            ..CopyNote::default()
+        };
+        let capacity = rows.iter().fold(0usize, |total, row| {
+            total.saturating_add(match copied {
+                Copied::Hashes(algorithm) => algorithm.bytes() * 2 + 1,
+                Copied::Lines(algorithm) => algorithm.bytes() * 2 + 4 + row.name.as_os_str().len(),
+                Copied::Rows => {
+                    row.base.as_os_str().len()
+                        + row.name.as_os_str().len()
+                        + row
+                            .digests
+                            .iter()
+                            .map(|d| d.bytes.len() * 2 + 10)
+                            .sum::<usize>()
+                        + 3
+                }
+            })
+        });
+        let mut text = String::with_capacity(capacity);
+        for row in &rows {
+            if let Some(reason) = left_out(row, copied) {
+                note.left_out(reason);
+                continue;
+            }
+            match copied {
+                Copied::Hashes(algorithm) => {
+                    let Some(digest) = row.digest(algorithm) else {
+                        continue;
+                    };
+                    if note.copied > 0 {
+                        text.push('\n');
+                    }
+                    digest.push_hex(&mut text);
+                }
+                Copied::Rows => {
+                    if note.copied > 0 {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(&row.path().display().to_string());
+                    for digest in row.digests.iter() {
+                        text.push('\n');
+                        text.push_str(digest.algorithm.label());
+                        text.push_str(": ");
+                        digest.push_hex(&mut text);
+                    }
+                }
+                Copied::Lines(algorithm) => {
+                    let Some(digest) = row.digest(algorithm) else {
+                        continue;
+                    };
+                    let Some(name) = checksum_file_name(row.base, &row.name, folder) else {
+                        note.left_out(CHECKSUM_NAME_NOT_BELOW);
+                        continue;
+                    };
+                    if let Err((_, reason)) = push_checksum_file_line(&mut text, digest, &name) {
+                        note.left_out(reason);
+                        continue;
+                    }
+                }
+            }
+            note.copied += 1;
+        }
+        // Selected files still waiting for their rows come after the rows shown.
+        for _ in 0..waiting {
+            note.left_out(report::WAITING);
+        }
         let Some(s) = self.checksums.sessions.get_mut(&id) else {
             return;
         };
-        if s.running {
-            return;
-        }
-        let directory = s.suggested.parent().unwrap_or(&s.directory).to_owned();
-        let mut text = String::new();
-        let mut note = CopyNote::default();
-        for row in s.rows() {
-            let Some(digest) = (row.state == ChecksumRowState::Calculated)
-                .then(|| row.digest(algorithm))
-                .flatten()
-            else {
-                continue;
-            };
-            match checksum_file_line(algorithm, &digest.hex(), &row.path, &directory) {
-                Ok(line) => {
-                    text.push_str(&line);
-                    note.copied += 1;
-                }
-                Err((_, reason)) => note.left_out(reason),
-            }
-        }
         // The copy succeeded: an earlier error stays, and the note replaces only the
         // previous copy's note.
         s.copy_note = (!note.left_out.is_empty()).then_some(note);

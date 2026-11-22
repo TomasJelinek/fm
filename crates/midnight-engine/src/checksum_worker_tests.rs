@@ -240,6 +240,58 @@ fn run(request: ChecksumRequest, provider: &Provider, cancel: &Cancellation) -> 
         |_| true,
     )
 }
+/// The run's row at `index`.
+fn row(run: &ChecksumRun, index: usize) -> ChecksumRowRef<'_> {
+    run.rows.get(index).expect("a row")
+}
+/// A calculation of `request` with other settings, reporting to `emit`.
+fn run_with(
+    request: &ChecksumRequest,
+    service: &dyn TransferService,
+    settings: Settings,
+    emit: impl FnMut(ChecksumUpdate) -> bool,
+) -> Arc<ChecksumRun> {
+    let targets = Targets::Request(&request.targets);
+    let pass = Pass {
+        request,
+        targets: &targets,
+        base: common_base(&request.targets),
+        settings,
+    };
+    super::run(
+        pass,
+        Arc::from([]),
+        service,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        emit,
+    )
+}
+/// A verification of the files the request names, below their folder.
+fn verify_run(
+    request: &ChecksumRequest,
+    service: &dyn TransferService,
+    emit: impl FnMut(ChecksumUpdate) -> bool,
+) -> Arc<ChecksumRun> {
+    let folder: Arc<Path> = common_base(&request.targets);
+    let names: Vec<Box<Path>> = request
+        .targets
+        .iter()
+        .map(|target| target.path.strip_prefix(&folder).unwrap().into())
+        .collect();
+    calculate_for_verification(
+        request,
+        folder.clone(),
+        &names,
+        folder.join("checksums.sha256"),
+        service,
+        &UNCLASSIFIED,
+        &Cancellation::default(),
+        ChecksumRetention::new(()),
+        emit,
+    )
+}
 
 #[test]
 fn short_reads_and_interruption_feed_all_hashes_with_one_ordered_read_stream() {
@@ -249,7 +301,7 @@ fn short_reads_and_interruption_feed_all_hashes_with_one_ordered_read_stream() {
     request.algorithms = ChecksumAlgorithms::all();
     let result = run(request, &provider, &Cancellation::default());
     assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
-    assert_eq!(result.rows[0].digests.len(), 5);
+    assert_eq!(row(&result, 0).digests.iter().count(), 5);
     assert_eq!(provider.reads.bytes.load(Ordering::SeqCst), 13);
     assert_eq!(provider.reads.calls.load(Ordering::SeqCst), 7); // EINTR, five short reads, EOF.
     assert_eq!(
@@ -257,11 +309,11 @@ fn short_reads_and_interruption_feed_all_hashes_with_one_ordered_read_stream() {
         CHECKSUM_BUFFER_BYTES
     );
     assert_eq!(
-        result.rows[0]
+        row(&result, 0)
             .digest(ChecksumAlgorithm::Sha256)
             .unwrap()
             .bytes,
-        Sha256::digest(b"abcdefghijklm").to_vec()
+        Sha256::digest(b"abcdefghijklm").as_slice()
     );
 }
 
@@ -277,9 +329,9 @@ fn crc32_uses_sfv_byte_order_and_preserves_incremental_reads() {
         request.algorithms = ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap();
         let result = run(request, &provider, &Cancellation::default());
         assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
-        assert_eq!(result.rows[0].digests.len(), 1);
+        assert_eq!(row(&result, 0).digests.iter().count(), 1);
         assert_eq!(
-            result.rows[0]
+            row(&result, 0)
                 .digest(ChecksumAlgorithm::Crc32)
                 .unwrap()
                 .hex(),
@@ -305,9 +357,9 @@ fn changed_unreadable_cancelled_and_wrong_length_files_never_publish_partial_dig
         }
         let result = run(request(), &provider, &cancel);
         assert_eq!(result.rows.len(), 1);
-        assert_ne!(result.rows[0].state, ChecksumRowState::Calculated);
-        assert!(result.rows[0].digests.is_empty());
-        assert!(result.rows[0].bytes_read > 0);
+        assert_ne!(row(&result, 0).state, ChecksumRowState::Calculated);
+        assert!(row(&result, 0).digests.is_empty());
+        assert!(row(&result, 0).bytes_read > 0);
         assert_ne!(result.summary.completion, ChecksumCompletion::Completed);
     }
 }
@@ -339,28 +391,16 @@ fn due_revalidation_stops_a_changed_source_before_its_end() {
         revalidation: Duration::ZERO,
         ..CALCULATION
     };
-    let result = super::run(
-        request(),
-        &provider,
-        &UNCLASSIFIED,
-        &Cancellation::default(),
-        ChecksumRetention::new(()),
-        settings,
-        |_| true,
-    );
-    assert_eq!(result.rows[0].state, ChecksumRowState::SourceChanged);
-    assert!(result.rows[0].digests.is_empty());
+    let result = run_with(&request(), &provider, settings, |_| true);
+    assert_eq!(row(&result, 0).state, ChecksumRowState::SourceChanged);
+    assert!(row(&result, 0).digests.is_empty());
     assert_eq!(
-        result.rows[0].bytes_read, 3,
+        row(&result, 0).bytes_read,
+        3,
         "stopped after the first chunk"
     );
 }
 
-/// Name of exactly `length` bytes; the index keeps paths distinct.
-fn padded(index: usize, length: usize) -> String {
-    let prefix = format!("{index:05}-");
-    format!("{prefix}{}", "n".repeat(length - prefix.len()))
-}
 fn export(run: &ChecksumRun, directory: &Path) -> Result<Vec<u8>, FsError> {
     let included = run
         .rows
@@ -384,81 +424,17 @@ fn export(run: &ChecksumRun, directory: &Path) -> Result<Vec<u8>, FsError> {
 }
 
 #[test]
-fn completed_and_budget_limited_calculations_always_fit_the_manifest_verifier() {
-    // Very long virtual names fill the budget with a dozen rows, keeping the
-    // shared I/O gate traffic of this unit test (also path-included) small.
-    let directory = std::env::current_dir()
-        .unwrap()
-        .join("_build/virtual-export-budget");
-    let limit = ChecksumLimits::default().max_retained_bytes;
-    let charge = |path: &Path| path.as_os_str().as_encoded_bytes().len() * 4 + 1024;
-    let name = 160_000;
-    let per_row = charge(&directory.join(padded(0, name)));
-    let count = limit / per_row - 1;
-    let uniform = (0..count).map(|index| directory.join(padded(index, name)));
-
-    // A completed run that leaves less than one row of its budget unused.
-    let provider = Provider::new(b"x");
-    let mut whole = request();
-    whole.targets = uniform.clone().map(Into::into).collect();
-    let completed = run(whole, &provider, &Cancellation::default());
-    assert_eq!(completed.summary.completion, ChecksumCompletion::Completed);
-    assert_eq!(completed.rows.len(), count);
-    let bytes = export(&completed, &directory).expect("a completed run must be exportable");
-    assert!(bytes.len() > 1024 * 1024);
-
-    // A final row whose plain charge lands within 4 bytes of the limit would make
-    // the verifier's per-line name check overflow; it must stop the calculation
-    // with an honest budget instead, and the acknowledged partial run must save.
-    let remaining = limit - count * per_row;
-    let base = directory.as_os_str().as_encoded_bytes().len() + 1;
-    let last = directory.join(padded(count, (remaining - 1024) / 4 - base));
-    assert!(remaining - charge(&last) < 4);
-    let mut limited = request();
-    limited.targets = uniform.chain([last]).map(Into::into).collect();
-    let request = limited;
-    let limited = run(request.clone(), &provider, &Cancellation::default());
-    assert_eq!(limited.summary.completion, ChecksumCompletion::Incomplete);
-    assert_eq!(
-        limited.summary.reached_budgets,
-        [ChecksumBudget::RetainedBytes]
-    );
-    assert_eq!(limited.rows.len(), count);
-    export(&limited, &directory).expect("an acknowledged partial run must be exportable");
-    // Verification rows are never exported and keep the plain per-entry charge.
-    let verified = calculate_for_verification(
-        request,
-        &provider,
-        &UNCLASSIFIED,
-        &Cancellation::default(),
-        ChecksumRetention::new(()),
-        |_| true,
-    );
-    assert_eq!(verified.summary.completion, ChecksumCompletion::Completed);
-    assert_eq!(verified.rows.len(), count + 1);
-}
-
-#[test]
-fn duplicate_roots_do_not_skip_a_later_distinct_source_and_row_limit_is_honest() {
+fn duplicate_roots_do_not_skip_a_later_distinct_source() {
     let provider = Provider::new(b"abc");
     let mut request = request();
     request.targets.push(request.targets[0].clone());
     let mut second = request.targets[0].clone();
     second.path.set_file_name("second");
     request.targets.push(second);
-    let result = run(request.clone(), &provider, &Cancellation::default());
+    let result = run(request, &provider, &Cancellation::default());
     assert_eq!(result.rows.len(), 2);
     assert_eq!(result.summary.progress.bytes_read, 6);
-    request.limits.max_rows = 1;
-    let limited = run(request, &provider, &Cancellation::default());
-    assert_eq!(limited.rows.len(), 1);
-    assert_eq!(limited.summary.completion, ChecksumCompletion::Incomplete);
-    assert!(
-        limited
-            .summary
-            .reached_budgets
-            .contains(&ChecksumBudget::Rows)
-    );
+    assert_eq!(result.summary.completion, ChecksumCompletion::Completed);
 }
 
 #[test]
@@ -470,7 +446,7 @@ fn large_declared_files_allocate_only_one_fixed_buffer_and_cancel_responsively()
     let result = run(request(), &provider, &cancel);
     assert_eq!(result.summary.completion, ChecksumCompletion::Cancelled);
     assert_eq!(provider.reads.buffer.load(Ordering::SeqCst), 256 * 1024);
-    assert!(result.rows[0].digests.is_empty());
+    assert!(row(&result, 0).digests.is_empty());
 }
 
 #[test]
@@ -493,12 +469,12 @@ fn empty_stream_has_all_four_standard_digests() {
             "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e",
         ),
     ] {
-        assert_eq!(result.rows[0].digest(algorithm).unwrap().hex(), hex);
+        assert_eq!(row(&result, 0).digest(algorithm).unwrap().hex(), hex);
     }
 }
 
 #[tokio::test]
-async fn controller_cancellation_and_retained_job_quota_are_bounded() {
+async fn controller_cancellation_and_retained_job_slots_are_bounded() {
     let _quota_fixture = super::super::test_quota_fixture().await;
     let provider = Arc::new(Provider::new(b"abc"));
     let mut controller =
@@ -508,12 +484,10 @@ async fn controller_cancellation_and_retained_job_quota_are_bounded() {
     for job in 1..=32 {
         let mut request = request();
         request.job = ChecksumJobId(job);
-        request.limits.max_retained_bytes = 16 * 1024;
         controller.start(request).unwrap();
     }
     let mut rejected = request();
     rejected.job = ChecksumJobId(33);
-    rejected.limits.max_retained_bytes = 16 * 1024;
     assert_eq!(
         controller.start(rejected.clone()).unwrap_err().kind,
         io::ErrorKind::WouldBlock
@@ -532,12 +506,13 @@ async fn controller_cancellation_and_retained_job_quota_are_bounded() {
             }
         }
     }
-    assert!(controller.start(rejected.clone()).is_err()); // Results own the job permit.
+    assert!(controller.start(rejected.clone()).is_err()); // Results own the job slot.
     let released = runs.pop().unwrap();
-    let retained_row = released.rows[0].clone();
+    let retained_chunk = released.rows.chunks()[0].clone();
     drop(released);
-    assert!(controller.start(rejected.clone()).is_err()); // A row alone retains quota.
-    drop(retained_row);
+    // A chunk of its rows alone (as a window keeps them) still holds the slot.
+    assert!(controller.start(rejected.clone()).is_err());
+    drop(retained_chunk);
     controller.start(rejected).unwrap();
     controller.cancel(ChecksumJobId(33), ChecksumGeneration(1));
     let cancelled = loop {
@@ -732,12 +707,9 @@ fn listed_run(
         .map(|target| target.path.clone())
         .collect();
     let mut updates = Vec::new();
-    let result = super::run(
-        request,
+    let result = run_with(
+        &request,
         &provider,
-        &UNCLASSIFIED,
-        &Cancellation::default(),
-        ChecksumRetention::new(()),
         Settings {
             update,
             ..CALCULATION
@@ -755,7 +727,7 @@ fn batches(updates: &[ChecksumUpdate]) -> Vec<usize> {
     updates
         .iter()
         .filter_map(|update| match update {
-            ChecksumUpdate::Batch(rows) => Some(rows.len()),
+            ChecksumUpdate::Batch(chunk) => Some(chunk.rows.len()),
             _ => None,
         })
         .collect()
@@ -775,7 +747,13 @@ fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
     let listed: Vec<_> = updates[..first_row]
         .iter()
         .filter_map(|update| match update {
-            ChecksumUpdate::Planned(files) => Some(files.iter().cloned()),
+            ChecksumUpdate::Planned(planned) => Some(
+                planned
+                    .files
+                    .iter()
+                    .map(|file| (planned.base.join(&file.name), file.size))
+                    .collect::<Vec<_>>(),
+            ),
             _ => None,
         })
         .flatten()
@@ -783,11 +761,11 @@ fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
     assert_eq!(
         listed
             .iter()
-            .map(|file| file.path.clone())
+            .map(|(path, _)| path.clone())
             .collect::<Vec<_>>(),
         paths
     );
-    assert!(listed.iter().all(|file| file.size == Some(8)));
+    assert!(listed.iter().all(|(_, size)| *size == Some(8)));
     assert_eq!(
         provider.reads.bytes.load(Ordering::SeqCst),
         24,
@@ -821,17 +799,10 @@ fn a_calculation_lists_its_files_first_and_reports_each_one_as_it_finishes() {
 fn verification_reads_without_listing() {
     let provider = Provider::new(b"abc");
     let mut updates = Vec::new();
-    calculate_for_verification(
-        request(),
-        &provider,
-        &UNCLASSIFIED,
-        &Cancellation::default(),
-        ChecksumRetention::new(()),
-        |update| {
-            updates.push(update);
-            true
-        },
-    );
+    verify_run(&request(), &provider, |update| {
+        updates.push(update);
+        true
+    });
     assert!(
         !updates
             .iter()
@@ -928,11 +899,7 @@ fn a_selected_folder_contributes_its_own_files_and_include_subfolders_the_rest()
             ChecksumRetention::new(()),
             |_| true,
         );
-        let rows: Vec<_> = run
-            .rows
-            .iter()
-            .map(|row| (row.path.clone(), row.state))
-            .collect();
+        let rows: Vec<_> = run.rows.iter().map(|row| (row.path(), row.state)).collect();
         let mut wanted = vec![(root.join("top.txt"), ChecksumRowState::Calculated)];
         if recursive {
             wanted.push((
@@ -945,16 +912,9 @@ fn a_selected_folder_contributes_its_own_files_and_include_subfolders_the_rest()
         assert_eq!(run.summary.completion, ChecksumCompletion::Completed);
     }
     // Verification names files: a folder in its place is still skipped.
-    let run = calculate_for_verification(
-        request(),
-        &Nested(Provider::new(b"abc"), 1),
-        &UNCLASSIFIED,
-        &Cancellation::default(),
-        ChecksumRetention::new(()),
-        |_| true,
-    );
+    let run = verify_run(&request(), &Nested(Provider::new(b"abc"), 1), |_| true);
     assert_eq!(run.rows.len(), 1);
-    assert_eq!(run.rows[0].state, ChecksumRowState::Skipped);
+    assert_eq!(row(&run, 0).state, ChecksumRowState::Skipped);
 }
 
 #[test]
@@ -972,11 +932,7 @@ fn a_subfolder_mounted_from_another_volume_is_left_out_unless_subfolders_are_inc
             ChecksumRetention::new(()),
             |_| true,
         );
-        let rows: Vec<_> = run
-            .rows
-            .iter()
-            .map(|row| (row.path.clone(), row.state))
-            .collect();
+        let rows: Vec<_> = run.rows.iter().map(|row| (row.path(), row.state)).collect();
         let mut wanted = vec![(root.join("top.txt"), ChecksumRowState::Calculated)];
         // Without Include subfolders it is left out like any subfolder: no row, and
         // the run is complete. With them, a walk does not cross into another volume:
@@ -997,21 +953,23 @@ fn a_subfolder_mounted_from_another_volume_is_left_out_unless_subfolders_are_inc
     }
 }
 
-/// A child of [`Tree`]: a three-byte file, a folder of `children`, a link or a special
-/// entry, on `device`, with a distinct object identity.
+/// A child of [`Tree`]: a three-byte file, a folder of `children` (one whose listing fails
+/// when `unreadable`), a link or a special entry, on `device`, with an object identity.
 struct Node {
-    name: &'static str,
+    name: String,
     kind: EntryKind,
     device: u64,
     object: u8,
+    unreadable: bool,
     children: Vec<Node>,
 }
-fn node(name: &'static str, kind: EntryKind, object: u8) -> Node {
+fn node(name: &str, kind: EntryKind, object: u8) -> Node {
     Node {
-        name,
+        name: name.to_owned(),
         kind,
         device: 1,
         object,
+        unreadable: false,
         children: Vec::new(),
     }
 }
@@ -1046,13 +1004,14 @@ struct TreeFolder {
     entry: TransferEntry,
     children: std::collections::VecDeque<Node>,
     describes: bool,
+    unreadable: bool,
     opens: Arc<Opens>,
 }
 impl TreeFolder {
     fn entry_of(&self, node: &Node) -> TransferEntry {
         TransferEntry {
             item: MutationItem {
-                path: self.entry.item.path.join(node.name),
+                path: self.entry.item.path.join(&node.name),
                 kind: node.kind,
                 metadata: EntryMetadata {
                     size: (node.kind == EntryKind::File).then_some(3),
@@ -1079,6 +1038,7 @@ impl TreeFolder {
                     entry,
                     children: node.children.into(),
                     describes: self.describes,
+                    unreadable: node.unreadable,
                     opens: self.opens.clone(),
                 }))
             }
@@ -1113,6 +1073,7 @@ impl TransferService for Tree {
             },
             children: (self.root)().into(),
             describes: self.describes,
+            unreadable: false,
             opens: self.opens.clone(),
         }))
     }
@@ -1139,6 +1100,13 @@ impl TransferSource for TreeFolder {
         ))
     }
     fn next_child(&mut self, _: &Cancellation) -> Result<Option<Box<dyn TransferSource>>, FsError> {
+        if self.unreadable {
+            return Err(failure(
+                &self.entry.item.path,
+                io::ErrorKind::PermissionDenied,
+                "Access is denied.",
+            ));
+        }
         self.children
             .pop_front()
             .map(|node| self.open(node))
@@ -1149,6 +1117,13 @@ impl TransferSource for TreeFolder {
         open: &dyn Fn(EntryKind) -> bool,
         cancel: &Cancellation,
     ) -> Result<Option<ListedChild>, FsError> {
+        if self.unreadable {
+            return Err(failure(
+                &self.entry.item.path,
+                io::ErrorKind::PermissionDenied,
+                "Access is denied.",
+            ));
+        }
         if !self.describes {
             return self
                 .next_child(cancel)
@@ -1211,7 +1186,7 @@ fn list_tree(describes: bool, recursive: bool) -> Listed {
         |update| {
             match &update {
                 ChecksumUpdate::Planned(files) => {
-                    planned.extend(files.iter().map(|file| file.path.clone()))
+                    planned.extend(files.files.iter().map(|file| files.base.join(&file.name)))
                 }
                 ChecksumUpdate::Progress(progress) if !progress.listing => {
                     listing_opens.get_or_insert_with(|| opens.snapshot());
@@ -1228,7 +1203,7 @@ fn list_tree(describes: bool, recursive: bool) -> Listed {
             .iter()
             .map(|row| {
                 let message = row.error.as_ref().map(|error| error.message.clone());
-                (row.path.clone(), row.state, message.unwrap_or_default())
+                (row.path(), row.state, message.unwrap_or_default())
             })
             .collect(),
         completion: run.summary.completion,
@@ -1339,9 +1314,8 @@ impl TransferSource for Opened {
 }
 
 /// A timing, not a check (run it explicitly): the listing pass of a folder of small files
-/// on the native filesystem, as before (every file opened) and now, alternately, with
-/// budgets large enough for all of them. The count is `MIDNIGHT_CHECKSUM_LISTING_FILES`
-/// (20,000 by default).
+/// on the native filesystem, as before (every file opened) and now, alternately. The count
+/// is `MIDNIGHT_CHECKSUM_LISTING_FILES` (20,000 by default).
 #[test]
 #[ignore = "times a native folder of many files; run explicitly"]
 fn native_listing_pass_timing() {
@@ -1362,9 +1336,6 @@ fn native_listing_pass_timing() {
     let time = |service: &dyn TransferService| {
         let mut request = request();
         request.targets = vec![folder.path().to_owned().into()];
-        // Room for every file: the default budgets stop near 6,000 such paths.
-        request.limits.max_rows = count + 1;
-        request.limits.max_retained_bytes = 1 << 30;
         let started = Instant::now();
         let mut listed = None;
         let run = calculate(
@@ -1391,4 +1362,256 @@ fn native_listing_pass_timing() {
              whole run {old_total:?} before, {new_total:?} now"
         );
     }
+}
+
+/// A calculation of the tree `root` below the selected folder (`request()`'s target),
+/// with Include subfolders as given, cancelled by `cancel`, reporting to `emit`.
+fn walk_tree(
+    root: fn() -> Vec<Node>,
+    recursive: bool,
+    cancel: &Cancellation,
+    emit: impl FnMut(ChecksumUpdate) -> bool,
+) -> Arc<ChecksumRun> {
+    let mut request = request();
+    request.recursive = recursive;
+    calculate(
+        request,
+        &Tree {
+            root,
+            describes: true,
+            opens: Arc::default(),
+        },
+        &UNCLASSIFIED,
+        cancel,
+        ChecksumRetention::new(()),
+        emit,
+    )
+}
+/// The rows' paths below the selected folder, with their states.
+fn below_root(run: &ChecksumRun) -> Vec<(PathBuf, ChecksumRowState)> {
+    let root = request().targets[0].path.clone();
+    run.rows
+        .iter()
+        .map(|row| {
+            let path = row.path();
+            (
+                path.strip_prefix(&root).unwrap_or(&path).to_owned(),
+                row.state,
+            )
+        })
+        .collect()
+}
+
+const WIDE_FILES: usize = 16_500;
+fn wide() -> Vec<Node> {
+    (0..WIDE_FILES)
+        .map(|index| node(&format!("{index:05}.bin"), EntryKind::File, 1))
+        .collect()
+}
+
+/// A run has no row limit: more files than the former 16,384 rows are all listed, read
+/// and kept, found by ID; and a selection names any number of targets (4,096 before).
+#[test]
+fn a_run_takes_any_number_of_files_and_targets() {
+    let mut listed = 0;
+    let walked = walk_tree(wide, false, &Cancellation::default(), |update| {
+        if let ChecksumUpdate::Planned(planned) = &update {
+            listed += planned.files.len();
+        }
+        true
+    });
+    assert_eq!(walked.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(listed, WIDE_FILES);
+    assert_eq!(walked.rows.len(), WIDE_FILES);
+    assert_eq!(walked.summary.progress.calculated, WIDE_FILES as u64);
+    let last = walked.rows.by_id(WIDE_FILES as u64).expect("the last row");
+    assert_eq!(
+        last.path(),
+        request().targets[0]
+            .path
+            .join(format!("{:05}.bin", WIDE_FILES - 1))
+    );
+    let folder = request().targets[0].path.parent().unwrap().to_owned();
+    let mut many = request();
+    many.targets = (0..5_000)
+        .map(|index| folder.join(format!("{index}.bin")).into())
+        .collect();
+    assert!(many.validate().is_ok());
+    let selected = run(many, &Provider::new(b"abc"), &Cancellation::default());
+    assert_eq!(selected.rows.len(), 5_000);
+    assert_eq!(selected.summary.completion, ChecksumCompletion::Completed);
+}
+
+const LEVELS: usize = 80;
+/// Folders `d0/d1/…/d79` below the selected folder, a file at every level and one at
+/// the bottom.
+fn deep() -> Vec<Node> {
+    let mut children = vec![node("bottom.txt", EntryKind::File, 1)];
+    for depth in (0..LEVELS).rev() {
+        let mut folder = node(&format!("d{depth}"), EntryKind::Directory, 10 + depth as u8);
+        folder.children = std::mem::take(&mut children);
+        children = vec![node(&format!("f{depth}.txt"), EntryKind::File, 1), folder];
+    }
+    children
+}
+
+/// Include subfolders walks every level: deeper than the former 64-level limit, without
+/// recursion in the walk itself.
+#[test]
+fn include_subfolders_reaches_the_bottom_of_any_depth() {
+    let run = walk_tree(deep, true, &Cancellation::default(), |_| true);
+    assert_eq!(run.summary.completion, ChecksumCompletion::Completed);
+    let rows = below_root(&run);
+    assert_eq!(rows.len(), LEVELS + 1);
+    assert!(
+        rows.iter()
+            .all(|(_, state)| *state == ChecksumRowState::Calculated)
+    );
+    let bottom = (0..LEVELS)
+        .map(|depth| format!("d{depth}"))
+        .collect::<PathBuf>()
+        .join("bottom.txt");
+    assert!(rows.iter().any(|(path, _)| *path == bottom), "{bottom:?}");
+}
+
+/// `a.txt`, `l1/b.txt`, `l1/l2/c.txt` and `l1/l2/l3/d.txt`.
+fn levels() -> Vec<Node> {
+    let mut l3 = node("l3", EntryKind::Directory, 13);
+    l3.children.push(node("d.txt", EntryKind::File, 1));
+    let mut l2 = node("l2", EntryKind::Directory, 12);
+    l2.children = vec![node("c.txt", EntryKind::File, 1), l3];
+    let mut l1 = node("l1", EntryKind::Directory, 11);
+    l1.children = vec![node("b.txt", EntryKind::File, 1), l2];
+    vec![node("a.txt", EntryKind::File, 1), l1]
+}
+
+/// Include subfolders (regression: the walk was already recursive): every nesting level
+/// with it, only the selected folder's own files without; a saved manifest names each
+/// file relative to the folder it is saved in, with `/` separators.
+#[test]
+fn include_subfolders_walks_three_levels_and_saves_relative_names() {
+    let flat = walk_tree(levels, false, &Cancellation::default(), |_| true);
+    assert_eq!(
+        below_root(&flat),
+        [(PathBuf::from("a.txt"), ChecksumRowState::Calculated)]
+    );
+    let run = walk_tree(levels, true, &Cancellation::default(), |_| true);
+    assert_eq!(run.summary.completion, ChecksumCompletion::Completed);
+    let names: Vec<_> = below_root(&run).into_iter().map(|(path, _)| path).collect();
+    assert_eq!(
+        names,
+        [
+            PathBuf::from("a.txt"),
+            ["l1", "b.txt"].iter().collect(),
+            ["l1", "l2", "c.txt"].iter().collect(),
+            ["l1", "l2", "l3", "d.txt"].iter().collect(),
+        ]
+    );
+    let folder = request().targets[0].path.clone();
+    let text = String::from_utf8(export(&run, &folder).unwrap()).unwrap();
+    let hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert_eq!(
+        text,
+        format!("{hex} *a.txt\n{hex} *l1/b.txt\n{hex} *l1/l2/c.txt\n{hex} *l1/l2/l3/d.txt\n")
+    );
+}
+
+/// The selected folder reached again inside itself, and a folder reached again below
+/// itself (a bind mount, a hard-linked folder).
+fn looped() -> Vec<Node> {
+    let mut again = node("again", EntryKind::Directory, 100);
+    again.children.push(node("x.txt", EntryKind::File, 1));
+    let mut back = node("back", EntryKind::Directory, 2);
+    back.children.push(node("y.txt", EntryKind::File, 1));
+    let mut sub = node("sub", EntryKind::Directory, 2);
+    sub.children = vec![node("s.txt", EntryKind::File, 1), back];
+    vec![node("a.txt", EntryKind::File, 1), again, sub]
+}
+
+/// A folder reached again is recognized by its identity and walked once: the walk ends.
+#[test]
+fn a_folder_reached_again_is_walked_once() {
+    let run = walk_tree(looped, true, &Cancellation::default(), |_| true);
+    assert_eq!(run.summary.completion, ChecksumCompletion::Completed);
+    assert_eq!(
+        below_root(&run),
+        [
+            (PathBuf::from("a.txt"), ChecksumRowState::Calculated),
+            (
+                ["sub", "s.txt"].iter().collect(),
+                ChecksumRowState::Calculated
+            ),
+        ]
+    );
+}
+
+/// `a.txt`, a folder whose listing is refused, and `open/b.txt`.
+fn locked() -> Vec<Node> {
+    let mut locked = node("locked", EntryKind::Directory, 2);
+    locked.unreadable = true;
+    locked.children.push(node("hidden.txt", EntryKind::File, 1));
+    let mut open = node("open", EntryKind::Directory, 3);
+    open.children.push(node("b.txt", EntryKind::File, 1));
+    vec![node("a.txt", EntryKind::File, 1), locked, open]
+}
+
+/// A subfolder that cannot be read is its own failed row; the run reads everything else
+/// and says it may have missed files.
+#[test]
+fn an_unreadable_subfolder_fails_alone_and_the_run_goes_on() {
+    let mut planned = Vec::new();
+    let run = walk_tree(locked, true, &Cancellation::default(), |update| {
+        if let ChecksumUpdate::Planned(files) = &update {
+            planned.extend(files.files.iter().map(|file| file.name.to_path_buf()));
+        }
+        true
+    });
+    assert_eq!(
+        below_root(&run),
+        [
+            (PathBuf::from("a.txt"), ChecksumRowState::Calculated),
+            (PathBuf::from("locked"), ChecksumRowState::ReadError),
+            (
+                ["open", "b.txt"].iter().collect(),
+                ChecksumRowState::Calculated
+            ),
+        ]
+    );
+    let failed = row(&run, 1);
+    assert_eq!(
+        failed.error.as_ref().map(|error| error.kind),
+        Some(io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(run.summary.completion, ChecksumCompletion::Incomplete);
+    assert_eq!(run.summary.progress.errors, 1);
+    assert_eq!(
+        planned.len(),
+        2,
+        "the listing leaves the unreadable folder out"
+    );
+}
+
+/// Stop as the first rows of the walk of `root` (`files` files) arrive.
+fn stop_at_first_rows(root: fn() -> Vec<Node>, recursive: bool, files: usize) {
+    let cancel = Cancellation::default();
+    let run = walk_tree(root, recursive, &cancel, |update| {
+        if matches!(update, ChecksumUpdate::Batch(_)) {
+            cancel.cancel();
+        }
+        true
+    });
+    assert_eq!(run.summary.completion, ChecksumCompletion::Cancelled);
+    assert!(
+        (1..files).contains(&run.rows.len()),
+        "{} of {files} rows",
+        run.rows.len()
+    );
+}
+
+/// Stop ends the walk between files, in a folder or deep inside Include subfolders: no
+/// row after it, and the run says so.
+#[test]
+fn cancelling_stops_the_walk_between_files() {
+    stop_at_first_rows(wide, false, WIDE_FILES);
+    stop_at_first_rows(deep, true, LEVELS + 1);
 }

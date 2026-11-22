@@ -4,8 +4,9 @@ use midnight_core::{
 };
 use std::path::{Component, Path, PathBuf};
 
-/// Items that a menu, dialog, Custom Command or checksum takes from one panel selection:
-/// each holds something per item (a shell item, a dialog entry, an argument, a hash).
+/// Items that a menu, dialog or Custom Command takes from one panel selection: each
+/// holds something per item (a shell item, a dialog entry, an argument). Checksums take
+/// any number (`resolve_all`).
 pub(crate) const MAX_ITEMS: usize = 4096;
 // The refusal in `resolve_within` names this bound.
 const _: () = assert!(MAX_ITEMS == 4096);
@@ -18,7 +19,18 @@ pub(crate) fn resolve(
     fallback: Option<&Path>,
     cancel: &Cancellation,
 ) -> Result<Vec<PathBuf>, FsError> {
-    resolve_within(selection, view, fallback, cancel, Some(MAX_ITEMS))
+    resolve_within(selection, view, fallback, cancel, Some(MAX_ITEMS), true)
+}
+
+/// The selected paths in display order, any number of them whatever their names' total
+/// length: for checksums, whose runs have no size limit and keep compact rows per file.
+pub(crate) fn resolve_all(
+    selection: &SelectionSnapshot,
+    view: &DirectoryIndex,
+    fallback: Option<&Path>,
+    cancel: &Cancellation,
+) -> Result<Vec<PathBuf>, FsError> {
+    resolve_within(selection, view, fallback, cancel, None, false)
 }
 
 /// The selected paths in display order for a native file list (the clipboard, a drag
@@ -30,7 +42,7 @@ pub(crate) fn resolve_payload(
     fallback: Option<&Path>,
     cancel: &Cancellation,
 ) -> Result<Vec<PathBuf>, FsError> {
-    resolve_within(selection, view, fallback, cancel, None)
+    resolve_within(selection, view, fallback, cancel, None, true)
 }
 
 fn resolve_within(
@@ -39,6 +51,7 @@ fn resolve_within(
     fallback: Option<&Path>,
     cancel: &Cancellation,
     items: Option<usize>,
+    bounded_names: bool,
 ) -> Result<Vec<PathBuf>, FsError> {
     use std::io;
     let failure = |kind, message| {
@@ -73,7 +86,7 @@ fn resolve_within(
                 "This action takes at most 4096 selected items at once.",
             ));
         }
-        if bytes > MAX_FILE_CLIPBOARD_BYTES || raw.contains(&0) {
+        if (bounded_names && bytes > MAX_FILE_CLIPBOARD_BYTES) || raw.contains(&0) {
             return Err(failure(
                 io::ErrorKind::InvalidInput,
                 "The selected names exceed the 4 MiB that a file list holds, or one \
@@ -228,5 +241,33 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Checksums take any selection: more items than 4,096 and more names than the 4 MiB
+    /// a file list holds. An empty path, parent navigation or NUL is still refused.
+    #[test]
+    fn checksums_take_any_number_of_items_and_names_of_any_total_length() {
+        let names: Vec<_> = (0..5_000)
+            .map(|i| format!("{i:05}-{}", "n".repeat(994)))
+            .collect();
+        assert!(names.iter().map(String::len).sum::<usize>() > MAX_FILE_CLIPBOARD_BYTES);
+        let large = index(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let mut bits = vec![u64::MAX; 79];
+        bits[78] = 0xff;
+        let selected = SelectionSnapshot::from_bits(large.clone(), bits).unwrap();
+        let cancel = Cancellation::default();
+        assert!(resolve(&selected, &large, None, &cancel).is_err());
+        assert!(resolve_payload(&selected, &large, None, &cancel).is_err());
+        let all = resolve_all(&selected, &large, None, &cancel).unwrap();
+        assert_eq!(all.len(), 5_000);
+        assert_eq!(all[4_999], PathBuf::from(&names[4_999]));
+        for name in ["", "folder/..", "nul\0name"] {
+            let view = index(&[name]);
+            let selected = SelectionSnapshot::from_bits(view.clone(), vec![1]).unwrap();
+            assert!(
+                resolve_all(&selected, &view, None, &cancel).is_err(),
+                "{name:?}"
+            );
+        }
     }
 }

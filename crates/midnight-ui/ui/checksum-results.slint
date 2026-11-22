@@ -11,6 +11,8 @@ export struct ChecksumDisplayRow {
     calculated: bool, verified: bool, error: bool,
     // The listed file being read now.
     current: bool,
+    // The row is in the selection.
+    selected: bool,
 }
 
 // Column widths; a header separator drag changes one. The window keeps them for its
@@ -29,15 +31,19 @@ component Columns inherits HorizontalLayout {
     in property <bool> header;
     in property <bool> compact;
     callback resize(int, length);
+    // A selected row's text uses the theme's selection colours, as file rows do; a
+    // failed row there keeps its failure glyph and status words.
+    private property <bool> selected: !root.header && root.entry.selected;
     padding-left: 8px; padding-right: 8px; spacing: 0px; alignment: start;
     HorizontalLayout {
         padding-right: root.header ? 0px : 10px;
         VerticalLayout {
             width: root.widths.name; spacing: 0px; alignment: center;
             Text { text: root.header ? "File / folder" : root.entry.name;
-                color: root.entry.error ? Theme.error-text : Theme.text;
+                color: root.selected ? Theme.selected-text : root.entry.error ? Theme.error-text : Theme.text;
                 font-size: Theme.small-font; font-weight: root.header || root.entry.current ? 600 : 400; overflow: elide; }
-            if !root.header && !root.compact: PathText { text: root.entry.path; foreground: Theme.secondary-text;
+            if !root.header && !root.compact: PathText { text: root.entry.path;
+                foreground: root.selected ? Theme.selected-text : Theme.secondary-text;
                 font-size: Theme.small-font; }
         }
         if root.header: ColumnGrip {
@@ -48,7 +54,7 @@ component Columns inherits HorizontalLayout {
     HorizontalLayout {
         padding-right: root.header ? 0px : 10px;
         Text { text: root.header ? "Bytes read" : root.entry.bytes; width: root.widths.bytes;
-            color: Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
+            color: root.selected ? Theme.selected-text : Theme.secondary-text; font-size: Theme.small-font; overflow: elide;
             horizontal-alignment: right; vertical-alignment: center; }
         if root.header: ColumnGrip {
             active: true; start-width: root.widths.bytes; title: "Bytes read";
@@ -62,14 +68,16 @@ component Columns inherits HorizontalLayout {
             if !root.header && (root.entry.verified || root.entry.error): Image {
                 width: min(16px, Theme.small-font + 4px); height: self.width;
                 source: root.entry.error ? @image-url("icons/close.svg") : @image-url("icons/check.svg");
+                // At least 3:1 against every row background of their schemes, the cursor's
+                // and the selection's included.
                 colorize: root.entry.error ? (Theme.light ? #b91c1c : #ff8a8a)
-                    : (Theme.light ? #167d3f : #6ee7a1);
+                    : (Theme.light ? #137038 : #6ee7a1);
                 image-fit: contain;
                 accessible-label: (root.entry.error ? "Failed: " : "Passed: ") + root.entry.name;
             }
             Text { text: root.header ? "Status" : root.entry.status;
                 min-width: 0px; horizontal-stretch: 1;
-                color: root.entry.error ? Theme.error-text : Theme.secondary-text;
+                color: root.selected ? Theme.selected-text : root.entry.error ? Theme.error-text : Theme.secondary-text;
                 font-size: Theme.small-font; vertical-alignment: center; overflow: elide; }
         }
         if root.header: ColumnGrip {
@@ -85,7 +93,7 @@ component Columns inherits HorizontalLayout {
                 x: 0px; y: 0px; width: parent.width; height: parent.height;
                 text: root.header ? ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32"][root.output-algorithm]
                     : [root.entry.sha256, root.entry.sha512, root.entry.md5, root.entry.sha1, root.entry.crc32][root.output-algorithm];
-                color: Theme.text; font-size: Theme.small-font;
+                color: root.selected ? Theme.selected-text : Theme.text; font-size: Theme.small-font;
                 font-family: root.header ? Theme.font-family : "monospace";
                 vertical-alignment: center; overflow: elide;
             }
@@ -98,7 +106,14 @@ component Columns inherits HorizontalLayout {
 }
 
 // Result-first table with the chosen full hash. Other calculated algorithms
-// remain available in the output selector and the captured-row context menu.
+// remain available in the output selector and the row context menu.
+//
+// Multi-selection follows `list_selection.rs` (the same conventions as Find): a click
+// selects a row alone, Ctrl+click toggles it, Shift+click marks the range from the
+// anchor; the cursor keys select the row they reach, with Shift extend the range and
+// with Ctrl move the cursor alone; Space toggles the cursor's row, Insert also moves
+// down; Ctrl+A selects all and Ctrl+D none. The presenter keeps the selection by row
+// identity; this list sends what was clicked or pressed and shows the marks it reads.
 export component ChecksumResults inherits FocusScope {
     in property <length> surface-width;
     in property <length> surface-height;
@@ -106,8 +121,30 @@ export component ChecksumResults inherits FocusScope {
     in property <[bool]> algorithms;
     in property <string> generation-token;
     in property <int> output-algorithm;
-    in-out property <int> selected-row: -1;
-    callback copy-result(string, int, bool);
+    // The keyboard's row (-1: none), as the presenter keeps it.
+    in property <int> cursor-row: -1;
+    // Selected rows with a checksum to copy, and that number as text.
+    in property <int> selected-hashes;
+    in property <string> selected-hashes-text;
+    // The row being calculated (-1: none) and whether no row is selected: the list then
+    // follows that row (see `follow`).
+    in property <int> active-row: -1;
+    in property <bool> selection-empty: true;
+    // How many times the list scrolled to follow the row being calculated.
+    out property <int> follow-scrolls;
+    // A click on a row: its index, Ctrl (toggle) and Shift (range).
+    callback pick-row(int, bool, bool);
+    // A cursor key reached a row: its index, Shift (extend the range), Ctrl (cursor alone).
+    callback move-cursor(int, bool, bool);
+    // Space (false) or Insert (true) on the cursor's row.
+    callback toggle-row(bool);
+    callback select-all();
+    callback deselect-all();
+    // Ctrl+C and Ctrl+Shift+C: the selected rows' checksums of an algorithm, or full rows.
+    callback copy-selection(int, bool);
+    // The context menu: the row's token, an algorithm, full rows, and whether it acts on
+    // the whole selection.
+    callback copy-result(string, int, bool, bool);
     // Enter in the list: the window's primary action. A held key starts nothing.
     callback activate();
     private property <bool> compact-rows: root.height < Theme.column-height + (Theme.small-font * 2 + 12px) * 2;
@@ -141,22 +178,78 @@ export component ChecksumResults inherits FocusScope {
         if root.widths.hash > 0px { root.widths.hash = 0px; }
     }
     private property <string> menu-token;
+    // The menu acts on the whole selection (its row was selected), and on how many rows.
+    private property <bool> menu-selection;
+    private property <int> menu-count;
+    private property <string> menu-count-text;
     private property <length> menu-x;
     private property <length> menu-y;
-    changed generation-token => { menu.close(); root.menu-token = ""; }
-    changed selected-row => {
-        if root.selected-row >= 0 {
-            if root.selected-row * root.row-height < -list.content-y {
-                list.content-y = -root.selected-row * root.row-height;
-            } else if (root.selected-row + 1) * root.row-height > -list.content-y + list.visible-height {
-                list.content-y = list.visible-height - (root.selected-row + 1) * root.row-height;
-            }
+    changed generation-token => {
+        menu.close(); root.menu-token = "";
+        // A new run: following resumes (see `follow`).
+        root.follow-paused = false;
+    }
+    // Page Up and Page Down move by the rows shown, less one.
+    private property <int> page-size: max(1, floor(list.visible-height / root.row-height) - 1);
+    // The cursor's row is brought into view when it moves, and kept there while the list
+    // grows, until the user scrolls.
+    private property <bool> reveal-active;
+    changed cursor-row => {
+        root.reveal-active = true;
+        root.reveal-cursor();
+    }
+    function reveal-cursor() {
+        if !root.reveal-active || root.cursor-row < 0 || root.cursor-row >= root.rows.length { return; }
+        if root.cursor-row * root.row-height < -list.content-y {
+            list.content-y = -root.cursor-row * root.row-height;
+        } else if (root.cursor-row + 1) * root.row-height > -list.content-y + list.visible-height {
+            list.content-y = root.last-whole(root.cursor-row);
         }
     }
-    function select-row(index: int) { root.selected-row = index; root.focus(); }
+    // The scroll position that shows `row` as the last whole row in view. Scrolling stops
+    // at a row's top: when the list jumps far, the ListView puts its first shown row at the
+    // top, which would cut a row placed exactly at the bottom edge.
+    function last-whole(row: int) -> length {
+        -max(0, row + 1 - max(1, floor(list.visible-height / root.row-height))) * root.row-height
+    }
+    // While a calculation runs and no row is selected, the list keeps the row being
+    // calculated in view: when it would leave the view, the list scrolls to show it as the
+    // last whole row at the bottom, so the rows above stay in view. This runs only when that
+    // row changes (or the selection empties), from Slint's change handlers, which run once
+    // per frame with the latest value: many rows finishing between two frames scroll the
+    // list once. A selection stops following. A scroll by the user pauses it until the
+    // row being calculated is in view again with nothing selected, or a new run starts.
+    private property <bool> follow-paused;
+    changed active-row => { root.follow(); }
+    changed selection-empty => { if root.selection-empty { root.follow(); } }
+    function follow() {
+        if root.active-row < 0 || root.active-row >= root.rows.length || !root.selection-empty { return; }
+        let top = root.active-row * root.row-height;
+        let bottom = top + root.row-height;
+        let shown = top >= -list.content-y && bottom <= -list.content-y + list.visible-height;
+        if root.follow-paused {
+            if shown { root.follow-paused = false; }
+            return;
+        }
+        if !shown {
+            list.content-y = root.last-whole(root.active-row);
+            root.follow-scrolls += 1;
+        }
+    }
+    function pick(index: int, control: bool, shift: bool) {
+        root.pick-row(index, control, shift);
+        root.focus();
+    }
     function open-menu(index: int, x: length, y: length) {
-        root.select-row(index);
-        if index >= 0 && index < root.rows.length && root.rows[index].calculated {
+        if index < 0 || index >= root.rows.length { return; }
+        // On a selected row the menu acts on the whole selection, on another row on that
+        // row alone; either way the row becomes the cursor and the marks stay.
+        root.menu-selection = root.rows[index].selected;
+        root.menu-count = root.menu-selection ? root.selected-hashes : 1;
+        root.menu-count-text = root.selected-hashes-text;
+        root.move-cursor(index, false, true);
+        root.focus();
+        if root.menu-selection ? root.selected-hashes > 0 : root.rows[index].calculated {
             root.menu-token = root.rows[index].token;
             root.menu-x = x; root.menu-y = y; menu.show();
         }
@@ -164,30 +257,52 @@ export component ChecksumResults inherits FocusScope {
     function copy-menu(index: int, whole: bool) {
         // The token is captured when opening: a refreshed/recycled row cannot
         // redirect a pending action to a different run or file.
-        root.copy-result(root.menu-token, index, whole); menu.close(); root.focus();
+        root.copy-result(root.menu-token, index, whole, root.menu-selection); menu.close(); root.focus();
+    }
+    // The row a cursor key reaches: -2 when the key is not one, -1 when there is no row.
+    function target(key: string) -> int {
+        if key != Key.DownArrow && key != Key.UpArrow && key != Key.PageDown && key != Key.PageUp
+            && key != Key.Home && key != Key.End { return -2; }
+        if root.rows.length == 0 { return -1; }
+        let last = root.rows.length - 1;
+        if key == Key.Home { return 0; }
+        if key == Key.End { return last; }
+        if root.cursor-row < 0 { return 0; }
+        if key == Key.DownArrow { return min(last, root.cursor-row + 1); }
+        if key == Key.UpArrow { return max(0, root.cursor-row - 1); }
+        if key == Key.PageDown { return min(last, root.cursor-row + root.page-size); }
+        return max(0, root.cursor-row - root.page-size);
     }
     key-pressed(event) => {
-        if event.text == Key.DownArrow { root.selected-row = min(root.rows.length - 1, root.selected-row + 1); return accept; }
-        if event.text == Key.UpArrow { root.selected-row = max(0, root.selected-row - 1); return accept; }
-        if event.text == Key.Home { root.selected-row = root.rows.length > 0 ? 0 : -1; return accept; }
-        if event.text == Key.End { root.selected-row = root.rows.length - 1; return accept; }
+        if event.modifiers.alt || event.modifiers.meta { return reject; }
+        let row = root.target(event.text);
+        if row != -2 {
+            if row >= 0 { root.move-cursor(row, event.modifiers.shift, event.modifiers.control); }
+            return accept;
+        }
         if event.text == Key.Return {
             if !event.repeat { root.activate(); }
             return accept;
         }
         if event.modifiers.shift && event.text == Key.F10 {
-            root.open-menu(root.selected-row, 12px,
-                root.header-height + (root.selected-row + 1) * root.row-height + list.content-y);
+            root.open-menu(root.cursor-row, 12px,
+                root.header-height + (root.cursor-row + 1) * root.row-height + list.content-y);
             return accept;
         }
-        if event.modifiers.control && (event.text == "c" || event.text == "C") {
-            if root.selected-row >= 0 && root.selected-row < root.rows.length && root.rows[root.selected-row].calculated {
+        if event.modifiers.control {
+            if event.text == "a" || event.text == "A" { root.select-all(); return accept; }
+            if event.text == "d" || event.text == "D" { root.deselect-all(); return accept; }
+            if event.text == "c" || event.text == "C" {
                 if event.modifiers.shift || root.algorithms[root.output-algorithm] {
-                    root.copy-result(root.rows[root.selected-row].token, root.output-algorithm, event.modifiers.shift);
+                    root.copy-selection(root.output-algorithm, event.modifiers.shift);
                 }
+                return accept;
             }
-            return accept;
+            // Ctrl+Space stays with the input method.
+            return reject;
         }
+        if event.text == Key.Space { root.toggle-row(false); return accept; }
+        if event.text == Key.Insert && !event.modifiers.shift { root.toggle-row(true); return accept; }
         reject
     }
     Rectangle {
@@ -201,26 +316,54 @@ export component ChecksumResults inherits FocusScope {
     list := ListView {
         y: root.header-height; width: parent.width; height: max(0px, parent.height - self.y);
         content-width: max(self.visible-width, root.table-width);
+        scrolled => {
+            root.reveal-active = false;
+            // The user scrolled: stop following the row being calculated (see `follow`).
+            root.follow-paused = root.active-row >= 0;
+        }
         accessible-role: AccessibleRole.list; accessible-label: "Checksum results";
         accessible-item-count: root.rows.length;
         for row[index] in root.rows: Rectangle {
             width: list.content-width; height: root.row-height;
-            background: root.selected-row == index ? Theme.cursor-background
+            // As file rows: the selection fills a row, the cursor's row has its own fill
+            // when not selected. Marks below tell them apart without colour.
+            background: row.selected ? Theme.selected-background
+                : root.cursor-row == index ? Theme.cursor-background
                 : mod(index, 2) == 1 ? Theme.alternate-row : Theme.pane-background;
-            border-width: root.selected-row == index ? 1px : 0px; border-color: Theme.cursor-edge;
             accessible-role: list-item;
             accessible-label: row.name + " · " + row.path + " · " + row.bytes + " · " + row.status + " · " + row.digests;
             accessible-value: row.token;
             accessible-item-selectable: true;
-            accessible-item-selected: root.selected-row == index;
+            accessible-item-selected: row.selected;
             accessible-item-index: index;
-            accessible-action-default => { root.select-row(index); }
+            accessible-action-default => { root.pick(index, false, false); }
             Columns { entry: row; algorithms: root.algorithms;
                 output-algorithm: root.output-algorithm; widths: root.shown-widths; compact: root.compact-rows; }
+            // The cursor: a full-height stroke and an outline. A selected row: a square.
+            // Hidden instead of conditional: an `if` is one more generated component.
+            Rectangle {
+                x: 0px; y: 0px; width: 3px; height: parent.height;
+                background: root.cursor-row == index ? Theme.cursor-edge : transparent;
+            }
+            Rectangle {
+                x: 0px; y: (parent.height - self.height) / 2;
+                width: Theme.touch ? 9px : 7px; height: self.width;
+                background: row.selected ? Theme.selected-edge : transparent;
+            }
+            Rectangle {
+                border-width: root.cursor-row == index ? 1px : 0px; border-color: Theme.cursor-edge;
+            }
             TouchArea {
                 private property <string> pressed-token;
+                // The modifiers when the button went down decide what a click does.
+                private property <bool> pressed-control;
+                private property <bool> pressed-shift;
                 pointer-event(event) => {
-                    if event.kind == PointerEventKind.down { self.pressed-token = row.token; }
+                    if event.kind == PointerEventKind.down {
+                        self.pressed-token = row.token;
+                        self.pressed-control = event.modifiers.control;
+                        self.pressed-shift = event.modifiers.shift;
+                    }
                     if event.kind == PointerEventKind.cancel { self.pressed-token = ""; }
                     if event.kind == PointerEventKind.up && event.button == PointerEventButton.right
                         && self.pressed-token == row.token && self.mouse-x >= 0px && self.mouse-x < self.width
@@ -229,22 +372,28 @@ export component ChecksumResults inherits FocusScope {
                             self.absolute-position.y + self.mouse-y - root.absolute-position.y);
                     }
                 }
-                clicked => { if self.pressed-token == row.token { root.select-row(index); } }
+                clicked => {
+                    if self.pressed-token == row.token { root.pick(index, self.pressed-control, self.pressed-shift); }
+                }
             }
         }
     }
     menu := PopupWindow {
         x: clamp(root.absolute-position.x + root.menu-x, 4px, max(4px, root.surface-width - self.width - 4px)) - root.absolute-position.x;
         y: clamp(root.absolute-position.y + root.menu-y, 4px, max(4px, root.surface-height - self.height - 4px)) - root.absolute-position.y;
-        width: min(240px, root.surface-width - 8px); height: min(root.surface-height - 8px, 6 * Theme.control-height + 20px);
+        width: min(260px, root.surface-width - 8px); height: min(root.surface-height - 8px, 6 * Theme.control-height + 20px);
         close-policy: close-on-click-outside;
         Rectangle {
             background: Theme.surface; border-width: 1px; border-color: Theme.active-frame;
             ListView {
                 x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
                 horizontal-scrollbar-policy: always-off;
+                // With several rows: "Copy 3 SHA-256", "Copy 3 full rows".
                 for label[index] in ["SHA-256", "SHA-512", "MD5", "SHA-1", "CRC32", "full row"]: ActionButton {
-                    text: "Copy " + label; enabled: index == 5 || root.algorithms[index];
+                    text: root.menu-count > 1
+                        ? "Copy " + root.menu-count-text + " " + (index == 5 ? "full rows" : label)
+                        : "Copy " + label;
+                    enabled: index == 5 || root.algorithms[index];
                     clicked => { root.copy-menu(index == 5 ? root.output-algorithm : index, index == 5); }
                 }
             }

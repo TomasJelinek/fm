@@ -1373,7 +1373,13 @@ Further designs cover [the viewer and virtual filesystems](docs/superpowers/spec
 and [reusable sudo terminal sessions](docs/superpowers/specs/2026-11-04-terminal-sessions-design.md).
 [Checksums on Ctrl+F8](docs/developer/CHECKSUMS.md) use a separate modeless window
 with SHA-256 by default, optional SHA-512/MD5/SHA-1, background calculation,
-per-algorithm copy and safe manifest export. Ctrl+F7 retains filename case conversion.
+per-algorithm copy and safe manifest export. A run has no limit on files, folder depth
+or manifest size; its memory follows its rows (about 200 bytes per SHA-256 row). The
+results select like other lists (click, Ctrl+click, Shift+click, the cursor keys with
+Shift or Ctrl, Space, Insert, Ctrl+A, Ctrl+D); Copy, Ctrl+C, Ctrl+Shift+C and the
+context menu take the selected rows, while Save manifest… writes every calculated row.
+While a calculation runs and nothing is selected, the list keeps the file being
+calculated in view. Ctrl+F7 retains filename case conversion.
 The [verification record](docs/verification/2026-11-07-checksum-window.md) distinguishes
 tested source from release/native-desktop qualification still in progress.
 The [finalized dynamic plugin interface](docs/superpowers/specs/2026-11-05-dynamic-viewer-filesystem-plugins-design.md)

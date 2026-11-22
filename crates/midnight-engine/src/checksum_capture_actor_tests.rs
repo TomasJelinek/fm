@@ -70,7 +70,6 @@ fn request(
         }),
         algorithms: ChecksumAlgorithms::default(),
         recursive: false,
-        limits: ChecksumLimits::default(),
     }
 }
 

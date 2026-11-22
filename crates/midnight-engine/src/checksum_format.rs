@@ -1,149 +1,333 @@
-//! Bounded checksum manifest decoding, independent of filesystem access.
+//! Checksum manifest decoding, independent of filesystem access. A manifest is read as a
+//! stream of lines: its memory follows its entries (a short name and a fixed-length
+//! digest each), never its raw size, and nothing limits how large it may be.
 use super::worker::failure;
 use midnight_core::*;
 use std::{
     borrow::Cow,
-    collections::HashSet,
+    collections::{HashMap, hash_map::Entry},
+    hash::{BuildHasher, RandomState},
     io,
     path::{Component, Path, PathBuf},
 };
 
-pub(super) const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
-
+/// A manifest's entries, in file order.
 #[derive(Debug)]
 pub(super) struct ParsedManifest {
     pub algorithm: ChecksumAlgorithm,
-    pub entries: Vec<ManifestEntry>,
+    /// Each entry's name below the manifest's folder.
+    pub names: Vec<Box<Path>>,
+    /// Each entry's expected digest, `algorithm.bytes()` long, in the same order.
+    digests: Vec<u8>,
 }
-#[derive(Debug)]
-pub(super) struct ManifestEntry {
-    pub path: PathBuf,
-    pub digest: Vec<u8>,
+impl ParsedManifest {
+    /// The expected digest of entry `index`.
+    pub fn digest(&self, index: usize) -> Option<&[u8]> {
+        let length = self.algorithm.bytes();
+        self.digests
+            .get(index.checked_mul(length)?..index.checked_add(1)?.checked_mul(length)?)
+    }
+    /// Each entry's name and expected digest.
+    pub fn entries(&self) -> impl Iterator<Item = (&Path, &[u8])> {
+        self.names
+            .iter()
+            .map(AsRef::as_ref)
+            .zip(self.digests.chunks_exact(self.algorithm.bytes()))
+    }
 }
 
+/// The whole text at once: what a save is about to write, or a test's input.
 pub(super) fn parse_manifest(
     bytes: &[u8],
     path: &Path,
-    limits: ChecksumLimits,
     cancel: &Cancellation,
 ) -> Result<ParsedManifest, FsError> {
-    check_cancel(path, cancel)?;
-    limits
-        .validate()
-        .map_err(|text| failure(path, io::ErrorKind::InvalidInput, text))?;
-    if !path.is_absolute()
-        || path.as_os_str().as_encoded_bytes().contains(&0)
-        || path
-            .components()
-            .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
-    {
-        return Err(invalid(
-            path,
-            "Checksum manifest needs an absolute native path without traversal.",
-        ));
+    let mut parser = ManifestParser::new(path, cancel)?;
+    for chunk in bytes.chunks(CHECKSUM_BUFFER_BYTES) {
+        parser.feed(chunk)?;
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid(path, "Checksum manifest needs a parent directory."))?;
-    if bytes.len() > MAX_MANIFEST_BYTES || bytes.len() > limits.max_retained_bytes {
-        return Err(budget(path, "encoded input"));
-    }
-    let text = decode_text(bytes, path, limits.max_retained_bytes, cancel)?;
-    // Borrowed UTF-8 text is the caller's encoded buffer, bounded above and
-    // reserved separately from decoded/entry data (`checksum::reserve_verification`).
-    // Only decoded UTF-16 text is a second allocation in this budget. Each entry is
-    // then charged exactly like a calculated row (`checksum_worker::State::charge`).
-    let mut retained = match &text {
-        Cow::Borrowed(_) => 0,
-        Cow::Owned(decoded) => decoded.len(),
-    };
-    let mut algorithm = None;
-    let mut entries = Vec::new();
-    let mut seen = HashSet::new();
-    let mut sidecar = false;
-    for (index, line) in text.split('\n').enumerate() {
+    parser.finish()
+}
+
+#[derive(Clone, Copy)]
+enum Encoding {
+    Utf8,
+    Utf16 { little: bool },
+}
+
+/// Decodes a manifest fed in chunks of any size. It holds the entries so far, the text of
+/// the line being read and at most one chunk: never the whole text.
+pub(super) struct ManifestParser<'a> {
+    path: &'a Path,
+    cancel: &'a Cancellation,
+    /// Unknown until the first bytes (and any byte-order mark) are in.
+    encoding: Option<Encoding>,
+    /// The first bytes, until they show the encoding.
+    head: Vec<u8>,
+    /// UTF-8 text not yet split into lines: at most a line and a chunk.
+    text: Vec<u8>,
+    /// How much of `text` is known to hold no line end: a line of any length that
+    /// arrives in many chunks is searched once, not again with every chunk.
+    searched: usize,
+    /// A UTF-16 byte waiting for its pair, and a high surrogate waiting for its low one.
+    odd: Option<u8>,
+    high: Option<u16>,
+    lines: usize,
+    algorithm: Option<ChecksumAlgorithm>,
+    sidecar: bool,
+    names: Vec<Box<Path>>,
+    digests: Vec<u8>,
+    aliases: Aliases,
+}
+
+impl<'a> ManifestParser<'a> {
+    pub(super) fn new(path: &'a Path, cancel: &'a Cancellation) -> Result<Self, FsError> {
         check_cancel(path, cancel)?;
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.trim().is_empty() || line.trim_start().starts_with([';', '#']) {
-            continue;
-        }
-        // Bound temporary decoded names, native paths and alias keys before
-        // allocating them, including when the record will later prove malformed.
-        // `export_line_headroom` mirrors how far this may exceed the entry charge.
-        let _temporary = line
-            .len()
-            .checked_add(parent.as_os_str().as_encoded_bytes().len())
-            .and_then(|length| length.checked_mul(4))
-            .and_then(|length| length.checked_add(1024))
-            .and_then(|length| retained.checked_add(length))
-            .filter(|total| *total <= limits.max_retained_bytes)
-            .ok_or_else(|| budget(path, "retained name/entry"))?;
-        let decoded = decode_record(line, path).map_err(|mut error| {
-            error.message = format!("Line {}: {}", index + 1, error.message);
-            error
-        })?;
-        if algorithm.is_some_and(|previous| previous != decoded.algorithm) {
+        if !path.is_absolute()
+            || path.as_os_str().as_encoded_bytes().contains(&0)
+            || path
+                .components()
+                .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+        {
             return Err(invalid(
                 path,
+                "Checksum manifest needs an absolute native path without traversal.",
+            ));
+        }
+        // Names are below the manifest's folder.
+        path.parent()
+            .ok_or_else(|| invalid(path, "Checksum manifest needs a parent directory."))?;
+        Ok(Self {
+            path,
+            cancel,
+            encoding: None,
+            head: Vec::new(),
+            text: Vec::new(),
+            searched: 0,
+            odd: None,
+            high: None,
+            lines: 0,
+            algorithm: None,
+            sidecar: false,
+            names: Vec::new(),
+            digests: Vec::new(),
+            aliases: Aliases::default(),
+        })
+    }
+
+    /// The next bytes of the manifest.
+    pub(super) fn feed(&mut self, mut bytes: &[u8]) -> Result<(), FsError> {
+        check_cancel(self.path, self.cancel)?;
+        if self.encoding.is_none() {
+            // Three bytes tell a UTF-8 byte-order mark; two a UTF-16 one.
+            let wanted = 3usize.saturating_sub(self.head.len()).min(bytes.len());
+            self.head.extend_from_slice(&bytes[..wanted]);
+            bytes = &bytes[wanted..];
+            if self.head.len() < 3 {
+                return Ok(());
+            }
+            self.start()?;
+        }
+        self.decode(bytes)?;
+        self.split_lines(false)
+    }
+
+    /// The end of the manifest: its entries.
+    pub(super) fn finish(mut self) -> Result<ParsedManifest, FsError> {
+        if self.encoding.is_none() {
+            self.start()?;
+        }
+        if self.odd.is_some() {
+            return Err(invalid(self.path, "Truncated UTF-16 checksum text."));
+        }
+        if self.high.is_some() {
+            return Err(invalid(self.path, "Invalid UTF-16 checksum text."));
+        }
+        self.split_lines(true)?;
+        let algorithm = self
+            .algorithm
+            .ok_or_else(|| invalid(self.path, "Checksum manifest contains no entries."))?;
+        Ok(ParsedManifest {
+            algorithm,
+            names: self.names,
+            digests: self.digests,
+        })
+    }
+
+    /// Decide the encoding from the first bytes and decode them.
+    fn start(&mut self) -> Result<(), FsError> {
+        let head = std::mem::take(&mut self.head);
+        let (encoding, rest) = match head.as_slice() {
+            [0xff, 0xfe, rest @ ..] => (Encoding::Utf16 { little: true }, rest),
+            [0xfe, 0xff, rest @ ..] => (Encoding::Utf16 { little: false }, rest),
+            [0xef, 0xbb, 0xbf, rest @ ..] => (Encoding::Utf8, rest),
+            rest => (Encoding::Utf8, rest),
+        };
+        self.encoding = Some(encoding);
+        self.decode(rest)
+    }
+
+    /// Append `bytes` to the text as UTF-8.
+    fn decode(&mut self, bytes: &[u8]) -> Result<(), FsError> {
+        let Some(Encoding::Utf16 { little }) = self.encoding else {
+            self.text.extend_from_slice(bytes);
+            return Ok(());
+        };
+        let mut bytes = bytes.iter().copied();
+        let mut next_unit = |odd: &mut Option<u8>| {
+            let first = odd.take().or_else(|| bytes.next())?;
+            match bytes.next() {
+                Some(second) => Some(if little {
+                    u16::from_le_bytes([first, second])
+                } else {
+                    u16::from_be_bytes([first, second])
+                }),
+                None => {
+                    *odd = Some(first);
+                    None
+                }
+            }
+        };
+        while let Some(unit) = next_unit(&mut self.odd) {
+            let character = match (self.high.take(), unit) {
+                (None, 0xd800..=0xdbff) => {
+                    self.high = Some(unit);
+                    continue;
+                }
+                (Some(high), 0xdc00..=0xdfff) => {
+                    char::decode_utf16([high, unit]).next().and_then(Result::ok)
+                }
+                (None, unit) => char::from_u32(u32::from(unit)),
+                (Some(_), _) => None,
+            }
+            .ok_or_else(|| invalid(self.path, "Invalid UTF-16 checksum text."))?;
+            let mut buffer = [0; 4];
+            self.text
+                .extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+        }
+        Ok(())
+    }
+
+    /// Parse every complete line of the text; at the end also the last one.
+    fn split_lines(&mut self, end: bool) -> Result<(), FsError> {
+        let text = std::mem::take(&mut self.text);
+        let mut start = 0;
+        let mut from = self.searched.min(text.len());
+        while let Some(length) = text[from..].iter().position(|byte| *byte == b'\n') {
+            self.line(&text[start..from + length])?;
+            start = from + length + 1;
+            from = start;
+        }
+        if end {
+            if start < text.len() {
+                self.line(&text[start..])?;
+            }
+            return Ok(());
+        }
+        self.text = text;
+        self.text.drain(..start);
+        self.searched = self.text.len();
+        Ok(())
+    }
+
+    fn line(&mut self, bytes: &[u8]) -> Result<(), FsError> {
+        self.lines += 1;
+        check_cancel(self.path, self.cancel)?;
+        let line = std::str::from_utf8(bytes).map_err(|_| {
+            invalid(
+                self.path,
+                "Checksum files require UTF-8 or BOM-marked UTF-16 text.",
+            )
+        })?;
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.trim().is_empty() || line.trim_start().starts_with([';', '#']) {
+            return Ok(());
+        }
+        let number = self.lines;
+        let decoded = decode_record(line, self.path).map_err(|mut error| {
+            error.message = format!("Line {number}: {}", error.message);
+            error
+        })?;
+        if self
+            .algorithm
+            .is_some_and(|previous| previous != decoded.algorithm)
+        {
+            return Err(invalid(
+                self.path,
                 "Checksum manifest mixes different algorithms.",
             ));
         }
-        if sidecar || (decoded.name.is_none() && !entries.is_empty()) {
+        if self.sidecar || (decoded.name.is_none() && !self.names.is_empty()) {
             return Err(invalid(
-                path,
+                self.path,
                 "A hash-only sidecar must contain exactly one checksum.",
             ));
         }
-        algorithm = Some(decoded.algorithm);
+        self.algorithm = Some(decoded.algorithm);
         let relative = if let Some(name) = decoded.name {
-            relative_name(&name, decoded.escaped, path, limits.max_depth)?
+            relative_name(&name, decoded.escaped, self.path)?
         } else {
-            sidecar = true;
-            sidecar_name(path, decoded.algorithm)?
+            self.sidecar = true;
+            sidecar_name(self.path, decoded.algorithm)?
         };
-        let absolute = parent.join(&relative);
         // Names are never case-folded for opening. Conservative alias detection rejects
         // an entire manifest instead of letting another platform silently reuse a row.
-        let key = unicase::UniCase::new(
-            relative
-                .to_str()
-                .ok_or_else(|| {
-                    invalid(
-                        path,
-                        "Checksum filename cannot be represented without loss.",
-                    )
-                })?
-                .to_owned(),
-        );
-        let cost = absolute
-            .as_os_str()
-            .as_encoded_bytes()
-            .len()
-            .checked_mul(4)
-            .and_then(|length| length.checked_add(1024))
-            .and_then(|length| retained.checked_add(length))
-            .filter(|total| *total <= limits.max_retained_bytes)
-            .ok_or_else(|| budget(path, "retained name/entry"))?;
-        if entries.len() >= limits.max_rows || entries.len() as u64 >= limits.max_nodes {
-            return Err(budget(path, "entry count"));
+        let key = relative.to_str().ok_or_else(|| {
+            invalid(
+                self.path,
+                "Checksum filename cannot be represented without loss.",
+            )
+        })?;
+        if self.aliases.repeated(&self.names, key) {
+            return Err(invalid(
+                self.path,
+                "Duplicate or ambiguous checksum filename.",
+            ));
         }
-        seen.try_reserve(1)
-            .map_err(|_| budget(path, "allocation"))?;
-        if !seen.insert(key) {
-            return Err(invalid(path, "Duplicate or ambiguous checksum filename."));
-        }
-        entries
-            .try_reserve(1)
-            .map_err(|_| budget(path, "allocation"))?;
-        retained = cost;
-        entries.push(ManifestEntry {
-            path: absolute,
-            digest: decoded.digest,
-        });
+        self.names.push(relative.into_boxed_path());
+        self.digests.extend_from_slice(&decoded.digest);
+        Ok(())
     }
-    let algorithm =
-        algorithm.ok_or_else(|| invalid(path, "Checksum manifest contains no entries."))?;
-    Ok(ParsedManifest { algorithm, entries })
+}
+
+/// Names seen so far by the hash of their case-folded text: a lookup per entry, and the
+/// names themselves (kept by the parser) settle a shared hash.
+#[derive(Default)]
+struct Aliases {
+    hasher: RandomState,
+    first: HashMap<u64, usize>,
+    /// Further names whose hash an earlier name already had.
+    more: Vec<(u64, usize)>,
+}
+impl Aliases {
+    /// Whether `name` folds to the name of an entry in `names`; if not, it is the next
+    /// entry's.
+    fn repeated(&mut self, names: &[Box<Path>], name: &str) -> bool {
+        let hash = self.hasher.hash_one(unicase::UniCase::new(name));
+        let same = |index: usize| {
+            names[index]
+                .to_str()
+                .is_some_and(|known| unicase::UniCase::new(known) == unicase::UniCase::new(name))
+        };
+        match self.first.entry(hash) {
+            Entry::Vacant(entry) => {
+                entry.insert(names.len());
+                false
+            }
+            Entry::Occupied(entry) => {
+                if same(*entry.get())
+                    || self
+                        .more
+                        .iter()
+                        .any(|(known, index)| *known == hash && same(*index))
+                {
+                    return true;
+                }
+                self.more.push((hash, names.len()));
+                false
+            }
+        }
+    }
 }
 
 struct Record<'a> {
@@ -307,10 +491,7 @@ fn decode_hex(hex: &str, algorithm: ChecksumAlgorithm, path: &Path) -> Result<Ve
 }
 
 fn unescape(name: &str, path: &Path) -> Result<String, FsError> {
-    let mut decoded = String::new();
-    decoded
-        .try_reserve(name.len())
-        .map_err(|_| budget(path, "allocation"))?;
+    let mut decoded = String::with_capacity(name.len());
     let mut chars = name.chars();
     while let Some(character) = chars.next() {
         decoded.push(if character == '\\' {
@@ -327,12 +508,8 @@ fn unescape(name: &str, path: &Path) -> Result<String, FsError> {
     Ok(decoded)
 }
 
-fn relative_name(
-    name: &str,
-    escaped: bool,
-    path: &Path,
-    max_depth: usize,
-) -> Result<PathBuf, FsError> {
+/// A manifest name as a relative native path, at any depth.
+fn relative_name(name: &str, escaped: bool, path: &Path) -> Result<PathBuf, FsError> {
     if name.is_empty() || name.contains(['\0', ':']) {
         return Err(invalid(path, "Empty or unsafe checksum filename."));
     }
@@ -342,10 +519,7 @@ fn relative_name(
         Cow::Owned(name.replace('\\', "/"))
     };
     let mut relative = PathBuf::new();
-    for (index, part) in normalized.split('/').enumerate() {
-        if index >= max_depth {
-            return Err(budget(path, "relative path depth"));
-        }
+    for part in normalized.split('/') {
         // Checking the native component shape also prevents a GNU escaped literal
         // backslash from becoming a separator when read on Windows.
         let mut components = Path::new(part).components();
@@ -380,6 +554,7 @@ fn device_name(part: &str) -> bool {
         ))
 }
 
+/// The file a hash-only `name.ext.<algorithm>` sidecar checks: `name.ext`, beside it.
 fn sidecar_name(path: &Path, algorithm: ChecksumAlgorithm) -> Result<PathBuf, FsError> {
     if !path
         .extension()
@@ -400,89 +575,11 @@ fn sidecar_name(path: &Path, algorithm: ChecksumAlgorithm) -> Result<PathBuf, Fs
                 "Hash-only sidecar filename cannot be decoded without loss.",
             )
         })?;
-    relative_name(name, true, path, 1)
-}
-
-fn decode_text<'a>(
-    bytes: &'a [u8],
-    path: &Path,
-    limit: usize,
-    cancel: &Cancellation,
-) -> Result<Cow<'a, str>, FsError> {
-    let utf16 = bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]);
-    if !utf16 {
-        let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
-        return std::str::from_utf8(bytes).map(Cow::Borrowed).map_err(|_| {
-            invalid(
-                path,
-                "Checksum files require UTF-8 or BOM-marked UTF-16 text.",
-            )
-        });
-    }
-    if !bytes.len().is_multiple_of(2) {
-        return Err(invalid(path, "Truncated UTF-16 checksum text."));
-    }
-    let little = bytes[0] == 0xff;
-    let units = bytes[2..].as_chunks::<2>().0.iter().map(|pair| {
-        if little {
-            u16::from_le_bytes([pair[0], pair[1]])
-        } else {
-            u16::from_be_bytes([pair[0], pair[1]])
-        }
-    });
-    let mut decoded = String::new();
-    for (index, result) in char::decode_utf16(units).enumerate() {
-        if index.is_multiple_of(4096) {
-            check_cancel(path, cancel)?;
-        }
-        let character = result.map_err(|_| invalid(path, "Invalid UTF-16 checksum text."))?;
-        let size = decoded
-            .len()
-            .checked_add(character.len_utf8())
-            .filter(|size| *size <= limit)
-            .ok_or_else(|| budget(path, "decoded text"))?;
-        decoded
-            .try_reserve(size - decoded.len())
-            .map_err(|_| budget(path, "allocation"))?;
-        decoded.push(character);
-    }
-    Ok(Cow::Owned(decoded))
+    relative_name(name, true, path)
 }
 
 fn invalid(path: &Path, message: &str) -> FsError {
     failure(path, io::ErrorKind::InvalidData, message)
-}
-fn budget(path: &Path, budget: &str) -> FsError {
-    failure(
-        path,
-        io::ErrorKind::OutOfMemory,
-        &format!("Checksum manifest exceeds its bounded {budget} parsing budget."),
-    )
-}
-
-/// Upper bound by which `parse_manifest`'s transient check of one exported line
-/// (4 x (line + manifest directory) + 1 KiB) exceeds that entry's committed charge
-/// (4 x absolute path + 1 KiB), for any line `manifest::encode` can write for
-/// `path` with one of `algorithms`. The relative name plus the directory is never
-/// longer than the absolute path, so only the digest, separators, the GNU escape
-/// marker and doubled escaped characters remain. None means arithmetic overflow.
-pub(super) fn export_line_headroom(path: &Path, algorithms: ChecksumAlgorithms) -> Option<usize> {
-    let digest = algorithms.iter().map(ChecksumAlgorithm::bytes).max()?;
-    let escaped = path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(name) => Some(name.as_encoded_bytes()),
-            _ => None,
-        })
-        .flatten()
-        .filter(|byte| matches!(byte, b'\\' | b'\n' | b'\r'))
-        .count();
-    // GNU: optional '\\' marker + hex digest + " *". SFV: "  " + 8 hex digits.
-    digest
-        .checked_mul(2)?
-        .checked_add(3)?
-        .checked_add(escaped)?
-        .checked_mul(4)
 }
 fn check_cancel(path: &Path, cancel: &Cancellation) -> Result<(), FsError> {
     if cancel.is_cancelled() {

@@ -1,3 +1,5 @@
+#[path = "support/window_input.rs"]
+mod input;
 use crate::support::modeless;
 use midnight_core::*;
 use midnight_ui::{ChecksumDraft, ChecksumWindow, MainWindow, Presenter};
@@ -11,6 +13,15 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+
+/// A run's rows from these chunks.
+fn rows_of<const N: usize>(chunks: [Arc<ChecksumChunk>; N]) -> ChecksumRows {
+    let mut rows = ChecksumRows::default();
+    for chunk in chunks {
+        rows.push(chunk);
+    }
+    rows
+}
 
 #[test]
 fn checksum_window_offers_file_verification_and_browse() {
@@ -130,26 +141,28 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
     let rows = cases
         .iter()
         .enumerate()
-        .map(|(index, (status, _))| {
-            Arc::new(ChecksumRow {
-                id: ChecksumRowId(index as u64 + 1),
-                path: root.join(format!("{status:?}.txt")),
-                identity: None,
-                kind: Some(EntryKind::File),
-                state: *status,
-                bytes_read: 3,
-                digests: Vec::new(),
-                error: None,
-                retention: retention.clone(),
-            })
+        .map(|(index, (status, _))| ChecksumRow {
+            id: ChecksumRowId(index as u64 + 1),
+            name: std::path::Path::new(&format!("{status:?}.txt")).into(),
+            identity: None,
+            kind: Some(EntryKind::File),
+            state: *status,
+            bytes_read: 3,
+            digests: ChecksumDigests::default(),
+            error: None,
         })
         .collect::<Vec<_>>();
+    let chunk = Arc::new(ChecksumChunk {
+        base: root.as_path().into(),
+        rows: rows.into_boxed_slice(),
+        retention: retention.clone(),
+    });
     state
         .borrow_mut()
         .apply(Event::Checksum(Box::new(ChecksumEvent {
             job: verify.job,
             generation: verify.generation,
-            update: ChecksumUpdate::Batch(rows.clone().into()),
+            update: ChecksumUpdate::Batch(chunk.clone()),
         })));
     midnight_ui::refresh(&main, &state.borrow());
     draw(&native, 1000, 620, "checksum-verification-icons");
@@ -179,7 +192,7 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
                 generation: verify.generation,
                 algorithms: ChecksumAlgorithms::new(&[ChecksumAlgorithm::Crc32]).unwrap(),
                 captured_roots: vec![manifest.clone()].into(),
-                rows: rows.into(),
+                rows: rows_of([chunk]),
                 summary: ChecksumSummary {
                     completion: ChecksumCompletion::CompletedWithErrors,
                     progress: ChecksumProgress {
@@ -188,7 +201,6 @@ fn empty_panel_can_choose_manifest_then_explicitly_start_verification() {
                         missing: 1,
                         ..Default::default()
                     },
-                    reached_budgets: vec![],
                     diagnostics: vec![],
                 },
                 retention,
@@ -275,13 +287,23 @@ fn checksum_rows_support_accessible_selection_and_algorithm_context_copy() {
             verified: false,
             error: false,
             current: false,
+            selected: false,
         }]))
         .into(),
     );
     let copies = Rc::new(RefCell::new(Vec::new()));
     window.on_copy_result({
         let copies = copies.clone();
-        move |token, algorithm, whole| copies.borrow_mut().push((token, algorithm, whole))
+        move |token, algorithm, whole, selection| {
+            copies
+                .borrow_mut()
+                .push((token, algorithm, whole, selection))
+        }
+    });
+    let picks = Rc::new(RefCell::new(Vec::new()));
+    window.on_pick_row({
+        let picks = picks.clone();
+        move |row, control, shift| picks.borrow_mut().push((row, control, shift))
     });
     window.show().unwrap();
     let native = windows.borrow()[0].clone();
@@ -292,8 +314,9 @@ fn checksum_rows_support_accessible_selection_and_algorithm_context_copy() {
         "日本語.bin · fixture · 3 B · Calculated · hashes",
     )
     .unwrap();
+    // The default action selects the row alone, as a click does.
     row.accessible_action(&AccessibilityAction::Default);
-    assert_eq!(window.get_selected_row(), 0);
+    assert_eq!(*picks.borrow(), [(0, false, false)]);
     // Pointer is in the filename cell even when the table extends past the viewport.
     let rect = row.geometry();
     let origin = row.map_to_native_window(rect.origin);
@@ -314,12 +337,14 @@ fn checksum_rows_support_accessible_selection_and_algorithm_context_copy() {
             });
         draw(&native, 860, 620, "checksum-context");
         click(&native, &format!("Copy {label}"));
+        // The row is not selected: the menu acts on it alone.
         assert_eq!(
             copies.borrow().last().cloned(),
             Some((
                 "7:1".into(),
                 if index == 5 { 0 } else { index as i32 },
-                index == 5
+                index == 5,
+                false
             ))
         );
     }
@@ -434,44 +459,43 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
     // The MD5 + SHA-256 set saved by an earlier version is not the window's default.
     assert_eq!(request.algorithms, ChecksumAlgorithms::default());
     let retention = ChecksumRetention::new(());
-    let rows: Arc<[Arc<ChecksumRow>]> = vec![Arc::new(ChecksumRow {
-        id: ChecksumRowId(1),
-        path: path.clone(),
-        identity: None,
-        kind: Some(EntryKind::File),
-        state: ChecksumRowState::Calculated,
-        bytes_read: 3,
-        digests: vec![
-            ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Sha256,
-                bytes: vec![0x42; 32],
-            },
-            ChecksumDigest {
-                algorithm: ChecksumAlgorithm::Md5,
-                bytes: vec![0x43; 16],
-            },
-        ],
-        error: None,
+    let chunk = Arc::new(ChecksumChunk {
+        base: root.as_path().into(),
+        rows: vec![ChecksumRow {
+            id: ChecksumRowId(1),
+            name: std::path::Path::new(path.file_name().unwrap()).into(),
+            identity: None,
+            kind: Some(EntryKind::File),
+            state: ChecksumRowState::Calculated,
+            bytes_read: 3,
+            digests: ChecksumDigests::new(&[
+                (ChecksumAlgorithm::Sha256, &[0x42; 32]),
+                (ChecksumAlgorithm::Md5, &[0x43; 16]),
+            ])
+            .unwrap(),
+            error: None,
+        }]
+        .into_boxed_slice(),
         retention: retention.clone(),
-    })]
-    .into();
+    });
     // The run lists its files first: the file being read shows its share, the
     // others wait, and the progress line counts files and bytes.
     let other = root.join("další 文档.txt");
     for update in [
-        ChecksumUpdate::Planned(
-            vec![
+        ChecksumUpdate::Planned(Arc::new(ChecksumPlanned {
+            base: root.as_path().into(),
+            files: vec![
                 ChecksumPlannedFile {
-                    path: path.clone(),
+                    name: std::path::Path::new(path.file_name().unwrap()).into(),
                     size: Some(3),
                 },
                 ChecksumPlannedFile {
-                    path: other.clone(),
+                    name: std::path::Path::new(other.file_name().unwrap()).into(),
                     size: Some(5),
                 },
             ]
-            .into(),
-        ),
+            .into_boxed_slice(),
+        })),
         ChecksumUpdate::Progress(ChecksumProgress {
             planned: 2,
             planned_bytes: 8,
@@ -510,7 +534,7 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
         .apply(Event::Checksum(Box::new(ChecksumEvent {
             job: request.job,
             generation: request.generation,
-            update: ChecksumUpdate::Batch(rows.clone()),
+            update: ChecksumUpdate::Batch(chunk.clone()),
         })));
     midnight_ui::refresh(&main, &state.borrow());
     draw(&native, 860, 620, "checksum-running");
@@ -530,7 +554,7 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
         generation: request.generation,
         algorithms: request.algorithms,
         captured_roots: vec![root.clone()].into(),
-        rows,
+        rows: rows_of([chunk]),
         summary: ChecksumSummary {
             completion: ChecksumCompletion::Completed,
             progress: ChecksumProgress {
@@ -539,7 +563,6 @@ fn checksum_window_captures_selection_streams_and_closes_without_blocking_main()
                 bytes_read: 3,
                 ..Default::default()
             },
-            reached_budgets: vec![],
             diagnostics: vec![],
         },
         retention,
@@ -839,4 +862,96 @@ fn row_labels(native: &slint::platform::software_renderer::MinimalSoftwareWindow
     collect(ItemRc::new_root(root), &mut found);
     found.sort_by(|a, b| a.0.total_cmp(&b.0));
     found.into_iter().map(|(_, label)| label).collect()
+}
+
+#[path = "checksum_windows/selection.rs"]
+mod selection;
+
+/// U-D22: at the minimum size and a wider one, every footer action is a whole button 8 px
+/// from the next one, or in More…, never both; an action in More… runs from there.
+#[test]
+fn checksum_footer_keeps_whole_evenly_spaced_actions_and_the_rest_in_more() {
+    use i_slint_core::items::AccessibleRole;
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let window = ChecksumWindow::new().unwrap();
+    window.set_has_output(true);
+    window.set_output_available(Rc::new(slint::VecModel::from(vec![true; 5])).into());
+    // One selected calculated row: Copy is available.
+    window.set_copy_lines(1);
+    window.set_copy_lines_text("1".into());
+    let copies = Rc::new(Cell::new(0));
+    window.on_copy_checksum_file({
+        let copies = copies.clone();
+        move |_| copies.set(copies.get() + 1)
+    });
+    window.show().unwrap();
+    let native = windows.borrow()[0].clone();
+    let mut overflowed = false;
+    for (theme, density, width, height) in [
+        (PreferenceTheme::Blue, 0, 320, 200),
+        (PreferenceTheme::Dark, 1, 320, 200),
+        (PreferenceTheme::Blue, 0, 640, 480),
+        (PreferenceTheme::Dark, 1, 640, 480),
+    ] {
+        window.invoke_apply_preferences(theme.index(), density, "".into(), 12, 15);
+        let case = format!("{theme:?} density {density} {width}x{height}");
+        draw(&native, width, height, "checksum-footer-fit");
+        // Every footer button whole, 8 px from the next one, Close last.
+        let row = modeless::fitted_footer(&native, "Close", &case);
+        let actions = if width < 460 {
+            ["Calculate", "Copy", "Save…"]
+        } else {
+            ["Calculate", "Copy SHA-256", "Save manifest…"]
+        };
+        if !row.iter().any(|label| label == "More…") {
+            for label in actions {
+                assert!(
+                    row.iter().any(|shown| shown == label),
+                    "{case}: {label} in {row:?}"
+                );
+            }
+            continue;
+        }
+        overflowed = true;
+        // Each action is a button or in More…, never both.
+        click(&native, "More…");
+        for label in actions {
+            let in_menu =
+                modeless::accessible_popup_item(&native, AccessibleRole::Button, label).is_some();
+            assert_ne!(
+                in_menu,
+                row.iter().any(|shown| shown == label),
+                "{case}: {label} must be a button or in More…, not both"
+            );
+        }
+        native.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Escape.into(),
+        });
+        native.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Escape.into(),
+        });
+    }
+    assert!(overflowed, "320×200 moves actions into More…");
+    // An action in More… runs from there.
+    window.invoke_apply_preferences(PreferenceTheme::Blue.index(), 0, "".into(), 12, 15);
+    draw(&native, 320, 200, "checksum-footer-fit-menu");
+    click(&native, "More…");
+    click(&native, "Copy");
+    assert_eq!(copies.get(), 1);
+    // Several selected rows: the counted caption is measured as well, so at 640 px it is a
+    // whole button or in More…, never cut.
+    window.set_copy_lines(12_345);
+    window.set_copy_lines_text("12,345".into());
+    draw(&native, 640, 480, "checksum-footer-fit-counted");
+    let row = modeless::fitted_footer(&native, "Close", "640x480 counted");
+    let counted = "Copy 12,345 SHA-256";
+    if !row.iter().any(|label| label == counted) {
+        click(&native, "More…");
+        assert!(
+            modeless::accessible_popup_item(&native, AccessibleRole::Button, counted).is_some(),
+            "{counted} is neither a button nor in More…: {row:?}"
+        );
+    }
+    window.hide().unwrap();
 }

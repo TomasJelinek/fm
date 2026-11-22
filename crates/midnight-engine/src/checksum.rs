@@ -1,4 +1,5 @@
-//! Backend-only checksum controller. One process-wide worker, bounded queues and retained quota.
+//! Backend-only checksum controller. One process-wide worker, bounded queues and retained
+//! job slots. A run has no size limit: its rows are compact and its memory follows them.
 //! The host must await shutdown during normal close; UI/protocol integration is separate.
 use super::retirement::WorkerOwned;
 use midnight_core::*;
@@ -91,82 +92,27 @@ impl Request {
         }
     }
 }
-struct Quota {
-    _job: OwnedSemaphorePermit,
-    memory: Mutex<OwnedSemaphorePermit>,
-}
-impl Quota {
-    /// Return reserved bytes beyond `retained` to the shared budget. The rest stays
-    /// held until the run and every row referencing this quota are dropped.
-    fn shrink_to(&self, retained: usize) {
-        let mut memory = self
-            .memory
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let excess = memory.num_permits().saturating_sub(retained);
-        drop(memory.split(excess));
-    }
-}
-
-/// One admitted request's share of the process-wide checksum quota.
+/// One admitted request's job slot, held until its run and every chunk of its rows are
+/// gone: a window that keeps results keeps its slot. The slot counts jobs, never bytes.
 pub(super) struct Reservation {
     retention: Arc<ChecksumRetention>,
-    quota: Option<Arc<Quota>>,
 }
 impl Reservation {
     pub(super) fn retention(&self) -> Arc<ChecksumRetention> {
         self.retention.clone()
     }
-    /// Admission reserves for the worst case (expanded targets, rows and, during
-    /// verification, overlapping row sets). A finished run keeps only its actual
-    /// bounded rows and roots, so retained result windows and a replacement
-    /// generation fit the same budget.
-    fn finish(&self, run: &ChecksumRun) {
-        if let Some(quota) = &self.quota {
-            quota.shrink_to(retained_bytes(run));
-        }
-    }
-    /// Quota-free ownership for fixtures that bypass process-wide admission.
+    /// Slot-free ownership for fixtures that bypass process-wide admission.
     #[cfg(test)]
     pub(super) fn untracked() -> Self {
         Self {
             retention: ChecksumRetention::new(()),
-            quota: None,
         }
     }
 }
 
-/// Conservative size of what a finished run keeps alive: the calculation's own
-/// per-row charge (path, index and diagnostic copies plus bounded digest/error
-/// data) and the captured roots and diagnostics.
-fn retained_bytes(run: &ChecksumRun) -> usize {
-    let length = |path: &Path| path.as_os_str().as_encoded_bytes().len();
-    let rows = run
-        .rows
-        .iter()
-        .map(|row| length(&row.path).saturating_mul(4).saturating_add(1024));
-    let roots = run
-        .captured_roots
-        .iter()
-        .map(|root| length(root).saturating_add(std::mem::size_of::<std::path::PathBuf>()));
-    let diagnostics = run.summary.diagnostics.iter().map(|error| {
-        length(&error.path)
-            .saturating_add(error.message.len())
-            .saturating_add(std::mem::size_of::<FsError>())
-    });
-    rows.chain(roots)
-        .chain(diagnostics)
-        .fold(std::mem::size_of::<ChecksumRun>(), usize::saturating_add)
-}
 fn jobs() -> Arc<Semaphore> {
     static JOBS: OnceLock<Arc<Semaphore>> = OnceLock::new();
     JOBS.get_or_init(|| Arc::new(Semaphore::new(MAX_CHECKSUM_JOBS)))
-        .clone()
-}
-fn memory() -> Arc<Semaphore> {
-    static MEMORY: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    MEMORY
-        .get_or_init(|| Arc::new(Semaphore::new(64 * 1024 * 1024)))
         .clone()
 }
 fn workers() -> Arc<Semaphore> {
@@ -174,50 +120,27 @@ fn workers() -> Arc<Semaphore> {
     WORKERS.get_or_init(|| Arc::new(Semaphore::new(1))).clone()
 }
 
-pub(super) fn reserve(bytes: usize, retained: usize) -> Result<Reservation, FsError> {
-    let fail = |kind, message| worker::failure(Path::new(""), kind, message);
-    let job = jobs().try_acquire_owned().map_err(|_| {
-        fail(
+/// Take one of the process-wide job slots (results that windows keep included).
+pub(super) fn reserve() -> Result<Reservation, FsError> {
+    let job: OwnedSemaphorePermit = jobs().try_acquire_owned().map_err(|_| {
+        worker::failure(
+            Path::new(""),
             io::ErrorKind::WouldBlock,
             "Checksum job budget is full (32 including retained results).",
         )
     })?;
-    let bytes = bytes
-        .checked_add(retained)
-        .and_then(|value| u32::try_from(value).ok())
-        .ok_or_else(|| {
-            fail(
-                io::ErrorKind::InvalidInput,
-                "Checksum memory reservation overflow.",
-            )
-        })?;
-    let memory = memory().try_acquire_many_owned(bytes).map_err(|_| {
-        fail(
-            io::ErrorKind::WouldBlock,
-            "Checksum target/result memory budget is full (64 MiB).",
-        )
-    })?;
-    let quota = Arc::new(Quota {
-        _job: job,
-        memory: Mutex::new(memory),
-    });
     Ok(Reservation {
-        retention: ChecksumRetention::new(quota.clone()),
-        quota: Some(quota),
+        retention: ChecksumRetention::new(job),
     })
 }
 
 pub(super) fn reserve_verification(
     request: &ChecksumVerifyRequest,
 ) -> Result<Reservation, FsError> {
-    let bytes = request.validate().map_err(|message| {
+    request.validate().map_err(|message| {
         worker::failure(&request.manifest, io::ErrorKind::InvalidInput, message)
     })?;
-    // Parsing bounds encoded text and decoded/entry data independently. During
-    // calculation the original rows, comparison index and transformed rows share
-    // the existing conservative per-row charge. Three budgets cover overlap,
-    // while admitting a replacement beside a retained verification generation.
-    reserve(bytes, request.limits.max_retained_bytes * 3)
+    reserve()
 }
 
 pub struct Controller {
@@ -273,7 +196,7 @@ impl Controller {
     #[cfg(test)]
     pub fn start(&self, request: ChecksumRequest) -> Result<(), FsError> {
         let fail = |kind, text| worker::failure(Path::new(""), kind, text);
-        let request_bytes = request
+        request
             .validate()
             .map_err(|text| fail(io::ErrorKind::InvalidInput, text))?;
         if self.stop.is_cancelled() {
@@ -282,7 +205,7 @@ impl Controller {
                 "Checksum service is closing.",
             ));
         }
-        let reservation = reserve(request_bytes, request.limits.max_retained_bytes)?;
+        let reservation = reserve()?;
         self.admit_plain(Request::Calculate(request), self.stop.child(), reservation)
     }
 
@@ -541,7 +464,6 @@ fn execute(
             send,
         ),
     };
-    work.reservation.finish(&run);
     // Actual native reads are gone before the captured provider, permits and lease.
     drop(work);
     drop(lease);
@@ -576,8 +498,8 @@ fn send_update(
 pub(crate) async fn test_quota_fixture() -> tokio::sync::MutexGuard<'static, ()> {
     // This module is also path-included by checksums_backend. Every test using
     // real reservation admission must hold this guard until its controllers,
-    // retained runs and individual row Arcs are released. Production admission
-    // and its process-wide 32-job/64-MiB quotas remain unchanged.
+    // retained runs and row chunks are released. Production admission and its
+    // process-wide 32 job slots remain unchanged.
     static FIXTURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     FIXTURE.lock().await
 }

@@ -109,19 +109,17 @@ impl Controller {
         }
     }
     pub(crate) fn start(&self, request: ChecksumRequest) -> Result<(), FsError> {
-        let bytes = request.validate().map_err(invalid)?;
+        request.validate().map_err(invalid)?;
         let key = (request.job, request.generation);
-        let reservation = checksum::reserve(bytes, request.limits.max_retained_bytes)?;
+        let reservation = checksum::reserve()?;
         self.admit_plain(Capture::Paths(request), key, reservation)
     }
     pub(crate) fn start_selected(&self, request: SelectedChecksumRequest) -> Result<(), FsError> {
-        request.limits.validate().map_err(invalid)?;
         if request.job.0 == 0 || request.generation.0 == 0 {
             return Err(invalid("Zero checksum job/generation."));
         }
         let key = (request.job, request.generation);
-        // Reserve the entire bounded expansion before retaining a queued selection.
-        let reservation = checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)?;
+        let reservation = checksum::reserve()?;
         self.admit_plain(Capture::Selected(request), key, reservation)
     }
     pub(crate) async fn start_captured(
@@ -142,12 +140,11 @@ impl Controller {
         });
         let validation = match start.capture.as_ref().expect("owned capture") {
             Capture::Captured(request) => {
-                request.limits.validate().map_err(invalid).and_then(|()| {
-                    if request.job.0 == 0 || request.generation.0 == 0 {
-                        return Err(invalid("Zero checksum job/generation."));
-                    }
-                    checksum::reserve(8 * 1024 * 1024, request.limits.max_retained_bytes)
-                })
+                if request.job.0 == 0 || request.generation.0 == 0 {
+                    Err(invalid("Zero checksum job/generation."))
+                } else {
+                    checksum::reserve()
+                }
             }
             _ => unreachable!("captured intake owns a captured request"),
         };
@@ -588,7 +585,6 @@ fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, F
             targets: captured.sources.resolve(cancel)?,
             algorithms: captured.algorithms,
             recursive: captured.recursive,
-            limits: captured.limits,
         },
         Capture::Verify(_) => {
             return Err(invalid(
@@ -596,7 +592,7 @@ fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, F
             ));
         }
         Capture::Selected(selected) => {
-            let paths = crate::file_targets::resolve(
+            let paths = crate::file_targets::resolve_all(
                 &selected.files.selection,
                 &selected.files.view,
                 selected.files.fallback.as_deref(),
@@ -611,7 +607,6 @@ fn resolve(capture: Capture, cancel: &Cancellation) -> Result<ChecksumRequest, F
             let mut request = ChecksumRequest::new(selected.job, selected.generation, paths);
             request.algorithms = selected.algorithms;
             request.recursive = selected.recursive;
-            request.limits = selected.limits;
             for target in &mut request.targets {
                 if let Some(position) = selected
                     .files

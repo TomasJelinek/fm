@@ -85,7 +85,7 @@ fn exercise(pane: PaneId, folders: bool) {
     let root = first
         .rows
         .iter()
-        .find(|row| row.path == fixture.root.join("root.txt"))
+        .find(|row| row.path() == fixture.root.join("root.txt"))
         .unwrap();
     assert_eq!(root.state, ChecksumRowState::Calculated);
     assert_eq!(
@@ -95,7 +95,7 @@ fn exercise(pane: PaneId, folders: bool) {
     modeless::draw(&child, 1000, 720, "tree-checksums-result");
     if folders {
         // A selected folder contributes its own files without Include subfolders.
-        assert!(first.rows.iter().any(|row| row.path
+        assert!(first.rows.iter().any(|row| row.path()
             == fixture.root.join("folder/small/payload.bin")
             && row.state == ChecksumRowState::Calculated));
         modeless::click(&child, "Checksum algorithms");
@@ -115,7 +115,7 @@ fn exercise(pane: PaneId, folders: bool) {
         assert_eq!(next.captured_roots, first.captured_roots);
         assert_eq!(next.summary.completion, ChecksumCompletion::Completed);
         assert_eq!(next.summary.progress.calculated, 2);
-        assert!(next.rows.iter().any(|row| row.path
+        assert!(next.rows.iter().any(|row| row.path()
             == fixture.root.join("folder/small/payload.bin")
             && row.bytes_read == 12
             && row.state == ChecksumRowState::Calculated));

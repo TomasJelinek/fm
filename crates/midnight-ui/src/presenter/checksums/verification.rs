@@ -62,12 +62,15 @@ impl Presenter {
                 job: id,
                 generation,
                 manifest: manifest.clone(),
-                limits: ChecksumLimits::default(),
             },
         ))) {
             s.error = "Checksum queue is busy. Try Verify again.".into();
             return false;
         }
+        // Verifying the same checksum file again reads the same files, and selects the
+        // same ones again; another file's results start with no selection.
+        let same_files = s.verification.as_deref() == Some(manifest.as_path());
+        s.restart_selection(same_files);
         s.generation = generation;
         s.verification = Some(manifest.clone());
         s.manifest_suggested = manifest;

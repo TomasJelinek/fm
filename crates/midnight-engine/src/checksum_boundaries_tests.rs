@@ -166,34 +166,35 @@ fn different_native_volume_is_refused_before_manifest_staging_even_with_a_common
         .unwrap()
         .join("_build/virtual-volume");
     let retention = ChecksumRetention::new(());
-    let row = Arc::new(ChecksumRow {
-        id: ChecksumRowId(1),
-        path: directory.join("mounted/file"),
-        identity: Some(TransferIdentity {
-            device: 1,
-            object: [1; 16],
-        }),
-        kind: Some(EntryKind::File),
-        state: ChecksumRowState::Calculated,
-        bytes_read: 0,
-        digests: vec![ChecksumDigest {
-            algorithm: ChecksumAlgorithm::Sha256,
-            bytes: vec![0; 32],
-        }],
-        error: None,
+    let rows = Arc::new(ChecksumChunk {
+        base: directory.as_path().into(),
+        rows: vec![ChecksumRow {
+            id: ChecksumRowId(1),
+            name: Path::new("mounted/file").into(),
+            identity: Some(TransferIdentity {
+                device: 1,
+                object: [1; 16],
+            }),
+            kind: Some(EntryKind::File),
+            state: ChecksumRowState::Calculated,
+            bytes_read: 0,
+            digests: ChecksumDigests::new(&[(ChecksumAlgorithm::Sha256, &[0; 32])]).unwrap(),
+            error: None,
+        }]
+        .into(),
         retention: retention.clone(),
-    });
+    })
+    .into();
     let run = ChecksumRun {
         job: ChecksumJobId(1),
         generation: ChecksumGeneration(1),
         algorithms: ChecksumAlgorithms::default(),
-        captured_roots: vec![row.path.clone()].into(),
-        rows: vec![row].into(),
+        captured_roots: vec![directory.join("mounted/file")].into(),
+        rows,
         retention,
         summary: ChecksumSummary {
             completion: ChecksumCompletion::Completed,
             progress: ChecksumProgress::default(),
-            reached_budgets: vec![],
             diagnostics: vec![],
         },
     };

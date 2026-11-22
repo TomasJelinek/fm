@@ -252,16 +252,12 @@ async fn captured_manifest_verification_routes_through_the_actor_and_replaces_re
         job: ChecksumJobId(1),
         generation: ChecksumGeneration(generation),
         manifest: manifest.clone(),
-        limits: ChecksumLimits {
-            max_retained_bytes: 1024 * 1024,
-            ..Default::default()
-        },
     };
     send.send(Command::VerifyChecksumManifest(Box::new(request(2))))
         .await
         .unwrap();
     let first = completed(&mut receive, 2).await;
-    assert_eq!(first.rows[0].path, listed);
+    assert_eq!(first.rows.get(0).unwrap().path(), listed);
     assert_eq!(first.rows[0].state, ChecksumRowState::Verified);
     send.send(Command::VerifyChecksumManifest(Box::new(request(3))))
         .await
