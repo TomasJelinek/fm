@@ -35,6 +35,20 @@ The host consumer now lives in
 `Catalog::discover` performs bounded manifest discovery; `NativeProvider::open`
 revalidates the complete package and the native descriptor before creating an
 instance. It implements directory, metadata, volume and storage service adapters.
+A listing of a node that is no directory (a file, a special file) fails with
+`io::ErrorKind::NotADirectory`, as with the application's other providers, so that a
+file's path in the path bar opens its folder (`Event::ListingNotAFolder`): the host
+finds it from the resolved node's kind before any listing request, and a plugin
+failure that carries the operating system's "not a directory" code (`ENOTDIR`,
+Windows `ERROR_DIRECTORY`, which `Failure::from_io` keeps) maps the same way. The ABI
+has no error code for it and is unchanged; any other failure maps by its error code,
+so an invalid reply stays `InvalidData`. Tests: the host's
+`a_listing_of_a_node_that_is_no_directory_is_not_a_directory` and the engine's opt-in
+`a_path_that_names_a_file_names_its_folder_through_the_installed_native_provider`,
+which failed before the change (`ListingFailed`, `InvalidData`; run on Windows) and
+passes with the in-tree Windows package on Windows and the in-tree Linux package on
+Linux (WSL), where a link to a file, which only the plugin's directory open refuses
+(`ENOTDIR`), names its folder too.
 The manifest may include an optional friendly `name` of at most 128 UTF-8 bytes,
 nonblank and without control characters. Missing names preserve old packages.
 The host retains the declared native/network kind separately from that display

@@ -216,7 +216,7 @@ impl NativeProvider {
             directory.kind,
             Kind::Directory | Kind::DirectoryLink | Kind::Symlink
         ) {
-            return Err(invalid("The selected node is not a directory"));
+            return Err(not_a_directory());
         }
         let parent = paths::decode(&directory.address)?;
         let mut response = self.exchange(
@@ -293,6 +293,18 @@ impl NativeProvider {
                 cancelled,
             )?;
         }
+    }
+}
+
+/// The host's finding that the node it was asked to list is no directory (a file or a
+/// special file). The ABI has no error code for it, so the failure carries the code
+/// that the operating system reports for a directory listing of such a node
+/// (`paths::NOT_A_DIRECTORY`), as a plugin's own failure does (`Failure::from_io`);
+/// `services::fs_error` makes both `io::ErrorKind::NotADirectory`.
+pub(crate) fn not_a_directory() -> Failure {
+    Failure {
+        os_code: Some(paths::NOT_A_DIRECTORY),
+        ..invalid("The selected node is not a directory")
     }
 }
 

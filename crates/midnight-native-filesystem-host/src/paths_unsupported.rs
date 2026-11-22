@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) const ENCODING: AddressEncoding = AddressEncoding::Opaque;
+/// `ENOTDIR` of POSIX systems; no native provider runs on this platform.
+pub(crate) const NOT_A_DIRECTORY: i32 = 20;
 #[cfg(test)]
 pub(crate) const MANIFEST_ENCODING: &str = "unsupported";
 pub(crate) fn encode(_: &Path) -> Result<Address, Failure> {

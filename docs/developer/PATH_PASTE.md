@@ -19,7 +19,12 @@ an archive file) opens the file's folder with the cursor on the file. The listin
 worker that failed to list the path asks the provider what it names
 (`browse_directory_identity`, following links) and sends `Event::ListingNotAFolder`
 before the failure; only the path editor's request, while still pending, then lists
-the folder with the file as its focus hint. Other navigations keep their failure and
+the folder with the file as its focus hint. The worker asks only after a "not a
+directory" failure (`io::ErrorKind::NotADirectory`). Since 22 November the installed
+native filesystem package, the application's only browsing provider, fails a listing
+of a file that way too (ACC WP2: its host reported it as invalid data, so Enter showed
+"Cannot open folder" and the panel stayed where it was); see the
+[native filesystem API](NATIVE_FILESYSTEM_API.md). Other navigations keep their failure and
 recovery, and a missing path its error. A final separator does not make a file's
 path a folder's, as Paste ends every path with one. A file that the panel's own
 listing shows gets the cursor without a navigation. A Windows folder ignores letter
@@ -35,7 +40,9 @@ Network locations keep their routes. The editor's tooltips say that a file's pat
 opens the file's folder with the cursor on the file. Tests: presenter `typed_paths`,
 one search-results case in `find_feed_tests` and the platform cases in the presenter's
 `windows`/`unix` tests and `name_case_windows`; the engine's `not_a_folder` unit and
-`navigation_not_a_folder` integration tests; the UI integration modules
+`navigation_not_a_folder` integration tests, the latter also through the installed
+native package (opt-in, `MIDNIGHT_NATIVE_TEST_INSTALLATION`), and the native host's
+`a_listing_of_a_node_that_is_no_directory_is_not_a_directory`; the UI integration modules
 `path_bar_file` and `path_bar_file_windows`, and `tooltips`.
 
 Clipboard text is read by the existing bounded backend worker, with a 4 MiB

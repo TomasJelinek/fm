@@ -187,8 +187,18 @@ impl StorageService for NativeProvider {
             .map_err(|failure| fs_error("query filesystem space", path, failure))
     }
 }
+/// A plugin failure as the `FsError` of `operation`. A failure that carries the operating
+/// system's "not a directory" code (`ENOTDIR`, Windows `ERROR_DIRECTORY`), as a plugin's
+/// directory open reports it and the host's own finding in `read_directory` carries it,
+/// is `NotADirectory`, as a listing of a file is with every other provider; the path bar
+/// then shows that file in its folder (`Event::ListingNotAFolder`). Any other failure
+/// maps by its error code alone, so an invalid reply stays `InvalidData`.
 pub(crate) fn fs_error(operation: &'static str, path: &Path, failure: Failure) -> FsError {
+    let not_a_directory = failure.os_code.is_some_and(|code| {
+        io::Error::from_raw_os_error(code).kind() == io::ErrorKind::NotADirectory
+    });
     let kind = match failure.code {
+        _ if not_a_directory => io::ErrorKind::NotADirectory,
         ErrorCode::Unsupported => io::ErrorKind::Unsupported,
         ErrorCode::NotFound => io::ErrorKind::NotFound,
         ErrorCode::PermissionDenied => io::ErrorKind::PermissionDenied,

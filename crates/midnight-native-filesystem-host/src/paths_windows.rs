@@ -9,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) const ENCODING: AddressEncoding = AddressEncoding::WindowsUtf16Le;
+/// `ERROR_DIRECTORY`: what Windows reports for a directory listing of a file.
+pub(crate) const NOT_A_DIRECTORY: i32 = 267;
 #[cfg(test)]
 pub(crate) const MANIFEST_ENCODING: &str = "windows-utf16le";
 pub(crate) fn encode(path: &Path) -> Result<Address, Failure> {

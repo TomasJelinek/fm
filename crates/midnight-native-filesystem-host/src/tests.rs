@@ -130,6 +130,62 @@ fn stopping_listing_closes_cursor_before_mount_and_preserves_native_name() {
     ));
 }
 
+/// ACC WP2, a file's path in the path bar: a listing of a node that is no directory
+/// fails with `NotADirectory`, as with every other provider, whoever finds it: the host
+/// before any listing request (a file, a special file), or the plugin when the operating
+/// system refuses to list a link's target. Another invalid reply stays `InvalidData`.
+#[test]
+fn a_listing_of_a_node_that_is_no_directory_is_not_a_directory() {
+    let list = |host: &NativeProvider, path: &std::path::Path| {
+        midnight_core::DirectoryService::read_directory(
+            host,
+            path,
+            &midnight_core::Cancellation::default(),
+            &mut |_| panic!("a node that is no directory lists no entry"),
+        )
+        .unwrap_err()
+        .kind
+    };
+    let file = path().join("žluťoučký.txt");
+    for kind in [Kind::File, Kind::Other] {
+        let mut named = node();
+        named.kind = kind;
+        let (host, fake) = fixture(vec![Response::Resolved {
+            mount: 1,
+            node: named,
+        }]);
+        assert_eq!(
+            list(&host, &file),
+            std::io::ErrorKind::NotADirectory,
+            "{kind:?}"
+        );
+        assert!(matches!(
+            fake.requests.lock().unwrap().as_slice(),
+            [Request::Resolve { .. }, Request::CloseMount { mount: 1 }]
+        ));
+    }
+    // What this operating system answers to a listing of a file, as a plugin reports it
+    // (`Failure::from_io`): Linux may know a link without its target's type, so a link
+    // to a file reaches the plugin's directory open.
+    let directory = tempfile::tempdir().unwrap();
+    let real = directory.path().join("file");
+    std::fs::write(&real, b"file").unwrap();
+    let refused = std::fs::read_dir(&real).unwrap_err();
+    assert_eq!(refused.raw_os_error(), Some(paths::NOT_A_DIRECTORY));
+    let mut link = node();
+    link.kind = Kind::Symlink;
+    let (host, _) = fixture(vec![
+        Response::Resolved {
+            mount: 1,
+            node: link,
+        },
+        Response::Failed(Failure::from_io(refused)),
+    ]);
+    assert_eq!(list(&host, &file), std::io::ErrorKind::NotADirectory);
+    let (host, _) = fixture(vec![resolve_directory(), Response::Unit]);
+    assert_eq!(list(&host, &path()), std::io::ErrorKind::InvalidData);
+}
+
 #[test]
 fn cancelled_owned_resolve_is_closed_without_starting_enumeration() {
     let (host, fake) = fixture(vec![resolve_directory()]);

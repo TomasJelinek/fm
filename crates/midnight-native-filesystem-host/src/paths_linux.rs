@@ -9,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) const ENCODING: AddressEncoding = AddressEncoding::UnixBytes;
+/// `ENOTDIR`: what Linux reports for a directory open of a file.
+pub(crate) const NOT_A_DIRECTORY: i32 = 20;
 #[cfg(test)]
 pub(crate) const MANIFEST_ENCODING: &str = "unix-bytes";
 pub(crate) fn encode(path: &Path) -> Result<Address, Failure> {
