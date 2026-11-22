@@ -1,7 +1,7 @@
 //! Opt-in installed native/archive/thumbnail-worker probe. All fixtures and cache are private.
 //! Usage: archive_thumbnails <protected-runtime-dir> <fixture-root> [qualified-video.avi]
 use midnight_core::{ArchiveMount, ArchiveNode, Cancellation};
-use midnight_filesystem_host::{Catalog, Mount};
+use midnight_filesystem_host::{Catalog, Mount, NativeAllowance};
 use midnight_native_filesystem_host::InstalledProvider;
 use midnight_thumbnail_host::{
     archive_source::ArchiveThumbnailSource,
@@ -147,40 +147,34 @@ fn open_archive(runtime: &Path, zip: &Path) -> io::Result<Arc<Mount>> {
             catalog.diagnostics
         ))
     })?;
-    // Service shutdown retires source owners asynchronously on its backend thread.
+    // Service shutdown retires source owners asynchronously on its backend thread, so
+    // the previous probe's archive may still hold its slot for a moment.
     let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match Mount::open_captured(
-            package,
-            format,
-            zip,
-            source.clone(),
-            &Cancellation::default(),
-        ) {
-            Ok(mount) => {
-                eprintln!("probe mounted archive id={}", mount.id());
-                return Ok(mount);
-            }
-            Err(error)
-                if error.to_string().contains("Two archive mounts")
-                    && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => {
-                eprintln!("probe archive opening failed: {error}");
-                match native.capture(zip, &|| false) {
-                    Ok(current) => eprintln!(
-                        "probe current native source length={} revision={:?}",
-                        current.length(),
-                        current.stable_version()
-                    ),
-                    Err(failure) => {
-                        eprintln!("probe current native source capture failed: {failure}")
-                    }
+    let slot = loop {
+        match NativeAllowance::global().try_reserve() {
+            Ok(slot) => break slot,
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Err(limit) => return Err(io::Error::other(limit)),
+        }
+    };
+    match Mount::open_captured_in(slot, package, format, zip, source, &Cancellation::default()) {
+        Ok(mount) => {
+            eprintln!("probe mounted archive id={}", mount.id());
+            Ok(mount)
+        }
+        Err(error) => {
+            eprintln!("probe archive opening failed: {error}");
+            match native.capture(zip, &|| false) {
+                Ok(current) => eprintln!(
+                    "probe current native source length={} revision={:?}",
+                    current.length(),
+                    current.stable_version()
+                ),
+                Err(failure) => {
+                    eprintln!("probe current native source capture failed: {failure}")
                 }
-                return Err(io::Error::other(error));
             }
+            Err(io::Error::other(error))
         }
     }
 }

@@ -303,6 +303,7 @@ async fn stale_public_archive_command_retires_raw_native_input_before_controller
             navigation: NavigationId(1),
             action: fixture.action.take().unwrap(),
             sort: SortSpec::default(),
+            replaces: None,
         })
         .await
         .unwrap();

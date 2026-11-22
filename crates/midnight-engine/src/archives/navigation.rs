@@ -17,27 +17,9 @@ pub(super) fn run(
         .ok_or_else(|| error("Archive navigation request was already consumed"))?;
     let (mut location, mount) = match action {
         ArchiveAction::Open { path, format } => {
+            let slot = request.take_native_slot();
             let reserved = mounts.reserve()?;
-            let (package, format) = request
-                .catalog
-                .get()
-                .and_then(|c| c.choose_format(format, None))
-                .ok_or_else(|| {
-                    FsError::from_io(
-                        "open archive",
-                        &path,
-                        std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            unavailable(
-                                "Compatible archive filesystem plugin is unavailable",
-                                request.catalog.get(),
-                            ),
-                        ),
-                    )
-                })?;
-            let source = capture_source(request.capture.as_ref(), &path, None, &request.cancel)?;
-            let raw = Mount::open_captured(package, format, &path, source, &request.cancel)?;
-            let address = raw.address();
+            let (raw, address) = request.opener.open(request, slot, &path, format)?;
             let mount = mounts.adopt_reserved(raw, reserved);
             (
                 ArchiveLocation {
@@ -59,13 +41,9 @@ pub(super) fn run(
             let mount = if let Some(raw) = location.mount.take() {
                 mounts.adopt(raw)?
             } else {
+                let slot = request.take_native_slot();
                 let reserved = mounts.reserve()?;
-                location = restore(
-                    request.catalog.get(),
-                    request.capture.as_ref(),
-                    location.address,
-                    &request.cancel,
-                )?;
+                location = restore(request, slot, location.address)?;
                 let raw = location
                     .mount
                     .take()

@@ -214,7 +214,7 @@ impl Presenter {
             saved.networks.get(&saved.active).cloned(),
             sort,
         );
-        if !send(location.command(pane, navigation)) {
+        if !send(location.command(pane, navigation, None)) {
             return;
         }
         let mut archives = saved.archives;

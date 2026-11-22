@@ -2,6 +2,7 @@ use super::*;
 use std::{cell::RefCell, io};
 
 mod activation;
+mod archive_sessions;
 mod archive_sizes;
 mod archives;
 mod bookmarks;

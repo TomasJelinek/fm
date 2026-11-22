@@ -17,8 +17,8 @@ use std::{
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-/// Active mounts of archives opened from native files for panels, tabs and viewers.
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// Archives opened from native files for panels, tabs and viewers that may be open at
+/// once (`session_allowance`).
 const MAX_ACTIVE: usize = 2;
 /// Active mounts of archives inside archives (`nested::MAX_NESTED_ACTIVE`).
 static NESTED_ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -50,6 +50,10 @@ const LEGACY_WORKER_MEMORY: u64 = 512 * 1024 * 1024;
 
 #[path = "session_close.rs"]
 mod close;
+
+#[path = "session_allowance.rs"]
+mod allowance;
+pub use allowance::{NativeAllowance, NativeLimit, NativeSession, NativeSlot, Reservation};
 
 /// The idle-progress watchdog of the one active exchange. A token is hard request
 /// cancellation that terminates the worker; only the startup exchange carries one.
@@ -288,7 +292,29 @@ impl Mount {
             locator,
             source,
             cancel,
-            close::Allowance::Native,
+            close::Counting::Reserve(close::Allowance::Native),
+            None,
+        )
+    }
+
+    /// `open_captured` in a native slot that the caller reserved beforehand
+    /// (`NativeAllowance::reserve`), for example one handed off by the session it replaces.
+    /// The slot is the new session's; a failed open releases it.
+    pub fn open_captured_in(
+        slot: NativeSlot,
+        package: &Package,
+        format: Format,
+        locator: &Path,
+        source: CapturedFile,
+        cancel: &Cancellation,
+    ) -> Result<Arc<Self>, FsError> {
+        Self::open_source(
+            package,
+            format,
+            locator,
+            source,
+            cancel,
+            close::Counting::Reserved(slot),
             None,
         )
     }
@@ -309,7 +335,7 @@ impl Mount {
             locator,
             source,
             cancel,
-            close::Allowance::Search,
+            close::Counting::Reserve(close::Allowance::Search),
             None,
         )
     }
@@ -383,19 +409,19 @@ impl Mount {
             &locator,
             captured,
             cancel,
-            close::Allowance::Nested,
+            close::Counting::Reserve(close::Allowance::Nested),
             Some(link),
         )
     }
 
-    /// `allowance` is `Nested` exactly for a mount with an enclosing archive (`nested`).
+    /// `counting` is in `Nested` exactly for a mount with an enclosing archive (`nested`).
     fn open_source(
         package: &Package,
         format: Format,
         locator: &Path,
         source: CapturedFile,
         cancel: &Cancellation,
-        allowance: close::Allowance,
+        counting: close::Counting,
         nested: Option<Arc<crate::nested::Link>>,
     ) -> Result<Arc<Self>, FsError> {
         let label = nested
@@ -434,7 +460,7 @@ impl Mount {
                 locator,
                 &mut source,
                 cancel,
-                allowance,
+                counting,
                 nested,
             )
         })();
@@ -489,10 +515,13 @@ impl Mount {
         path: &Path,
         source: &mut close::CapturedInput,
         cancel: &Cancellation,
-        allowance: close::Allowance,
+        counting: close::Counting,
         nested: Option<Arc<crate::nested::Link>>,
     ) -> Result<Arc<Self>, FsError> {
-        debug_assert_eq!(nested.is_some(), allowance == close::Allowance::Nested);
+        debug_assert_eq!(
+            nested.is_some(),
+            counting.allowance() == close::Allowance::Nested
+        );
         let label = nested
             .as_ref()
             .map_or_else(|| path.to_owned(), |link| link.label.clone());
@@ -509,7 +538,11 @@ impl Mount {
         } else {
             None
         }));
-        let accounting = close::Accounting::reserve(allowance).map_err(fail)?;
+        let accounting = close::Accounting::of(counting).map_err(fail)?;
+        // Named before the worker starts, so that refusals list it and a later open may
+        // replace it (`session_allowance`).
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        accounting.bind(id, path);
         let spawned = if package.protocol.supports_staging() {
             midnight_worker_platform::spawn_with_policy(
                 &package.executable,
@@ -575,7 +608,6 @@ impl Mount {
             }
             return Err(error);
         }
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let mount = Arc::new(Self {
             id,
             provider: package.id.clone(),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::Channel;
+use crate::session::{Channel, MAX_ACTIVE};
 use midnight_core::{ArchiveMount, Cancellation};
 use midnight_filesystem_api::{Format, Message, Protocol, StagePurpose};
 use midnight_plugin_host::{CapturedFile, ContentSource, Error};
@@ -970,7 +970,7 @@ fn refusal(allowance: Allowance) -> String {
     }
 }
 
-const PANELS_FULL: &str = "Two archive mounts are already active; close one first";
+const PANELS_FULL: &str = "Two archives are already open; close one of them first";
 const SEARCHES_FULL: &str = "2 archives are already open for searches; stop a search first";
 
 #[test]

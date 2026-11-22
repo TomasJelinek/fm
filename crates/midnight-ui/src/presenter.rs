@@ -1,5 +1,6 @@
 use midnight_core::*;
 mod archive_password;
+mod archive_sessions;
 mod archive_sizes;
 mod archives;
 mod bookmarks;
@@ -303,6 +304,8 @@ pub struct Presenter {
     pub(crate) mask_dialog: mask_selection::MaskDialogState,
     /// The password of a mounted archive that an action needs (`archive_password`).
     pub(crate) archive_password: archive_password::ArchivePasswordState,
+    /// Archive sessions held by tabs and viewers, and the ones tabs let go of.
+    pub(crate) archive_sessions: archive_sessions::State,
     pub(crate) hidden_entries: panel_visibility::HiddenEntriesState,
     pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
@@ -365,6 +368,7 @@ impl Presenter {
             filter_dialog: filter::FilterDialogState::default(),
             mask_dialog: mask_selection::MaskDialogState::default(),
             archive_password: archive_password::ArchivePasswordState::default(),
+            archive_sessions: archive_sessions::State::default(),
             hidden_entries: panel_visibility::HiddenEntriesState::default(),
             colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
@@ -1389,7 +1393,14 @@ impl Presenter {
             }
             Event::ListingFinished { entries, index, .. } => {
                 self.retired.push(Box::new(p.network.take()));
-                self.retired.push(Box::new(p.archive.take()));
+                let left = p.archive.take();
+                if let Some(session) = left
+                    .as_ref()
+                    .and_then(archives::ArchivePane::native_session)
+                {
+                    self.archive_sessions.released(pane, session);
+                }
+                self.retired.push(Box::new(left));
                 let mut request = p.pending.take().expect("validated pending generation");
                 debug_assert_eq!(request.navigation, navigation);
                 let same_location = p.path == request.path;

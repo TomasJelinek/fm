@@ -509,6 +509,7 @@ impl Session {
             navigation: NavigationId(navigation),
             action,
             sort: SortSpec::default(),
+            replaces: None,
         })
         .await?;
         let end = Instant::now() + DEADLINE;

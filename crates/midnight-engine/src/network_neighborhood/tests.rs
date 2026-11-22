@@ -443,3 +443,72 @@ fn device_captions_use_backend_locale_keys_before_publication() {
     .unwrap();
     assert_eq!(final_names, ["Álfa", "Beta"]);
 }
+
+/// An archive mount that reports when its last owner drops it.
+#[derive(Debug)]
+struct Shown(std::sync::mpsc::Sender<()>);
+impl Drop for Shown {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+impl ArchiveMount for Shown {
+    fn id(&self) -> u64 {
+        61
+    }
+    fn list(&self, _: u64, _: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
+        Ok(Vec::new())
+    }
+    fn read(&self, _: u64, _: u64, _: u32, _: &Cancellation) -> Result<Vec<u8>, FsError> {
+        panic!("Network reads no archive member")
+    }
+    fn validate(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_published_listing_lets_go_of_the_panes_last_archive() {
+    let (mut controller, mut events, snapshots) = controller(Fake::default());
+    let (report, ended) = std::sync::mpsc::channel();
+    // The pane showed an archive: the root of that listing holds the archive's session.
+    let listing = ArchiveListing {
+        location: ArchiveLocation {
+            mount: Some(Arc::new(Shown(report))),
+            address: ArchiveAddress {
+                provider: "test.archive".into(),
+                format: Some(ArchiveFormat::Zip),
+                container: std::env::temp_dir().join("shown.zip"),
+                source_version: vec![1],
+                components: Vec::new(),
+            },
+            directory: 1,
+            trail: vec![(1, "shown.zip".into())],
+        },
+        entries: Arc::from([]),
+        index: Arc::default(),
+    };
+    drop(snapshots.lock().unwrap()[0].remember_archive_tree_root(
+        PaneId::Left,
+        NavigationId(3),
+        &listing,
+    ));
+    drop(listing);
+    let mut tasks = JoinSet::new();
+    controller.navigate(
+        PaneId::Left,
+        NavigationId(4),
+        NetworkAction::OpenRoot,
+        SortSpec::default(),
+        &mut tasks,
+    );
+    drain(&mut tasks).await;
+    while events.try_recv().is_ok() {}
+    assert!(
+        snapshots.lock().unwrap()[0].tree_root.is_none(),
+        "the pane shows Network, not the archive"
+    );
+    ended
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the archive's session ended");
+}

@@ -41,7 +41,9 @@ impl TabLocation {
             network.map(|address| network_neighborhood::NetworkPane::restored(address, path));
         location
     }
-    fn command(&self, pane: PaneId, navigation: NavigationId) -> Command {
+    /// `replaces`: the archive session that this tab lets go of for the navigation
+    /// (`Command::ArchiveNavigate`).
+    fn command(&self, pane: PaneId, navigation: NavigationId, replaces: Option<u64>) -> Command {
         if let Some(network) = &self.network {
             return Command::NetworkNavigate {
                 pane,
@@ -56,6 +58,7 @@ impl TabLocation {
                 navigation,
                 action: ArchiveAction::List(a.location.clone()),
                 sort: self.sort,
+                replaces,
             }
         } else {
             Command::Navigate {
@@ -241,7 +244,7 @@ impl Presenter {
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             return false;
         };
-        if !send(location.command(pane, navigation)) {
+        if !send(location.command(pane, navigation, None)) {
             self.panes[slot].set_error("Navigation queue is busy. Try again.", &mut self.retired);
             return false;
         }
@@ -281,7 +284,7 @@ impl Presenter {
         let Some(navigation) = self.panes[slot].generation.checked_add(1).map(NavigationId) else {
             return false;
         };
-        if !send(location.command(pane, navigation)) {
+        if !send(location.command(pane, navigation, None)) {
             self.panes[slot].set_error("Navigation queue is busy. Try again.", &mut self.retired);
             return false;
         }
@@ -343,7 +346,9 @@ impl Presenter {
             return false;
         };
         let mut location = TabLocation::from_saved(parent, Some(address), None, current.sort);
-        if !send(location.command(pane, navigation)) {
+        // The outgoing location of this tab goes with this navigation.
+        let replaces = self.replaceable_session(pane);
+        if !send(location.command(pane, navigation, replaces)) {
             self.panes[pane.index()]
                 .set_error("Archive navigation queue is busy", &mut self.retired);
             return false;
@@ -378,7 +383,7 @@ impl Presenter {
         };
         let mut location =
             TabLocation::from_saved(origin, None, Some(address.clone()), current.sort);
-        if !send(location.command(pane, navigation)) {
+        if !send(location.command(pane, navigation, None)) {
             self.panes[pane.index()].set_error(
                 "Network navigation queue is busy. Try again.",
                 &mut self.retired,
@@ -420,6 +425,18 @@ impl Presenter {
             send(Command::CancelFolderSizes { pane, scan });
         }
         outgoing
+    }
+
+    /// Whether a tab in the background holds archive session `session`.
+    pub(super) fn parked_tabs_hold(&self, session: u64) -> bool {
+        self.tabs.panes.iter().any(|tabs| {
+            tabs.tabs.iter().any(|tab| {
+                tab.parked
+                    .as_ref()
+                    .and_then(|location| location.archive.as_ref())
+                    .is_some_and(|archive| archive.holds_session(session))
+            })
+        })
     }
 
     /// Close an inactive tab immediately; an active close commits only when its

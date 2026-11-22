@@ -264,6 +264,7 @@ async fn archive_listings_leave_dot_named_members_out() {
         pane: PaneId::Left,
         navigation: NavigationId(1),
         sort: SortSpec::default(),
+        replaces: None,
         action: ArchiveAction::List(ArchiveLocation {
             mount: Some(Arc::new(Archive)),
             directory: 1,

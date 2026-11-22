@@ -1,19 +1,23 @@
 //! Bounded archive navigation and canonical guarded native mount ownership.
 use crate::{Outbox, Snapshots, retirement::WorkerOwned, task_lifetime::TaskLifetime};
 use midnight_core::*;
-use midnight_filesystem_host::{Catalog, Mount};
+use midnight_filesystem_host::{Catalog, Mount, NativeAllowance, NativeSlot};
 use std::{
     path::Path,
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
 use tokio::{
     sync::{Notify, OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
 };
+mod native;
 mod navigation;
 mod ownership;
 use ownership::Mounts;
 pub(crate) use ownership::{RETIREMENT_CAPACITY, Retirement};
+#[cfg(test)]
+mod native_tests;
 #[cfg(test)]
 mod retirement_tests;
 #[cfg(test)]
@@ -36,6 +40,9 @@ const MAX_REQUESTS: usize = MAX_WORKERS + PANES;
 /// Discovery diagnostics carried into an "unavailable" navigation error.
 const MAX_REPORTED_DIAGNOSTICS: usize = 4;
 const MAX_DIAGNOSTIC_CHARS: usize = 512;
+/// How long a navigation waits for the session it replaces to end (`native::slot`). A
+/// session that its holders let go ends well within it; one still held never does.
+const HANDOFF_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Backend capture authority. An expected revision must be validated before returning content.
 pub type ArchiveCapture = Arc<
@@ -91,6 +98,10 @@ struct Request {
     navigation: NavigationId,
     sort: SortSpec,
     cancel: Cancellation,
+    /// The slot reserved for the archive that this navigation opens from a native file;
+    /// its session takes the slot, and a failed navigation releases it.
+    native: Mutex<Option<NativeSlot>>,
+    opener: native::Opener,
     _scope: TaskLifetime,
     // Last: native input and original service owners finish cleanup first.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
@@ -113,6 +124,9 @@ pub(crate) struct Controller {
     mounts: Arc<Mounts>,
     retirement: Retirement,
     scope: TaskLifetime,
+    /// The slots of archives opened from native files (`NativeAllowance::global`).
+    allowance: Arc<NativeAllowance>,
+    opener: native::Opener,
 }
 impl Controller {
     pub(crate) fn new(
@@ -140,6 +154,8 @@ impl Controller {
             mounts: Arc::new(Mounts::new(retirement.domain.clone())),
             retirement,
             scope: scope.clone(),
+            allowance: NativeAllowance::global(),
+            opener: native::Opener::Installed,
         };
         let native_scope = scope.clone();
         tasks.spawn(scope.future(async move {
@@ -207,12 +223,27 @@ impl Controller {
         // A failed native navigation can still display the previous virtual snapshot.
         snapshots[pane.index()].archive_navigation = None;
     }
+    #[cfg(test)]
     pub(crate) async fn navigate(
         &mut self,
         pane: PaneId,
         navigation: NavigationId,
         action: ArchiveAction,
         sort: SortSpec,
+        tasks: &mut JoinSet<()>,
+    ) {
+        self.navigate_replacing(pane, navigation, action, sort, None, tasks)
+            .await;
+    }
+    /// `replaces`: the session that this pane's tab let go of for this navigation
+    /// (`Command::ArchiveNavigate`).
+    pub(crate) async fn navigate_replacing(
+        &mut self,
+        pane: PaneId,
+        navigation: NavigationId,
+        action: ArchiveAction,
+        sort: SortSpec,
+        replaces: Option<u64>,
         tasks: &mut JoinSet<()>,
     ) {
         // EngineRun protects the incoming command while this single intake waits.
@@ -222,6 +253,7 @@ impl Controller {
         let cancel = Cancellation::default();
         self.cancellations[pane.index()] = cancel.clone();
         let restore_native_on_failure = matches!(&action, ArchiveAction::Open { .. });
+        let target = native::Target::of(&action);
         {
             // Before any wait: a superseded result must not act as the current one.
             let mut states = self.snapshots.lock().unwrap_or_else(|e| e.into_inner());
@@ -239,6 +271,8 @@ impl Controller {
             navigation,
             sort,
             cancel,
+            native: Mutex::new(None),
+            opener: self.opener.clone(),
             _scope: self.scope.clone(),
             permit: Mutex::new(None),
             _share: share,
@@ -250,6 +284,7 @@ impl Controller {
         let scope = self.scope.clone();
         let budget = self.budget.clone();
         let superseded = self.superseded.clone();
+        let allowance = self.allowance.clone();
         tasks.spawn(self.scope.future(async move {
             // Superseded listings keep their worker until the native call returns.
             // The newest navigation waits for one instead of being refused; each
@@ -281,6 +316,23 @@ impl Controller {
                     break;
                 }
                 notified.await;
+            }
+            if let Some(target) = &target
+                && let Err(error) =
+                    native::slot(&request, target, replaces, &allowance, &superseded, &scope).await
+            {
+                let snapshots = request.snapshots.clone();
+                drop(request);
+                navigation::publish(
+                    &snapshots,
+                    &outbox,
+                    pane,
+                    navigation,
+                    restore_native_on_failure,
+                    Err(error),
+                )
+                .await;
+                return;
             }
             let worker = request.clone();
             let progress = outbox.clone();
@@ -319,7 +371,16 @@ impl Controller {
             mounts: Arc::new(Mounts::new(retirement.domain.clone())),
             retirement,
             scope: TaskLifetime::testing(()),
+            allowance: NativeAllowance::new(2),
+            opener: native::Opener::Installed,
         }
+    }
+}
+
+impl Request {
+    /// The slot reserved for this navigation's new session (`native::slot`), if any.
+    fn take_native_slot(&self) -> Option<NativeSlot> {
+        self.native.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
 
@@ -414,32 +475,15 @@ fn unavailable(message: &str, catalog: Option<&Catalog>) -> String {
 }
 
 fn restore(
-    catalog: Option<&Catalog>,
-    capture: Option<&ArchiveCapture>,
+    request: &Request,
+    slot: Option<NativeSlot>,
     mut address: ArchiveAddress,
-    cancel: &Cancellation,
 ) -> Result<ArchiveLocation, FsError> {
+    let cancel = &request.cancel;
     address.validate().map_err(error)?;
-    let (package, format) = catalog
-        .and_then(|c| match address.format {
-            Some(format) => c.choose_format(format, Some(&address.provider)),
-            None => c.choose_provider(&address.container, Some(&address.provider)),
-        })
-        .ok_or_else(|| {
-            error(unavailable(
-                "Saved archive filesystem plugin is unavailable; the tab address is retained",
-                catalog,
-            ))
-        })?;
-    let source = capture_source(
-        capture,
-        &address.container,
-        Some(&address.source_version),
-        cancel,
-    )?;
-    let mount = Mount::open_captured(package, format, &address.container, source, cancel)?;
+    let (mount, version) = request.opener.restore(request, slot, &address)?;
     // The capture authority validated the saved token, including supported legacy encodings.
-    address.source_version = mount.address().source_version;
+    address.source_version = version;
     let mut location = ArchiveLocation {
         mount: Some(mount.clone()),
         directory: 1,

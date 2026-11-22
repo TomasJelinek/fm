@@ -1,7 +1,8 @@
 //! A session-specific acknowledgement from the existing independent supervisor.
 //! No archive/Copy retirement queue or fresh I/O acquisition participates in this wait.
 use super::{
-    ACTIVE, MAX_ACTIVE, MAX_SEARCH_ACTIVE, Mount, NESTED_ACTIVE, SEARCH_ACTIVE, Stop, Supervision,
+    MAX_SEARCH_ACTIVE, Mount, NESTED_ACTIVE, SEARCH_ACTIVE, Stop, Supervision,
+    allowance::{NativeAllowance, NativeSlot},
 };
 use midnight_core::{ArchiveMount, FsError};
 use std::{
@@ -188,17 +189,18 @@ pub(super) enum Allowance {
     Search,
 }
 impl Allowance {
-    /// The process-wide count of active mounts in this allowance, and its limit.
-    fn count(self) -> (&'static AtomicUsize, usize) {
+    /// The process-wide count of active mounts in this allowance, and its limit. Archives
+    /// opened from native files count in their own slots (`session_allowance`).
+    fn count(self) -> Option<(&'static AtomicUsize, usize)> {
         match self {
-            Self::Native => (&ACTIVE, MAX_ACTIVE),
-            Self::Nested => (&NESTED_ACTIVE, crate::nested::MAX_NESTED_ACTIVE),
-            Self::Search => (&SEARCH_ACTIVE, MAX_SEARCH_ACTIVE),
+            Self::Native => None,
+            Self::Nested => Some((&NESTED_ACTIVE, crate::nested::MAX_NESTED_ACTIVE)),
+            Self::Search => Some((&SEARCH_ACTIVE, MAX_SEARCH_ACTIVE)),
         }
     }
     fn refusal(self, limit: usize) -> io::Error {
         io::Error::other(match self {
-            Self::Native => "Two archive mounts are already active; close one first".into(),
+            Self::Native => NativeAllowance::global().refusal().to_string(),
             Self::Nested => format!(
                 "{limit} archives inside archives are already open; leave one of them first"
             ),
@@ -209,30 +211,76 @@ impl Allowance {
     }
 }
 
+/// What a new mount counts in: an allowance in which it reserves now, or the native slot
+/// that its caller reserved beforehand (`Mount::open_captured_in`).
+pub(super) enum Counting {
+    Reserve(Allowance),
+    Reserved(NativeSlot),
+}
+impl Counting {
+    pub(super) fn allowance(&self) -> Allowance {
+        match self {
+            Self::Reserve(allowance) => *allowance,
+            Self::Reserved(_) => Allowance::Native,
+        }
+    }
+}
+
 pub(super) struct Accounting {
     /// The allowance this mount is counted in.
     allowance: Allowance,
+    /// The slot of an archive opened from a native file; dropping it releases the slot.
+    native: Option<NativeSlot>,
     #[cfg(test)]
     local: Option<Arc<AtomicUsize>>,
 }
 impl Accounting {
     /// Count one more mount in `allowance`, refused while all of it is in use.
     pub(super) fn reserve(allowance: Allowance) -> io::Result<Self> {
-        let (active, limit) = allowance.count();
+        let Some((active, limit)) = allowance.count() else {
+            let slot = NativeAllowance::global()
+                .try_reserve()
+                .map_err(io::Error::other)?;
+            return Ok(Self::native(slot));
+        };
         if !reserve_in(active, limit) {
             return Err(allowance.refusal(limit));
         }
         Ok(Self {
             allowance,
+            native: None,
             #[cfg(test)]
             local: None,
         })
+    }
+    /// Count a new mount as `counting` says.
+    pub(super) fn of(counting: Counting) -> io::Result<Self> {
+        match counting {
+            Counting::Reserve(allowance) => Self::reserve(allowance),
+            Counting::Reserved(slot) => Ok(Self::native(slot)),
+        }
+    }
+    /// A native archive's slot reserved before its session started.
+    fn native(slot: NativeSlot) -> Self {
+        Self {
+            allowance: Allowance::Native,
+            native: Some(slot),
+            #[cfg(test)]
+            local: None,
+        }
+    }
+    /// Name the session that this mount counts for (`NativeSlot::bind`).
+    pub(super) fn bind(&self, id: u64, container: &std::path::Path) {
+        if let Some(slot) = &self.native {
+            slot.bind(id, container);
+        }
     }
     #[cfg(test)]
     pub(super) fn for_test(local: Arc<AtomicUsize>) -> Self {
         local.fetch_add(1, Ordering::AcqRel);
         Self {
             allowance: Allowance::Native,
+            native: None,
             local: Some(local),
         }
     }
@@ -252,7 +300,10 @@ impl Drop for Accounting {
             local.fetch_sub(1, Ordering::AcqRel);
             return;
         }
-        self.allowance.count().0.fetch_sub(1, Ordering::AcqRel);
+        if let Some((active, _)) = self.allowance.count() {
+            active.fetch_sub(1, Ordering::AcqRel);
+        }
+        // A native slot is released by its own drop, after this.
     }
 }
 

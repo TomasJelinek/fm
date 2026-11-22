@@ -987,7 +987,7 @@ impl EngineServices {
                             archives.cancel(pane);
                             neighborhood.navigate(pane, navigation, action, sort, &mut tasks);
                         }
-                        Some(Command::ArchiveNavigate { pane, navigation, action, sort }) => {
+                        Some(Command::ArchiveNavigate { pane, navigation, action, sort, replaces }) => {
                             if requests[pane.index()].as_ref().is_some_and(|old| navigation <= old.navigation) {
                                 if let Err(error) = archives.retire_action(action).await {
                                     eprintln!("Stale archive input cleanup failed: {error}");
@@ -1001,7 +1001,7 @@ impl EngineServices {
                             entry_sizes.cancel_all(pane);
                             search.invalidate(pane);
                             comparison.invalidate(pane);
-                            archives.navigate(pane, navigation, action, sort, &mut tasks).await;
+                            archives.navigate_replacing(pane, navigation, action, sort, replaces, &mut tasks).await;
                         }
                         Some(Command::UnlockArchive { request, mount, password }) => {
                             archives.unlock(request, mount, password, &mut tasks);

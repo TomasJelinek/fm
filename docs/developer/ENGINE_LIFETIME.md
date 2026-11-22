@@ -365,6 +365,26 @@ still occupy their token until final destruction. Saturation reports busy and
 accepted content is never evicted.
 Only exact raw/proxy identity reuses a guard, not matching plugin IDs or names.
 
+Each pane's snapshot keeps the root of its last archive listing
+(`SnapshotState::tree_root`) for tree captures, and that root holds the archive's
+session. A successful native listing replaces it. A published Network listing drops it,
+and so does every navigation of the pane that opens an archive from a native file
+(Enter on an archive file, a saved tab, a Hot Path, Go to file, the recovery of a
+failed session), before it takes its slot: a pane that shows no archive keeps no
+session alive, also after a refused open. Such a navigation then reserves its native
+slot asynchronously (`archives/native.rs`, `NativeAllowance`), holding one of the two
+navigation workers meanwhile: at once while a slot is free. Otherwise, when the command
+names the session that its tab let go of (`Command::ArchiveNavigate::replaces`), it
+waits for that session's teardown, at most 10 seconds and only until the navigation is
+cancelled; any other case is refused with the counted sessions. Dropping the wait
+withdraws it. The slot moves into the blocking open and then into the new session, and
+a failed or unwound open releases it. The presenter names a session only when no other
+tab, the other panel or a viewer holds it (`presenter/archive_sessions.rs`), and the tab
+lets go of every reference it has to it (its location, history entries, the listing in
+flight and a pending recovery), keeping their addresses, so revisiting one opens the
+archive again. After leaving an archive natively or for Network, the tab names the
+session it left for its next archive once, since that session's teardown may still run.
+
 A release never destroys a session whose cleanup is unconfirmed (tainted, for example
 by a failed source close). Releasing a shared reference of its guard, also from a Copy
 whose retirement is already quarantined (`ArchiveMount::release_quarantined`), only

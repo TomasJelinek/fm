@@ -285,7 +285,18 @@ viewers, 1 GiB process memory (`WORKER_MEMORY`, the most the worker SDK grants; 
 MiB for protocol 1) and a 20-second idle-progress watchdog. Find's private
 sessions (`Mount::open_for_search`, at most two: one archive per running search) and
 archives inside archives (at most three, below) are counted apart, so none of these
-uses refuses another's mounts. Protocol 2 adds no aggregate CPU
+uses refuses another's mounts. Each of the two counts in one slot of the host's
+`NativeAllowance` (`filesystem-host/src/session_allowance.rs`): `Mount::open_captured`
+takes a free slot itself, and `Mount::open_captured_in` opens in a slot that its caller
+reserved with `NativeAllowance::reserve`. A reservation that names the session it
+replaces waits, as a future that blocks no thread, while that session still counts
+and has no other successor. The session's supervisor releases its slot only after the
+worker's termination is confirmed; the slot then passes straight to the successor, so
+no other open can take it and never more than two workers run. Dropping a waiting
+reservation (cancellation, the caller's deadline, an unwind) withdraws it, and a slot
+handed over but not yet taken is freed. A full allowance is refused with
+`NativeLimit`, which lists the counted sessions (`ArchiveMount::id` and native file);
+a slot whose session is still starting counts but is not listed. Protocol 2 adds no aggregate CPU
 ceiling; inherited OS resource policy remains in effect. Only successful bounded
 byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
 legacy limits. Shared tab/viewer leases count as the same mount. Source reads may

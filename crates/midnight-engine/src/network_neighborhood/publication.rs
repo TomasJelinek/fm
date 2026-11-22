@@ -57,9 +57,13 @@ impl Publication {
         };
         let result = self.outbox.sender.try_send(event);
         let mut retired = None;
+        let mut retired_root = None;
         if result.is_ok() {
             if let Some(entries) = entries {
                 retired = state.network.replace((self.navigation, entries));
+                // The pane shows Network now: its last archive listing's root, which
+                // holds that archive's session, goes too.
+                retired_root = state.take_archive_tree_root();
             } else if failed
                 && state
                     .network
@@ -71,6 +75,7 @@ impl Publication {
         }
         drop(states);
         drop(retired);
+        drop(retired_root);
         match result {
             Ok(()) => {
                 (self.outbox.wakeup)();

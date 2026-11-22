@@ -270,6 +270,7 @@ fn archive_lane(
                 format: ArchiveFormat::Zip,
             },
             sort: SortSpec::default(),
+            replaces: None,
         },
         deadline,
     )?;

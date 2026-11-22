@@ -140,6 +140,11 @@ pub enum Command {
         navigation: NavigationId,
         action: crate::ArchiveAction,
         sort: SortSpec,
+        /// The session (`ArchiveMount::id`) of an archive opened from a native file that
+        /// this tab let go of for this navigation and that no other tab, panel or viewer
+        /// holds. When the navigation opens another such archive, it takes that session's
+        /// place once the session's teardown ends, instead of counting beside it.
+        replaces: Option<u64>,
     },
     /// Verify the password of one archive mount on a backend worker
     /// (`ArchiveMount::unlock`), answered by `Event::ArchiveUnlocked`. The password

@@ -161,6 +161,48 @@ impl ArchivePane {
         }
         self.history_index = index.min(self.history.len() - 1);
     }
+    /// Every location through which this tab holds a session: the shown one, its
+    /// history, the listing in flight and a pending recovery.
+    fn held(&self) -> impl Iterator<Item = &ArchiveLocation> {
+        let recovery = match &self.recovery {
+            Recovery::Parent(parent) => Some(&parent.location),
+            _ => None,
+        };
+        std::iter::once(&self.location)
+            .chain(&self.history)
+            .chain(&self.requested)
+            .chain(recovery)
+            .filter(|location| location.mount.is_some())
+    }
+    /// The session of the archive opened from a native file that this tab holds.
+    pub(super) fn native_session(&self) -> Option<u64> {
+        self.held()
+            .find_map(|location| location.outermost().mount_id())
+    }
+    /// Whether this tab holds archive session `session`, also through an archive inside
+    /// it.
+    pub(super) fn holds_session(&self, session: u64) -> bool {
+        self.held().any(|location| {
+            location.mount_id() == Some(session)
+                || location
+                    .enclosing()
+                    .iter()
+                    .any(|parent| parent.location.mount_id() == Some(session))
+        })
+    }
+    /// Let go of every session this tab holds, keeping their addresses: listing one of
+    /// them again opens its archive again. A folder of an archive inside an archive keeps
+    /// the folder of the archive opened from a native file that leads to it.
+    fn let_go(&mut self, retired: &mut Vec<DeferredDrop>) {
+        for location in std::iter::once(&mut self.location).chain(&mut self.history) {
+            if location.mount.is_some() {
+                let unavailable = ArchiveLocation::unavailable(location.outermost().address);
+                retired.push(Box::new(mem::replace(location, unavailable)));
+            }
+        }
+        retired.push(Box::new(self.requested.take()));
+        retired.push(Box::new(mem::take(&mut self.recovery)));
+    }
     /// The archive sessions of this pane's location: its own and its enclosing ones.
     fn shown_sessions(&self) -> Vec<u64> {
         std::iter::once(self.location.mount_id())
@@ -264,6 +306,18 @@ impl Presenter {
         mode: Reload,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        // An archive opened from a native file gets a new session, which takes the place
+        // of the one this tab holds or let go of last (`replaceable_session`).
+        let opens_session = match &action {
+            ArchiveAction::Open { .. } => true,
+            ArchiveAction::List(location) => location.mount.is_none(),
+            ArchiveAction::OpenMember { .. } => false,
+        };
+        let replaces = if opens_session {
+            self.replaceable_session(pane)
+        } else {
+            None
+        };
         let p = &mut self.panes[pane.index()];
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             return false;
@@ -289,6 +343,7 @@ impl Presenter {
             navigation,
             action,
             sort: p.sort,
+            replaces,
         }) {
             if mode != Reload::Background {
                 p.set_error("Archive navigation queue is busy", &mut self.retired);
@@ -318,6 +373,10 @@ impl Presenter {
             if let Some(location) = unavailable {
                 self.retired
                     .push(Box::new(mem::replace(&mut a.location, location)));
+            }
+            // The tab leaves the session it held: the new one takes its place.
+            if opens_session {
+                a.let_go(&mut self.retired);
             }
         }
         if let Some(scan) = p.size_scan.take() {
@@ -467,6 +526,9 @@ impl Presenter {
                                     a.recovery = Recovery::Parent(parent);
                                     enclosing = true;
                                 } else if let Some(requested) = &requested {
+                                    if let Some(session) = a.native_session() {
+                                        self.archive_sessions.released(pane, session);
+                                    }
                                     a.forget_session(&mut self.retired);
                                     a.recovery = Recovery::Reopen(ArchiveLocation::unavailable(
                                         requested.address.clone(),

@@ -245,6 +245,18 @@ through that session again: it opens the archive once more at the requested fold
 as well it returns to the native folder that contains the archive, with the archive
 under the cursor, and shows the error. A cancelled listing changes nothing.
 
+Panels, tabs and viewers keep at most two archives opened from native files open at
+once; tabs and viewers that show the same archive share it. A tab that leaves its
+archive for another one (a Hot Path or saved tab, Find's Go to file, or Enter on an
+archive right after leaving one) gives up its archive, and the new archive takes its
+place as soon as the old one has closed, normally at once and never later than after
+10 seconds: a tab's own archive never blocks its next one. The tab keeps the old
+archive's folders in its history by their addresses, so going back to one opens that
+archive again. An archive that another tab, the other panel or a viewer still shows
+stays open and counts as before, so the new one is refused at once with "Two archives
+are already open; close one of them first"; one that a running copy still reads from
+also stays open, and the new archive is refused after those 10 seconds.
+
 ZIP support is Stored/Deflate, including password-protected members (below); other
 codecs, encrypted Office containers, DRM and corrupt archives fail explicitly, and the
 panel names the reason. The current worker

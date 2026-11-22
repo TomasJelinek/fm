@@ -61,6 +61,13 @@ impl SnapshotState {
         retired
     }
 
+    /// The pane leaves its archive: the root of its last archive listing, which holds that
+    /// archive's session, goes with it. The caller drops it off the executor and outside
+    /// the snapshots lock.
+    pub(crate) fn take_archive_tree_root(&mut self) -> Option<Arc<ReadyRoot>> {
+        self.tree_root.take_if(|root| root.archive().is_some())
+    }
+
     pub(crate) fn capture_tree_root(
         &self,
         requested: &TreeRootSnapshot,

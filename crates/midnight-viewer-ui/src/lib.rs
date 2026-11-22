@@ -138,6 +138,8 @@ pub struct ViewerWindows {
 
 struct OpenWindow {
     window: ViewerWindow,
+    /// The archive sessions that this viewer of an archive member holds (`sessions_of`).
+    archive: Vec<u64>,
     media_controls: media_controls::MediaControls,
     session: Rc<WindowSession>,
     input: RefCell<InputSender>,
@@ -481,6 +483,7 @@ impl ViewerWindows {
         }
         let geometry = window_geometry(&window);
         let opening_palette = appearance.clone();
+        let archive = sessions_of(&launch);
         let session = match self.service.open_with_layout(launch, appearance, geometry) {
             Ok(session) => Rc::new(session),
             Err(error) => {
@@ -509,6 +512,7 @@ impl ViewerWindows {
                 }),
             ),
             window,
+            archive,
             session,
             input: RefCell::new(Rc::new(move |value| {
                 input.upgrade().is_some_and(|session| session.send(value))
@@ -586,6 +590,22 @@ impl ViewerWindows {
         Ok(weak_window)
     }
 
+    /// The archive sessions (`ArchiveMount::id`) that open viewers of archive members
+    /// hold, each with every session that encloses it.
+    pub fn archive_sessions(&self) -> Vec<u64> {
+        // Asked from the panels' callbacks, never while this list is being changed.
+        self.windows
+            .try_borrow()
+            .map(|windows| {
+                windows
+                    .iter()
+                    .filter(|open| !open.closed.get())
+                    .flat_map(|open| open.archive.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn close_all(&self) {
         // `close` reports cancellation to `OpenReady` callbacks, which may
         // re-enter this manager. Never run them while the list is borrowed.
@@ -595,6 +615,27 @@ impl ViewerWindows {
         }
     }
 }
+
+/// The archive sessions that a viewer of `launch` holds: its member's archive and every
+/// archive that encloses that one.
+fn sessions_of(launch: &ViewerLaunch) -> Vec<u64> {
+    let Some(archive) = &launch.archive else {
+        return Vec::new();
+    };
+    let mut sessions = vec![archive.mount.id()];
+    let mut next = archive.mount.parent();
+    while let Some(parent) = next
+        && sessions.len() <= midnight_core::MAX_ARCHIVE_DEPTH
+    {
+        sessions.extend(parent.location.mount_id());
+        next = parent.location.parent();
+    }
+    sessions
+}
+
+#[cfg(test)]
+#[path = "archive_sessions_tests.rs"]
+mod archive_sessions_tests;
 
 /// A canvas need not be a whole number of physical pixels (for example 22.5 px
 /// of chrome at 125%). Round to the nearest raster size: presentation maps it 1:1

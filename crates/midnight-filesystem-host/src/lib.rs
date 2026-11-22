@@ -5,6 +5,8 @@ mod nested;
 mod session;
 mod staging;
 pub use discovery::{Catalog, Package};
-pub use session::Mount;
+/// The decoder that a package opens an archive with (`Catalog::choose_format`).
+pub use midnight_filesystem_api::Format;
+pub use session::{Mount, NativeAllowance, NativeLimit, NativeSession, NativeSlot, Reservation};
 #[cfg(test)]
 mod captured_source_tests;

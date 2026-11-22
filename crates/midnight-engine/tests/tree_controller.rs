@@ -483,6 +483,7 @@ async fn actual_archive_completion_seeds_tree_and_navigation_retains_registratio
             navigation: NavigationId(1),
             action: ArchiveAction::List(location),
             sort: SortSpec::default(),
+            replaces: None,
         })
         .await
         .unwrap();
@@ -640,6 +641,7 @@ async fn enter_archive_from_tree(
             navigation: NavigationId(2),
             action: ArchiveAction::List(target),
             sort: SortSpec::default(),
+            replaces: None,
         })
         .await
         .unwrap();
@@ -1010,6 +1012,7 @@ async fn archive_root_in_pane_at(
             navigation: NavigationId(generation),
             action: ArchiveAction::List(location),
             sort: SortSpec::default(),
+            replaces: None,
         })
         .await
         .unwrap();

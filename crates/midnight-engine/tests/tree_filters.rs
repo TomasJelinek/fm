@@ -210,6 +210,7 @@ impl Harness {
                 pane: PaneId::Left,
                 navigation: NavigationId(navigation),
                 sort: SortSpec::default(),
+                replaces: None,
                 action: ArchiveAction::List(ArchiveLocation {
                     mount: Some(self.archive.clone()),
                     directory: 1,

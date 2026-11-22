@@ -53,6 +53,7 @@ async fn navigate(
             navigation,
             action,
             sort: SortSpec::default(),
+            replaces: None,
         })
         .await
         .unwrap();
