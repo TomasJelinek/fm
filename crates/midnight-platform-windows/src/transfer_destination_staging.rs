@@ -4,14 +4,48 @@
 //! covers everything below it: stages are created in it through its handle outside any
 //! turn, each with the security a file created directly in the destination gets
 //! (`security`), and each is published by one handle-relative no-replace rename out of it.
-//! `finish` removes it, empty, through its handle in one turn; a folder that holds another
-//! entry is kept, never listed or emptied, and reported by its exact path.
+//! A destination folder that refuses Midnight its security, new folders or new files gets
+//! no staging folder: each stage there is a `.me-*` entry of its own, as outside a job.
+//! `finish` removes the folder, empty, through its handle in one turn; a folder that holds
+//! another entry is kept, never listed or emptied, and reported by its exact path. A
+//! removal that fails otherwise keeps the folder held for the job's later attempts.
 use super::*;
-use std::{os::windows::io::OwnedHandle, sync::Mutex};
+use std::{
+    os::windows::io::OwnedHandle,
+    sync::{Mutex, MutexGuard},
+};
 
 /// The staging of one destination folder, shared by the clones of its `Directory`.
-#[derive(Default)]
-pub(super) struct Staging(Mutex<State>);
+pub(super) struct Staging {
+    state: Mutex<State>,
+    /// The job's staging folders whose removal failed, shared by every folder of the job.
+    left: Arc<Left>,
+    /// Whether this is the folder the job started from, whose `finish` comes at the job's
+    /// end: it reports a folder whose removal is still refused then.
+    root: bool,
+}
+
+impl Default for Staging {
+    /// The staging of the folder a job starts from.
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            left: Arc::default(),
+            root: true,
+        }
+    }
+}
+
+impl Staging {
+    /// The staging of a folder below `parent` in the same job.
+    pub(super) fn below(parent: &Self) -> Self {
+        Self {
+            state: Mutex::default(),
+            left: parent.left.clone(),
+            root: false,
+        }
+    }
+}
 
 #[derive(Default)]
 enum State {
@@ -19,7 +53,8 @@ enum State {
     #[default]
     Unknown,
     /// Not local fixed NTFS, where Midnight creates no private folders (see
-    /// `recovery::supported`): each stage is a `.me-*` entry of its own there.
+    /// `recovery::supported`), or a folder that refuses what the staging folder needs:
+    /// each stage is a `.me-*` entry of its own there.
     Unsupported,
     Folder(Folder),
 }
@@ -45,7 +80,8 @@ const STAGE_ACCESS: u32 =
 
 /// A stage of the job in `directory`'s staging folder, created first if the job has none
 /// there. None where stages stay `.me-*` entries of their own: outside a job, whose turns
-/// are what the folder saves, and where `recovery::supported` does not hold.
+/// are what the folder saves, where `recovery::supported` does not hold, and where the
+/// folder refuses the staging folder access.
 pub(super) fn stage(
     directory: &Directory,
     cancel: &Cancellation,
@@ -57,14 +93,24 @@ pub(super) fn stage(
     checked(cancel, &directory.path)?;
     let mut state = directory
         .staging
-        .0
+        .state
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if matches!(*state, State::Unknown) {
         *state = if recovery::supported(directory) {
-            // A failed creation leaves no folder and fails this stage; the next one tries
-            // again. There is no fallback to a stage of its own.
-            State::Folder(Folder::create(directory, cancel)?)
+            match Folder::create(directory, cancel) {
+                Ok(folder) => State::Folder(folder),
+                // A folder that lets Midnight create files but not read its security or
+                // create folders, such as a write-only drop folder, or one that refuses new
+                // files: a stage of its own works, or fails before the copy as it always
+                // did. The refusal created nothing.
+                Err(failure) if failure.kind == io::ErrorKind::PermissionDenied => {
+                    State::Unsupported
+                }
+                // Anything else (a cancellation, a refused turn, a full volume) leaves no
+                // folder and fails this stage; the next one tries again.
+                Err(failure) => return Err(failure),
+            }
         } else {
             State::Unsupported
         };
@@ -75,23 +121,27 @@ pub(super) fn stage(
     folder.stage(directory, cancel).map(Some)
 }
 
-/// Remove `directory`'s staging folder, if the job has one there (`finish_staging`).
+/// Remove `directory`'s staging folder, if the job has one there (`finish_staging`), and
+/// retry the job's folders whose removal failed before.
 pub(super) fn finish(directory: &Directory) -> Result<(), FsError> {
+    let staging = &directory.staging;
     let folder = {
-        let mut state = directory
-            .staging
-            .0
+        let mut state = staging
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match std::mem::take(&mut *state) {
-            State::Folder(folder) => folder,
+            State::Folder(folder) => Some(folder),
             unchanged => {
                 *state = unchanged;
-                return Ok(());
+                None
             }
         }
     };
-    folder.remove()
+    if let Some(folder) = folder {
+        staging.left.remove(folder.into_private())?;
+    }
+    staging.left.retry(staging.root)
 }
 
 impl Folder {
@@ -110,6 +160,15 @@ impl Folder {
                 "destination directory changed before staging",
             ));
         }
+        // Each publication out of the folder adds a file to the destination: one that
+        // refuses that gets no staging folder, so its files are refused before their copy
+        // rather than after it. The access is checked only, not held.
+        native::reopen(
+            &directory.file,
+            FILE_ADD_FILE | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+        .map_err(|e| error(&directory.path, e))?;
         let token = security::process_token().map_err(|e| error(&directory.path, e))?;
         let private = super::super::namespace::change(cancel, |mutation| {
             recovery::staging_folder_in(directory, cancel, mutation)
@@ -173,9 +232,8 @@ impl Folder {
         ))
     }
 
-    /// Remove the folder through its handle in one turn; the kernel refuses one that still
-    /// holds an entry, which is then kept and reported by its path.
-    fn remove(self) -> Result<(), FsError> {
+    /// The folder alone, for its removal: what only staging needs is released first.
+    fn into_private(self) -> Directory {
         let Self {
             private,
             destination,
@@ -183,17 +241,140 @@ impl Folder {
             held,
         } = self;
         drop((held, destination, token));
-        private.remove_empty_stage()
+        private
+    }
+}
+
+/// What one attempt to remove a staging folder left.
+enum Removal {
+    Removed,
+    /// The kernel refused a folder that still holds an entry: kept on disk, never listed
+    /// or emptied, and no longer held.
+    Released(FsError),
+    /// Any other failure, such as the job's namespace coordination refusing the turn's
+    /// change while a peer is latched: nothing changed, and the folder is still held.
+    Held(Directory, FsError),
+}
+
+/// Remove an empty staging folder through its handle in one turn.
+fn remove_folder(private: Directory) -> Removal {
+    let mut held = Some(private);
+    let removed = super::super::namespace::change(&Cancellation::default(), |mutation| {
+        let removed = held
+            .as_ref()
+            .map_or(Ok(()), |private| private.remove_empty_in(mutation));
+        if removed.is_ok() {
+            // Closed in the turn, so that its finish certifies the removal.
+            held = None;
+        }
+        removed
+    });
+    match (removed, held) {
+        (Ok(()), _) => Removal::Removed,
+        (Err(failure), Some(private)) if failure.kind != io::ErrorKind::DirectoryNotEmpty => {
+            // Named by the folder it leaves, whatever step refused.
+            let failure = FsError {
+                path: private.path.clone(),
+                ..failure
+            };
+            Removal::Held(private, failure)
+        }
+        (Err(failure), _) => Removal::Released(failure),
+    }
+}
+
+/// A staging folder whose removal failed, held for the job's later attempts.
+struct Leftover {
+    private: Directory,
+    failure: FsError,
+    /// Whether the job was told; a refusal is told only if it lasts to the job's end.
+    reported: bool,
+}
+
+/// The job's staging folders whose removal failed. Every later `finish` of the job retries
+/// them, and the last folder of the job to go tries once more.
+#[derive(Default)]
+struct Left(Mutex<Vec<Leftover>>);
+
+impl Left {
+    fn lock(&self) -> MutexGuard<'_, Vec<Leftover>> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Remove `private`. A refusal by the job's namespace coordination is no failure of the
+    /// job: the folder is held for a later attempt. Another failure is reported, and the
+    /// folder held all the same.
+    fn remove(&self, private: Directory) -> Result<(), FsError> {
+        let (private, failure) = match remove_folder(private) {
+            Removal::Removed => return Ok(()),
+            Removal::Released(failure) => return Err(failure),
+            Removal::Held(private, failure) => (private, failure),
+        };
+        let reported = failure.kind != io::ErrorKind::WouldBlock;
+        self.lock().push(Leftover {
+            private,
+            failure: failure.clone(),
+            reported,
+        });
+        if reported { Err(failure) } else { Ok(()) }
+    }
+
+    /// Retry the held folders. One that now holds an entry is released and reported; the
+    /// others stay held. At the job's end (`last`), a refusal not yet told is reported.
+    fn retry(&self, last: bool) -> Result<(), FsError> {
+        let pending = std::mem::take(&mut *self.lock());
+        let mut outcome = Ok(());
+        let mut kept = Vec::with_capacity(pending.len());
+        for leftover in pending {
+            // One report per call; the rest wait for the next.
+            if outcome.is_err() {
+                kept.push(leftover);
+                continue;
+            }
+            match remove_folder(leftover.private) {
+                Removal::Removed => {}
+                Removal::Released(failure) => outcome = Err(failure),
+                Removal::Held(private, failure) => kept.push(Leftover {
+                    private,
+                    failure,
+                    reported: leftover.reported,
+                }),
+            }
+        }
+        if last
+            && outcome.is_ok()
+            && let Some(leftover) = kept.iter_mut().find(|leftover| !leftover.reported)
+        {
+            leftover.reported = true;
+            outcome = Err(leftover.failure.clone());
+        }
+        self.lock().extend(kept);
+        outcome
+    }
+}
+
+impl Drop for Left {
+    /// The last folder of the job is gone: one more attempt each. Nobody is left to report
+    /// a failure to.
+    fn drop(&mut self) {
+        let left = std::mem::take(self.0.get_mut().unwrap_or_else(|error| error.into_inner()));
+        for leftover in left {
+            let _ = remove_folder(leftover.private);
+        }
     }
 }
 
 impl Drop for Staging {
     /// A job that did not finish this folder's staging (`finish_staging`): remove the
-    /// folder as far as possible. Nobody is left to report a failure to.
+    /// folder as far as possible. Nobody is left to report a failure to; a folder that
+    /// cannot be removed now is held for the job's later attempts.
     fn drop(&mut self) {
-        let state = self.0.get_mut().unwrap_or_else(|error| error.into_inner());
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
         if let State::Folder(folder) = std::mem::take(state) {
-            let _ = folder.remove();
+            let _ = self.left.remove(folder.into_private());
         }
     }
 }

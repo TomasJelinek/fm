@@ -71,9 +71,11 @@ DELETE and without delete sharing, in one namespace turn before its first stage 
 it is not hidden, as the stages are not. Its pin is reserved before it exists and covers
 everything below it, so each stage is created in it through its handle outside any turn,
 and each publication is one turn: a handle-relative no-replace rename out of it into the
-destination folder. A folder whose staging folder cannot be created (an ACL or a quota
-refuses it) fails the job's first file there with the error a stage of its own would
-report; there is no fallback. A paused job keeps its staging folders and stages in them
+destination folder. A destination folder that refuses Midnight its security, new folders
+or new files gets no staging folder: each file there is staged as a `.me-*` entry of its
+own beside its final name, so a write-only drop folder still receives its files, and a
+folder that refuses new files refuses each file before it is copied. Any other failure to
+create the staging folder (a quota, a cancellation) fails that file's stage. A paused job keeps its staging folders and stages in them
 again when resumed. Outside a job (checksum, file-list and other single outputs),
 elsewhere than local fixed NTFS, for the files a cross-volume Move removes once they are
 copied and for required-metadata stages, each stage is a `.me-*` entry of its own in the
@@ -104,7 +106,10 @@ prove removal. The job removes each staging folder through its handle in one tur
 stages nothing more in that folder (after the folder's copy, or when the folder is
 skipped) and at its end: the kernel refuses one that still holds an entry, such as another
 program's file, and the job keeps it, never lists or empties it, and reports it with its
-exact path. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
+exact path. A staging folder whose removal the job's namespace coordination refuses is
+kept by the job and removed by a later attempt (the end of another folder's copy, the
+job's end or the job's last folder going away); one still refused at the job's end is
+reported by its path. See [staging and cancellation](../superpowers/specs/2026-11-10-transfer-verification-and-native-move.md#short-staging-names-and-cancellation).
 
 ## Destination capabilities
 

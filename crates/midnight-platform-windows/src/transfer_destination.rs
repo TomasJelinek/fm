@@ -32,7 +32,8 @@ pub(super) struct Directory {
     /// What planning links reads once per job, shared with the folders below this one.
     links: Arc<link_stage::LinkFacts>,
     /// This folder's private staging folder of the job (`stage_job_file`), shared by the
-    /// clones of this folder only.
+    /// clones of this folder only; the folders below it share the job's staging folders
+    /// whose removal failed.
     staging: Arc<staging::Staging>,
     // Last: the final Directory clone closes its native Arc<File> before certification.
     _namespace_owner: super::namespace::NativeOwner,
@@ -61,6 +62,7 @@ impl Directory {
     /// sharing the link facts `parent` already read.
     pub(super) fn below(mut self, parent: &Directory) -> Self {
         self.links = parent.links.clone();
+        self.staging = Arc::new(staging::Staging::below(&parent.staging));
         self
     }
 }

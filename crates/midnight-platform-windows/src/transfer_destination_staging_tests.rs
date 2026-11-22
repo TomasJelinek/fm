@@ -12,20 +12,25 @@ use std::{
     os::windows::fs::OpenOptionsExt,
     sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use windows_sys::Win32::Security::*;
 
-/// A job's host: grants every turn and reservation, counts them, and refreshes the
-/// private pins it keeps when a turn finishes, retiring those that certify their removal.
+/// A job's host: grants every turn and reservation (unless told to refuse turns, as a
+/// latched peer makes a real host refuse changes), counts them, and refreshes the private pins it
+/// keeps when a turn finishes, retiring those that certify their removal.
 #[derive(Default)]
 struct Turns {
     begun: AtomicUsize,
     private: AtomicUsize,
     pins: Mutex<Vec<Arc<dyn TransferNamespacePin>>>,
+    refuse: AtomicBool,
 }
 impl Turns {
+    fn refuse(&self, refuse: bool) {
+        self.refuse.store(refuse, Ordering::SeqCst);
+    }
     fn begun(&self) -> usize {
         self.begun.load(Ordering::SeqCst)
     }
@@ -40,6 +45,11 @@ struct Host(Arc<Turns>);
 struct Turn(Arc<Turns>);
 impl TransferNamespaceChanges for Host {
     fn begin(&self, _: &Cancellation) -> Result<Box<dyn TransferNamespaceChange>, FsError> {
+        // These tests register no job root, so no change reserves anything: a refusal that
+        // the engine's reservation reports (`WouldBlock`, nothing changed) comes here.
+        if self.0.refuse.load(Ordering::SeqCst) {
+            return Err(error(Path::new(""), io::ErrorKind::WouldBlock.into()));
+        }
         self.0.begun.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(Turn(self.0.clone())))
     }
@@ -118,7 +128,7 @@ fn staging_folder(folder: &Path) -> PathBuf {
 }
 
 /// Stage `bytes` for the job, then publish them as `name` after their readback.
-fn publish(directory: &Directory, name: &str, bytes: &[u8]) {
+fn publish(directory: &dyn TransferDirectory, name: &str, bytes: &[u8]) {
     let cancel = Cancellation::default();
     let mut stage = directory.stage_job_file(&cancel).unwrap();
     stage.write_all(bytes).unwrap();
@@ -252,6 +262,62 @@ fn a_foreign_entry_keeps_the_staging_folder_and_is_reported_by_its_path() {
 }
 
 #[test]
+fn a_refused_removal_is_retried_by_a_later_finish_of_the_job() {
+    let temp = crate::test_fixtures::build_temp("staging-");
+    with_job(|turns| {
+        let parent = directory(temp.path());
+        let cancel = Cancellation::default();
+        let finished = parent
+            .create_directory(OsStr::new("finished"), &cancel)
+            .unwrap();
+        let dropped = parent
+            .create_directory(OsStr::new("dropped"), &cancel)
+            .unwrap();
+        publish(finished.as_ref(), "file", b"finished");
+        publish(dropped.as_ref(), "file", b"dropped");
+        let folders = [
+            staging_folder(&temp.path().join("finished")),
+            staging_folder(&temp.path().join("dropped")),
+        ];
+        // A latched peer refuses every change of the job: neither removal is a failure of
+        // the job, and neither folder is lost to it.
+        turns.refuse(true);
+        finished.finish_staging().unwrap();
+        drop((finished, dropped));
+        assert!(folders.iter().all(|folder| folder.exists()));
+        // The job's next finish removes both.
+        turns.refuse(false);
+        parent.finish_staging().unwrap();
+        assert!(folders.iter().all(|folder| !folder.exists()));
+        assert_eq!(names(&temp.path().join("finished")), ["file"]);
+        assert_eq!(names(&temp.path().join("dropped")), ["file"]);
+    });
+}
+
+#[test]
+fn a_removal_still_refused_at_the_job_end_is_reported_and_tried_once_more() {
+    let temp = crate::test_fixtures::build_temp("staging-");
+    with_job(|turns| {
+        let directory = directory(temp.path());
+        publish(&directory, "file", b"bytes");
+        let folder = staging_folder(temp.path());
+        turns.refuse(true);
+        // The job's own folder finishes last, at the job's end: what is still refused then
+        // is reported by its path.
+        let failure = directory
+            .finish_staging()
+            .expect_err("a refusal at the job's end is reported");
+        assert_eq!(failure.kind, io::ErrorKind::WouldBlock, "{failure}");
+        assert_eq!(failure.path, folder);
+        assert!(folder.exists());
+        // The last folder of the job to go tries once more.
+        turns.refuse(false);
+        drop(directory);
+        assert_eq!(names(temp.path()), ["file"]);
+    });
+}
+
+#[test]
 fn sibling_destination_folders_stage_in_folders_of_their_own() {
     let temp = crate::test_fixtures::build_temp("staging-");
     with_job(|turns| {
@@ -296,7 +362,7 @@ fn sibling_destination_folders_stage_in_folders_of_their_own() {
 }
 
 #[test]
-fn a_staging_folder_that_cannot_be_created_fails_the_stage_with_todays_words() {
+fn a_folder_that_refuses_new_entries_fails_the_stage_with_todays_words() {
     let temp = crate::test_fixtures::build_temp("staging-");
     let refusing = temp.path().join("refusing");
     fs::create_dir(&refusing).unwrap();
@@ -313,26 +379,120 @@ fn a_staging_folder_that_cannot_be_created_fails_the_stage_with_todays_words() {
         let refused = directory
             .stage_job_file(&cancel)
             .err()
-            .expect("a staging folder refused");
+            .expect("a job's stage refused");
         (today, refused, names(&refusing))
     });
     crate::test_fixtures::restore_dacl(&refusing, &saved).unwrap();
-    // Nothing was created instead: no folder and no stage of its own.
+    // No staging folder: the refused stage is one of its own, refused as today's is.
     assert!(left.is_empty(), "{left:?}");
     assert_eq!(refused.operation, today.operation);
     assert_eq!(refused.kind, io::ErrorKind::PermissionDenied);
     assert_eq!(refused.kind, today.kind);
     assert_eq!(refused.message, today.message);
-    // The folder it could not stage in; today's names the stage it could not create there.
-    assert_eq!(refused.path, refusing);
+    assert_eq!(refused.path.parent(), Some(refusing.as_path()));
     assert_eq!(today.path.parent(), Some(refusing.as_path()));
-    // The next stage tries again.
+    // The next job stages in a staging folder again.
     with_job(|_| {
         let directory = directory(&refusing);
         publish(&directory, "after", b"allowed again");
+        staging_folder(&refusing);
         directory.finish_staging().unwrap();
     });
     assert_eq!(names(&refusing), ["after"]);
+}
+
+/// Publish one file for a job in `folder`, whose DACL `deny` changed (`restore` undoes it),
+/// and return what the folder holds then and the turns the job took.
+fn publish_in_refusing(
+    folder: &Path,
+    deny: impl FnOnce(&Path),
+    restore: impl FnOnce(&Path),
+) -> (Vec<String>, usize) {
+    deny(folder);
+    let begun = with_job(|turns| {
+        let directory = directory(folder);
+        for name in ["first", "second"] {
+            publish(&directory, name, name.as_bytes());
+        }
+        directory.finish_staging().unwrap();
+        turns.begun()
+    });
+    restore(folder);
+    (names(folder), begun)
+}
+
+#[test]
+fn a_folder_that_refuses_new_folders_gets_stages_of_their_own() {
+    let temp = crate::test_fixtures::build_temp("staging-");
+    let saved = std::cell::OnceCell::new();
+    let (left, begun) = publish_in_refusing(
+        temp.path(),
+        |folder| {
+            let denied = crate::test_fixtures::deny_to_everyone(folder, FILE_ADD_SUBDIRECTORY);
+            assert!(saved.set(denied.unwrap()).is_ok());
+        },
+        |folder| crate::test_fixtures::restore_dacl(folder, saved.get().unwrap()).unwrap(),
+    );
+    // A write-only drop folder: no staging folder, each file staged beside its final name.
+    assert_eq!(left, ["first", "second"]);
+    assert_eq!(fs::read(temp.path().join("second")).unwrap(), b"second");
+    // The refused creation's turn, then each stage's own and each publication's.
+    assert!(begun >= 3, "{begun}");
+}
+
+#[test]
+fn a_folder_whose_security_cannot_be_read_gets_stages_of_their_own() {
+    let temp = crate::test_fixtures::build_temp("staging-");
+    let user = Sid::user();
+    // OWNER RIGHTS replaces the owner's implicit READ_CONTROL, so the deny applies to the
+    // test's own folder too.
+    let owner = Sid::well_known(WinCreatorOwnerRightsSid);
+    let tree = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+    let (left, _) = publish_in_refusing(
+        temp.path(),
+        |folder| {
+            set_dacl(
+                folder,
+                &[
+                    Entry(false, 0, READ_CONTROL, &owner),
+                    Entry(true, tree, FILE_ALL_ACCESS, &user),
+                ],
+                true,
+            );
+            assert!(
+                OpenOptions::new()
+                    .access_mode(READ_CONTROL)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                    .open(folder)
+                    .is_err()
+            );
+        },
+        |folder| set_dacl(folder, &[Entry(true, tree, FILE_ALL_ACCESS, &user)], true),
+    );
+    assert_eq!(left, ["first", "second"]);
+    assert_eq!(fs::read(temp.path().join("first")).unwrap(), b"first");
+}
+
+/// The reverse case: a folder that takes new folders but no new files never gets a staging
+/// folder, so its files are refused before they are copied, not at their publication.
+#[test]
+fn a_folder_that_refuses_new_files_refuses_the_stage_before_the_copy() {
+    let temp = crate::test_fixtures::build_temp("staging-");
+    let saved = crate::test_fixtures::deny_to_everyone(temp.path(), FILE_ADD_FILE).unwrap();
+    let (refused, left) = with_job(|_| {
+        let directory = directory(temp.path());
+        let refused = directory
+            .stage_job_file(&Cancellation::default())
+            .err()
+            .expect("a stage refused");
+        directory.finish_staging().unwrap();
+        (refused, names(temp.path()))
+    });
+    crate::test_fixtures::restore_dacl(temp.path(), &saved).unwrap();
+    assert_eq!(refused.kind, io::ErrorKind::PermissionDenied, "{refused}");
+    // The stage it could not create beside the final names.
+    assert_eq!(refused.path.parent(), Some(temp.path()));
+    assert!(left.is_empty(), "{left:?}");
 }
 
 /// The process token's user, a well-known SID, each in an aligned buffer.
@@ -399,7 +559,7 @@ fn open_security(path: &Path, access: u32) -> File {
 /// Give `folder` a protected DACL of `entries`, auto-inherited (as Explorer and
 /// `SetSecurityInfo` leave a folder) when `auto`.
 fn set_dacl(folder: &Path, entries: &[Entry<'_>], auto: bool) {
-    let file = open_security(folder, READ_CONTROL | WRITE_DAC);
+    let file = open_security(folder, WRITE_DAC);
     let mut acl = vec![0u64; 256];
     let pointer = acl.as_mut_ptr().cast::<ACL>();
     // SAFETY: the aligned writable allocation covers the 2,048 bytes given; every SID is

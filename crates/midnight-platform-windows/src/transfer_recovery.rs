@@ -30,6 +30,14 @@ impl Directory {
         self,
         mutation: &mut super::super::namespace::Mutation<'_>,
     ) -> Result<(), FsError> {
+        self.remove_empty_in(mutation)
+    }
+    /// `remove_empty_stage_in` whose caller keeps the handle: it closes the handle in the
+    /// turn once the removal succeeded, and may try again after a failure.
+    pub(in crate::transfer) fn remove_empty_in(
+        &self,
+        mutation: &mut super::super::namespace::Mutation<'_>,
+    ) -> Result<(), FsError> {
         self.revalidate(&Cancellation::default())?;
         // Exact directory handle; the kernel refuses nonempty directories. Never
         // enumerate/delete children, reopen a path or weaken the private ACL.
