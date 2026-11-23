@@ -8,18 +8,40 @@ use std::{
 };
 use windows_sys::{
     Wdk::Storage::FileSystem::{FILE_EA_INFORMATION, FileEaInformation, NtQueryInformationFile},
-    Win32::{Foundation::RtlNtStatusToDosError, Security::*, System::IO::IO_STATUS_BLOCK},
+    Win32::{
+        Foundation::RtlNtStatusToDosError,
+        Security::*,
+        System::{
+            IO::{DeviceIoControl, IO_STATUS_BLOCK},
+            Ioctl::FSCTL_SET_COMPRESSION,
+        },
+    },
 };
 
 const SECURITY: u32 = OWNER_SECURITY_INFORMATION
     | GROUP_SECURITY_INFORMATION
     | DACL_SECURITY_INFORMATION
     | LABEL_SECURITY_INFORMATION;
+/// Attributes the replacement takes over exactly, through `FILE_BASIC_INFO`. The user
+/// confirmed the replacement of this very file, so read-only, hidden and system are kept,
+/// not reasons to refuse it.
 const ATTRIBUTES: u32 = FILE_ATTRIBUTE_ARCHIVE
     | FILE_ATTRIBUTE_HIDDEN
     | FILE_ATTRIBUTE_SYSTEM
+    | FILE_ATTRIBUTE_READONLY
     | FILE_ATTRIBUTE_NORMAL
     | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED;
+/// How the original is stored, which the replacement follows by its own means: it is
+/// compressed exactly when the original was (whatever its folder does to new files),
+/// encrypted when the original was (created so) or when its folder encrypts new files,
+/// and written as ordinary data whatever the original's sparse ranges.
+const STORAGE: u32 =
+    FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_ENCRYPTED | FILE_ATTRIBUTE_SPARSE_FILE;
+/// The original's contents may not be on this computer (offline storage, cloud files).
+const REMOTE: u32 =
+    FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+/// The attributes a readback compares with the original's.
+const COMPARED: u32 = (ATTRIBUTES & !FILE_ATTRIBUTE_NORMAL) | FILE_ATTRIBUTE_COMPRESSED;
 
 pub(super) struct Snapshot {
     security: Vec<u64>,
@@ -61,10 +83,30 @@ impl Snapshot {
             ));
         }
         let basic = basic(&file, &path)?;
-        if basic.FileAttributes & !ATTRIBUTES != 0 {
+        let attributes = basic.FileAttributes;
+        // Replacing such a file downloads nothing, but its original would be kept for
+        // recovery as a placeholder of contents that may exist nowhere else.
+        if attributes & REMOTE != 0 {
             return Err(unsupported(
                 &path,
-                "Existing output has readonly, compressed, encrypted or other unsupported attributes; it was not replaced.",
+                "Existing output is a cloud or offline file whose contents may not be on this \
+                 computer; it was not replaced. Make it available on this device first.",
+            ));
+        }
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(unsupported(
+                &path,
+                "Existing output is a link or another special file; it was not replaced.",
+            ));
+        }
+        let other = attributes & !(ATTRIBUTES | STORAGE);
+        if other != 0 {
+            return Err(unsupported(
+                &path,
+                &format!(
+                    "Existing output has attributes that its replacement could not keep \
+                     ({other:#x}); it was not replaced."
+                ),
             ));
         }
         require_single_stream(&file, &path)?;
@@ -118,15 +160,61 @@ impl Snapshot {
         {
             return Err(error(path, io::Error::last_os_error()));
         }
+        self.match_compression(file, path)?;
         self.apply_attributes(file, path)?;
         self.verify(file, path)
     }
 
+    /// Whether the replacement takes the original's read-only attribute.
+    pub(super) fn read_only(&self) -> bool {
+        self.attributes & FILE_ATTRIBUTE_READONLY != 0
+    }
+
+    /// Attributes the stage is created with: encryption, which only creation applies.
+    pub(super) fn creation_attributes(&self) -> u32 {
+        self.attributes & FILE_ATTRIBUTE_ENCRYPTED
+    }
+
+    /// Compresses the empty stage when the original was compressed, and leaves it plain
+    /// when the original was not, whatever its folder gives new files.
+    fn match_compression(&self, file: &File, path: &Path) -> Result<(), FsError> {
+        let wanted = self.attributes & FILE_ATTRIBUTE_COMPRESSED != 0;
+        if (basic(file, path)?.FileAttributes & FILE_ATTRIBUTE_COMPRESSED != 0) == wanted {
+            return Ok(());
+        }
+        // COMPRESSION_FORMAT_DEFAULT or COMPRESSION_FORMAT_NONE.
+        let format: u16 = if wanted { 1 } else { 0 };
+        let mut returned = 0;
+        // SAFETY: the owned stage has read and write data access; the fixed-size input
+        // stays live for this synchronous control call.
+        if unsafe {
+            DeviceIoControl(
+                file.as_raw_handle(),
+                FSCTL_SET_COMPRESSION,
+                (&format as *const u16).cast(),
+                size_of::<u16>() as u32,
+                ptr::null_mut(),
+                0,
+                &mut returned,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(error(path, io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
     pub(super) fn apply_attributes(&self, file: &File, path: &Path) -> Result<(), FsError> {
+        // Zero would leave the stage's attributes as they are; NORMAL clears them.
+        let attributes = match self.attributes & ATTRIBUTES & !FILE_ATTRIBUTE_NORMAL {
+            0 => FILE_ATTRIBUTE_NORMAL,
+            kept => kept,
+        };
         let information = FILE_BASIC_INFO {
             CreationTime: self.creation,
             LastAccessTime: self.accessed,
-            FileAttributes: self.attributes,
+            FileAttributes: attributes,
             ..Default::default()
         };
         // SAFETY: the owned stage has WRITE_ATTRIBUTES; this fixed-size structure is live.
@@ -191,7 +279,15 @@ impl Snapshot {
             }
         }
         let actual = basic(file, path)?.FileAttributes;
-        if actual != self.attributes {
+        if self.attributes & FILE_ATTRIBUTE_ENCRYPTED != 0 && actual & FILE_ATTRIBUTE_ENCRYPTED == 0
+        {
+            return Err(unsupported(
+                path,
+                "Existing output is encrypted, and its replacement could not be encrypted; it \
+                 was not replaced.",
+            ));
+        }
+        if actual & COMPARED != self.attributes & COMPARED {
             return Err(unsupported(
                 path,
                 &format!(

@@ -69,6 +69,30 @@ the replacement protects the captured DACL from later parent inheritance. Privil
 audit-SACL preservation is outside this contract. Alternate streams and unsupported
 storage/security metadata are refused instead of silently discarded.
 
+On Windows the original's attributes decide how the replacement is stored, not whether
+the confirmed replacement happens (`transfer_preservation.rs`, tests in
+`transfer_preservation_tests.rs`):
+
+- Read-only, hidden, system and not-content-indexed are kept exactly. Archive is kept
+  too, and Windows sets it again when the replacement is put in place, as for any
+  changed file. A stage that took the read-only attribute is still removed when the
+  replacement is given up.
+- Compressed (NTFS compression) is a storage detail: the replacement is compressed
+  exactly when the original was, whatever the folder gives new files
+  (`FSCTL_SET_COMPRESSION` on the empty stage).
+- Encrypted (EFS): the stage is created encrypted, and the replacement is refused with
+  that reason when it could not be. A plain original in a folder that encrypts new files
+  gets an encrypted replacement, as any new file there.
+- Sparse: the replacement is written as ordinary data.
+- Offline and recall-on-open or recall-on-data-access files (cloud files whose contents
+  may not be on this computer) are refused with that reason: replacing one downloads
+  nothing, but its original would be kept for recovery only as a placeholder. Links and
+  other reparse points are refused as before, and so is any other attribute, which the
+  message names by value.
+
+A Copy's own Replace keeps no metadata of the original and replaces such files too
+(`a_copy_replaces_a_compressed_read_only_file`).
+
 ## Preferences and UI
 
 Preferences (schema 26 and later) store the last 30 unique accepted templates

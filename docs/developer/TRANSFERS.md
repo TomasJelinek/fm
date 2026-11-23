@@ -63,6 +63,12 @@ characters. Exclusive creation is relative to a held directory handle, without a
 inodes. Both stage on the destination filesystem. The final name is assigned only
 after verification; same-volume native Move does not stage content.
 
+A Copy's Replace keeps no metadata of the file it replaces, so its attributes never stop
+it: a compressed, read-only or hidden file is replaced like any other, and the copy is
+compressed when its folder compresses new files. Generated outputs that replace a file
+(Shift+F4's empty file, a checksum manifest, a file list) keep the replaced file's
+metadata instead, with the rules in [Make File List](MAKE_FILE_LIST.md#output-lifetime-and-safety).
+
 On local fixed NTFS a Copy job (`TransferDirectory::stage_job_file`) keeps the stages of
 each destination folder in one private staging folder of the job, `.midnight-stage-` plus
 32 random hex characters, in that folder (`transfer_destination_staging.rs`). The job

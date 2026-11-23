@@ -1107,7 +1107,11 @@ current keys.
   Enter to create a zero-byte file. Escape cancels. For the name of a file the panel
   lists, the dialog asks first: only its **Replace file** button (not another Enter)
   replaces that file with an empty one, and the original is kept in a recovery folder
-  whose path the completion notice shows. Folders and links are never replaced. The
+  whose path the completion notice shows. Folders and links are never replaced. On
+  Windows the empty file keeps the original's permissions and its read-only, hidden and
+  system attributes, is compressed or encrypted when the original was, and replaces a
+  compressed, encrypted or sparse file like any other; a cloud or offline file whose
+  contents may not be on this computer is not replaced, and the notice says so. The
   new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
   explicitly confirm permanent deletion. A Trash failure never permanently deletes.

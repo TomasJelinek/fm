@@ -350,8 +350,12 @@ impl Directory {
                         super::namespace::Creation::Private(EntryKind::File),
                         cancel,
                         || {
-                            if preserved.is_some() {
-                                recovery::create_private_file_untracked(&self.file, &name)
+                            if let Some(preserved) = &preserved {
+                                recovery::create_private_file_with(
+                                    &self.file,
+                                    &name,
+                                    preserved.creation_attributes(),
+                                )
                             } else {
                                 native::open_relative(
                                     &self.file,
@@ -584,9 +588,18 @@ impl StagedTransferFile for Stage {
             // Disposition is bound to our retained inode, never to a pathname that
             // another process could replace. Denied delete sharing protects this handle.
             let cancel = Cancellation::default();
+            // A stage that keeps a read-only original's attributes carries its read-only
+            // attribute: this owned stage is removed whatever that attribute says.
+            let read_only = self.preserved.as_ref().is_some_and(|kept| kept.read_only());
             super::namespace::change(&cancel, |mutation| {
                 mutation
-                    .remove(&self.file, &cancel, || native::remove(&self.file))
+                    .remove(&self.file, &cancel, || {
+                        if read_only {
+                            native::remove_confirmed(&self.file)
+                        } else {
+                            native::remove(&self.file)
+                        }
+                    })
                     .map_err(|e| error(&self.path, e))
             })?;
             self.cleaned = true;

@@ -634,7 +634,7 @@ fn create_named_directory_in(
             &name,
             super::super::namespace::Creation::Private(EntryKind::Directory),
             cancel,
-            || create_private_object(&directory.file, &name, additional_access, true),
+            || create_private_object(&directory.file, &name, additional_access, true, 0),
         ) {
             Ok(file) => return Directory::from_file(file, directory.path.join(name)),
             Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -806,7 +806,7 @@ pub(in crate::transfer) fn create_private_directory(
     super::super::namespace::change(&cancel, |mutation| {
         mutation
             .create_relative(parent, name, EntryKind::Directory, &cancel, || {
-                create_private_object(parent, name, additional_access, true)
+                create_private_object(parent, name, additional_access, true, 0)
             })
             .map_err(|e| error(Path::new(""), e))
     })
@@ -834,7 +834,17 @@ pub(in crate::transfer) fn create_private_file_for_namespace_test(
     create_private_file_untracked(parent, name)
 }
 
-pub(super) fn create_private_file_untracked(parent: &File, name: &OsStr) -> io::Result<File> {
+#[cfg(test)]
+fn create_private_file_untracked(parent: &File, name: &OsStr) -> io::Result<File> {
+    create_private_file_with(parent, name, 0)
+}
+
+/// A private file created with `attributes` (encryption, which only creation applies).
+pub(super) fn create_private_file_with(
+    parent: &File,
+    name: &OsStr,
+    attributes: u32,
+) -> io::Result<File> {
     create_private_object(
         parent,
         name,
@@ -846,6 +856,7 @@ pub(super) fn create_private_file_untracked(parent: &File, name: &OsStr) -> io::
             | WRITE_DAC
             | WRITE_OWNER,
         false,
+        attributes,
     )
 }
 
@@ -854,6 +865,7 @@ fn create_private_object(
     name: &OsStr,
     additional_access: u32,
     directory: bool,
+    file_attributes: u32,
 ) -> io::Result<File> {
     use std::os::windows::io::FromRawHandle;
     let user = current_user()?;
@@ -914,6 +926,8 @@ fn create_private_object(
             ptr::null(),
             if directory {
                 FILE_ATTRIBUTE_DIRECTORY
+            } else if file_attributes != 0 {
+                file_attributes
             } else {
                 FILE_ATTRIBUTE_NORMAL
             },
@@ -942,3 +956,7 @@ fn create_private_object(
 #[cfg(test)]
 #[path = "transfer_recovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transfer_preservation_tests.rs"]
+mod preservation_tests;

@@ -904,7 +904,9 @@ new file list or checksum manifest, gets those of any new file or folder: 0666 o
 and sticky bits are never copied (a new directory keeps a set-group-ID bit
 inherited from its parent), and a folder that a copy merges into keeps its own mode. Generated outputs replacing an existing file
 (file lists, checksum manifests, an empty file over an existing one) keep the
-replaced file's mode, ACL and extended attributes. Where a filesystem cannot store modes, a new
+replaced file's mode, ACL and extended attributes (on Windows its owner, group, DACL,
+integrity label and attributes, compression and encryption: see
+[Make File List](docs/developer/MAKE_FILE_LIST.md#output-lifetime-and-safety)). Where a filesystem cannot store modes, a new
 directory keeps the mount-provided permissions only while no other user can write to
 it (group write only for the user's private group, without an access ACL); otherwise
 it is removed again and Copy fails. Creation requires a protected parent:
