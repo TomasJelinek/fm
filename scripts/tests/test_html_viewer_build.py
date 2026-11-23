@@ -410,9 +410,11 @@ class HtmlViewerBuildWindows(unittest.TestCase):
 
     def test_hold_beyond_the_retry_budget_fails_and_restores_the_previous_package(self):
         # The thumbnail swap waits out the real 2 s budget end to end; here a caller-side
-        # default of 100 ms (the scripts never pass one) meets a 300 ms hold.
+        # default of 100 ms (the scripts never pass one) meets a hold that lasts well past
+        # the rename however long the script takes to reach it on a loaded machine (a
+        # 300 ms hold could end first). Deleting the held file still works (share delete).
         self.install_previous_package()
-        self.hold_new_package(300, share_delete=True)
+        self.hold_new_package(10_000, share_delete=True)
         budget = "$PSDefaultParameterValues['Invoke-FreshRename:TimeoutMilliseconds'] = 100\n"
         ((message, _),), output = self.run_driver(self.root, budget, [self.root / "_build/debug"])
         self.assertIn("denied", message, output)
