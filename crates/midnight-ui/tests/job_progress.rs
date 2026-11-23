@@ -194,8 +194,7 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
     test.window.set_job(copy);
     test.draw();
     for label in [
-        "D:\\Source\\資料",
-        "example.zip",
+        "D:\\Source\\資料\\example.zip",
         "Files: 6 of 18 · Bytes: 900 B of 1.8 KiB",
         "Time remaining: About 3 min",
     ] {
@@ -366,7 +365,7 @@ fn native_rect(item: &ItemRc) -> (f32, f32, f32, f32) {
 }
 
 #[test]
-fn a_slow_file_shows_its_own_bar_beside_its_name_and_quick_files_none() {
+fn every_file_shows_its_path_and_its_own_bar_under_the_chart_without_moving() {
     let mut test = ui::TestUi::new();
     let mut copy = job("copy-job:31", "Copy");
     copy.state = "Copying".into();
@@ -375,58 +374,75 @@ fn a_slow_file_shows_its_own_bar_beside_its_name_and_quick_files_none() {
     copy.determinate = true;
     copy.progress = 0.25;
     copy.progress_label = "25% complete".into();
-    copy.transfer_directory = "/source/資料".into();
-    copy.transfer_name = "large.bin".into();
     copy.transfer_totals = "Files: 3 of 12 · Bytes: 1.0 GiB of 4.0 GiB".into();
     copy.eta = "About 3 min".into();
     copy.file_determinate = true;
-    copy.file_progress = 0.45;
     copy.file_progress_title = "Current file written".into();
-    copy.file_progress_label = "Current file written: 450 / 1000 bytes".into();
-    test.window.set_job(copy.clone());
-    test.draw();
     let bar = |test: &ui::TestUi| {
         ui::find_popup_item(
             &test.window,
             "Current file progress",
             AccessibleRole::ProgressIndicator,
         )
+        .expect("the current file's bar is always shown")
     };
-    assert!(bar(&test).is_none(), "a quick file shows no bar");
-    ui::popup_item(
-        &test.window,
-        "Files: 3 of 12 · Bytes: 1.0 GiB of 4.0 GiB",
-        AccessibleRole::Text,
+    // Each file in turn: a large one part written, a small one already through, none
+    // between two files, and a long archive member path whose middle is left out.
+    let long = format!(
+        "/source/資料/backup.zip/{}/deep/large.bin",
+        "a-folder-with-a-long-name/".repeat(8)
     );
-    copy.file_percent = "45%".into();
-    test.window.set_job(copy.clone());
+    let files: [(&str, &str, f32, &str); 4] = [
+        ("/source/資料/large.bin", "large.bin", 0.45, "45%"),
+        ("/source/資料/small.txt", "small.txt", 1.0, "100%"),
+        ("", "", 0.0, ""),
+        (long.as_str(), "large.bin", 0.1, "Verifying 10%"),
+    ];
     for (width, height) in [(1000, 700), (480, 360), (320, 200)] {
         test.resize(width, height);
-        let meter = bar(&test).expect("a slow file's bar");
-        assert_eq!(
-            meter
-                .accessible_string_property(AccessibleStringProperty::Value)
-                .unwrap(),
-            "45%"
-        );
-        let fill = meter.first_child().expect("the bar has a fill");
-        assert!((fill.geometry().width() - meter.geometry().width() * 0.45).abs() <= 1.0);
-        let name = ui::popup_item(&test.window, "large.bin", AccessibleRole::Text);
-        let percent = ui::popup_item(&test.window, "45%", AccessibleRole::Text);
-        let (name_x, name_y, name_width, name_height) = native_rect(&name);
-        let (bar_x, bar_y, bar_width, bar_height) = native_rect(&meter);
-        let (percent_x, _, percent_width, _) = native_rect(&percent);
-        assert!(bar_x >= name_x + name_width, "beside the name, after it");
-        assert!(
-            bar_y >= name_y && bar_y + bar_height <= name_y + name_height + 1.0,
-            "on the name's line"
-        );
-        assert!(percent_x >= bar_x + bar_width);
-        assert!(
-            percent_x + percent_width <= width as f32 + 1.0,
-            "inside the window"
-        );
-        test.snapshot(&format!("slow-file-{width}x{height}"));
+        let mut place = None;
+        for (index, (path, name, fraction, percent)) in files.iter().enumerate() {
+            copy.current_path = (*path).into();
+            copy.transfer_name = (*name).into();
+            copy.file_progress = *fraction;
+            copy.file_percent = (*percent).into();
+            test.window.set_job(copy.clone());
+            test.draw();
+            let meter = bar(&test);
+            assert_eq!(
+                meter
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .unwrap(),
+                *percent
+            );
+            let rect = native_rect(&meter);
+            // The same place for every file: nothing appears, disappears or shifts.
+            assert_eq!(
+                *place.get_or_insert(rect),
+                rect,
+                "file {index} at {width}x{height}"
+            );
+            let fill = meter.first_child().expect("the bar has a fill");
+            assert!((fill.geometry().width() - rect.2 * fraction).abs() <= 1.0);
+            // Right under the job's chart.
+            let chart = ui::popup_item(
+                &test.window,
+                "Overall progress",
+                AccessibleRole::ProgressIndicator,
+            );
+            let (_, chart_y, _, chart_height) = native_rect(&chart);
+            assert!(rect.1 >= chart_y + chart_height, "below the chart");
+            if !path.is_empty() {
+                let label = ui::popup_item(&test.window, path, AccessibleRole::Text);
+                let (label_x, label_y, label_width, _) = native_rect(&label);
+                assert!(label_y < rect.1, "the path is above its bar");
+                assert!(
+                    label_x + label_width <= width as f32 + 1.0,
+                    "the path stays inside the window"
+                );
+            }
+            test.snapshot(&format!("current-file-{index}-{width}x{height}"));
+        }
     }
     // A pause keeps the estimate, marked as paused.
     copy.paused = true;

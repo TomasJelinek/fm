@@ -9,6 +9,7 @@ import { HintedActionButton } from "hinted-inputs.slint";
 import { OperationRow } from "jobs-dialog.slint";
 import { OperationSpeedChart } from "operation-speed-chart.slint";
 import { JobDetails, JobIssueList } from "job-outcome.slint";
+import { PathText } from "path-text.slint";
 
 // Copy, Move and Delete share one progress window.
 export component JobProgressWindow inherits DialogWindow {
@@ -194,41 +195,40 @@ export component JobProgressWindow inherits DialogWindow {
                                 : root.job.paused ? "Paused" : "Waiting for activity";
                             height: max(130px, Theme.font-size * 7.5);
                         }
-                        if root.transfer && root.job.transfer-directory != "" : Text {
-                            text: root.job.transfer-directory; color: Theme.secondary-text;
-                            font-size: Theme.small-font; overflow: elide; min-width: 0px;
-                        }
-                        if root.transfer && root.job.transfer-name != "" : HorizontalLayout {
-                            spacing: 8px; cross-axis-alignment: center;
-                            Text {
-                                text: root.job.transfer-name; color: Theme.strong-text;
-                                font-size: Theme.font-size; overflow: elide; min-width: 0px;
-                                horizontal-stretch: 1;
-                            }
-                            // A file that takes seconds shows its own progress beside its
-                            // name; quick files never do, so the row does not flicker.
-                            if root.job.file-percent != "" : HorizontalLayout {
-                                spacing: 6px; cross-axis-alignment: center;
-                                Rectangle {
-                                    accessible-role: progress-indicator;
-                                    accessible-label: "Current file progress";
-                                    accessible-value: root.job.file-percent;
-                                    width: Theme.font-size * 6; height: 6px; border-radius: 3px;
-                                    background: Theme.frame.with-alpha(0.35);
-                                    Rectangle {
-                                        x: 0px; y: 0px; height: parent.height; border-radius: parent.border-radius;
-                                        width: parent.width * clamp(root.job.file-progress, 0, 1);
-                                        background: root.job.verification-view ? Theme.pending-size : Theme.active-frame;
-                                    }
+                        // The current file, always in the same place right under the job's
+                        // chart: its path, the middle left out when it is too long, and its
+                        // own bar, which every file updates (a quick one passes through to
+                        // 100%). Nothing here appears, disappears or moves between files.
+                        if root.transfer : VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                PathText {
+                                    text: root.job.current-path; tail: root.job.transfer-name;
+                                    foreground: Theme.strong-text; font-size: Theme.font-size;
+                                    horizontal-stretch: 1; min-width: 0px;
+                                    height: Theme.font-size * 1.5;
                                 }
                                 Text {
                                     text: root.job.file-percent; color: Theme.secondary-text;
-                                    font-size: Theme.small-font;
+                                    font-size: Theme.small-font; width: Theme.font-size * 8;
+                                    horizontal-alignment: right; vertical-alignment: center;
+                                }
+                            }
+                            Rectangle {
+                                accessible-role: progress-indicator;
+                                accessible-label: "Current file progress";
+                                accessible-value: root.job.file-percent;
+                                height: 6px; border-radius: 3px;
+                                background: Theme.frame.with-alpha(0.35);
+                                Rectangle {
+                                    x: 0px; y: 0px; height: parent.height; border-radius: parent.border-radius;
+                                    width: parent.width * clamp(root.job.file-progress, 0, 1);
+                                    background: root.job.verification-view ? Theme.pending-size : Theme.active-frame;
                                 }
                             }
                         }
-                        if root.job.current-path != "" && (!root.transfer
-                            || (root.job.transfer-directory == "" && root.job.transfer-name == "")) : Text {
+                        if root.job.current-path != "" && !root.transfer : Text {
                             text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
                             wrap: char-wrap; min-width: 0px;
                         }

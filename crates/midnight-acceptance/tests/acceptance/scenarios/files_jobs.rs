@@ -96,53 +96,40 @@ fn pause(app: &mut App, window: &Tool, start: usize, what: &str) -> Result<(), S
     Ok(())
 }
 
-/// What [`slow_file_bar`] saw.
+/// What [`current_file_bar`] saw.
 enum SlowBar {
-    /// The bar appeared; its accessible value ("45%").
+    /// The bar showed the file's share; its accessible value ("45%").
     Shown(String),
-    /// The job ended after this many milliseconds of running time on the file, under
-    /// the 2 s after which the bar appears.
-    NotObservable(u64),
+    /// The job ended before a share of the file was observed.
+    NotObservable,
 }
 
-/// How long a file must be copying (running time, pauses excluded) before its window
-/// shows the file's own bar: `SLOW_FILE_MILLIS` of the presenter.
-const SLOW_FILE: u64 = 2_000;
-
-/// Wait, while the job `start` runs, for its window's "Current file progress" bar
-/// beside the file's name. It is a failure when the file has been copying for well
-/// over 2 s of running time (as the job reports it) without one.
-fn slow_file_bar(app: &mut App, window: &Tool, start: usize) -> Result<SlowBar, String> {
-    // Presentation lags the backend's report by a few frames; a second is plenty.
-    const MARGIN: u64 = 1_000;
+/// The job `start`'s window always shows the current file's own "Current file progress"
+/// bar under its chart, from the first frame and without Details (a failure when it is
+/// missing); wait until the bar shows the large file's share, a percentage.
+fn current_file_bar(app: &mut App, window: &Tool, start: usize) -> Result<SlowBar, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let mut longest = 0;
     loop {
-        if let Some(bar) = inspect::find(
+        let Some(bar) = inspect::find(
             window.window(),
             AccessibleRole::ProgressIndicator,
             "Current file progress",
-        ) {
-            return Ok(SlowBar::Shown(tools::value(&bar)));
-        }
-        match support::job(app, start) {
-            Some(job) if job.state.is_terminal() => {
-                return if longest >= SLOW_FILE + MARGIN {
-                    Err(format!(
-                        "the large file copied for {longest} ms of running time and its window \
-                         never showed the \"Current file progress\" bar"
-                    ))
-                } else {
-                    Ok(SlowBar::NotObservable(longest))
-                };
-            }
-            Some(job) => longest = longest.max(job.current_file_active_millis),
-            None => {}
-        }
-        if longest >= SLOW_FILE + MARGIN || std::time::Instant::now() >= deadline {
+        ) else {
             return Err(format!(
-                "after {longest} ms of running time on the large file its window shows no \
-                 \"Current file progress\" bar without Details: {:?}",
+                "the window shows no \"Current file progress\" bar without Details: {:?}",
+                texts(window)
+            ));
+        };
+        let value = tools::value(&bar);
+        if value.ends_with('%') {
+            return Ok(SlowBar::Shown(value));
+        }
+        if support::job(app, start).is_some_and(|job| job.state.is_terminal()) {
+            return Ok(SlowBar::NotObservable);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "the \"Current file progress\" bar never showed the large file's share: {:?}",
                 texts(window)
             ));
         }
@@ -659,24 +646,21 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
             .any(|prefix| text.starts_with(prefix)))
             .collect::<Vec<_>>()
     ));
-    // Without Details, a file that takes a while shows its own bar beside its name: the
-    // "Current file progress" indicator appears once the file has been copying for 2 s
-    // of running time (pauses do not count), so it is looked for after Resume.
+    // Without Details, the current file's own bar is always under the chart, and shows
+    // the large file's share as it is copied after Resume.
     tools::click_last(window4.window(), "Fewer details")?;
     app.settle();
     if tools::has(window4.window(), AccessibleRole::Button, "Resume") {
         tools::click_last(window4.window(), "Resume")?;
     }
-    match slow_file_bar(&mut app, &window4, large) {
+    match current_file_bar(&mut app, &window4, large) {
         Ok(SlowBar::Shown(value)) => {
             context.note(format!(
-                "the slow file's own bar showed {value:?} beside its name without Details"
+                "the current file's own bar showed {value:?} under the chart without Details"
             ));
         }
-        Ok(SlowBar::NotObservable(millis)) => context.note(format!(
-            "the slow-file bar was not observable: the large file was copied after {millis} ms \
-             of running time, under the 2 s after which the bar appears"
-        )),
+        Ok(SlowBar::NotObservable) => context
+            .note("the large file's share was not observable: the job ended first".to_string()),
         Err(failure) => failures.push(failure),
     }
     let done = support::wait_job(&mut app, large);
