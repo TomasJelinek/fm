@@ -954,74 +954,10 @@ fn an_existing_incompatible_writer_refuses_move_preparation() {
 
 #[test]
 fn a_world_writable_source_parent_takes_no_capture_folder_and_keeps_the_source_until_removal() {
-    use std::{
-        mem::size_of,
-        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
-        ptr,
-    };
-    use windows_sys::Win32::{Security::*, Storage::FileSystem::*};
     let (_temp, parent) = fixture();
     let source = parent.join("source");
     fs::write(&source, b"original").unwrap();
-    let file = fs::OpenOptions::new()
-        .access_mode(READ_CONTROL | WRITE_DAC)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(&parent)
-        .unwrap();
-    let mut world = [0u32; 17];
-    let mut sid_length = 68;
-    // SAFETY: owned writable SID buffer of the native maximum size.
-    assert_ne!(
-        unsafe {
-            CreateWellKnownSid(
-                WinWorldSid,
-                ptr::null_mut(),
-                world.as_mut_ptr().cast(),
-                &mut sid_length,
-            )
-        },
-        0
-    );
-    let length =
-        size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid_length as usize;
-    let mut acl = vec![0u64; length.div_ceil(8)];
-    let acl = acl.as_mut_ptr().cast::<ACL>();
-    let mut descriptor = SECURITY_DESCRIPTOR::default();
-    let descriptor = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
-    // SAFETY: ACL/descriptor/SID buffers are live and writable; only this fresh owned
-    // fixture parent receives a deliberately unsafe DACL. No workspace/root ACL changes.
-    assert_ne!(
-        unsafe { InitializeAcl(acl, length as u32, ACL_REVISION) },
-        0
-    );
-    assert_ne!(
-        unsafe {
-            AddAccessAllowedAce(
-                acl,
-                ACL_REVISION,
-                FILE_ALL_ACCESS,
-                world.as_mut_ptr().cast(),
-            )
-        },
-        0
-    );
-    assert_ne!(unsafe { InitializeSecurityDescriptor(descriptor, 1) }, 0);
-    assert_ne!(
-        unsafe { SetSecurityDescriptorDacl(descriptor, 1, acl, 0) },
-        0
-    );
-    assert_ne!(
-        unsafe {
-            SetKernelObjectSecurity(
-                file.as_raw_handle(),
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                descriptor,
-            )
-        },
-        0
-    );
-    drop(file);
+    make_world_writable(&parent);
     let provider = crate::WindowsFileSystem::new(None);
     // A folder that every account may change cannot hold the Move's private capture
     // folder: the source is removed in place instead (`Capture::direct`), and nothing is
@@ -1306,8 +1242,80 @@ mod peer_refusal;
 #[path = "transfer_move_durability_tests.rs"]
 mod durability;
 
-/// A folder whose inherited permissions let other accounts change it (as the folders of a
-/// data drive do), where the Move's private capture cannot be trusted.
+/// Gives `folder` a protected DACL that lets every account change it: whatever the
+/// permissions the test folder inherits (a CI runner's temporary folder may be private to
+/// the user), it is then a folder the Move's private capture cannot trust.
+fn make_world_writable(folder: &std::path::Path) {
+    use std::{
+        mem::size_of,
+        os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        ptr,
+    };
+    use windows_sys::Win32::{Security::*, Storage::FileSystem::*};
+    let file = fs::OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(folder)
+        .unwrap();
+    let mut world = [0u32; 17];
+    let mut sid_length = 68;
+    // SAFETY: owned writable SID buffer of the native maximum size.
+    assert_ne!(
+        unsafe {
+            CreateWellKnownSid(
+                WinWorldSid,
+                ptr::null_mut(),
+                world.as_mut_ptr().cast(),
+                &mut sid_length,
+            )
+        },
+        0
+    );
+    let length =
+        size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid_length as usize;
+    let mut acl = vec![0u64; length.div_ceil(8)];
+    let acl = acl.as_mut_ptr().cast::<ACL>();
+    let mut descriptor = SECURITY_DESCRIPTOR::default();
+    let descriptor = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+    // SAFETY: ACL/descriptor/SID buffers are live and writable; only this fresh owned
+    // fixture parent receives a deliberately unsafe DACL. No workspace/root ACL changes.
+    assert_ne!(
+        unsafe { InitializeAcl(acl, length as u32, ACL_REVISION) },
+        0
+    );
+    assert_ne!(
+        unsafe {
+            AddAccessAllowedAce(
+                acl,
+                ACL_REVISION,
+                FILE_ALL_ACCESS,
+                world.as_mut_ptr().cast(),
+            )
+        },
+        0
+    );
+    assert_ne!(unsafe { InitializeSecurityDescriptor(descriptor, 1) }, 0);
+    assert_ne!(
+        unsafe { SetSecurityDescriptorDacl(descriptor, 1, acl, 0) },
+        0
+    );
+    assert_ne!(
+        unsafe {
+            SetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                descriptor,
+            )
+        },
+        0
+    );
+    drop(file);
+}
+
+/// A folder that every account may change (as the folders of a data drive usually are for
+/// Authenticated Users), where the Move's private capture cannot be trusted: set
+/// explicitly, never taken from the permissions the test folder inherits.
 fn unprotected_fixture() -> (tempfile::TempDir, PathBuf) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1318,6 +1326,7 @@ fn unprotected_fixture() -> (tempfile::TempDir, PathBuf) {
     fs::create_dir_all(&root).unwrap();
     let temp = tempfile::tempdir_in(root).unwrap();
     let parent = temp.path().to_owned();
+    make_world_writable(&parent);
     (temp, parent)
 }
 
