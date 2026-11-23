@@ -162,7 +162,7 @@ or remove that assignment in Options → Keyboard to free the number.
 | Alt+↑ / Alt+↓ in files | Previous / next selected file or folder in displayed order, including expanded tree rows. Skip the current row, preserve all marks, and stop at the boundary without wrapping; inactive during filename search. Configurable as `panel.previous-selected` / `panel.next-selected`. |
 | Shift+Backspace / Ctrl+Backspace / Ctrl+Backslash | Root of the focused panel's location: `/` on Linux; on Windows the drive's root, or the share's root for a `\\server\share` path; inside an archive the root of the outermost archive; in a Network location the Network root |
 | Ctrl+PageDown | Enter a known folder; never launch a regular file |
-| Ctrl+G | Focus the path editor; Enter there opens the typed folder, or the folder of a typed file with the cursor on the file |
+| Ctrl+G | Focus the path editor; Enter there, or its Go button, opens the typed folder, or the folder of a typed file with the cursor on the file |
 | Alt+F1 / Alt+F2 | Open left / right volume choices |
 | . in the drive dropdown | As Other Panel: open the other panel's current folder |
 | Shift+drive letter | Switch volume on Windows, using its remembered path; when no drive has that letter (always on Linux), the uppercase letter is typed into the filename search instead |
@@ -361,8 +361,9 @@ also works by mouse and uses the current
 opposite folder after Ctrl+U swaps the panels. Back/Forward arrows have history
 dropdowns. Tabs sit below the drive
 toolbar. Hovering a path segment highlights its prefix; clicking opens that raw
-ancestor; right-click copies that prefix without navigating. Click blank space
-after the path to edit it; Enter navigates and Escape cancels. Middle-click a tab
+ancestor; right-click copies that prefix without navigating. Click anywhere in the
+blank space after the path, up to the bar's end, to edit it; Paste keeps the copied
+text exactly; Enter or the editor's Go button navigates and Escape cancels. Middle-click a tab
 to close it (the last tab remains). Double-click the empty space after the tabs to
 create a new tab at that panel's current location; tab bodies and the + button keep
 their own actions. Tabs and their active position survive restart.

@@ -1208,9 +1208,10 @@ current keys.
   fills a row with the current local date, time and offset and ticks it; Apply
   sets exactly that moment. A change that completes without problems closes
   without a summary; only failures, skips or cancellation report.
-- Click the blank area after a panel's path breadcrumb, or press Ctrl+G, to type a
-  path; Enter navigates and Escape cancels. Breadcrumb navigation/copy gestures
-  remain available.
+- Click anywhere in the blank area after a panel's path breadcrumb, up to the end of
+  the path bar, or press Ctrl+G, to type or paste a path; a pasted path stays exactly
+  as copied. Press Enter or click **Go** at the right end of the editor to open it;
+  Escape cancels. Breadcrumb navigation/copy gestures remain available.
   The path may name a file, also pasted in double quotes as Windows "Copy as path"
   writes it: Enter opens the file's folder with the cursor on the file (an archive is
   not opened), and the panel's status line says why when the file is hidden or the

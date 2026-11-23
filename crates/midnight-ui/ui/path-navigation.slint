@@ -28,6 +28,38 @@ component PathOmission inherits Rectangle {
     Tip { text: root.names; }
 }
 
+// Ends the open path editor: a click, or Enter or Space with keyboard focus, does
+// what Enter in the editor does.
+component PathGoButton inherits Rectangle {
+    in property <length> text-size;
+    callback clicked();
+    width: max(32px, caption.preferred-width + 16px);
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: focus.has-focus ? Theme.active-frame : Theme.frame;
+    background: area.pressed ? Theme.selection-background : area.has-hover ? Theme.hover : Theme.secondary-surface;
+    accessible-role: button; accessible-label: "Go";
+    accessible-description: "Open the path: a folder, or a file's folder with the cursor on the file";
+    accessible-action-default => { root.clicked(); }
+    forward-focus: focus;
+    caption := Text {
+        text: "Go"; font-size: root.text-size;
+        color: area.pressed ? Theme.selection-text : Theme.text;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift
+                && !event.modifiers.meta && (event.text == Key.Return || event.text == Key.Space) {
+                root.clicked(); return accept;
+            }
+            reject
+        }
+        area := TouchArea { clicked => { root.clicked(); } }
+    }
+    Tip { text: "Go (Enter): open the folder, or the file's folder with the cursor on the file. Escape cancels."; }
+}
+
 // Paths are parsed by the backend. Each token contains a whole component,
 // preserving its Unicode shaping; the UI never reconstructs an operation path.
 export component PathNavigation inherits Rectangle {
@@ -218,16 +250,20 @@ export component PathNavigation inherits Rectangle {
                     activated => { root.focus-editor(); }
                 }
             }
-            Rectangle {
-                min-width: 32px; horizontal-stretch: 1;
-                height: trail.height;
-                background: edit-area.has-hover ? Theme.hover : transparent;
-                border-radius: 2px;
-                accessible-role: button; accessible-label: "Edit folder path";
-                accessible-action-default => { root.focus-editor(); }
-                edit-area := TouchArea { mouse-cursor: MouseCursor.text; clicked => { root.focus-editor(); } }
-                Tip { text: ShortcutHints.hint("Enter a folder or file path", "panel.path") + ". Enter opens the folder, or the file's folder with the cursor on the file; Escape cancels."; }
-            }
+            // Keeps at least 32px free after the components; the edit area starts here.
+            edit-slot := Rectangle { min-width: 32px; horizontal-stretch: 1; height: trail.height; }
+        }
+        // Everything right of the components, to the bar's end, opens the editor. The
+        // layout gives its last item only its preferred width, so the area is placed
+        // from that item's start rather than inside the layout.
+        Rectangle {
+            x: edit-slot.x; y: 0px; width: max(0px, trail.width - self.x); height: trail.height;
+            background: edit-area.has-hover ? Theme.hover : transparent;
+            border-radius: 2px;
+            accessible-role: button; accessible-label: "Edit folder path";
+            accessible-action-default => { root.focus-editor(); }
+            edit-area := TouchArea { mouse-cursor: MouseCursor.text; clicked => { root.focus-editor(); } }
+            Tip { text: ShortcutHints.hint("Enter a folder or file path", "panel.path") + ". Enter or Go opens the folder, or the file's folder with the cursor on the file; Escape cancels."; }
         }
     }
     FocusScope {
@@ -241,9 +277,15 @@ export component PathNavigation inherits Rectangle {
         editor := PathEditor {
             pane-id: root.pane-id;
             font-size: root.text-size;
-            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            x: 0px; y: 0px; width: max(1px, parent.width - go.width - 2px); height: parent.height;
             hint: root.hint;
             accepted => { root.navigate(self.text); }
+        }
+        // Follows the editor in the focus chain: Tab reaches it.
+        go := PathGoButton {
+            x: parent.width - self.width - 1px; y: 1px; height: max(0px, parent.height - 2px);
+            text-size: root.text-size;
+            clicked => { root.navigate(editor.text); }
         }
     }
 }

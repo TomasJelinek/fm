@@ -464,7 +464,7 @@ fn shared_tooltips_keep_cursor_clear_in_panels_dropdowns_and_options() {
             &time,
             &mut pixels,
             center(&edit),
-            "Enter a folder or file path (Ctrl+G). Enter opens the folder, or the file's \
+            "Enter a folder or file path (Ctrl+G). Enter or Go opens the folder, or the file's \
              folder with the cursor on the file; Escape cancels.",
         );
         window.window().dispatch_event(WindowEvent::PointerExited);

@@ -47,8 +47,9 @@ How to read it:
 
 - **Windows and Linux:** two panels with tabs; history (Alt+Left, Alt+Right and the
   toolbar menus); drives and mounted volumes; a path bar with clickable segments and a
-  path editor (Ctrl+G), where a typed or pasted file path opens its folder with the
-  cursor on the file; parent navigation that keeps the cursor on the folder left; Brief,
+  path editor (Ctrl+G, or a click after the path), which keeps a pasted path exactly as
+  copied and opens it with Enter or its Go button, where a file path opens its folder
+  with the cursor on the file; parent navigation that keeps the cursor on the folder left; Brief,
   Detailed and Thumbnails views (Alt+2, Alt+3, Alt+5); locale-aware sorting; quick
   search by typing; hidden files (Ctrl+H); Hot Paths, numbered Hot Path keys and saved
   tabs; folder sizes; native change watches with a 15-second check; startup folders

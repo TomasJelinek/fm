@@ -89,14 +89,16 @@ pub(super) fn redirected(p: &mut Presenter, typed: &Path) -> NavigationId {
 }
 
 #[test]
-fn pasted_quotes_whitespace_and_the_separator_paste_adds_are_not_part_of_a_path() {
+fn pasted_quotes_and_whitespace_are_not_part_of_a_path() {
     let separator = std::path::MAIN_SEPARATOR;
     for (typed, path) in [
         ("  plain 文档.txt\t".to_owned(), "plain 文档.txt".to_owned()),
         ("\"quoted 文档.txt\"".into(), "quoted 文档.txt".into()),
+        (" \"pasted 文档.txt\" ".into(), "pasted 文档.txt".into()),
+        // A separator after the closing quote is the user's own text: it stays.
         (
-            format!(" \"pasted 文档.txt\"{separator} "),
-            "pasted 文档.txt".into(),
+            format!("\"pasted 文档.txt\"{separator}"),
+            format!("\"pasted 文档.txt\"{separator}"),
         ),
         (
             format!("\"folder{separator}\""),
@@ -126,9 +128,7 @@ fn every_pasted_form_of_a_file_path_requests_that_path() {
         path.to_owned(),
         format!("  {path}\t"),
         format!("\"{path}\""),
-        // Path Paste ends a pasted "Copy as path" text with a separator.
-        format!("\"{path}\"{separator}"),
-        // So it does a plain path: the file's path with a separator names the file.
+        // The file's path with a final separator still names the file.
         format!("{path}{separator}"),
     ];
     #[cfg(windows)]

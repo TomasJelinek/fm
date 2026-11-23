@@ -11,7 +11,7 @@ use midnight_ui::{Presenter, install, refresh};
 use slint::{Model, platform::Key};
 use std::{
     cell::{Cell, RefCell},
-    path::{MAIN_SEPARATOR, Path, PathBuf},
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -115,8 +115,8 @@ fn a_pasted_file_path_lists_its_folder_with_the_cursor_on_the_file() {
             _ => None,
         })
         .expect("Paste reads the clipboard through the backend");
-    // "Copy as path" text, ended with the separator that the backend's Paste adds.
-    let pasted = format!("\"{}\"{MAIN_SEPARATOR}", file.to_str().unwrap());
+    // "Copy as path" text, inserted exactly as copied.
+    let pasted = format!("\"{}\"", file.to_str().unwrap());
     h.p.borrow_mut().apply(Event::PathClipboardTextRead {
         request,
         result: Ok(Arc::from(pasted.as_str())),

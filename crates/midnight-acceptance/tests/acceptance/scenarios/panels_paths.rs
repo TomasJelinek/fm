@@ -3,9 +3,10 @@
 //! and Forward history menus; Ctrl+PageUp, Ctrl+PageDown (into a folder, never opening
 //! a file), Shift+Backspace and Ctrl+Backslash; double clicks on a folder and on `..`;
 //! Tab and Shift+Tab between the panels; the path bar: a hovered segment highlights its
-//! prefix, a right click copies it (pasted back into the path editor with a separator),
+//! prefix, a right click copies it (pasted back into the path editor exactly as copied),
 //! a long path collapses its middle into one marker that opens the whole path for
-//! editing, the blank space after the path opens the editor and Escape cancels it; the
+//! editing, the blank space after the path, to the bar's end, opens the editor, its Go
+//! button opens the typed folder as Enter does and Escape cancels it; the
 //! drive menu (Alt+F1, Alt+F2, `.` As Other Panel, the filesystem root by pointer); an
 //! empty folder and a search without matches say so. A typed path that names a file
 //! opens the file's folder with the cursor on it (quoted, with a final separator, with
@@ -437,13 +438,13 @@ fn path_bar(
                     at(app, LEFT)
                 ));
             }
-            // Pasted into the path editor it ends with the platform's separator.
+            // Pasted into the path editor it is exactly the copied text: nothing added.
+            let wanted = copied(app).unwrap_or_default();
             panel::focus_list(app, LEFT)?;
             input::chord(app.slint(), &[Key::Control], "g");
             app.settle();
             input::chord(app.slint(), &[Key::Control], "a");
             input::chord(app.slint(), &[Key::Control], "v");
-            let wanted = format!("{docs}{}", std::path::MAIN_SEPARATOR);
             if !ps::wait(app, Duration::from_secs(3), |app| {
                 app.window.get_left_path_draft() == wanted.as_str()
             }) {
@@ -519,7 +520,8 @@ fn path_bar(
         input::key(app.slint(), Key::Escape);
         app.settle();
     }
-    // The blank space after the path opens the editor; Enter opens the typed folder.
+    // The blank space after the path, to the bar's end, opens the editor; Go opens the
+    // typed folder as Enter does.
     go(app, &root.join("docs"))?;
     let blank = inspect::find_all(app.slint(), AccessibleRole::Button, "Edit folder path")
         .into_iter()
@@ -530,13 +532,19 @@ fn path_bar(
     match blank {
         None => failures.push("no blank space after the path to click".into()),
         Some(item) => {
-            let (_, _, width, _) = inspect::rect(&item);
-            if width < 31.5 {
+            let (x, y, width, height) = inspect::rect(&item);
+            let bar = app.window.get_left_path_left() + app.window.get_left_path_width();
+            // The bar's frame and inner margin: 3px on each side.
+            if width < 31.5 || x + width < bar - 6.0 {
                 failures.push(format!(
-                    "the blank space after the path is only {width} px wide"
+                    "the blank space after the path is {x:.0}..{:.0}, {width} px wide; the bar ends at {bar:.0}",
+                    x + width
                 ));
             }
-            click(app, &item);
+            // A click near the bar's right end, far from the last segment.
+            let position = LogicalPosition::new(x + width - 4.0, y + height / 2.0);
+            input::click_at(app.slint(), position);
+            app.settle();
             let current = root.join("docs").to_string_lossy().into_owned();
             if app.window.get_left_path_draft().as_str() != current {
                 failures.push(format!(
@@ -545,12 +553,25 @@ fn path_bar(
                 ));
             }
             input::replace_text(app.slint(), &root.join("images").to_string_lossy());
-            input::key(app.slint(), Key::Return);
-            if !reached(app, &root.join("images")) {
-                failures.push(format!(
-                    "Enter in the clicked path editor went to {:?}",
-                    at(app, LEFT)
-                ));
+            let go_button = inspect::find_all(app.slint(), AccessibleRole::Button, "Go")
+                .into_iter()
+                .find(|item| inspect::visible_rect(item).is_some());
+            app.screenshot(
+                context,
+                "path-editor-go",
+                "The path editor, opened by a click after the path, with its Go button",
+            );
+            match go_button {
+                None => failures.push("the open path editor shows no Go button".into()),
+                Some(go_button) => {
+                    click(app, &go_button);
+                    if !reached(app, &root.join("images")) {
+                        failures.push(format!(
+                            "Go in the clicked path editor went to {:?}",
+                            at(app, LEFT)
+                        ));
+                    }
+                }
             }
         }
     }
@@ -1061,7 +1082,7 @@ fn typed_unshown(
 
 /// Paths typed in the path editor that name a file (2b901122;
 /// docs/developer/PATH_PASTE.md): the file's folder opens with the cursor on the file, as
-/// typed, pasted ("Copy as path" quotes, the separator Paste adds) or relative; a file
+/// typed, pasted ("Copy as path" quotes, a final separator) or relative; a file
 /// the panel does not show is noted with the reason; a missing file is reported; an
 /// archive is focused, not opened; on Windows a name in other letter case finds the
 /// listed one unless the folder keeps letter case apart.
@@ -1088,10 +1109,6 @@ fn typed_files(context: &mut Context, failures: &mut Vec<String>) -> Result<(), 
     let mut variants = vec![
         ("as typed", text.clone()),
         ("in double quotes", format!("\"{text}\"")),
-        (
-            "quoted, with the separator Paste adds",
-            format!("\"{text}\"{separator}"),
-        ),
         ("with a final separator", format!("{text}{separator}")),
         ("with spaces around it", format!("  {text}  ")),
     ];

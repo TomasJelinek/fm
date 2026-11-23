@@ -839,7 +839,7 @@ mod tests {
         }
     }
     #[test]
-    fn explicit_text_read_applies_literal_path_policy_and_reports_invalid_input() {
+    fn explicit_text_read_keeps_the_literal_text_and_reports_invalid_input() {
         let id = DesktopRequestId(17);
         match execute(id, Prepared::ReadText, &mut TextReader("资料 ")) {
             Event::PathClipboardTextRead {
@@ -847,9 +847,26 @@ mod tests {
                 result: Ok(text),
             } => {
                 assert_eq!(request, id);
-                assert_eq!(&*text, format!("资料 {}", std::path::MAIN_SEPARATOR));
+                assert_eq!(&*text, "资料 ");
             }
             other => panic!("unexpected {other:?}"),
+        }
+        // A full path is pasted as copied, with or without a final separator.
+        for path in [
+            r"C:\Users\me\Documents",
+            r"C:\Users\me\Documents\",
+            "C:/Users/me/Documents/",
+            r"\\server\share\folder",
+            r"\\server\share\folder\",
+            "/home/me/docs",
+            "/home/me/docs/",
+        ] {
+            match execute(id, Prepared::ReadText, &mut TextReader(path)) {
+                Event::PathClipboardTextRead {
+                    result: Ok(text), ..
+                } => assert_eq!(&*text, path),
+                other => panic!("unexpected {other:?}"),
+            }
         }
         assert!(matches!(
             execute(id, Prepared::ReadText, &mut TextReader("bad\npath")),

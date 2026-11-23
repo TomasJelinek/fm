@@ -133,7 +133,7 @@ fn keyboard_paste_replaces_only_selection_keeps_native_undo_and_waits_for_enter(
         .set_selection_offsets(&item.window_adapter().unwrap(), &item, 0, 6);
     h.settle();
     let id = h.paste();
-    let path = format!("资料/e\u{301}{}", std::path::MAIN_SEPARATOR);
+    let path = "资料/e\u{301}".to_owned();
     h.reply(id, &path);
     assert_eq!(h.value(), format!("{path}SUFFIX"));
     assert!(
@@ -189,7 +189,7 @@ fn actual_context_menu_paste_uses_same_backend_route_and_preserves_quotes_spaces
     h.tick();
     ui::click_popup(&h.ui.window, "Paste", AccessibleRole::Text);
     let id = h.request();
-    let path = format!("\"quoted 资料\" {}", std::path::MAIN_SEPARATOR);
+    let path = "\"quoted 资料\" ".to_owned();
     h.reply(id, &path);
     assert_eq!(h.value(), path);
     assert!(
@@ -286,7 +286,7 @@ fn committed_paste_preserves_private_use_scalars_tabs_and_clears_old_ime_preedit
     item.borrow().as_ref().key_event(&event, &adapter, &item);
     h.settle();
     let id = h.paste();
-    let path = format!("private\u{f708}🦀\tpath{}", std::path::MAIN_SEPARATOR);
+    let path = "private\u{f708}🦀\tpath".to_owned();
     h.reply(id, &path);
     assert_eq!(h.value(), format!("start{path}"));
     assert!(
@@ -316,7 +316,7 @@ fn pane_switch_cancels_left_reply_and_right_compact_editor_keeps_its_own_payload
     h.sent.borrow_mut().clear();
     ui::chord(&h.ui.window, &[Key::Control], "v");
     let id = h.request();
-    let payload = format!(" literal quoted / {}", std::path::MAIN_SEPARATOR);
+    let payload = " literal quoted / ".to_owned();
     h.reply(id, &payload);
     assert_eq!(
         h.ui.window.get_right_path_draft(),
@@ -370,4 +370,25 @@ fn paste_timer_defers_conservatively_while_presenter_is_borrowed() {
     drop(held);
     h.settle();
     assert_eq!(h.value(), "beforeafter/");
+}
+
+#[test]
+fn a_pasted_full_path_replaces_the_field_with_exactly_the_copied_text() {
+    let mut h = Harness::new();
+    for path in [
+        r"C:\Users\me\Documents",
+        r"C:\Users\me\Documents\",
+        "C:/Users/me/Documents",
+        r"\server\share\folder",
+        r"\server\share\folder\",
+        "/home/me/docs",
+        "/home/me/docs/",
+    ] {
+        h.text("current folder");
+        ui::chord(&h.ui.window, &[Key::Control], "a");
+        h.settle();
+        let id = h.paste();
+        h.reply(id, path);
+        assert_eq!(h.value(), path);
+    }
 }

@@ -1,20 +1,20 @@
 # Pasting folder paths
 
 The top panel path editor treats keyboard Paste (Ctrl+V or Shift+Insert) and its
-context-menu Paste as the same explicit action. Only the pasted text receives a
-native trailing separator: Windows accepts an existing `/` or `\` and otherwise
-adds `\`; Linux accepts/adds `/`. An empty paste is unchanged. Existing text after
-the selection stays in place. Ordinary typing is not modified.
+context-menu Paste as the same explicit action. Paste inserts exactly the clipboard
+text: it adds no separator and removes none, so a full path pasted with or without a
+final `\` or `/` (a drive path, a UNC path or a Linux path) stays as copied. An empty
+paste is unchanged. Existing text after the selection stays in place. Ordinary typing
+is not modified.
 
 Spaces, quotes, combining characters and other Unicode are literal. Paste does
 not trim, unquote, normalize, expand variables, interpret URIs or open a folder.
-Enter remains the navigation action. Breadcrumb/provider identities and unchanged
-raw native paths keep their navigation routes.
+Enter, or the editor's Go button, is the navigation action. Breadcrumb/provider
+identities and unchanged raw native paths keep their navigation routes.
 
-Enter takes edited text without its surrounding whitespace and without one pair of
-surrounding double quotes, which Windows "Copy as path" adds; a separator that Paste
-added after the closing quote goes with them. The unchanged location text keeps its
-exact identity. A native path that names a file (or a link to one, a special file or
+Enter and Go take edited text without its surrounding whitespace and without one pair
+of surrounding double quotes, which Windows "Copy as path" adds. The unchanged
+location text keeps its exact identity. A native path that names a file (or a link to one, a special file or
 an archive file) opens the file's folder with the cursor on the file. The listing
 worker that failed to list the path asks the provider what it names
 (`browse_directory_identity`, following links) and sends `Event::ListingNotAFolder`
@@ -24,7 +24,7 @@ directory" failure (`io::ErrorKind::NotADirectory`); the installed native filesy
 package, the application's only browsing provider, fails a listing of a file that way
 (see the [native filesystem API](NATIVE_FILESYSTEM_API.md)). Other navigations keep their failure and
 recovery, and a missing path its error. A final separator does not make a file's
-path a folder's, as Paste ends every path with one. A file that the panel's own
+path a folder's. A file that the panel's own
 listing shows gets the cursor without a navigation. A Windows folder ignores letter
 case, so when its listing has no entry of exactly the typed name, the one entry whose
 name differs only in letter case (simple uppercase mapping of each UTF-16 unit, as
@@ -74,6 +74,18 @@ reported explicitly. Known limit: the tests do not cover every native compositor
 Linux middle-click primary-selection editing keeps Slint's own behavior;
 the explicit path-paste operation covers keyboard and context-menu Paste.
 
-Focused tests: `path_paste_ui`, UI presenter path-paste tests, engine clipboard
-tests and separate native clipboard text/transport tests. Evidence:
+Focused tests: `path_paste_ui` (including full Windows, UNC and Linux paths with and
+without a final separator), the engine's `clipboard_text` and clipboard read tests, UI
+presenter path-paste tests and separate native clipboard text/transport tests. Evidence:
 [path paste record](../verification/2026-11-07-path-paste.md).
+
+## Opening the editor and Go
+
+A click anywhere in the blank part of the path bar after the path components, up to
+the bar's right end, opens the editor with the shown path; Ctrl+G does the same from
+the keyboard. Clicking a component still opens that folder, and a right click still
+copies its path. The open editor ends in a Go button: a click on it, or Enter or Space
+while it has keyboard focus (Tab moves there from the editor), does exactly what Enter
+in the editor does, with the same file-path handling and the same errors. Escape
+cancels from either. Tests: the UI integration modules `path_bar_edit` and
+`path_bar_fit`, and `tooltips`.

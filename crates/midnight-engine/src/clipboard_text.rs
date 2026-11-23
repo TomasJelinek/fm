@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 pub(crate) const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
-pub(crate) fn prepare_pasted_path(mut text: String) -> Result<Arc<str>, &'static str> {
+/// Checks clipboard text for the path editor and returns it exactly as copied: no
+/// separator, quote, whitespace or letter case is added or removed.
+pub(crate) fn prepare_pasted_path(text: String) -> Result<Arc<str>, &'static str> {
     if text.len() > MAX_TEXT_BYTES {
         return Err("Clipboard text exceeds its 4 MiB operation resource budget.");
     }
@@ -12,9 +14,6 @@ pub(crate) fn prepare_pasted_path(mut text: String) -> Result<Arc<str>, &'static
             "Clipboard text contains NUL or a line break and cannot be pasted as a literal single-line path.",
         );
     }
-    if !text.is_empty() && !text.ends_with(std::path::is_separator) {
-        text.push(std::path::MAIN_SEPARATOR);
-    }
     Ok(Arc::from(text))
 }
 
@@ -22,29 +21,30 @@ pub(crate) fn prepare_pasted_path(mut text: String) -> Result<Arc<str>, &'static
 mod tests {
     use super::*;
     #[test]
-    fn pasted_path_keeps_literal_text_and_native_termination() {
-        let separator = std::path::MAIN_SEPARATOR;
+    fn pasted_path_keeps_exactly_the_copied_text() {
         for text in [
+            "",
             "资料/e\u{301}",
             "relative folder ",
             "\"quoted path\"",
             "..",
             "private\u{f708}🦀\tpath",
+            "/",
+            "folder/",
+            "folder\\",
+            r"C:\Users\me\Documents",
+            r"C:\Users\me\Documents\",
+            "C:/Users/me/Documents",
+            "C:/Users/me/Documents/",
+            r"\\server\share\folder",
+            r"\\server\share\folder\",
+            r"\\?\C:\very\long",
+            "/home/me/docs",
+            "/home/me/docs/",
+            "/home/me/report.txt",
         ] {
-            assert_eq!(
-                &*prepare_pasted_path(text.into()).unwrap(),
-                format!("{text}{separator}")
-            );
-        }
-        for text in ["", "/", "folder/"] {
             assert_eq!(&*prepare_pasted_path(text.into()).unwrap(), text);
         }
-        let expected = if std::path::is_separator('\\') {
-            "folder\\".into()
-        } else {
-            format!("folder\\{separator}")
-        };
-        assert_eq!(&*prepare_pasted_path("folder\\".into()).unwrap(), expected);
     }
     #[test]
     fn paste_refuses_unrepresentable_single_line_text_and_oversized_payloads() {

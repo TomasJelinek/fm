@@ -23,20 +23,13 @@ pub(crate) struct FileTarget {
 }
 
 /// What edited path text names: the text without surrounding whitespace and without
-/// one pair of surrounding double quotes, which Windows "Copy as path" adds. Path Paste
-/// ends what it pastes with a separator (`PATH_PASTE.md`), after a closing quote too;
-/// such a separator belongs to no path. Other separators stay: a navigation drops a
-/// final one, so the path of a file still names the file with one.
+/// one pair of surrounding double quotes, which Windows "Copy as path" adds. Separators
+/// stay: a navigation drops a final one, so the path of a file still names the file
+/// with one.
 pub(super) fn typed_path(text: &str) -> &str {
     let text = text.trim();
     text.strip_prefix('"')
-        .and_then(|quoted| {
-            quoted.strip_suffix('"').or_else(|| {
-                quoted
-                    .strip_suffix(std::path::is_separator)?
-                    .strip_suffix('"')
-            })
-        })
+        .and_then(|quoted| quoted.strip_suffix('"'))
         .unwrap_or(text)
 }
 

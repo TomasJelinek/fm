@@ -1,6 +1,7 @@
 //! WIN-3 of the Windows acceptance run (docs/developer/acceptance/windows.md): the path
 //! bar's components, drawn one caption each, stay inside the bar together with the
-//! 32px "Edit folder path" area after them, at every width. Each drawn caption is
+//! "Edit folder path" area after them, at least 32px wide and reaching the bar's end,
+//! at every width. Each drawn caption is
 //! rounded up to a whole pixel while the bar measures joined captions, which pushed
 //! "Edit folder path" up to several pixels out of the bar's clip where a long path
 //! just fitted. Measured with the fonts of the platform the test runs on, over a sweep
@@ -117,9 +118,11 @@ fn path_components_and_the_edit_area_stay_inside_the_bar_at_every_width() {
             test.layout();
             let ((x, _, w, _), (clip_x, _, clip_w, _)) = edit_area(&test);
             let outside = (x + w - (clip_x + clip_w)).max(clip_x - x);
-            if outside > 0.5 || w < 31.5 {
+            // The area reaches the bar's end: all the room after the components edits.
+            let short = clip_x + clip_w - (x + w);
+            if outside > 0.5 || short > 0.5 || w < 31.5 {
                 findings.push(format!(
-                    "theme {scheme}, density {density}, font {font}, window {width}px: Edit folder path at {x:.0}..{:.0}, {w:.0}px wide, reaches {outside:.1}px outside {clip_x:.0}..{:.0}",
+                    "theme {scheme}, density {density}, font {font}, window {width}px: Edit folder path at {x:.0}..{:.0}, {w:.0}px wide, reaches {outside:.1}px outside and ends {short:.1}px before the end of {clip_x:.0}..{:.0}",
                     x + w,
                     clip_x + clip_w
                 ));

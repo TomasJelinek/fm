@@ -65,7 +65,7 @@ combinations. Helpers of these scenarios are in
 | N-13 | A double click opens a folder; on `..` goes up with the cursor on the folder left | `panels_paths` › keys | PASS |
 | N-14 | Tab and Shift+Tab switch the active panel and its keyboard focus | `panels_paths` › keys | PASS |
 | N-15 | Ctrl+G opens a typed path | `files_navigation`; `panels_paths` | PASS |
-| N-46 | A typed or pasted path of a file opens the file's folder with the cursor on the file, nothing marked, no notice, the keyboard in the list: as typed, in double quotes, quoted with the separator Paste adds, with a final separator, with spaces around it, with `/` separators (Windows); a name relative to the shown folder moves the cursor without a new listing. In process, browsing through the engine's own local filesystem | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); for the application see N-46b |
+| N-46 | A typed or pasted path of a file opens the file's folder with the cursor on the file, nothing marked, no notice, the keyboard in the list: as typed, in double quotes, with a final separator, with spaces around it, with `/` separators (Windows); a name relative to the shown folder moves the cursor without a new listing. In process, browsing through the engine's own local filesystem | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); for the application see N-46b |
 | N-46b | The same through the installed native filesystem package, as the application browses (staged): the typed path of a plain file and of an archive opens its folder with the cursor on the file, the archive not opened | `panels_root_keys` › typed files | PASS (Windows `20261122-153059`, Linux `20261122-152841`; P-8 fixed in 7ab1e8ac) |
 | N-47 | A typed path of a file the panel does not show opens its folder and the details strip says why: "Not shown" / ".dot.txt is hidden" with "Ctrl+H shows them", "filter-me.log is filtered out" with "Ctrl+F12 edits the filter"; a missing file's path reports "Cannot open folder" naming it and the panel keeps its folder | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); no staged check yet |
 | N-48 | A typed archive path focuses the archive in its folder without opening it (in process; staged: N-46b) | `panels_paths` › typed file paths | staged-only: PASS in process (Windows `20261122-153059`, Linux `20261122-152841`); for the application see N-46b |
@@ -75,9 +75,9 @@ combinations. Helpers of these scenarios are in
 | N-17 | A path segment click opens that ancestor | `files_navigation` | PASS |
 | N-18 | Hovering a path segment highlights its prefix | `panels_paths` › path bar | PASS |
 | N-19 | Right-clicking a segment copies its raw prefix without navigating | `panels_paths` › path bar (clipboard content) | PASS |
-| N-20 | Pasting into the path editor appends a separator | `panels_paths` › path bar | PASS |
+| N-20 | Pasting into the path editor inserts exactly the copied text | `panels_paths` › path bar | PASS (Windows `20261123-114246`) |
 | N-21 | A long path shows whole segments, one middle marker and its last folder; the marker opens the whole path for editing | `panels_paths` › long path | PASS |
-| N-22 | The blank space after the path opens the editor (at least 32 px); Enter opens; Escape cancels and returns to the list | `panels_paths` › path bar | PASS |
+| N-22 | The blank space after the path, to the bar's end, opens the editor (at least 32 px); its Go button opens the typed folder; Escape cancels and returns to the list | `panels_paths` › path bar | PASS (Windows `20261123-114246`) |
 | N-23 | Alt+F1 and Alt+F2 open each panel's drive menu; Escape closes it without navigating | `panels_paths` › drives | PASS |
 | N-24 | `.` in the drive menu opens the other panel's folder (As Other Panel) | `panels_paths` › drives | PASS |
 | N-25 | The drive menu's filesystem root by pointer | `panels_paths` › drives | PASS |
