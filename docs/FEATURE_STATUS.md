@@ -258,8 +258,11 @@ How to read it:
 
 - **Windows and Linux:** Ctrl+Shift+C compares two files: text side by side, images,
   and a streamed hex comparison of any other pair. Options › Comparators chooses the
-  comparator for each file type. Compare directories marks the differences by
-  metadata, optionally by contents and with subfolders.
+  comparator for each file type. Compare directories selects the differences as
+  Open Salamander does (size, time with tolerance and daylight saving, attributes,
+  contents, subfolders, ignore masks), with progress and Cancel in its dialog, the
+  result below the active panel and per-row match badges in the panels' inline
+  subfolders (0.5.1).
 - **Open:** the time to the first frame is not measured on Linux (COMPARE-01); image
   and hex comparisons report a change of the change time alone as a change
   (COMPARE-02).

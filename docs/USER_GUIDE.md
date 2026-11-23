@@ -1115,16 +1115,23 @@ current keys.
   The normal panel width ratio is saved automatically after adjustment and restored
   on the next startup, including when the window size changes.
 - Ctrl+F10 or **Compare directories** in the shared top toolbar compares the
-  two displayed native directories on the backend, selecting
-  missing, larger or newer files. Size and modified time are enabled by default,
-  with a two-second timestamp tolerance. Name-case matching and unmatched
-  directories are configurable. Matching metadata does **not** verify file contents:
-  **Compare contents** reads same-sized files that the metadata calls equal byte by
-  byte and selects both when they differ. **Include subfolders** compares
-  same-named folders recursively and selects a folder on the side where it contains
-  differences (an expanded tree also selects the differing subfolders it shows).
-  The dialog closes at Compare; the status line shows progress and the result, and
-  Ctrl+F10 again offers Cancel. See [Compare directories](developer/COMPARE_DIRECTORIES.md).
+  two displayed native directories on the backend as Open Salamander does, and
+  selects the differences in both panels: files present in one panel only, and of
+  same-named files the larger (**Size**) or newer (**Date and time**) one, or both
+  when **Attributes** or **Content** differ. Size and time are on by default; time
+  differences up to 2 seconds are ignored (the tolerance is the small field beside
+  the time option), and differences of exactly one or two hours (daylight saving)
+  can be ignored too. Matching metadata does **not** verify file contents: **Content**
+  reads same-sized files byte by byte. **Compare subfolders** compares same-named
+  folders with everything inside them and selects a folder that differs anywhere
+  inside in both panels; every compared row then shows a badge at the end of its
+  name: **=** matches, **≠** differs, **+** exists in this panel only, **?** could not
+  be compared; expand a folder to see which subfolders and files differ. Folders in
+  one panel only can be selected without comparing subfolders, and files or folders
+  can be ignored by masks. While contents or subfolders are compared, the dialog shows
+  "Comparing … with …", the counts and a progress bar; Cancel, Escape or Alt+C stops
+  it and leaves the panels unchanged. The result is a line below the active panel.
+  See [Compare directories](developer/COMPARE_DIRECTORIES.md).
 - Ctrl+F or Alt+F7 **Find** searches names (masks, regular expressions or metadata
   expressions), sizes, dates and contents; the content query can be a regular
   expression matched per line. **Identical files** finds groups of files with the

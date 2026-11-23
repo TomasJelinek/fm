@@ -41,7 +41,7 @@ fn start_tree_comparison() -> (Presenter, Arc<CompareRequest>) {
     let mut p = loaded_comparison();
     let commands = RefCell::new(Vec::new());
     p.open_comparison();
-    p.submit_comparison(CompareOptions::default(), &|command| {
+    p.submit_comparison(CompareOptions::default(), Default::default(), &|command| {
         commands.borrow_mut().push(command);
         true
     });
@@ -80,12 +80,17 @@ fn compared(request: Arc<CompareRequest>) -> Event {
                 )),
                 None,
             ],
+            marks: None,
             unknown: 0,
             ambiguous: 0,
             differing_folders: 0,
+            compared_folders: 0,
             content_differences: 0,
             content_files: 0,
             content_bytes: 0,
+            walked_folders: 0,
+            walked_files: 0,
+            dst_shifts: 0,
             skipped: 0,
             errors: 0,
             limited: false,
@@ -187,11 +192,11 @@ fn rejected_tree_comparison_selection_reports_failure_without_success_claim() {
             .is_some_and(|(_, body)| body.contains("Compare again"))
     );
     assert!(
-        p.comparison_status().is_none(),
+        p.comparison_note(p.active).is_none(),
         "no status line claims the selection that was not applied"
     );
     let commands = RefCell::new(Vec::new());
-    p.submit_comparison(CompareOptions::default(), &|command| {
+    p.submit_comparison(CompareOptions::default(), Default::default(), &|command| {
         commands.borrow_mut().push(command);
         true
     });
@@ -241,7 +246,7 @@ fn waiting_comparison_dispatches_on_the_last_tree_selection_receipt() {
     assert!(p.bulk_selection(PaneId::Left, SelectionOperation::All, &|_| true));
     let view = p.panes[0].tree_view().cloned().unwrap();
     let revision = p.panes[0].tree.revision;
-    p.submit_comparison(CompareOptions::default(), &|command| {
+    p.submit_comparison(CompareOptions::default(), Default::default(), &|command| {
         assert!(!matches!(command, Command::CompareDirectories(_)));
         true
     });
@@ -309,7 +314,7 @@ fn waiting_comparison_dispatches_when_tree_search_clear_is_acknowledged() {
         })
         .expect("tree search request");
     p.apply_with_sender(reprojected(request), &|_| true);
-    p.submit_comparison(CompareOptions::default(), &send);
+    p.submit_comparison(CompareOptions::default(), Default::default(), &send);
     let commands = sent.replace(Vec::new());
     assert!(
         !commands

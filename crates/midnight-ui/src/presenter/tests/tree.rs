@@ -572,7 +572,7 @@ fn dropped_adopted_session_cancels_a_comparison_that_waits_for_it() {
         &|_| false,
     );
     p.open_comparison();
-    p.submit_comparison(CompareOptions::default(), &|_| false);
+    p.submit_comparison(CompareOptions::default(), Default::default(), &|_| false);
     assert!(p.comparison.busy, "the comparison waits for the tree");
     let sent = RefCell::new(Vec::new());
     p.apply_with_sender(

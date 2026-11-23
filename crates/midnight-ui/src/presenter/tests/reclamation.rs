@@ -87,7 +87,7 @@ fn shutdown_leaves_no_presenter_reference_to_a_compared_listing() {
     let weak_entries = Arc::downgrade(&p.panes[0].entries);
     let weak_index = Arc::downgrade(&p.panes[0].index);
     p.open_comparison();
-    p.submit_comparison(CompareOptions::default(), &|_| true);
+    p.submit_comparison(CompareOptions::default(), Default::default(), &|_| true);
     assert!(p.comparison.busy, "the request captured both listings");
     p.retire_all();
     let retired = p.take_retired();

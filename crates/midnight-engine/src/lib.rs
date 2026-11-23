@@ -542,6 +542,7 @@ impl EngineServices {
         let external_comparator_service = self.user_commands.clone();
         let comparison_services = comparison::Services {
             find: self.find.clone(),
+            transfer: self.transfers.clone(),
             scope: Some(scope.clone()),
         };
         let find_archives = self.archive_capture.clone().map(|capture| {

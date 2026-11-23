@@ -426,7 +426,7 @@ export component OperationDialog inherits Rectangle {
                     name := ThemedLineEdit {
                         min-height: root.name-height; preferred-height: root.name-height;
                         max-height: root.name-height;
-                        visible: root.has-name;
+                        visible: root.has-name; clear-button: true;
                         accessible-label: root.input-label == "" ? root.title : root.input-label;
                         accessible-description: root.name-missing ? root.name-reason
                             : root.field-note && !root.links-note ? root.note-text : "";

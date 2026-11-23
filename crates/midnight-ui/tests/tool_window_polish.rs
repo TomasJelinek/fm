@@ -17,7 +17,8 @@ use i_slint_core::{
     window::WindowInner,
 };
 use midnight_ui::{
-    ChecksumDraft, ChecksumWindow, ComparisonView, JobsView, JobsWindow, OperationRow, Theme,
+    ChecksumDraft, ChecksumWindow, ComparisonChoices, ComparisonView, JobsView, JobsWindow,
+    OperationRow, Theme,
 };
 use slint::{
     Color, ComponentHandle, Model, ModelRc, SharedString, VecModel,
@@ -58,19 +59,17 @@ fn settle(test: &mut ui::TestUi) {
 fn compare_directories(test: &mut ui::TestUi) -> Rc<RefCell<Vec<Submission>>> {
     let submissions = Rc::new(RefCell::new(Vec::new()));
     let sink = submissions.clone();
-    test.window.on_submit_comparison(
-        move |size, time, case, tolerance, directories, contents, subfolders| {
-            sink.borrow_mut().push((
-                size,
-                time,
-                case,
-                tolerance.to_string(),
-                directories,
-                contents,
-                subfolders,
-            ));
-        },
-    );
+    test.window.on_submit_comparison(move |choices| {
+        sink.borrow_mut().push((
+            choices.by_size,
+            choices.by_modified,
+            choices.case_sensitive,
+            choices.tolerance_seconds.to_string(),
+            choices.unmatched_directories,
+            choices.by_content,
+            choices.recursive,
+        ));
+    });
     let weak = test.window.as_weak();
     test.window.on_cancel_comparison(move || {
         let window = weak.upgrade().unwrap();
@@ -82,9 +81,12 @@ fn compare_directories(test: &mut ui::TestUi) -> Rc<RefCell<Vec<Submission>>> {
         open: true,
         left_path: "C:\\文档\\left".into(),
         right_path: "C:\\文档\\right".into(),
-        by_size: true,
-        by_modified: true,
-        tolerance_seconds: "2".into(),
+        choices: ComparisonChoices {
+            by_size: true,
+            by_modified: true,
+            tolerance_seconds: "2".into(),
+            ..Default::default()
+        },
         ..Default::default()
     });
     settle(test);

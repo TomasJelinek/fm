@@ -11,7 +11,7 @@ mod checksums_tests;
 mod choices;
 mod comparator_draft;
 mod comparators;
-mod comparison;
+pub(crate) mod comparison;
 mod copies;
 mod copy_decisions;
 mod copy_dialog;

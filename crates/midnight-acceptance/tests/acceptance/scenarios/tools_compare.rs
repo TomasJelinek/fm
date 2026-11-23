@@ -1,26 +1,30 @@
-//! Compare directories (Ctrl+F10): every option of the dialog on identical,
-//! asymmetric, nested and unreadable trees, Compare contents and Include subfolders
-//! included. Compare closes the dialog at once, the differences become each panel's
-//! selection and no result message appears; invalid options are reported in the
-//! dialog, which stays open. A long content comparison (two 24 GiB sparse files) shows
-//! its progress on the status line, refuses Create folder, Rename, New file, Delete,
-//! Copy, Paste and Show hidden files with the reason while it runs, shows its progress
-//! and Cancel in the reopened dialog, and Cancel ends it without selecting anything; the
-//! next comparison runs normally; the toolbar's button opens the dialog, and Escape in it
-//! cancels a running comparison, selecting nothing.
+//! Compare directories (Ctrl+F10), by Open Salamander's rules: every option of the
+//! dialog on identical, asymmetric, nested and unreadable trees, contents and
+//! subfolders included. A metadata comparison closes the dialog at once; one with
+//! contents or subfolders keeps the dialog open with "Comparing … with …", its counts,
+//! a progress bar and Cancel, then closes it. The differences become each panel's
+//! selection (a differing folder in both panels), one line below the active panel
+//! reports the result, and no line appears at the bottom of the window. With
+//! subfolders every compared row shows whether it matches, also inside an expanded
+//! folder. Invalid options are reported in the dialog, which stays open. A long
+//! content comparison (two 8 GiB sparse files, deleted afterwards) is cancelled by
+//! the Cancel button, by Escape and by Alt+C within a moment, selecting nothing; the
+//! next comparison runs normally.
 use crate::{
     Context,
     app::{App, Config},
-    input, inspect, panel, tools_support as tools,
+    files_support, input, inspect,
+    options_support::SettingsStore,
+    panel, tools_support as tools,
 };
 use i_slint_core::items::AccessibleRole;
-use midnight_core::PaneId;
+use midnight_core::{PaneId, PreferenceTheme};
 use slint::platform::{Key, WindowAdapter};
 use std::{
     collections::BTreeSet,
     fs,
     path::Path,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// The base modification time of every generated file (2023-11-14).
@@ -92,6 +96,8 @@ fn asymmetric(root: &Path) -> Result<(), String> {
     tools::write_at(&root.join("right/dir-both/deeper/right.txt"), b"y", at(0))?;
     tools::write_at(&root.join("left/dir-both/shared.txt"), b"same", at(5))?;
     tools::write_at(&root.join("right/dir-both/shared.txt"), b"same", at(5))?;
+    tools::write_at(&root.join("left/dir-both/equal/e.txt"), b"e", at(5))?;
+    tools::write_at(&root.join("right/dir-both/equal/e.txt"), b"e", at(5))?;
     tools::write_at(&root.join("left/dir-left-only/file.txt"), b"x", at(0))?;
     tools::write_at(&root.join("right/dir-right-only/file.txt"), b"x", at(0))?;
     Ok(())
@@ -126,19 +132,21 @@ fn open_dialog(app: &mut App) -> Result<(), String> {
 fn set_options(app: &mut App, options: Options) -> Result<(), String> {
     let main = app.main.clone();
     let window = main.window();
-    // Include subfolders disables Select unmatched directories: clear it first.
-    tools::set_check(app, window, "Include subfolders", false)?;
+    // Compare subfolders disables Select one-sided folders, and an unticked time the
+    // tolerance field: clear the one, tick the other first.
+    tools::set_check(app, window, "Compare subfolders", false)?;
+    tools::set_check(app, window, "Compare modification time", true)?;
+    input::fill(window, "Time tolerance in seconds", options.tolerance)?;
     for (label, wanted) in [
         ("Compare file size", options.size),
         ("Compare modification time", options.time),
         ("Compare contents", options.contents),
         ("Match names with exact case", options.exact_case),
-        ("Select unmatched directories", options.directories),
-        ("Include subfolders", options.subfolders),
+        ("Select one-sided folders", options.directories),
+        ("Compare subfolders", options.subfolders),
     ] {
         tools::set_check(app, window, label, wanted)?;
     }
-    input::fill(window, "Time tolerance in seconds", options.tolerance)?;
     app.settle();
     Ok(())
 }
@@ -154,35 +162,55 @@ fn click_compare(app: &App) -> Result<(), String> {
     Ok(())
 }
 
-/// Compare with `options` and return both panels' selections. Verifies that the
-/// dialog closed at the click, before the result arrived, and that no notice or
-/// other window reports the result.
+/// The result line below the left panel, where the comparisons start.
+fn result_line(app: &App) -> String {
+    app.window.get_left_watch_status().to_string()
+}
+
+/// No line at the bottom of the window reports a comparison (the owner's report).
+fn no_bottom_line(app: &App) -> Result<(), String> {
+    let status = app.window.get_desktop_status().to_string();
+    if status.starts_with("Compar")
+        || app.window.get_desktop_feedback_important() && status.contains("ompar")
+    {
+        return Err(format!(
+            "the bottom line reports the comparison: {status:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Compare with `options` and return both panels' selections. A metadata comparison
+/// closes the dialog at the click; one with contents or subfolders keeps it open with
+/// its progress until it ends. No notice or other window reports the result: one line
+/// below the left panel does.
 fn compare(app: &mut App, options: Options) -> Result<[BTreeSet<String>; 2], String> {
     open_dialog(app)?;
     set_options(app, options)?;
     let tools_before = app.tool_windows().len();
     click_compare(app)?;
-    // The callback publishes the closed dialog synchronously, while the Engine works.
+    let long = options.contents || options.subfolders;
+    // The callback publishes the dialog's state synchronously, while the Engine works.
     let view = app.window.get_comparison_view();
-    if view.open {
+    if !view.error.is_empty() {
+        return Err(format!("Compare was refused: {}", view.error));
+    }
+    if view.open != long || view.running != long {
         return Err(format!(
-            "the dialog stayed open after Compare (error {:?})",
-            view.error
+            "after Compare the dialog is open={} running={} (contents or subfolders: {long})",
+            view.open, view.running
         ));
     }
-    // The result: a summary in the dialog's state, or a "Compared: …" footer status
-    // line (newer builds), or an error.
     app.until("the comparison result", |app| {
         let view = app.window.get_comparison_view();
-        !view.busy
-            && (!view.summary.is_empty()
-                || !view.error.is_empty()
-                || footer_status(app).is_some()
-                || tools::shown_notice(app).is_some())
+        !view.busy && (!view.open || !view.error.is_empty() || !view.summary.is_empty())
     });
     let view = app.window.get_comparison_view();
     if !view.error.is_empty() {
         return Err(format!("the comparison failed: {}", view.error));
+    }
+    if view.open {
+        return Err(format!("the dialog stayed open: {}", view.summary));
     }
     if let Some(notice) = tools::shown_notice(app) {
         return Err(format!("a result notice appeared: {notice:?}"));
@@ -193,38 +221,29 @@ fn compare(app: &mut App, options: Options) -> Result<[BTreeSet<String>; 2], Str
             tools::tool_titles(app)
         ));
     }
+    no_bottom_line(app)?;
     let both = [selected(app, PaneId::Left), selected(app, PaneId::Right)];
-    // Where the footer reports the result, its counts are the panels' selections.
-    if let Some(status) = footer_status(app) {
-        let wanted = if both[0].is_empty() && both[1].is_empty() {
-            "Compared: no differences for the chosen criteria".to_owned()
-        } else {
-            format!(
-                "Compared: {} selected in the left panel, {} in the right",
-                both[0].len(),
-                both[1].len()
-            )
-        };
-        if !status.starts_with(&wanted) {
-            return Err(format!(
-                "the footer reads {status:?}; the panels show {} and {} selected",
-                both[0].len(),
-                both[1].len()
-            ));
-        }
+    let line = result_line(app);
+    let wanted = if both[0].is_empty() && both[1].is_empty() {
+        "Compared: The files in the two folders".to_owned()
+    } else {
+        format!(
+            "Compared: {} selected here, {} in the right panel",
+            both[0].len(),
+            both[1].len()
+        )
+    };
+    if !line.starts_with(&wanted) {
+        return Err(format!(
+            "below the left panel: {line:?}; the panels show {} and {} selected",
+            both[0].len(),
+            both[1].len()
+        ));
+    }
+    if !inspect::visible_texts(app.slint()).contains(&line) {
+        return Err(format!("the result line {line:?} is not shown"));
     }
     Ok(both)
-}
-
-/// The footer's comparison status, when the build reports it there.
-fn footer_status(app: &App) -> Option<String> {
-    let status = app.window.get_desktop_status().to_string();
-    if status.starts_with("Compared:") {
-        return Some(status);
-    }
-    inspect::visible_texts(app.slint())
-        .into_iter()
-        .find(|text| text.starts_with("Compared:"))
 }
 
 fn expect(
@@ -243,27 +262,53 @@ fn expect(
     Ok(())
 }
 
-/// Reopen the dialog, read its summary, close it.
-fn summary(app: &mut App, context: &mut Context, shot: Option<&str>) -> Result<String, String> {
-    open_dialog(app)?;
-    let summary = app.window.get_comparison_view().summary.to_string();
-    let main = app.main.clone();
-    if !summary.is_empty() && !inspect::visible_texts(main.window()).contains(&summary) {
-        return Err(format!("the dialog does not show its summary {summary:?}"));
+fn line_has(app: &App, case: &str, parts: &[&str]) -> Result<(), String> {
+    let line = result_line(app);
+    let details = app.window.get_left_watch_details().to_string();
+    for part in parts {
+        if !line.contains(part) && !details.contains(part) {
+            return Err(format!(
+                "{case}: {part:?} is neither in {line:?} nor in its details {details:?}"
+            ));
+        }
     }
-    if let Some(name) = shot {
-        app.screenshot(context, name, "The reopened dialog shows the last summary");
+    Ok(())
+}
+
+/// Each panel row's comparison mark: 1 matches, 2 differs, 3 this panel only.
+fn marks(app: &App, pane: PaneId) -> Vec<(String, i32)> {
+    app.rows(pane)
+        .iter()
+        .filter(|row| !row.parent_entry)
+        .map(|row| (row.name.to_string(), row.compare_mark))
+        .collect()
+}
+
+fn expect_marks(app: &App, case: &str, pane: PaneId, wanted: &[(&str, i32)]) -> Result<(), String> {
+    let shown = marks(app, pane);
+    for (name, mark) in wanted {
+        let found = shown
+            .iter()
+            .find(|(row, _)| row == name)
+            .map(|(_, mark)| *mark);
+        if found != Some(*mark) {
+            return Err(format!(
+                "{case}: {name} has mark {found:?}, expected {mark}; rows {shown:?}"
+            ));
+        }
     }
-    input::key(app.slint(), Key::Escape);
-    app.until("the Compare dialog to close", |app| {
-        !app.window.get_comparison_view().open && !app.window.get_embedded_modal_open()
-    });
-    Ok(summary)
+    Ok(())
 }
 
 pub fn compare_directories(context: &mut Context) -> Result<(), String> {
     let root = context.work.join("compare");
+    let outcome = compare_all(context, &root);
+    // Leave nothing large behind in the work folder.
+    let _ = fs::remove_dir_all(root.join("slow"));
+    outcome
+}
 
+fn compare_all(context: &mut Context, root: &Path) -> Result<(), String> {
     // Identical trees: nothing differs, under every option.
     for side in ["left", "right"] {
         for (name, size, offset) in [("a.txt", 5, 0), ("b.bin", 4096, 7), ("c.md", 0, 99)] {
@@ -284,6 +329,7 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
     ));
     let both = compare(&mut app, DEFAULTS)?;
     expect("identical trees", &both, &[], &[])?;
+    line_has(&app, "identical trees", &["appear to be identical"])?;
     let both = compare(
         &mut app,
         Options {
@@ -294,13 +340,8 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
         },
     )?;
     expect("identical trees, every option", &both, &[], &[])?;
-    let text = summary(&mut app, context, Some("identical-summary"))?;
-    // Builds that report on the footer instead may leave the summary empty.
-    if !text.is_empty() && text != "Displayed metadata matches for the chosen criteria." {
-        return Err(format!("identical trees summarised as {text:?}"));
-    }
-    // Compare contents reads the three same-sized pairs (the empty one too) and
-    // Include subfolders walks the matched folder: identical bytes, still no difference.
+    // Contents reads the two same-sized pairs with bytes (an empty pair is equal
+    // unread) and subfolders walk the matched folder: identical, no difference.
     let both = compare(
         &mut app,
         Options {
@@ -310,49 +351,55 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
         },
     )?;
     expect("identical trees, contents and subfolders", &both, &[], &[])?;
-    let status = footer_status(&app).unwrap_or_default();
-    if !status.contains("3 file pairs read") {
-        return Err(format!(
-            "identical contents: the footer reads {status:?}, expected 3 file pairs read"
-        ));
-    }
+    line_has(
+        &app,
+        "identical contents",
+        &["are identical", "Files read byte by byte: 2 pairs"],
+    )?;
+    expect_marks(
+        &app,
+        "identical marks",
+        PaneId::Right,
+        &[("a.txt", 1), ("c.md", 1), ("folder", 1)],
+    )?;
     app.shutdown()?;
 
     let left = root.join("asymmetric/left");
     let right = root.join("asymmetric/right");
     let mut app = App::start(Config::new(&left, &right));
+    open_dialog(&mut app)?;
+    app.screenshot(
+        context,
+        "dialog-12-light",
+        "Compare directories, 12 px, light",
+    );
+    input::key(app.slint(), Key::Escape);
+    app.until("the dialog to close", |app| {
+        !app.window.get_comparison_view().open
+    });
     // Size and time with the default two-second tolerance and exact case.
+    let default_left = [
+        "only-left.txt",
+        "bigger-left.dat",
+        "newer-left.txt",
+        "README.TXT",
+    ];
+    let default_right = [
+        "only-right.txt",
+        "bigger-right.dat",
+        "newer-right.txt",
+        "readme.txt",
+    ];
     let both = compare(&mut app, DEFAULTS)?;
     app.screenshot(
         context,
         "asymmetric-default",
-        "Differences selected in both panels (size, time, exact case)",
+        "Differences selected in both panels (size, time, exact case); the result below the active panel",
     );
-    expect(
-        "defaults",
-        &both,
-        &[
-            "only-left.txt",
-            "bigger-left.dat",
-            "newer-left.txt",
-            "README.TXT",
-        ],
-        &[
-            "only-right.txt",
-            "bigger-right.dat",
-            "newer-right.txt",
-            "readme.txt",
-        ],
-    )?;
+    expect("defaults", &both, &default_left, &default_right)?;
     let status = app.window.get_left_status().to_string();
     if !status.contains("4 selected") {
         return Err(format!("the left status reads {status:?}"));
-    }
-    let text = summary(&mut app, context, Some("asymmetric-summary"))?;
-    if !text.is_empty()
-        && !text.starts_with("Found 4 differences in the first directory and 4 in the second")
-    {
-        return Err(format!("the summary reads {text:?}"));
     }
     // Size only: newer files are no longer differences.
     let both = compare(
@@ -416,12 +463,7 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
             "at-tolerance.txt",
             "README.TXT",
         ],
-        &[
-            "only-right.txt",
-            "bigger-right.dat",
-            "newer-right.txt",
-            "readme.txt",
-        ],
+        &default_right,
     )?;
     // Tolerance 1: a difference equal to the tolerance counts as equal.
     let both = compare(
@@ -441,12 +483,7 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
             "at-tolerance.txt",
             "README.TXT",
         ],
-        &[
-            "only-right.txt",
-            "bigger-right.dat",
-            "newer-right.txt",
-            "readme.txt",
-        ],
+        &default_right,
     )?;
     // Case folding pairs README.TXT with readme.txt, which then match.
     let both = compare(
@@ -462,8 +499,7 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
         &["only-left.txt", "bigger-left.dat", "newer-left.txt"],
         &["only-right.txt", "bigger-right.dat", "newer-right.txt"],
     )?;
-    // Unmatched directories: folders without a partner join the selection; the
-    // matched dir-both is never selected (no recursion).
+    // One-sided folders join the selection; the matched dir-both is not compared.
     let both = compare(
         &mut app,
         Options {
@@ -471,49 +507,27 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
             ..DEFAULTS
         },
     )?;
-    app.screenshot(
-        context,
-        "asymmetric-directories",
-        "Select unmatched directories adds the one-sided folders",
-    );
     expect(
-        "unmatched directories",
+        "one-sided folders",
         &both,
-        &[
-            "only-left.txt",
-            "bigger-left.dat",
-            "newer-left.txt",
-            "README.TXT",
-            "dir-left-only",
-        ],
-        &[
-            "only-right.txt",
-            "bigger-right.dat",
-            "newer-right.txt",
-            "readme.txt",
-            "dir-right-only",
-        ],
+        &[&default_left[..], &["dir-left-only"]].concat(),
+        &[&default_right[..], &["dir-right-only"]].concat(),
     )?;
 
-    // Compare contents: the same-sized pairs that size and time call equal are read
-    // byte by byte. Their bytes differ ('l' against 'r'), so both sides are selected;
-    // the pairs that size or time already separate are not read.
-    let default_left = [
-        "only-left.txt",
+    // Content (Salamander): different sizes select both files; equal sizes are read
+    // unless both files are selected already ('l' against 'r' differ). The newer
+    // pairs are read too, so both of their files end up selected.
+    let both_sides = [
         "bigger-left.dat",
-        "newer-left.txt",
-        "README.TXT",
-    ];
-    let default_right = [
-        "only-right.txt",
         "bigger-right.dat",
+        "newer-left.txt",
         "newer-right.txt",
-        "readme.txt",
+        "same.txt",
+        "within-tolerance.txt",
+        "at-tolerance.txt",
     ];
-    let read = ["same.txt", "within-tolerance.txt", "at-tolerance.txt"];
-    let with = |base: &[&'static str], extra: &[&'static str]| -> Vec<&'static str> {
-        base.iter().chain(extra).copied().collect()
-    };
+    let contents_left = [&["only-left.txt", "README.TXT"][..], &both_sides].concat();
+    let contents_right = [&["only-right.txt", "readme.txt"][..], &both_sides].concat();
     let both = compare(
         &mut app,
         Options {
@@ -524,22 +538,19 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
     app.screenshot(
         context,
         "asymmetric-contents",
-        "Compare contents also selects same-sized files whose bytes differ",
+        "Content: different sizes and different bytes select both files",
     );
-    expect(
+    expect("contents", &both, &contents_left, &contents_right)?;
+    line_has(
+        &app,
         "contents",
-        &both,
-        &with(&default_left, &read),
-        &with(&default_right, &read),
+        &[
+            "5 with different contents",
+            "Files read byte by byte: 5 pairs",
+        ],
     )?;
-    let status = footer_status(&app).unwrap_or_default();
-    if !status.contains("3 with different contents") || !status.contains("3 file pairs read") {
-        return Err(format!(
-            "contents: the footer reads {status:?}, expected 3 different of 3 read"
-        ));
-    }
-    // Include subfolders: dir-both differs inside on both sides (a larger file on the
-    // right, a file on each side alone two levels down); one-sided folders count.
+    // Subfolders: dir-both differs inside, so it is selected in both panels;
+    // one-sided folders always count. Each row shows how it compared.
     let both = compare(
         &mut app,
         Options {
@@ -547,27 +558,64 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
             ..DEFAULTS
         },
     )?;
-    app.screenshot(
-        context,
-        "asymmetric-subfolders",
-        "Include subfolders selects the folders that contain differences",
-    );
     expect(
         "subfolders",
         &both,
-        &with(&default_left, &["dir-both", "dir-left-only"]),
-        &with(&default_right, &["dir-both", "dir-right-only"]),
+        &[&default_left[..], &["dir-both", "dir-left-only"]].concat(),
+        &[&default_right[..], &["dir-both", "dir-right-only"]].concat(),
     )?;
-    let status = footer_status(&app).unwrap_or_default();
-    if !status.contains("1 folder with differences") {
-        return Err(format!(
-            "subfolders: the footer reads {status:?}, expected 1 folder with differences"
-        ));
+    line_has(&app, "subfolders", &["1 of 1 folders differ"])?;
+    expect_marks(
+        &app,
+        "subfolder marks, left",
+        PaneId::Left,
+        &[
+            ("dir-both", 2),
+            ("dir-left-only", 3),
+            ("same.txt", 1),
+            ("within-tolerance.txt", 1),
+            ("bigger-left.dat", 2),
+            ("README.TXT", 3),
+        ],
+    )?;
+    expect_marks(
+        &app,
+        "subfolder marks, right",
+        PaneId::Right,
+        &[
+            ("dir-both", 2),
+            ("dir-right-only", 3),
+            ("newer-right.txt", 2),
+        ],
+    )?;
+    let description = app
+        .rows(PaneId::Left)
+        .iter()
+        .any(|row| row.name == "dir-both" && row.compare_mark == 2);
+    if !description {
+        return Err("dir-both shows no mark".into());
     }
-    let text = summary(&mut app, context, Some("subfolders-summary"))?;
-    if !text.is_empty() && !text.contains("Folders with differences: 1.") {
-        return Err(format!("subfolders: the summary reads {text:?}"));
-    }
+    app.screenshot(
+        context,
+        "asymmetric-subfolders",
+        "Compare subfolders: the differing folder is selected in both panels; every row shows = ≠ +",
+    );
+    // Expanded, dir-both shows which of its subfolders differ.
+    files_support::toggle_tree(&mut app, "dir-both")?;
+    files_support::wait_tree_depth(&mut app, "deeper", Some(1));
+    expect_marks(
+        &app,
+        "inside the expanded dir-both",
+        PaneId::Left,
+        &[("dir-both", 2), ("deeper", 2), ("equal", 1)],
+    )?;
+    app.screenshot(
+        context,
+        "asymmetric-subfolders-expanded",
+        "Inside the expanded folder, deeper differs and equal matches",
+    );
+    files_support::toggle_tree(&mut app, "dir-both")?;
+    files_support::wait_tree_depth(&mut app, "deeper", None);
     // Both: dir-both/shared.txt has equal bytes and stays a match inside.
     let both = compare(
         &mut app,
@@ -580,21 +628,13 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
     expect(
         "contents and subfolders",
         &both,
-        &with(&with(&default_left, &read), &["dir-both", "dir-left-only"]),
-        &with(
-            &with(&default_right, &read),
-            &["dir-both", "dir-right-only"],
-        ),
+        &[&contents_left[..], &["dir-both", "dir-left-only"]].concat(),
+        &[&contents_right[..], &["dir-both", "dir-right-only"]].concat(),
     )?;
 
     // Invalid tolerances are reported in the dialog, which stays open; nothing runs.
-    for (text, message) in [
-        ("abc", "Enter a whole number of seconds from 0 to 86400."),
-        (
-            "86401",
-            "Time tolerance must be between 0 and 86400 seconds.",
-        ),
-    ] {
+    let message = "Enter a whole number of seconds from 0 to 86400 for the time tolerance.";
+    for text in ["abc", "86401"] {
         open_dialog(&mut app)?;
         set_options(
             &mut app,
@@ -640,7 +680,7 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
         });
     }
 
-    // Nested trees: comparison never recurses, so compare inside the shared folder.
+    // Without subfolders nothing recurses: compare inside the shared folder.
     panel::enter(&mut app, PaneId::Left, "dir-both")?;
     panel::enter(&mut app, PaneId::Right, "dir-both")?;
     let both = compare(&mut app, DEFAULTS)?;
@@ -653,7 +693,7 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
         },
     )?;
     expect(
-        "inside dir-both with directories",
+        "inside dir-both with one-sided folders",
         &both,
         &[],
         &["inner.txt"],
@@ -667,18 +707,67 @@ pub fn compare_directories(context: &mut Context) -> Result<(), String> {
         &["left.txt"],
         &["right.txt"],
     )?;
-    app.screenshot(
-        context,
-        "nested-deeper",
-        "Two levels down, each side's only file is selected",
-    );
     app.shutdown()?;
 
-    unreadable(context, &root)?;
-    running(context, &root)?;
+    appearance(context, root)?;
+    unreadable(context, root)?;
+    running(context, root)?;
     context.note(
-        "identical, asymmetric (size, time, tolerance 0/1/2, case, unmatched folders, contents, subfolders), nested and unreadable trees; invalid tolerances stay in the dialog; Compare closed the dialog at once and no result message appeared",
+        "identical, asymmetric (size, time, tolerance 0/1/2, case, one-sided folders, contents, subfolders with marks, expanded marks), nested and unreadable trees; invalid tolerances stay in the dialog; no bottom status line; results below the active panel",
     );
+    Ok(())
+}
+
+/// The dialog at 8 and 32 px and in the dark theme, and the dark panels' marks.
+fn appearance(context: &mut Context, root: &Path) -> Result<(), String> {
+    let left = root.join("asymmetric/left");
+    let right = root.join("asymmetric/right");
+    for (font, theme, name) in [
+        (8, PreferenceTheme::Light, "dialog-8-light"),
+        (32, PreferenceTheme::Light, "dialog-32-light"),
+        (12, PreferenceTheme::Dark, "dialog-12-dark"),
+    ] {
+        let mut config = Config::new(&left, &right);
+        config.settings = Some(SettingsStore::seeded(move |preferences| {
+            preferences.desktop_font_size = font;
+        }));
+        config.theme = theme;
+        let mut app = App::start(config);
+        open_dialog(&mut app)?;
+        let main = app.main.clone();
+        for label in ["Compare", "Close"] {
+            let button = tools::control(main.window(), AccessibleRole::Button, label)?;
+            if !tools::enabled(&button) {
+                return Err(format!("{name}: {label} is not available"));
+            }
+        }
+        app.screenshot(
+            context,
+            name,
+            &format!("Compare directories at {font} px, {theme:?}"),
+        );
+        input::key(app.slint(), Key::Escape);
+        app.until("the dialog to close", |app| {
+            !app.window.get_comparison_view().open
+        });
+        if theme == PreferenceTheme::Dark {
+            compare(
+                &mut app,
+                Options {
+                    subfolders: true,
+                    ..DEFAULTS
+                },
+            )?;
+            files_support::toggle_tree(&mut app, "dir-both")?;
+            files_support::wait_tree_depth(&mut app, "deeper", Some(1));
+            app.screenshot(
+                context,
+                "subfolders-dark",
+                "Subfolder marks in the dark theme, dir-both expanded",
+            );
+        }
+        app.shutdown()?;
+    }
     Ok(())
 }
 
@@ -691,144 +780,96 @@ fn sparse(path: &Path, length: u64) -> Result<(), String> {
     tools::set_modified(path, at(0))
 }
 
-/// A content comparison long enough to watch: progress, the refusal of Create folder
-/// while it runs, the reopened dialog's progress and Cancel.
-fn running(context: &mut Context, root: &Path) -> Result<(), String> {
-    let (left, right) = (root.join("slow/left"), root.join("slow/right"));
-    for side in [&left, &right] {
-        sparse(&side.join("big.bin"), 24 << 30)?;
-    }
-    let mut app = App::start(Config::new(&left, &right));
-    open_dialog(&mut app)?;
+/// Starts a long content comparison and waits for its progress in the dialog.
+fn start_long(app: &mut App) -> Result<String, String> {
     set_options(
-        &mut app,
+        app,
         Options {
             contents: true,
             ..DEFAULTS
         },
     )?;
-    click_compare(&app)?;
-    if app.window.get_comparison_view().open {
-        return Err("the dialog stayed open after Compare".into());
-    }
-    // The status line follows the content comparison.
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    let progress = loop {
+    click_compare(app)?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
         app.settle();
-        let status = app.window.get_desktop_status().to_string();
-        if status.starts_with("Comparing contents:") {
-            break status;
-        }
-        if !app.window.get_comparison_view().busy {
+        let view = app.window.get_comparison_view();
+        if view.running
+            && view
+                .progress_counts
+                .starts_with("Comparing the displayed files")
+        {
+            if !view.progress_detail.is_empty() || Instant::now() >= deadline {
+                return Ok(format!(
+                    "{} · {}",
+                    view.progress_counts, view.progress_detail
+                ));
+            }
+        } else if !view.busy {
             return Err(format!(
-                "the 48 GiB comparison ended before its progress showed (status {status:?})"
+                "the long comparison ended before its progress showed: {:?}",
+                view.error
             ));
         }
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("no progress on the status line: {status:?}"));
+        if Instant::now() >= deadline {
+            return Err("no progress in the dialog".into());
         }
         app.idle(Duration::from_millis(50));
-    };
+    }
+}
+
+/// How long the comparison took to end after `cancel`, which must select nothing.
+fn cancelled_by(
+    app: &mut App,
+    how: &str,
+    cancel: impl FnOnce(&mut App),
+) -> Result<Duration, String> {
+    let started = Instant::now();
+    cancel(app);
+    app.until(&format!("{how} to end the comparison"), |app| {
+        let view = app.window.get_comparison_view();
+        !view.busy && !view.open
+    });
+    let took = started.elapsed();
+    let both = [selected(app, PaneId::Left), selected(app, PaneId::Right)];
+    if !both[0].is_empty() || !both[1].is_empty() {
+        return Err(format!("a comparison cancelled by {how} selected {both:?}"));
+    }
+    no_bottom_line(app)?;
+    Ok(took)
+}
+
+/// A content comparison long enough to watch: the dialog's progress, and Cancel,
+/// Escape and Alt+C each ending it at once without selecting anything.
+fn running(context: &mut Context, root: &Path) -> Result<(), String> {
+    let (left, right) = (root.join("slow/left"), root.join("slow/right"));
+    for side in [&left, &right] {
+        sparse(&side.join("big.bin"), 8 << 30)?;
+    }
+    let mut app = App::start(Config::new(&left, &right));
+    open_dialog(&mut app)?;
+    let progress = start_long(&mut app)?;
+    let main = app.main.clone();
+    let texts = inspect::visible_texts(main.window());
+    for wanted in ["Comparing", "with", "Comparing the displayed files"] {
+        if !texts.iter().any(|text| text.starts_with(wanted)) {
+            return Err(format!("the progress shows no {wanted:?}: {texts:?}"));
+        }
+    }
+    no_bottom_line(&app)?;
     app.screenshot(
         context,
         "running-progress",
         &format!("A running content comparison: {progress}"),
     );
-    // Create folder is refused with the reason while it runs, and so is every other
-    // action that changes the compared folders or what they show.
-    panel::focus_list(&mut app, PaneId::Left)?;
-    input::key(app.slint(), Key::F7);
-    app.settle();
-    let refusal = tools::shown_notice(&app);
-    match &refusal {
-        Some((title, body))
-            if title == "Directory comparison running" && body.contains("cancel") =>
-        {
-            input::key(app.slint(), Key::Escape);
-            app.settle();
-        }
-        other => {
-            return Err(format!(
-                "F7 during the comparison: notice {other:?}, expected the refusal"
-            ));
-        }
-    }
-    panel::select_row(&mut app, PaneId::Left, "big.bin")?;
-    let mut refused = Vec::new();
-    for (modifiers, key, how) in [
-        (&[][..], slint::SharedString::from(Key::F2), "F2"),
-        (&[Key::Shift][..], Key::F4.into(), "Shift+F4"),
-        (&[][..], Key::Delete.into(), "Delete"),
-        (&[][..], Key::F5.into(), "F5"),
-        (&[Key::Control][..], "v".into(), "Ctrl+V"),
-        (&[Key::Control][..], "h".into(), "Ctrl+H"),
-    ] {
-        input::chord(app.slint(), modifiers, key);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let notice = loop {
-            app.settle();
-            if let Some(notice) = tools::shown_notice(&app) {
-                break Some(notice);
-            }
-            // A dialog instead of the refusal: report it, then close it.
-            if !app.window.get_copy_draft_token().is_empty()
-                || !app.window.get_operation_token().is_empty()
-                || std::time::Instant::now() >= deadline
-            {
-                break None;
-            }
-            app.idle(Duration::from_millis(20));
-        };
-        match notice {
-            Some((title, _)) if title == "Directory comparison running" => refused.push(how),
-            other => {
-                let dialog = !app.window.get_copy_draft_token().is_empty()
-                    || !app.window.get_operation_token().is_empty();
-                input::key(app.slint(), Key::Escape);
-                app.settle();
-                return Err(format!(
-                    "{how} during the comparison: notice {other:?}, a dialog open {dialog}; expected the refusal \"Directory comparison running\""
-                ));
-            }
-        }
-        input::key(app.slint(), Key::Escape);
-        app.until("the refusal to close", |app| {
-            tools::shown_notice(app).is_none()
-        });
-        panel::focus_list(&mut app, PaneId::Left)?;
-    }
-    // The reopened dialog shows the progress and Cancel; Cancel ends the comparison.
-    panel::focus_list(&mut app, PaneId::Left)?;
-    input::chord(app.slint(), &[Key::Control], Key::F10);
-    app.until("the dialog with the running comparison", |app| {
-        app.window.get_comparison_view().open
-    });
-    let main = app.main.clone();
-    let texts = inspect::visible_texts(main.window());
-    if !texts
-        .iter()
-        .any(|text| text.starts_with("Comparing contents:"))
-    {
-        return Err(format!("the reopened dialog shows no progress: {texts:?}"));
-    }
-    app.screenshot(
-        context,
-        "running-dialog",
-        "Compare directories reopened while it runs: progress and Cancel",
-    );
-    input::click_button(main.window(), "Cancel")?;
-    app.until("Cancel to end the comparison", |app| {
-        !app.window.get_comparison_view().busy && !app.window.get_comparison_view().open
-    });
-    let both = [selected(&app, PaneId::Left), selected(&app, PaneId::Right)];
-    if !both[0].is_empty() || !both[1].is_empty() {
-        return Err(format!("a cancelled comparison selected {both:?}"));
-    }
+    let button = cancelled_by(&mut app, "the Cancel button", |app| {
+        let main = app.main.clone();
+        let _ = input::click_button(main.window(), "Cancel");
+    })?;
     // The next comparison runs normally: equal size and time, nothing differs.
     let both = compare(&mut app, DEFAULTS)?;
     expect("after a cancelled comparison", &both, &[], &[])?;
-    // The toolbar's Compare directories opens the dialog too; Escape in the dialog of a
-    // running comparison cancels it, and nothing is selected.
+    // The toolbar's Compare directories opens the dialog too; Escape cancels.
     panel::focus_list(&mut app, PaneId::Left)?;
     let main = app.main.clone();
     input::click_button(main.window(), "Compare directories")?;
@@ -836,36 +877,17 @@ fn running(context: &mut Context, root: &Path) -> Result<(), String> {
         "the toolbar's Compare directories to open the dialog",
         |app| app.window.get_comparison_view().open,
     );
-    set_options(
-        &mut app,
-        Options {
-            contents: true,
-            ..DEFAULTS
-        },
-    )?;
-    click_compare(&app)?;
-    app.until("the second long comparison to run", |app| {
-        app.window
-            .get_desktop_status()
-            .starts_with("Comparing contents:")
-    });
-    panel::focus_list(&mut app, PaneId::Left)?;
-    input::chord(app.slint(), &[Key::Control], Key::F10);
-    app.until("the dialog of the running comparison", |app| {
-        app.window.get_comparison_view().open && app.window.get_comparison_view().busy
-    });
-    input::key(main.window(), Key::Escape);
-    app.until("Escape to cancel the comparison", |app| {
-        !app.window.get_comparison_view().busy && !app.window.get_comparison_view().open
-    });
-    let both = [selected(&app, PaneId::Left), selected(&app, PaneId::Right)];
-    if !both[0].is_empty() || !both[1].is_empty() {
-        return Err(format!(
-            "a comparison cancelled with Escape selected {both:?}"
-        ));
-    }
+    start_long(&mut app)?;
+    let escape = cancelled_by(&mut app, "Escape", |app| {
+        input::key(app.slint(), Key::Escape);
+    })?;
+    open_dialog(&mut app)?;
+    start_long(&mut app)?;
+    let alt_c = cancelled_by(&mut app, "Alt+C", |app| {
+        input::chord(app.slint(), &[Key::Alt], "c");
+    })?;
     context.note(format!(
-        "Long comparison: {progress:?}; refused F7: {refusal:?}, and {refused:?}; the toolbar button opened the dialog; Escape cancelled a running comparison, nothing selected"
+        "Long comparison: {progress:?}; ended after Cancel in {button:?}, Escape in {escape:?}, Alt+C in {alt_c:?}; nothing selected"
     ));
     app.shutdown()
 }
@@ -910,14 +932,15 @@ fn unreadable(context: &mut Context, root: &Path) -> Result<(), String> {
         &["x.txt", "y.txt"],
         &["x.txt", "y.txt"],
     )?;
-    let text = summary(&mut app, context, None)?;
-    if !text.is_empty() && !text.contains("Unknown metadata: 2.") {
-        return Err(format!("the unreadable comparison summary reads {text:?}"));
-    }
+    line_has(
+        &app,
+        "unreadable metadata",
+        &["Unknown metadata or not verified: 2."],
+    )?;
     app.shutdown()?;
 
-    // A dangling link has no file metadata either: it and its same-named file are
-    // both selected as unknown; an ordinary equal pair is not.
+    // A dangling link opposite a file of its name differs: both are selected; an
+    // ordinary equal pair is not.
     let left = root.join("special/left");
     let right = root.join("special/right");
     for side in [&left, &right] {
@@ -929,10 +952,7 @@ fn unreadable(context: &mut Context, root: &Path) -> Result<(), String> {
     let mut app = App::start(Config::new(&left, &right));
     let both = compare(&mut app, DEFAULTS)?;
     expect("a dangling link", &both, &["link.txt"], &["link.txt"])?;
-    let text = summary(&mut app, context, None)?;
-    if !text.is_empty() && !text.contains("Unknown metadata: 1.") {
-        return Err(format!("the dangling link summary reads {text:?}"));
-    }
+
     app.shutdown()
 }
 

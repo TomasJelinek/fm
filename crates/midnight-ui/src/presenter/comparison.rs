@@ -1,9 +1,36 @@
-//! Atomic publication of two immutable, revision-checked selection snapshots.
+//! Atomic publication of two immutable, revision-checked selection snapshots, the
+//! running comparison's progress (in the Compare directories dialog) and its result
+//! (a line below the panel that was active, and per-row marks with subfolders).
 use super::*;
 #[cfg(test)]
 #[path = "comparison_tests.rs"]
 mod tests;
 mod tree;
+
+/// What the dialog's ignore fields hold, kept while their boxes are off.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IgnoreChoices {
+    pub(crate) files: bool,
+    pub(crate) files_masks: String,
+    pub(crate) folders: bool,
+    pub(crate) folders_masks: String,
+}
+
+/// The last result as the panels show it: its line, the panel it is shown below,
+/// and each panel's generation and selection revision as the result left them.
+pub(crate) struct Reported {
+    pub(crate) line: String,
+    pub(crate) details: String,
+    pub(crate) pane: PaneId,
+    shown: [(u64, SelectionRevision); 2],
+}
+
+/// Per-row outcomes of the last comparison with subfolders, while both panels still
+/// show the listings it compared (`generation` of each).
+pub(crate) struct ShownMarks {
+    marks: Arc<CompareMarks>,
+    generations: [u64; 2],
+}
 
 #[derive(Default)]
 pub(crate) struct ComparisonState {
@@ -12,19 +39,19 @@ pub(crate) struct ComparisonState {
     pub(crate) error: String,
     pub(crate) summary: String,
     pub(crate) options: CompareOptions,
+    pub(crate) ignore: IgnoreChoices,
     pub(super) seeds: [Option<Arc<AuthoritativeSelection>>; 2],
     next: u64,
     waiting: bool,
     pending: Option<Arc<CompareRequest>>,
     cancellation: Option<CompareId>,
     tree_pending: [Option<(TreeViewStamp, SelectionRevision)>; 2],
-    /// The last result's status line, with each pane's generation and selection
-    /// revision as the result left them: it is shown while both panes still show
-    /// the selections it made, and never as a window.
-    reported: Option<(String, [(u64, SelectionRevision); 2])>,
-    /// The running comparison's latest progress as one status line; shown only
-    /// while that comparison waits or runs (Compare contents, Include subfolders).
-    pub(crate) progress: String,
+    /// The panel that was active when Compare was pressed: the result shows below it.
+    origin: Option<PaneId>,
+    pub(crate) reported: Option<Reported>,
+    pub(crate) marks: Option<ShownMarks>,
+    /// The running comparison's latest progress sample.
+    pub(crate) progress: Option<CompareProgress>,
 }
 
 impl ComparisonState {
@@ -34,8 +61,9 @@ impl ComparisonState {
         self.waiting || self.pending.is_some()
     }
 
-    /// One that reads contents or walks subfolders, which can take minutes.
-    fn long(&self) -> bool {
+    /// One that reads contents or walks subfolders, which can take minutes: the
+    /// dialog stays open with its progress and Cancel.
+    pub(crate) fn running(&self) -> bool {
         self.in_progress() && (self.options.by_content || self.options.recursive)
     }
 
@@ -43,6 +71,7 @@ impl ComparisonState {
     pub(super) fn retire_captures(&mut self, retired: &mut Vec<DeferredDrop>) {
         retired.push(Box::new(self.pending.take()));
         retired.push(Box::new(mem::take(&mut self.seeds)));
+        retired.push(Box::new(self.marks.take()));
     }
 }
 
@@ -53,20 +82,20 @@ impl Presenter {
     /// of a panel's folder the user expects to see at once, is refused with that
     /// explanation instead. Returns whether it was refused.
     pub(crate) fn comparison_refuses(&mut self, action: &str) -> bool {
-        if !self.comparison.long() {
+        if !self.comparison.running() {
             return false;
         }
         self.desktop.report(
             "Directory comparison running",
             format!(
-                "{action} is not available while the directory comparison reads both panels' folders: they show changes only once it ends. Wait for it to finish, or open Compare directories and cancel it."
+                "{action} is not available while the directory comparison reads both panels' folders: they show changes only once it ends. Wait for it to finish, or press Cancel (Escape) in the Compare directories dialog."
             ),
         );
         true
     }
 
-    /// An outcome the dialog cannot show once it closed (it closes on Compare) is
-    /// reported as a notice; an open dialog shows it in its own error line.
+    /// An outcome the dialog cannot show once it closed is reported as a notice;
+    /// an open dialog shows it in its own error line.
     fn report_comparison(&mut self, title: &str, message: String) {
         if self.comparison.open {
             self.comparison.error = message;
@@ -75,20 +104,52 @@ impl Presenter {
         }
     }
 
-    /// The running comparison's progress, or the last comparison's result while
-    /// both panes still show the selections it made.
-    pub(crate) fn comparison_status(&self) -> Option<&str> {
-        if self.comparison.in_progress() && !self.comparison.progress.is_empty() {
-            return Some(&self.comparison.progress);
+    /// The last comparison's result line below `pane`, with its details, while both
+    /// panes still show the selections it made.
+    pub(crate) fn comparison_note(&self, pane: PaneId) -> Option<(&str, &str)> {
+        let reported = self.comparison.reported.as_ref()?;
+        (reported.pane == pane
+            && self
+                .panes
+                .iter()
+                .zip(&reported.shown)
+                .all(|(pane, (generation, revision))| {
+                    pane.generation == *generation && tree::selection_revision(pane) == *revision
+                }))
+        .then_some((reported.line.as_str(), reported.details.as_str()))
+    }
+
+    /// How the last comparison with subfolders found `entry` in `pane`: 1 matches,
+    /// 2 differs, 3 exists in this panel only, 4 not verified; 0 when there is
+    /// nothing to show (another listing, or not compared).
+    pub(crate) fn comparison_mark(&self, pane: PaneId, entry: &Entry) -> i32 {
+        let Some(shown) = &self.comparison.marks else {
+            return 0;
+        };
+        if self.panes[pane.index()].generation != shown.generations[pane.index()]
+            || entry.virtual_node.is_some()
+        {
+            return 0;
         }
-        let (line, panes) = self.comparison.reported.as_ref()?;
-        self.panes
-            .iter()
-            .zip(panes)
-            .all(|(pane, (generation, revision))| {
-                pane.generation == *generation && tree::selection_revision(pane) == *revision
-            })
-            .then_some(line.as_str())
+        match shown.marks.mark(pane.index(), &entry.path) {
+            Some(CompareMark::Same) => 1,
+            Some(CompareMark::Differs) => 2,
+            Some(CompareMark::OnlyHere) => 3,
+            Some(CompareMark::Unverified) => 4,
+            None => 0,
+        }
+    }
+
+    /// Marks that no longer describe both panels' listings are dropped.
+    fn observe_comparison_marks(&mut self) {
+        if self.comparison.marks.as_ref().is_some_and(|shown| {
+            self.panes
+                .iter()
+                .zip(shown.generations)
+                .any(|(pane, generation)| pane.generation != generation)
+        }) {
+            self.retired.push(Box::new(self.comparison.marks.take()));
+        }
     }
 
     pub(crate) fn open_comparison(&mut self) {
@@ -111,18 +172,22 @@ impl Presenter {
         }
         self.comparison.open = true;
         self.comparison.error.clear();
+        if !self.comparison.running() {
+            self.comparison.summary.clear();
+        }
     }
 
     pub(crate) fn submit_comparison(
         &mut self,
         options: CompareOptions,
+        ignore: IgnoreChoices,
         send: &dyn Fn(Command) -> bool,
     ) {
         if self.comparison.busy || self.panes.iter().any(|pane| !pane.native_capabilities()) {
             return;
         }
-        if options.time_tolerance_seconds > 86_400 {
-            self.comparison.error = "Time tolerance must be between 0 and 86400 seconds.".into();
+        if let Err(error) = options.validate() {
+            self.comparison.error = error.into();
             return;
         }
         if [PaneId::Left, PaneId::Right]
@@ -132,35 +197,43 @@ impl Presenter {
             self.comparison.error = "Wait until both directories have finished loading.".into();
             return;
         }
-        // Reading contents or walking subfolders can take a while: the status line
-        // shows that it runs from the start, then its progress.
-        self.comparison.progress = if options.by_content || options.recursive {
-            "Comparing directories…".into()
-        } else {
-            String::new()
-        };
+        if self.panes[0].path == self.panes[1].path {
+            self.comparison.error =
+                "Both panels show the same folder. Open another folder in one of them.".into();
+            return;
+        }
         self.comparison.options = options;
+        self.comparison.ignore = ignore;
+        self.comparison.origin = Some(self.active);
+        self.comparison.progress = None;
         self.comparison.error.clear();
         self.comparison.summary.clear();
         self.retired.push(Box::new(self.comparison.reported.take()));
+        self.retired.push(Box::new(self.comparison.marks.take()));
         for pane in [PaneId::Left, PaneId::Right] {
             self.change_search_query(pane, "", send);
         }
         self.comparison.busy = true;
         self.comparison.waiting = true;
         self.flush_comparison(send);
-        // The panels show the result by selecting the differences, so the dialog gets out of
-        // the way at once; closing it here, unlike cancel, lets the comparison run on.
-        self.comparison.open = false;
+        // A quick comparison's result is the panels' selection: the dialog gets out of
+        // the way at once. A long one keeps the dialog open with its progress and
+        // Cancel until it ends.
+        if !self.comparison.running() {
+            self.comparison.open = false;
+        }
     }
 
+    /// Cancel (the button, Escape) or Close: a running comparison stops and changes
+    /// nothing; the dialog closes.
     pub(crate) fn cancel_comparison(&mut self, send: &dyn Fn(Command) -> bool) {
         if let Some(request) = self.comparison.pending.take() {
             self.comparison.cancellation = Some(request.id);
             self.retired.push(Box::new(request));
         }
         self.comparison.waiting = false;
-        self.comparison.busy = false;
+        self.comparison.busy = self.comparison.tree_pending.iter().any(Option::is_some);
+        self.comparison.progress = None;
         self.comparison.open = false;
         self.flush_comparison(send);
     }
@@ -186,8 +259,16 @@ impl Presenter {
         })
     }
 
+    /// The comparison stopped without a result: the dialog says why when it is open.
+    fn comparison_stopped(&mut self, title: &str, message: &str) {
+        self.comparison.busy = self.comparison.tree_pending.iter().any(Option::is_some);
+        self.comparison.progress = None;
+        self.report_comparison(title, message.into());
+    }
+
     pub fn flush_comparison(&mut self, send: &dyn Fn(Command) -> bool) {
         self.observe_tree_comparison();
+        self.observe_comparison_marks();
         if self
             .comparison
             .pending
@@ -197,10 +278,9 @@ impl Presenter {
             let request = self.comparison.pending.take().unwrap();
             self.comparison.cancellation = Some(request.id);
             self.retired.push(Box::new(request));
-            self.comparison.busy = false;
-            self.report_comparison(
+            self.comparison_stopped(
                 "Directory comparison cancelled",
-                "Comparison cancelled because a panel or selection changed.".into(),
+                "Comparison cancelled because a panel or selection changed.",
             );
         }
         if let Some(id) = self.comparison.cancellation
@@ -215,10 +295,9 @@ impl Presenter {
         for pane in [PaneId::Left, PaneId::Right] {
             let Some(source) = self.visible_directory(pane) else {
                 self.comparison.waiting = false;
-                self.comparison.busy = false;
-                self.report_comparison(
+                self.comparison_stopped(
                     "Directory comparison cancelled",
-                    "Comparison cancelled because a directory changed.".into(),
+                    "Comparison cancelled because a directory changed.",
                 );
                 return;
             };
@@ -227,10 +306,9 @@ impl Presenter {
                 // A dropped tree session never becomes ready; the panel is listed
                 // again instead, and that re-read must not wait for this request.
                 self.comparison.waiting = false;
-                self.comparison.busy = false;
-                self.report_comparison(
+                self.comparison_stopped(
                     "Directory comparison cancelled",
-                    "Comparison cancelled because a panel or selection changed.".into(),
+                    "Comparison cancelled because a panel or selection changed.",
                 );
                 return;
             }
@@ -247,10 +325,9 @@ impl Presenter {
         }
         let Some(next) = self.comparison.next.checked_add(1) else {
             self.comparison.waiting = false;
-            self.comparison.busy = false;
-            self.report_comparison(
+            self.comparison_stopped(
                 "Directory comparison failed",
-                "Comparison identities are exhausted.".into(),
+                "Comparison identities are exhausted.",
             );
             return;
         };
@@ -276,7 +353,10 @@ impl Presenter {
                     .as_ref()
                     .is_some_and(|request| request.id == id)
                 {
-                    self.comparison.progress = progress_line(&progress, &self.number_locale);
+                    self.retired
+                        .push(Box::new(self.comparison.progress.replace(progress)));
+                } else {
+                    self.retired.push(Box::new(progress));
                 }
                 return None;
             }
@@ -292,7 +372,9 @@ impl Presenter {
             return None;
         };
         let valid = self.comparison_current(request);
+        let long = self.comparison.running();
         self.retired.push(Box::new(self.comparison.pending.take()));
+        self.retired.push(Box::new(self.comparison.progress.take()));
         self.comparison.busy = false;
         if !valid {
             self.report_comparison(
@@ -352,16 +434,35 @@ impl Presenter {
                     self.retired
                         .push(Box::new(mem::replace(&mut pane.selected, selected.clone())));
                 }
-                self.comparison.summary = summary(&result, &self.number_locale);
-                // The panels show the differences selected; one line also says how
-                // many, with no window (the dialog has closed).
-                let line = status_line(&result, &self.number_locale);
+                let summary = summary(&result, &self.number_locale);
+                // The panels show the differences selected; a line below the panel that
+                // was active says how many. Problems keep the dialog open with them.
+                let origin = self.comparison.origin.unwrap_or(self.active);
+                let line = status_line(&result, origin, &self.number_locale);
                 let shown = [0, 1].map(|slot| {
                     let pane = &self.panes[slot];
                     (pane.generation, tree::selection_revision(pane))
                 });
                 self.retired
-                    .push(Box::new(self.comparison.reported.replace((line, shown))));
+                    .push(Box::new(self.comparison.reported.replace(Reported {
+                        line,
+                        details: summary.clone(),
+                        pane: origin,
+                        shown,
+                    })));
+                if let Some(marks) = &result.marks {
+                    let generations = [0, 1].map(|slot| self.panes[slot].generation);
+                    self.retired
+                        .push(Box::new(self.comparison.marks.replace(ShownMarks {
+                            marks: marks.clone(),
+                            generations,
+                        })));
+                }
+                if long && (result.errors > 0 || result.limited) {
+                    self.comparison.summary = summary;
+                } else {
+                    self.comparison.open = false;
+                }
                 self.comparison.busy = self.comparison.tree_pending.iter().any(Option::is_some);
                 self.retired.push(Box::new(result));
             }
@@ -370,33 +471,27 @@ impl Presenter {
     }
 }
 
-/// The dialog's summary of the last result, shown when it is opened again.
+/// The result's details: the line's tooltip, and the dialog's summary when the
+/// comparison could not compare everything.
 fn summary(result: &CompareResult, locale: &NumberLocale) -> String {
     let options = &result.request.options;
     let count = |value: u64| locale.format_u64(value);
-    let differences = result
-        .selections
-        .iter()
-        .any(|selection| !selection.is_empty())
-        || result.unknown > 0
-        || result.ambiguous > 0;
-    let mut text = if differences {
-        format!(
-            "Found {} differences in the first directory and {} in the second directory. Unknown metadata: {}. Ambiguous name groups: {}.",
-            result.selections[0].len(),
-            result.selections[1].len(),
-            result.unknown,
-            result.ambiguous
-        )
-    } else if options.by_content {
-        "Displayed metadata and the compared contents match for the chosen criteria.".into()
+    let mut text = if result.identical() {
+        identical_text(options).to_owned()
     } else {
-        "Displayed metadata matches for the chosen criteria.".into()
+        format!(
+            "Selected: {} in the left panel, {} in the right panel.",
+            count(result.selections[0].len() as u64),
+            count(result.selections[1].len() as u64),
+        )
     };
     if options.recursive {
         text.push_str(&format!(
-            " Folders with differences: {}.",
-            count(result.differing_folders as u64)
+            " Folders compared: {} ({} folder pairs and {} file pairs inside); with differences: {}.",
+            count(result.compared_folders as u64),
+            count(result.walked_folders),
+            count(result.walked_files),
+            count(result.differing_folders as u64),
         ));
     }
     if options.by_content {
@@ -407,6 +502,19 @@ fn summary(result: &CompareResult, locale: &NumberLocale) -> String {
             count(result.content_differences as u64)
         ));
     }
+    if result.dst_shifts > 0 {
+        text.push_str(&format!(
+            " {}",
+            dst_text(result.dst_shifts, options.ignore_dst_shifts, locale)
+        ));
+    }
+    if result.unknown > 0 || result.ambiguous > 0 {
+        text.push_str(&format!(
+            " Unknown metadata or not verified: {}. Names that differ only in case: {}.",
+            count(result.unknown as u64),
+            count(result.ambiguous as u64)
+        ));
+    }
     if result.skipped > 0 {
         text.push_str(&format!(
             " Links and special files matched by name only: {}.",
@@ -415,7 +523,7 @@ fn summary(result: &CompareResult, locale: &NumberLocale) -> String {
     }
     if result.limited {
         text.push_str(
-            " A size limit ended the folder walk early; the folders it did not finish are selected.",
+            " A size limit ended part of the folder walk; the folders it did not finish are selected.",
         );
     }
     if result.errors > 0 {
@@ -431,50 +539,107 @@ fn summary(result: &CompareResult, locale: &NumberLocale) -> String {
     text
 }
 
-/// One status line for a running comparison.
-fn progress_line(progress: &CompareProgress, locale: &NumberLocale) -> String {
+/// Salamander's verdict when nothing differs.
+fn identical_text(options: &CompareOptions) -> &'static str {
+    if options.by_content {
+        "The files in the two folders are identical."
+    } else {
+        "The files in the two folders appear to be identical."
+    }
+}
+
+fn dst_text(shifts: u64, ignored: bool, locale: &NumberLocale) -> String {
+    let pairs = if shifts == 1 { "pair" } else { "pairs" };
+    if ignored {
+        format!(
+            "{} file {pairs} one or two hours apart (daylight saving) counted as equal.",
+            locale.format_u64(shifts)
+        )
+    } else {
+        format!(
+            "{} file {pairs} differ by exactly one or two hours, probably daylight saving; Compare directories can ignore that.",
+            locale.format_u64(shifts)
+        )
+    }
+}
+
+/// The running comparison's progress for the dialog: the counts, the bytes read,
+/// and the fraction done (below zero when it cannot be told).
+pub(crate) fn progress_texts(
+    progress: Option<&CompareProgress>,
+    locale: &NumberLocale,
+) -> (String, String, f32) {
+    let Some(progress) = progress else {
+        return ("Starting…".into(), String::new(), -1.0);
+    };
     let count = |value: u64| locale.format_u64(value);
-    match progress.phase {
-        ComparePhase::Scanning => format!(
-            "Comparing subfolders: {} entries in {} folders…",
-            count(progress.entries),
-            count(progress.folders)
-        ),
-        ComparePhase::Contents => format!(
-            "Comparing contents: {} of {} files · {} of {}…",
+    let mut counts = if progress.top_total > 0 {
+        format!(
+            "Folder {} of {} · {} folders and {} files compared",
+            count((progress.top_done + 1).min(progress.top_total)),
+            count(progress.top_total),
+            count(progress.folders),
+            count(progress.files),
+        )
+    } else {
+        "Comparing the displayed files".to_owned()
+    };
+    counts.push_str(&format!(
+        " · {} {} found",
+        count(progress.differences),
+        if progress.differences == 1 {
+            "difference"
+        } else {
+            "differences"
+        }
+    ));
+    let detail = if progress.content_files_total > 0 {
+        format!(
+            "Contents: {} of {} file pairs read · {} of {}",
             count(progress.content_files),
             count(progress.content_files_total),
             crate::format_size(progress.content_bytes, locale),
             crate::format_size(progress.content_bytes_total, locale)
-        ),
-    }
+        )
+    } else {
+        String::new()
+    };
+    (counts, detail, progress.fraction().unwrap_or(-1.0))
 }
 
-/// "Compared: …" for the status line, with the counts each panel now selects.
-fn status_line(result: &CompareResult, locale: &NumberLocale) -> String {
+/// "Compared: …" below the panel that was active, with the counts each panel now
+/// selects (that panel's first).
+fn status_line(result: &CompareResult, pane: PaneId, locale: &NumberLocale) -> String {
+    let options = &result.request.options;
+    if result.identical() {
+        let mut line = format!("Compared: {}", identical_text(options));
+        if result.dst_shifts > 0 {
+            line.push_str(&format!(
+                " · {} one- or two-hour shifts ignored",
+                locale.format_u64(result.dst_shifts)
+            ));
+        }
+        return line;
+    }
+    let count = |value: usize| locale.format_u64(value as u64);
     let [left, right] = result
         .selections
         .each_ref()
         .map(|selection| selection.len());
-    let count = |value: usize| locale.format_u64(value as u64);
-    let mut line = if left == 0 && right == 0 && result.unknown == 0 && result.ambiguous == 0 {
-        "Compared: no differences for the chosen criteria".to_owned()
-    } else {
-        format!(
-            "Compared: {} selected in the left panel, {} in the right",
-            count(left),
-            count(right)
-        )
+    let (here, there, other) = match pane {
+        PaneId::Left => (left, right, "right"),
+        PaneId::Right => (right, left, "left"),
     };
-    if result.differing_folders > 0 {
+    let mut line = format!(
+        "Compared: {} selected here, {} in the {other} panel",
+        count(here),
+        count(there)
+    );
+    if options.recursive {
         line.push_str(&format!(
-            " · {} {} with differences",
+            " · {} of {} folders differ",
             count(result.differing_folders),
-            if result.differing_folders == 1 {
-                "folder"
-            } else {
-                "folders"
-            }
+            count(result.compared_folders)
         ));
     }
     if result.content_differences > 0 {
@@ -483,26 +648,23 @@ fn status_line(result: &CompareResult, locale: &NumberLocale) -> String {
             count(result.content_differences)
         ));
     }
-    if result.request.options.by_content {
+    if result.dst_shifts > 0 {
         line.push_str(&format!(
-            " · {} file {} read",
-            locale.format_u64(result.content_files),
-            if result.content_files == 1 {
-                "pair"
+            " · {} one- or two-hour time {}",
+            locale.format_u64(result.dst_shifts),
+            if options.ignore_dst_shifts {
+                "shifts ignored"
             } else {
-                "pairs"
+                "differences (daylight saving?)"
             }
         ));
     }
     if result.unknown > 0 {
-        line.push_str(&format!(
-            " · {} with unknown metadata",
-            count(result.unknown)
-        ));
+        line.push_str(&format!(" · {} not verified", count(result.unknown)));
     }
     if result.ambiguous > 0 {
         line.push_str(&format!(
-            " · {} ambiguous name groups",
+            " · {} names differ only in case",
             count(result.ambiguous)
         ));
     }

@@ -398,6 +398,7 @@ impl Model for Rows {
             directory,
             selected: pane.selection_visible(entry),
             cursor: pane.cursor == Some(entry.id),
+            compare_mark: state.comparison_mark(self.pane, entry),
             color_rule: filename_style.is_some(),
             custom_foreground: filename_style.is_some_and(|style| style.foreground.is_some()),
             foreground: color_options::color(
@@ -709,13 +710,12 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_restored_panel_ratio(
         f32::from(presenter.preferences.values.panel_split_basis_points) / 10_000.0,
     );
-    // A directory comparison's result also uses this line: the user asked for no
-    // window after Compare, and the panels show the differences selected. So does a
-    // failure of background work nobody asked for (`DesktopState::report_background`).
+    // A failure of background work nobody asked for also uses this line
+    // (`DesktopState::report_background`). A directory comparison does not: its
+    // progress is in its dialog and its result below the panel that was active.
     window.set_desktop_feedback_important(
         presenter.desktop.terminal_guidance.is_some()
             || !presenter.desktop.error.is_empty()
-            || presenter.comparison_status().is_some()
             || presenter.desktop.background.is_some(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
@@ -847,11 +847,14 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         // Copying or inspecting the shown error maps it back (`Presenter::copy_panel_error`).
         let error = shown_text(presenter.panel_error_text(pane_id));
         // What Enter or a command did not do takes the pane's status row while it applies;
-        // then why a Thumbnails view shows no previews, a failed filename-color match and
-        // the watch status. None of them is a dialog or takes the keyboard.
+        // then the result of a directory comparison started from this pane, why a
+        // Thumbnails view shows no previews, a failed filename-color match and the watch
+        // status. None of them is a dialog or takes the keyboard.
         let (watch, watch_details): (SharedString, String) =
             if let Some(note) = presenter.search_note(pane_id) {
                 (note.into(), String::new())
+            } else if let Some((line, details)) = presenter.comparison_note(pane_id) {
+                (shown_text(line), details.to_owned())
             } else if let Some(previews) = presenter.thumbnail_status(pane_id) {
                 (shown_text(&previews.text), previews.details)
             } else if let Some(failure) = presenter.filename_colors_failure(pane_id) {
@@ -954,8 +957,6 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
             guidance
         } else if !presenter.desktop.error.is_empty() {
             &presenter.desktop.error
-        } else if let Some(compared) = presenter.comparison_status() {
-            compared
         } else if let Some(background) = &presenter.desktop.background {
             background
         } else {

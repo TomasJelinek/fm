@@ -760,10 +760,11 @@ unmatched-folder handling and time tolerance use the same backend comparison as
 flat panels. Both roots must be native; any virtual/provider entry is rejected,
 including virtual descendants of a native root. Display paths cannot authorize
 native access. No files are modified; files are read only with Compare contents.
-With Include subfolders the root folders are walked natively (see
-[COMPARE_DIRECTORIES.md](COMPARE_DIRECTORIES.md)), and the displayed descendant
-folders on the way to a difference are selected as well, through the same
-occurrence-based replacement.
+With Compare subfolders the root folders are walked natively (see
+[COMPARE_DIRECTORIES.md](COMPARE_DIRECTORIES.md)); only the root rows are selected (a
+differing folder in both panels, as in Salamander), and every displayed row, the
+descendants of expanded folders included, shows a match badge (=, ≠, +, ?) from the
+comparison's marks until either panel is listed again.
 
 The result is correlated with both original panel paths, navigation IDs, displayed
 projections and settled selection revisions before either preview changes. A flat

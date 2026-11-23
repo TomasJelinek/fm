@@ -1,0 +1,36 @@
+import { Theme } from "theme.slint";
+
+// How a directory comparison with subfolders found one row (`FileRow.compare-mark`):
+// 1 matches, 2 differs (a folder: something inside differs), 3 exists on this side
+// only, 4 not verified; 0 shows nothing. The glyph carries the meaning; colour only
+// emphasises it, so every theme and colour vision reads it the same.
+export global CompareMarks {
+    pure public function glyph(mark: int) -> string {
+        return mark == 1 ? "=" : mark == 2 ? "≠" : mark == 3 ? "+" : mark == 4 ? "?" : "";
+    }
+    pure public function words(mark: int, directory: bool) -> string {
+        return mark == 1 ? (directory ? "Compared: everything inside matches" : "Compared: matches")
+            : mark == 2 ? (directory ? "Compared: something inside differs" : "Compared: differs")
+            : mark == 3 ? "Compared: exists in this panel only"
+            : mark == 4 ? "Compared: could not be compared completely" : "";
+    }
+}
+
+export component CompareBadge inherits Rectangle {
+    in property <int> mark;
+    in property <bool> directory;
+    private property <length> edge: max(14px, min(22px, Theme.small-font + 4px));
+    width: self.edge + 4px; height: self.edge;
+    border-radius: 3px;
+    border-width: 1px;
+    background: root.mark == 2 ? Theme.error-background
+        : root.mark == 3 ? Theme.active-header : Theme.secondary-surface;
+    border-color: root.mark == 2 ? Theme.error-text : root.mark == 1 ? Theme.frame : Theme.active-frame;
+    // The row's accessible description says it in words (FileEntry).
+    Text {
+        text: CompareMarks.glyph(root.mark);
+        color: root.mark == 2 ? Theme.error-text : root.mark == 1 ? Theme.muted-text : Theme.strong-text;
+        font-size: Theme.small-font; font-weight: root.mark == 1 ? 400 : 700;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}

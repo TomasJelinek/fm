@@ -290,6 +290,7 @@ fn deep(
         &|| cancel.is_cancelled(),
         Some(compute::Deep {
             find: fake,
+            transfer: None,
             cancel,
             report: &mut report,
         }),
@@ -360,7 +361,8 @@ fn contents_skip_pairs_the_metadata_already_separates() {
     // Sizes differ: never read. With size off, both are selected.
     fake.file("/left/longer.txt", b"abcdef", 100)
         .file("/right/longer.txt", b"abc", 100)
-        // Times differ: the newer is selected without reading.
+        // Times differ: the newer is selected, and the pair is still read, as
+        // different bytes would select the other file too (Salamander).
         .file("/left/newer.txt", b"same", 500)
         .file("/right/newer.txt", b"same", 100);
     let cancel = Cancellation::default();
@@ -370,10 +372,11 @@ fn contents_skip_pairs_the_metadata_already_separates() {
         selected(&result),
         [
             vec!["longer.txt".to_owned(), "newer.txt".to_owned()],
-            vec![]
-        ]
+            vec!["longer.txt".to_owned()]
+        ],
+        "with contents, different sizes select both files (Salamander)"
     );
-    assert_eq!(result.content_files, 0, "no pair needed reading");
+    assert_eq!(result.content_files, 1, "only the equal-size pair is read");
     let only_contents = CompareOptions {
         by_size: false,
         by_modified: false,
@@ -389,7 +392,7 @@ fn contents_skip_pairs_the_metadata_already_separates() {
 }
 
 #[test]
-fn subfolders_select_the_folder_on_the_side_that_differs() {
+fn subfolders_select_a_differing_folder_in_both_panels() {
     let fake = twins();
     fake.dir("/left/equal")
         .dir("/right/equal")
@@ -414,11 +417,17 @@ fn subfolders_select_the_folder_on_the_side_that_differs() {
     assert_eq!(
         selected(&result),
         [
-            vec!["extra".to_owned(), "one-sided".to_owned()],
-            vec!["newer".to_owned()]
-        ]
+            vec![
+                "extra".to_owned(),
+                "newer".to_owned(),
+                "one-sided".to_owned()
+            ],
+            vec!["extra".to_owned(), "newer".to_owned()]
+        ],
+        "a folder that differs anywhere inside is selected on both sides (Salamander)"
     );
     assert_eq!(result.differing_folders, 2);
+    assert_eq!(result.compared_folders, 3);
     assert_eq!(result.errors, 0);
     assert!(!result.limited);
 }
@@ -442,7 +451,7 @@ fn subfolder_contents_and_links_are_compared_inside_folders() {
     let result = result.unwrap();
     assert_eq!(
         selected(&result),
-        [vec!["links".to_owned()], vec![]],
+        [vec!["links".to_owned()], vec!["links".to_owned()]],
         "a link on one side only is a difference; bytes are not read"
     );
     assert_eq!(
@@ -456,7 +465,7 @@ fn subfolder_contents_and_links_are_compared_inside_folders() {
         selected(&result),
         [
             vec!["data".to_owned(), "links".to_owned()],
-            vec!["data".to_owned()]
+            vec!["data".to_owned(), "links".to_owned()]
         ]
     );
     assert_eq!(result.content_differences, 1);
@@ -560,11 +569,11 @@ fn folder_walk_limits_end_with_unfinished_folders_selected() {
 }
 
 fn walk_depth_limit() -> usize {
-    compute::walk_limits().1
+    walk::MAX_DEPTH
 }
 
 #[test]
-fn an_expanded_tree_shows_the_differing_subfolders_selected() {
+fn an_expanded_tree_selects_root_rows_and_marks_the_differing_subfolders() {
     let root = std::env::current_dir().unwrap();
     let fake = Fake::default();
     for side in ["left", "right"] {
@@ -580,7 +589,10 @@ fn an_expanded_tree_shows_the_differing_subfolders_selected() {
         );
     }
     let mut request = super::tree_tests::request();
-    Arc::make_mut(&mut request).options = options(false, true);
+    Arc::make_mut(&mut request).options = CompareOptions {
+        by_modified: false,
+        ..options(false, true)
+    };
     let cancel = Cancellation::default();
     let (result, _) = deep(&fake, request.clone(), &cancel);
     let result = result.unwrap();
@@ -591,11 +603,32 @@ fn an_expanded_tree_shows_the_differing_subfolders_selected() {
             "the displayed folder contains a difference"
         );
         assert!(
-            selection.contains_position(1, TreeRowId(90)),
-            "its one-sided child, shown by the expanded tree, is selected too"
+            !selection.contains_position(1, TreeRowId(90)),
+            "only displayed root rows are selected, as in Salamander"
         );
     }
     assert_eq!(result.differing_folders, 1);
+    let marks = result.marks.as_ref().unwrap();
+    for (slot, side) in ["left", "right"].into_iter().enumerate() {
+        let base = root.join(side);
+        assert_eq!(
+            marks.mark(slot, &base.join("folder")),
+            Some(CompareMark::Differs)
+        );
+        assert_eq!(
+            marks.mark(
+                slot,
+                &base.join("folder").join(format!("only-{side}-child"))
+            ),
+            Some(CompareMark::OnlyHere),
+            "the expanded child shows that it exists on its side only"
+        );
+        assert_eq!(
+            marks.mark(slot, &base.join("same.txt")),
+            Some(CompareMark::Differs),
+            "10 and 20 bytes"
+        );
+    }
 }
 
 fn controller(
@@ -612,6 +645,7 @@ fn controller(
         },
         Services {
             find: Some(Arc::new(fake.clone())),
+            transfer: None,
             scope: None,
         },
         &mut tasks,
@@ -687,4 +721,520 @@ async fn cancel_stops_a_blocked_content_read_and_publishes_nothing() {
             "a cancelled comparison publishes no result"
         );
     }
+}
+
+/// The owner's report: a folder compared with its copy whose every file is newer.
+/// Without subfolders the newer files are selected on their side; with subfolders
+/// every folder differs, and is selected in both panels, not only on the newer side.
+#[test]
+fn a_newer_copy_selects_its_newer_files_and_both_sides_of_every_folder() {
+    let fake = twins();
+    for (side, time) in [("left", 100), ("right", 5_000)] {
+        fake.dir(&format!("/{side}/src"))
+            .dir(&format!("/{side}/src/deep"))
+            .file(&format!("/{side}/src/deep/lib.rs"), b"fn main() {}", time)
+            .file(&format!("/{side}/README.md"), b"readme", time)
+            .file(&format!("/{side}/Cargo.toml"), b"[package]", time);
+    }
+    let flat = compute(request(&fake, CompareOptions::default()), &|| false).unwrap();
+    assert_eq!(
+        selected(&flat),
+        [
+            vec![],
+            vec!["Cargo.toml".to_owned(), "README.md".to_owned()]
+        ]
+    );
+    let cancel = Cancellation::default();
+    let (result, _) = deep(&fake, request(&fake, options(false, true)), &cancel);
+    let result = result.unwrap();
+    assert_eq!(
+        selected(&result),
+        [
+            vec!["src".to_owned()],
+            vec![
+                "Cargo.toml".to_owned(),
+                "README.md".to_owned(),
+                "src".to_owned()
+            ]
+        ]
+    );
+    let marks = result.marks.as_ref().unwrap();
+    assert_eq!(
+        marks.mark(0, Path::new("/left/src/deep/lib.rs")),
+        Some(CompareMark::Differs)
+    );
+    assert_eq!(
+        marks.mark(1, Path::new("/right/src/deep")),
+        Some(CompareMark::Differs)
+    );
+    assert_eq!(
+        marks.mark(0, Path::new("/left/README.md")),
+        Some(CompareMark::Differs)
+    );
+}
+
+#[test]
+fn marks_tell_matching_differing_and_one_sided_entries_at_every_depth() {
+    let fake = twins();
+    fake.dir("/left/a")
+        .dir("/right/a")
+        .dir("/left/a/same")
+        .dir("/right/a/same")
+        .file("/left/a/same/x", b"x", 1)
+        .file("/right/a/same/x", b"x", 1)
+        .dir("/left/a/only-left")
+        .file("/left/a/only-left/inner", b"i", 1)
+        .file("/left/a/size", b"12", 1)
+        .file("/right/a/size", b"1", 1)
+        .dir("/left/b")
+        .dir("/right/b")
+        .file("/left/b/eq", b"e", 1)
+        .file("/right/b/eq", b"e", 1);
+    let cancel = Cancellation::default();
+    let (result, _) = deep(&fake, request(&fake, options(false, true)), &cancel);
+    let result = result.unwrap();
+    assert_eq!(
+        selected(&result),
+        [vec!["a".to_owned()], vec!["a".to_owned()]]
+    );
+    let marks = result.marks.as_ref().unwrap();
+    assert!(marks.complete());
+    let mark = |side: usize, path: &str| marks.mark(side, Path::new(path));
+    assert_eq!(mark(0, "/left/a"), Some(CompareMark::Differs));
+    assert_eq!(mark(1, "/right/a"), Some(CompareMark::Differs));
+    assert_eq!(mark(0, "/left/a/same"), Some(CompareMark::Same));
+    assert_eq!(mark(0, "/left/a/same/x"), Some(CompareMark::Same));
+    assert_eq!(mark(0, "/left/a/only-left"), Some(CompareMark::OnlyHere));
+    assert_eq!(
+        mark(0, "/left/a/only-left/inner"),
+        Some(CompareMark::OnlyHere)
+    );
+    assert_eq!(mark(0, "/left/a/size"), Some(CompareMark::Differs));
+    assert_eq!(mark(1, "/right/a/size"), Some(CompareMark::Differs));
+    assert_eq!(mark(0, "/left/b"), Some(CompareMark::Same));
+    assert_eq!(mark(1, "/right/b/eq"), Some(CompareMark::Same));
+    assert_eq!(mark(0, "/elsewhere/b"), None);
+}
+
+#[test]
+fn files_and_folders_of_one_name_are_one_sided_and_ignore_masks_apply_inside() {
+    let fake = twins();
+    fake.file("/left/name", b"file", 1)
+        .dir("/right/name")
+        .dir("/left/f")
+        .dir("/right/f")
+        .file("/left/f/build.tmp", b"1", 1)
+        .dir("/left/f/.git")
+        .file("/left/f/.git/HEAD", b"ref", 1)
+        .file("/right/f/kept", b"k", 1)
+        .file("/left/f/kept", b"k", 1);
+    let cancel = Cancellation::default();
+    let (result, _) = deep(&fake, request(&fake, options(false, true)), &cancel);
+    assert_eq!(
+        selected(&result.unwrap()),
+        [
+            vec!["f".to_owned(), "name".to_owned()],
+            vec!["f".to_owned(), "name".to_owned()]
+        ]
+    );
+    let ignoring = CompareOptions {
+        ignore_files: Some("*.tmp".into()),
+        ignore_folders: Some(".git".into()),
+        ..options(false, true)
+    };
+    let (result, _) = deep(&fake, request(&fake, ignoring), &cancel);
+    assert_eq!(
+        selected(&result.unwrap()),
+        [vec!["name".to_owned()], vec!["name".to_owned()]],
+        "ignored names are left out on both sides, inside compared folders too"
+    );
+    // Without subfolders, folders are left out entirely; the file still is one-sided.
+    let flat = compute(request(&fake, CompareOptions::default()), &|| false).unwrap();
+    assert_eq!(selected(&flat), [vec!["name".to_owned()], vec![]]);
+}
+
+#[test]
+fn folded_names_pair_across_case_inside_folders_unless_case_must_match() {
+    let fake = twins();
+    fake.dir("/left/Docs")
+        .dir("/right/docs")
+        .file("/left/Docs/Read.ME", b"r", 1)
+        .file("/right/docs/read.me", b"r", 1);
+    let cancel = Cancellation::default();
+    let folded = CompareOptions {
+        case_sensitive: false,
+        ..options(false, true)
+    };
+    let (result, _) = deep(&fake, request(&fake, folded), &cancel);
+    let result = result.unwrap();
+    assert!(result.identical(), "{:?}", selected(&result));
+    let exact = CompareOptions {
+        case_sensitive: true,
+        ..options(false, true)
+    };
+    let (result, _) = deep(&fake, request(&fake, exact), &cancel);
+    assert_eq!(
+        selected(&result.unwrap()),
+        [vec!["Docs".to_owned()], vec!["docs".to_owned()]]
+    );
+}
+
+#[test]
+fn daylight_saving_shifts_are_counted_and_optionally_ignored_inside_folders() {
+    let fake = twins();
+    fake.dir("/left/d")
+        .dir("/right/d")
+        .file("/left/d/shifted", b"s", 10_000)
+        .file("/right/d/shifted", b"s", 10_000 + 3600);
+    let cancel = Cancellation::default();
+    let (result, _) = deep(&fake, request(&fake, options(false, true)), &cancel);
+    let result = result.unwrap();
+    assert_eq!(result.dst_shifts, 1);
+    assert_eq!(
+        selected(&result),
+        [vec!["d".to_owned()], vec!["d".to_owned()]]
+    );
+    let ignoring = CompareOptions {
+        ignore_dst_shifts: true,
+        ..options(false, true)
+    };
+    let (result, _) = deep(&fake, request(&fake, ignoring), &cancel);
+    let result = result.unwrap();
+    assert_eq!(result.dst_shifts, 1);
+    assert!(result.identical());
+}
+
+#[test]
+fn both_panels_on_one_folder_are_refused() {
+    let fake = twins();
+    let mut capture = (*request(&fake, CompareOptions::default())).clone();
+    capture.sides[1].source.path = capture.sides[0].source.path.clone();
+    let error = compute(Arc::new(capture), &|| false).unwrap_err();
+    assert!(error.message.contains("same folder"), "{error:?}");
+}
+
+#[test]
+fn contents_are_read_in_parallel_with_progress_naming_the_pair() {
+    let fake = twins();
+    for index in 0..40 {
+        let bytes = format!("file {index}").repeat(50);
+        fake.file(&format!("/left/f{index:02}"), bytes.as_bytes(), 1)
+            .file(&format!("/right/f{index:02}"), bytes.as_bytes(), 1);
+    }
+    let cancel = Cancellation::default();
+    let (result, samples) = deep(&fake, request(&fake, options(true, false)), &cancel);
+    let result = result.unwrap();
+    assert!(result.identical());
+    assert_eq!(result.content_files, 40);
+    let last = samples.last().unwrap();
+    assert_eq!(last.phase, ComparePhase::Contents);
+    assert_eq!(last.content_files_total, 40);
+}
+
+#[tokio::test]
+async fn a_panel_change_during_a_comparison_is_answered_not_dropped() {
+    // Before 0.5.1 the controller dropped a running request whose panel was re-read
+    // or navigated, without any answer: the UI kept "Comparing subfolders…" for
+    // ever and refused refreshes and file operations (the reported hang).
+    let fake = twins();
+    fake.file("/left/a", b"abc", 1).file("/right/a", b"abc", 1);
+    fake.0.blocking.store(true, Ordering::SeqCst);
+    let capture = request(&fake, options(true, false));
+    let (controller, mut events, mut tasks) = controller(&fake, &capture);
+    controller.compare((*capture).clone());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fake.0.reads.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the worker starts reading");
+    let started = std::time::Instant::now();
+    controller.invalidate(PaneId::Left);
+    let answer = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(Event::DirectoriesCompared { id, result }) = events.recv().await {
+                break (id, result);
+            }
+        }
+    })
+    .await
+    .expect("the request the UI waits for is answered");
+    assert_eq!(answer.0, capture.id);
+    let error = answer.1.unwrap_err();
+    assert!(error.message.contains("Compare again"), "{error:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(controller);
+    while let Some(joined) = tasks.join_next().await {
+        joined.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn cancel_frees_the_readers_within_a_hundred_milliseconds() {
+    let fake = twins();
+    for index in 0..8 {
+        fake.file(&format!("/left/f{index}"), b"abc", 1).file(
+            &format!("/right/f{index}"),
+            b"abc",
+            1,
+        );
+    }
+    fake.0.blocking.store(true, Ordering::SeqCst);
+    let capture = request(&fake, options(true, false));
+    let (controller, _events, mut tasks) = controller(&fake, &capture);
+    controller.compare((*capture).clone());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while fake.0.reads.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("several readers block in their reads");
+    let started = std::time::Instant::now();
+    controller.cancel(capture.id);
+    drop(controller);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(joined) = tasks.join_next().await {
+            joined.unwrap();
+        }
+    })
+    .await
+    .expect("every reader ends");
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "cancellation took {:?}",
+        started.elapsed()
+    );
+}
+/// A generated tree of `TOP` folders of `SUB` folders of `FILES` files on each side,
+/// listed and read without being stored: the shape of the reported hang (thousands of
+/// folders, tens of thousands of files), small enough for a unit test.
+#[derive(Clone)]
+struct Generated {
+    top: usize,
+    sub: usize,
+    files: usize,
+    /// Reads wait here until their cancellation token fires.
+    reads: Arc<AtomicUsize>,
+}
+
+impl Generated {
+    fn new(top: usize, sub: usize, files: usize) -> Self {
+        Self {
+            top,
+            sub,
+            files,
+            reads: Arc::default(),
+        }
+    }
+    fn entry(&self, path: &Path) -> FindEntry {
+        let depth = path.components().count().saturating_sub(2);
+        let file = depth == 3;
+        FindEntry {
+            path: path.to_owned(),
+            kind: if file {
+                EntryKind::File
+            } else {
+                EntryKind::Directory
+            },
+            metadata: EntryMetadata {
+                size: file.then_some(64),
+                modified: Some(UNIX_EPOCH + Duration::from_secs(1_000)),
+                ..Default::default()
+            },
+            identity: TransferIdentity {
+                device: 1,
+                object: [0; 16],
+            },
+            revision: FindRevision([depth as u64, 0, 0, 0, 0, 0]),
+        }
+    }
+}
+
+impl FindService for Generated {
+    fn open_find_source(
+        &self,
+        path: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn FindSource>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(find_error(path, io::ErrorKind::Interrupted, "cancelled"));
+        }
+        Ok(Box::new(GeneratedSource {
+            tree: self.clone(),
+            entry: self.entry(path),
+            next: 0,
+            offset: 0,
+        }))
+    }
+}
+
+struct GeneratedSource {
+    tree: Generated,
+    entry: FindEntry,
+    next: usize,
+    offset: usize,
+}
+
+impl FindSource for GeneratedSource {
+    fn entry(&self) -> &FindEntry {
+        &self.entry
+    }
+    fn revalidate(&self, _: &Cancellation) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn next_child(&mut self, cancel: &Cancellation) -> Result<Option<FindChild>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(find_error(
+                &self.entry.path,
+                io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let depth = self.entry.path.components().count().saturating_sub(2);
+        let (count, name): (usize, fn(usize) -> String) = match depth {
+            0 => (self.tree.top, |index| format!("t{index:03}")),
+            1 => (self.tree.sub, |index| format!("s{index:03}")),
+            2 => (self.tree.files, |index| format!("f{index}.txt")),
+            _ => (0, |_| String::new()),
+        };
+        if self.next >= count {
+            return Ok(None);
+        }
+        let path = self.entry.path.join(name(self.next));
+        self.next += 1;
+        Ok(Some(FindChild::Entry(Box::new(GeneratedSource {
+            tree: self.tree.clone(),
+            entry: self.tree.entry(&path),
+            next: 0,
+            offset: 0,
+        }))))
+    }
+    fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
+        self.tree.reads.fetch_add(1, Ordering::SeqCst);
+        if cancel.is_cancelled() {
+            return Err(find_error(
+                &self.entry.path,
+                io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
+        }
+        let count = (64 - self.offset).min(buffer.len());
+        buffer[..count].fill(b'g');
+        self.offset += count;
+        Ok(count)
+    }
+}
+
+fn generated_request(tree: &Generated, options: CompareOptions) -> Arc<CompareRequest> {
+    let sides = [(PaneId::Left, "/left"), (PaneId::Right, "/right")].map(|(pane, root)| {
+        let entries: Vec<Entry> = (0..tree.top)
+            .map(|index| {
+                let mut entry = Entry::new(
+                    EntryId(index as u64 + 1),
+                    Path::new(root).join(format!("t{index:03}")),
+                    EntryKind::Directory,
+                );
+                entry.metadata.modified = Some(UNIX_EPOCH + Duration::from_secs(1_000));
+                entry
+            })
+            .collect();
+        CompareSide {
+            tree: None,
+            view: Arc::new(DirectoryIndex::from_entries(&entries)),
+            source: VisibleDirectory {
+                pane,
+                navigation: NavigationId(1),
+                path: root.into(),
+                entries: entries.into(),
+            },
+            view_revision: 0,
+            selection_revision: SelectionRevision(0),
+        }
+    });
+    Arc::new(CompareRequest {
+        id: CompareId(1),
+        sides,
+        options,
+    })
+}
+
+/// The reported hang: subfolders of a tree of 5,050 folders and 40,000 files per side
+/// end in bounded time with progress streamed meanwhile, and only the folders are
+/// retained as marks when everything matches (memory grows with folders, not files).
+#[test]
+fn a_large_tree_is_walked_in_bounded_time_and_memory_with_streamed_progress() {
+    let tree = Generated::new(50, 100, 8);
+    let cancel = Cancellation::default();
+    let started = std::time::Instant::now();
+    let mut samples = Vec::new();
+    let mut report = |sample: &CompareProgress| samples.push(sample.clone());
+    let result = compute::compare(
+        generated_request(&tree, options(false, true)),
+        &|| false,
+        Some(compute::Deep {
+            find: &tree,
+            transfer: None,
+            cancel: &cancel,
+            report: &mut report,
+        }),
+    )
+    .unwrap();
+    let took = started.elapsed();
+    assert!(result.identical());
+    assert_eq!(
+        (result.walked_folders, result.walked_files),
+        (5_050, 40_000)
+    );
+    assert!(took < Duration::from_secs(60), "the walk took {took:?}");
+    let marks = result.marks.as_ref().unwrap();
+    assert!(marks.complete());
+    assert_eq!(marks.len(), 5_050, "matching files are not stored");
+    assert_eq!(
+        marks.mark(1, Path::new("/right/t007/s042/f3.txt")),
+        Some(CompareMark::Same)
+    );
+    assert!(samples.len() >= 2, "progress is reported while it walks");
+    assert!(
+        samples
+            .windows(2)
+            .all(|pair| pair[0].folders <= pair[1].folders && pair[0].top_done <= pair[1].top_done)
+    );
+    assert!(samples.iter().any(|sample| sample.current.is_some()));
+}
+
+/// Cancelled in the middle of a large walk, the comparison ends at once.
+#[test]
+fn cancelling_a_large_walk_ends_it_within_a_hundred_milliseconds() {
+    let tree = Generated::new(50, 100, 8);
+    let cancel = Cancellation::default();
+    let mut cancelled_at = None;
+    let mut report = |sample: &CompareProgress| {
+        if sample.folders > 200 && cancelled_at.is_none() {
+            cancel.cancel();
+            cancelled_at = Some(std::time::Instant::now());
+        }
+    };
+    let error = compute::compare(
+        generated_request(&tree, options(true, true)),
+        &|| cancel.is_cancelled(),
+        Some(compute::Deep {
+            find: &tree,
+            transfer: None,
+            cancel: &cancel,
+            report: &mut report,
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::Interrupted);
+    let took = cancelled_at.expect("the walk reported progress").elapsed();
+    assert!(
+        took < Duration::from_millis(100),
+        "cancellation took {took:?}"
+    );
 }

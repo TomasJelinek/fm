@@ -85,7 +85,7 @@ fn cursor_keys_select_extend_from_the_anchor_or_move_the_cursor_alone() {
     // Ctrl moves the cursor alone; Space then adds its row.
     assert_eq!(
         selection.move_to(&order, 5, false, true).unwrap(),
-        Vec::new()
+        Vec::<std::ops::Range<usize>>::new()
     );
     assert_eq!(marked(&selection, &order), [2, 3]);
     assert_eq!(selection.cursor_index(&order), Some(5));
@@ -134,7 +134,11 @@ fn select_all_and_deselect_all_keep_the_cursor_and_report_their_rows() {
     assert_eq!(changed, one(0..5), "consecutive rows merge into one range");
     assert!(selection.is_empty());
     assert_eq!(selection.cursor_index(&order), Some(1));
-    assert_eq!(selection.clear(&order), Vec::new(), "nothing to deselect");
+    assert_eq!(
+        selection.clear(&order),
+        Vec::<std::ops::Range<usize>>::new(),
+        "nothing to deselect"
+    );
     // A click reports the rows it unmarks and the row it marks.
     selection.click(&order, 0, true, false).unwrap();
     selection.click(&order, 3, true, false).unwrap();

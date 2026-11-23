@@ -1,15 +1,22 @@
-//! One coalescing two-pane comparison; stale work cannot publish selections.
+//! One coalescing two-pane comparison; stale work cannot publish selections, and
+//! every request the UI still waits for is answered (a result, or why there is none).
 use crate::{Outbox, Snapshots, task_lifetime::TaskLifetime};
 use midnight_core::*;
 use std::{io, sync::Arc};
 use tokio::{sync::watch, task::JoinSet};
 mod compute;
+mod contents;
+mod rules;
+mod walk;
 
 #[derive(Clone, Default)]
 struct Intent {
     id: CompareId,
     serial: u64,
     request: Option<Arc<CompareRequest>>,
+    /// A panel was navigated or re-read under the request `id`: it is answered with
+    /// an explanation instead of a result.
+    invalidated: bool,
 }
 
 pub(crate) struct Controller {
@@ -20,6 +27,8 @@ pub(crate) struct Controller {
 #[derive(Clone, Default)]
 pub(crate) struct Services {
     pub(crate) find: Option<Arc<dyn FindService>>,
+    /// Lists compared folders from their records, without opening every child.
+    pub(crate) transfer: Option<Arc<dyn TransferService>>,
     /// Anchors the services while a blocking comparison still uses them.
     pub(crate) scope: Option<TaskLifetime>,
 }
@@ -57,6 +66,7 @@ impl Controller {
             intent.id = request.id;
             intent.serial = intent.serial.wrapping_add(1);
             intent.request = Some(Arc::new(request));
+            intent.invalidated = false;
             true
         });
     }
@@ -69,6 +79,7 @@ impl Controller {
             intent.id = id;
             intent.serial = intent.serial.wrapping_add(1);
             intent.request = None;
+            intent.invalidated = false;
             true
         });
     }
@@ -76,7 +87,7 @@ impl Controller {
     pub(crate) fn invalidate(&self, _pane: PaneId) {
         self.input.send_modify(|intent| {
             intent.serial = intent.serial.wrapping_add(1);
-            intent.request = None;
+            intent.invalidated |= intent.request.take().is_some();
         });
     }
 }
@@ -106,6 +117,15 @@ fn source_matches(snapshots: &Snapshots, request: &CompareRequest) -> bool {
     })
 }
 
+/// Whether the UI still waits for an answer to `request`: no newer request and no
+/// Cancel came. A panel change (`invalidated`) still owes one.
+fn awaited(latest: &Intent, request: &CompareRequest) -> bool {
+    latest.id == request.id && (latest.request.is_some() || latest.invalidated)
+}
+
+const PANELS_CHANGED: &str =
+    "A panel was refreshed or opened another folder while the comparison ran. Compare again.";
+
 async fn run(
     snapshots: Snapshots,
     outbox: Outbox,
@@ -129,6 +149,7 @@ async fn run(
             let work = request.clone();
             let observer = input.clone();
             let find = services.find.clone();
+            let transfer = services.transfer.clone();
             let progress = outbox.clone();
             let worker_token = token.clone();
             let job = move || {
@@ -151,6 +172,7 @@ async fn run(
                 };
                 let deep = find.as_deref().map(|find| compute::Deep {
                     find,
+                    transfer: transfer.as_deref(),
                     cancel: &worker_token,
                     report: &mut report,
                 });
@@ -183,36 +205,48 @@ async fn run(
             }
             joined.unwrap_or_else(|error| Err(failure(&request, error.to_string())))
         } else {
-            Err(failure(
-                &request,
-                "The captured directories are no longer current.",
-            ))
+            Err(failure(&request, PANELS_CHANGED))
         };
-        if result
-            .as_ref()
-            .is_err_and(|error| error.kind == io::ErrorKind::Interrupted)
-        {
-            continue;
-        }
-        let event = Event::DirectoriesCompared {
+        // Answer every request the UI still waits for. Before, a request whose panels
+        // changed while it ran was dropped without an answer, and the UI waited for it
+        // for ever: "Comparing subfolders…" stayed and every refresh stayed blocked.
+        let mut event = Some(Event::DirectoriesCompared {
             id: request.id,
             result: result.map(Arc::new),
-        };
-        tokio::select! {
-            biased;
-            changed = input.changed() => {
-                if changed.is_err() { return; }
-                pending = true;
-            }
-            permit = outbox.sender.reserve() => {
-                let Ok(permit) = permit else { return; };
-                let sent = {
-                    let latest = input.borrow();
-                    if latest.serial != intent.serial || (valid && !source_matches(&snapshots, &request)) {
-                        false
-                    } else { permit.send(event); true }
-                };
-                if sent { (outbox.wakeup)(); }
+        });
+        while let Some(answer) = event.take() {
+            tokio::select! {
+                biased;
+                changed = input.changed() => {
+                    if changed.is_err() { return; }
+                    pending = true;
+                    if awaited(&input.borrow(), &request) {
+                        event = Some(answer);
+                    }
+                }
+                permit = outbox.sender.reserve() => {
+                    let Ok(permit) = permit else { return; };
+                    let answer = {
+                        let latest = input.borrow();
+                        if !awaited(&latest, &request) {
+                            None
+                        } else if latest.invalidated
+                            || latest.serial != intent.serial
+                            || (valid && !source_matches(&snapshots, &request))
+                        {
+                            Some(Event::DirectoriesCompared {
+                                id: request.id,
+                                result: Err(failure(&request, PANELS_CHANGED)),
+                            })
+                        } else {
+                            Some(answer)
+                        }
+                    };
+                    if let Some(answer) = answer {
+                        permit.send(answer);
+                        (outbox.wakeup)();
+                    }
+                }
             }
         }
     }
@@ -242,3 +276,6 @@ mod tree_tests;
 
 #[cfg(test)]
 mod deep_tests;
+
+#[cfg(test)]
+mod native_bench_tests;

@@ -7,6 +7,7 @@ import { FileRow, TreePress } from "file-models.slint";
 import { TreeDisclosure } from "tree-disclosure.slint";
 import { PanelWarning } from "panel-warning.slint";
 import { FileArtwork } from "file-artwork.slint";
+import { CompareBadge, CompareMarks } from "compare-badge.slint";
 
 // The box a preview fills in a Thumbnails tile: the tile's width less the name's
 // 10px insets, and the height from 6px below the tile's top to the icons' baseline,
@@ -103,6 +104,7 @@ export component FileEntry inherits Rectangle {
         + (item.encrypted ? " · Encrypted" : "")
         + (item.browsable-archive ? " · Archive: open as folder" : "")
         + (item.size-state == 3 ? " · Folder size warning" : "");
+    accessible-description: CompareMarks.words(item.compare-mark, item.directory);
     pointer := TouchArea {
         if item.folder-link && root.link-tooltips-enabled && root.visible && !root.touch-contact : Tooltip {
             TipBody {
@@ -275,6 +277,14 @@ export component FileEntry inherits Rectangle {
                                 && parent.preferred-width > parent.width + 0.5px ? item.name : "";
                         }
                     }
+                }
+            }
+            // A comparison's outcome for this row, at the end of its name.
+            if item.compare-mark != 0 : Rectangle {
+                width: badge.width; horizontal-stretch: 0;
+                badge := CompareBadge {
+                    mark: item.compare-mark; directory: item.directory;
+                    y: (parent.height - self.height) / 2;
                 }
             }
         }

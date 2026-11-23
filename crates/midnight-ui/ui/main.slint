@@ -69,7 +69,7 @@ import { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeSt
 export { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView, MetadataEditFormat }
 import { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "unix-permissions.slint";
 export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView }
-import { ComparisonView, CompareDirectoriesDialog } from "comparison-dialog.slint";
+import { ComparisonView, ComparisonChoices, CompareDirectoriesDialog } from "comparison-dialog.slint";
 import { PanelFilterHistoryItem, PanelFilterView } from "panel-filter-dialog.slint";
 export { ComparisonView, PanelFilterView, PanelFilterHistoryItem }
 export { OperationRow }
@@ -323,7 +323,7 @@ export component MainWindow inherits Window {
     in property <PanelFilterView> panel-filter-view;
     in property <string> left-filter-label;
     in property <string> right-filter-label;
-    callback submit-comparison(bool, bool, bool, string, bool, bool, bool);
+    callback submit-comparison(ComparisonChoices);
     callback cancel-comparison();
     callback clear-panel-filter(int);
     private property <bool> comparison-open: root.comparison-view.open;
@@ -1484,7 +1484,7 @@ export component MainWindow inherits Window {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
         comparison-popup-frame := DialogFrame {
-            desired-width: max(720px, Theme.font-size * 30); desired-height: max(560px, Theme.font-size * 24);
+            desired-width: max(720px, Theme.font-size * 30); desired-height: max(640px, Theme.font-size * 32);
             dismiss-on-outside: false;
             dismiss => { root.cancel-comparison(); }
             CompareDirectoriesDialog {
@@ -1493,7 +1493,7 @@ export component MainWindow inherits Window {
                 private property <bool> opened: self.model.open;
                 init => { self.begin(); }
                 changed opened => { if self.opened { self.begin(); } }
-                submit(size, time, names, tolerance, directories, contents, subfolders) => { root.submit-comparison(size, time, names, tolerance, directories, contents, subfolders); }
+                submit(choices) => { root.submit-comparison(choices); }
                 cancel => { root.cancel-comparison(); }
             }
         }

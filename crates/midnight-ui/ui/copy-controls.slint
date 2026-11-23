@@ -116,7 +116,7 @@ export component CopyConflictDialog inherits Rectangle {
                 min-height: root.name-height; preferred-height: root.name-height;
                 max-height: root.name-height;
                 visible: root.allow-alternate-name;
-                accessible-label: "Copy under a different name";
+                accessible-label: "Copy under a different name"; clear-button: true;
                 accepted => { if self.text != "" { root.decide(2, self.text); } }
             }
             if !root.failure-mode : HorizontalLayout {

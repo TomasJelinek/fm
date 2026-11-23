@@ -531,8 +531,7 @@ comparator and fails for any other text field that is not listed with its reason
 | Number boxes (`ThemedSpinBox`, the colour picker's channels, viewer font size) | they step with − and + or arrows |
 | Viewer zoom entry | a transient editor that leaving cancels, so an × would only cancel |
 | Viewer find bar | its frame already holds its own inline clear |
-| Copy conflict name, Copy/Move/Rename/Create name | pending: they take `clear-button: true` with the Copy/Move/Delete dialog work |
-| Compare directories' time tolerance | pending: it takes `clear-button: true` with the Compare directories work |
+| Compare directories' time tolerance | a short number field with its unit |
 
 Pickers: a dialog uses one kind of dropdown for its fields. Make File List's Presets,
 Insert variable (action menus, which Slint's `ComboBox` cannot be) and Output are all

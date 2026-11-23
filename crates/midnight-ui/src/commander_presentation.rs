@@ -1,5 +1,6 @@
 //! Small UI bindings for worker-owned directory comparison and panel filtering.
 use super::*;
+use crate::presenter::comparison::IgnoreChoices;
 
 pub(super) fn bind(
     window: &MainWindow,
@@ -32,28 +33,12 @@ pub(super) fn bind(
     callback!(on_cancel_comparison, |p, s| {
         p.cancel_comparison(s);
     });
-    callback!(
-        on_submit_comparison,
-        |p, s, size, modified, case, tolerance, directories, contents, subfolders| {
-            match tolerance.trim().parse::<u32>() {
-                Ok(seconds) => p.submit_comparison(
-                    CompareOptions {
-                        by_size: size,
-                        by_modified: modified,
-                        by_content: contents,
-                        recursive: subfolders,
-                        case_sensitive: case,
-                        time_tolerance_seconds: seconds,
-                        unmatched_directories: directories,
-                    },
-                    s,
-                ),
-                Err(_) => {
-                    p.comparison.error = "Enter a whole number of seconds from 0 to 86400.".into()
-                }
-            }
+    callback!(on_submit_comparison, |p, s, choices| {
+        match comparison_options(&choices) {
+            Ok((options, ignore)) => p.submit_comparison(options, ignore, s),
+            Err(error) => p.comparison.error = error.into(),
         }
-    );
+    });
     callback!(on_open_panel_filter, |p, _s, id| {
         if let Some(pane) = match id {
             0 => Some(PaneId::Left),
@@ -74,28 +59,101 @@ pub(super) fn bind(
     });
 }
 
+/// The dialog's choices as options, and the ignore fields as typed.
+fn comparison_options(
+    choices: &ComparisonChoices,
+) -> Result<(CompareOptions, IgnoreChoices), &'static str> {
+    let seconds = choices
+        .tolerance_seconds
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|seconds| *seconds <= MAX_COMPARE_TOLERANCE_SECONDS)
+        .ok_or("Enter a whole number of seconds from 0 to 86400 for the time tolerance.")?;
+    let ignore = IgnoreChoices {
+        files: choices.ignore_files,
+        files_masks: choices.ignore_files_masks.trim().to_owned(),
+        folders: choices.ignore_folders,
+        folders_masks: choices.ignore_folders_masks.trim().to_owned(),
+    };
+    let masks =
+        |enabled: bool, masks: &str| (enabled && !masks.is_empty()).then(|| masks.to_owned());
+    let options = CompareOptions {
+        by_size: choices.by_size,
+        by_modified: choices.by_modified,
+        by_attributes: choices.by_attributes,
+        by_content: choices.by_content,
+        recursive: choices.recursive,
+        subfolder_attributes: choices.recursive && choices.subfolder_attributes,
+        unmatched_directories: choices.unmatched_directories,
+        case_sensitive: choices.case_sensitive,
+        time_tolerance_seconds: seconds,
+        ignore_dst_shifts: choices.ignore_dst,
+        ignore_files: masks(ignore.files, &ignore.files_masks),
+        ignore_folders: masks(ignore.folders, &ignore.folders_masks),
+    };
+    Ok((options, ignore))
+}
+
 pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     let state = &presenter.comparison;
+    let options = &state.options;
+    let running = state.running();
+    let (progress_counts, progress_detail, fraction) = if running {
+        crate::presenter::comparison::progress_texts(
+            state.progress.as_ref(),
+            &presenter.number_locale,
+        )
+    } else {
+        (String::new(), String::new(), -1.0)
+    };
+    let current = state
+        .progress
+        .as_ref()
+        .and_then(|progress| progress.current.clone())
+        .filter(|_| running);
+    let shown = |path: Option<&std::path::Path>| -> (SharedString, SharedString) {
+        let text = path.map(|path| path.to_string_lossy()).unwrap_or_default();
+        (shown_text(&text), crate::path_tail(&text))
+    };
+    let (left_path, left_tail) = shown(Some(presenter.panes[0].display_path()));
+    let (right_path, right_tail) = shown(Some(presenter.panes[1].display_path()));
+    let (current_left, current_left_tail) = shown(current.as_ref().map(|pair| pair[0].as_path()));
+    let (current_right, current_right_tail) = shown(current.as_ref().map(|pair| pair[1].as_path()));
     window.set_comparison_view(ComparisonView {
         open: state.open,
         busy: state.busy,
+        running,
         // A failed comparison names the path it could not read.
         error: shown_text(&state.error),
-        summary: state.summary.as_str().into(),
-        left_path: shown_text(&presenter.panes[0].display_path().to_string_lossy()),
-        right_path: shown_text(&presenter.panes[1].display_path().to_string_lossy()),
-        by_size: state.options.by_size,
-        by_modified: state.options.by_modified,
-        case_sensitive: state.options.case_sensitive,
-        tolerance_seconds: state.options.time_tolerance_seconds.to_string().into(),
-        unmatched_directories: state.options.unmatched_directories,
-        by_content: state.options.by_content,
-        recursive: state.options.recursive,
-        progress: if state.busy && state.in_progress() {
-            shown_text(&state.progress)
-        } else {
-            SharedString::default()
+        summary: shown_text(&state.summary),
+        left_path,
+        left_tail,
+        right_path,
+        right_tail,
+        choices: ComparisonChoices {
+            by_size: options.by_size,
+            by_modified: options.by_modified,
+            by_attributes: options.by_attributes,
+            by_content: options.by_content,
+            recursive: options.recursive,
+            subfolder_attributes: options.subfolder_attributes,
+            unmatched_directories: options.unmatched_directories,
+            case_sensitive: options.case_sensitive,
+            tolerance_seconds: options.time_tolerance_seconds.to_string().into(),
+            ignore_dst: options.ignore_dst_shifts,
+            ignore_files: state.ignore.files,
+            ignore_files_masks: state.ignore.files_masks.as_str().into(),
+            ignore_folders: state.ignore.folders,
+            ignore_folders_masks: state.ignore.folders_masks.as_str().into(),
         },
+        current_left,
+        current_left_tail,
+        current_right,
+        current_right_tail,
+        progress_counts: progress_counts.into(),
+        progress_detail: progress_detail.into(),
+        fraction,
     });
     let state = &presenter.filter_dialog;
     let (history, history_labels) = filter_history(window, presenter);

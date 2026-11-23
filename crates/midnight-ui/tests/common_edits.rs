@@ -100,25 +100,11 @@ const EXCEPTIONS: &[(&str, &str, &str, &str)] = &[
         "search-edit",
         "the viewer's find bar, whose frame already holds its own inline clear",
     ),
-    // Owned by work in progress elsewhere (the Copy/Move/Delete confirmations and the
-    // Compare directories dialog): these fields take `clear-button: true` there.
     (
         "comparison-dialog.slint",
         "ThemedLineEdit",
         "tolerance",
-        "pending: Compare directories' time tolerance (Compare directories owner)",
-    ),
-    (
-        "copy-controls.slint",
-        "ThemedLineEdit",
-        "name",
-        "pending: the Copy conflict's new name (Copy/Move/Delete owner)",
-    ),
-    (
-        "operation-controls.slint",
-        "ThemedLineEdit",
-        "name",
-        "pending: the Copy/Move/Rename/Create name (Copy/Move/Delete owner)",
+        "Compare directories' time tolerance: a short number field with its unit",
     ),
 ];
 

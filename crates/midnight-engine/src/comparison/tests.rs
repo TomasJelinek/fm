@@ -203,7 +203,7 @@ async fn cancel_and_newer_comparison_replace_a_result_waiting_for_output_capacit
 }
 
 #[tokio::test(start_paused = true)]
-async fn either_source_refresh_discards_a_completed_result_under_backpressure() {
+async fn either_source_refresh_answers_a_completed_result_with_an_explanation() {
     let capture = request(vec![entry(1, "left", Some(1), 1)], vec![]);
     let snapshots = sources(&capture);
     let (sender, mut events) = tokio::sync::mpsc::channel(1);
@@ -225,6 +225,20 @@ async fn either_source_refresh_discards_a_completed_result_under_backpressure() 
         events.recv().await,
         Some(Event::VolumesUpdated(_))
     ));
+    // The result is discarded, but the UI still waits for this request: it gets the
+    // reason instead of waiting for ever.
+    let event = tokio::time::timeout(Duration::from_secs(4), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let Event::DirectoriesCompared {
+        id: CompareId(1),
+        result: Err(error),
+    } = event
+    else {
+        panic!("expected the discarded request's answer");
+    };
+    assert!(error.message.contains("Compare again"), "{error:?}");
     drop(controller);
     tokio::time::timeout(Duration::from_secs(4), async {
         while let Some(result) = tasks.join_next().await {

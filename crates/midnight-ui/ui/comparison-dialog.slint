@@ -1,3 +1,4 @@
+import { ProgressIndicator } from "std-widgets.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { VScrollView } from "scroll-view.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
@@ -8,21 +9,83 @@ import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
+import { PathText } from "path-text.slint";
+
+// The options of Compare directories (Open Salamander's criteria).
+export struct ComparisonChoices {
+    by-size: bool, by-modified: bool, by-attributes: bool, by-content: bool,
+    recursive: bool, subfolder-attributes: bool, unmatched-directories: bool,
+    case-sensitive: bool, tolerance-seconds: string, ignore-dst: bool,
+    ignore-files: bool, ignore-files-masks: string,
+    ignore-folders: bool, ignore-folders-masks: string,
+}
 
 export struct ComparisonView {
-    open: bool, busy: bool, error: string, summary: string,
-    left-path: string, right-path: string,
-    by-size: bool, by-modified: bool, case-sensitive: bool,
-    tolerance-seconds: string, unmatched-directories: bool,
-    by-content: bool, recursive: bool,
-    // The running comparison's progress line; empty when none runs.
-    progress: string,
+    open: bool,
+    // Compare is refused (a comparison runs or its selection is being applied).
+    busy: bool,
+    // A comparison runs: the dialog shows its progress and Cancel.
+    running: bool,
+    error: string, summary: string,
+    left-path: string, left-tail: string, right-path: string, right-tail: string,
+    choices: ComparisonChoices,
+    // The pair being compared now, left then right, with their last components.
+    current-left: string, current-left-tail: string,
+    current-right: string, current-right-tail: string,
+    // Counts so far, and the bytes read; empty when nothing to say.
+    progress-counts: string, progress-detail: string,
+    // The fraction done, or below zero when it cannot be told yet.
+    fraction: float,
+}
+
+// A group's caption with a rule after it, as the options are grouped.
+component Section inherits HorizontalLayout {
+    in property <string> text;
+    spacing: 8px;
+    Text {
+        text: root.text; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
+        vertical-alignment: center; wrap: no-wrap; horizontal-stretch: 0;
+    }
+    Rectangle {
+        horizontal-stretch: 1; min-width: 0px;
+        Rectangle { y: (parent.height - 1px) / 2; height: 1px; background: Theme.frame; }
+    }
+}
+
+// A criterion's check box with what it selects beside it, or below it when narrow.
+component Criterion inherits Rectangle {
+    in property <string> text;
+    in property <string> effect;
+    in property <string> hint;
+    // What a screen reader names it, when the caption alone says too little.
+    in property <string> accessible-name;
+    in property <bool> enabled: true;
+    in property <bool> narrow;
+    // The check boxes' column, shared with the ignore fields' captions.
+    in property <length> label-width: max(170px, min(Theme.font-size * 15, 260px));
+    in-out property <bool> checked <=> box.checked;
+    out property <bool> has-focus: box.has-focus;
+    forward-focus: box;
+    min-height: layout.min-height;
+    // Narrow, the effect stays in the hint only: the check box keeps the whole row.
+    layout := HorizontalLayout {
+        spacing: 12px; padding-left: 8px;
+        box := WrappingCheckBox {
+            text: root.text; hint: root.hint; enabled: root.enabled;
+            accessible-name: root.accessible-name;
+            width: root.narrow ? root.width - 8px : root.label-width;
+        }
+        if !root.narrow : Text {
+            text: root.effect; color: root.enabled ? Theme.secondary-text : Theme.muted-text;
+            font-size: Theme.small-font; wrap: word-wrap; vertical-alignment: center;
+            horizontal-stretch: 1; min-width: 0px;
+        }
+    }
 }
 
 export component CompareDirectoriesDialog inherits Rectangle {
     in property <ComparisonView> model;
-    // size, time, exact case, tolerance, unmatched folders, contents, subfolders
-    callback submit(bool, bool, bool, string, bool, bool, bool);
+    callback submit(ComparisonChoices);
     callback cancel();
     callback move-dialog(length, length);
     // Shrinking can clip the focused field and clear Slint's focus entirely.
@@ -30,29 +93,72 @@ export component CompareDirectoriesDialog inherits Rectangle {
     // not take focus from the field being edited.
     private property <bool> compact: root.width < 400px || root.height < 350px;
     changed compact => { if root.compact { footer.focus-dismiss(); } }
-    // The stock field's 32px, or the theme's control height when taller.
-    private property <length> field-height: max(32px, Theme.control-height, Theme.font-size + 12px);
+    private property <bool> narrow: root.width < Theme.font-size * 34;
+    private property <length> field-height: max(Theme.control-height, Theme.font-size + 12px);
+    private property <bool> running: root.model.running;
+    // Cancel takes the keyboard while a comparison runs; the options get it back after.
+    changed running => {
+        if root.running { footer.focus-dismiss(); } else if !root.compact { sizes.focus(); }
+    }
     public function begin() {
-        sizes.checked = root.model.by-size;
-        times.checked = root.model.by-modified;
-        names.checked = root.model.case-sensitive;
-        tolerance.text = root.model.tolerance-seconds;
-        directories.checked = root.model.unmatched-directories;
-        contents.checked = root.model.by-content;
-        subfolders.checked = root.model.recursive;
-        if root.compact {
+        sizes.checked = root.model.choices.by-size;
+        times.checked = root.model.choices.by-modified;
+        attributes.checked = root.model.choices.by-attributes;
+        contents.checked = root.model.choices.by-content;
+        subfolders.checked = root.model.choices.recursive;
+        folder-attributes.checked = root.model.choices.subfolder-attributes;
+        one-sided.checked = root.model.choices.unmatched-directories;
+        names.checked = root.model.choices.case-sensitive;
+        tolerance.text = root.model.choices.tolerance-seconds;
+        shifts.checked = root.model.choices.ignore-dst;
+        ignore-files.checked = root.model.choices.ignore-files;
+        files-masks.text = root.model.choices.ignore-files-masks;
+        ignore-folders.checked = root.model.choices.ignore-folders;
+        folders-masks.text = root.model.choices.ignore-folders-masks;
+        if root.compact || root.running {
             footer.focus-dismiss();
         } else {
             sizes.focus();
         }
     }
-    // Compare, Enter in the options and Enter in the tolerance field start the same
-    // comparison; none while one runs.
+    // Compare, Enter in the options and Enter in a field start the same comparison;
+    // none while one runs.
     function compare() {
         if !root.model.busy {
-            root.submit(sizes.checked, times.checked, names.checked, tolerance.text,
-                directories.checked, contents.checked, subfolders.checked);
+            root.submit({
+                by-size: sizes.checked, by-modified: times.checked,
+                by-attributes: attributes.checked, by-content: contents.checked,
+                recursive: subfolders.checked,
+                subfolder-attributes: subfolders.checked && folder-attributes.checked,
+                unmatched-directories: one-sided.checked,
+                case-sensitive: names.checked, tolerance-seconds: tolerance.text,
+                ignore-dst: shifts.checked,
+                ignore-files: ignore-files.checked, ignore-files-masks: files-masks.text,
+                ignore-folders: ignore-folders.checked, ignore-folders-masks: folders-masks.text,
+            });
         }
+    }
+    // Alt+letter toggles an option and focuses it, as a dialog's accelerators do.
+    function accelerator(key: string) -> bool {
+        if root.running {
+            if key == "c" { root.cancel(); return true; }
+            return false;
+        }
+        if key == "z" { sizes.checked = !sizes.checked; sizes.focus(); }
+        else if key == "d" { times.checked = !times.checked; times.focus(); }
+        else if key == "t" && times.checked { tolerance.focus-value(); tolerance.select-all(); }
+        else if key == "h" && times.checked { shifts.checked = !shifts.checked; shifts.focus(); }
+        else if key == "a" { attributes.checked = !attributes.checked; attributes.focus(); }
+        else if key == "c" { contents.checked = !contents.checked; contents.focus(); }
+        else if key == "s" { subfolders.checked = !subfolders.checked; subfolders.focus(); }
+        else if key == "o" && subfolders.checked { folder-attributes.checked = !folder-attributes.checked; folder-attributes.focus(); }
+        else if key == "e" && !subfolders.checked { one-sided.checked = !one-sided.checked; one-sided.focus(); }
+        else if key == "m" { names.checked = !names.checked; names.focus(); }
+        else if key == "f" { ignore-files.checked = !ignore-files.checked; if ignore-files.checked { files-masks.focus-value(); } else { ignore-files.focus(); } }
+        else if key == "n" { ignore-folders.checked = !ignore-folders.checked; if ignore-folders.checked { folders-masks.focus-value(); } else { ignore-folders.focus(); } }
+        else if key == "r" { root.compare(); }
+        else { return false; }
+        return true;
     }
     background: Theme.surface; border-radius: 8px;
     border-width: 1px; border-color: Theme.active-frame;
@@ -62,6 +168,10 @@ export component CompareDirectoriesDialog inherits Rectangle {
         // A held Enter answers nothing: only a new press compares or closes.
         capture-key-pressed(event) => {
             if event.repeat && event.text == Key.Return { return accept; }
+            if event.modifiers.alt && !event.modifiers.control && !event.modifiers.meta
+                && !event.repeat && root.accelerator(event.text.to-lowercase()) {
+                return accept;
+            }
             reject
         }
         key-pressed(event) => {
@@ -69,20 +179,22 @@ export component CompareDirectoriesDialog inherits Rectangle {
             return reject;
         }
         VerticalLayout {
-            padding: root.height < 280px ? 8px : 20px; spacing: root.height < 280px ? 4px : 12px;
-            DialogHeader { title: "Compare displayed directories"; compact: root.height < 280px;
+            padding: root.height < 280px ? 8px : 16px; spacing: root.height < 280px ? 4px : 10px;
+            DialogHeader { title: root.running ? "Comparing directories" : "Compare directories";
+                compact: root.height < 280px;
                 fallback-icon: FallbackIcons.compare-directories;
                 close => { root.cancel(); }
                 dragged(dx, dy) => { root.move-dialog(dx, dy); } }
             // Enter in an option compares, as other dialogs confirm from their options
-            // (Space toggles one); the tolerance field compares on its own Enter, so its
-            // input method keeps the key. Close and the header's close button keep theirs.
+            // (Space toggles one); the fields compare on their own Enter, so their input
+            // methods keep the key.
             FocusScope {
                 min-height: 0px; vertical-stretch: 1;
                 // A key router, not a Tab stop.
                 focus-on-tab-navigation: false;
                 capture-key-pressed(event) => {
-                    if event.text == Key.Return && !tolerance.has-focus {
+                    if event.text == Key.Return && !root.running && !tolerance.has-focus
+                        && !files-masks.has-focus && !folders-masks.has-focus {
                         root.compare();
                         return accept;
                     }
@@ -90,70 +202,176 @@ export component CompareDirectoriesDialog inherits Rectangle {
                 }
                 VScrollView {
                     VerticalLayout {
-                        spacing: 12px; alignment: start;
+                        spacing: 8px; alignment: start;
+                        // Which folders: one line each, shortened in the middle.
+                        GridLayout {
+                            spacing-horizontal: 8px; spacing-vertical: 2px;
+                            Text { row: 0; col: 0; text: root.running ? "Comparing" : "Left";
+                                color: Theme.secondary-text; font-size: Theme.font-size;
+                                horizontal-alignment: right; vertical-alignment: center; }
+                            PathText { row: 0; col: 1; horizontal-stretch: 1;
+                                text: root.running && root.model.current-left != "" ? root.model.current-left : root.model.left-path;
+                                tail: root.running && root.model.current-left != "" ? root.model.current-left-tail : root.model.left-tail;
+                                foreground: Theme.text; font-size: Theme.font-size; }
+                            Text { row: 1; col: 0; text: root.running ? "with" : "Right";
+                                color: Theme.secondary-text; font-size: Theme.font-size;
+                                horizontal-alignment: right; vertical-alignment: center; }
+                            PathText { row: 1; col: 1; horizontal-stretch: 1;
+                                text: root.running && root.model.current-right != "" ? root.model.current-right : root.model.right-path;
+                                tail: root.running && root.model.current-right != "" ? root.model.current-right-tail : root.model.right-tail;
+                                foreground: Theme.text; font-size: Theme.font-size; }
+                        }
+                        if root.running : VerticalLayout {
+                            spacing: 6px;
+                            // A visible track: an empty determinate bar is still a bar.
+                            Rectangle {
+                                height: 8px; border-radius: 4px;
+                                background: Theme.secondary-surface;
+                                border-width: 1px; border-color: Theme.frame;
+                                ProgressIndicator {
+                                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                                    indeterminate: root.model.fraction < 0;
+                                    progress: max(0, root.model.fraction);
+                                }
+                            }
+                            Text {
+                                text: root.model.progress-counts; color: Theme.text;
+                                font-size: Theme.font-size; wrap: word-wrap;
+                            }
+                            if root.model.progress-detail != "" : Text {
+                                text: root.model.progress-detail; color: Theme.secondary-text;
+                                font-size: Theme.small-font; wrap: word-wrap;
+                            }
+                        }
                         VerticalLayout {
-                            spacing: 4px;
-                            Text { text: "First: " + root.model.left-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                            Text { text: "Second: " + root.model.right-path; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                        }
-                        Rectangle { height: 1px; background: Theme.frame; }
-                        Text {
-                            text: (contents.checked ? "Metadata and contents" : "Metadata only")
-                                + (subfolders.checked ? " · displayed files and folders, with their subfolders" : " · displayed files · no recursion");
-                            color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
-                        }
-                        sizes := WrappingCheckBox {
-                            text: "Compare file size"; enabled: !root.model.busy; min-height: Theme.control-height;
-                            hint: "Select the larger file. Missing requested metadata selects both files as unknown. File contents are read only with Compare contents.";
-                        }
-                        times := WrappingCheckBox {
-                            text: "Compare modification time"; enabled: !root.model.busy; min-height: Theme.control-height;
-                            hint: "Select the newer file, comparing whole seconds with the chosen tolerance.";
-                        }
-                        Text { text: "Time tolerance (seconds)"; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
-                        // Themed, so that selected text uses the theme's selection colours.
-                        tolerance := ThemedLineEdit {
-                            enabled: !root.model.busy; accessible-label: "Time tolerance in seconds";
-                            min-height: root.field-height; preferred-height: root.field-height;
-                            max-height: root.field-height;
-                            accepted => { root.compare(); }
-                            Tooltip { TipBody {
-                                text: "A whole number from 0 to 86400. A difference exactly equal to the tolerance counts as equal.";
-                            } }
-                        }
-                        contents := WrappingCheckBox {
-                            text: "Compare contents"; enabled: !root.model.busy; min-height: Theme.control-height;
-                            hint: "Read same-named files of equal size byte by byte when the other criteria find no difference; different bytes select both files. Sizes are checked first, so files of different size are never read. Runs in the background: the status line shows progress, and Compare directories again shows Cancel.";
-                        }
-                        names := WrappingCheckBox {
-                            text: "Match names with exact case"; enabled: !root.model.busy; min-height: Theme.control-height;
-                            hint: "Turn off to use Unicode case folding. Ambiguous folded names are all selected; native filenames are never changed.";
-                        }
-                        subfolders := WrappingCheckBox {
-                            text: "Include subfolders"; enabled: !root.model.busy; min-height: Theme.control-height;
-                            hint: "Compare same-named folders and everything inside them. A folder that contains a difference is selected on the side that differs (both sides for unknown or different contents); an expanded tree also selects the differing subfolders it shows. Folders and links on one side only count as differences; links are never followed.";
-                        }
-                        directories := WrappingCheckBox {
-                            text: "Select unmatched directories"; enabled: !root.model.busy && !subfolders.checked; min-height: Theme.control-height;
-                            hint: subfolders.checked ? "With Include subfolders, folders on one side only are always selected."
-                                : "Also select directories without a name match. Their contents and metadata are not compared. Persistent panel filters still apply to files.";
-                        }
-                        if root.model.busy: Text {
-                            text: root.model.progress != "" ? root.model.progress : "Comparing…";
-                            color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                            // Hidden, not removed, while a comparison runs: the options keep
+                            // their state for the next Compare.
+                            visible: !root.running;
+                            height: root.running ? 0px : self.preferred-height;
+                            spacing: 6px;
+                            Section { text: "Compare files with the same name by"; }
+                            sizes := Criterion {
+                                text: "Size"; accessible-name: "Compare file size"; effect: "The larger file is selected."; narrow: root.narrow;
+                                enabled: !root.model.busy;
+                                hint: "Alt+Z. Of a pair of same-named files, the larger one is selected.";
+                            }
+                            times := Criterion {
+                                text: "Date and time"; accessible-name: "Compare modification time"; effect: "The newer file is selected."; narrow: root.narrow;
+                                enabled: !root.model.busy;
+                                hint: "Alt+D. Of a pair of same-named files, the one modified later is selected, comparing whole seconds.";
+                            }
+                            HorizontalLayout {
+                                padding-left: 40px; spacing: 6px; alignment: start;
+                                Text { text: "Ignore differences up to"; color: times.checked ? Theme.text : Theme.muted-text;
+                                    font-size: Theme.font-size; vertical-alignment: center; wrap: no-wrap; }
+                                // Room for "86400" and the caret: a small number field, not a full-width edit.
+                                tolerance := ThemedLineEdit {
+                                    enabled: !root.model.busy && times.checked; input-type: number;
+                                    horizontal-alignment: right;
+                                    accessible-label: "Time tolerance in seconds";
+                                    width: Theme.font-size * 4 + 16px;
+                                    min-height: root.field-height; preferred-height: root.field-height;
+                                    max-height: root.field-height;
+                                    accepted => { root.compare(); }
+                                    Tooltip { TipBody {
+                                        text: "Alt+T. A whole number from 0 to 86400. Times this many seconds apart, or fewer, count as equal; 2 also covers FAT's two-second times.";
+                                    } }
+                                }
+                                Text { text: "s"; color: times.checked ? Theme.text : Theme.muted-text;
+                                    font-size: Theme.font-size; vertical-alignment: center; }
+                            }
+                            HorizontalLayout {
+                                padding-left: 32px;
+                                shifts := WrappingCheckBox {
+                                    text: "Ignore differences of exactly one or two hours (daylight saving)";
+                                    enabled: !root.model.busy && times.checked;
+                                    hint: "Alt+H. Times one or two hours apart, give or take the tolerance, usually come from a daylight saving change or a time zone: count them as equal. The result says how many there were either way.";
+                                }
+                            }
+                            attributes := Criterion {
+                                text: "Attributes"; accessible-name: "Compare attributes"; effect: "Files with different attributes are selected."; narrow: root.narrow;
+                                enabled: !root.model.busy;
+                                hint: "Alt+A. Both files are selected when read-only, hidden, system, archive, encrypted, temporary, compressed or offline differ (on Linux, the permissions).";
+                            }
+                            contents := Criterion {
+                                text: "Content"; accessible-name: "Compare contents"; effect: "Files with different content are selected."; narrow: root.narrow;
+                                enabled: !root.model.busy;
+                                hint: "Alt+C. Same-named files are read byte by byte unless both are selected already; files of different size are never read and are both selected.";
+                            }
+                            Section { text: "Subfolders"; }
+                            subfolders := Criterion {
+                                text: "Compare subfolders"; narrow: root.narrow;
+                                effect: "Folders with different content are selected in both panels. Each row then shows whether it matches.";
+                                enabled: !root.model.busy;
+                                hint: "Alt+S. Same-named folders are compared with everything inside them, by the criteria above. Folders on one side only are selected; links are never followed.";
+                            }
+                            folder-attributes := Criterion {
+                                text: "Compare folder attributes"; narrow: root.narrow;
+                                effect: "Folders with different attributes are selected.";
+                                enabled: !root.model.busy && subfolders.checked;
+                                hint: "Alt+O. With Compare subfolders: same-named folders whose attributes differ are selected.";
+                            }
+                            one-sided := Criterion {
+                                text: "Select one-sided folders"; narrow: root.narrow;
+                                effect: subfolders.checked ? "Always, when subfolders are compared." : "Folders that exist in one panel only are selected.";
+                                enabled: !root.model.busy && !subfolders.checked;
+                                hint: "Alt+E. Without Compare subfolders, folders are otherwise left out of the comparison.";
+                            }
+                            Section { text: "Names"; }
+                            names := Criterion {
+                                text: "Match exact case"; accessible-name: "Match names with exact case"; narrow: root.narrow;
+                                effect: "Off: names that differ only in case are the same entry.";
+                                enabled: !root.model.busy;
+                                hint: "Alt+M. Windows names never differ by case alone; elsewhere they can.";
+                            }
+                            GridLayout {
+                                spacing-horizontal: 12px; spacing-vertical: 6px; padding-left: 8px;
+                                ignore-files := WrappingCheckBox {
+                                    row: 0; col: 0; text: "Ignore files"; enabled: !root.model.busy;
+                                    width: root.narrow ? Theme.font-size * 8 : max(170px, min(Theme.font-size * 15, 260px));
+                                    hint: "Alt+F. Files whose names match these masks are left out on both sides.";
+                                    toggled => { if self.checked { files-masks.focus-value(); } }
+                                }
+                                files-masks := ThemedLineEdit {
+                                    row: 0; col: 1; horizontal-stretch: 1;
+                                    enabled: !root.model.busy && ignore-files.checked;
+                                    placeholder-text: "*.tmp; *.bak"; accessible-label: "Masks of files to ignore"; clear-button: true;
+                                    min-height: root.field-height; preferred-height: root.field-height;
+                                    max-height: root.field-height;
+                                    accepted => { root.compare(); }
+                                }
+                                ignore-folders := WrappingCheckBox {
+                                    row: 1; col: 0; text: "Ignore folders"; enabled: !root.model.busy;
+                                    width: root.narrow ? Theme.font-size * 8 : max(170px, min(Theme.font-size * 15, 260px));
+                                    hint: "Alt+N. Folders whose names match these masks are left out on both sides, where folders are compared.";
+                                    toggled => { if self.checked { folders-masks.focus-value(); } }
+                                }
+                                folders-masks := ThemedLineEdit {
+                                    row: 1; col: 1; horizontal-stretch: 1;
+                                    enabled: !root.model.busy && ignore-folders.checked;
+                                    placeholder-text: ".git; node_modules"; accessible-label: "Masks of folders to ignore"; clear-button: true;
+                                    min-height: root.field-height; preferred-height: root.field-height;
+                                    max-height: root.field-height;
+                                    accepted => { root.compare(); }
+                                }
+                            }
                         }
                         if root.model.error != "": ErrorNotice { text: root.model.error; }
-                        if root.model.summary != "": Text { text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap; }
+                        if root.model.summary != "" && !root.running: Text {
+                            text: root.model.summary; color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                        }
                     }
                 }
             }
             footer := DialogFooter {
                 compact-height: root.height < 280px;
-                dismiss-text: root.model.busy ? "Cancel" : "Close";
+                dismiss-text: root.running ? "Cancel" : "Close";
+                dismiss-hint: root.running ? "Stop the comparison; the panels stay as they are (Escape, Alt+C)." : "Close (Escape).";
                 dismiss => { root.cancel(); }
-                HintedActionButton { text: "Compare"; primary: true; enabled: !root.model.busy; min-height: Theme.control-height;
+                if !root.running : HintedActionButton { text: "Compare"; primary: true; enabled: !root.model.busy;
+                    min-height: Theme.control-height;
                     fallback-icon: FallbackIcons.compare-directories;
-                    hint: "Replace both selections with differences: files present on only one side, plus the larger or newer file for enabled criteria, files with different contents and folders that contain differences when those options are on. No files are changed.";
+                    hint: "Replace both selections with the differences (Enter, Alt+R). No files are changed.";
                     clicked => { root.compare(); } }
             }
         }

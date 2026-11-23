@@ -4,9 +4,12 @@ mod render;
 use crate::support::ui;
 
 use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
-use midnight_ui::ComparisonView;
+use midnight_ui::{ComparisonChoices, ComparisonView};
 use slint::{ComponentHandle, platform::Key};
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 fn settle(test: &mut ui::TestUi) {
     for _ in 0..2 {
@@ -99,12 +102,15 @@ fn comparison_opened_at_minimum_size_keeps_keyboard_draft_and_escape() {
     test.resize(320, 200);
     let submissions = Rc::new(RefCell::new(Vec::new()));
     let captured = submissions.clone();
-    test.window
-        .on_submit_comparison(move |size, time, case, tolerance, directories, _, _| {
-            captured
-                .borrow_mut()
-                .push((size, time, case, tolerance, directories));
-        });
+    test.window.on_submit_comparison(move |choices| {
+        captured.borrow_mut().push((
+            choices.by_size,
+            choices.by_modified,
+            choices.case_sensitive,
+            choices.tolerance_seconds,
+            choices.unmatched_directories,
+        ));
+    });
     let weak = test.window.as_weak();
     test.window.on_cancel_comparison(move || {
         let window = weak.upgrade().unwrap();
@@ -116,11 +122,14 @@ fn comparison_opened_at_minimum_size_keeps_keyboard_draft_and_escape() {
         open: true,
         left_path: "C:\\文档\\left".into(),
         right_path: "C:\\文档\\right".into(),
-        by_size: false,
-        by_modified: true,
-        case_sensitive: true,
-        tolerance_seconds: "17".into(),
-        unmatched_directories: true,
+        choices: ComparisonChoices {
+            by_size: false,
+            by_modified: true,
+            case_sensitive: true,
+            tolerance_seconds: "17".into(),
+            unmatched_directories: true,
+            ..Default::default()
+        },
         ..Default::default()
     });
     settle(&mut test);
@@ -159,12 +168,15 @@ fn comparison_dialog_keeps_draft_and_actions_visible_at_large_fonts() {
     test.resize(1040, 820);
     let submissions = Rc::new(RefCell::new(Vec::new()));
     let captured = submissions.clone();
-    test.window
-        .on_submit_comparison(move |size, time, case, tolerance, directories, _, _| {
-            captured
-                .borrow_mut()
-                .push((size, time, case, tolerance, directories));
-        });
+    test.window.on_submit_comparison(move |choices| {
+        captured.borrow_mut().push((
+            choices.by_size,
+            choices.by_modified,
+            choices.case_sensitive,
+            choices.tolerance_seconds,
+            choices.unmatched_directories,
+        ));
+    });
     let weak = test.window.as_weak();
     test.window.on_cancel_comparison(move || {
         let window = weak.upgrade().unwrap();
@@ -173,16 +185,19 @@ fn comparison_dialog_keeps_draft_and_actions_visible_at_large_fonts() {
         window.set_comparison_view(model);
     });
     for density in [0, 1] {
-        for font in [11, 32] {
+        for font in [8, 12, 32] {
             test.window.invoke_apply_fonts("".into(), font, font);
             test.window.invoke_apply_preferences(0, density);
             test.window.set_comparison_view(ComparisonView {
                 open: true,
-                by_size: true,
-                by_modified: true,
                 left_path: "C:\\文档\\left".into(),
                 right_path: "C:\\文档\\right".into(),
-                tolerance_seconds: "2".into(),
+                choices: ComparisonChoices {
+                    by_size: true,
+                    by_modified: true,
+                    tolerance_seconds: "2".into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             });
             settle(&mut test);
@@ -195,7 +210,7 @@ fn comparison_dialog_keeps_draft_and_actions_visible_at_large_fonts() {
                 AccessibleRole::TextInput,
             );
             ui::chord(&test.window, &[Key::Control], "a");
-            ui::key(&test.window, "12.5");
+            ui::key(&test.window, "86401");
             let mut model = test.window.get_comparison_view();
             model.error = "Validation feedback preserves the typed draft.".into();
             test.window.set_comparison_view(model);
@@ -203,15 +218,25 @@ fn comparison_dialog_keeps_draft_and_actions_visible_at_large_fonts() {
             render::snapshot(&test, &format!("comparison-{density}-{font}"));
             let mut model = test.window.get_comparison_view();
             model.busy = true;
+            model.running = true;
+            model.progress_counts =
+                "Folder 1 of 3 · 10 folders and 200 files compared · 4 differences found".into();
+            model.current_left = "C:\\文档\\left\\a very long folder name\\deeper".into();
+            model.current_left_tail = "\\deeper".into();
+            model.current_right = "C:\\文档\\right\\a very long folder name\\deeper".into();
+            model.current_right_tail = "\\deeper".into();
+            model.fraction = 0.33;
             test.window.set_comparison_view(model);
             settle(&mut test);
             action_in_viewport(&test, "Cancel");
+            render::snapshot(&test, &format!("comparison-progress-{density}-{font}"));
             let mut model = test.window.get_comparison_view();
             model.busy = false;
+            model.running = false;
             test.window.set_comparison_view(model);
             settle(&mut test);
             ui::click_popup(&test.window, "Compare", AccessibleRole::Button);
-            assert_eq!(submissions.borrow().last().unwrap().3, "12.5");
+            assert_eq!(submissions.borrow().last().unwrap().3, "86401");
             ui::key(&test.window, Key::Escape);
             settle(&mut test);
             assert!(!test.window.get_comparison_view().open);
@@ -251,24 +276,28 @@ fn checkbox(
 }
 
 #[test]
-fn contents_and_subfolders_are_submitted_and_subfolders_disable_unmatched_directories() {
+fn contents_and_subfolders_are_submitted_and_subfolders_disable_one_sided_folders() {
     let mut test = ui::TestUi::new();
     test.resize(1040, 820);
     let submissions = Rc::new(RefCell::new(Vec::new()));
     let captured = submissions.clone();
-    test.window
-        .on_submit_comparison(move |_, _, _, _, directories, contents, subfolders| {
-            captured
-                .borrow_mut()
-                .push((directories, contents, subfolders));
-        });
+    test.window.on_submit_comparison(move |choices| {
+        captured.borrow_mut().push((
+            choices.unmatched_directories,
+            choices.by_content,
+            choices.recursive,
+        ));
+    });
     test.window.set_comparison_view(ComparisonView {
         open: true,
-        by_size: true,
-        by_modified: true,
-        by_content: true,
-        unmatched_directories: true,
-        tolerance_seconds: "2".into(),
+        choices: ComparisonChoices {
+            by_size: true,
+            by_modified: true,
+            by_content: true,
+            unmatched_directories: true,
+            tolerance_seconds: "2".into(),
+            ..Default::default()
+        },
         ..Default::default()
     });
     settle(&mut test);
@@ -283,7 +312,7 @@ fn contents_and_subfolders_are_submitted_and_subfolders_disable_unmatched_direct
     assert_eq!(
         checkbox(
             &test.window,
-            "Include subfolders",
+            "Compare subfolders",
             AccessibleStringProperty::Checked
         ),
         "false"
@@ -291,7 +320,7 @@ fn contents_and_subfolders_are_submitted_and_subfolders_disable_unmatched_direct
     assert_eq!(
         checkbox(
             &test.window,
-            "Select unmatched directories",
+            "Select one-sided folders",
             AccessibleStringProperty::Enabled
         ),
         "true"
@@ -299,15 +328,15 @@ fn contents_and_subfolders_are_submitted_and_subfolders_disable_unmatched_direct
     assert!(
         popup_texts(&test.window)
             .iter()
-            .any(|text| text.starts_with("Metadata and contents")),
-        "the subtitle says what is compared"
+            .any(|text| text == "Files with different content are selected."),
+        "each criterion says what it selects"
     );
-    ui::click_popup(&test.window, "Include subfolders", AccessibleRole::Checkbox);
+    ui::click_popup(&test.window, "Compare subfolders", AccessibleRole::Checkbox);
     settle(&mut test);
     assert_eq!(
         checkbox(
             &test.window,
-            "Select unmatched directories",
+            "Select one-sided folders",
             AccessibleStringProperty::Enabled
         ),
         "false",
@@ -315,16 +344,98 @@ fn contents_and_subfolders_are_submitted_and_subfolders_disable_unmatched_direct
     );
     ui::click_popup(&test.window, "Compare", AccessibleRole::Button);
     assert_eq!(submissions.borrow().last(), Some(&(true, true, true)));
-    // A running comparison shows its progress line instead of a bare "Comparing…".
+    // A running comparison shows what it compares now, its counts and its bytes.
     let mut model = test.window.get_comparison_view();
     model.busy = true;
-    model.progress = "Comparing contents: 1 of 4 files · 2 KiB of 8 KiB…".into();
+    model.running = true;
+    model.current_left = "C:\\left\\src".into();
+    model.current_right = "D:\\right\\src".into();
+    model.progress_counts =
+        "Folder 1 of 4 · 3 folders and 40 files compared · 0 differences found".into();
+    model.progress_detail = "Contents: 1 of 4 file pairs read · 2 KiB of 8 KiB".into();
     test.window.set_comparison_view(model);
     settle(&mut test);
+    let texts = popup_texts(&test.window);
+    for expected in [
+        "Comparing",
+        "with",
+        "Folder 1 of 4",
+        "Contents: 1 of 4 file pairs read",
+    ] {
+        assert!(
+            texts.iter().any(|text| text.starts_with(expected)),
+            "the dialog shows {expected:?}: {texts:?}"
+        );
+    }
     assert!(
-        popup_texts(&test.window)
+        !texts
             .iter()
-            .any(|text| text.starts_with("Comparing contents: 1 of 4 files")),
-        "the reopened dialog shows the progress"
+            .any(|text| text == "Files with different content are selected."),
+        "the options give way to the progress"
     );
+    // Escape and Alt+C cancel a running comparison, as the Cancel button does.
+    let cancelled = Rc::new(Cell::new(0));
+    let count = cancelled.clone();
+    test.window
+        .on_cancel_comparison(move || count.set(count.get() + 1));
+    ui::key(&test.window, Key::Escape);
+    settle(&mut test);
+    ui::chord(&test.window, &[Key::Alt], "c");
+    settle(&mut test);
+    ui::click_popup(&test.window, "Cancel", AccessibleRole::Button);
+    settle(&mut test);
+    assert_eq!(cancelled.get(), 3);
+}
+
+/// The options and the progress of Compare directories in every theme: the controls
+/// keep their colours and the progress view names the pair being compared.
+#[test]
+fn comparison_dialog_and_progress_in_every_theme() {
+    use midnight_core::PreferenceTheme;
+    let mut test = ui::TestUi::new();
+    test.resize(1040, 820);
+    for theme in PreferenceTheme::ALL {
+        test.window.set_theme_index(theme.index());
+        test.window.set_comparison_view(ComparisonView {
+            open: true,
+            left_path: "C:\\Projects\\physics".into(),
+            right_path: "D:\\Backup\\physics".into(),
+            choices: ComparisonChoices {
+                by_size: true,
+                by_modified: true,
+                recursive: true,
+                tolerance_seconds: "2".into(),
+                ignore_folders: true,
+                ignore_folders_masks: ".git".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        settle(&mut test);
+        action_in_viewport(&test, "Compare");
+        render::snapshot(&test, &format!("comparison-theme-{theme:?}"));
+        let mut model = test.window.get_comparison_view();
+        model.busy = true;
+        model.running = true;
+        model.current_left = "C:\\Projects\\physics\\source\\solver\\contacts".into();
+        model.current_left_tail = "\\contacts".into();
+        model.current_right = "D:\\Backup\\physics\\source\\solver\\contacts".into();
+        model.current_right_tail = "\\contacts".into();
+        model.progress_counts =
+            "Folder 7 of 16 · 2 210 folders and 19 874 files compared · 12 differences found"
+                .into();
+        model.progress_detail =
+            "Contents: 1 532 of 4 410 file pairs read · 180 MiB of 2.1 GiB".into();
+        model.fraction = 0.43;
+        test.window.set_comparison_view(model);
+        settle(&mut test);
+        action_in_viewport(&test, "Cancel");
+        render::snapshot(&test, &format!("comparison-progress-theme-{theme:?}"));
+        let mut model = test.window.get_comparison_view();
+        model.open = false;
+        model.busy = false;
+        model.running = false;
+        test.window.set_comparison_view(model);
+        settle(&mut test);
+    }
 }

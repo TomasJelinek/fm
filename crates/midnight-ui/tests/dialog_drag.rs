@@ -207,7 +207,7 @@ fn dialog_headers_move_and_escape_keeps_existing_close_behavior() {
                         open: true,
                         ..Default::default()
                     });
-                "Compare displayed directories"
+                "Compare directories"
             }
             _ => unreachable!("only remaining embedded dialog cases are listed"),
         };
