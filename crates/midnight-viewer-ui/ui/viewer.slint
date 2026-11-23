@@ -272,7 +272,13 @@ export component ViewerWindow inherits Window {
     callback link-history(bool);
     in property <bool> link-hover;
     in property <string> link-status;
+    // A video's playback status and errors take the status line's front, so the media bar
+    // stays one row and nothing above it moves while a command is in flight.
+    private property <bool> media-error: root.media-visible && root.media-controls.error != "";
+    private property <string> media-message: !root.media-visible ? ""
+        : root.media-error ? root.media-controls.error : root.media-controls.status;
     private property <string> shown-status: root.link-status != "" ? root.link-status
+        : root.media-message != "" ? root.media-message + " · " + root.status
         : root.position-pending ? "Loading requested position… · " + root.status : root.status;
     callback find();
     callback search(bool);
@@ -610,7 +616,6 @@ export component ViewerWindow inherits Window {
                 state: root.media-controls;
                 compact: root.compact; accent: root.accent;
                 font-size: root.effective-ui-size; control-height: root.control-height;
-                status-size: root.status-size;
                 toggle(session) => { root.media-toggle(session); }
                 seek(session, position) => { root.media-seek(session, position); }
             }
@@ -628,7 +633,7 @@ export component ViewerWindow inherits Window {
                     x: 0px; y: 0px; width: parent.width; height: parent.height;
                     // Width comes only from what the buttons leave over: a longer status (for example
                     // "Loading requested position…") must never push Find, Wrap or Aa sideways.
-                    Text { visible: !root.compact-status; min-width: 0px; preferred-width: 0px; max-width: root.compact-status ? 0px : 1000000px; text: root.shown-status; color: Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { visible: !root.compact-status; min-width: 0px; preferred-width: 0px; max-width: root.compact-status ? 0px : 1000000px; text: root.shown-status; color: root.media-error && root.link-status == "" ? Theme.error-text : Theme.text; font-size: root.status-size; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
                     if !root.media-visible && root.image-mode: GridLayout {
                         spacing: 3px;
                         // Long PDF page counts must not crowd the zoom actions at

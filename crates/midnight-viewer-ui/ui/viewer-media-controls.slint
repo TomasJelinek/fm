@@ -147,24 +147,20 @@ export component MediaControls inherits Rectangle {
     in property <color> accent;
     in property <length> font-size;
     in property <length> control-height;
-    in property <length> status-size;
     callback toggle(string);
     callback seek(string, float);
-    private property <string> message: root.state.error == "" ? root.state.status : root.state.error;
     private property <length> inset: root.compact ? 4px : 6px;
-    private property <length> message-height: max(18px, root.status-size + 4px);
 
     background: Theme.surface;
     border-width: 1px; border-color: Theme.frame; border-radius: 4px;
     min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
-    // The status row is always reserved: a press shows "Starting playback…", "Pausing…" or
-    // "Seeking…" until the helper confirms it, and a row that came and went with that
-    // text shrank and grew the video above on every press.
-    min-height: root.control-height + root.inset * 2 + root.message-height + 2px;
+    // One row only. The playback status ("Starting playback…", "Pausing…", "Seeking…") and
+    // errors show in the viewer's status line below: a row of their own here either came
+    // and went with each press (moving the video) or stood empty most of the time.
+    min-height: root.control-height + root.inset * 2;
     preferred-height: self.min-height;
     VerticalLayout {
         padding: root.inset;
-        spacing: 2px;
         HorizontalLayout {
             height: root.control-height;
             spacing: 6px;
@@ -195,16 +191,6 @@ export component MediaControls inherits Rectangle {
                 overflow: elide; vertical-alignment: center;
                 accessible-role: text; accessible-label: "Playback time";
                 accessible-value: root.state.time;
-            }
-        }
-        Rectangle {
-            height: root.message-height;
-            if root.message != "" : Text {
-                width: parent.width; height: parent.height;
-                text: root.message; font-size: root.status-size;
-                color: root.state.error == "" ? Theme.muted-text : Theme.error-text;
-                overflow: elide; vertical-alignment: center;
-                accessible-role: text; accessible-label: root.message;
             }
         }
     }

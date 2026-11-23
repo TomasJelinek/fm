@@ -1,8 +1,11 @@
-//! Pressing a video control must not move the video: every status the
-//! controls show while a command is in flight shares one reserved row.
+//! Pressing a video control must not move the video, and the media bar is one row:
+//! the status shown while a command is in flight, and errors, take the front of the
+//! viewer's status line instead of a row of their own.
 use crate::{ViewerWindow, media_controls::MediaControls};
 use i_slint_core::{
-    accessibility::AccessibleStringProperty, item_tree::ItemRc, window::WindowInner,
+    accessibility::AccessibleStringProperty,
+    item_tree::{ItemRc, ParentItemTraversalMode},
+    window::WindowInner,
 };
 use midnight_core::{MediaControl, MediaControlId, MediaPhase, MediaSessionId, MediaSnapshot};
 use slint::{
@@ -42,6 +45,48 @@ fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
     None
 }
 
+/// Whether some text on the window starts with `prefix` (a Text's label is its text).
+fn shows(item: ItemRc, prefix: &str) -> bool {
+    if item
+        .accessible_string_property(AccessibleStringProperty::Label)
+        .is_some_and(|value| value.starts_with(prefix))
+    {
+        return true;
+    }
+    let mut child = item.first_child();
+    while let Some(item) = child {
+        child = item.next_sibling();
+        if shows(item, prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn shows_status(window: &ViewerWindow, prefix: &str) -> bool {
+    shows(
+        ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
+        prefix,
+    )
+}
+
+/// Window-space rectangle of the media bar: the nearest ancestor of the Play/Pause button
+/// that is taller than the button.
+fn bar(window: &ViewerWindow, button: &str) -> [f32; 4] {
+    let item = control(window, button);
+    let height = item.geometry().size.height;
+    let mut parent = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+    while let Some(ancestor) = parent {
+        let rect = ancestor.geometry();
+        if rect.size.height > height + 0.5 {
+            let origin = ancestor.map_to_native_window(rect.origin);
+            return [origin.x, origin.y, rect.size.width, rect.size.height];
+        }
+        parent = ancestor.parent_item(ParentItemTraversalMode::StopAtPopups);
+    }
+    panic!("no media bar around {button}");
+}
+
 fn control(window: &ViewerWindow, label: &str) -> ItemRc {
     find(
         ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
@@ -73,6 +118,7 @@ struct Layout {
     content: [f32; 4],
     button: [f32; 4],
     timeline: [f32; 4],
+    bar: [f32; 4],
 }
 
 fn layout(native: &MinimalSoftwareWindow, window: &ViewerWindow) -> Layout {
@@ -89,6 +135,7 @@ fn layout(native: &MinimalSoftwareWindow, window: &ViewerWindow) -> Layout {
         ],
         button: bounds(window, if playing { "Pause" } else { "Play" }),
         timeline: bounds(window, "Playback position"),
+        bar: bar(window, if playing { "Pause" } else { "Play" }),
     }
 }
 
@@ -166,6 +213,13 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
     assert!(media.apply(snapshot(0, 1, 30, MediaPhase::Paused)));
     let base = layout(&native, &window);
     assert!(base.video[3] > 0.0 && base.content[3] > 0.0, "{base:?}");
+    // One row: the bar is the button and its 6 px inset above and below, no empty status row.
+    assert!(
+        base.bar[3] <= base.button[3] + 12.5,
+        "media bar {:.1} px tall around a {:.1} px button",
+        base.bar[3],
+        base.button[3]
+    );
 
     let check = |step: &str| {
         let now = layout(&native, &window);
@@ -204,6 +258,10 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
     control_id += 1;
     assert_eq!(sent.borrow().len(), control_id as usize, "seek sent");
     assert_eq!(window.get_media_controls().status.as_str(), "Seeking…");
+    assert!(
+        shows_status(&window, "Seeking… · "),
+        "the status line leads with the playback status"
+    );
     check("seek in flight");
     revision += 1;
     assert!(media.apply(snapshot(control_id, revision, 84, MediaPhase::Paused)));
@@ -229,12 +287,17 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
         check(&format!("{key:?} seek confirmed"));
     }
 
-    // A refused command shows its error in the same row.
+    // A refused command shows its error at the front of the status line.
     accepts.set(false);
     let centre = at(bounds(&window, "Play"), 0.5);
     pointer(&window, centre, Some(true));
     pointer(&window, centre, Some(false));
     assert_ne!(window.get_media_controls().error.as_str(), "");
+    let error = window.get_media_controls().error.to_string();
+    assert!(
+        shows_status(&window, &format!("{error} · ")),
+        "the status line leads with the error"
+    );
     check("refused command");
     accepts.set(true);
     revision += 1;

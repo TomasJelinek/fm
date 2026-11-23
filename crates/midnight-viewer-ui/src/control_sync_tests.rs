@@ -490,8 +490,8 @@ fn video_status_changes_keep_the_canvas_and_same_session_advancing_pixels() {
         open.window.get_media_controls().status,
         "Starting playback…"
     );
-    // The status row is always reserved: a pending command neither moves nor resizes
-    // the video, so the backend gets no Resize.
+    // The pending status leads the status line, not a row of its own: a pending command
+    // neither moves nor resizes the video, so the backend gets no Resize.
     let pending = window_geometry(&open.window);
     assert_eq!(
         (pending.width, pending.height),

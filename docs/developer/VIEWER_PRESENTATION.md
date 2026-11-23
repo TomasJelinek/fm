@@ -304,21 +304,23 @@ ratio preserved and unused space around the centered frame. App palette changes
 style the chrome and canvas background; they neither recolor video pixels nor
 make their delivery wait for a text-palette acknowledgement.
 
-Playback has dedicated, session-bound Play/Pause controls, a seek timeline,
-position/duration text and pending/error feedback. The active media layout hides
+Playback has dedicated, session-bound Play/Pause controls, a seek timeline and
+position/duration text in a one-row media bar. Pending feedback ("Starting playback…",
+"Pausing…", "Seeking…", "Buffering…") and errors lead the viewer's status line below
+it (errors in the error colour), so a press never adds or removes a row and the video
+above keeps its size. The active media layout hides
 text Find, typography and scrollbars. Timeline seeks use media controls rather
 than text scroll positions; seek and replay frames retain their media-session and
 applied-control fences.
 
-Resizing the canvas, including a playback status row appearing or collapsing,
-preserves the existing `MediaSessionId` and its generation. An admitted video
+Resizing the canvas preserves the existing `MediaSessionId` and its generation. An admitted video
 resize cancels the text scroll-position gate; it must not wait for a newer text
 generation before accepting advancing video frames. Layout and media-control
 checks still apply. Text and Source resize keep their distinct newer-generation
 requirement. Image zoom/camera and retained image tiles keep their own presentation
 paths.
 
-Failures are shown in the media bar and the status line with the backend's sentence,
+Failures are shown at the front of the status line with the backend's sentence,
 never a raw I/O text: "The video helper could not load its libraries (access denied):
 <path>" when the sandboxed helper cannot open an FFmpeg library (one not granted to the
 workers' AppContainer, see the [worker SDK](WORKER_SDK.md)) or "…: <path> is missing",
