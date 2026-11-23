@@ -1,4 +1,4 @@
-Midnight Explorer 0.5.0 - Linux x86-64 preview
+Midnight Explorer 0.5.1 - Linux x86-64 preview
 
 Extract the archive with tar, then run ./midnight-explorer in a graphical desktop
 session. Keep the viewers, filesystems and thumbnailers folders beside
@@ -103,6 +103,6 @@ License: GNU General Public License, version 3 or (at your option) any later
 version, with no warranty; see LICENSE.
 The plugins are licensed under the same terms.
 Source of this release (its tagged commit; BUILD-INFO.json names the revision):
-https://github.com/TomasJelinek/fm/tree/v0.5.0
+https://github.com/TomasJelinek/fm/tree/v0.5.1
 Releases: https://github.com/TomasJelinek/fm/releases
 Dependency notices and licenses are included alongside the executable.

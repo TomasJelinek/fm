@@ -785,8 +785,10 @@ fn both_panes_stay_aligned_during_and_after_a_glide() {
             .unwrap_or_else(|error| panic!("frame {frame}: {error}"));
     }
     assert!(summarize(&samples).moving_frames > 20);
+    // Five notches of the platform's distance: 100 px on Windows, 120 px on Linux.
+    let notch = if cfg!(windows) { 100.0 } else { 120.0 };
     assert!(
-        (harness.shown() - 500.0).abs() <= 1.0,
+        (harness.shown() - 5.0 * notch).abs() <= 1.0,
         "{}",
         harness.shown()
     );

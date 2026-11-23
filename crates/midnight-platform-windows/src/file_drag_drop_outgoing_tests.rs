@@ -34,14 +34,21 @@ fn offer(files: &FileClipboard) -> IDataObject {
 fn outgoing_offer_carries_shell_items_a_drag_image_and_the_lossless_file_list() {
     let _ole = Ole::new().unwrap();
     let fixture = crate::test_fixtures::build_temp("outgoing-");
+    // The long spelling of the folder: a TEMP given in 8.3 form (as on hosted runners) would
+    // not convert back exactly, and the offer then rightly stays CF_HDROP only.
+    let root = {
+        let canonical = std::fs::canonicalize(fixture.path()).unwrap();
+        let text = canonical.to_string_lossy().into_owned();
+        std::path::PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    };
     let mut paths = Vec::new();
     for name in ["a.txt", "Ünïcode 文档.txt"] {
-        let path = fixture.path().join(name);
+        let path = root.join(name);
         std::fs::write(&path, b"x").unwrap();
         paths.push(path);
     }
-    std::fs::create_dir(fixture.path().join("folder")).unwrap();
-    paths.push(fixture.path().join("folder"));
+    std::fs::create_dir(root.join("folder")).unwrap();
+    paths.push(root.join("folder"));
     let files = FileClipboard {
         paths: paths.clone(),
         intent: FileClipboardIntent::Copy,
