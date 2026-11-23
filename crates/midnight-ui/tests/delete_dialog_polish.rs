@@ -327,7 +327,9 @@ fn texts(item: ItemRc, found: &mut Vec<(String, ItemRc)>) {
         return;
     }
     if let Some(text) = text {
-        found.push((text.to_string(), item.clone()));
+        // Names are drawn between isolation marks that keep them left to right.
+        let text = text.replace(['\u{2066}', '\u{2069}'], "");
+        found.push((text, item.clone()));
     }
     let mut child = item.first_child();
     while let Some(next) = child {
@@ -344,8 +346,12 @@ fn edges(item: &ItemRc) -> (f32, f32, f32, f32) {
 }
 
 fn button(popup: &ItemRc, label: &str) -> ItemRc {
-    fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
-        if item.accessible_role() == AccessibleRole::Button
+    accessible(popup, AccessibleRole::Button, label).unwrap_or_else(|| panic!("no {label} button"))
+}
+
+fn accessible(popup: &ItemRc, role: AccessibleRole, label: &str) -> Option<ItemRc> {
+    fn find(item: ItemRc, role: AccessibleRole, label: &str) -> Option<ItemRc> {
+        if item.accessible_role() == role
             && item
                 .accessible_string_property(AccessibleStringProperty::Label)
                 .is_some_and(|text| text == label)
@@ -355,13 +361,13 @@ fn button(popup: &ItemRc, label: &str) -> ItemRc {
         let mut child = item.first_child();
         while let Some(next) = child {
             child = next.next_sibling();
-            if let Some(found) = find(next, label) {
+            if let Some(found) = find(next, role, label) {
                 return Some(found);
             }
         }
         None
     }
-    find(popup.clone(), label).unwrap_or_else(|| panic!("no {label} button"))
+    find(popup.clone(), role, label)
 }
 
 impl Fixture {
@@ -418,7 +424,19 @@ impl Fixture {
             bottom = warning_bottom;
         }
         for row in form.get_details().iter() {
-            for text in [row.label.as_str(), row.value.as_str()] {
+            let value = if row.identity == "path" {
+                let trail = accessible(&popup, AccessibleRole::Text, &row.value)
+                    .unwrap_or_else(|| panic!("{case}: no path {:?}", row.value));
+                let (x, _, end, _) = edges(&trail);
+                assert!(
+                    x >= left - 0.5 && end <= right + 0.5,
+                    "{case}: the path is clipped at {x}..{end}, the dialog is {left}..{right}"
+                );
+                None
+            } else {
+                Some(row.value.as_str())
+            };
+            for text in [Some(row.label.as_str()), value].into_iter().flatten() {
                 let Some((_, item)) = found.iter().find(|(shown, _)| shown == text) else {
                     assert!(!whole, "{case}: {text:?} is not drawn");
                     continue;
@@ -469,7 +487,6 @@ impl Fixture {
         Shown {
             height: size.height,
             band: actions_top - bottom,
-            found: found.into_iter().map(|(text, _)| text).collect(),
         }
     }
 }
@@ -478,7 +495,6 @@ struct Shown {
     height: f32,
     /// From the last detail to the actions.
     band: f32,
-    found: Vec<String>,
 }
 
 /// At every density and font size, from 8 to 32 px, each confirmation shows its question
@@ -514,11 +530,91 @@ fn delete_confirmations_fit_their_content_at_every_font_and_density() {
     }
 }
 
-/// A folder's path that does not fit is shortened in the middle, keeping its start and
-/// its last component, as the path bar does; it follows the dialog's width, and the whole
-/// path stays its tooltip and accessible label. A path that fits shows whole.
+/// A file in `folder`.
+fn in_folder(folder: PathBuf, mode: DeleteMode) -> OperationPreview {
+    let mut file = item("experiments.rar", EntryKind::File, Some(25_320_511));
+    file.path = folder.join("experiments.rar");
+    preview(mode, 1, 0, Some(25_320_511), vec![file])
+}
+
+/// A drawn path: its pieces left to right, the trail's start and end, and each piece's.
+type Trail = (Vec<String>, (f32, f32), Vec<(f32, f32)>);
+
+impl Fixture {
+    /// The Location's components as drawn, left to right (dropped ones as one "..."),
+    /// with the trail's box and the box of each drawn piece.
+    fn trail(&self, case: &str) -> Trail {
+        let popup = self.popup();
+        let form = self.window.global::<OperationPresentation>();
+        let row = form
+            .get_details()
+            .iter()
+            .find(|row| row.identity == "path")
+            .unwrap_or_else(|| panic!("{case}: no path row"));
+        let trail = accessible(&popup, AccessibleRole::Text, &row.value)
+            .unwrap_or_else(|| panic!("{case}: no path"));
+        let (start, _, end, _) = edges(&trail);
+        let mut found = Vec::new();
+        texts(trail, &mut found);
+        let mut pieces: Vec<_> = found
+            .into_iter()
+            .map(|(text, item)| {
+                let (x, _, right, _) = edges(&item);
+                (x, text, right)
+            })
+            .collect();
+        // By their ends: a component cut at its start begins before the trail.
+        pieces.sort_by(|a, b| a.2.total_cmp(&b.2));
+        let boxes = pieces.iter().map(|piece| (piece.0, piece.2)).collect();
+        (
+            pieces.into_iter().map(|piece| piece.1).collect(),
+            (start, end),
+            boxes,
+        )
+    }
+}
+
+/// The path bar's rule, checked on what the Location shows: whole components only, the
+/// whole path when it fits, otherwise at most two leading ones, one "..." for the dropped
+/// middle ones and a trailing run that ends with the last component; nothing past the
+/// trail's end. Returns how many components show.
+fn assert_path_bar_rule(case: &str, labels: &[String], pieces: &[String]) -> usize {
+    let Some(marker) = pieces.iter().position(|piece| piece == "...") else {
+        assert_eq!(pieces, labels, "{case}: a path that fits shows whole");
+        return labels.len();
+    };
+    assert_eq!(
+        pieces.iter().filter(|piece| *piece == "...").count(),
+        1,
+        "{case}: one marker: {pieces:?}"
+    );
+    assert!(
+        marker <= 2,
+        "{case}: at most two leading components: {pieces:?}"
+    );
+    assert_eq!(&pieces[..marker], &labels[..marker], "{case}: {pieces:?}");
+    let tail = &pieces[marker + 1..];
+    assert!(
+        !tail.is_empty(),
+        "{case}: the last component shows: {pieces:?}"
+    );
+    assert_eq!(
+        tail,
+        &labels[labels.len() - tail.len()..],
+        "{case}: whole trailing components: {pieces:?}"
+    );
+    assert!(
+        marker + tail.len() < labels.len(),
+        "{case}: the marker stands for dropped components: {pieces:?}"
+    );
+    marker + tail.len()
+}
+
+/// A folder's path that does not fit drops whole middle components behind one "...", as
+/// the path bar does; it follows the dialog's width, font and density, and the whole path
+/// stays its tooltip and accessible label. A path that fits shows whole.
 #[test]
-fn a_long_location_is_shortened_in_the_middle_at_every_width() {
+fn a_long_location_drops_whole_middle_components_as_the_path_bar_does() {
     use DeleteMode::{Permanent, Trash};
     let fixture = Fixture::new();
     for mode in [Permanent, Trash] {
@@ -530,35 +626,139 @@ fn a_long_location_is_shortened_in_the_middle_at_every_width() {
             .find(|row| row.label == "Location")
             .unwrap();
         assert_eq!(row.identity, "path");
-        let separator = std::path::MAIN_SEPARATOR;
-        assert_eq!(row.explanation, format!("{separator}packages"));
-        for (density, font) in [(0, 8), (0, 12), (1, 15), (0, 32)] {
+        let labels: Vec<String> = form
+            .get_path_parts()
+            .iter()
+            .map(|part| part.label.to_string())
+            .collect();
+        let joined: String = labels.concat();
+        assert_eq!(
+            joined,
+            row.value.as_str(),
+            "the components join into the path"
+        );
+        for (density, font) in [(0, 8), (0, 12), (1, 15), (0, 20)] {
             fixture.appearance(0, density, font);
-            for (width, height) in [(1340, 900), (900, 900), (520, 900), (360, 900)] {
-                // At 32 px both actions do not fit 360 px; their row scrolls.
+            let mut shown = Vec::new();
+            // Narrower and narrower: the dialog follows the window below its 540 px.
+            for width in [1340, 520, 460, 400, 360] {
                 if width == 360 && font > 15 {
                     continue;
                 }
-                fixture.layout(width, height);
+                fixture.layout(width, 900);
                 let case = format!("{mode:?} font {font} density {density} at {width}");
-                let shown = fixture.check(&case, true);
-                assert!(
-                    shown.found.iter().any(|text| text == "..."),
-                    "{case}: the path is shortened with the path bar's marker"
-                );
-                assert!(
-                    shown.found.iter().any(|text| row.explanation == *text),
-                    "{case}: its last component shows"
-                );
+                fixture.check(&case, true);
+                let (pieces, (start, end), boxes) = fixture.trail(&case);
+                shown.push(assert_path_bar_rule(&case, &labels, &pieces));
+                for (x, right) in boxes {
+                    assert!(
+                        x >= start - 0.5 && right <= end + 1.5,
+                        "{case}: a piece {x}..{right} outside the trail {start}..{end}"
+                    );
+                }
             }
+            assert!(
+                shown.windows(2).all(|pair| pair[0] >= pair[1]),
+                "font {font}: a narrower dialog shows no more components: {shown:?}"
+            );
+            assert!(
+                font > 15 || shown.first() > shown.last(),
+                "font {font}: the components follow the width: {shown:?}"
+            );
+            // Back to the wide window: shortened again from the same parts.
+            fixture.layout(1340, 900);
+            let (pieces, _, _) = fixture.trail("wide again");
+            assert_eq!(
+                assert_path_bar_rule("wide again", &labels, &pieces),
+                shown[0]
+            );
         }
     }
     fixture.show(one_file(Permanent));
     fixture.appearance(0, 0, 12);
     fixture.layout(1340, 900);
-    let shown = fixture.check("a short path", true);
+    let (pieces, _, _) = fixture.trail("a short path");
     assert!(
-        !shown.found.iter().any(|text| text == "..."),
-        "a path that fits is not shortened"
+        !pieces.iter().any(|piece| piece == "..."),
+        "a path that fits is not shortened: {pieces:?}"
     );
+}
+
+/// A UNC share and an archive inside a folder split as the path bar splits them: the
+/// share is one leading component, the archive one of the middle ones.
+#[test]
+fn unc_and_archive_locations_drop_whole_components() {
+    let fixture = Fixture::new();
+    let mut folders = vec![(
+        "archive",
+        folder()
+            .join("backups")
+            .join("photos 2026 with every album.zip")
+            .join("2026")
+            .join("summer holiday in the mountains")
+            .join("beach and lake"),
+    )];
+    if cfg!(windows) {
+        folders.push((
+            "unc",
+            PathBuf::from(r"\\fileserver\shared documents")
+                .join("Projects")
+                .join("Midnight Explorer")
+                .join("release candidates")
+                .join("2026-11-23 nightly build with symbols"),
+        ));
+    }
+    for (name, path) in folders {
+        fixture.show(in_folder(path, DeleteMode::Permanent));
+        let form = fixture.window.global::<OperationPresentation>();
+        let labels: Vec<String> = form
+            .get_path_parts()
+            .iter()
+            .map(|part| part.label.to_string())
+            .collect();
+        if name == "unc" {
+            assert_eq!(labels[0], r"\\fileserver\shared documents\", "{labels:?}");
+        } else {
+            assert!(
+                labels
+                    .iter()
+                    .any(|label| label.ends_with("photos 2026 with every album.zip")),
+                "{labels:?}"
+            );
+        }
+        fixture.appearance(0, 0, 12);
+        let mut dropped = false;
+        for width in [1340, 460, 380] {
+            fixture.layout(width, 900);
+            let case = format!("{name} at {width}");
+            let (pieces, _, _) = fixture.trail(&case);
+            let shown = assert_path_bar_rule(&case, &labels, &pieces);
+            dropped |= shown < labels.len();
+        }
+        assert!(dropped, "{name}: a narrow dialog drops components");
+    }
+}
+
+/// A folder whose last component alone is wider than the trail: the path bar's marker,
+/// then that component cut at its start, so that its end stays in view.
+#[test]
+fn a_single_very_long_component_keeps_its_end() {
+    let fixture = Fixture::new();
+    let long = format!("{}end-of-the-name", "a-very-long-folder-name-".repeat(8));
+    fixture.show(in_folder(folder().join(&long), DeleteMode::Permanent));
+    fixture.appearance(0, 0, 12);
+    for width in [1340, 460] {
+        fixture.layout(width, 900);
+        let case = format!("at {width}");
+        fixture.check(&case, true);
+        let (pieces, (start, end), boxes) = fixture.trail(&case);
+        assert_eq!(pieces[0], "...", "{case}: {pieces:?}");
+        let last = pieces.last().unwrap();
+        assert!(last.ends_with("end-of-the-name"), "{case}: {pieces:?}");
+        let (x, right) = *boxes.last().unwrap();
+        assert!(
+            x < start && right <= end + 0.5 && end - right <= 6.0,
+            "{case}: the cut component ends at the trail's end: {x}..{right} in {start}..{end}"
+        );
+    }
 }

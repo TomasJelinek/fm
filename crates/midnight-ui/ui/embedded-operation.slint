@@ -2,7 +2,7 @@ import { DialogFrame, PopupFocus } from "dialog-frame.slint";
 import { OperationDialog } from "operation-controls.slint";
 import { Theme } from "theme.slint";
 import { FallbackIcons } from "action-icons.slint";
-import { DetailRow } from "navigation-models.slint";
+import { DetailRow, PathPartRow } from "navigation-models.slint";
 
 // Presentation values contain no captured provider or filesystem authority.
 export global OperationPresentation {
@@ -17,6 +17,8 @@ export global OperationPresentation {
     in-out property <string> question;
     in-out property <[DetailRow]> details;
     in-out property <string> detail-labels;
+    // The components of the path in `details`, as the path bar has them.
+    in-out property <[PathPartRow]> path-parts;
     // Copy/Move: where the items come from, the first line's tooltip.
     in-out property <string> body-hint;
     in-out property <string> policy;
@@ -91,6 +93,7 @@ export component EmbeddedOperation inherits Rectangle {
                 question: OperationPresentation.question;
                 details: OperationPresentation.details;
                 detail-labels: OperationPresentation.detail-labels;
+                path-parts: OperationPresentation.path-parts;
                 body-hint: OperationPresentation.body-hint;
                 policy: OperationPresentation.policy;
                 wait-visible: OperationPresentation.wait-visible;

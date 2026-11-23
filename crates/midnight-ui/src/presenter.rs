@@ -107,6 +107,7 @@ mod viewer_plugins;
 mod volumes;
 mod watch_status;
 pub(crate) use file_actions::MenuAnchor;
+pub(crate) use panel_navigation::path_labels;
 use std::{
     collections::{HashMap, HashSet},
     mem,

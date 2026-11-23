@@ -33,10 +33,12 @@ fn delete_confirmation(
 /// What the shared form draws of the pending Delete confirmation besides its warning.
 pub(super) struct DeleteForm {
     pub(super) question: SharedString,
-    /// A folder's path is marked `path`, with its last component as the explanation:
-    /// the form shortens it in the middle and keeps that end, as the path bar does.
+    /// A folder's path is marked `path`, with its last component as the explanation.
     pub(super) details: Vec<DetailRow>,
     pub(super) labels: SharedString,
+    /// That folder's components as the path bar has them: the form drops whole middle
+    /// components when it does not fit, as the path bar does.
+    pub(super) path_parts: Vec<PathPartRow>,
 }
 
 pub(super) fn delete_form(presenter: &Presenter) -> Option<DeleteForm> {
@@ -64,10 +66,24 @@ pub(super) fn delete_form(presenter: &Presenter) -> Option<DeleteForm> {
             }
         })
         .collect();
+    let path_parts = confirmation
+        .folder
+        .as_deref()
+        .map(crate::presenter::path_labels)
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(index, (label, prefix))| PathPartRow {
+            identity: index.to_string().into(),
+            label: shown_text(&label),
+            prefix: shown_text(&prefix),
+        })
+        .collect();
     Some(DeleteForm {
         question: shown_text(&confirmation.question),
         details,
         labels: confirmation.labels().into(),
+        path_parts,
     })
 }
 
@@ -230,6 +246,36 @@ fn rename_selection_end(name: &str, kind: Option<EntryKind>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Delete confirmation's folder splits into the path bar's components: the root
+    /// (a drive, `/` or a UNC share) first, an archive like any other folder.
+    #[test]
+    fn a_folder_splits_into_the_path_bars_components() {
+        let separator = std::path::MAIN_SEPARATOR_STR;
+        let path = std::path::PathBuf::from(separator)
+            .join("data")
+            .join("photos.zip")
+            .join("2026");
+        let labels = crate::presenter::path_labels(&path);
+        let expected: Vec<(String, String)> = vec![
+            (separator.to_owned(), separator.to_owned()),
+            ("data".to_owned(), format!("{separator}data")),
+            (
+                format!("{separator}photos.zip"),
+                format!("{separator}data{separator}photos.zip"),
+            ),
+            (format!("{separator}2026"), path.display().to_string()),
+        ];
+        assert_eq!(labels, expected);
+        if cfg!(windows) {
+            let unc = crate::presenter::path_labels(std::path::Path::new(
+                r"\\server\share\Projects\2026",
+            ));
+            let labels: Vec<_> = unc.iter().map(|(label, _)| label.as_str()).collect();
+            assert_eq!(labels, [r"\\server\share\", "Projects", r"\2026"]);
+            assert_eq!(unc[2].1, r"\\server\share\Projects\2026");
+        }
+    }
 
     #[test]
     fn rename_selects_whole_dotted_directories_but_only_file_basename() {

@@ -136,11 +136,18 @@ measurement.
   when it was measured. Everything comes from the worker's preview (at most 32 items)
   and the sizes the panels hold; opening the confirmation reads nothing from disk.
   Names wrap, so a long name is never cut. A folder's path (Location) stays on one line
-  and, when it does not fit, is shortened in the middle with the "..." marker of the
-  path bar (`PathText`, which the Find results and lists also use): its start, the
-  marker, and its last component with the separator before it; the whole path is its
-  tooltip and accessible label, and it is shortened again at every width, font, density
-  and scale. The dialog asks for its content's height in the regular layout (padding,
+  and, when it does not fit, is shortened as the path bar shortens a panel path (see
+  below): the same components (the presenter's `path_labels`, which also splits the
+  bar's native paths: a drive, `/` or a UNC share is the first component, an archive
+  inside a folder is a component like a folder) and the same rule (`PathCollapse`,
+  which the path bar uses too), drawn read-only by `PathTrailText`. Up to two leading
+  components, one "..." for the dropped middle ones, then the longest run of whole
+  trailing components that fits. Only when not even the marker and the last component
+  fit is the last component cut, at its start, so that its end (a name's extension)
+  stays; the path bar cuts it at its end. The whole path is the tooltip and the
+  accessible label, and it is shortened again at every width, font, density and scale.
+  Find results, lists and checksum rows keep `PathText` (start, "...", last component).
+  The dialog asks for its content's height in the regular layout (padding,
   header, gaps, the summary measured at the regular width, and the actions), between
   180 and 640 px, so it shows no empty band, and it turns compact only when the window
   cannot give it that height. The primary button keeps its caption's 12 px padding in
@@ -153,8 +160,9 @@ measurement.
   (`all_themes_are_selectable_and_keep_text_readable`). `tests/delete_dialog_polish.rs`
   (software-window tests, run on Windows) checks the question first, every detail
   unclipped, the actions' padding and grip clearance and no empty band, at 8, 12, 20
-  and 32 px and Touch 15 and 32 px, in a large and a 520 × 360 window, and the shortened
-  path at widths from 360 to 1340 px; `delete_summary.rs` tests the texts. The Copy and
+  and 32 px and Touch 15 and 32 px, in a large and a 520 × 360 window, and the dropped
+  path components (a UNC share, an archive, one very long component) at widths from 360
+  to 1340 px; `delete_summary.rs` tests the texts. The Copy and
   Move dialogs print no path: the first line names items, the source folder is its
   tooltip, and the destination is the editable field, whose text is never shortened
   (`copy_and_move_print_no_path_and_keep_the_typed_destination_whole`).
@@ -416,7 +424,8 @@ separate 100 ms transition after 80 ms without motion, and real gestures or
 explicit cursor navigation cancel it.
 
 Long panel paths preserve their beginning and ending: whole middle components
-collapse into one ellipsis marker. Up to two leading components stay (while they
+collapse into one ellipsis marker. `PathCollapse` decides which components show; the
+path bar and the Delete confirmation's Location (`PathTrailText`) draw what it decides. Up to two leading components stay (while they
 take at most about a third of the bar), then the marker, then the longest suffix of
 whole components that fits; nothing overlaps and no component is cut, except the
 last one, which is shortened at its end only when it alone is wider than the bar.

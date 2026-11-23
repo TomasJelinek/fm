@@ -4,7 +4,8 @@ import { Theme } from "theme.slint";
 import { Tip } from "controls.slint";
 import { PathPartRow } from "navigation-models.slint";
 import { PathToken } from "path-token.slint";
-import { NameText, OmissionText } from "path-text.slint";
+import { OmissionText } from "path-text.slint";
+import { PathCollapse } from "path-collapse.slint";
 
 // Stands for omitted components; it edits the complete path. Its tooltip names what it
 // stands for.
@@ -78,67 +79,21 @@ export component PathNavigation inherits Rectangle {
     private property <bool> edit-mode;
     private property <int> hovered-index: -1;
     private property <int> revision;
-    // A path that does not fit shows whole components only: up to two leading ones
-    // (the root first), one omission marker for the middle, then the longest suffix
-    // that fits. Nothing overlaps and no component is cut, except the last one, which
-    // always shows and is shortened at its end when even it alone is too wide.
-    // The anchor shows too: the leading components give way to a suffix that reaches
-    // it, and when even that does not fit, it stands between two markers, followed by
-    // the suffix that fits, as long as it and the last component both fit whole.
-    // At least 32px stay free for opening the editor.
-    private property <int> count: root.parts.length;
-    // Each component is drawn as its own caption, whose width is rounded up to a whole
-    // pixel, while the widths below measure joined captions: a pixel per component
-    // keeps the drawn components inside the room the measures allow.
-    private property <length> room: max(0px, trail.width - 32px - root.count * 1px);
-    private property <length> omission-width: omission-metrics.preferred-width + 4px;
-    // The shown components join into the shown path (each label is the part of its
-    // prefix after the previous one), so prefixes measure suffix widths.
-    private property <length> full-width: full-metrics.preferred-width;
-    private property <bool> collapsed: root.count > 1 && root.full-width > root.room;
-    private property <length> first-width: first-metrics.preferred-width;
-    private property <length> pair-width: first-metrics.preferred-width + second-metrics.preferred-width;
-    private property <length> last-width: last-metrics.preferred-width;
-    private property <int> plain-lead-count: root.count >= 4 && root.pair-width <= trail.width * 0.35
-            && root.pair-width + root.omission-width + root.last-width <= root.room ? 2
-        : root.count >= 3 && root.first-width <= trail.width * 0.35
-            && root.first-width + root.omission-width + root.last-width <= root.room ? 1
-        : 0;
-    private property <length> plain-lead-width: root.plain-lead-count == 2 ? root.pair-width
-        : root.plain-lead-count == 1 ? root.first-width : 0px;
-    // The first component leads and the last always shows: neither needs anchoring.
-    private property <bool> anchor-inside: root.anchor > 0 && root.anchor < root.count - 1;
-    private property <length> anchor-width: anchor-metrics.preferred-width;
-    // The anchor and every later component, as shown.
-    private property <length> anchor-suffix-width: root.full-width - anchor-parent-metrics.preferred-width;
-    // Components between the anchor and the last one, omitted behind a second marker.
-    private property <bool> anchor-gap: root.anchor + 1 < root.count - 1;
-    private property <bool> anchor-alone-fits: root.omission-width + root.anchor-width
-        + (root.anchor-gap ? root.omission-width : 0px) + root.last-width <= root.room;
-    // The leading components and the suffix that fits after them leave the anchor out.
-    private property <bool> anchor-dropped: root.collapsed && root.anchor-inside
-        && root.anchor >= root.plain-lead-count
-        && root.anchor-suffix-width > root.room - root.plain-lead-width - root.omission-width;
-    private property <int> lead-count: !root.collapsed ? root.count
-        : !root.anchor-dropped ? root.plain-lead-count
-        : root.plain-lead-count == 2
-            && root.first-width + root.omission-width + root.anchor-suffix-width <= root.room ? 1
-        : root.anchor-suffix-width + root.omission-width <= root.room || root.anchor-alone-fits ? 0
-        : root.plain-lead-count;
-    // Not even the suffix from the anchor fits: the anchor stands between two markers.
-    private property <bool> anchored: root.anchor-dropped && root.lead-count == 0
-        && root.anchor-suffix-width + root.omission-width > root.room && root.anchor-alone-fits;
+    // A path that does not fit shows whole components only, as `PathCollapse` decides;
+    // at least 32px stay free for opening the editor. The last component, when even it
+    // alone is too wide, is shortened at its end.
+    private property <int> count: collapse.count;
+    private property <length> room: collapse.room;
+    private property <length> omission-width: collapse.omission-width;
+    private property <length> full-width: collapse.full-width;
+    private property <bool> collapsed: collapse.collapsed;
     // The editor holds the whole path that the parts join into (a native or archive
     // path), or only the location's own caption (Network, whose parts are the captions
     // of its ancestors). A marker's tooltip names what it stands for: the whole path,
     // which it edits, or else the chain through the last part it omits.
     private property <bool> editor-holds-path: root.count == 0
         || root.path == root.parts[root.count - 1].prefix;
-    private property <length> lead-width: root.lead-count == 2 ? root.pair-width
-        : root.lead-count == 1 ? root.first-width : 0px;
-    private property <length> suffix-room: root.anchored
-        ? root.room - root.omission-width - root.anchor-width - (root.anchor-gap ? root.omission-width : 0px)
-        : root.room - root.lead-width - root.omission-width;
+    private property <length> suffix-room: collapse.suffix-room;
     callback navigate(string);
     callback selected-part(string);
     callback copy-part(string);
@@ -164,31 +119,10 @@ export component PathNavigation inherits Rectangle {
         editor.invalidate-paste();
         root.edit-mode = false; editor.text = root.path;
     }
-    full-metrics := Text {
-        visible: false; font-size: root.text-size;
-        text: root.count > 0 ? root.parts[root.count - 1].prefix : "";
+    collapse := PathCollapse {
+        parts: root.parts; anchor: root.anchor; text-size: root.text-size;
+        trail-width: trail.width; reserve: 32px;
     }
-    first-metrics := Text {
-        visible: false; font-size: root.text-size;
-        text: root.count > 0 ? NameText.ltr(root.parts[0].label) : "";
-    }
-    second-metrics := Text {
-        visible: false; font-size: root.text-size;
-        text: root.count > 1 ? NameText.ltr(root.parts[1].label) : "";
-    }
-    last-metrics := Text {
-        visible: false; font-size: root.text-size;
-        text: root.count > 0 ? NameText.ltr(root.parts[root.count - 1].label) : "";
-    }
-    anchor-metrics := Text {
-        visible: false; font-size: root.text-size;
-        text: root.anchor-inside ? NameText.ltr(root.parts[root.anchor].label) : "";
-    }
-    anchor-parent-metrics := Text {
-        visible: false; font-size: root.text-size;
-        text: root.anchor-inside ? root.parts[root.anchor - 1].prefix : "";
-    }
-    omission-metrics := OmissionText { visible: false; font-size: root.text-size; }
     trail := Rectangle {
         visible: !root.edit-mode;
         x: 3px; y: 1px; width: parent.width - 6px; height: parent.height - 2px;
@@ -204,16 +138,13 @@ export component PathNavigation inherits Rectangle {
                 // This component and every later one, as shown.
                 private property <length> suffix-width: index == 0 ? root.full-width
                     : root.full-width - parent-metrics.preferred-width;
-                private property <bool> shown: !root.collapsed || index < root.lead-count
-                    || index == root.count - 1 || (root.anchored && index == root.anchor)
-                    || self.suffix-width <= root.suffix-room;
+                private property <bool> shown: collapse.shown(index, self.suffix-width);
                 // An omitted component that a shown one follows ends a run of omitted
                 // components (at the start of the trail, after the leading ones, or after
                 // the anchor), and its place holds the marker that stands for the run.
                 // The next component's suffix is measured from this one's prefix.
-                private property <bool> ends-omission: root.collapsed && !self.shown
-                    && (index + 1 >= root.count - 1 || (root.anchored && index + 1 == root.anchor)
-                        || root.full-width - own-metrics.preferred-width <= root.suffix-room);
+                private property <bool> ends-omission: collapse.ends-omission(index, self.shown,
+                    own-metrics.preferred-width);
                 visible: self.shown || self.ends-omission;
                 width: self.shown ? token.width : self.ends-omission ? root.omission-width : 0px;
                 height: trail.height;

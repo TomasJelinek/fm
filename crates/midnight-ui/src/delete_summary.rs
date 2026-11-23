@@ -6,7 +6,7 @@
 use midnight_core::{
     DeleteMode, EntryKind, FolderSize, MutationItem, NumberLocale, OperationPreview,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How many names a confirmation of several items lists before "and N more". One name
 /// more is listed instead of "and 1 more".
@@ -24,6 +24,8 @@ pub(crate) struct Confirmation {
     /// The detail whose value is a folder's path: the dialog shortens it in the middle,
     /// as the path bar does, instead of wrapping it.
     pub(crate) path: Option<usize>,
+    /// That folder, which the dialog splits into the path bar's components.
+    pub(crate) folder: Option<PathBuf>,
 }
 
 impl Confirmation {
@@ -125,7 +127,7 @@ fn one(item: &MutationItem, mode: DeleteMode, context: &Context<'_>) -> Confirma
         .map(|value| format!("{} {}", value.date, value.time))
         .unwrap_or_else(|| "Unavailable".into());
     details.push(("Modified", modified));
-    let mut path = None;
+    let (mut path, mut folder) = (None, None);
     if let Some(parent) = item
         .path
         .parent()
@@ -133,12 +135,14 @@ fn one(item: &MutationItem, mode: DeleteMode, context: &Context<'_>) -> Confirma
     {
         path = Some(details.len());
         details.push(("Location", parent.display().to_string()));
+        folder = Some(parent.to_path_buf());
     }
     Confirmation {
         question,
         warning: warning(mode, false),
         details,
         path,
+        folder,
     }
 }
 
@@ -189,11 +193,12 @@ fn several(preview: &OperationPreview, mode: DeleteMode, context: &Context<'_>) 
     if let Some(size) = several_size(preview, complete, context) {
         details.push(("Size", size));
     }
-    let mut path = None;
+    let (mut path, mut folder) = (None, None);
     match location(preview, complete, context.source) {
-        Some(Location::Folder(folder)) => {
+        Some(Location::Folder(parent)) => {
             path = Some(details.len());
-            details.push(("Location", folder));
+            details.push(("Location", parent.display().to_string()));
+            folder = Some(parent);
         }
         Some(Location::Several) => details.push(("Location", "Several folders".into())),
         None => {}
@@ -203,6 +208,7 @@ fn several(preview: &OperationPreview, mode: DeleteMode, context: &Context<'_>) 
         warning: warning(mode, true),
         details,
         path,
+        folder,
     }
 }
 
@@ -268,7 +274,7 @@ fn several_size(
 }
 
 enum Location {
-    Folder(String),
+    Folder(PathBuf),
     Several,
 }
 
@@ -282,7 +288,7 @@ fn location(preview: &OperationPreview, complete: bool, source: Option<&Path>) -
         return Some(Location::Several);
     }
     (!first.as_os_str().is_empty() && (complete || source == Some(first)))
-        .then(|| Location::Folder(first.display().to_string()))
+        .then(|| Location::Folder(first.to_path_buf()))
 }
 
 fn final_size(size: &FolderSize) -> bool {
@@ -451,6 +457,7 @@ mod tests {
             Some(4),
             "the folder's path is shortened, not wrapped"
         );
+        assert_eq!(permanent.folder, Some(folder()));
 
         let trash = confirm(&one, DeleteMode::Trash);
         assert_eq!(trash.question, "Move “experiments.rar” to the Trash?");
@@ -703,6 +710,7 @@ mod tests {
         );
         assert_eq!(detail(&shown, "Location"), Some("Several folders"));
         assert_eq!(shown.path, None, "Several folders is no path");
+        assert_eq!(shown.folder, None);
         assert_eq!(
             detail(&shown, "Items"),
             Some("2 files and 1 folder, including everything in the folder")

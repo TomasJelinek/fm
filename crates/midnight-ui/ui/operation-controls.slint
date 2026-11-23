@@ -9,7 +9,7 @@ import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { FormNote } from "form-note.slint";
 import { Tip } from "controls.slint";
 import { ConfirmationSummary } from "confirmation-summary.slint";
-import { DetailRow } from "navigation-models.slint";
+import { DetailRow, PathPartRow } from "navigation-models.slint";
 
 
 export component OperationDialog inherits Rectangle {
@@ -20,6 +20,7 @@ export component OperationDialog inherits Rectangle {
     in property <string> question;
     in property <[DetailRow]> details;
     in property <string> detail-labels;
+    in property <[PathPartRow]> path-parts;
     in property <string> policy;
     // The Copy/Move form (`EmbeddedOperation` passes `kind < 0`). `body` is its first
     // line, which names what is copied and ends where the destination field takes over;
@@ -392,6 +393,7 @@ export component OperationDialog inherits Rectangle {
                     if root.confirmation : ConfirmationSummary {
                         question: root.question; warning: root.warning; danger: root.dangerous;
                         details: root.details; labels: root.detail-labels; compact: root.compact;
+                        path-parts: root.path-parts;
                     }
                     if !root.transfer && !root.confirmation : Rectangle {
                         height: min(280px, drawn-summary.preferred-height);
@@ -562,6 +564,6 @@ export component OperationDialog inherits Rectangle {
         x: 0px; y: 0px; width: root.content-width(false);
         // Empty in other forms: its hidden texts must not stand in for the shown ones.
         question: root.question; warning: root.confirmation ? root.warning : ""; danger: root.dangerous;
-        details: root.details; labels: root.detail-labels;
+        details: root.details; labels: root.detail-labels; path-parts: root.path-parts;
     }
 }

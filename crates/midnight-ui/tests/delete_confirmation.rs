@@ -293,8 +293,8 @@ fn show(
     modeless::draw(&main, 540, 360, "summary-layout");
     assert!(ui.window.get_embedded_modal_open());
     assert!(!ui.window.get_dialog_input_blocked());
-    // The question, the warning and every detail value are drawn; a folder's path in
-    // full in the label that a shortened path starts with.
+    // The question, the warning and every detail value are drawn; a folder's path as the
+    // path bar's components, its last one always.
     let form = ui.window.global::<OperationPresentation>();
     let body = ui.window.get_operation_body();
     assert!(body.starts_with(form.get_question().as_str()), "{body}");
@@ -307,11 +307,23 @@ fn show(
             "{} is drawn",
             row.label
         );
-        assert!(
-            has_text(popup.clone(), &row.value),
-            "{} is drawn",
-            row.value
-        );
+        if row.identity == "path" {
+            let parts: Vec<_> = form.get_path_parts().iter().collect();
+            let joined: String = parts.iter().map(|part| part.label.as_str()).collect();
+            assert_eq!(
+                joined,
+                row.value.as_str(),
+                "the components join into the path"
+            );
+            let last = format!("\u{2066}{}\u{2069}", parts.last().unwrap().label);
+            assert!(has_text(popup.clone(), &last), "{last} is drawn");
+        } else {
+            assert!(
+                has_text(popup.clone(), &row.value),
+                "{} is drawn",
+                row.value
+            );
+        }
         assert!(
             body.contains(&format!(
                 "{}: {}",

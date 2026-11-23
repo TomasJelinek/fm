@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
-import { DetailRow } from "navigation-models.slint";
-import { PathText } from "path-text.slint";
+import { DetailRow, PathPartRow } from "navigation-models.slint";
+import { PathTrailText } from "path-collapse.slint";
 import { Tip } from "controls.slint";
 
 // A confirmation's content, top to bottom: the question it asks, as its headline; right
@@ -8,8 +8,8 @@ import { Tip } from "controls.slint";
 // undone); and after a wider gap the details, label and value, in a subdued block. Names
 // wrap at the width the dialog gives them, so a long one is never clipped or elided. A
 // folder's path (a row marked "path") stays on one line and, when it does not fit, is
-// shortened in the middle as the path bar shortens a path: its start, "...", and its last
-// component (the row's explanation); the whole path is its tooltip and accessible label.
+// shortened as the path bar shortens a path (`PathTrailText`): whole middle components
+// give way to "..."; the whole path is its tooltip and accessible label.
 // Its height is its content's: the dialog sizes itself from it.
 export component ConfirmationSummary inherits Rectangle {
     in property <string> question;
@@ -20,6 +20,8 @@ export component ConfirmationSummary inherits Rectangle {
     // Every label, one per line: the label column is as wide as the widest of them, and
     // at most two fifths of the block.
     in property <string> labels;
+    // The components of the path row's value, as the path bar has them.
+    in property <[PathPartRow]> path-parts;
     in property <bool> compact;
     private property <length> glyph-size: max(14px, round(Theme.font-size / 1px) * 1px);
     private property <length> label-width: min(labels-measure.preferred-width, root.width * 0.4);
@@ -83,10 +85,9 @@ export component ConfirmationSummary inherits Rectangle {
                             text: row.value; wrap: word-wrap; width: root.value-width;
                             color: Theme.secondary-text; font-size: Theme.small-font;
                         }
-                        if row.identity == "path" : PathText {
-                            text: row.value; tail: row.explanation; width: root.value-width;
+                        if row.identity == "path" : PathTrailText {
+                            parts: root.path-parts; text: row.value; width: root.value-width;
                             foreground: Theme.secondary-text; font-size: Theme.small-font;
-                            vertical-alignment: top;
                             Tip { text: row.value; }
                         }
                     }

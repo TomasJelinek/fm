@@ -45,6 +45,16 @@ fn native_parts(path: &Path, identity: &str) -> Vec<PathPart> {
         .collect()
 }
 
+/// The components of a native path as the path bar shows them: each one's label and
+/// the path up to and including it (a drive, a UNC share or `/` is the first). A
+/// read-only path elsewhere (a Delete confirmation's folder) is shortened from these.
+pub(crate) fn path_labels(path: &Path) -> Vec<(String, String)> {
+    native_parts(path, "")
+        .into_iter()
+        .map(|part| (part.label, part.prefix))
+        .collect()
+}
+
 /// Joins Network captions in the path bar. It is not a path separator: the joined text
 /// is presentation only and is never parsed back into a location.
 pub(super) const NETWORK_PATH_SEPARATOR: &str = " › ";

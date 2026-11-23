@@ -1,0 +1,198 @@
+import { NameText, OmissionText } from "path-text.slint";
+import { PathPartRow } from "navigation-models.slint";
+
+// Which components of a path a trail of `trail-width` shows, as the path bar shows them.
+// A path that does not fit shows whole components only: up to two leading ones (the root
+// first), one omission marker for the middle, then the longest suffix that fits. Nothing
+// overlaps and no component is cut, except the last one, which always shows and is
+// shortened when even it alone is too wide. The anchor shows too: the leading components
+// give way to a suffix that reaches it, and when even that does not fit, it stands
+// between two markers, followed by the suffix that fits, as long as it and the last
+// component both fit whole. `reserve` stays free after the components.
+// The path bar (`PathNavigation`) and the read-only `PathTrailText` draw what this
+// decides; each repeated component measures its own prefixes and asks `shown` and
+// `ends-omission`. Holds hidden measures only.
+export component PathCollapse inherits Rectangle {
+    in property <[PathPartRow]> parts;
+    // The component that a shortened path keeps whole besides the last one (-1: none).
+    in property <int> anchor: -1;
+    in property <length> text-size;
+    in property <length> trail-width;
+    in property <length> reserve;
+    out property <int> count: root.parts.length;
+    // Each component is drawn as its own caption, whose width is rounded up to a whole
+    // pixel, while the widths below measure joined captions: a pixel per component
+    // keeps the drawn components inside the room the measures allow.
+    out property <length> room: max(0px, root.trail-width - root.reserve - root.count * 1px);
+    out property <length> omission-width: omission-metrics.preferred-width + 4px;
+    // The shown components join into the shown path (each label is the part of its
+    // prefix after the previous one), so prefixes measure suffix widths.
+    out property <length> full-width: full-metrics.preferred-width;
+    out property <bool> collapsed: root.count > 1 && root.full-width > root.room;
+    private property <length> first-width: first-metrics.preferred-width;
+    private property <length> pair-width: first-metrics.preferred-width + second-metrics.preferred-width;
+    private property <length> last-width: last-metrics.preferred-width;
+    private property <int> plain-lead-count: root.count >= 4 && root.pair-width <= root.trail-width * 0.35
+            && root.pair-width + root.omission-width + root.last-width <= root.room ? 2
+        : root.count >= 3 && root.first-width <= root.trail-width * 0.35
+            && root.first-width + root.omission-width + root.last-width <= root.room ? 1
+        : 0;
+    private property <length> plain-lead-width: root.plain-lead-count == 2 ? root.pair-width
+        : root.plain-lead-count == 1 ? root.first-width : 0px;
+    // The first component leads and the last always shows: neither needs anchoring.
+    private property <bool> anchor-inside: root.anchor > 0 && root.anchor < root.count - 1;
+    private property <length> anchor-width: anchor-metrics.preferred-width;
+    // The anchor and every later component, as shown.
+    private property <length> anchor-suffix-width: root.full-width - anchor-parent-metrics.preferred-width;
+    // Components between the anchor and the last one, omitted behind a second marker.
+    private property <bool> anchor-gap: root.anchor + 1 < root.count - 1;
+    private property <bool> anchor-alone-fits: root.omission-width + root.anchor-width
+        + (root.anchor-gap ? root.omission-width : 0px) + root.last-width <= root.room;
+    // The leading components and the suffix that fits after them leave the anchor out.
+    private property <bool> anchor-dropped: root.collapsed && root.anchor-inside
+        && root.anchor >= root.plain-lead-count
+        && root.anchor-suffix-width > root.room - root.plain-lead-width - root.omission-width;
+    out property <int> lead-count: !root.collapsed ? root.count
+        : !root.anchor-dropped ? root.plain-lead-count
+        : root.plain-lead-count == 2
+            && root.first-width + root.omission-width + root.anchor-suffix-width <= root.room ? 1
+        : root.anchor-suffix-width + root.omission-width <= root.room || root.anchor-alone-fits ? 0
+        : root.plain-lead-count;
+    // Not even the suffix from the anchor fits: the anchor stands between two markers.
+    out property <bool> anchored: root.anchor-dropped && root.lead-count == 0
+        && root.anchor-suffix-width + root.omission-width > root.room && root.anchor-alone-fits;
+    private property <length> lead-width: root.lead-count == 2 ? root.pair-width
+        : root.lead-count == 1 ? root.first-width : 0px;
+    out property <length> suffix-room: root.anchored
+        ? root.room - root.omission-width - root.anchor-width - (root.anchor-gap ? root.omission-width : 0px)
+        : root.room - root.lead-width - root.omission-width;
+    // The width the last component gets: its own, or what is left for it.
+    pure public function last-room() -> length {
+        return max(0px, root.collapsed ? root.suffix-room : root.room);
+    }
+    // Whether component `index` shows; `suffix-width` measures it and every later one.
+    pure public function shown(index: int, suffix-width: length) -> bool {
+        return !root.collapsed || index < root.lead-count || index == root.count - 1
+            || (root.anchored && index == root.anchor) || suffix-width <= root.suffix-room;
+    }
+    // An omitted component that a shown one follows ends a run of omitted components (at
+    // the start of the trail, after the leading ones, or after the anchor), and its place
+    // holds the marker that stands for the run. The next component's suffix is measured
+    // from this one's prefix (`prefix-width`).
+    pure public function ends-omission(index: int, shown: bool, prefix-width: length) -> bool {
+        return root.collapsed && !shown
+            && (index + 1 >= root.count - 1 || (root.anchored && index + 1 == root.anchor)
+                || root.full-width - prefix-width <= root.suffix-room);
+    }
+    visible: false;
+    x: 0px; y: 0px; width: 0px; height: 0px;
+    accessible-role: none;
+    full-metrics := Text {
+        font-size: root.text-size;
+        text: root.count > 0 ? root.parts[root.count - 1].prefix : "";
+    }
+    first-metrics := Text {
+        font-size: root.text-size;
+        text: root.count > 0 ? NameText.ltr(root.parts[0].label) : "";
+    }
+    second-metrics := Text {
+        font-size: root.text-size;
+        text: root.count > 1 ? NameText.ltr(root.parts[1].label) : "";
+    }
+    last-metrics := Text {
+        font-size: root.text-size;
+        text: root.count > 0 ? NameText.ltr(root.parts[root.count - 1].label) : "";
+    }
+    anchor-metrics := Text {
+        font-size: root.text-size;
+        text: root.anchor-inside ? NameText.ltr(root.parts[root.anchor].label) : "";
+    }
+    anchor-parent-metrics := Text {
+        font-size: root.text-size;
+        text: root.anchor-inside ? root.parts[root.anchor - 1].prefix : "";
+    }
+    omission-metrics := OmissionText { font-size: root.text-size; }
+}
+
+// A read-only path on one line, shortened as the path bar shortens it (`PathCollapse`):
+// whole components only, the dropped middle ones replaced by one "..." marker. Only when
+// not even the marker and the last component fit is the last component cut, at its start,
+// so that its end (a name's extension) stays. `text` is the whole path: the accessible
+// label (and its holder's tooltip).
+export component PathTrailText inherits Rectangle {
+    in property <[PathPartRow]> parts;
+    in property <string> text;
+    in property <int> anchor: -1;
+    in property <brush> foreground;
+    in property <length> font-size;
+    min-width: 0px;
+    preferred-width: collapse.full-width + collapse.count * 1px;
+    preferred-height: line.preferred-height;
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+    clip: true;
+    collapse := PathCollapse {
+        parts: root.parts; anchor: root.anchor;
+        text-size: root.font-size; trail-width: root.width; reserve: 0px;
+    }
+    line := Text { visible: false; accessible-role: none; text: "X"; font-size: root.font-size; }
+    // Placed, not filling: one line high whatever height a layout gives the trail.
+    HorizontalLayout {
+        x: 0px; y: 0px; width: root.width; height: line.preferred-height;
+        spacing: 0px; alignment: start;
+        for part[index] in root.parts : Rectangle {
+            // This component and every later one, as shown.
+            private property <length> suffix-width: index == 0 ? collapse.full-width
+                : collapse.full-width - parent-metrics.preferred-width;
+            private property <bool> shown: collapse.shown(index, self.suffix-width);
+            private property <bool> ends-omission: collapse.ends-omission(index, self.shown,
+                own-metrics.preferred-width);
+            private property <bool> last: index == collapse.count - 1;
+            private property <length> natural: caption.preferred-width;
+            private property <length> given: self.last ? min(self.natural, collapse.last-room())
+                : self.natural;
+            // The last component alone is too wide: it keeps its end after a marker, unless
+            // the marker for dropped components already stands right before it.
+            private property <bool> cut: self.shown && self.given < self.natural;
+            private property <bool> own-marker: self.cut && !collapse.collapsed;
+            visible: self.shown || self.ends-omission;
+            width: self.shown ? self.given : self.ends-omission ? collapse.omission-width : 0px;
+            height: line.preferred-height;
+            parent-metrics := Text {
+                visible: false; font-size: root.font-size;
+                text: collapse.collapsed && index > 0 ? root.parts[index - 1].prefix : "";
+            }
+            // Only an omitted component measures its own prefix.
+            own-metrics := Text {
+                visible: false; font-size: root.font-size;
+                text: collapse.collapsed && !parent.shown ? part.prefix : "";
+            }
+            if self.own-marker : OmissionText {
+                x: 0px; y: 0px; width: self.preferred-width; height: parent.height;
+                color: root.foreground; font-size: root.font-size;
+                vertical-alignment: top; accessible-role: none;
+            }
+            Rectangle {
+                private property <bool> cut: parent.cut;
+                visible: parent.shown;
+                x: parent.own-marker ? collapse.omission-width : 0px; y: 0px;
+                width: max(0px, parent.width - self.x); height: parent.height;
+                clip: true;
+                caption := Text {
+                    // Cut at its start: the end stays in view.
+                    x: parent.cut ? parent.width - self.width : 0px; y: 0px;
+                    width: self.preferred-width; height: parent.height;
+                    text: NameText.ltr(part.label);
+                    color: root.foreground; font-size: root.font-size;
+                    vertical-alignment: top; accessible-role: none;
+                }
+            }
+            if self.ends-omission : OmissionText {
+                x: 0px; y: 0px; width: collapse.omission-width; height: parent.height;
+                color: root.foreground; font-size: root.font-size;
+                horizontal-alignment: center; vertical-alignment: top;
+                accessible-role: none;
+            }
+        }
+    }
+}

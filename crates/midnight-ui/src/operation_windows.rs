@@ -227,9 +227,11 @@ fn open(
     );
     // A path's tooltip may still show from an earlier confirmation's rows.
     crate::tooltip::dismiss(main.window());
-    window.set_details(slint::ModelRc::new(slint::VecModel::from(
-        delete.map(|form| form.details).unwrap_or_default(),
-    )));
+    let (details, path_parts) = delete
+        .map(|form| (form.details, form.path_parts))
+        .unwrap_or_default();
+    window.set_details(slint::ModelRc::new(slint::VecModel::from(details)));
+    window.set_path_parts(slint::ModelRc::new(slint::VecModel::from(path_parts)));
     match &key {
         Key::Copy(_) => copy_draft_windows::initialize(&window, main, p.copy_draft_links_view()),
         Key::Operation(_) => {
