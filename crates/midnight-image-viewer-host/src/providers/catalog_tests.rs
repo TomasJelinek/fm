@@ -38,7 +38,7 @@ impl Drop for Fixture {
 #[test]
 fn image_and_web_manifest_pair_is_rejected_without_loading_a_provider() {
     let root = Fixture::new();
-    let executable = root.0.join("me.exe");
+    let executable = root.0.join("midnight-explorer.exe");
     fs::write(&executable, b"discovery fixture, never executed").unwrap();
     let package = root.0.join("viewers/image");
     fs::create_dir_all(&package).unwrap();

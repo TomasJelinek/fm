@@ -45,7 +45,7 @@ class LinuxBuildCleanTests(unittest.TestCase):
 
     def test_plan_contains_generated_entries_but_preserves_caches_and_fixture_bytes(self):
         contents = {
-            "_build/debug/me": b"current executable",
+            "_build/debug/midnight-explorer": b"current executable",
             "_build/.rustc_info.json": b"generated metadata",
             "_build/qa/result.json": b"receipt",
             "_build/docker/cargo/cache": b"legacy cache",

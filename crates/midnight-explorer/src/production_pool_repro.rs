@@ -429,7 +429,7 @@ impl Harness {
         // Existing qualified installation fixture selects the real application
         // explicitly. This never changes the process-global executable resolver.
         // Discovery runs on this backend setup thread before any pressure exists.
-        let application = installation.join("me.exe");
+        let application = installation.join("midnight-explorer.exe");
         let prepared_catalogs = midnight_viewer_engine::PreparedCatalogs::discover(&application)?;
         eprintln!(
             "controlled catalog selection: qualified application={}",

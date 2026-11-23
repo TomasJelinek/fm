@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn startup_recovery_preserves_arguments_and_working_directory_without_a_shell() {
-        let executable = PathBuf::from("private runtime/me");
+        let executable = PathBuf::from("private runtime/midnight-explorer");
         let cwd = PathBuf::from("original working directory");
         let arguments: Vec<OsString> = [
             "--left",

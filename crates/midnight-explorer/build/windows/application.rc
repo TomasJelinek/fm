@@ -16,9 +16,9 @@ BEGIN
             VALUE "CompanyName", "\0"
             VALUE "FileDescription", "Midnight Explorer\0"
             VALUE "FileVersion", MIDNIGHT_VERSION_STRING
-            VALUE "InternalName", "me\0"
+            VALUE "InternalName", "midnight-explorer\0"
             VALUE "LegalCopyright", "© 2026 Tomas Jelinek\0"
-            VALUE "OriginalFilename", "me.exe\0"
+            VALUE "OriginalFilename", "midnight-explorer.exe\0"
             VALUE "ProductName", "Midnight Explorer\0"
             VALUE "ProductVersion", MIDNIGHT_VERSION_STRING
         END

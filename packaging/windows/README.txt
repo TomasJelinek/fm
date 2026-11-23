@@ -1,7 +1,8 @@
 Midnight Explorer 0.5.0 - Windows x64 preview
 
-Extract the complete ZIP to a folder, then run me.exe.
-Keep the viewers, filesystems and thumbnailers folders beside me.exe, including
+Extract the complete ZIP to a folder, then run midnight-explorer.exe.
+Keep the viewers, filesystems and thumbnailers folders beside midnight-explorer.exe,
+including
 the thumbnail helpers' adjacent runtime libraries and notices. Use a private folder in your user profile
 or an administrator-managed installation: native plugins are refused if other
 accounts can replace their files or installation directory.
@@ -10,7 +11,7 @@ midnight-elevated-listing.exe as Administrator. It is used only when an administ
 installs the complete folder where standard users cannot change it, for example
 below C:\Program Files. From a folder in your user profile the retry is still
 offered but refused, and the message states this requirement. Earlier packages'
-me.exe used the included helper from such a
+application (then named me.exe) used the included helper from such a
 folder, where any program running as you could replace it: replace an earlier
 extracted package with this one, or at least delete its
 midnight-elevated-listing.exe.
@@ -24,9 +25,12 @@ Default graphics use Direct3D 12. --software is a diagnostic fallback with known
 bitmap-emoji limitations, not equivalent to the GPU renderer's Unicode coverage.
 
 Example:
-  me.exe --left "C:\Users" --right "C:\Windows"
+  midnight-explorer.exe --left "C:\Users" --right "C:\Windows"
 
 Settings are stored in %LOCALAPPDATA%\Midnight Explorer\preferences.json.
+Releases up to 0.5.0 named the executable me.exe. Settings stay where they were;
+point shortcuts, pinned taskbar items, "Open with" choices and firewall rules
+that named me.exe at midnight-explorer.exe instead.
 See FEATURE_STATUS.md for implemented and pending functionality, and
 SYSTEM_REQUIREMENTS.md, KEYBOARD_SHORTCUTS.md and SECURITY.md for details.
 F1 opens keyboard help; Options allows changing shortcuts and appearance.

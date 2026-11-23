@@ -143,7 +143,7 @@ An example installed Windows package is:
 
 ```text
 app/
-  me.exe
+  midnight-explorer.exe
   viewers/
     my-viewer/
       plugin.toml

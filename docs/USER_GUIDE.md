@@ -172,8 +172,8 @@ when started by path from another directory. Both:
 
 - accept no profile (debug), `debug` or `release`, and `--validate`, which runs
   [full validation](#full-validation) after the build;
-- run a locked Cargo build of the host, `midnight-explorer` (its executable is `me.exe`
-  on Windows and `me` on Linux), and of the authorization helper, `midnight-elevation`;
+- run a locked Cargo build of the host, `midnight-explorer` (its executable is
+  `midnight-explorer.exe` on Windows and `midnight-explorer` on Linux), and of the authorization helper, `midnight-elevation`;
 - then build the platform's independent modules beside the host, with the same
   profile: the native and Network Neighborhood filesystem packages
   (`filesystems/native.{windows,linux}/`, `filesystems/network.{windows,linux}/`), the
@@ -283,7 +283,7 @@ through Windows UAC or Linux polkit (`pkexec` and a desktop authentication agent
 lists the requested folder only, loads no plugins, and does not elevate file
 operations, change permissions or store passwords
 ([authorization boundary](../SECURITY.md#directory-authorization-helper)). Because it runs
-as Administrator or root, the host uses it only from beside an installed `me` that
+as Administrator or root, the host uses it only from beside an installed `midnight-explorer` that
 standard users cannot change: on Windows a folder on a local fixed drive whose
 permissions only administrators can change, such as one below `C:\Program Files`; on
 Linux a root-owned directory such as `/opt/midnight-explorer` (see
@@ -299,7 +299,7 @@ from that folder:
 ```powershell
 $target = Join-Path $env:ProgramFiles 'Midnight Explorer'
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item -LiteralPath _build\release\me.exe, _build\release\midnight-elevated-listing.exe -Destination $target
+Copy-Item -LiteralPath _build\release\midnight-explorer.exe, _build\release\midnight-elevated-listing.exe -Destination $target
 Copy-Item -Recurse -Force -LiteralPath _build\release\viewers, _build\release\filesystems, _build\release\thumbnailers -Destination $target
 ```
 
@@ -343,7 +343,7 @@ build, `build.bat` deploys the complete bundle to a new private installation (a
 `%USERPROFILE%\MidnightExplorer-*` folder) and registers it for that build output by
 its launch path and the host executable's SHA-256
 ([runtime resolution](developer/RUNTIME_DISCOVERY.md)). The build output's
-`me.exe` then loads its plugins from that protected installation, even when the
+`midnight-explorer.exe` then loads its plugins from that protected installation, even when the
 checkout is on a shared drive; plugin code is never loaded from a folder that other
 users can change. Each `build.bat` run removes the earlier installations it deployed
 for the same build output, except any that is still running or selected by another
@@ -372,32 +372,38 @@ launches the application or changes saved settings.
 
 **Upgrading from earlier builds:** earlier versions left
 `midnight-elevated-listing.exe` in folders that you can change (private runtimes,
-release ZIPs extracted into your user profile, build output), and their `me.exe` ran it
-as Administrator after the UAC prompt, so any program running as you could have
-replaced it. Current builds refuse such a copy, so deleting it loses nothing. Rebuild
-and redeploy (repeat `-CreateDesktopShortcut` if you use the shortcut), then delete
-every older runtime that contains the helper, by default a
+release ZIPs extracted into your user profile, build output), and their executable
+(then named `me.exe`) ran it as Administrator after the UAC prompt, so any program
+running as you could have replaced it. Current builds refuse such a copy, so deleting
+it loses nothing. Rebuild and redeploy (repeat `-CreateDesktopShortcut` if you use the
+shortcut), then delete every older runtime that contains the helper, by default a
 `%USERPROFILE%\MidnightExplorer-*` folder, and replace an earlier extracted release
 with a current one, or at least delete its `midnight-elevated-listing.exe`. No script
 removes these for you.
 
+**Renamed executable:** releases up to 0.5.0 named the executable `me.exe`; it is now
+`midnight-explorer.exe`. Settings stay in `%LOCALAPPDATA%\Midnight Explorer`. A
+redeployment with `-CreateDesktopShortcut` replaces the Desktop shortcut; point other
+shortcuts, pinned taskbar items, "Open with" choices and firewall rules that name
+`me.exe` at `midnight-explorer.exe`.
+
 Direct launches:
 
 ```powershell
-.\_build\debug\me.exe
-.\_build\release\me.exe --left "C:\Users" --right "C:\Program Files"
+.\_build\debug\midnight-explorer.exe
+.\_build\release\midnight-explorer.exe --left "C:\Users" --right "C:\Program Files"
 cargo run -p midnight-explorer --locked -- --left "C:\Users" --right "C:\Windows"
 cargo run -p midnight-explorer --locked --release
 ```
 
 For a filesystem smoke check that exits without opening the UI, wait for the
 process and read its exit code. It needs the native filesystem package, which
-`build.bat` installs. `me.exe` is a GUI-subsystem program: a console neither waits
+`build.bat` installs. `midnight-explorer.exe` is a GUI-subsystem program: a console neither waits
 for it nor shows its standard output, so its volume and entry counts and `--help`
 text are visible only through `cargo run` (or a redirected stream):
 
 ```powershell
-$smoke = Start-Process .\_build\debug\me.exe -Wait -PassThru -ArgumentList '--smoke-test', '--left', 'C:\Users', '--right', 'C:\Windows'
+$smoke = Start-Process .\_build\debug\midnight-explorer.exe -Wait -PassThru -ArgumentList '--smoke-test', '--left', 'C:\Users', '--right', 'C:\Windows'
 $smoke.ExitCode
 cargo run -p midnight-explorer --locked -- --smoke-test --left "C:\Users" --right "C:\Windows"
 ```
@@ -602,8 +608,8 @@ drivers. Slint's [Winit backend documentation](https://docs.slint.dev/latest/doc
 describes the display and runtime libraries. The normal renderer is FemtoVG-WGPU.
 
 ```sh
-./_build/debug/me
-./_build/release/me --left "$HOME" --right /tmp
+./_build/debug/midnight-explorer
+./_build/release/midnight-explorer --left "$HOME" --right /tmp
 cargo run -p midnight-explorer --locked -- --left "$HOME" --right /tmp
 cargo run -p midnight-explorer --locked --release
 ```
@@ -612,7 +618,7 @@ The filesystem smoke check does not require a display; like browsing, it needs t
 native filesystem package:
 
 ```sh
-./_build/debug/me --smoke-test --left "$HOME" --right /tmp
+./_build/debug/midnight-explorer --smoke-test --left "$HOME" --right /tmp
 ```
 
 Linux discovers already-mounted filesystems through `/proc/self/mountinfo`;
@@ -636,7 +642,7 @@ python3 -B scripts/install-linux-desktop.py
 ```
 
 For another existing executable, use
-`python3 -B scripts/install-linux-desktop.py --executable _build/custom/debug/me`.
+`python3 -B scripts/install-linux-desktop.py --executable _build/custom/debug/midnight-explorer`.
 The script installs the desktop entry and the committed icon under `$XDG_DATA_HOME`
 (default `$HOME/.local/share`), with an absolute executable path, and invalidates
 the icon theme cache. It leaves the application and its plugins in place and needs
@@ -647,12 +653,12 @@ selecting another build.
 For a separate per-user installation of the debug build:
 
 ```sh
-install -Dm755 _build/debug/me "$HOME/.local/bin/me"
+install -Dm755 _build/debug/midnight-explorer "$HOME/.local/bin/midnight-explorer"
 mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
 cp -R _build/debug/viewers/. "$HOME/.local/bin/viewers/"
 cp -R _build/debug/filesystems/. "$HOME/.local/bin/filesystems/"
 cp -R _build/debug/thumbnailers/. "$HOME/.local/bin/thumbnailers/"
-python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/me"
+python3 -B scripts/install-linux-desktop.py --executable "$HOME/.local/bin/midnight-explorer"
 ```
 
 In a per-user installation, **Retry with authorization** is still offered but is
@@ -663,10 +669,10 @@ mounted `nosuid`):
 
 ```sh
 sudo install -d -m 755 /opt/midnight-explorer
-sudo install -m 755 _build/debug/me _build/debug/midnight-elevated-listing /opt/midnight-explorer/
+sudo install -m 755 _build/debug/midnight-explorer _build/debug/midnight-elevated-listing /opt/midnight-explorer/
 sudo cp -R _build/debug/viewers _build/debug/filesystems _build/debug/thumbnailers /opt/midnight-explorer/
 sudo install -m 755 scripts/install-html-viewer-apparmor.sh /opt/midnight-explorer/
-python3 -B scripts/install-linux-desktop.py --executable /opt/midnight-explorer/me
+python3 -B scripts/install-linux-desktop.py --executable /opt/midnight-explorer/midnight-explorer
 ```
 
 Where AppArmor restricts user namespaces (Ubuntu 23.10 and later), the HTML viewer of
@@ -675,14 +681,20 @@ this installation then needs its profile once:
 such profile, so installing it for another installation moves the permission there.
 
 **Upgrading from earlier builds:** earlier versions left `midnight-elevated-listing`
-in directories that you can change, and their `me` ran it as root through polkit even
-there: these instructions installed `$HOME/.local/bin/midnight-elevated-listing`,
-release archives contain it beside `me` (so an archive extracted into a folder you own
-has it there), and build output holds it beside `me`. Any program running as you
-could have replaced it. Current builds refuse such a copy, so deleting it loses
-nothing: delete `$HOME/.local/bin/midnight-elevated-listing`, rebuild, and replace an
-earlier extracted release with a current one, or at least delete its
-`midnight-elevated-listing`.
+in directories that you can change, and their executable (then named `me`) ran it as
+root through polkit even there: these instructions installed
+`$HOME/.local/bin/midnight-elevated-listing`, release archives contain it beside the
+executable (so an archive extracted into a folder you own has it there), and build
+output holds it beside the executable. Any program running as you could have replaced
+it. Current builds refuse such a copy, so deleting it loses nothing: delete
+`$HOME/.local/bin/midnight-elevated-listing`, rebuild, and replace an earlier extracted
+release with a current one, or at least delete its `midnight-elevated-listing`.
+
+**Renamed executable:** releases up to 0.5.0 named the executable `me`; it is now
+`midnight-explorer`. Settings stay in `$XDG_CONFIG_HOME/midnight-explorer`. Run
+`scripts/install-linux-desktop.py` again: it replaces the desktop entry, whose `Exec`
+named the old executable. Delete an earlier per-user copy such as
+`$HOME/.local/bin/me`.
 
 Registration uses only the dedicated `io.github.TomasJelinek.MidnightExplorer`
 desktop-entry and icon paths. It refuses symbolic links in those paths and an
@@ -715,7 +727,7 @@ cargo run -p midnight-explorer --locked -- --software
 
 The UI smoke check and `--snapshot FILE.png` need a working display; see
 [Checks](#checks) below. The software renderer does not draw bitmap (color) emoji.
-For WGPU diagnostics only, `SLINT_WGPU_CPU=1 ./_build/debug/me` permits a CPU adapter.
+For WGPU diagnostics only, `SLINT_WGPU_CPU=1 ./_build/debug/midnight-explorer` permits a CPU adapter.
 This still needs the graphics runtime and fonts, and says nothing about GPU
 performance.
 
@@ -1442,7 +1454,7 @@ The application workspace (`crates/`):
 | `midnight-platform-windows` | Windows-only service implementations and Win32 integration |
 | `midnight-platform-linux` | Linux-only service implementations, mount discovery and desktop integration |
 | `midnight-engine` | Tokio orchestration, cancellation, bounded workers and batches |
-| `midnight-explorer` | The `me` executable: runtime, bounded channels, coalesced UI wakeup, startup and lifecycle |
+| `midnight-explorer` | The `midnight-explorer` executable: runtime, bounded channels, coalesced UI wakeup, startup and lifecycle |
 | `midnight-ui` | Slint presentation: presenters, the virtualized lazy row model and dialogs |
 | `midnight-ui-bindings` | Generated Slint types, compiled separately from the handwritten presentation |
 | `midnight-ui-input` | Shared keyboard, placement and wheel input policy |
@@ -1684,7 +1696,7 @@ example "This image is damaged or incomplete: unexpected end of file".
 
 The [HTML viewer](developer/WEB_VIEWER_API.md) renders HTML with
 embedded Chromium inside the normal viewer. Its runtime is a separate plugin
-package included by the normal build helpers; building `me.exe` alone does not
+package included by the normal build helpers; building `midnight-explorer.exe` alone does not
 install Chromium. Build/package steps are in the
 [independent provider README](../plugins/midnight-viewer-html/README.md).
 Ctrl+F searches and Escape closes the viewer. HTML starts offline with JavaScript
@@ -1747,16 +1759,16 @@ Administrators and SYSTEM. See the
 [resolution and security contract](developer/RUNTIME_DISCOVERY.md).
 
 On Windows, `build.bat` therefore deploys each build to a new private installation
-under your user profile and registers it, so that `_build\release\me.exe` can use
+under your user profile and registers it, so that `_build\release\midnight-explorer.exe` can use
 protected plugins even when the checkout is on a shared or writable drive
-([Windows x64](#windows-x64) has the commands). Run `me.exe` from the printed
+([Windows x64](#windows-x64) has the commands). Run `midnight-explorer.exe` from the printed
 installation path or the matching `_build` path. Deployment copies the executable and
 its plugin packages, protects the new installation's permissions, and refuses unsafe
 parents or an existing destination. It never changes the checkout's permissions or
 launches the app. Compiler and intermediate files remain in `_build`.
 Registrations live in `%USERPROFILE%\.midnight-explorer\plugin-runtimes`. Each is
 named by the deployed host's SHA-256, which deployment checked against the build
-output. By default, a protected launcher pointer for the build output's `me.exe` path
+output. By default, a protected launcher pointer for the build output's `midnight-explorer.exe` path
 selects the registration while that executable keeps the size and modification time
 recorded at deployment; startup then hashes no executable. With
 `MIDNIGHT_VERIFY_RUNTIME_SHA256=1`, startup instead hashes the running host, selects

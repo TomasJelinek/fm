@@ -168,7 +168,7 @@ function Open-DeploymentValidationPayload([string]$Receipt, [string]$ProjectRoot
             $event.package_id.StartsWith($packagePrefix, [StringComparison]::OrdinalIgnoreCase) -and
             $event.manifest_path -is [string] -and $event.manifest_path -eq $manifest -and
             $event.target.src_path -is [string] -and $event.target.src_path -eq $main -and
-            $event.target.name -is [string] -and $event.target.name -ceq 'me' -and
+            $event.target.name -is [string] -and $event.target.name -ceq 'midnight-explorer' -and
             $event.target.kind.Count -eq 1 -and $event.target.kind[0] -ceq 'bin' -and
             $event.profile.test -is [bool] -and $event.profile.test -and
             $event.profile.debug_assertions -is [bool] -and $event.profile.debug_assertions) {
@@ -176,7 +176,7 @@ function Open-DeploymentValidationPayload([string]$Receipt, [string]$ProjectRoot
         }
     }
     if (-not $finished) { throw 'Cargo build-finished success is missing' }
-    if ($selected.Count -ne 1) { throw 'Expected exactly one local Explorer bin me libtest artifact' }
+    if ($selected.Count -ne 1) { throw 'Expected exactly one local Explorer bin midnight-explorer libtest artifact' }
     $artifact = $selected[0]
     if ($artifact.executable -isnot [string] -or $artifact.filenames -isnot [Array] -or $artifact.filenames -notcontains $artifact.executable) {
         throw 'Cargo executable is missing from filenames'
@@ -189,11 +189,11 @@ function Open-DeploymentValidationPayload([string]$Receipt, [string]$ProjectRoot
     }
     $deps = [IO.Path]::GetFullPath((Join-Path $SourceDirectory 'deps'))
     $payload = [IO.Path]::GetFullPath($artifact.executable)
-    if ((Split-Path -Parent $payload) -ne $deps -or (Split-Path -Leaf $payload) -cnotmatch '^me-[0-9a-f]{1,64}\.exe$') {
+    if ((Split-Path -Parent $payload) -ne $deps -or (Split-Path -Leaf $payload) -cnotmatch '^midnight_explorer-[0-9a-f]{1,64}\.exe$') {
         throw 'Explorer validation artifact must retain its Cargo filename directly in source deps'
     }
     $file = Get-ValidationPlainFile $payload
-    $application = Get-ValidationPlainFile (Join-Path $SourceDirectory 'me.exe')
+    $application = Get-ValidationPlainFile (Join-Path $SourceDirectory 'midnight-explorer.exe')
     $stream = $null
     $applicationStream = $null
     try {
@@ -205,7 +205,7 @@ function Open-DeploymentValidationPayload([string]$Receipt, [string]$ProjectRoot
             Source=$file.FullName; Stream=$stream; ApplicationStream=$applicationStream; ProjectRoot=$project
             Metadata=[ordered]@{
                 schema_version=1; path=$file.Name; bytes=$stream.Length; sha256=$proof.artifact_sha256
-                application_path='me.exe'; application_sha256=$proof.application_sha256
+                application_path='midnight-explorer.exe'; application_sha256=$proof.application_sha256
                 source_snapshot=$snapshot.Path; source_snapshot_sha256=$snapshot.Sha256; live_source_files_checked=$sourceCount
                 cargo_json=$cargo.Path; cargo_json_sha256=$cargo.Sha256; cargo_exit_code=0; cargo_artifact=$artifact
                 qualification_receipt=$evidence.Path; qualification_receipt_sha256=$evidence.Sha256
@@ -225,7 +225,7 @@ function Copy-DeploymentValidationPayload($Lease, [string]$Destination) {
     $inventory = Join-Path $Destination 'validation-payload.json'
     if ((Test-Path -LiteralPath $target) -or (Test-Path -LiteralPath $inventory)) { throw 'Validation payload or inventory already exists' }
     $null = Assert-DeploymentValidationSources $Lease.Metadata.source_snapshot $Lease.Metadata.source_snapshot_sha256 $Lease.ProjectRoot
-    if ((Get-FileHash -LiteralPath (Join-Path $Destination 'me.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Lease.Metadata.application_sha256) {
+    if ((Get-FileHash -LiteralPath (Join-Path $Destination 'midnight-explorer.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Lease.Metadata.application_sha256) {
         throw 'Destination application SHA256 differs from the qualified epoch'
     }
     $null = Get-ValidationPlainFile $Lease.Source

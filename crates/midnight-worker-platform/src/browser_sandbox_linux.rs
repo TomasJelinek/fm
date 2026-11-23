@@ -286,7 +286,7 @@ fn only_root_can_change(script: &Path, lookup: &impl Fn(&Path) -> Option<Ownersh
             .all(|folder| root_only(folder).is_some())
 }
 
-/// The installer of this installation: beside `me` in a package
+/// The installer of this installation: beside `midnight-explorer` in a package
 /// (`<root>/viewers/<package>/<executable>`), or in the checkout's `scripts` directory for a
 /// development build (`<checkout>/_build/<profile>/viewers/<package>/<executable>`).
 fn install_script(executable: &Path) -> Option<PathBuf> {

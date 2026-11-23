@@ -80,7 +80,7 @@ def html_package(viewers, target):
 def complete_runtime(source, target):
     windows = target.endswith('windows-msvc')
     suffix = '.exe' if windows else ''
-    for name in ('me' + suffix, 'midnight-elevated-listing' + suffix):
+    for name in ('midnight-explorer' + suffix, 'midnight-elevated-listing' + suffix):
         write_file(source, name)
     viewers = source / 'viewers'
     for name in ('basic', 'source', 'markdown'):
@@ -193,7 +193,7 @@ class RuntimePackages(unittest.TestCase):
                 *(f'thumbnailers/{name}' for name in libraries),
                 *(f'thumbnailers/notices/ffmpeg-9.0.2/{name}' for name in (
                     'ffmpeg-9.0.2.tar.xz', 'COPYING.LGPLv2.1', 'build-options.txt', 'config.h', 'config.mak')),
-                'thumbnailers', 'midnight-elevated-listing' + suffix,
+                'thumbnailers', 'midnight-explorer' + suffix, 'midnight-elevated-listing' + suffix,
             ]:
                 with self.subTest(target=target, missing=relative):
                     original = source / relative
@@ -238,7 +238,7 @@ class RuntimePackages(unittest.TestCase):
                                            'viewers/midnight-viewer-html/chrome-sandbox'})
         for kind in ('zip', 'tar.gz'):
             output = self.root / ('release.' + kind)
-            packaging.write_archive(stage, output, 'me', kind, executable)
+            packaging.write_archive(stage, output, 'midnight-explorer', kind, executable)
             with zipfile.ZipFile(output) if kind == 'zip' else tarfile.open(output) as bundle:
                 for name, data in expected.items():
                     member = 'release/viewers/midnight-viewer-html/' + name
@@ -350,13 +350,13 @@ class RuntimePackages(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(source, self.target)
 
-    def release(self, source, readme_version='0.2.0'):
+    def release(self, source, readme_version='0.2.0', binary='midnight-explorer'):
         readme = self.root / 'README.txt'
         readme.write_text(f'Midnight Explorer {readme_version} - fixture\n'
                           f'https://github.com/TomasJelinek/fm/tree/v{readme_version}\n')
         output = self.root / 'release-output'
         command = [sys.executable, '-B', str(ROOT / 'scripts/package-release.py'),
-                   '--binary', str(source / 'me'), '--metadata', str(self.root / 'absent.json'),
+                   '--binary', str(source / binary), '--metadata', str(self.root / 'absent.json'),
                    '--dependency-list', str(self.root / 'absent.txt'), '--rust-docs', str(self.root),
                    '--target', self.target, '--format', 'tar.gz', '--readme', str(readme),
                    '--revision', '0' * 40, '--output', str(output)]
@@ -372,6 +372,32 @@ class RuntimePackages(unittest.TestCase):
                 result, output = self.release(source, readme_version)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(output.exists(), 'A refused release left a staging directory')
+
+    def test_the_application_executable_keeps_its_released_name(self):
+        # Releases up to 0.5.0 named the application `me`; an installation or a release
+        # built from such an executable is refused rather than packaged under that name.
+        validate = self.validator()
+        for target, previous in ((self.target, 'me'), ('x86_64-pc-windows-msvc', 'me.exe')):
+            with self.subTest(target=target):
+                source = self.root / ('renamed-' + target)
+                complete_runtime(source, target)
+                current = 'midnight-explorer' + ('.exe' if target.endswith('windows-msvc') else '')
+                self.assertEqual(packaging.application_executable(source / current, target), current)
+                with self.assertRaisesRegex(ValueError, current):
+                    packaging.application_executable(source / previous, target)
+                rename(source / current, source / previous)
+                with self.assertRaisesRegex((OSError, ValueError), current):
+                    validate(source, target)
+        with self.assertRaises(ValueError):
+            packaging.application_executable(Path('midnight-explorer.exe'), self.target)
+        source = self.root / 'runtime'
+        complete_runtime(source, self.target)
+        version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
+        rename(source / 'midnight-explorer', source / 'me')
+        result, output = self.release(source, version, binary='me')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('must be named midnight-explorer', result.stderr)
+        self.assertFalse(output.exists(), 'A refused release left a staging directory')
 
 
 if __name__ == '__main__':

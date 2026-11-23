@@ -34,7 +34,10 @@ fn service() -> (Service, tempfile::TempDir) {
     );
     let cache = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     (
-        Service::start(root.join("me.exe"), cache.path().join("cache")),
+        Service::start(
+            root.join("midnight-explorer.exe"),
+            cache.path().join("cache"),
+        ),
         cache,
     )
 }

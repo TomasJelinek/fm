@@ -20,7 +20,7 @@ function Expect-Refusal([scriptblock]$Action, [string]$Reason) {
 New-Item -ItemType Directory -Path $testRoot, $source | Out-Null
 Protect-NewFixture $testRoot
 try {
-    [IO.File]::WriteAllText((Join-Path $source 'me.exe'), 'executable fixture')
+    [IO.File]::WriteAllText((Join-Path $source 'midnight-explorer.exe'), 'executable fixture')
     [IO.File]::WriteAllText((Join-Path $source 'midnight-elevated-listing.exe'), 'authorization helper fixture')
     foreach ($name in @('basic', 'source', 'markdown')) {
         $package = Join-Path $source "viewers/midnight-viewer-$name"
@@ -32,7 +32,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $source 'unrelated.pdb'), 'must not be deployed')
     $destination = Join-Path $testRoot 'installed'
     $output = @(& $deploy -SourceDirectory $source -Destination $destination) -join "`n"
-    if ((Get-FileHash "$destination/me.exe").Hash -ne (Get-FileHash "$source/me.exe").Hash) {
+    if ((Get-FileHash "$destination/midnight-explorer.exe").Hash -ne (Get-FileHash "$source/midnight-explorer.exe").Hash) {
         throw 'Executable contents changed during deployment'
     }
     # The Administrator helper is accepted only from a folder standard users cannot
@@ -92,7 +92,7 @@ try {
 
     Remove-Item -LiteralPath (Join-Path $source 'midnight-elevated-listing.exe')
     & $deploy -SourceDirectory $source -Destination "$testRoot/without-helper" | Out-Null
-    if (-not (Test-Path -LiteralPath "$testRoot/without-helper/me.exe" -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath "$testRoot/without-helper/midnight-explorer.exe" -PathType Leaf)) {
         throw 'A build input without the authorization helper was not deployed'
     }
     $before = (Get-Acl -LiteralPath $destination).Sddl

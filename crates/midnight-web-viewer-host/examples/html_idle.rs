@@ -74,7 +74,7 @@ fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if !(6..=7).contains(&args.len()) {
         return Err(
-            "usage: html_idle <installed me.exe> <fixture.html> <seconds> <width> \
+            "usage: html_idle <installed midnight-explorer.exe> <fixture.html> <seconds> <width> \
                     <height> <scale> [offline|scripts]"
                 .into(),
         );

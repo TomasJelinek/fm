@@ -39,7 +39,7 @@ executable_utf16 = [67, 58, 92]
 ```
 
 The example array illustrates encoding only. Real records contain the full
-absolute native path of a deployed private `me.exe`, preserving UTF-16 including
+absolute native path of a deployed private `midnight-explorer.exe`, preserving UTF-16 including
 unpaired surrogate units. Unknown fields, NULs, parent traversal, unsupported
 namespaces and schema mismatches are rejected. ON additionally requires the
 private EXE to have the same SHA-256 as the running executable. That comparison

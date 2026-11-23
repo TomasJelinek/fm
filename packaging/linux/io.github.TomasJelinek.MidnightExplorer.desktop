@@ -2,8 +2,8 @@
 Type=Application
 Name=Midnight Explorer
 Comment=Dual-pane file manager
-Exec=me
-TryExec=me
+Exec=midnight-explorer
+TryExec=midnight-explorer
 Icon=io.github.TomasJelinek.MidnightExplorer
 Terminal=false
 Categories=System;FileTools;FileManager;

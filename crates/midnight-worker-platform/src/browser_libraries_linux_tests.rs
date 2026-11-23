@@ -545,7 +545,7 @@ fn only_a_development_build_names_the_checkouts_setup_script() {
         b"#!/bin/sh\n",
     );
     assert!(checkout(&executable));
-    // A package beside `me`, or a build output that is not the checkout's `_build`.
+    // A package beside `midnight-explorer`, or a build output that is not the checkout's `_build`.
     for other in [
         root.path()
             .join("opt/me/viewers/midnight-viewer-html/midnight-viewer-html"),

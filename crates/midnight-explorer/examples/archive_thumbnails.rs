@@ -333,7 +333,11 @@ fn main() -> io::Result<()> {
     fs::create_dir(&run)?;
     let zip = run.join("fixture 文档@.zip");
     let cache = run.join("cache");
-    let executable = runtime.join(if cfg!(windows) { "me.exe" } else { "me" });
+    let executable = runtime.join(if cfg!(windows) {
+        "midnight-explorer.exe"
+    } else {
+        "midnight-explorer"
+    });
     require(
         executable.is_file(),
         "Installed application executable is missing",

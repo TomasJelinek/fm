@@ -192,7 +192,7 @@ to the project's own API/SDK code.
 Only direct viewer packages in `viewers/<package>/` inside the **resolved
 installation** are discovered. Normally this is the actual executable's directory;
 shared Windows builds can use an explicitly registered private copy. By default a
-protected launcher pointer for the build's `me.exe` path selects it while that
+protected launcher pointer for the build's `midnight-explorer.exe` path selects it while that
 executable keeps the size and modification time recorded at deployment, which
 checked the copy's SHA-256 against the build; `MIDNIGHT_VERIFY_RUNTIME_SHA256=1`
 instead requires the running host and the registered copy to have the same SHA-256.

@@ -49,7 +49,7 @@ class ImageViewerPackages(unittest.TestCase):
         self.assertEqual(executable, ["viewers/image/image-worker"])
         self.assertEqual(len(inventory[0]["package_sha256"]), 64)
         output = self.root / "release.zip"
-        packaging.write_archive(self.stage, output, "me", "zip", executable)
+        packaging.write_archive(self.stage, output, "midnight-explorer", "zip", executable)
         with zipfile.ZipFile(output) as archive:
             self.assertEqual(archive.getinfo("release/viewers/image/image-worker").external_attr
                              >> 16 & 0o777, 0o755)

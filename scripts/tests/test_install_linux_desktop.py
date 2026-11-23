@@ -46,7 +46,7 @@ class LinuxDesktopInstallTests(unittest.TestCase):
                                 WAYLAND_DISPLAY="",
                                 DESKTOP_INSTALL_LOG=str(self.root / "argv.json"))
 
-    def executable(self, relative="_build/debug/me"):
+    def executable(self, relative="_build/debug/midnight-explorer"):
         executable = self.checkout / relative
         executable.parent.mkdir(parents=True, exist_ok=True)
         executable.write_text(
@@ -70,7 +70,7 @@ class LinuxDesktopInstallTests(unittest.TestCase):
         self.assertEqual(self.icon.read_bytes(),
                          (ROOT / "assets/branding/midnight-explorer.png").read_bytes())
         self.assertTrue(executable.is_file())
-        self.assertFalse((self.home / ".local/bin/me").exists())
+        self.assertFalse((self.home / ".local/bin/midnight-explorer").exists())
         entry = configparser.ConfigParser(interpolation=None)
         entry.read(self.desktop, encoding="utf-8")
         self.assertEqual(entry["Desktop Entry"]["StartupWMClass"], APP_ID)
@@ -79,7 +79,7 @@ class LinuxDesktopInstallTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("gio"), "Gio desktop launcher unavailable")
     def test_real_gio_launcher_preserves_unicode_and_reserved_characters(self):
-        for name in ("me '$`\"\\&;", "me '%f%u $`\"\\&;"):
+        for name in ("midnight-explorer '$`\"\\&;", "midnight-explorer '%f%u $`\"\\&;"):
             with self.subTest(name=name):
                 executable = self.executable(f"build Žluťoučký 漢字/{name}")
                 result = self.run_installer("--executable", executable.relative_to(self.root))
@@ -147,7 +147,7 @@ class LinuxDesktopInstallTests(unittest.TestCase):
         self.assertFalse(self.data.exists())
 
     def test_spec_forbidden_equal_sign_in_executable_is_reported(self):
-        executable = self.executable("name=unsupported/me")
+        executable = self.executable("name=unsupported/midnight-explorer")
         result = self.run_installer("--executable", executable)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("=", result.stderr)
@@ -161,7 +161,7 @@ class LinuxDesktopInstallTests(unittest.TestCase):
         second = self.run_installer()
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.desktop.read_bytes(), default_entry)
-        alternate = self.executable("_build/custom/debug/me")
+        alternate = self.executable("_build/custom/debug/midnight-explorer")
         third = self.run_installer("--executable", alternate)
         self.assertEqual(third.returncode, 0, third.stderr)
         self.assertIn(str(alternate), self.desktop.read_text(encoding="utf-8"))
@@ -212,7 +212,7 @@ class LinuxDesktopInstallTests(unittest.TestCase):
                 raise OSError(errno.EACCES, "injected desktop publication failure")
             return replace(source, destination, **arguments)
 
-        alternate = self.executable("_build/custom/debug/me")
+        alternate = self.executable("_build/custom/debug/midnight-explorer")
         with mock.patch.dict(os.environ, self.environment, clear=True):
             with mock.patch.object(module.os, "replace", side_effect=fail_desktop_publication):
                 with self.assertRaisesRegex(OSError, "injected desktop publication failure"):

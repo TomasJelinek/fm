@@ -316,7 +316,7 @@ mod tests {
         let package = root.path().join("viewers/broken");
         std::fs::create_dir_all(&package).unwrap();
         std::fs::write(package.join("image-viewer.json"), br#"{"schema":1}"#).unwrap();
-        let result = comparator_images(&root.path().join("me.exe"), &[]);
+        let result = comparator_images(&root.path().join("midnight-explorer.exe"), &[]);
         assert!(
             result.is_err(),
             "unavailable discovery cannot claim known empty coverage"
@@ -388,7 +388,7 @@ mod tests {
         let package = root.path().join("viewers/broken");
         std::fs::create_dir_all(&package).unwrap();
         std::fs::write(package.join("plugin.toml"), "not valid = [").unwrap();
-        match catalog(&root.path().join("me.exe")) {
+        match catalog(&root.path().join("midnight-explorer.exe")) {
             Ok(rows) => {
                 assert_eq!(rows.len(), 1);
                 assert!(rows[0].id.is_empty());

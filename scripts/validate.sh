@@ -429,7 +429,7 @@ step_network_metadata_ignored() {
 }
 step_app_native_viewers() {
     local executable probe fixture
-    executable=$(python3 -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me | tail -n 1)
+    executable=$(python3 -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:midnight-explorer | tail -n 1)
     [[ -n $executable ]] || { printf '%s\n' 'Application test executable not reported' >&2; return 1; }
     probe="$HOST_TEST_INSTALL_ROOT/native-app-test"
     cp -- "$executable" "$probe"
@@ -480,8 +480,8 @@ step_host_build() {
     fi
 }
 step_smoke_test() {
-    local executable="$HOST_TEST_INSTALL_ROOT/me"
-    cp -- "$cargo_target/$build_profile/me" "$executable"
+    local executable="$HOST_TEST_INSTALL_ROOT/midnight-explorer"
+    cp -- "$cargo_target/$build_profile/midnight-explorer" "$executable"
     # The root helper is built but never installed in a private test installation.
     [[ -f $cargo_target/$build_profile/midnight-elevated-listing ]] ||
         { printf 'The %s build is missing midnight-elevated-listing\n' "$build_profile" >&2; return 1; }

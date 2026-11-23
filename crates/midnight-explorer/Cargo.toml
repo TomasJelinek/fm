@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "me"
+name = "midnight-explorer"
 path = "src/main.rs"
 
 [dependencies]

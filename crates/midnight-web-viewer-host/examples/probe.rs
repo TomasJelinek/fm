@@ -68,7 +68,10 @@ fn save_bitmap(path: &std::path::Path, frame: &api::Frame) -> std::io::Result<()
 fn main() -> Result<(), String> {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     if args.len() != 3 {
-        return Err("Usage: probe <installed me.exe> <fixture.html> <report directory>".into());
+        return Err(
+            "Usage: probe <installed midnight-explorer.exe> <fixture.html> <report directory>"
+                .into(),
+        );
     }
     // Discovery compares the path with its canonical form, as html_wheel_latency passes it.
     let app = args[0].canonicalize().map_err(|e| e.to_string())?;

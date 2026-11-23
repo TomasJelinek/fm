@@ -666,7 +666,7 @@ jobs:
       - name: Application viewers use native provider and refuse missing provider
         shell: pwsh
         run: |
-          $executable = python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me
+          $executable = python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:midnight-explorer
           if ($LASTEXITCODE -ne 0 -or -not $executable) { throw 'Application test executable not reported' }
           $name = if ($IsWindows) { 'native-app-test.exe' } else { 'native-app-test' }
           $probe = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
@@ -769,7 +769,7 @@ jobs:
       - name: Release filesystem smoke test
         shell: pwsh
         run: |
-          $name = if ($IsWindows) { 'me.exe' } else { 'me' }
+          $name = if ($IsWindows) { 'midnight-explorer.exe' } else { 'midnight-explorer' }
           $executable = Join-Path $env:HOST_TEST_INSTALL_ROOT $name
           Copy-Item -LiteralPath "_build/release/$name" -Destination $executable
           # The Administrator/root helper is built for administrator-managed installations;

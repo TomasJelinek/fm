@@ -47,14 +47,18 @@ fn catalog_metadata_preserves_declared_capabilities_and_readable_names() {
 #[test]
 fn absent_thumbnailer_directory_is_an_empty_catalog() {
     let root = tempfile::tempdir().unwrap();
-    assert!(catalog(&root.path().join("me.exe")).unwrap().is_empty());
+    assert!(
+        catalog(&root.path().join("midnight-explorer.exe"))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn fixture() -> tempfile::TempDir {
     let base = std::env::var_os("HOST_TEST_INSTALL_ROOT").expect("HOST_TEST_INSTALL_ROOT");
     let root = tempfile::tempdir_in(base).unwrap();
     fs::write(
-        root.path().join("me.exe"),
+        root.path().join("midnight-explorer.exe"),
         b"catalog fixture, never executed",
     )
     .unwrap();
@@ -101,7 +105,7 @@ fn trusted_thumbnailer_catalog_lists_both_workers_without_starting_them() {
         &["png", "jpg"],
         false,
     );
-    let rows = catalog(&root.path().join("me.exe")).unwrap();
+    let rows = catalog(&root.path().join("midnight-explorer.exe")).unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].id, "midnight-image");
     assert_eq!(rows[1].id, "midnight-video");
@@ -123,7 +127,7 @@ fn malformed_thumbnailer_manifest_returns_an_error_instead_of_a_partial_catalog(
     let root = fixture();
     provider(root.path(), "image", "midnight-image", &["png"], false);
     fs::write(root.path().join("thumbnailers/broken.json"), b"not JSON").unwrap();
-    assert!(catalog(&root.path().join("me.exe")).is_err());
+    assert!(catalog(&root.path().join("midnight-explorer.exe")).is_err());
 }
 
 #[test]
@@ -132,7 +136,7 @@ fn missing_thumbnailer_helper_returns_an_error() {
     let root = fixture();
     let helper = provider(root.path(), "image", "midnight-image", &["png"], false);
     fs::remove_file(helper).unwrap();
-    assert!(catalog(&root.path().join("me.exe")).is_err());
+    assert!(catalog(&root.path().join("midnight-explorer.exe")).is_err());
 }
 
 #[test]
@@ -141,7 +145,7 @@ fn duplicate_thumbnailer_identity_returns_an_explicit_error() {
     let root = fixture();
     provider(root.path(), "one", "duplicate", &["png"], false);
     provider(root.path(), "two", "duplicate", &["jpg"], false);
-    let error = catalog(&root.path().join("me.exe")).unwrap_err();
+    let error = catalog(&root.path().join("midnight-explorer.exe")).unwrap_err();
     assert!(
         error
             .to_string()

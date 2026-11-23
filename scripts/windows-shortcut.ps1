@@ -43,7 +43,7 @@ function Install-MidnightDesktopShortcut([string]$InstallationDirectory,
     $temporary = $null
     try {
         Assert-ShortcutRuntimeSecurity $installation $true
-        $executable = Join-Path $installation 'me.exe'
+        $executable = Join-Path $installation 'midnight-explorer.exe'
         $executableStream = [MidnightShortcut.Native]::OpenExecutable($executable)
         Assert-ShortcutRuntimeSecurity $executable $true
         $hasher = [Security.Cryptography.SHA256]::Create()

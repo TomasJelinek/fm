@@ -18,6 +18,9 @@ from pathlib import Path
 REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
                     "midnight.viewer.image", "midnight.viewer.pdf", "midnight.viewer.html")
 FILESYSTEM_ABI_MINOR = 4
+# The application executable: the `midnight-explorer` Cargo binary (releases up to 0.5.0
+# named it `me`). Packages and runtime installations carry it under exactly this name.
+APPLICATION = "midnight-explorer"
 
 
 def portable_component(name):
@@ -570,7 +573,7 @@ def validate_runtime_installation(source, target):
     """Check the normal provider graph without creating staging or deployment files."""
     source = real_directory(source, "Runtime installation")
     suffix = ".exe" if target.endswith("windows-msvc") else ""
-    for name in ("me" + suffix, "midnight-elevated-listing" + suffix):
+    for name in (APPLICATION + suffix, "midnight-elevated-listing" + suffix):
         if not stat.S_ISREG(plain_metadata(source / name).st_mode):
             raise ValueError("Normal builds require an ordinary executable: " + name)
     viewers = copy_viewer_packages(source, source / "viewers", target,
@@ -756,6 +759,14 @@ def write_archive(stage, archive, binary_name, archive_format, executables=()):
             bundle.add(stage, arcname=stage.name, filter=safe_tar_member)
 
 
+def application_executable(binary, target):
+    """The release binary must be the application under its released name."""
+    name = APPLICATION + (".exe" if target.endswith("windows-msvc") else "")
+    if Path(binary).name != name:
+        raise ValueError(f"The application executable must be named {name}: {Path(binary).name}")
+    return name
+
+
 def authorization_helper(binary, target):
     name = "midnight-elevated-listing.exe" if target.endswith("windows-msvc") else "midnight-elevated-listing"
     source = (Path(binary).parent / name).absolute()
@@ -842,6 +853,7 @@ def main():
     thumbnail_root = args.thumbnailers_root or args.binary.parent / "thumbnailers"
     # Validate every module before creating the stage: a refused input leaves no
     # partial staging directory that would block the next attempt.
+    application_executable(args.binary, args.target)
     authorization_helper(args.binary, args.target)
     copy_viewer_packages(stage, viewers_root, args.target, required_ids=REQUIRED_VIEWERS, validate_only=True)
     copy_filesystem_packages(stage, filesystem_root, args.target, require_native=True, require_network=True,

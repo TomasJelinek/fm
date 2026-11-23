@@ -31,7 +31,8 @@ fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() != 5 {
         return Err(
-            "usage: html_wheel_latency <installed me.exe> <fixture.html> <width> <height> <scale>"
+            "usage: html_wheel_latency <installed midnight-explorer.exe> <fixture.html> <width> \
+             <height> <scale>"
                 .into(),
         );
     }

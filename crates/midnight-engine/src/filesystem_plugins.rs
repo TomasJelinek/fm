@@ -96,7 +96,7 @@ mod tests {
         let base = std::env::var_os("HOST_TEST_INSTALL_ROOT").expect("HOST_TEST_INSTALL_ROOT");
         let root = tempfile::tempdir_in(base).unwrap();
         std::fs::write(
-            root.path().join("me.exe"),
+            root.path().join("midnight-explorer.exe"),
             b"catalog fixture, never executed",
         )
         .unwrap();
@@ -136,7 +136,7 @@ mod tests {
         );
         archive(root.path(), "tar-name", "archive.second", "'zip'");
         network(root.path(), "network", "network.fixture");
-        let rows = catalog(&root.path().join("me.exe")).unwrap();
+        let rows = catalog(&root.path().join("midnight-explorer.exe")).unwrap();
         assert_eq!(rows.len(), 3, "{rows:?}");
         for (id, directory, formats) in [
             (
@@ -185,7 +185,7 @@ mod tests {
             "schema_version=1\nid='archive.fixture'\nname='Archive filesystem'\nkind='filesystem-worker'\nversion='1'\nentry_executable='worker.exe'\ntarget='{}'\nprotocol=2\nformats=['zip']\n",
             midnight_plugin_host::host_target()
         )).unwrap();
-        let rows = catalog(&root.path().join("me.exe")).unwrap();
+        let rows = catalog(&root.path().join("midnight-explorer.exe")).unwrap();
         assert_eq!(rows.len(), 2, "{rows:?}");
         for kind in [FilesystemPluginKind::Archive, FilesystemPluginKind::Network] {
             let row = rows.iter().find(|row| row.kind == Some(kind)).unwrap();
@@ -208,7 +208,7 @@ mod tests {
         let malformed = root.path().join("filesystems/malformed");
         std::fs::create_dir_all(&malformed).unwrap();
         std::fs::write(malformed.join("plugin.toml"), b"not valid = [").unwrap();
-        let rows = catalog(&root.path().join("me.exe")).unwrap();
+        let rows = catalog(&root.path().join("midnight-explorer.exe")).unwrap();
         assert!(
             rows.iter()
                 .all(|row| row.id.is_empty() && row.kind.is_none())
@@ -228,7 +228,7 @@ mod tests {
         let root = fixture();
         network(root.path(), "one", "network.one");
         network(root.path(), "two", "network.two");
-        let rows = catalog(&root.path().join("me.exe")).unwrap();
+        let rows = catalog(&root.path().join("midnight-explorer.exe")).unwrap();
         assert_eq!(rows.len(), 2, "{rows:?}");
         assert!(
             rows.iter()
@@ -242,7 +242,7 @@ mod tests {
         let root = fixture();
         network(root.path(), "one", "network.duplicate");
         network(root.path(), "two", "network.duplicate");
-        let rows = catalog(&root.path().join("me.exe")).unwrap();
+        let rows = catalog(&root.path().join("midnight-explorer.exe")).unwrap();
         assert!(rows.iter().all(|row| row.id.is_empty()));
         assert!(rows.iter().all(|row| row.formats.is_empty()));
         assert!(

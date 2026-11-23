@@ -13,7 +13,7 @@ ValidationPayloadReceipt opts into the Build-qualified Explorer libtest payload
 described in deployment-validation-payload.ps1. It requires complete modules and
 PowerShell 7, validates the full runtime before/after copying, and records a root
 validation-payload.json before returning. The caller still owns final assembly
-inventory/freeze. Only normal me.exe is registered when RegisterRuntime is set.
+inventory/freeze. Only normal midnight-explorer.exe is registered when RegisterRuntime is set.
 #>
 param(
     [string]$SourceDirectory,
@@ -651,11 +651,11 @@ if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
 }
 Assert-PrivatePath $destinationParent $false
 Assert-PlainPath $SourceDirectory
-$executable = Join-Path $SourceDirectory 'me.exe'
+$executable = Join-Path $SourceDirectory 'midnight-explorer.exe'
 $viewers = Join-Path $SourceDirectory 'viewers'
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf) -or
     -not (Test-Path -LiteralPath $viewers -PathType Container)) {
-    throw 'Build input must contain me.exe and independently built viewers/'
+    throw 'Build input must contain midnight-explorer.exe and independently built viewers/'
 }
 foreach ($name in @('basic', 'source', 'markdown')) {
     foreach ($file in @('plugin.toml', "midnight_viewer_$name.dll", 'LICENSE', 'THIRD-PARTY.md')) {
@@ -815,23 +815,23 @@ try {
         Assert-PrivatePath (Join-Path $Destination 'validation-payload.json') $true
     }
     if ($RegisterRuntime) {
-        Register-PrivateRuntime $RegistrationDirectory (Join-Path $Destination 'me.exe') $launchLease $privateAcl
+        Register-PrivateRuntime $RegistrationDirectory (Join-Path $Destination 'midnight-explorer.exe') $launchLease $privateAcl
     }
     if ($ReplaceBuildDeployment) {
         Remove-SupersededBuildDeployments $destinationParent $launchStamp.Key $Destination $RegistrationDirectory
     }
     Write-Output ('Retry with authorization is not available from a private installation: it needs an ' +
-        'administrator-managed installation (me.exe with midnight-elevated-listing.exe in a folder that ' +
+        'administrator-managed installation (midnight-explorer.exe with midnight-elevated-listing.exe in a folder that ' +
         'only administrators can change, for example below C:\Program Files).')
     Write-Output "Private installation: $Destination"
-    Write-Output ('Run: & "' + (Join-Path $Destination 'me.exe') + '"')
+    Write-Output ('Run: & "' + (Join-Path $Destination 'midnight-explorer.exe') + '"')
     if ($CreateDesktopShortcut) {
         $desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
         if (-not $desktopPath) {
             throw 'No desktop directory is available; the private installation is ready to run directly'
         }
         . (Join-Path $PSScriptRoot 'windows-shortcut.ps1')
-        $shortcutHash = (Get-FileHash -LiteralPath (Join-Path $Destination 'me.exe') -Algorithm SHA256).Hash
+        $shortcutHash = (Get-FileHash -LiteralPath (Join-Path $Destination 'midnight-explorer.exe') -Algorithm SHA256).Hash
         Install-MidnightDesktopShortcut $Destination $desktopPath $shortcutHash
     }
 

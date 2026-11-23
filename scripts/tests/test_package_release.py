@@ -127,23 +127,23 @@ class ArchivePermissionsTests(unittest.TestCase):
             folder = Path(directory)
             stage = folder / "release"
             stage.mkdir()
-            for name in ("me", "README.txt"):
+            for name in ("midnight-explorer", "README.txt"):
                 path = stage / name
                 path.write_text("fixture", encoding="utf-8")
                 path.chmod(0o777)
             for archive_format in ("tar.gz", "zip"):
                 with self.subTest(format=archive_format):
                     archive = folder / f"release.{archive_format}"
-                    packaging.write_archive(stage, archive, "me", archive_format)
+                    packaging.write_archive(stage, archive, "midnight-explorer", archive_format)
                     if archive_format == "tar.gz":
                         with tarfile.open(archive) as bundle:
-                            self.assertEqual(bundle.getmember("release/me").mode, 0o755)
+                            self.assertEqual(bundle.getmember("release/midnight-explorer").mode, 0o755)
                             self.assertEqual(bundle.getmember("release/README.txt").mode, 0o644)
                             self.assertEqual(bundle.getmember("release").mode, 0o755)
-                            self.assertEqual(bundle.getmember("release/me").uid, 0)
+                            self.assertEqual(bundle.getmember("release/midnight-explorer").uid, 0)
                     else:
                         with zipfile.ZipFile(archive) as bundle:
-                            self.assertEqual(bundle.getinfo("release/me").external_attr >> 16 & 0o777, 0o755)
+                            self.assertEqual(bundle.getinfo("release/midnight-explorer").external_attr >> 16 & 0o777, 0o755)
                             self.assertEqual(bundle.getinfo("release/README.txt").external_attr >> 16 & 0o777, 0o644)
 
     def test_linux_packages_carry_the_html_sandbox_installer_as_an_executable(self):
@@ -154,7 +154,7 @@ class ArchivePermissionsTests(unittest.TestCase):
             folder = Path(directory)
             stage = folder / "release"
             stage.mkdir()
-            (stage / "me").write_text("fixture", encoding="utf-8")
+            (stage / "midnight-explorer").write_text("fixture", encoding="utf-8")
             self.assertIsNone(packaging.copy_html_sandbox_installer(stage, root, "x86_64-pc-windows-msvc"))
             self.assertFalse((stage / packaging.HTML_SANDBOX_INSTALLER).exists())
             installer = packaging.copy_html_sandbox_installer(stage, root, "x86_64-unknown-linux-gnu")
@@ -162,7 +162,7 @@ class ArchivePermissionsTests(unittest.TestCase):
             self.assertEqual((stage / installer).read_bytes(),
                              (root / "scripts" / installer).read_bytes())
             archive = folder / "release.tar.gz"
-            packaging.write_archive(stage, archive, "me", "tar.gz", [installer])
+            packaging.write_archive(stage, archive, "midnight-explorer", "tar.gz", [installer])
             with tarfile.open(archive) as bundle:
                 self.assertEqual(bundle.getmember(f"release/{installer}").mode, 0o755)
 
@@ -206,7 +206,7 @@ class ViewerPackageTests(unittest.TestCase):
         self.assertEqual(len(inventory[0]["package_sha256"]), 64)
         self.assertEqual((self.stage / "viewers/basic/notices/upstream-LICENSE").read_text(), "Upstream terms")
         archive = self.root / "release.zip"
-        packaging.write_archive(self.stage, archive, "me.exe", "zip")
+        packaging.write_archive(self.stage, archive, "midnight-explorer.exe", "zip")
         with zipfile.ZipFile(archive) as bundle:
             self.assertEqual(bundle.read("release/viewers/basic/viewer.dll"), b"independent native fixture")
 
@@ -250,7 +250,7 @@ class ViewerPackageTests(unittest.TestCase):
             packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
         (self.stage / "redirect").symlink_to(outside)
         with self.assertRaises(ValueError):
-            packaging.write_archive(self.stage, self.root / "unsafe.zip", "me.exe", "zip")
+            packaging.write_archive(self.stage, self.root / "unsafe.zip", "midnight-explorer.exe", "zip")
 
     def assert_packages_below_a_linked_folder_are_accepted(self, kind):
         # A checkout reached through a link (/home -> /var/home, a linked parent folder):
@@ -297,7 +297,7 @@ class ViewerPackageTests(unittest.TestCase):
             packaging.copy_viewer_packages(self.stage, self.viewers, self.target)
         (self.stage / "..\\escape.txt").write_text("ambiguous archive path")
         with self.assertRaises(ValueError):
-            packaging.write_archive(self.stage, self.root / "unsafe-name.zip", "me.exe", "zip")
+            packaging.write_archive(self.stage, self.root / "unsafe-name.zip", "midnight-explorer.exe", "zip")
 
 
 class ReleaseLinkRuleTests(unittest.TestCase):
@@ -460,10 +460,10 @@ class AuthorizationHelperPackageTests(unittest.TestCase):
             source.mkdir()
             stage.mkdir()
             with self.assertRaises(FileNotFoundError):
-                packaging.copy_authorization_helper(stage, source / "me.exe", "x86_64-pc-windows-msvc")
+                packaging.copy_authorization_helper(stage, source / "midnight-explorer.exe", "x86_64-pc-windows-msvc")
             helper = source / "midnight-elevated-listing.exe"
             helper.write_bytes(b"owned test helper")
-            record = packaging.copy_authorization_helper(stage, source / "me.exe", "x86_64-pc-windows-msvc")
+            record = packaging.copy_authorization_helper(stage, source / "midnight-explorer.exe", "x86_64-pc-windows-msvc")
             self.assertEqual((stage / helper.name).read_bytes(), helper.read_bytes())
             self.assertEqual(record["sha256"], hashlib.sha256(helper.read_bytes()).hexdigest())
             self.assertTrue(record["executable"])
@@ -517,9 +517,9 @@ class ProjectLicenseTests(unittest.TestCase):
                 for relative in packaging.PROJECT_DOCUMENTS:
                     self.assertTrue((stage / Path(relative).name).is_file(), relative)
                 archive_format = "zip" if name == "LICENSE.txt" else "tar.gz"
-                (stage / "me").write_text("fixture", encoding="utf-8")
+                (stage / "midnight-explorer").write_text("fixture", encoding="utf-8")
                 archive = Path(self.temporary.name) / f"{target}.{archive_format}"
-                packaging.write_archive(stage, archive, "me", archive_format)
+                packaging.write_archive(stage, archive, "midnight-explorer", archive_format)
                 if archive_format == "zip":
                     with zipfile.ZipFile(archive) as bundle:
                         names = set(bundle.namelist())

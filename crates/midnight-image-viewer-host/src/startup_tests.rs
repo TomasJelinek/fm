@@ -84,7 +84,7 @@ impl Fixture {
 
     fn with_before_discovery(before_discovery: impl FnOnce(&Path)) -> Self {
         let root = FixtureDirectory::new();
-        let application = root.0.join("me.exe");
+        let application = root.0.join("midnight-explorer.exe");
         fs::write(&application, b"catalog fixture, never executed").unwrap();
         let package = root.0.join("viewers/image");
         fs::create_dir_all(&package).unwrap();

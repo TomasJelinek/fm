@@ -276,7 +276,7 @@ dependencies with one package's narrower features:
 
 ```text
 python -B scripts/ci-workspace-tests.py run midnight-image-viewer-host test:native --ignored --test-threads=1
-python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me
+python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:midnight-explorer
 ```
 
 `run PACKAGE lib|test:NAME|bin:NAME [LIBTEST ARGS...]` reuses (or relinks) that

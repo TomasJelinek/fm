@@ -1,7 +1,8 @@
 Midnight Explorer 0.5.0 - Linux x86-64 preview
 
-Extract the archive with tar, then run ./me in a graphical desktop session.
-Keep the viewers, filesystems and thumbnailers folders beside me. The thumbnailers
+Extract the archive with tar, then run ./midnight-explorer in a graphical desktop
+session. Keep the viewers, filesystems and thumbnailers folders beside
+midnight-explorer. The thumbnailers
 folder includes both image/video helpers and their required runtime and notices.
 Native plugins require a private user-owned
 or administrator-managed installation, with no group/other-writable package or
@@ -38,7 +39,7 @@ The wsdd helper discovers Windows computers. Allow time for discovery, then
 refresh Network Neighborhood. A known server can be entered as smb://server/.
 
 Example:
-  ./me --left "$HOME" --right /tmp
+  ./midnight-explorer --left "$HOME" --right /tmp
 
 X11/XWayland supports native external file drag-and-drop. Native Wayland currently
 supports internal panel dragging only. --software is a diagnostic fallback with
@@ -47,7 +48,7 @@ Fedora 44+ and openSUSE Leap 16/Tumbleweed are compatibility targets, but this
 preview has not been qualified on their native desktops. See SYSTEM_REQUIREMENTS.md.
 
 Optional per-user desktop installation from the extracted folder:
-  install -Dm755 me "$HOME/.local/bin/me"
+  install -Dm755 midnight-explorer "$HOME/.local/bin/midnight-explorer"
   mkdir -p "$HOME/.local/bin/viewers" "$HOME/.local/bin/filesystems" "$HOME/.local/bin/thumbnailers"
   cp -R viewers/. "$HOME/.local/bin/viewers/"
   cp -R filesystems/. "$HOME/.local/bin/filesystems/"
@@ -67,13 +68,14 @@ midnight-elevated-listing as root through pkexec and the desktop's polkit agent.
 It is used only from an installation that only root can change (root-owned, not
 group- or world-writable, not on a nosuid mount). In the per-user installation above
 or the extracted folder, the retry is still offered but refused, and the message
-states this requirement. Earlier packages' me used the included helper
+states this requirement. Earlier packages' application (then named me) used the
+included helper
 from a folder you own, where any program running as you could replace it: replace
 an earlier extracted package with this one, or at least delete its
 midnight-elevated-listing. System-wide installation from the extracted folder:
   sudo install -d -m 755 /opt/midnight-explorer
   sudo cp -R . /opt/midnight-explorer/
-Then run /opt/midnight-explorer/me. For the desktop launcher, install the desktop
+Then run /opt/midnight-explorer/midnight-explorer. For the desktop launcher, install the desktop
 entry and icon as above and put /opt/midnight-explorer on PATH instead. On Ubuntu
 23.10+ / Mint 22, use Install... in the HTML viewer's notice, or run the root-owned copy
 of the script (this moves the sandbox permission to this installation):
@@ -81,6 +83,9 @@ of the script (this moves the sandbox permission to this installation):
 
 Settings: $XDG_CONFIG_HOME/midnight-explorer/preferences.json, normally
 $HOME/.config/midnight-explorer/preferences.json.
+Releases up to 0.5.0 named the executable me. Settings stay where they were;
+install the desktop entry again as above and delete an earlier per-user copy,
+such as "$HOME/.local/bin/me".
 See FEATURE_STATUS.md, KEYBOARD_SHORTCUTS.md and SECURITY.md for capabilities/limits.
 The complete distribution includes all six viewers (text/hex, source, Markdown,
 image, PDF and Chromium HTML), native/network/archive filesystems and both

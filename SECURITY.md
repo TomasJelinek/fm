@@ -681,11 +681,11 @@ helper in a refused location.
 the plugin trust policy alone, and earlier deployment scripts (Windows private
 runtimes), Linux per-user instructions (`$HOME/.local/bin`), release packages extracted
 into a user-owned folder and build output left it in folders that their user can change.
-There any process running as that user can replace the helper that the older `me` runs
-as Administrator or root. Current builds refuse such a copy, so deleting it loses
-nothing: replace each such installation with a current build, deployment or package, or
-at least delete its `midnight-elevated-listing`. No script does this: `build.bat`
-retires only build deployments that it marked itself, so installations made directly
+There any process running as that user can replace the helper that the older executable
+(then named `me`) runs as Administrator or root. Current builds refuse such a copy, so
+deleting it loses nothing: replace each such installation with a current build,
+deployment or package, or at least delete its `midnight-elevated-listing`. No script
+does this: `build.bat` retires only build deployments that it marked itself, so installations made directly
 with `scripts/deploy-private.ps1` (without `-ReplaceBuildDeployment`), older build
 deployments, extracted packages and per-user copies stay.
 

@@ -176,7 +176,10 @@ fn actual_thumbnail_service_decodes_image_and_video_from_native_plugin() {
         }
     }
     let cache = RemoveOnDrop(fixtures().join(format!("cache-{}", std::process::id())));
-    let service = service::Service::start(installation().join("me.exe"), cache.0.clone());
+    let service = service::Service::start(
+        installation().join("midnight-explorer.exe"),
+        cache.0.clone(),
+    );
     let capture = factory(provider());
     let targets = [(1, "picture 文档.bmp", "bmp"), (2, "video.avi", "avi")]
         .into_iter()

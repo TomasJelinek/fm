@@ -104,7 +104,7 @@ class WorkerPackages(unittest.TestCase):
         executable = ["filesystems/archive/archive-worker", "thumbnailers/image-worker"]
         for archive_format in ("tar.gz", "zip"):
             output = self.root / f"workers.{archive_format}"
-            packaging.write_archive(self.stage, output, "me", archive_format, executable)
+            packaging.write_archive(self.stage, output, "midnight-explorer", archive_format, executable)
             expected = {"release/" + name: 0o755 for name in executable}
             expected["release/thumbnailers/libavcodec.so.62"] = 0o644
             expected["release/filesystems/archive/plugin.toml"] = 0o644

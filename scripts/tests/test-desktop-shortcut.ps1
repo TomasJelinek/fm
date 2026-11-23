@@ -81,7 +81,7 @@ try {
     $desktop = Join-Path $testRoot ('desktop-' + [char]0x010d + [char]0x6587)
     $outside = Join-Path $testRoot 'outside'
     New-Item -ItemType Directory -Path $installation, $desktop, $outside | Out-Null
-    $executable = Join-Path $installation 'me.exe'
+    $executable = Join-Path $installation 'midnight-explorer.exe'
     [IO.File]::WriteAllText($executable, 'owned native shortcut fixture')
     $hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
     $linkPath = Join-Path $desktop 'Midnight Explorer.lnk'

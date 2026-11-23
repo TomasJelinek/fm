@@ -40,7 +40,7 @@ fn local_png_reaches_the_installed_thumbnail_worker_with_network_previews_disabl
         std::env::var_os("MIDNIGHT_NATIVE_THUMBNAIL_CACHE").expect("explicit disposable cache"),
     );
     assert!(cache.is_absolute() && cache.components().any(|part| part.as_os_str() == "_build"));
-    let service = service::Service::start(installation.join("me"), cache);
+    let service = service::Service::start(installation.join("midnight-explorer"), cache);
     service.set_view(service::View {
         generation: 1,
         thumbnailer_associations: Default::default(),

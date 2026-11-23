@@ -122,11 +122,11 @@ function Assert-LauncherPointer([string]$Registry, [string]$SourceExecutable, [s
 }
 function Assert-KeyVectors {
     $vectors = @(
-        @('C:\Build\me.exe', 'da5f8e3a0bef298885baacf001a1906d6ee69f63f9a8eb106334c9fcb50359df'),
-        @('\\?\C:\Build\me.exe', '3ae87c599e2de284fe29eaee9040e4c0038b32de5cd55db7b5cf867c0ef19e97'),
-        @(('\\?\UNC\server\share\' + [char]0x76ee + [char]0x5f55 + '\me.exe'), '7e77c97a610424cd81be997aeb3604d1f202cc33ef4291fd231c92190ae41059'),
-        @(('\\?\C:\' + ('segment\' * 40) + 'me.exe'), '9b446e9c76b897ef92e04879f1220561b3b879261c0bd867631d25c8e1168a44'),
-        @(('\\?\C:\raw-' + [char]0xd800 + '-tail-' + [char]0xdc00 + '\me.exe'), '2e10f377ebc052ae196813e11cd11b2a327d9e55ee951d6cfe21ced58378c5b0')
+        @('C:\Build\midnight-explorer.exe', '06bf529c3d1adb10987aae5aa43980c7fc433bcaaf32ec9be96c451251261122'),
+        @('\\?\C:\Build\midnight-explorer.exe', '419b90ed499c757debe70e3b11ad37eaad2adf0c145fc6535a4de3e5b2861f33'),
+        @(('\\?\UNC\server\share\' + [char]0x76ee + [char]0x5f55 + '\midnight-explorer.exe'), 'a271a30dfbebe7c54a8b05cb2e2b4275d51895451ad9a478cea3708f274fa3be'),
+        @(('\\?\C:\' + ('segment\' * 40) + 'midnight-explorer.exe'), 'b326d9854b671a38b0b240b6d7ee9f05d3a823f6d1e2812be455158588d0fd16'),
+        @(('\\?\C:\raw-' + [char]0xd800 + '-tail-' + [char]0xdc00 + '\midnight-explorer.exe'), '3adfc4d47c610729bf2f1544e8dc991fab5629b41a3ab1ce696e0bb74409866e')
     )
     foreach ($vector in $vectors) {
         $actual = [MidnightRuntimeRegistrationV1.LaunchStamp]::KeyForUtf16Units($vector[0])
@@ -183,7 +183,7 @@ public static class MidnightRegistrationLongFixture {
             [MidnightRegistrationLongFixture]::Directory($cursor)
             $directories.Add($cursor)
         }
-        $candidate = $cursor + '\me.exe'
+        $candidate = $cursor + '\midnight-explorer.exe'
         [MidnightRegistrationLongFixture]::File($candidate)
         $file = $candidate
         $stamp = [MidnightRuntimeRegistrationV1.LaunchStamp]::Open($file)
@@ -211,7 +211,7 @@ try {
     $sourceName = 'source-' + [char]0x539f + [char]0x59cb + ' source'
     $source = Join-Path $testRoot $sourceName
     New-Item -ItemType Directory -Path $source | Out-Null
-    $sourceExecutable = Join-Path $source 'me.exe'
+    $sourceExecutable = Join-Path $source 'midnight-explorer.exe'
     [IO.File]::WriteAllText($sourceExecutable, 'registered executable fixture')
     [IO.File]::WriteAllText((Join-Path $source 'midnight-elevated-listing.exe'), 'authorization helper fixture')
     foreach ($name in @('basic', 'source', 'markdown')) {
@@ -230,7 +230,7 @@ try {
     $record = [IO.File]::ReadAllText($recordPath)
     if ((Read-IntegerField $record 'schema_version') -ne 1 -or
         $record -cnotmatch ('(?m)^sha256 = "' + $hash + '"$')) { throw 'Registration schema/digest differs' }
-    if ((Read-Utf16Field $record 'executable_utf16') -cne (Join-Path $destination 'me.exe')) {
+    if ((Read-Utf16Field $record 'executable_utf16') -cne (Join-Path $destination 'midnight-explorer.exe')) {
         throw 'Native target path changed in legacy registration'
     }
     if (-not (Get-Acl -LiteralPath $registry).AreAccessRulesProtected) { throw 'Registry ACL is inherited' }

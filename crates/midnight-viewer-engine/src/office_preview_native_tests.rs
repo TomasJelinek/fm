@@ -532,7 +532,7 @@ impl Config {
             ensure_d_build_path(label, &environment_path(label)?, &build)?;
         }
         // No in-process env mutation (unsafe in edition 2024), trust changes,
-        // fake me.exe, registration, C staging or inherited private leaf DACL.
+        // fake midnight-explorer.exe, registration, C staging or inherited private leaf DACL.
         ensure(
             !local.join("MidnightExplorer/web-viewer-sessions").exists(),
             "LOCALAPPDATA must be fresh; leave browser store/session leaves absent",

@@ -34,10 +34,10 @@ class ValidationPayloadTests(unittest.TestCase):
         self.addCleanup(self.owner.cleanup)
         self.root = Path(self.owner.name)
         self.source = self.root / 'debug'
-        self.artifact = self.source / 'deps/me-0123456789abcdef.exe'
+        self.artifact = self.source / 'deps/midnight_explorer-0123456789abcdef.exe'
         self.artifact.parent.mkdir(parents=True)
         self.artifact.write_bytes(b'owned synthetic tooling payload\x00\xff')
-        (self.source / 'me.exe').write_bytes(b'owned normal app tooling fixture')
+        (self.source / 'midnight-explorer.exe').write_bytes(b'owned normal app tooling fixture')
         self.destination = self.root / 'new-product'
         self.snapshot = self.root / 'source-snapshot.json'
         self.source_rows = [
@@ -51,7 +51,7 @@ class ValidationPayloadTests(unittest.TestCase):
             'reason': 'compiler-artifact',
             'package_id': 'path+' + (ROOT / 'crates/midnight-explorer').as_uri() + '#0.2.0',
             'manifest_path': str(ROOT / 'crates/midnight-explorer/Cargo.toml'),
-            'target': {'name': 'me', 'kind': ['bin'], 'crate_types': ['bin'],
+            'target': {'name': 'midnight-explorer', 'kind': ['bin'], 'crate_types': ['bin'],
                        'src_path': str(ROOT / 'crates/midnight-explorer/src/main.rs')},
             'profile': {'test': True, 'opt_level': '0', 'debuginfo': 0, 'debug_assertions': True},
             'features': [], 'filenames': [str(self.artifact)],
@@ -62,7 +62,7 @@ class ValidationPayloadTests(unittest.TestCase):
         self.evidence = {
             'schema_version': 1, 'cargo_json': str(self.cargo), 'cargo_json_sha256': '',
             'cargo_exit_code': 0, 'artifact_sha256': digest(self.artifact),
-            'application_sha256': digest(self.source / 'me.exe'),
+            'application_sha256': digest(self.source / 'midnight-explorer.exe'),
             'source_snapshot': str(self.snapshot), 'source_snapshot_sha256': digest(self.snapshot),
             'target': 'x86_64-pc-windows-msvc', 'profile': 'debug',
         }
@@ -116,7 +116,7 @@ class ValidationPayloadTests(unittest.TestCase):
 
     def test_exact_receipt_selects_real_cargo_path_and_hashes_copy_bytes(self):
         self.destination.mkdir()
-        (self.destination / 'me.exe').write_bytes(b'owned normal app tooling fixture')
+        (self.destination / 'midnight-explorer.exe').write_bytes(b'owned normal app tooling fixture')
         result = self.invoke('copy')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         record = json.loads(result.stdout)
@@ -125,10 +125,10 @@ class ValidationPayloadTests(unittest.TestCase):
         self.assertEqual(record['sha256'], digest(self.artifact))
         self.assertEqual(record['path'], self.artifact.name)
         inventory = json.loads((self.destination / 'validation-payload.json').read_text(encoding='utf-8'))
-        self.assertEqual(inventory['application_sha256'], digest(self.source / 'me.exe'))
+        self.assertEqual(inventory['application_sha256'], digest(self.source / 'midnight-explorer.exe'))
         self.assertEqual(inventory['source_snapshot_sha256'], digest(self.snapshot))
         self.assertEqual(inventory['live_source_files_checked'], 4)
-        self.assertEqual((self.destination / 'me.exe').read_bytes(), b'owned normal app tooling fixture')
+        self.assertEqual((self.destination / 'midnight-explorer.exe').read_bytes(), b'owned normal app tooling fixture')
 
     def test_wrong_package_manifest_or_target_cannot_authorize_payload(self):
         for key, value in [('package_id', 'registry+elsewhere#midnight-explorer@0.2.0'),
@@ -218,9 +218,9 @@ class ValidationPayloadTests(unittest.TestCase):
 
     def test_snapshot_changed_after_qualification_refuses_before_payload_creation(self):
         self.destination.mkdir()
-        (self.destination / 'me.exe').write_bytes(b'owned normal app tooling fixture')
+        (self.destination / 'midnight-explorer.exe').write_bytes(b'owned normal app tooling fixture')
         self.assert_refused('snapshot', 'late-snapshot')
-        self.assertEqual(sorted(p.name for p in self.destination.iterdir()), ['me.exe'])
+        self.assertEqual(sorted(p.name for p in self.destination.iterdir()), ['midnight-explorer.exe'])
 
     def test_receipt_cargo_hash_cannot_be_substituted(self):
         self.save()
@@ -263,9 +263,9 @@ class ValidationPayloadTests(unittest.TestCase):
 
     def test_destination_app_epoch_mismatch_refuses_without_adding_payload(self):
         self.destination.mkdir()
-        (self.destination / 'me.exe').write_bytes(b'different app')
+        (self.destination / 'midnight-explorer.exe').write_bytes(b'different app')
         self.assert_refused('application SHA256', 'copy')
-        self.assertEqual(sorted(p.name for p in self.destination.iterdir()), ['me.exe'])
+        self.assertEqual(sorted(p.name for p in self.destination.iterdir()), ['midnight-explorer.exe'])
 
     def test_lease_denies_modifying_source_before_copy(self):
         self.assert_refused('being used', 'locked')
@@ -288,7 +288,7 @@ class ValidationPayloadTests(unittest.TestCase):
         # Only this new D fixture receives an ACL. Its ancestors remain untrusted:
         # this is a copy/inheritance test, never a qualified product installation.
         self.destination.mkdir()
-        (self.destination / 'me.exe').write_bytes(b'owned normal app tooling fixture')
+        (self.destination / 'midnight-explorer.exe').write_bytes(b'owned normal app tooling fixture')
         result = self.invoke('private-copy')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         driver = self.root / 'acl-readback.ps1'
@@ -303,7 +303,7 @@ class ValidationPayloadTests(unittest.TestCase):
 
     def test_full_runtime_validation_accepts_extra_root_file_but_rejects_missing_archive(self):
         complete_runtime(self.source, 'x86_64-pc-windows-msvc')
-        self.evidence['application_sha256'] = digest(self.source / 'me.exe')
+        self.evidence['application_sha256'] = digest(self.source / 'midnight-explorer.exe')
         result = self.invoke('runtime')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         shutil.rmtree(self.source / 'filesystems/archive')

@@ -668,7 +668,7 @@ try {
     } }
     Add-Step @{ Id = 'app-native-viewers'; Job = 'check'; Title = 'Application viewers use the native provider'
         Needs = @('test-install', 'filesystem-native') + $allViewers; Body = {
-        $executable = & $Python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:me
+        $executable = & $Python -B scripts/ci-workspace-tests.py artifact midnight-explorer bin:midnight-explorer
         if ($LASTEXITCODE -ne 0 -or -not $executable) { throw 'Application test executable not reported' }
         $probe = Join-Path $env:HOST_TEST_INSTALL_ROOT 'native-app-test.exe'
         Copy-Item -LiteralPath ($executable | Select-Object -Last 1) -Destination $probe -Force
@@ -726,8 +726,8 @@ try {
     } }
     Add-Step @{ Id = 'smoke-test'; Job = 'release'; Title = "Installed filesystem smoke test ($profileName)"
         Needs = @('test-install', 'host-build'); Body = {
-        $executable = Join-Path $env:HOST_TEST_INSTALL_ROOT 'me.exe'
-        Copy-Item -LiteralPath (Join-Path $CargoTarget "$BuildProfile/me.exe") -Destination $executable -Force
+        $executable = Join-Path $env:HOST_TEST_INSTALL_ROOT 'midnight-explorer.exe'
+        Copy-Item -LiteralPath (Join-Path $CargoTarget "$BuildProfile/midnight-explorer.exe") -Destination $executable -Force
         # The Administrator helper is built but never installed in a private test installation.
         if (-not (Test-Path -LiteralPath (Join-Path $CargoTarget "$BuildProfile/midnight-elevated-listing.exe") -PathType Leaf)) {
             throw "The $BuildProfile build is missing midnight-elevated-listing.exe"

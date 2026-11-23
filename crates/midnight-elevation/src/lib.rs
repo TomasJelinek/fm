@@ -195,7 +195,7 @@ mod tests {
         // the lookup reaches the missing helper without creating or changing anything.
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"));
         assert!(!directory.join(HELPER).exists());
-        let error = helper_beside(&directory.join("me")).unwrap_err();
+        let error = helper_beside(&directory.join("midnight-explorer")).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         let message = error.to_string();
         let expected_directory = directory.display().to_string();

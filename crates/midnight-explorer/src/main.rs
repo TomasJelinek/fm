@@ -83,9 +83,10 @@ fn options() -> Result<Option<Options>, String> {
             Some("--help" | "-h") => {
                 println!(concat!(
                     "Midnight Explorer — dual-pane file manager\n\n",
-                    "Usage: me [--left PATH] [--right PATH] [--software]\n",
-                    "       me --smoke-test [--left PATH] [--right PATH]\n",
-                    "       me --ui-smoke-test [--snapshot FILE.png] [--software]\n\n",
+                    "Usage: midnight-explorer [--left PATH] [--right PATH] [--software]\n",
+                    "       midnight-explorer --smoke-test [--left PATH] [--right PATH]\n",
+                    "       midnight-explorer --ui-smoke-test [--snapshot FILE.png] ",
+                    "[--software]\n\n",
                     "Native browsing, installed viewers, external editing, rename, ",
                     "file/directory creation, confirmed deletion, verified copying, ",
                     "per-file verified moves, Find and checksums. ",

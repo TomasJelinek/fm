@@ -150,8 +150,10 @@ def install(executable):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--executable", type=Path, default=ROOT / "_build/debug/me",
-                        help="existing executable to register (default: _build/debug/me)")
+    parser.add_argument("--executable", type=Path,
+                        default=ROOT / "_build/debug/midnight-explorer",
+                        help="existing executable to register "
+                             "(default: _build/debug/midnight-explorer)")
     arguments = parser.parse_args()
     try:
         if not sys.platform.startswith("linux"):

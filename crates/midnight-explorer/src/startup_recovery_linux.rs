@@ -20,7 +20,11 @@ mod tests {
     fn startup_recovery_preserves_native_linux_argument_bytes() {
         let bytes = [b'a', 0xff, b' ', b'b'];
         let argument = OsString::from_vec(bytes.to_vec());
-        let command = super::super::software_command(Path::new("me"), &[argument], Path::new("."));
+        let command = super::super::software_command(
+            Path::new("midnight-explorer"),
+            &[argument],
+            Path::new("."),
+        );
         assert_eq!(command.get_args().next().unwrap().as_bytes(), bytes);
     }
 }

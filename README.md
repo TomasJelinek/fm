@@ -56,9 +56,10 @@ and filesystem notes are in [system requirements](docs/SYSTEM_REQUIREMENTS.md).
 
 Preview builds for Windows x64 (`.zip`) and Linux x86-64 (`.tar.gz`) are published on
 the [GitHub Releases page](https://github.com/TomasJelinek/fm/releases), each with a
-`SHA256SUMS` file to verify the download. Extract the complete archive and run `me.exe`
-(Windows) or `./me` (Linux); its `README.txt` has the details. The Windows executable is
-unsigned, and there is no installer or automatic updater. The archives include every
+`SHA256SUMS` file to verify the download. Extract the complete archive and run
+`midnight-explorer.exe` (Windows) or `./midnight-explorer` (Linux); its `README.txt`
+has the details. Releases up to 0.5.0 named the executable `me.exe` and `me`. The
+Windows executable is unsigned, and there is no installer or automatic updater. The archives include every
 plugin, the dependency notices and the license; the release notes say what each
 preview contains ([0.5.0](docs/releases/0.5.0.md)).
 
@@ -85,10 +86,10 @@ build.bat release      # Windows, optimized release
 ```
 
 Debug is the default; `release` builds with full optimization and LTO. Build output
-goes to `_build/` (`_build/debug/` or `_build/release/`, with the executable `me.exe`
-or `me` and its `viewers/`, `filesystems/` and `thumbnailers/` folders); toolchain
-caches go to `.tools/`. On Windows, `build.bat` also deploys the build to a private
-installation that the built `me.exe` loads its plugins from.
+goes to `_build/` (`_build/debug/` or `_build/release/`, with the executable
+`midnight-explorer.exe` or `midnight-explorer` and its `viewers/`, `filesystems/` and
+`thumbnailers/` folders); toolchain caches go to `.tools/`. On Windows, `build.bat` also deploys the build to a private
+installation that the built `midnight-explorer.exe` loads its plugins from.
 
 The [user guide](docs/USER_GUIDE.md#build-and-run) has the complete build and run
 instructions, [release build](docs/RELEASE_BUILD.md) describes release settings and

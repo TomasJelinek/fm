@@ -22,8 +22,8 @@ impl Fixture {
         for directory in [&source_directory, &target_directory, &registrations] {
             std::fs::create_dir(directory).unwrap();
         }
-        let source = source_directory.join("me.exe");
-        let target = target_directory.join("me.exe");
+        let source = source_directory.join("midnight-explorer.exe");
+        let target = target_directory.join("midnight-explorer.exe");
         std::fs::write(&source, b"abc").unwrap();
         std::fs::write(&target, b"abc").unwrap();
         std::fs::create_dir(source_directory.join("viewers")).unwrap();
@@ -345,7 +345,7 @@ fn registered_target_ancestor_reparse_is_rejected_before_canonicalization() {
     let fixture = Fixture::new();
     let redirect = fixture._root.path().join("redirect");
     junction(&redirect, fixture.target.parent().unwrap());
-    fixture.write_record(&redirect.join("me.exe"));
+    fixture.write_record(&redirect.join("midnight-explorer.exe"));
     let result = fixture.resolve();
     std::fs::remove_dir(&redirect).unwrap();
     assert!(result.unwrap_err().0.contains("reparse point"));
@@ -372,7 +372,7 @@ fn launch_path_reparse_is_rejected_before_canonicalization() {
     let redirect = fixture._root.path().join("redirect");
     junction(&redirect, fixture.source.parent().unwrap());
     let result = resolve_at(
-        &redirect.join("me.exe"),
+        &redirect.join("midnight-explorer.exe"),
         Some(&fixture.registrations),
         RuntimeVerification::Sha256,
     );
@@ -396,13 +396,13 @@ fn executable_snapshot_diagnostics_identifies_role_and_actual_path() {
     for (role, path, expected_context) in [
         (
             ExecutableRole::Launch,
-            Path::new(r"\\?\D:\český build\me.exe"),
-            r#"role=launch_executable; path="\\\\?\\D:\\český build\\me.exe""#,
+            Path::new(r"\\?\D:\český build\midnight-explorer.exe"),
+            r#"role=launch_executable; path="\\\\?\\D:\\český build\\midnight-explorer.exe""#,
         ),
         (
             ExecutableRole::RegisteredTarget,
-            Path::new(r"\\?\C:\private runtime\me.exe"),
-            r#"role=registered_target; path="\\\\?\\C:\\private runtime\\me.exe""#,
+            Path::new(r"\\?\C:\private runtime\midnight-explorer.exe"),
+            r#"role=registered_target; path="\\\\?\\C:\\private runtime\\midnight-explorer.exe""#,
         ),
     ] {
         let error = validate_executable_snapshot(path, role, &before, &before, 2).unwrap_err();
@@ -449,7 +449,7 @@ fn executable_snapshot_diagnostics_reports_changed_fields_and_exact_values() {
         ),
     ] {
         let error = validate_executable_snapshot(
-            Path::new(r"D:\launch\me.exe"),
+            Path::new(r"D:\launch\midnight-explorer.exe"),
             ExecutableRole::Launch,
             &before,
             &after,
@@ -468,7 +468,7 @@ fn executable_snapshot_diagnostics_reports_actual_bytes_when_metadata_is_unchang
         (4, "changed_fields=[]; bytes_read=4; expected_length=3"),
     ] {
         let error = validate_executable_snapshot(
-            Path::new(r"D:\launch\me.exe"),
+            Path::new(r"D:\launch\midnight-explorer.exe"),
             ExecutableRole::Launch,
             &before,
             &before,
@@ -486,7 +486,7 @@ fn executable_snapshot_diagnostics_accepts_identical_snapshots_and_expected_byte
         for role in [ExecutableRole::Launch, ExecutableRole::RegisteredTarget] {
             assert!(
                 validate_executable_snapshot(
-                    Path::new(r"D:\launch\me.exe"),
+                    Path::new(r"D:\launch\midnight-explorer.exe"),
                     role,
                     &before,
                     &before,
@@ -841,7 +841,7 @@ fn disabled_mode_rejects_reparse_paths_before_normalization() {
         let mut root = fixture.registrations.clone();
         let (link, target) = match component {
             "launch" => {
-                source = redirect.join("me.exe");
+                source = redirect.join("midnight-explorer.exe");
                 (
                     redirect.clone(),
                     fixture.source.parent().unwrap().to_owned(),
@@ -868,7 +868,7 @@ fn disabled_mode_rejects_reparse_paths_before_normalization() {
                 )
             }
             "target parent" => {
-                fixture.write_record(&redirect.join("me.exe"));
+                fixture.write_record(&redirect.join("midnight-explorer.exe"));
                 (
                     redirect.clone(),
                     fixture.target.parent().unwrap().to_owned(),
@@ -907,7 +907,7 @@ fn launcher_path_aliases_use_one_native_normalized_key() {
     for alias in [
         PathBuf::from(OsString::from_wide(&dos_units)),
         verbatim,
-        fixture.source.with_file_name("ME.EXE"),
+        fixture.source.with_file_name("MIDNIGHT-EXPLORER.EXE"),
     ] {
         let native = launch_path::open(&alias).unwrap();
         assert_eq!(native.executable, expected.executable);
@@ -1004,15 +1004,18 @@ fn installation_prefix_normalization_preserves_native_utf16_without_resolution()
     assert_eq!(installation_path(&output).unwrap(), output);
     assert_eq!(runtime_path(&input).unwrap(), output);
     assert_eq!(
-        installation_path(Path::new(r"\\server\share\me.exe")).unwrap(),
-        PathBuf::from(r"\\?\UNC\server\share\me.exe")
+        installation_path(Path::new(r"\\server\share\midnight-explorer.exe")).unwrap(),
+        PathBuf::from(r"\\?\UNC\server\share\midnight-explorer.exe")
     );
     assert!(installation_path(Path::new(r"\\.\pipe\midnight")).is_err());
 }
 
 #[test]
 fn recorded_runtime_paths_are_never_resolved_against_the_current_directory() {
-    for recorded in [r"relative\me.exe", r"C:\runtime\..\me.exe"] {
+    for recorded in [
+        r"relative\midnight-explorer.exe",
+        r"C:\runtime\..\midnight-explorer.exe",
+    ] {
         assert!(runtime_path(Path::new(recorded)).is_err(), "{recorded}");
         // A host's own executable path may be relative; it resolves without following links.
         let resolved = installation_path(Path::new(recorded)).unwrap();

@@ -78,7 +78,10 @@ fn compile_resources() {
         status.success(),
         "Compiling the application resources failed: {status}"
     );
-    println!("cargo:rustc-link-arg-bin=me={}", output.display());
+    println!(
+        "cargo:rustc-link-arg-bin=midnight-explorer={}",
+        output.display()
+    );
 }
 
 fn write_version_header(output_dir: &std::path::Path) {

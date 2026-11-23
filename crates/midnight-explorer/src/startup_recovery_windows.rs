@@ -17,8 +17,11 @@ mod tests {
     fn startup_recovery_preserves_native_windows_argument_code_units() {
         let units = [0x0061, 0xd800, 0x0020, 0x0062];
         let argument = OsString::from_wide(&units);
-        let command =
-            super::super::software_command(Path::new("me.exe"), &[argument], Path::new("."));
+        let command = super::super::software_command(
+            Path::new("midnight-explorer.exe"),
+            &[argument],
+            Path::new("."),
+        );
         let actual = command
             .get_args()
             .next()

@@ -1,12 +1,14 @@
 # Midnight Explorer release builds
 
-The application package `midnight-explorer` builds `me.exe` on Windows and `me` on
-Linux. Release output is `_build/release/me.exe` or `_build/release/me`.
+The application package `midnight-explorer` builds `midnight-explorer.exe` on Windows
+and `midnight-explorer` on Linux. Release output is `_build/release/midnight-explorer.exe`
+or `_build/release/midnight-explorer`. Releases up to 0.5.0 named the executable
+`me.exe` and `me`; the packager refuses a binary under any name but the current one.
 
 Use **debug and test builds for ordinary development**. `build.bat` and `build.sh`
-default to debug, producing `_build/debug/me.exe` or `_build/debug/me`. For a focused
-host-code change, build only `midnight-explorer` with Cargo, and rebuild plugins when
-their own code or API changes. Plugin trust and deployment requirements apply in debug
+default to debug, producing `_build/debug/midnight-explorer.exe` or
+`_build/debug/midnight-explorer`. For a focused host-code change, build only
+`midnight-explorer` with Cargo, and rebuild plugins when their own code or API changes. Plugin trust and deployment requirements apply in debug
 too. Build release for final integration and packaging or for a specific performance
 comparison, not after every UI edit: fat LTO and one code-generation unit trade build
 time for the published binary.
@@ -30,7 +32,7 @@ The workspace release profile (`[profile.release]` in `Cargo.toml`):
   application crates keep level 3. Build-time host tools keep Cargo's normal build
   overrides.
 
-A same-source Windows comparison of this profile reduced `me.exe` from 42,425,856 to
+A same-source Windows comparison of this profile reduced the executable from 42,425,856 to
 37,096,448 bytes (12.56%), with overlapping native resize and redraw timings across six
 alternating runs per profile ([record](verification/2026-11-07-release-optimization.md));
 it was not repeated on Linux.
@@ -180,7 +182,7 @@ cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-m
 cargo tree -p midnight-explorer --locked --target x86_64-pc-windows-msvc `
     --edges 'normal,build' --prefix none --format '{p}' |
     Out-File -Encoding utf8 _build/windows-dependencies.txt
-python -B scripts/package-release.py --binary _build/release/me.exe `
+python -B scripts/package-release.py --binary _build/release/midnight-explorer.exe `
     --metadata _build/windows-metadata.json --target x86_64-pc-windows-msvc `
     --dependency-list _build/windows-dependencies.txt `
     --format zip --readme packaging/windows/README.txt `

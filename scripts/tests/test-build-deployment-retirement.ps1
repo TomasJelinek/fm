@@ -41,7 +41,7 @@ try {
     function Deploy-Build {
         # Every build links a different launcher, so each has its own registration.
         $script:build++
-        [IO.File]::WriteAllText((Join-Path $source 'me.exe'), "build $script:build")
+        [IO.File]::WriteAllText((Join-Path $source 'midnight-explorer.exe'), "build $script:build")
         & $deploy -SourceDirectory $source -RegisterRuntime -RegistrationDirectory $registry -ReplaceBuildDeployment 3>&1 |
             Out-String -Width 4096
     }
@@ -85,7 +85,7 @@ try {
     foreach ($name in $planted.Keys) {
         $directory = Join-Path $profileRoot $name
         New-Item -ItemType Directory -Path $directory | Out-Null
-        [IO.File]::WriteAllText((Join-Path $directory 'me.exe'), 'user data')
+        [IO.File]::WriteAllText((Join-Path $directory 'midnight-explorer.exe'), 'user data')
         if ($planted[$name]) {
             [IO.File]::WriteAllText((Join-Path $directory '.midnight-build-deployment'),
                 "schema_version = 1`nlaunch_key = `"$($planted[$name][0])`"`ninstallation = `"$($planted[$name][1])`"`n")
@@ -161,7 +161,7 @@ try {
     if (($remaining -join '|') -cne ($expected -join '|')) {
         throw "Unexpected remaining installations: $($remaining -join ', ')"
     }
-    if ([IO.File]::ReadAllText((Join-Path $profileRoot 'MidnightExplorer-20200101-000000-0000000a/me.exe')) -cne 'user data') {
+    if ([IO.File]::ReadAllText((Join-Path $profileRoot 'MidnightExplorer-20200101-000000-0000000a/midnight-explorer.exe')) -cne 'user data') {
         throw 'An unowned directory was changed'
     }
     if (@(Get-ChildItem -LiteralPath $registry -Filter '*.toml').Count -ne 5) { throw 'Registration records changed' }
@@ -171,7 +171,7 @@ try {
     $lock = New-Object Threading.Mutex($false, "Local\MidnightBuildDeployment-$key")
     if (-not $lock.WaitOne(0)) { throw 'The build deployment lock is unexpectedly held' }
     $script:build++
-    [IO.File]::WriteAllText((Join-Path $source 'me.exe'), "build $script:build")
+    [IO.File]::WriteAllText((Join-Path $source 'midnight-explorer.exe'), "build $script:build")
     $start = New-Object Diagnostics.ProcessStartInfo((Get-Process -Id $PID).Path)
     $start.Arguments = "-NoLogo -NoProfile -NonInteractive -File `"$deploy`" -SourceDirectory `"$source`" " +
         "-RegisterRuntime -RegistrationDirectory `"$registry`" -ReplaceBuildDeployment"

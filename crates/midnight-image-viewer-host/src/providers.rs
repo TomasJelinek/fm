@@ -296,7 +296,11 @@ mod tests {
     fn missing_installation_has_no_image_feature() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../_build/image-viewer-nonexistent-installation");
-        assert!(discover(&root.join("me.exe")).unwrap().is_empty());
+        assert!(
+            discover(&root.join("midnight-explorer.exe"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
