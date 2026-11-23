@@ -22,6 +22,7 @@ export { JobProgressWindow }
 import { JobsWindow } from "jobs-window.slint";
 import { DecisionWindow } from "decision-window.slint";
 export { JobsWindow, DecisionWindow }
+export * from "command-output-window.slint";
 
 import { HintedActionButton } from "hinted-inputs.slint";
 import { Palette } from "std-widgets.slint";
@@ -33,8 +34,7 @@ import { Tip, CompactPicker, TooltipPlacement } from "controls.slint";
 import { FileActionMenu } from "file-menu.slint";
 import { DirectoryLinkTooltip, FileRow } from "file-models.slint";
 export { FileRow }
-import { TabRow, BookmarkRow, PathPartRow, DetailRow } from "navigation-models.slint";
-import { NavigationChoiceRow, LocationRole } from "navigation-models.slint";
+import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRole, LocationRow } from "navigation-models.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { PanelSplitter } from "panel-splitter.slint";
 import { TerminalControl } from "terminal-control.slint";
@@ -81,7 +81,6 @@ export { ActionIcons, NavigationChoiceRow, LocationRole }
 export { SearchTextEdit }
 export { TooltipPlacement }
 
-import { LocationRow } from "navigation-models.slint";
 export { LocationRow }
 import { FilePane } from "file-pane.slint";
 import { PanelHold } from "panel-hold.slint";

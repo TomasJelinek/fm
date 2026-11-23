@@ -45,6 +45,34 @@ preserves uncommitted program and script fields. Captured-value declarations and
 optional toolbar appearance are collapsible. An empty toolbar label remains an
 icon-only button.
 
+For Run directly the form shows **Output** below Execution (in narrow forms, below
+it in the same column): **Hidden**, **Output window** or **Console window**, with
+**Close when finished successfully** beside it for the output window. A new command
+starts with Output window; commands saved before this choice existed stay Hidden.
+Switching to Run in terminal or Separator keeps the choice in the draft but saves the
+default for those modes. The choice is part of the staged command and is saved with
+Options OK ([backend contract](USER_COMMANDS.md#program-output)).
+
+The output window (`command-output-window.slint`, `command_output_windows.rs`) is an
+independent working window titled "<command> — output". Its first line says whether
+the command runs (with an indeterminate progress bar), stops, finished, failed or was
+stopped, with the exit code and duration; for a per-item command, how many runs ended
+and how many failed. Below are the command line as run (display quotes only, in a
+read-only field that can be selected and copied), the working folder and the start
+time, then the output: standard error marked by an error-coloured bar and colour (and
+"Error:" for screen readers), the window's own notices in italics. The list follows
+the newest line until it is scrolled up and again once scrolled to the end; it scrolls
+sideways to the longest line. **Stop** ends the program and every process it
+started; **Copy all** copies the shown lines; **Save as…** asks for a file and, if
+it exists, whether to replace it; **Clear** removes the lines shown so far; **Find**
+(Ctrl+F, F3 and Shift+F3 or Next/Previous) finds lines containing the text,
+ignoring case, and wraps around. **Close** and the window's close button stop a
+program that still runs; Escape closes Find, or the window once nothing runs, and
+never stops a program. **Close when finished successfully** is the command's own
+setting, changed and saved from the window too; the window then closes by itself
+when every run exited with code 0. Narrow windows show the buttons' glyphs only;
+short ones leave out the details, the dropped-lines note and the check box.
+
 A separator keeps its stable ID and position but has no execution fields or
 preview. Converting a command to a separator removes its shortcut bindings;
 the backend independently rejects forged Preview/Execute requests for it.

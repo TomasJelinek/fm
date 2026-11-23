@@ -131,6 +131,7 @@ mod tree_rename;
 mod tree_roots;
 mod tree_selection;
 mod tree_sizes;
+mod user_command_output;
 mod user_command_prepare;
 mod user_command_runtime;
 mod user_commands;
@@ -1184,6 +1185,7 @@ impl EngineServices {
                         Some(Command::PickPath { request, input }) => path_picker.show(request, input, &mut tasks).await,
                         Some(Command::ExportPreferences(request)) => preferences_files.export(request, &mut tasks).await,
                         Some(Command::ImportPreferences { request, source }) => preferences_files.import(request, source, &mut tasks),
+                        Some(Command::SaveUserCommandOutput(request)) => preferences_files.save_output(request, &mut tasks).await,
                         Some(Command::CancelPathPicker { request }) => path_picker.cancel(request),
                         Some(Command::CopyFiles { request, files }) => clipboard.copy_files(request, files, &mut resident_tasks).await,
                         Some(Command::CopyCapturedFiles { request, source, cancel }) => clipboard.copy_captured(request, source, cancel, &mut resident_tasks).await,

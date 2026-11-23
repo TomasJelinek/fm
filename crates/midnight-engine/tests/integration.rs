@@ -55,6 +55,7 @@ mod tree_recursive_controller;
 mod unicode;
 mod user_command_actor;
 mod user_command_contracts;
+mod user_command_output_run;
 mod user_command_preparation;
 mod user_command_process;
 mod user_command_templates;

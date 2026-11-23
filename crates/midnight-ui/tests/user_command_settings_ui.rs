@@ -56,6 +56,7 @@ impl Harness {
             index: Arc::default(),
         });
         let command = |id: &str, name: &str| UserCommand {
+            output: Default::default(),
             id: UserCommandId::new(id).unwrap(),
             name: String::from(name),
             enabled: true,
@@ -966,5 +967,72 @@ fn icon_artwork_uses_managed_picker_and_valid_completion_enables_update() {
             .borrow()
             .iter()
             .all(|c| !matches!(c, Command::ExecuteUserCommand(_)))
+    );
+}
+
+#[test]
+fn run_directly_offers_its_output_choice_new_commands_use_the_output_window() {
+    let mut h = Harness::new();
+    h.open();
+    h.action("New Custom Command");
+    h.ui.draw();
+    let window = h.ui.window.clone_strong();
+    let view = window.global::<UserCommandSettingsView>();
+    // A new Run directly command shows its output in the output window.
+    assert_eq!(view.get_draft().kind, 0);
+    assert_eq!(view.get_draft().output, 1);
+    assert!(
+        ui::try_popup_item(
+            &h.ui.window,
+            "Custom Command output",
+            AccessibleRole::Combobox
+        )
+        .is_some()
+    );
+    assert!(
+        ui::try_popup_item(
+            &h.ui.window,
+            "Close when finished successfully",
+            AccessibleRole::Checkbox
+        )
+        .is_some()
+    );
+    for (theme, density, font) in [(2, 0, 12), (1, 1, 32)] {
+        h.ui.window.invoke_apply_preferences(theme, density);
+        h.ui.window.invoke_apply_fonts("".into(), font, font);
+        for (width, height) in [(1340, 820), (320, 200)] {
+            h.ui.resize(width, height);
+            bitmap::snapshot(
+                &h.ui.pixels,
+                h.ui.width,
+                h.ui.height,
+                &format!("command-output-choice-t{theme}-d{density}-f{font}-{width}x{height}"),
+            );
+        }
+    }
+    h.ui.resize(1340, 820);
+    // Hidden or Console window: no check box; a terminal script has no output choice.
+    let mut form = view.get_draft();
+    form.output = 2;
+    view.set_draft(form.clone());
+    h.ui.draw();
+    assert!(
+        ui::try_popup_item(
+            &h.ui.window,
+            "Close when finished successfully",
+            AccessibleRole::Checkbox
+        )
+        .is_none()
+    );
+    form.kind = 1;
+    view.set_draft(form);
+    h.ui.draw();
+    assert!(
+        ui::try_popup_item(
+            &h.ui.window,
+            "Custom Command output",
+            AccessibleRole::Combobox
+        )
+        .is_none()
     );
 }

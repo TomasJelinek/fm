@@ -129,7 +129,9 @@ fn picker_options<'a>(
             algorithm.label(),
             vec![(0, format!("*.{}", algorithm.extension()))],
         )),
-        PathPickerKind::TextSave => Some(("Text files", vec![(0, "*.txt".to_owned())])),
+        PathPickerKind::TextSave | PathPickerKind::CommandOutputSave => {
+            Some(("Text files", vec![(0, "*.txt".to_owned())]))
+        }
         PathPickerKind::SettingsOpen | PathPickerKind::SettingsSave => {
             Some(("Settings files", vec![(0, "*.json".to_owned())]))
         }

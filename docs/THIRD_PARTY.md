@@ -260,7 +260,7 @@ This table is a guide; the inventories above list every selected crate.
 | parley 0.11.1 / swash 0.2.10 | Viewer text layout and glyph rendering | Apache-2.0 OR MIT |
 | ICU casemap / locale core 2.4.0 | Unicode case mapping | Unicode-3.0 |
 | minicbor 2.3.0 | Viewer plugin wire messages | BlueOak-1.0.0 |
-| windows 0.62.2 / windows-sys 0.61.2 | Windows API bindings | MIT OR Apache-2.0 |
+| windows 0.62.2 / windows-sys 0.61.2 | Windows API bindings (midnight-platform-windows also names `Win32_System_JobObjects` and `Win32_System_Pipes` for Custom Command output; midnight-worker-platform already enabled both in the same build, so the compiled feature set is unchanged) | MIT OR Apache-2.0 |
 | rustix 1.1.6 | Linux system calls | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | arboard 3.7.0 | Clipboard | MIT OR Apache-2.0 |
 | cbindgen 0.29.4 | Public API C header generation (tool) | MPL-2.0 |

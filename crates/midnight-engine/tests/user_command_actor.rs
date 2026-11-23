@@ -43,6 +43,7 @@ fn request(id: u64, directory: &Path) -> UserCommandRequest {
         id: UserCommandRequestId(id),
         command: UserCommandId::new("test").unwrap(),
         configuration: Arc::new(vec![UserCommand {
+            output: Default::default(),
             id: UserCommandId::new("test").unwrap(),
             name: "Test".into(),
             enabled: true,

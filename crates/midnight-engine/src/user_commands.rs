@@ -1,6 +1,9 @@
 //! Bounded Custom Commands actor. Preview and execution are distinct backend intents.
 use crate::retirement::{RetirementDomain, RetirementLease, WorkerOwned};
-use crate::{Outbox, user_command_prepare, user_command_runtime::Runtime};
+use crate::{
+    Outbox, user_command_prepare,
+    user_command_runtime::{Runtime, TrackedProcess},
+};
 
 use midnight_core::*;
 use std::{
@@ -222,6 +225,7 @@ struct Context {
     outbox: Outbox,
     stop: Cancellation,
     services: Arc<WorkerOwned<Services>>,
+    state: Arc<Mutex<State>>,
 }
 async fn run(
     services: Arc<WorkerOwned<Services>>,
@@ -242,6 +246,7 @@ async fn run(
         outbox,
         stop,
         services,
+        state: state.clone(),
     });
     loop {
         if context.stop.is_cancelled() {
@@ -256,12 +261,11 @@ async fn run(
             break;
         };
         let id = work.request.id;
-        execute(work, &context).await;
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .requests
-            .remove(&id);
+        // An output window's runs continue on their own task, which forgets the
+        // request when they end; the actor takes the next request meanwhile.
+        if !execute(work, &context).await {
+            forget(&context, id);
+        }
     }
     input.close();
     while input.try_recv().is_ok() {}
@@ -271,12 +275,29 @@ async fn run(
         .requests
         .clear();
 }
-async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
+fn forget(context: &Context, id: UserCommandRequestId) {
+    context
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .requests
+        .remove(&id);
+}
+/// True when the runs continue on their own task (an output window's), which forgets
+/// the request itself.
+async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) -> bool {
     let id = work.request.id;
     let command = work.request.command.clone();
     let cancel = work.cancel.clone();
     let retention = work.retention.clone();
     let preview = work.preview;
+    let (output, name) = work
+        .request
+        .configuration
+        .iter()
+        .find(|configured| configured.id == command)
+        .map(|configured| (configured.output, configured.name.clone()))
+        .unwrap_or_default();
     send(context, id, &command, UserCommandUpdate::Queued, None).await;
     send(context, id, &command, UserCommandUpdate::Preparing, None).await;
     let context_owner = context.clone();
@@ -327,7 +348,7 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
                 Some(error),
             )
             .await;
-            return;
+            return false;
         }
     };
     let planned = prepared.plan.processes.len() as u64;
@@ -363,7 +384,7 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
                 )
                 .await
                 {
-                    return;
+                    return false;
                 }
                 finish(context, id, &command, planned, 0, true, None).await;
             }
@@ -385,7 +406,23 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
                 .await;
             }
         }
-        return;
+        return false;
+    }
+    if output.mode == UserCommandOutputMode::Window {
+        let session = UserCommandOutputSession::new(id, command.clone(), name, planned);
+        if !send_output(context, &session, true).await {
+            finish(context, id, &command, planned, 0, true, None).await;
+            return false;
+        }
+        tokio::spawn(run_with_output(
+            context.clone(),
+            prepared,
+            session,
+            command,
+            cancel,
+            retention,
+        ));
+        return true;
     }
     let mut started = 0u64;
     let mut error = None;
@@ -393,36 +430,20 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
         if cancel.is_cancelled() {
             break;
         }
-        let reservation = match context.runtime.reserve(&cancel).await {
-            Ok(reservation) => reservation,
-            Err(cause) => {
-                error = Some(cause);
-                break;
+        let launched = match launch(context, &prepared, index, output.mode, &cancel).await {
+            Ok(Launched::Tracked(child)) => Ok(child),
+            // Only an output window captures; anything else is a contract breach.
+            Ok(Launched::Captured(mut program, _)) => {
+                let _ = program.terminate_tree(true);
+                Err(failure(
+                    io::ErrorKind::Other,
+                    "The program started with captured output without an output window.",
+                ))
             }
+            Err(cause) => Err(cause),
         };
-        let pinned = prepared.clone();
-        let context_owner = context.clone();
-        let stopping = cancel.clone();
-        let launched = tokio::task::spawn_blocking(move || {
-            // Both permits and metadata pins survive an async cancellation until native return.
-            let _launch = reservation.launch;
-            pinned
-                .plan
-                .revalidate_for(index, context_owner.files.as_ref(), &stopping)?;
-            context_owner
-                .native
-                .launch_user_command(&pinned.plan.processes[index], &stopping)
-                .map(|child| {
-                    reservation.ticket.own(
-                        child,
-                        reservation.process,
-                        context_owner.services.clone(),
-                    )
-                })
-        })
-        .await;
         match launched {
-            Ok(Ok(child)) => {
+            Ok(child) => {
                 let process_id = child.id();
                 started += 1;
                 let tracking = context.runtime.track(child).await;
@@ -442,15 +463,8 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
                     break;
                 }
             }
-            Ok(Err(cause)) => {
+            Err(cause) => {
                 error = Some(cause);
-                break;
-            }
-            Err(_) => {
-                error = Some(failure(
-                    io::ErrorKind::Other,
-                    "Native command worker failed.",
-                ));
                 break;
             }
         }
@@ -469,6 +483,209 @@ async fn execute(work: WorkerOwned<Work>, context: &Arc<Context>) {
         error,
     )
     .await;
+    false
+}
+enum Launched {
+    Tracked(TrackedProcess),
+    /// With the process permit it holds until it exits.
+    Captured(Box<dyn CapturedUserProgram>, Arc<OwnedSemaphorePermit>),
+}
+/// Admit and start planned process `index` on a backend worker.
+async fn launch(
+    context: &Arc<Context>,
+    prepared: &Prepared,
+    index: usize,
+    output: UserCommandOutputMode,
+    cancel: &Cancellation,
+) -> Result<Launched, FsError> {
+    let reservation = context.runtime.reserve(cancel).await?;
+    let pinned = prepared.clone();
+    let context_owner = context.clone();
+    let stopping = cancel.clone();
+    tokio::task::spawn_blocking(move || {
+        // Both permits and metadata pins survive an async cancellation until native return.
+        let _launch = reservation.launch;
+        pinned
+            .plan
+            .revalidate_for(index, context_owner.files.as_ref(), &stopping)?;
+        match context_owner.native.launch_user_command_with_output(
+            &pinned.plan.processes[index],
+            output,
+            &stopping,
+        )? {
+            LaunchedUserCommand::Tracked(child) => Ok(Launched::Tracked(reservation.ticket.own(
+                child,
+                reservation.process,
+                context_owner.services.clone(),
+            ))),
+            // Supervised until its exit by the output window's task, not the tracker.
+            LaunchedUserCommand::Captured(program) => {
+                drop(reservation.ticket);
+                Ok(Launched::Captured(program, reservation.process))
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(failure(
+            io::ErrorKind::Other,
+            "Native command worker failed.",
+        ))
+    })
+}
+/// An output window's runs, one after another (a per-item command shows each item's run
+/// in turn), each supervised to its exit; Stop or Cancel ends the running one and starts
+/// no further one.
+async fn run_with_output(
+    context: Arc<Context>,
+    prepared: Prepared,
+    session: Arc<UserCommandOutputSession>,
+    command: UserCommandId,
+    cancel: Cancellation,
+    retention: Arc<UserCommandRetention>,
+) {
+    let id = session.request;
+    let planned = prepared.plan.processes.len() as u64;
+    let publish = publisher(&context);
+    let mut started = 0u64;
+    let mut error = None;
+    for index in 0..prepared.plan.processes.len() {
+        if cancel.is_cancelled() || session.stop_requested() {
+            break;
+        }
+        let process = &prepared.plan.processes[index];
+        let (program, permit) = match launch(
+            &context,
+            &prepared,
+            index,
+            UserCommandOutputMode::Window,
+            &cancel,
+        )
+        .await
+        {
+            Ok(Launched::Captured(program, permit)) => (program, permit),
+            Ok(Launched::Tracked(child)) => {
+                // Never for an output window: keep the tracker's ownership.
+                let _ = context.runtime.track(child).await;
+                error = Some(failure(
+                    io::ErrorKind::Other,
+                    "The program started without captured output.",
+                ));
+                break;
+            }
+            Err(cause) => {
+                error = Some(cause);
+                break;
+            }
+        };
+        started += 1;
+        let process_id = program.id();
+        let command_line = match &process.invocation {
+            UserCommandProcessInvocation::Program {
+                executable,
+                arguments,
+            } => display_command_line(executable, arguments),
+            UserCommandProcessInvocation::Terminal { script, .. } => script.clone(),
+        };
+        session.begin_run(OutputRun {
+            index: index as u64,
+            command_line,
+            directory: process.working_directory.to_string_lossy().into_owned(),
+            started: std::time::SystemTime::now(),
+            process_id,
+            exit: None,
+            duration: None,
+            stopped: false,
+        });
+        send(
+            &context,
+            id,
+            &command,
+            UserCommandUpdate::Started {
+                index: index as u64,
+                process_id,
+            },
+            None,
+        )
+        .await;
+        let supervised = crate::user_command_output::supervise_on_thread(
+            program,
+            crate::user_command_output::Supervision {
+                session: session.clone(),
+                index: index as u64,
+                cancel: cancel.clone(),
+                publish: publish.clone(),
+                // The process permit and the services stay held until the program exited.
+                _pins: Box::new((permit, context.services.clone())),
+            },
+        )
+        .await;
+        if supervised.is_err() {
+            error = Some(failure(
+                io::ErrorKind::Other,
+                "The output window's worker failed.",
+            ));
+            break;
+        }
+    }
+    let cancelled = cancel.is_cancelled() || session.stop_requested();
+    session.finish(
+        cancelled,
+        error
+            .as_ref()
+            .map(|error| format!("Not started: {}", error.message)),
+    );
+    crate::user_command_output::notify(&session, &publish);
+    if let Ok(prepared) = Arc::try_unwrap(prepared) {
+        let _ = prepared.retire().await;
+    }
+    drop(retention);
+    finish(&context, id, &command, planned, started, cancelled, error).await;
+    forget(&context, id);
+}
+/// Queue `UserCommandOutput` events without waiting: a full queue retries later.
+fn publisher(context: &Arc<Context>) -> crate::user_command_output::Publish {
+    let outbox = context.outbox.clone();
+    Arc::new(move |session| {
+        let event = Event::UserCommandOutput(Box::new(UserCommandOutputEvent {
+            session: session.clone(),
+            opened: false,
+        }));
+        if outbox.sender.try_send(event).is_ok() {
+            (outbox.wakeup)();
+            true
+        } else {
+            false
+        }
+    })
+}
+/// Ask the UI for the output window, waiting while its queue is full.
+async fn send_output(
+    context: &Context,
+    session: &Arc<UserCommandOutputSession>,
+    opened: bool,
+) -> bool {
+    let mut pending = Event::UserCommandOutput(Box::new(UserCommandOutputEvent {
+        session: session.clone(),
+        opened,
+    }));
+    loop {
+        if context.stop.is_cancelled() {
+            return false;
+        }
+        match context.outbox.sender.try_send(pending) {
+            Ok(()) => {
+                (context.outbox.wakeup)();
+                return true;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                context.stop.cancel();
+                return false;
+            }
+            Err(mpsc::error::TrySendError::Full(event)) => pending = event,
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 async fn finish(
     context: &Context,

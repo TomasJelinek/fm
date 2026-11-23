@@ -4,6 +4,8 @@ export struct UserCommandSettingsForm {
     working-directory: string, kind: int, launch: int, executable: string, executable-edited: bool,
     arguments: string, script: string, shell: int, active-path: bool, other-path: bool,
     file-path: bool, file-name: bool, file-stem: bool, file-extension: bool,
+    // Run directly: 0 hidden, 1 output window, 2 console window.
+    output: int, close-on-success: bool,
 }
 export global UserCommandSettingsView {
     in property <string> revision;

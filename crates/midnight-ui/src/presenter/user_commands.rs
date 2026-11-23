@@ -1,8 +1,13 @@
 //! Captured command activations and session launch receipts. No parsing or process I/O.
 use super::*;
 
+#[path = "command_outputs.rs"]
+pub(crate) mod outputs;
+
 #[derive(Default)]
 pub(crate) struct CommandLaunches {
+    /// Output windows of Run directly commands (`outputs`).
+    pub(crate) outputs: outputs::CommandOutputs,
     pub(super) tree: [Option<tree_user_commands::Pending>; 2],
     next: u64,
     pub(super) next_submission: u64,
@@ -344,6 +349,18 @@ impl Presenter {
             if send(Command::CancelUserCommand(job.id)) {
                 job.stopping = true;
                 job.state = "Stopping future launches";
+                // An output window's run stops too, as its Stop button does.
+                let id = job.id;
+                if let Some(window) = self
+                    .command_launches
+                    .outputs
+                    .windows
+                    .iter_mut()
+                    .find(|window| window.session.request == id)
+                {
+                    window.session.request_stop();
+                    window.revision = window.revision.wrapping_add(1);
+                }
             } else {
                 self.desktop.report(
                     "Custom Commands",
@@ -354,8 +371,17 @@ impl Presenter {
     }
 
     pub(super) fn apply_user_command_event(&mut self, event: Event) -> Option<Event> {
-        let Event::UserCommand(event) = event else {
-            return Some(event);
+        let event = match event {
+            Event::UserCommand(event) => event,
+            Event::UserCommandOutput(event) => {
+                self.apply_command_output(*event);
+                return None;
+            }
+            Event::UserCommandOutputSaved { request, result } => {
+                self.apply_output_saved(request, result);
+                return None;
+            }
+            event => return Some(event),
         };
         let Some(job) = self
             .command_launches

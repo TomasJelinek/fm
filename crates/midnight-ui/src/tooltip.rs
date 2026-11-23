@@ -4,8 +4,8 @@
 //! shares its host coordinates. Recheck this contract when upgrading Slint or
 //! adding a backend with native popup windows. This observer never consumes input.
 use crate::{
-    ChecksumWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow, JobsWindow,
-    MainWindow, TooltipPlacement,
+    ChecksumWindow, CommandOutputWindow, DecisionWindow, FindWindow, HelpWindow, JobProgressWindow,
+    JobsWindow, MainWindow, TooltipPlacement,
 };
 #[cfg(test)]
 use i_slint_core::items::TooltipArea;
@@ -36,6 +36,7 @@ enum Target {
     Jobs(slint::Weak<JobsWindow>),
     JobProgress(slint::Weak<JobProgressWindow>),
     Decision(slint::Weak<DecisionWindow>),
+    Output(slint::Weak<CommandOutputWindow>),
 }
 enum Host {
     Main(MainWindow),
@@ -45,6 +46,7 @@ enum Host {
     Jobs(JobsWindow),
     JobProgress(JobProgressWindow),
     Decision(DecisionWindow),
+    Output(CommandOutputWindow),
 }
 impl Target {
     fn upgrade(&self) -> Option<Host> {
@@ -56,6 +58,7 @@ impl Target {
             Self::Jobs(window) => window.upgrade().map(Host::Jobs),
             Self::JobProgress(window) => window.upgrade().map(Host::JobProgress),
             Self::Decision(window) => window.upgrade().map(Host::Decision),
+            Self::Output(window) => window.upgrade().map(Host::Output),
         }
     }
 }
@@ -69,6 +72,7 @@ impl Host {
             Self::Jobs(window) => window.window(),
             Self::JobProgress(window) => window.window(),
             Self::Decision(window) => window.window(),
+            Self::Output(window) => window.window(),
         }
     }
     fn placement(&self) -> TooltipPlacement<'_> {
@@ -80,6 +84,7 @@ impl Host {
             Self::Jobs(window) => window.global::<TooltipPlacement>(),
             Self::JobProgress(window) => window.global::<TooltipPlacement>(),
             Self::Decision(window) => window.global::<TooltipPlacement>(),
+            Self::Output(window) => window.global::<TooltipPlacement>(),
         }
     }
     fn synchronize(&self) -> bool {
@@ -107,6 +112,10 @@ pub(crate) fn install_jobs(window: &JobsWindow) -> Result<(), PlatformError> {
 }
 pub(crate) fn install_decision(window: &DecisionWindow) -> Result<(), PlatformError> {
     register(Target::Decision(window.as_weak()))
+}
+
+pub(crate) fn install_output(window: &CommandOutputWindow) -> Result<(), PlatformError> {
+    register(Target::Output(window.as_weak()))
 }
 
 pub(crate) fn synchronize_checksum(window: &ChecksumWindow) {

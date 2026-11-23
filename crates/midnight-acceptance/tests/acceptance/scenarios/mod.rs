@@ -766,7 +766,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "tools_user_menu",
                 area: "tools",
-                summary: "F9 User menu: items in order, each built-in item's effect, Tab/Enter/Escape, Custom Commands on marks and on a tree row (on disk), a disabled command, the empty state's Set up.",
+                summary: "F9 User menu: items in order, each built-in item's effect, Tab/Enter/Escape, Custom Commands on marks and on a tree row (on disk), a command's output window with its exit code, a disabled command, the empty state's Set up.",
                 run: tools_user_menu::user_menu,
                 timeout: minutes(5),
             },

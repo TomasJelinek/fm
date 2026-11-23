@@ -84,6 +84,7 @@ fn expression_schema_preserves_commands_checksums_and_rejects_old_or_missing_req
     preferences.checksum_algorithms =
         ChecksumAlgorithms::new(&[ChecksumAlgorithm::Md5, ChecksumAlgorithm::Sha512]).unwrap();
     preferences.user_commands = Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("kept").unwrap(),
         name: "Kept 文档".into(),
         enabled: false,

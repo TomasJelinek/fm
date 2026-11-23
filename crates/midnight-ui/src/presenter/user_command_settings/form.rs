@@ -24,6 +24,9 @@ pub(crate) struct Form {
     pub file_name: bool,
     pub file_stem: bool,
     pub file_extension: bool,
+    /// Run directly only: 0 hidden, 1 output window, 2 console window.
+    pub output: i32,
+    pub close_on_success: bool,
 }
 impl Form {
     pub(crate) fn new(id: String) -> Self {
@@ -48,6 +51,8 @@ impl Form {
             file_name: false,
             file_stem: false,
             file_extension: false,
+            output: output_index(UserCommandOutput::NEW_PROGRAM.mode),
+            close_on_success: UserCommandOutput::NEW_PROGRAM.close_on_success,
         }
     }
     pub(crate) fn from_command(command: &UserCommand) -> Self {
@@ -70,6 +75,8 @@ impl Form {
                 form.executable = executable.to_string_lossy().into_owned();
                 form.arguments =
                     serde_json::to_string_pretty(arguments).unwrap_or_else(|_| "[]".into());
+                form.output = output_index(command.output.mode);
+                form.close_on_success = command.output.close_on_success;
             }
             UserCommandInvocation::Terminal {
                 shell,
@@ -151,6 +158,19 @@ impl Form {
             2 => UserCommandInvocation::Separator,
             _ => return Err("Choose direct execution, a terminal script, or a separator.".into()),
         };
+        let output = if self.kind == 0 {
+            UserCommandOutput {
+                mode: match self.output {
+                    0 => UserCommandOutputMode::Hidden,
+                    1 => UserCommandOutputMode::Window,
+                    2 => UserCommandOutputMode::Console,
+                    _ => return Err("Choose where the program's output goes.".into()),
+                },
+                close_on_success: self.close_on_success,
+            }
+        } else {
+            UserCommandOutput::default()
+        };
         let command = UserCommand {
             id,
             name: self.name.clone(),
@@ -173,6 +193,7 @@ impl Form {
             working_directory: self.working_directory.clone(),
             launch,
             invocation,
+            output,
         };
         command.validate().map_err(str::to_owned)?;
         Ok(command)
@@ -265,6 +286,14 @@ impl Form {
             UserCommandVariable::FileExtension => self.file_extension = true,
             UserCommandVariable::SelectedPaths => {}
         }
+    }
+}
+/// The Output choice's index in the form: Hidden, Output window, Console window.
+pub(crate) fn output_index(mode: UserCommandOutputMode) -> i32 {
+    match mode {
+        UserCommandOutputMode::Hidden => 0,
+        UserCommandOutputMode::Window => 1,
+        UserCommandOutputMode::Console => 2,
     }
 }
 fn literal(text: &str, edited: bool, original: Option<&Path>) -> Result<PathBuf, String> {

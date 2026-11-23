@@ -16,6 +16,8 @@ mod editor;
 mod file_clipboard;
 mod file_drag_drop;
 mod user_command_environment;
+mod user_command_output;
+pub use user_command_output::{run_and_wait, set_console_launcher};
 #[cfg(test)]
 mod user_command_terminal_tests;
 mod user_commands;

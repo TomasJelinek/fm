@@ -42,6 +42,7 @@ mod color_priority_list;
 mod command_bindings;
 mod command_line_layout;
 mod command_menus;
+mod command_output_window;
 mod command_path_overlay;
 mod commander_dialogs;
 mod commander_edges;

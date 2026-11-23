@@ -52,6 +52,33 @@ pub enum UserCommandInvocation {
         variables: Vec<crate::UserCommandVariable>,
     },
 }
+/// Where a Run directly (Program) command's output goes. Terminal commands and
+/// separators always use `Hidden`, the default and the value of every command saved
+/// before this setting existed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum UserCommandOutputMode {
+    /// No window: the program's standard streams are discarded (the original behavior).
+    #[default]
+    Hidden,
+    /// The app's own output window streams stdout and stderr live, with Stop.
+    Window,
+    /// A system console (Windows) or terminal emulator (Linux) that runs the program
+    /// through the app's own launcher and stays open until a key is pressed.
+    Console,
+}
+/// Program output presentation; `close_on_success` applies to `Window` only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct UserCommandOutput {
+    pub mode: UserCommandOutputMode,
+    pub close_on_success: bool,
+}
+impl UserCommandOutput {
+    /// What a newly created Run directly command uses: the in-app output window.
+    pub const NEW_PROGRAM: Self = Self {
+        mode: UserCommandOutputMode::Window,
+        close_on_success: false,
+    };
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserCommand {
     pub id: UserCommandId,
@@ -62,9 +89,16 @@ pub struct UserCommand {
     pub working_directory: String,
     pub launch: UserCommandLaunch,
     pub invocation: UserCommandInvocation,
+    /// Program output presentation; the default for every other invocation.
+    pub output: UserCommandOutput,
 }
 impl UserCommand {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if !matches!(self.invocation, UserCommandInvocation::Program { .. })
+            && self.output != UserCommandOutput::default()
+        {
+            return Err("Only Run directly commands choose where their output goes.");
+        }
         if self.name.trim().is_empty()
             || self.name.len() > 512
             || self.name.chars().any(char::is_control)
@@ -243,6 +277,50 @@ mod separator_tests {
             working_directory: String::new(),
             launch: UserCommandLaunch::Single,
             invocation: UserCommandInvocation::Separator,
+            output: UserCommandOutput::default(),
+        }
+    }
+    #[test]
+    fn output_choice_belongs_to_program_commands_only() {
+        assert_eq!(
+            UserCommandOutput::default().mode,
+            UserCommandOutputMode::Hidden
+        );
+        assert_eq!(
+            UserCommandOutput::NEW_PROGRAM.mode,
+            UserCommandOutputMode::Window
+        );
+        let mut item = separator();
+        item.output.mode = UserCommandOutputMode::Window;
+        assert!(item.validate().is_err(), "a separator has no output");
+        item.output = UserCommandOutput::default();
+        item.working_directory = "${active.path}".into();
+        item.invocation = UserCommandInvocation::Terminal {
+            shell: ShellFlavor::Posix,
+            script: "true".into(),
+            variables: Vec::new(),
+        };
+        item.output.close_on_success = true;
+        assert!(
+            item.validate().is_err(),
+            "a terminal script has no output choice"
+        );
+        item.output = UserCommandOutput::default();
+        assert!(item.validate().is_ok());
+        item.invocation = UserCommandInvocation::Program {
+            executable: std::env::current_exe().unwrap(),
+            arguments: Vec::new(),
+        };
+        for mode in [
+            UserCommandOutputMode::Hidden,
+            UserCommandOutputMode::Window,
+            UserCommandOutputMode::Console,
+        ] {
+            item.output = UserCommandOutput {
+                mode,
+                close_on_success: true,
+            };
+            assert!(item.validate().is_ok(), "{mode:?}");
         }
     }
     #[test]

@@ -1044,6 +1044,17 @@ current keys.
   Program mode passes native arguments separately; terminal mode runs literal
   user-authored PowerShell, POSIX shell or Command Prompt script with explicitly
   declared context variables.
+  A Run directly command's **Output** says where its output goes: **Hidden** (no
+  window, as before; commands created in earlier versions keep it), **Output window**
+  (the default for new commands) or **Console window**. The output window shows the
+  command line, folder and start time, the output as it arrives (errors marked) and
+  the exit code and duration at the end, with **Stop**, **Copy all**, **Save as…**,
+  **Clear**, **Find** (Ctrl+F) and **Close when finished successfully**. A per-item
+  command runs one item after another in one window. The program's input is empty,
+  so a program that asks a question gets no answer: use Console window for such
+  programs. Closing the window while the program runs stops it and the processes it
+  started. Console window opens a system console (Linux: your terminal emulator)
+  that runs the program with the same arguments and stays open until you press a key.
   Preview does not execute. Jobs reports started/not-started processes; Cancel
   stops future launches without terminating applications already started.
   Assign `user-command.<id>` shortcuts in Options → Keyboard. The

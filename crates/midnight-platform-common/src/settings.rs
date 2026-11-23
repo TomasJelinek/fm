@@ -50,11 +50,13 @@ mod scroll_glide_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod user_command_output_tests;
+#[cfg(test)]
 mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 38;
+const CURRENT_PREFERENCES_VERSION: u32 = 39;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1075,14 +1077,21 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         preferences.viewer.document_layout != midnight_core::DocumentLayout::default();
     let glide_choices = preferences.scroll_glide != midnight_core::ScrollGlide::default();
     let speed_choices = preferences.wheel_speed != midnight_core::WheelSpeed::default();
-    // Schemas 35 to 38 keep every field that versions 33 and 34 require.
+    // Schema 39: a Run directly command's output choice, also one a kept command has.
+    let output_choices = preferences
+        .user_commands
+        .iter()
+        .any(|command| command.output != midnight_core::UserCommandOutput::default())
+        || (foreign_commands && user_commands::kept_output(&foreign_settings)?);
+    // Schemas 35 to 39 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
         || panel_choices
         || layout_choices
         || glide_choices
-        || speed_choices;
+        || speed_choices
+        || output_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1219,7 +1228,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if speed_choices {
+        version: if output_choices {
+            39
+        } else if speed_choices {
             38
         } else if glide_choices {
             37

@@ -19,6 +19,7 @@ fn loaded(files: bool) -> (Presenter, PathBuf) {
     );
     p.preferences.loaded = true;
     p.preferences.values.user_commands = Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("test-command").unwrap(),
         name: "Test command".into(),
         enabled: true,

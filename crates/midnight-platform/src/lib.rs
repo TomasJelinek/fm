@@ -4,6 +4,7 @@
 #[cfg(windows)]
 pub use midnight_platform_windows::{
     NativeClipboard, WindowsFileSystem as LocalFileSystem, home_directory, monitor_work_area,
+    run_and_wait, set_console_launcher,
 };
 
 #[cfg(target_os = "linux")]
@@ -23,7 +24,7 @@ pub use network::{locale_service, network_service};
 #[cfg(target_os = "linux")]
 pub use midnight_platform_linux::{
     LinuxFileSystem as LocalFileSystem, NativeClipboard, home_directory, raise_open_file_limit,
-    with_original_open_file_limit,
+    run_and_wait, set_console_launcher, with_original_open_file_limit,
 };
 
 /// Windows has no soft limit on open handles to raise: the Linux function raises the

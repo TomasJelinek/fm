@@ -177,6 +177,7 @@ fn listed() -> (Presenter, FindSessionId, PathBuf) {
     p.focus_display_row(PaneId::Left, first);
     p.preferences.loaded = true;
     p.preferences.values.user_commands = Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("test-command").unwrap(),
         name: "Test command".into(),
         enabled: true,

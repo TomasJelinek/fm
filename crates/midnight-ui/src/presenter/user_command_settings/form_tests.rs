@@ -2,6 +2,7 @@ use super::*;
 
 fn command() -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("configured-7").unwrap(),
         name: "原命令".into(),
         enabled: true,
@@ -21,6 +22,53 @@ fn command() -> UserCommand {
 }
 fn absolute(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
+}
+
+#[test]
+fn output_choice_is_new_commands_output_window_and_round_trips_for_run_directly_only() {
+    let new = Form::new("fresh".into());
+    assert_eq!((new.output, new.close_on_success), (1, false));
+    // An existing command keeps its saved choice, Hidden for every older command.
+    let existing = command();
+    let form = Form::from_command(&existing);
+    assert_eq!(form.output, 0);
+    assert_eq!(form.command(Some(&existing)).unwrap(), existing);
+    for (index, mode) in [
+        (0, UserCommandOutputMode::Hidden),
+        (1, UserCommandOutputMode::Window),
+        (2, UserCommandOutputMode::Console),
+    ] {
+        let mut chosen = form.clone();
+        chosen.output = index;
+        chosen.close_on_success = true;
+        let saved = chosen.command(Some(&existing)).unwrap();
+        assert_eq!(
+            saved.output,
+            UserCommandOutput {
+                mode,
+                close_on_success: true
+            }
+        );
+        assert_eq!(Form::from_command(&saved).output, index);
+    }
+    let mut invalid = form.clone();
+    invalid.output = 3;
+    assert!(invalid.command(Some(&existing)).is_err());
+    // A terminal script or a separator has no output choice, whatever the form held.
+    let mut terminal = form.clone();
+    terminal.kind = 1;
+    terminal.script = "git clean -fxd".into();
+    terminal.output = 2;
+    assert_eq!(
+        terminal.command(Some(&existing)).unwrap().output,
+        UserCommandOutput::default()
+    );
+    let mut separator = form;
+    separator.kind = 2;
+    assert_eq!(
+        separator.command(Some(&existing)).unwrap().output,
+        UserCommandOutput::default()
+    );
 }
 
 fn assert_raw_parent_edits_are_refused(parent: PathBuf) {

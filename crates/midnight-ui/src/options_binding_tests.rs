@@ -670,6 +670,7 @@ fn narrow_topic_chooser_follows_page_changes_after_a_native_pick() {
 #[test]
 fn required_value_boxes_follow_discard_after_a_native_toggle() {
     let command = UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("script").unwrap(),
         name: "Script".into(),
         enabled: true,

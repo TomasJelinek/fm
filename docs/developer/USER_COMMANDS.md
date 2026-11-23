@@ -193,6 +193,86 @@ editors and Custom Commands share eight direct-child slots (`MAX_PROCESSES` in
 `user_command_process_tracker.rs`). Associations retain
 their separate helper pool.
 
+## Program output
+
+A Run directly (Program) command has an output choice, `UserCommand.output`
+(`UserCommandOutput { mode, close_on_success }`); terminal scripts and separators keep
+the default, and validation refuses anything else. Settings schema 39 stores it as
+`invocation.output` of a Program record (`{"window": "hidden" | "output" | "console",
+"close_on_success": true}`, written only when it differs from Hidden); every command
+saved before schema 39 reads as **Hidden**, its earlier behavior. New commands start
+with **Output window** (`UserCommandOutput::NEW_PROGRAM`): a program run directly
+otherwise has no visible result, and the window adds no console of its own.
+Each choice keeps the Program guarantee: the executable receives exactly the
+expanded argv elements, one per argument row, and no shell parses or splits them.
+
+- **Hidden** — `launch_user_program`: no window, standard streams on the null device.
+- **Output window** — `launch_user_program_captured` returns a
+  `CapturedUserProgram`: no window, standard input the null device (`NUL`,
+  `/dev/null`; reading it ends at once, so a program never waits for input), standard
+  output and error in two pipes, and the process tree in one group. Windows starts the
+  program suspended, assigns it to its own job object (no kill-on-close) and only then
+  resumes it, with exactly the three standard handles inheritable
+  (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) under the shared process-creation lock; Linux
+  makes it the leader of a new process group. Stop ends the tree: `TerminateJobObject`,
+  or `SIGTERM` to the group followed by `SIGKILL` after three seconds
+  (`STOP_GRACE`). Background processes still running after the program itself exited
+  are left alone.
+- **Console window** — `launch_user_program_console` starts the application's own
+  launcher, `midnight-explorer --run-and-wait <program> [argument…]` (`RUN_AND_WAIT_ARGUMENT`),
+  in a new console (Windows, `CREATE_NEW_CONSOLE`, without inherited handles) or in the
+  terminal emulator the Run in terminal mode already uses (Linux, after its execute
+  option). Each argument is one native argv element of the launcher, which starts the
+  program with the same elements (`std::process::Command`), shows the command line,
+  waits, shows the exit code and duration and waits for a key (Windows: console input
+  without Shift/Ctrl/Alt alone; Linux: one byte with the terminal out of line mode).
+  Ctrl+C reaches the program, not the launcher. The application sets the launcher at
+  startup (`set_console_launcher`); without it the mode reports Unsupported. The
+  program can read the console's input.
+
+The engine runs an output window's runs on a task of their own, one after another (a
+per-item command shows each item's run in turn in the same window); the actor takes
+the next request meanwhile. Every run still takes the shared process admission
+(`Runtime::reserve`), so the eight direct-child slots bound them too. A supervisor
+thread per running program (`user_command_output.rs` in the engine) holds the
+process permit until the program exits, polls its exit and Stop every 50 ms, and
+two reader threads drain the pipes in 64 KiB reads as fast as the program writes: the
+program never blocks on a full pipe because of the UI. After the exit the readers get
+one more second (`DRAIN_GRACE`) for the last output. Cancelling the request (Stop,
+Jobs › Cancel, closing the window while it runs, engine shutdown) ends the running
+tree and starts no further run.
+
+Output passes through `TerminalLines` (core): ANSI/VT escape sequences (colours,
+cursor movement, OSC titles and links) are removed, a carriage return not followed by
+a line feed starts the line again (progress counters), backspace removes a character,
+other control characters are dropped, tabs expand to eight columns and a line longer
+than 16 KiB is wrapped. Each complete line is decoded on its own: UTF-8 when valid,
+else on Windows the OEM code page of the program's hidden console (`CP_OEMCP`) and on
+Linux UTF-8 with replacement characters. The environment is not changed for this.
+
+`UserCommandOutputSession` (core) is shared by the backend, which appends, and the UI,
+which reads what changed after its last line with `read_since`. It keeps the last
+50,000 lines and at most 8 MiB of text (`MAX_OUTPUT_LINES`, `MAX_OUTPUT_BYTES`),
+counts dropped lines, and keeps each stream's unfinished line apart. The UI hears
+about news through `Event::UserCommandOutput`: `opened` once, then at most one
+notification until it has read (`take_notification`), at most every 50 ms; a full
+event queue is retried. At most 16 output windows are open
+(`MAX_OUTPUT_SESSIONS`); beyond that the command is stopped before it runs and
+reported. Save as… sends `Command::SaveUserCommandOutput`; the settings-file worker
+publishes the session's text through verified native staging under the namespace
+gate, refuses an existing file with AlreadyExists and replaces it (keeping the
+replaced file for recovery where the filesystem can) only when the request carries the
+user's consent; `Event::UserCommandOutputSaved` answers.
+
+Tests: `user_command_output_tests.rs` in core (terminal lines, bounds, session),
+`user_command_output_tests.rs` in the engine (supervision with fake programs: streams,
+a 64 MiB flood, Stop and its forced kill, notifications) and
+`tests/user_command_output_run.rs` (a real program end to end, per-item runs, Stop,
+Save as), and `user_command_output_tests.rs` in each platform crate (literal argv
+with spaces, quotes, empty and Unicode arguments in both modes, empty input, exit
+codes, interleaved streams, a 36 MiB burst, Stop ending a grandchild; on Windows
+the hidden mode's null output device as the evidence that output was invisible).
+
 ## Bounds and practical limits
 
 Configuration is bounded by 128 commands, 64 stored Program templates and 1 MiB

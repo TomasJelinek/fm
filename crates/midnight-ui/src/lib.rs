@@ -11,6 +11,7 @@ mod argument_rows;
 mod checksum_windows;
 mod color_options;
 mod command_line;
+mod command_output_windows;
 mod commander_presentation;
 mod comparator_options_presentation;
 mod copy_draft_windows;
@@ -534,6 +535,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     comparator_options_presentation::refresh(window, presenter);
     window.invoke_refresh_find_windows();
     window.invoke_refresh_checksum_windows();
+    window.global::<CommandOutputHub>().invoke_refresh();
     window.invoke_refresh_file_list_window();
     window.invoke_refresh_file_list_viewer();
     window.invoke_refresh_warning_viewer();
@@ -1093,6 +1095,7 @@ fn update_model_by<T: Clone + 'static>(
 pub fn close_tool_windows(window: &MainWindow) {
     window.invoke_close_find_windows();
     window.invoke_close_checksum_windows();
+    window.global::<CommandOutputHub>().invoke_close_all();
     window.invoke_close_file_list_window();
     window.invoke_close_operation_windows();
     window.invoke_close_jobs_window();
@@ -1162,6 +1165,7 @@ pub fn install_with_owned(
     path_paste::install(window, presenter.clone(), send.clone());
     find_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     checksum_windows::install(window, presenter.clone(), send.clone());
+    command_output_windows::install(window, presenter.clone(), send.clone());
     file_list_windows::install(window, presenter.clone(), send.clone());
     user_command_presentation::install(window, presenter.clone(), send.clone());
     user_command_settings_presentation::install(window, presenter.clone(), send.clone());

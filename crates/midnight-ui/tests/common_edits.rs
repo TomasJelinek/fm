@@ -23,6 +23,12 @@ const FIELDS: [&str; 8] = [
 /// id or accessible label, reason).
 const EXCEPTIONS: &[(&str, &str, &str, &str)] = &[
     (
+        "command-output-window.slint",
+        "ThemedLineEdit",
+        "Command line",
+        "the read-only command line an output window ran: selectable, nothing to clear",
+    ),
+    (
         "content-controls.slint",
         "TextInput",
         "edit",

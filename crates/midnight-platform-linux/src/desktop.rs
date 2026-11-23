@@ -194,7 +194,7 @@ fn interactive_shell(preferred: Option<&std::ffi::OsStr>) -> PathBuf {
         .to_path_buf()
 }
 
-fn terminal_executable() -> io::Result<PathBuf> {
+pub(crate) fn terminal_executable() -> io::Result<PathBuf> {
     let candidate = terminal_candidates(std::env::var_os("XDG_CURRENT_DESKTOP").as_deref())
         .into_iter()
         .find(|path| is_executable(path))
@@ -337,7 +337,7 @@ fn terminal_command_with_shell(
     Ok(command)
 }
 
-fn terminal_host_command(executable: &Path) -> Command {
+pub(crate) fn terminal_host_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
     crate::open_files::with_original_open_file_limit(&mut command);
     match executable.file_name().and_then(|name| name.to_str()) {

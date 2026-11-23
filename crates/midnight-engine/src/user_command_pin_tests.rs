@@ -163,9 +163,11 @@ fn dropping_prepared_command_awaiting_process_admission_retires_native_pins_off_
             wakeup: Arc::new(|| {}),
         },
         stop: Cancellation::default(),
+        state: Arc::default(),
     });
     let directory = std::env::current_dir().unwrap();
     let configuration = UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("lifetime").unwrap(),
         name: "Lifetime".into(),
         enabled: true,

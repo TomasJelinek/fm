@@ -133,6 +133,7 @@ fn exercise(pane: PaneId, selected: bool) {
     });
     let separator = std::path::MAIN_SEPARATOR;
     let command = UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("native-tree-probe").unwrap(),
         name: "Owned native tree probe".into(),
         enabled: true,

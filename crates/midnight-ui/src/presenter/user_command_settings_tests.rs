@@ -3,6 +3,7 @@ use std::cell::RefCell;
 
 fn command(id: &str, name: &str) -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new(id).unwrap(),
         name: name.into(),
         enabled: true,

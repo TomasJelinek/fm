@@ -59,6 +59,7 @@ fn request(
     arguments: &[&str],
 ) -> (UserCommandRequest, Arc<AtomicBool>) {
     let command = UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("tree-command").unwrap(),
         name: "Tree command".into(),
         enabled: true,

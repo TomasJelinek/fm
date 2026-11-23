@@ -90,6 +90,8 @@ pub enum Command {
     PreviewUserCommand(Box<crate::UserCommandRequest>),
     ExecuteUserCommand(Box<crate::UserCommandRequest>),
     CancelUserCommand(crate::UserCommandRequestId),
+    /// Save an output window's text (Save as…); answered by Event::UserCommandOutputSaved.
+    SaveUserCommandOutput(Box<crate::UserCommandOutputSaveRequest>),
     StartChecksums(Box<crate::ChecksumRequest>),
     StartSelectedChecksums(Box<crate::SelectedChecksumRequest>),
     StartCapturedChecksums(Box<crate::CapturedChecksumRequest>),
@@ -529,6 +531,12 @@ pub enum Event {
         update: Box<crate::NetworkUpdate>,
     },
     UserCommand(Box<crate::UserCommandEvent>),
+    /// A Run directly command with an output window has one, or news for it.
+    UserCommandOutput(Box<crate::UserCommandOutputEvent>),
+    UserCommandOutputSaved {
+        request: DesktopRequestId,
+        result: Result<crate::UserCommandOutputSaveReceipt, FsError>,
+    },
     Checksum(Box<crate::ChecksumEvent>),
     ChecksumRejected(Box<crate::ChecksumRejected>),
     ChecksumManifest(Box<crate::ChecksumManifestEvent>),

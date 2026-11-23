@@ -41,6 +41,7 @@ fn exercise(command: bool) {
             arguments: original.clone(),
         },
         user_commands: Arc::new(vec![UserCommand {
+            output: Default::default(),
             id: UserCommandId::new("argument-list").unwrap(),
             name: "Argument list".into(),
             enabled: true,

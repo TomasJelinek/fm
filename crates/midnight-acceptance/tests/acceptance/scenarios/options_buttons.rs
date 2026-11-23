@@ -241,6 +241,7 @@ fn seed(
     let command = command.to_owned();
     Ok(SettingsStore::seeded(move |preferences| {
         preferences.user_commands = Arc::new(vec![UserCommand {
+            output: Default::default(),
             id: UserCommandId::new("note").expect("a valid command id"),
             name: command,
             enabled: true,

@@ -133,6 +133,7 @@ impl Fixture {
             roots[1].clone(),
         )));
         let user_commands = command.then(|| UserCommand {
+            output: Default::default(),
             id: UserCommandId::new("editor").unwrap(),
             name: "Editor".into(),
             enabled: true,

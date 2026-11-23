@@ -5,6 +5,7 @@ fn loaded(selected: bool) -> Presenter {
     let (mut p, root) = tree::fixture();
     p.preferences.loaded = true;
     p.preferences.values.user_commands = Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("tree-command").unwrap(),
         name: "Tree command".into(),
         enabled: true,

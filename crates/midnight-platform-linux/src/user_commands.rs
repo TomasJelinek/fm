@@ -58,6 +58,39 @@ impl UserCommandService for LinuxFileSystem {
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|cause| error(executable, cause))
     }
+    fn launch_user_program_captured(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn CapturedUserProgram>, FsError> {
+        let command = prepare(executable, arguments, directory, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(error(directory, io::ErrorKind::Interrupted.into()));
+        }
+        crate::user_command_output::spawn_captured(command)
+            .map_err(|cause| error(executable, cause))
+    }
+    fn launch_user_program_console(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        prepare(executable, arguments, directory, cancel)?;
+        let mut command =
+            crate::user_command_output::console_command(executable, arguments, directory)
+                .map_err(|cause| error(directory, cause))?;
+        if cancel.is_cancelled() {
+            return Err(error(directory, io::ErrorKind::Interrupted.into()));
+        }
+        command
+            .spawn()
+            .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
+            .map_err(|cause| error(executable, cause))
+    }
 }
 fn prepare(
     executable: &Path,

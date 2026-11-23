@@ -34,6 +34,7 @@ fn command_artwork_retries_rejected_sends_and_clears_hidden_views_without_decodi
                 preferences: UserPreferences {
                     thumbnails_enabled: false,
                     user_commands: Arc::new(vec![UserCommand {
+                        output: Default::default(),
                         id: UserCommandId::new("editor").unwrap(),
                         name: "Editor".into(),
                         enabled: true,

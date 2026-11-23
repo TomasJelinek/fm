@@ -323,6 +323,7 @@ fn refused_picker_admission_never_leaves_a_busy_draft() {
 fn command_program_and_icon_picks_keep_raw_paths_and_stale_configuration_rejects_output() {
     let mut p = loaded();
     p.preferences.values.user_commands = Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("test").unwrap(),
         name: "Test".into(),
         enabled: true,

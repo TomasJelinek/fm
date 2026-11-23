@@ -33,7 +33,7 @@ pub(crate) struct LaunchSpec {
 }
 
 impl LaunchSpec {
-    fn command_line(&self) -> io::Result<Vec<u16>> {
+    pub(crate) fn command_line(&self) -> io::Result<Vec<u16>> {
         let mut line = Vec::new();
         append_argument(&mut line, self.application.as_os_str(), true)?;
         for argument in &self.arguments {
@@ -55,7 +55,7 @@ impl LaunchSpec {
     }
 }
 
-fn terminated(value: &OsStr) -> io::Result<Vec<u16>> {
+pub(crate) fn terminated(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut units = wide_units(value)?;
     units.push(0);
     Ok(units)
@@ -208,7 +208,7 @@ fn validate_cmd_expansion(spec: &LaunchSpec, values: &[(String, OsString)]) -> i
     Ok(())
 }
 
-fn spawn_inner(spec: &LaunchSpec, hidden: bool) -> io::Result<Box<dyn TerminalProcess>> {
+pub(crate) fn spawn_inner(spec: &LaunchSpec, hidden: bool) -> io::Result<Box<dyn TerminalProcess>> {
     spawn_native(spec, hidden, None, None)
 }
 fn spawn_native(

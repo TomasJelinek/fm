@@ -30,7 +30,8 @@ mod window_backend;
 mod window_state;
 
 use midnight_core::{
-    Command, DesktopServices, Event, NavigationId, PaneId, SettingsService, SortSpec, WatchService,
+    Command, ConsoleLauncher, DesktopServices, Event, NavigationId, PaneId, RUN_AND_WAIT_ARGUMENT,
+    SettingsService, SortSpec, WatchService,
 };
 use midnight_engine::{Engine, reclaim, snapshot};
 use midnight_platform::{LocalFileSystem, home_directory};
@@ -134,6 +135,13 @@ fn options() -> Result<Option<Options>, String> {
 }
 
 fn main() -> std::process::ExitCode {
+    // The Console window launcher of a Run directly command: a console program, not the
+    // file manager. It runs the program with exactly its arguments and waits for a key.
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() == Some(std::ffi::OsStr::new(RUN_AND_WAIT_ARGUMENT)) {
+        let code = midnight_platform::run_and_wait(arguments.collect());
+        return std::process::ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
     // First, before any thread opens files: on Linux, raise the soft open-file limit to
     // the hard limit (at most 65,536), from which the transfers' folder budget is sized;
     // programs started for the user get the original limit back.
@@ -161,6 +169,13 @@ fn run() -> Result<u8, String> {
         return Ok(0);
     };
     let engine_lifetime = Engine::lifetime().map_err(|error| error.to_string())?;
+    // Console window output starts this executable as its launcher (`main`).
+    if let Ok(executable) = std::env::current_exe() {
+        midnight_platform::set_console_launcher(ConsoleLauncher {
+            executable,
+            leading: vec![RUN_AND_WAIT_ARGUMENT.into()],
+        });
+    }
     let local = Arc::new(LocalFileSystem::new(home_directory()));
     let shared_native =
         midnight_native_filesystem_host::InstalledProvider::shared_composition(home_directory());

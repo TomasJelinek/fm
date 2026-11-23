@@ -28,6 +28,9 @@ pub enum PathPickerKind {
     /// Choose an Export configuration destination. Like `TextSave`, picking never
     /// creates, truncates or grants overwrite permission.
     SettingsSave,
+    /// Choose where an output window's text is saved. Like `TextSave`, picking never
+    /// creates, truncates or grants overwrite permission.
+    CommandOutputSave,
 }
 
 impl PathPickerKind {
@@ -35,7 +38,7 @@ impl PathPickerKind {
     pub const fn save_extension(self) -> Option<&'static str> {
         match self {
             Self::ChecksumSave(algorithm) => Some(algorithm.extension()),
-            Self::TextSave => Some("txt"),
+            Self::TextSave | Self::CommandOutputSave => Some("txt"),
             Self::SettingsSave => Some("json"),
             _ => None,
         }
@@ -46,6 +49,7 @@ impl PathPickerKind {
         match self {
             Self::ChecksumSave(algorithm) => Some(format!("checksums.{}", algorithm.extension())),
             Self::TextSave => Some("file-list.txt".into()),
+            Self::CommandOutputSave => Some("command-output.txt".into()),
             Self::SettingsSave => Some(crate::SETTINGS_FILE_SUGGESTED_NAME.into()),
             _ => None,
         }

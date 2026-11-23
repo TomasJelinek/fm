@@ -7,6 +7,7 @@ fn configured(count: usize) -> Presenter {
     p.preferences.values.user_commands = Arc::new(
         (0..count)
             .map(|index| UserCommand {
+                output: Default::default(),
                 id: UserCommandId::new(format!("command-{index}")).unwrap(),
                 name: format!("Command {index}"),
                 enabled: true,

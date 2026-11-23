@@ -21,6 +21,7 @@ pub(super) fn load(path: &Path) -> Result<(String, UserPreferences, bool), Strin
             preferences.user_commands = Arc::new(
                 (0..128)
                     .map(|index| UserCommand {
+                        output: Default::default(),
                         id: UserCommandId::new(format!("native-{index:03}")).expect("fixture ID"),
                         name: format!(
                             "Diagnostic {index:03} 文档 e\u{301} — {}",

@@ -8,6 +8,9 @@
 //! Commands. In a window narrower than 640 px the toolbar's commands are one "Custom
 //! commands" button whose bar runs a command and closes with Escape or a click outside.
 //!
+//! A Run directly command with an output window shows the program's lines (standard
+//! error marked) and its exit code, and Escape closes the window once it has finished.
+//!
 //! The commands are harmless programs writing into the scenario's `out` folder
 //! (`/bin/sh` with a literal script and `touch`), seeded into the settings before start.
 use crate::{
@@ -19,7 +22,9 @@ use crate::{
     tools_support::{self as tools},
 };
 use i_slint_core::items::AccessibleRole;
-use midnight_core::{PaneId, UserCommand, UserCommandId, UserCommandInvocation, UserCommandLaunch};
+use midnight_core::{
+    PaneId, UserCommand, UserCommandId, UserCommandInvocation, UserCommandLaunch, UserCommandOutput,
+};
 use midnight_ui::HotPathsPresentation;
 use slint::{
     ComponentHandle, LogicalPosition,
@@ -37,6 +42,7 @@ const LIST: &str = "List selection";
 const STAMP: &str = "Stamp each";
 const RULE: &str = "Group";
 const DISABLED: &str = "Disabled tool";
+const SHOW: &str = "Show output";
 /// One line per argument after `$0`, written into the working folder.
 use crate::tool::LIST_SCRIPT;
 const BUILT_IN: [&str; 5] = [
@@ -63,6 +69,7 @@ fn command(
     out: &Path,
 ) -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new(id).expect("a valid command id"),
         name: name.to_owned(),
         enabled: true,
@@ -120,6 +127,26 @@ fn commands(setup: &Setup) -> Vec<UserCommand> {
             &setup.out,
         ),
         disabled,
+        {
+            let mut show = command(
+                "show",
+                SHOW,
+                UserCommandLaunch::Single,
+                UserCommandInvocation::Program {
+                    executable: setup.sh.clone(),
+                    arguments: vec![
+                        "-c".into(),
+                        crate::tool::OUTPUT_SCRIPT.into(),
+                        "output".into(),
+                        "two words".into(),
+                        "文档".into(),
+                    ],
+                },
+                &setup.out,
+            );
+            show.output = UserCommandOutput::NEW_PROGRAM;
+            show
+        },
     ]
 }
 
@@ -370,6 +397,59 @@ fn compact_popup(app: &mut App, context: &mut Context, setup: &Setup) -> Result<
     result
 }
 
+/// Run the output window command from the menu: its window shows each argument's line,
+/// the standard error line marked as an error, and the exit code; Escape closes it.
+fn output_window(app: &mut App, context: &mut Context) -> Result<(), String> {
+    let title = format!("{SHOW} — output");
+    open_menu(app)?;
+    input::click_button(app.slint(), SHOW)?;
+    wait(app, "the output window to open", |app| {
+        tools::tool_titled(app, &title).is_some()
+    })?;
+    let window = tools::tool_titled(app, &title).ok_or("no output window")?;
+    crate::app::layout_tool(&window, 900, 600);
+    let status = "Status: Failed · Exit code 3 · ";
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let ended = |window: &tools::Tool| {
+        inspect::labels(window.window(), AccessibleRole::Text)
+            .iter()
+            .any(|label| label.starts_with(status))
+    };
+    while !ended(&window) {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "no {status:?} in the output window; texts {:?}",
+                inspect::labels(window.window(), AccessibleRole::Text)
+            ));
+        }
+        app.idle(Duration::from_millis(50));
+        crate::app::layout_tool(&window, 900, 600);
+    }
+    let rows = inspect::labels(window.window(), AccessibleRole::ListItem);
+    let mut missing = Vec::new();
+    for expected in [
+        "out two words",
+        "out 文档",
+        "Error: err line",
+        "Exit code 3",
+    ] {
+        if !rows.iter().any(|row| row.starts_with(expected)) {
+            missing.push(expected);
+        }
+    }
+    app.screenshot_window(
+        context,
+        &window,
+        "user-menu-output-window",
+        "A Custom Command's output window after the program exited with status 3",
+    );
+    if !missing.is_empty() {
+        return Err(format!("the output shows {rows:?}, without {missing:?}"));
+    }
+    tools::close_tool(app, &window, "the output window");
+    Ok(())
+}
+
 pub fn user_menu(context: &mut Context) -> Result<(), String> {
     let root = context.work.join("user-menu");
     let setup = Setup {
@@ -396,7 +476,7 @@ pub fn user_menu(context: &mut Context) -> Result<(), String> {
     let buttons = menu_buttons(&app);
     let labels: Vec<&str> = buttons.iter().map(|(label, _)| label.as_str()).collect();
     let mut wanted: Vec<&str> = BUILT_IN.to_vec();
-    wanted.extend([LIST, STAMP, DISABLED, "Close"]);
+    wanted.extend([LIST, STAMP, DISABLED, SHOW, "Close"]);
     if labels != wanted {
         failures.push(format!(
             "the User menu lists {labels:?}, expected {wanted:?}"
@@ -563,6 +643,12 @@ pub fn user_menu(context: &mut Context) -> Result<(), String> {
         failures.push(format!(
             "{STAMP} from the User menu on three marked files did not create {missing:?}"
         ));
+    }
+
+    // A command with an output window.
+    close_all(&mut app)?;
+    if let Err(error) = output_window(&mut app, context) {
+        failures.push(format!("{SHOW} with an output window: {error}"));
     }
 
     // A folder only visible in an expanded branch, focused without marks.

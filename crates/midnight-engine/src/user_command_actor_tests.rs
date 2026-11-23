@@ -3,6 +3,7 @@ use std::sync::Condvar;
 
 pub(super) fn request(id: u64, directory: &Path) -> UserCommandRequest {
     let command = UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("test").unwrap(),
         name: "Test".into(),
         enabled: true,

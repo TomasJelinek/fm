@@ -599,6 +599,7 @@ fn reset_preserves_user_content_and_commits_defaults_only_after_ok() {
         slot: Some(3),
     }];
     p.preferences.values.user_commands = Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("preserved").unwrap(),
         name: "Preserved command".into(),
         enabled: true,

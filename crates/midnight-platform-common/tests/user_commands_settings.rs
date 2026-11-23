@@ -3,6 +3,7 @@ use midnight_platform_common::settings::{decode_preferences, encode_preferences}
 
 fn command() -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("stable-id").unwrap(),
         name: "Tool 文档".into(),
         enabled: false,

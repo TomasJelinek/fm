@@ -66,6 +66,9 @@ impl OwnedCommandScope for FixtureScope {
             Command::PreviewUserCommand(request) | Command::ExecuteUserCommand(request) => {
                 self.retire(Box::new(request.clone()));
             }
+            Command::SaveUserCommandOutput(request) => {
+                self.retire(Box::new(request.session.clone()));
+            }
             Command::StartSelectedChecksums(request) => {
                 self.retire(Box::new(request.files.clone()));
             }

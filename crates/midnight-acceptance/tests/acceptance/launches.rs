@@ -1,6 +1,6 @@
 //! Stand-ins for what would start programs on the desktop: a Custom Command's terminal,
 //! the command line's terminal, a file's association, a system location and a web or mail
-//! link a viewer followed. Each launch
+//! link a viewer followed, a Custom Command's console window. Each launch
 //! is recorded in [`Launches`] for the scenario to check, and none starts a process:
 //! the Engine gets one that has already ended successfully. Only a Custom Command's
 //! program runs, as configured; the scenarios configure harmless programs that write into
@@ -20,6 +20,13 @@ use std::{
 pub enum Launch {
     /// A Custom Command's program (`Config::user_commands`), started as configured.
     Program {
+        executable: PathBuf,
+        arguments: Vec<OsString>,
+        directory: PathBuf,
+    },
+    /// A Custom Command's program in a console window (`Config::user_commands`): the
+    /// launcher would open a console, so it is recorded and never started.
+    Console {
         executable: PathBuf,
         arguments: Vec<OsString>,
         directory: PathBuf,
@@ -158,6 +165,41 @@ impl UserCommandService for UserCommands {
         });
         self.native
             .launch_user_program(executable, arguments, directory, cancel)
+    }
+
+    /// An output window's program runs as configured, its output captured.
+    fn launch_user_program_captured(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn CapturedUserProgram>, FsError> {
+        self.launches.push(Launch::Program {
+            executable: executable.to_path_buf(),
+            arguments: arguments.to_vec(),
+            directory: directory.to_path_buf(),
+        });
+        self.native
+            .launch_user_program_captured(executable, arguments, directory, cancel)
+    }
+
+    fn launch_user_program_console(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        if cancel.is_cancelled() {
+            return Err(interrupted(directory));
+        }
+        self.launches.push(Launch::Console {
+            executable: executable.to_path_buf(),
+            arguments: arguments.to_vec(),
+            directory: directory.to_path_buf(),
+        });
+        Ok(Box::new(NotStarted))
     }
 }
 

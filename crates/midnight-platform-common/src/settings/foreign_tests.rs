@@ -17,6 +17,7 @@ fn other(name: &str) -> String {
 
 fn program(id: &str, executable: PathBuf) -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new(id).unwrap(),
         name: format!("{id} 文档"),
         enabled: true,
@@ -224,6 +225,7 @@ fn shells() -> (ShellFlavor, ShellFlavor) {
 
 fn terminal(id: &str, shell: ShellFlavor, working_directory: &str) -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new(id).unwrap(),
         name: format!("{id} 文档"),
         enabled: true,

@@ -1,0 +1,318 @@
+import { ProgressIndicator } from "std-widgets.slint";
+import { ListView } from "scroll-view.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
+import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { CloseButton } from "close-button.slint";
+import { FallbackIcons } from "action-icons.slint";
+import { ToolWindow } from "tool-window.slint";
+import { Theme } from "theme.slint";
+
+// One output line. kind: 0 standard output, 1 standard error, 2 the window's own notice
+// (a run started, its exit code); partial is the line still being written.
+export struct CommandOutputRow { text: string, kind: int, partial: bool }
+
+// The main window's hook for the output windows (command_output_windows.rs).
+export global CommandOutputHub {
+    callback refresh();
+    callback close-all();
+}
+
+// A Run directly command's output window: what ran, its output as it arrives, how it
+// ended. The program cannot read from it; its input is empty.
+export component CommandOutputWindow inherits ToolWindow {
+    title: root.heading + " — output";
+    icon: FallbackIcons.run;
+    preferred-width: max(760px, Theme.font-size * 52);
+    preferred-height: max(520px, Theme.font-size * 34);
+    in property <string> heading;
+    in property <[CommandOutputRow]> rows;
+    // Changes with every update; the list then follows the newest line.
+    in property <int> revision;
+    in property <string> command-line;
+    in property <string> directory;
+    in property <string> started;
+    in property <string> status;
+    in property <bool> running;
+    in property <bool> stopping;
+    in property <bool> failed;
+    in property <string> dropped;
+    in property <string> note;
+    // The longest line's length in characters: the list scrolls sideways to it.
+    in property <int> columns;
+    in property <bool> close-on-success-available;
+    // The output's fixed-width font: the host names one the system has.
+    in property <string> mono-family: "monospace";
+    in-out property <bool> close-on-success;
+    // The row Find found (-1: none) and what Find says.
+    in property <int> match-row: -1;
+    in property <string> match-note;
+    // Save as… is choosing or writing a file; the question when the file exists.
+    in property <bool> saving;
+    in property <string> save-prompt;
+    callback save-as();
+    callback confirm-save(bool);
+    callback stop();
+    callback copy-all();
+    callback clear();
+    callback close-session();
+    callback close-on-success-toggled(bool);
+    callback find(string, bool);
+    callback find-closed();
+    public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
+        root.apply-tool-theme(scheme, density, family, desktop, touch);
+    }
+    public function begin() { keys.focus(); }
+    // Escape closes Find, else the finished window; it never stops a running program.
+    request-close => {
+        if root.find-open { root.close-find(); } else if !root.running { root.close-session(); }
+    }
+    // Buttons show their glyphs only where their captions would not fit in one row.
+    private property <bool> narrow: root.width < max(520px, Theme.font-size * 40);
+    // Below this height the details and the check box make room for the output.
+    private property <bool> compact: root.height < max(360px, Theme.font-size * 20);
+    private property <bool> find-open;
+    private property <length> row-height: ceil(Theme.font-size * 1.45 / 1px) * 1px;
+    private property <length> char-width: sample.preferred-width / 10;
+    // Follow the newest line until the user scrolls up; scrolling to the end follows again.
+    private property <bool> follow: true;
+    changed revision => { root.follow-end(); }
+    changed match-row => { root.reveal(root.match-row); }
+    function follow-end() {
+        if root.follow {
+            list.viewport-y = min(0px, list.visible-height - root.rows.length * root.row-height);
+        }
+    }
+    function reveal(row: int) {
+        if row < 0 { return; }
+        root.follow = false;
+        let top = row * root.row-height;
+        if top < -list.viewport-y || top + root.row-height > -list.viewport-y + list.visible-height {
+            list.viewport-y = min(0px, max(list.visible-height - root.rows.length * root.row-height,
+                -(top - list.visible-height / 3)));
+        }
+    }
+    function open-find() {
+        root.find-open = true;
+        find-field.focus-value();
+        find-field.select-all();
+    }
+    function close-find() {
+        root.find-open = false;
+        root.find-closed();
+        keys.focus();
+    }
+    sample := Text {
+        visible: false; text: "0000000000"; font-family: root.mono-family; font-size: Theme.font-size;
+        accessible-role: none;
+    }
+    keys := FocusScope {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        preferred-width: 0px; preferred-height: 0px;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.modifiers.control && (event.text == "f" || event.text == "F") {
+                root.open-find(); return accept;
+            }
+            if event.text == Key.F3 {
+                if root.find-open && find-field.text != "" { root.find(find-field.text, event.modifiers.shift); }
+                else { root.open-find(); }
+                return accept;
+            }
+            reject
+        }
+        VerticalLayout {
+            padding: root.compact ? 6px : 10px;
+            spacing: root.compact ? 4px : 6px;
+            HorizontalLayout {
+                spacing: 8px;
+                if root.running : VerticalLayout {
+                    alignment: center;
+                    ProgressIndicator {
+                        indeterminate: true; width: max(40px, Theme.font-size * 3); height: 6px;
+                        accessible-label: "Running";
+                    }
+                }
+                Text {
+                    text: root.status; horizontal-stretch: 1;
+                    wrap: root.compact ? TextWrap.no-wrap : TextWrap.word-wrap;
+                    overflow: root.compact ? TextOverflow.elide : TextOverflow.clip;
+                    font-size: Theme.font-size; font-weight: 600;
+                    color: root.failed ? Theme.error-text : Theme.strong-text;
+                    vertical-alignment: center;
+                    accessible-role: text; accessible-label: "Status: " + root.status;
+                }
+            }
+            if !root.compact : GridLayout {
+                spacing-horizontal: 8px; spacing-vertical: 4px;
+                Row {
+                    Text { text: "Command"; color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; horizontal-stretch: 0; }
+                    ThemedLineEdit {
+                        text: root.command-line; read-only: true; font-size: Theme.small-font;
+                        accessible-label: "Command line";
+                    }
+                }
+                Row {
+                    Text { text: "Folder"; color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; horizontal-stretch: 0; }
+                    Text {
+                        text: root.directory; color: Theme.text; font-size: Theme.small-font;
+                        overflow: elide; vertical-alignment: center; accessible-label: "Folder"; horizontal-stretch: 1;
+                    }
+                }
+                Row {
+                    Text { text: "Started"; color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center; horizontal-stretch: 0; }
+                    Text {
+                        text: root.started; color: Theme.text; font-size: Theme.small-font;
+                        overflow: elide; vertical-alignment: center; accessible-label: "Started"; horizontal-stretch: 1;
+                    }
+                }
+            }
+            if root.dropped != "" && !root.compact : Text {
+                text: root.dropped; color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+            }
+            // Always present (Find focuses its field), without height while closed.
+            Rectangle {
+                height: root.find-open ? max(Theme.control-height, 32px) : 0px;
+                visible: root.find-open; clip: true;
+                HorizontalLayout {
+                    spacing: 6px;
+                    find-field := ThemedLineEdit {
+                        placeholder-text: "Find in output"; clear-button: true;
+                        accessible-label: "Find in output";
+                        accepted(text) => { root.find(text, false); }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape { root.close-find(); return accept; }
+                            if event.text == Key.Return && event.modifiers.shift { root.find(self.text, true); return accept; }
+                            reject
+                        }
+                    }
+                    HintedActionButton {
+                        text: "Previous"; compact: true; glyph-only: root.narrow; fallback-icon: FallbackIcons.back;
+                        hint: "Find the previous line with this text (Shift+F3)";
+                        clicked => { root.find(find-field.text, true); }
+                    }
+                    HintedActionButton {
+                        text: "Next"; compact: true; glyph-only: root.narrow; fallback-icon: FallbackIcons.forward;
+                        hint: "Find the next line with this text (F3)";
+                        clicked => { root.find(find-field.text, false); }
+                    }
+                    if root.match-note != "" && !root.narrow : Text {
+                        text: root.match-note; color: Theme.secondary-text; font-size: Theme.small-font;
+                        vertical-alignment: center; accessible-role: text; accessible-label: root.match-note;
+                    }
+                    CloseButton { label: "Close Find"; key: "Escape"; clicked => { root.close-find(); } }
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: root.row-height + 2px;
+                background: Theme.pane-background;
+                border-width: 1px; border-color: keys.has-focus ? Theme.active-frame : Theme.frame;
+                border-radius: 4px;
+                list := ListView {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    content-width: max(self.visible-width, (root.columns + 2) * root.char-width + 16px);
+                    accessible-label: "Output";
+                    accessible-item-count: root.rows.length;
+                    scrolled => {
+                        root.follow = -self.viewport-y + self.visible-height >= root.rows.length * root.row-height - 2px;
+                    }
+                    for row[index] in root.rows : Rectangle {
+                        height: root.row-height; width: list.content-width;
+                        background: index == root.match-row ? Theme.selected-background : transparent;
+                        accessible-role: list-item;
+                        accessible-label: (row.kind == 1 ? "Error: " : "") + row.text;
+                        accessible-item-index: index;
+                        accessible-item-selectable: false;
+                        if row.kind == 1 : Rectangle {
+                            x: 0px; width: 3px; height: parent.height; background: Theme.error-text;
+                        }
+                        Text {
+                            x: 8px; width: parent.width - 8px; height: parent.height;
+                            text: row.text; wrap: no-wrap; overflow: clip;
+                            vertical-alignment: center;
+                            font-family: root.mono-family; font-size: Theme.font-size;
+                            font-italic: row.kind == 2;
+                            color: index == root.match-row ? Theme.selected-text
+                                : row.kind == 1 ? Theme.error-text
+                                : row.kind == 2 ? Theme.secondary-text : Theme.text;
+                            accessible-role: none;
+                        }
+                    }
+                }
+                if root.rows.length == 0 : Text {
+                    text: root.running ? "Waiting for output…" : "No output.";
+                    color: Theme.muted-text; font-size: Theme.font-size;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            if root.save-prompt != "" : HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: root.save-prompt; horizontal-stretch: 1; color: Theme.text;
+                    font-size: Theme.font-size; vertical-alignment: center; overflow: elide;
+                    accessible-role: text; accessible-label: root.save-prompt;
+                }
+                HintedActionButton {
+                    text: "Replace"; compact: true; destructive: true;
+                    hint: "Replace the existing file. It is kept for recovery where the filesystem allows.";
+                    clicked => { root.confirm-save(true); }
+                }
+                HintedActionButton {
+                    text: "Cancel"; compact: true;
+                    hint: "Keep the existing file and do not save.";
+                    clicked => { root.confirm-save(false); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                HintedActionButton {
+                    text: root.stopping ? "Stopping…" : "Stop"; compact: true; glyph-only: root.narrow;
+                    fallback-icon: FallbackIcons.close; destructive: true;
+                    enabled: root.running && !root.stopping;
+                    hint: "End the program and every process it started. A command for each item starts no further run.";
+                    clicked => { root.stop(); }
+                }
+                HintedActionButton {
+                    text: "Copy all"; compact: true; glyph-only: root.narrow; fallback-icon: FallbackIcons.copy;
+                    hint: "Copy every line shown to the clipboard.";
+                    clicked => { root.copy-all(); }
+                }
+                HintedActionButton {
+                    text: "Save as…"; compact: true; glyph-only: root.narrow; fallback-icon: FallbackIcons.save-again;
+                    enabled: !root.saving;
+                    hint: "Save every line shown to a text file.";
+                    clicked => { root.save-as(); }
+                }
+                HintedActionButton {
+                    text: "Clear"; compact: true; glyph-only: root.narrow; fallback-icon: FallbackIcons.delete;
+                    enabled: root.rows.length > 0;
+                    hint: "Remove the lines shown so far. A running program keeps running.";
+                    clicked => { root.clear(); }
+                }
+                HintedActionButton {
+                    text: "Find"; compact: true; glyph-only: root.narrow; fallback-icon: FallbackIcons.find;
+                    hint: "Find text in the output (Ctrl+F; F3 finds the next line).";
+                    clicked => { root.open-find(); }
+                }
+                Text {
+                    text: root.note; horizontal-stretch: 1; color: Theme.secondary-text;
+                    font-size: Theme.small-font; vertical-alignment: center; overflow: elide;
+                }
+                HintedActionButton {
+                    text: "Close"; compact: true; glyph-only: root.narrow; primary: !root.running;
+                    fallback-icon: FallbackIcons.close;
+                    hint: root.running ? "Stop the program and close this window." : "Close this window (Escape).";
+                    clicked => { root.close-session(); }
+                }
+            }
+            if root.close-on-success-available && !root.compact : WrappingCheckBox {
+                text: "Close when finished successfully";
+                hint: "Close this window by itself when every run exits with code 0. Remembered for this command.";
+                checked <=> root.close-on-success;
+                toggled => { root.close-on-success-toggled(self.checked); }
+            }
+        }
+    }
+}

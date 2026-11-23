@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 fn command() -> UserCommand {
     UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("tool_1").unwrap(),
         name: "My tool".into(),
         enabled: true,

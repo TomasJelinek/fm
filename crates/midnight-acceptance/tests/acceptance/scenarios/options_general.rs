@@ -447,6 +447,7 @@ pub fn general(context: &mut Context) -> Result<(), String> {
             slot: Some(2),
         }];
         preferences.user_commands = Arc::new(vec![UserCommand {
+            output: Default::default(),
             id: UserCommandId::new("kept").expect("a valid command id"),
             name: "Kept command".into(),
             enabled: true,

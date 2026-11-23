@@ -45,6 +45,20 @@ export component UserCommandForm inherits VerticalLayout {
             text: "Enabled"; checked <=> UserCommandSettingsView.draft.enabled;
             hint: "Disabled commands stay in the menu settings but cannot run."; toggled => { root.edited(); }
         }
+        if UserCommandSettingsView.draft.kind == 0 : Text { row: root.narrow ? 3 : 1; col: 0; text: "Output"; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; }
+        if UserCommandSettingsView.draft.kind == 0 : HintedComboBox { model: ["Hidden", "Output window", "Console window"]; current-index <=> UserCommandSettingsView.draft.output;
+            row: root.narrow ? 4 : 1; col: root.narrow ? 0 : 1; min-width: 0px; horizontal-stretch: 1;
+            accessible-label: "Custom Command output";
+            hint: UserCommandSettingsView.draft.output == 0 ? "The program runs without a window; its output is not shown."
+                : UserCommandSettingsView.draft.output == 1 ? "Shows what the program prints and its exit code in an output window, with Stop. Its input is empty, so it cannot ask questions."
+                : "Runs the program in a new console window that stays open after it exits until you press a key. It can ask questions there.";
+            selected(value) => { root.edited(); } }
+        if UserCommandSettingsView.draft.kind == 0 && UserCommandSettingsView.draft.output == 1 : WrappingCheckBox {
+            row: root.narrow ? 5 : 1; col: root.narrow ? 0 : 2;
+            text: "Close when finished successfully"; checked <=> UserCommandSettingsView.draft.close-on-success;
+            hint: "Close the output window by itself when every run exits with code 0. It stays open after a failure or Stop.";
+            toggled => { root.edited(); }
+        }
     }
     if UserCommandSettingsView.draft.kind == 2 : Text {
         text: "A separator divides the command toolbar into groups. It does not run a command.";

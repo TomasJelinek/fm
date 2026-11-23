@@ -465,6 +465,8 @@ fn to_view(form: Form) -> UserCommandSettingsForm {
         file_name: form.file_name,
         file_stem: form.file_stem,
         file_extension: form.file_extension,
+        output: form.output,
+        close_on_success: form.close_on_success,
     }
 }
 fn from_view(form: UserCommandSettingsForm) -> Form {
@@ -489,5 +491,7 @@ fn from_view(form: UserCommandSettingsForm) -> Form {
         file_name: form.file_name,
         file_stem: form.file_stem,
         file_extension: form.file_extension,
+        output: form.output,
+        close_on_success: form.close_on_success,
     }
 }

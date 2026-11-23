@@ -39,6 +39,13 @@ enum Invocation {
     Program {
         executable: NativePath,
         arguments: Vec<String>,
+        /// Schema 39: where the program's output goes; absent means hidden.
+        #[serde(
+            default,
+            deserialize_with = "super::present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        output: Option<StoredOutput>,
     },
     Terminal {
         shell: String,
@@ -47,8 +54,55 @@ enum Invocation {
         variables: Vec<String>,
     },
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredOutput {
+    window: OutputWindow,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    close_on_success: bool,
+}
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum OutputWindow {
+    Hidden,
+    Output,
+    Console,
+}
+impl StoredOutput {
+    fn from_output(output: UserCommandOutput) -> Option<Self> {
+        (output != UserCommandOutput::default()).then_some(Self {
+            window: match output.mode {
+                UserCommandOutputMode::Hidden => OutputWindow::Hidden,
+                UserCommandOutputMode::Window => OutputWindow::Output,
+                UserCommandOutputMode::Console => OutputWindow::Console,
+            },
+            close_on_success: output.close_on_success,
+        })
+    }
+    fn into_output(self) -> UserCommandOutput {
+        UserCommandOutput {
+            mode: match self.window {
+                OutputWindow::Hidden => UserCommandOutputMode::Hidden,
+                OutputWindow::Output => UserCommandOutputMode::Window,
+                OutputWindow::Console => UserCommandOutputMode::Console,
+            },
+            close_on_success: self.close_on_success,
+        }
+    }
+}
 impl StoredUserCommand {
+    /// Whether this record needs schema 39 (an output choice).
+    fn has_output(&self) -> bool {
+        matches!(
+            &self.invocation,
+            Invocation::Program {
+                output: Some(_),
+                ..
+            }
+        )
+    }
     fn into_command(self) -> io::Result<UserCommand> {
+        let mut output = UserCommandOutput::default();
         let command = UserCommand {
             id: UserCommandId::new(self.id).map_err(invalid)?,
             name: self.name,
@@ -65,10 +119,15 @@ impl StoredUserCommand {
                 Invocation::Program {
                     executable,
                     arguments,
-                } => UserCommandInvocation::Program {
-                    executable: executable.into_path()?,
-                    arguments,
-                },
+                    output: stored,
+                } => {
+                    output =
+                        stored.map_or_else(UserCommandOutput::default, StoredOutput::into_output);
+                    UserCommandInvocation::Program {
+                        executable: executable.into_path()?,
+                        arguments,
+                    }
+                }
                 Invocation::Terminal {
                     shell,
                     script,
@@ -87,7 +146,9 @@ impl StoredUserCommand {
                         .collect::<io::Result<_>>()?,
                 },
             },
+            output: UserCommandOutput::default(),
         };
+        let command = UserCommand { output, ..command };
         command.validate().map_err(invalid)?;
         Ok(command)
     }
@@ -113,6 +174,7 @@ impl From<UserCommand> for StoredUserCommand {
                 } => Invocation::Program {
                     executable: NativePath::from_path(executable),
                     arguments,
+                    output: StoredOutput::from_output(command.output),
                 },
                 UserCommandInvocation::Terminal {
                     shell,
@@ -358,6 +420,13 @@ pub(super) fn decode(
         }
         _ => return Err(invalid("missing, unexpected or excessive Custom Commands")),
     };
+    // Schema 39 added the output choice, and a schema 39 file has one.
+    let outputs = stored.iter().any(StoredUserCommand::has_output);
+    if (version < 39 && outputs) || (version == 39 && !outputs) {
+        return Err(invalid(
+            "missing or unexpected Custom Command output choice",
+        ));
+    }
     let (mut commands, mut foreign) = (Vec::new(), Vec::new());
     for (position, command) in stored.into_iter().enumerate() {
         match command.foreign()? {
@@ -367,6 +436,19 @@ pub(super) fn decode(
     }
     validate_user_commands(&commands).map_err(invalid)?;
     Ok((commands, foreign))
+}
+
+/// Whether a command kept for another system has an output choice (schema 39).
+pub(super) fn kept_output(foreign: &[ForeignSetting]) -> io::Result<bool> {
+    for setting in foreign {
+        if matches!(setting.kind, ForeignSettingKind::UserCommand { .. }) {
+            let kept: KeptUserCommand = serde_json::from_str(&setting.stored).map_err(invalid)?;
+            if kept.command.has_output() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Return kept commands to their stored positions, around the native ones. Their key

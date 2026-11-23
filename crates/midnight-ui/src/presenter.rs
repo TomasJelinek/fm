@@ -1044,6 +1044,7 @@ impl Presenter {
         // A manifest destination was just chosen: save to it now.
         self.begin_pending_checksum_saves(send);
         self.flush_settings_file(send);
+        self.flush_output_saves(send);
         self.dispatch_open_directories(send);
         self.flush_loaded_preferences(send);
     }
@@ -1145,6 +1146,8 @@ impl Presenter {
                 self.checksum_path_picked(request, result);
             } else if self.owns_find_picker(request) {
                 self.find_path_picked(request, result);
+            } else if self.owns_output_picker(request) {
+                self.output_path_picked(request, result);
             } else {
                 self.settings_path_picked(request, result);
             }

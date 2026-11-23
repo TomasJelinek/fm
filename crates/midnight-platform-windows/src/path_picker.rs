@@ -201,7 +201,9 @@ fn specific_filter(kind: PathPickerKind) -> Option<(&'static str, String)> {
         PathPickerKind::ChecksumSave(algorithm) => {
             Some((algorithm.label(), format!("*.{}", algorithm.extension())))
         }
-        PathPickerKind::TextSave => Some(("Text files", "*.txt".into())),
+        PathPickerKind::TextSave | PathPickerKind::CommandOutputSave => {
+            Some(("Text files", "*.txt".into()))
+        }
         PathPickerKind::SettingsOpen | PathPickerKind::SettingsSave => {
             Some(("Settings files", "*.json".into()))
         }
@@ -231,6 +233,7 @@ fn create_dialog(request: &PathPickerRequest) -> windows::core::Result<IFileDial
             // The export worker exclusively creates and publishes later.
             PathPickerKind::ChecksumSave(_)
             | PathPickerKind::TextSave
+            | PathPickerKind::CommandOutputSave
             | PathPickerKind::SettingsSave => options |= FOS_NOTESTFILECREATE,
             _ => options |= FOS_FILEMUSTEXIST,
         }

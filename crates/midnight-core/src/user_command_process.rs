@@ -151,7 +151,96 @@ impl UserCommandProcess {
     }
 }
 
+/// A started Custom Command process: one the process tracker reaps, or a captured
+/// program whose output an output window shows.
+pub enum LaunchedUserCommand {
+    Tracked(Box<dyn TerminalProcess>),
+    Captured(Box<dyn crate::CapturedUserProgram>),
+}
+
+fn output_unsupported(directory: &Path, message: &'static str) -> FsError {
+    FsError::from_io(
+        "Custom Command",
+        directory,
+        io::Error::new(io::ErrorKind::Unsupported, message),
+    )
+}
+
 pub trait UserCommandService: TerminalService {
+    /// Like `launch_user_program`, with no window: standard input empty and closed,
+    /// standard output and error captured, the process tree in one group.
+    fn launch_user_program_captured(
+        &self,
+        _executable: &Path,
+        _arguments: &[OsString],
+        directory: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn crate::CapturedUserProgram>, FsError> {
+        Err(output_unsupported(
+            directory,
+            "This platform cannot show a program's output in a window.",
+        ))
+    }
+    /// Like `launch_user_program`, in a new console or terminal window that the app's
+    /// own launcher keeps open after the program exits. The literal argv reaches the
+    /// program unchanged; no shell parses it.
+    fn launch_user_program_console(
+        &self,
+        _executable: &Path,
+        _arguments: &[OsString],
+        directory: &Path,
+        _cancel: &Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        Err(output_unsupported(
+            directory,
+            "This platform cannot run a program in a console window.",
+        ))
+    }
+    /// `launch_user_command` with the command's output choice; only Program invocations
+    /// choose something other than `Hidden`.
+    fn launch_user_command_with_output(
+        &self,
+        process: &UserCommandProcess,
+        output: crate::UserCommandOutputMode,
+        cancel: &Cancellation,
+    ) -> Result<LaunchedUserCommand, FsError> {
+        use crate::UserCommandOutputMode as Mode;
+        let (executable, arguments) = match (&process.invocation, output) {
+            (_, Mode::Hidden) => {
+                return self
+                    .launch_user_command(process, cancel)
+                    .map(LaunchedUserCommand::Tracked);
+            }
+            (
+                UserCommandProcessInvocation::Program {
+                    executable,
+                    arguments,
+                },
+                _,
+            ) => (executable, arguments),
+            (UserCommandProcessInvocation::Terminal { .. }, _) => {
+                return Err(FsError::from_io(
+                    "Custom Command",
+                    &process.working_directory,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Only Run directly commands choose where their output goes.",
+                    ),
+                ));
+            }
+        };
+        self.validate_user_command(process, cancel)?;
+        let directory = &process.working_directory;
+        match output {
+            Mode::Window => self
+                .launch_user_program_captured(executable, arguments, directory, cancel)
+                .map(LaunchedUserCommand::Captured),
+            _ => self
+                .launch_user_program_console(executable, arguments, directory, cancel)
+                .map(LaunchedUserCommand::Tracked),
+        }
+    }
+
     /// Backend preflight of every expanded plan before the first per-item spawn.
     fn validate_user_command(
         &self,

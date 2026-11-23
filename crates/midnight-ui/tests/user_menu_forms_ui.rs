@@ -41,6 +41,7 @@ fn options_on(
             arguments,
         },
         user_commands: Arc::new(vec![UserCommand {
+            output: Default::default(),
             id: UserCommandId::new("menu-example").unwrap(),
             name: "Menu example".into(),
             enabled: false,

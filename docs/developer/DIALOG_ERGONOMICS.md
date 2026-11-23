@@ -523,6 +523,7 @@ comparator and fails for any other text field that is not listed with its reason
 | Field | Why it is not the common edit |
 | --- | --- |
 | Make File List preview | multi-line and read-only |
+| Command output window's command line | read-only: selectable, nothing to clear |
 | Custom Command script | multi-line |
 | Command line | its own history, completion and path insertion keys |
 | Path bar editor | its own Go button and native path paste |

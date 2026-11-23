@@ -53,6 +53,7 @@ fn exercise(pane: PaneId, selected: bool) {
     let native = Arc::new(midnight_platform::LocalFileSystem::new(None));
     let launches = Arc::new(Launches::default());
     let command = UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("tree-command").unwrap(),
         name: "Tree command".into(),
         enabled: true,

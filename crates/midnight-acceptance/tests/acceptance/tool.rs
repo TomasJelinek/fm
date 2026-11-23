@@ -11,7 +11,9 @@
 //! - `true`: do nothing and succeed;
 //! - `sh -c LIST_SCRIPT NAME ARG...`: write each ARG on its own line to
 //!   `selection.txt` in the working folder, as the script does; `sh -c true` succeeds;
-//!   any other script is refused.
+//! - `sh -c OUTPUT_SCRIPT NAME ARG...`: print `out ARG` for each ARG, `err line` on
+//!   standard error and exit with status 3, as the script does; any other script is
+//!   refused.
 //!
 //! Each writes only where its arguments point, which the scenarios keep inside their own
 //! work folders; nothing else runs, so no scenario starts a terminal or a real editor.
@@ -26,6 +28,11 @@ use std::{
 /// The grouped command's script: one line per argument after `$0`, written into its
 /// working folder (`sh -c LIST_SCRIPT listing ARG...`).
 pub const LIST_SCRIPT: &str = "for f in \"$@\"; do printf '%s\\n' \"$f\"; done > selection.txt";
+
+/// The output window's script: `out ARG` per argument after `$0` on standard output, one
+/// line on standard error, exit status 3 (`sh -c OUTPUT_SCRIPT output ARG...`).
+pub const OUTPUT_SCRIPT: &str =
+    "for f in \"$@\"; do printf 'out %s\\n' \"$f\"; done; printf 'err line\\n' >&2; exit 3";
 
 /// The programs [`program`] knows.
 const NAMES: [&str; 4] = ["cp", "touch", "true", "sh"];
@@ -139,6 +146,15 @@ pub fn run_if_requested() -> Option<ExitCode> {
             if flag.as_os_str() == "-c" && script.as_os_str() == LIST_SCRIPT =>
         {
             list_into(Path::new("selection.txt"), items)
+        }
+        ("sh", [flag, script, _, items @ ..])
+            if flag.as_os_str() == "-c" && script.as_os_str() == OUTPUT_SCRIPT =>
+        {
+            for item in items {
+                println!("out {}", item.display());
+            }
+            eprintln!("err line");
+            return Some(ExitCode::from(3));
         }
         ("sh", [flag, script, ..]) if flag.as_os_str() == "-c" && script.as_os_str() == "true" => {
             Ok(())

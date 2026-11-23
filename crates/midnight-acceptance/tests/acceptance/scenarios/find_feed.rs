@@ -252,6 +252,7 @@ pub fn feed_panel(context: &mut Context) -> Result<(), String> {
         };
         // A harmless custom command on the toolbar: it would touch a marker file.
         preferences.user_commands = std::sync::Arc::new(vec![UserCommand {
+            output: Default::default(),
             id: UserCommandId::new(COMMAND_ID).expect("a valid command ID"),
             name: COMMAND.into(),
             enabled: true,

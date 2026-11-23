@@ -12,6 +12,7 @@ fn configuration(
     launch: UserCommandLaunch,
 ) -> Arc<Vec<UserCommand>> {
     Arc::new(vec![UserCommand {
+        output: Default::default(),
         id: UserCommandId::new("tool").unwrap(),
         name: "Tool".into(),
         enabled: true,

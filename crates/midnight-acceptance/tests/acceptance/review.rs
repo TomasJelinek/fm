@@ -665,6 +665,7 @@ fn seeded_commands(folder: &Path) -> Arc<super::options_support::SettingsStore> 
             [("build", "Build project"), ("deploy", "Deploy preview")]
                 .into_iter()
                 .map(|(id, name)| UserCommand {
+                    output: Default::default(),
                     id: UserCommandId::new(id).expect("a valid command id"),
                     name: name.into(),
                     enabled: true,

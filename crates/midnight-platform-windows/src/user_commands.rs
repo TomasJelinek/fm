@@ -62,6 +62,35 @@ impl UserCommandService for WindowsFileSystem {
             .map(|child| Box::new(child) as Box<dyn TerminalProcess>)
             .map_err(|cause| error(executable, cause))
     }
+    fn launch_user_program_captured(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn CapturedUserProgram>, FsError> {
+        prepare(executable, arguments, directory, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(error(directory, io::ErrorKind::Interrupted.into()));
+        }
+        crate::user_command_output::spawn_captured(executable, arguments, directory)
+            .map_err(|cause| error(executable, cause))
+    }
+    fn launch_user_program_console(
+        &self,
+        executable: &Path,
+        arguments: &[OsString],
+        directory: &Path,
+        cancel: &Cancellation,
+    ) -> Result<Box<dyn TerminalProcess>, FsError> {
+        prepare(executable, arguments, directory, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(error(directory, io::ErrorKind::Interrupted.into()));
+        }
+        let _error_mode = LaunchErrorMode::new().map_err(|cause| error(executable, cause))?;
+        crate::user_command_output::spawn_console(executable, arguments, directory)
+            .map_err(|cause| error(executable, cause))
+    }
 }
 fn prepare(
     executable: &Path,
@@ -137,12 +166,12 @@ fn validate_program(executable: &Path) -> Result<(), FsError> {
 }
 
 /// Thread-local suppression of native loader dialogs; no process-wide state changes.
-struct LaunchErrorMode {
+pub(crate) struct LaunchErrorMode {
     previous: u32,
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl LaunchErrorMode {
-    fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         use windows_sys::Win32::System::Diagnostics::Debug::{
             GetThreadErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetThreadErrorMode,
         };

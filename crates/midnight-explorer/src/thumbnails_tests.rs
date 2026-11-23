@@ -214,6 +214,7 @@ impl ThumbnailUi {
             panel_view_modes: [PanelViewMode::Thumbnails; 2],
             thumbnail_size,
             user_commands: Arc::new(vec![UserCommand {
+                output: Default::default(),
                 id: UserCommandId::new("preview-fixture").unwrap(),
                 name: "Preview fixture".into(),
                 enabled: true,

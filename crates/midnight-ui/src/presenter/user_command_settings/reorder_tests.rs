@@ -8,6 +8,7 @@ fn commands() -> Arc<Vec<UserCommand>> {
         ["a", "b", "c", "d"]
             .into_iter()
             .map(|id| UserCommand {
+                output: Default::default(),
                 id: UserCommandId::new(id).unwrap(),
                 name: format!("Command {id} 文档"),
                 enabled: id != "b",

@@ -364,6 +364,12 @@ How to read it:
   (Ctrl+Enter). The terminal button opens a terminal in the panel's folder; Ctrl+click
   opens it as administrator (sudo on Linux). F4 opens the configured external editor,
   and Enter opens documents with their associated application.
+- **Windows and Linux (0.5.1):** a Run directly command shows its output hidden (as
+  before), in an output window (live standard output and error, exit code, Stop, Copy
+  all, Save as…, Clear, Find, close when finished successfully) or in a console window
+  that stays open; the literal argument rows reach the program unchanged in every mode.
+  Settings schema 39. Verified on Windows; the Linux code has its own unit tests,
+  which have not run on Linux yet.
 - **Open:** terminal sessions are not reused (TERM-01).
 - **Documents:** [Custom Commands](developer/USER_COMMANDS.md),
   [Custom Command settings](developer/USER_COMMAND_SETTINGS.md).

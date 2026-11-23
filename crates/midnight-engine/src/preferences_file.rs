@@ -30,6 +30,8 @@ pub(crate) struct Controller {
     service: Option<Arc<dyn TransferService>>,
     mutation: Arc<Semaphore>,
     budget: Arc<Semaphore>,
+    /// Output windows' Save as…, independent of settings files.
+    outputs: Arc<Semaphore>,
     shutdown: Cancellation,
     outbox: Outbox,
     scope: TaskLifetime,
@@ -46,6 +48,7 @@ impl Controller {
             service,
             mutation,
             budget: Arc::new(Semaphore::new(1)),
+            outputs: Arc::new(Semaphore::new(2)),
             shutdown: Cancellation::default(),
             outbox,
             scope,
@@ -79,6 +82,58 @@ impl Controller {
             if !cancel.is_cancelled() {
                 outbox
                     .send(Event::PreferencesExported { request, result })
+                    .await;
+            }
+        }));
+    }
+
+    /// Save as… of an output window (`Command::SaveUserCommandOutput`).
+    pub(crate) async fn save_output(
+        &self,
+        input: Box<UserCommandOutputSaveRequest>,
+        tasks: &mut JoinSet<()>,
+    ) {
+        let request = input.request;
+        let admitted = split(&input.destination, OUTPUT.operation).and_then(|_| {
+            let service = self.service.clone().ok_or_else(|| {
+                failure(
+                    &input.destination,
+                    OUTPUT.operation,
+                    io::ErrorKind::Unsupported,
+                    "This platform cannot save files.",
+                )
+            })?;
+            let permit = self.outputs.clone().try_acquire_owned().map_err(|_| {
+                failure(
+                    &input.destination,
+                    OUTPUT.operation,
+                    io::ErrorKind::WouldBlock,
+                    "Two command outputs are being saved. Try again when one has finished.",
+                )
+            })?;
+            Ok((permit, service))
+        });
+        let (permit, service) = match admitted {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let result = Err(error);
+                self.outbox
+                    .send(Event::UserCommandOutputSaved { request, result })
+                    .await;
+                return;
+            }
+        };
+        let mutation = self.mutation.clone();
+        let cancel = self.shutdown.child();
+        let outbox = self.outbox.clone();
+        let scope = self.scope.clone();
+        tasks.spawn(self.scope.future(async move {
+            // Admission stays owned until the reply has been queued.
+            let _permit = permit;
+            let result = save_output(*input, service, mutation, &cancel, &scope).await;
+            if !cancel.is_cancelled() {
+                outbox
+                    .send(Event::UserCommandOutputSaved { request, result })
                     .await;
             }
         }));
@@ -170,17 +225,42 @@ async fn export_file(
     }))
     .await
     .unwrap_or_else(|_| Err(worker_failure(&destination)))?;
+    publish_gated(
+        destination,
+        bytes.into(),
+        input.overwrite,
+        service,
+        mutation,
+        cancel,
+        scope,
+        &SETTINGS,
+    )
+    .await
+}
+
+/// `publish` while holding the namespace gate, queued in FIFO order.
+#[allow(clippy::too_many_arguments)]
+async fn publish_gated(
+    destination: PathBuf,
+    bytes: Arc<[u8]>,
+    overwrite: bool,
+    service: Arc<dyn TransferService>,
+    mutation: Arc<Semaphore>,
+    cancel: &Cancellation,
+    scope: &TaskLifetime,
+    what: &'static Published,
+) -> Result<PreferencesExportReceipt, FsError> {
     // One queued acquisition keeps this export's FIFO place at the namespace gate.
     let acquire = mutation.acquire_many_owned(crate::transfer_leases::NAMESPACE_WEIGHT);
     tokio::pin!(acquire);
     let gate = loop {
         if cancel.is_cancelled() {
-            return Err(cancelled(&destination, "export settings"));
+            return Err(cancelled(&destination, what.operation));
         }
         tokio::select! {
             permit = &mut acquire => break permit.map_err(|_| failure(
                 &destination,
-                "export settings",
+                what.operation,
                 io::ErrorKind::BrokenPipe,
                 "The mutation service is closing.",
             ))?,
@@ -191,13 +271,7 @@ async fn export_file(
     let cancel = cancel.clone();
     let path = destination.clone();
     tokio::task::spawn_blocking(scope.blocking(move || {
-        let result = publish(
-            &path,
-            bytes.into(),
-            input.overwrite,
-            service.as_ref(),
-            &cancel,
-        );
+        let result = publish_as(&path, bytes, overwrite, service.as_ref(), &cancel, what);
         // Native cleanup has finished before the namespace gate is released.
         drop(gate);
         result
@@ -206,8 +280,57 @@ async fn export_file(
     .unwrap_or_else(|_| Err(worker_failure(&destination)))
 }
 
-/// Publish through exclusive staging, sync and independent readback. An existing
-/// regular file is replaced only with consent, keeping the displaced file.
+const OUTPUT: Published = Published {
+    operation: "save command output",
+    exists: "A file with this name already exists.",
+    noun: "output",
+};
+
+/// Save as… of an output window: the session's text, published like a settings export.
+async fn save_output(
+    input: UserCommandOutputSaveRequest,
+    service: Arc<dyn TransferService>,
+    mutation: Arc<Semaphore>,
+    cancel: &Cancellation,
+    scope: &TaskLifetime,
+) -> Result<UserCommandOutputSaveReceipt, FsError> {
+    let session = input.session.clone();
+    let bytes: Arc<[u8]> =
+        tokio::task::spawn_blocking(scope.blocking(move || Arc::from(session.text().into_bytes())))
+            .await
+            .map_err(|_| worker_failure(&input.destination))?;
+    let receipt = publish_gated(
+        input.destination,
+        bytes,
+        input.overwrite,
+        service,
+        mutation,
+        cancel,
+        scope,
+        &OUTPUT,
+    )
+    .await?;
+    Ok(UserCommandOutputSaveReceipt {
+        path: receipt.path,
+        bytes: receipt.bytes,
+        recovery: receipt.recovery,
+    })
+}
+
+/// What a published file is, in its errors.
+struct Published {
+    operation: &'static str,
+    exists: &'static str,
+    noun: &'static str,
+}
+const SETTINGS: Published = Published {
+    operation: "export settings",
+    exists: "The settings file already exists.",
+    noun: "settings file",
+};
+
+/// The settings export's `publish_as`, as its tests call it.
+#[cfg(test)]
 fn publish(
     destination: &Path,
     bytes: Arc<[u8]>,
@@ -215,27 +338,40 @@ fn publish(
     service: &dyn TransferService,
     cancel: &Cancellation,
 ) -> Result<PreferencesExportReceipt, FsError> {
-    const OPERATION: &str = "export settings";
-    let (parent, name) = split(destination, OPERATION)?;
-    let directory = with_io(destination, OPERATION, cancel, || {
+    publish_as(destination, bytes, overwrite, service, cancel, &SETTINGS)
+}
+
+/// Publish through exclusive staging, sync and independent readback. An existing
+/// regular file is replaced only with consent, keeping the displaced file.
+fn publish_as(
+    destination: &Path,
+    bytes: Arc<[u8]>,
+    overwrite: bool,
+    service: &dyn TransferService,
+    cancel: &Cancellation,
+    what: &Published,
+) -> Result<PreferencesExportReceipt, FsError> {
+    let operation = what.operation;
+    let (parent, name) = split(destination, operation)?;
+    let directory = with_io(destination, operation, cancel, || {
         service.prepare_transfer_destination(parent, cancel)
     })?;
-    let target = with_io(destination, OPERATION, cancel, || {
+    let target = with_io(destination, operation, cancel, || {
         directory.prepare_target(name, cancel)
     })?;
     if let Some(target) = &target {
         if !overwrite {
             return Err(failure(
                 destination,
-                OPERATION,
+                operation,
                 io::ErrorKind::AlreadyExists,
-                "The settings file already exists.",
+                what.exists,
             ));
         }
         if target.entry().item.kind != EntryKind::File {
             return Err(failure(
                 destination,
-                OPERATION,
+                operation,
                 io::ErrorKind::InvalidInput,
                 "The destination is a folder, link or special file and cannot be replaced.",
             ));
@@ -259,7 +395,7 @@ fn publish(
         bytes,
         offset: 0,
     });
-    let stage = with_io(destination, OPERATION, cancel, || match &target {
+    let stage = with_io(destination, operation, cancel, || match &target {
         Some(target) => {
             let capabilities = directory.capabilities();
             let policy = if capabilities.conditional_overwrite {
@@ -269,7 +405,7 @@ fn publish(
             } else {
                 return Err(failure(
                     destination,
-                    OPERATION,
+                    operation,
                     io::ErrorKind::Unsupported,
                     "This filesystem does not support safely replacing a file.",
                 ));
@@ -285,12 +421,12 @@ fn publish(
         }
         let publication = match &target {
             Some(target) => {
-                with_io(destination, OPERATION, cancel, || target.revalidate(cancel))?;
+                with_io(destination, operation, cancel, || target.revalidate(cancel))?;
                 copy.publish_replace(name, cancel)?
             }
             None => copy.publish(name, cancel)?,
         };
-        receipt(publication, copy.verified_bytes())
+        receipt(publication, copy.verified_bytes(), what.noun)
     })();
     if let Err(primary) = &mut result
         && let Err(cleanup) = copy.cleanup()
@@ -305,6 +441,7 @@ fn publish(
 fn receipt(
     publication: TransferPublication,
     bytes: u64,
+    noun: &str,
 ) -> Result<PreferencesExportReceipt, FsError> {
     match publication {
         TransferPublication::Published(path) => Ok(PreferencesExportReceipt {
@@ -319,7 +456,7 @@ fn receipt(
         }),
         TransferPublication::PublishedDurabilityUnconfirmed { path, mut error } => {
             error.message = format!(
-                "The settings file was written to {}, but its folder could not confirm \
+                "The {noun} was written to {}, but its folder could not confirm \
                  that it is stored durably: {}",
                 path.display(),
                 error.message
