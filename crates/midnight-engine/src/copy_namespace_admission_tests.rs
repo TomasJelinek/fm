@@ -77,6 +77,91 @@ fn unknown_read_root_is_unprotected_but_an_unknown_written_root_excludes_all() {
     };
 }
 
+/// A Copy from a folder whose lookups are unknown (on Windows, a volume that still creates
+/// 8.3 names, such as the system drive) into one with exact lookups. Its source stays
+/// unprotected, yet the native adapters announce the job's first original pin with every
+/// change, and that may be the source. Such an announcement adds nothing to the job's
+/// facts and refuses nothing; the job stays beside its peers, and its turns still finish
+/// by refreshing only what they announced. It used to fail every change of the job with
+/// "An unknown announcement requires the already exclusive opaque lane".
+#[test]
+fn announcing_an_unprotected_source_neither_refuses_the_change_nor_makes_the_job_run_alone() {
+    let registry = registry();
+    let cancel = Cancellation::default();
+    let (source_control, source) = pin(Vec::new());
+    *source_control.probe.lock().unwrap() = Ok(TransferNamespaceProbe::Unknown);
+    let (_, destination) = pin(vec![entry(parent(2, &[2, 0]), b"!qqq", Some(21), true)]);
+    // A second selected item, copied to a folder elsewhere.
+    let (unrelated_control, unrelated) = pin(vec![entry(
+        parent(3, &[3, 0]),
+        b"elsewhere",
+        Some(31),
+        true,
+    )]);
+    let copy = transfer(
+        &registry,
+        1,
+        vec![
+            (source.clone(), destination.clone()),
+            (source.clone(), unrelated),
+        ],
+    );
+    assert!(copy.grant());
+    assert_eq!(registry.state(1), FactsState::Stable);
+    let (_, other) = pin(vec![entry(parent(5, &[5, 0]), b"else", Some(51), true)]);
+    let peer = planned(&registry, 2, vec![(Write, Some(other))]);
+    assert!(peer.grant(), "a disjoint job runs beside the Copy");
+    let probes = |control: &Control| control.calls.load(Ordering::SeqCst);
+    let source_probes = probes(&source_control);
+    // Creating a folder in the destination: the source (the adapter's first original
+    // pin) and the destination folder that covers the new name.
+    let mut change = copy.claim().changes().begin(&cancel).unwrap();
+    assert!(
+        change
+            .reserve_private_child(Some(source.clone()), &cancel)
+            .unwrap()
+    );
+    assert!(
+        change
+            .reserve_private_child(Some(destination.clone()), &cancel)
+            .unwrap()
+    );
+    change.finish().unwrap();
+    assert_eq!(registry.state(1), FactsState::Stable);
+    // Staging a file: the first original pin and the fresh private stage only.
+    let unrelated_probes = probes(&unrelated_control);
+    let mut change = copy.claim().changes().begin(&cancel).unwrap();
+    assert!(
+        change
+            .reserve_private_child(Some(source.clone()), &cancel)
+            .unwrap()
+    );
+    let (_, stage) = pin(vec![entry(
+        parent(21, &[21, 2, 0]),
+        b".midnight-stage",
+        None,
+        false,
+    )]);
+    assert!(change.reserve_private_child(Some(stage), &cancel).unwrap());
+    change.finish().unwrap();
+    assert_eq!(registry.state(1), FactsState::Stable);
+    assert_eq!(
+        probes(&unrelated_control),
+        unrelated_probes,
+        "the turn refreshes what it announced, not every pin of the job"
+    );
+    assert_eq!(
+        probes(&source_control),
+        source_probes,
+        "an unprotected source is never probed"
+    );
+    let (_, third) = pin(vec![entry(parent(6, &[6, 0]), b"third", Some(61), true)]);
+    assert!(
+        planned(&registry, 3, vec![(Write, Some(third))]).grant(),
+        "the Copy still does not run alone"
+    );
+}
+
 /// A job that waits as a whole says why: a footprint is unknown (its own, a granted
 /// job's or an older waiting job's), so that job runs alone whatever the others use, or
 /// it uses items that another job uses. Only the second is about the same folders, and

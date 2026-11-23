@@ -67,6 +67,8 @@ mod throughput;
 mod timing;
 #[path = "tree_copy_tests.rs"]
 mod tree_copy;
+#[path = "copy_unprotected_source_tests.rs"]
+mod unprotected_source;
 #[path = "copy_verification_tests.rs"]
 mod verification;
 

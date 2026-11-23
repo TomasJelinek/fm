@@ -297,7 +297,7 @@ pub(super) async fn prepare_job(
                 snapshot(waiter.status).intent,
             )
         } else {
-            error
+            plain_namespace_error(error)
         };
         let can_retry = retryable_error(&error);
         // One of several selected items that failed alone can be left out; the
@@ -429,9 +429,84 @@ pub(super) fn vanished_source(
     error
 }
 
+/// The namespace host's own errors name its internals (announcements, lanes, aliases),
+/// and an adapter that wraps one keeps them in its message. The user reads what happened
+/// and what to do instead; the original text follows as technical detail.
+pub(super) fn plain_namespace_error(mut error: FsError) -> FsError {
+    let prefix = format!("{}: ", crate::copy_namespace::OPERATION);
+    if error.kind == io::ErrorKind::Interrupted
+        || !(error.operation == crate::copy_namespace::OPERATION
+            || error.message.starts_with(&prefix))
+    {
+        return error;
+    }
+    let plain = if error.kind == io::ErrorKind::Unsupported {
+        "This change needs the job to run alone: the names in this folder can no longer be \
+         checked exactly, because its name rules or a folder above it changed while the job \
+         ran. Skip the item and copy or move it again after this job has finished."
+    } else {
+        "The job could not confirm that the folders it uses are still as it found them, so \
+         it changed nothing more here. Skip the item, or cancel the job."
+    };
+    error.message = format!("{plain}\n\nTechnical details: {}", error.message);
+    error
+}
+
 #[cfg(test)]
 #[path = "copy_namespace_preparation_tests.rs"]
 mod namespace_preparation_tests;
+
+#[cfg(test)]
+mod plain_namespace_error_tests {
+    use super::*;
+
+    /// The owner's report showed the host's jargon as wrapped by the Windows adapter.
+    #[test]
+    fn namespace_jargon_becomes_a_sentence_with_the_original_as_detail() {
+        let internal = "transfer namespace: An unknown announcement requires the already \
+                        exclusive opaque lane. ()";
+        let wrapped = FsError::from_io(
+            "copy file",
+            Path::new("target/folder"),
+            io::Error::new(io::ErrorKind::Unsupported, internal),
+        );
+        let plain = plain_namespace_error(wrapped.clone());
+        let (said, details) = plain.message.split_once("\n\nTechnical details: ").unwrap();
+        assert!(
+            said.starts_with("This change needs the job to run alone"),
+            "{said}"
+        );
+        for jargon in ["announcement", "lane", "namespace", "opaque"] {
+            assert!(!said.contains(jargon), "{said}");
+        }
+        assert_eq!(details, internal);
+        assert_eq!(
+            (plain.operation, plain.kind, plain.path),
+            (wrapped.operation, wrapped.kind, wrapped.path)
+        );
+        let own = plain_namespace_error(FsError::from_io(
+            crate::copy_namespace::OPERATION,
+            Path::new(""),
+            io::Error::other("Native namespace teardown is unconfirmed."),
+        ));
+        assert!(
+            own.message.starts_with("The job could not confirm"),
+            "{}",
+            own.message
+        );
+        // Other errors and a cancellation keep their own words.
+        for error in [
+            FsError::from_io("copy file", Path::new("a"), io::Error::other("Disk full")),
+            FsError::from_io(
+                crate::copy_namespace::OPERATION,
+                Path::new(""),
+                io::Error::new(io::ErrorKind::Interrupted, "Namespace admission cancelled."),
+            ),
+        ] {
+            assert_eq!(plain_namespace_error(error.clone()).message, error.message);
+        }
+    }
+}
 
 #[cfg(test)]
 mod skipped_line_tests {

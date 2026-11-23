@@ -64,6 +64,10 @@ impl Exclusions {
     pub(super) fn is_deferred(&self, root: usize) -> bool {
         self.deferred.contains(root)
     }
+    /// Whether the job only reads `root` and left it unclaimed (its geometry is unknown).
+    pub(super) fn is_unprotected(&self, root: usize) -> bool {
+        self.unprotected.contains(root)
+    }
     /// A change claimed deferred `root`: the job's refreshes include it from now on.
     pub(super) fn claim(&mut self, root: usize) {
         self.deferred.remove(root);
@@ -80,6 +84,30 @@ impl Exclusions {
         (0..self.deferred.0.len() * WORD)
             .filter(|root| self.deferred.contains(*root))
             .collect()
+    }
+}
+
+impl super::Transaction {
+    /// Whether this job only reads each of `roots` and left it unclaimed: a Copy source of
+    /// unknown geometry, such as a folder on a Windows volume that creates 8.3 names. An
+    /// announcement of such a root, which every change of a native adapter makes when the
+    /// job's first original pin is that source, adds nothing to the job's facts: it never
+    /// makes the change wait or fail as one of unknown geometry would.
+    pub(super) fn unprotected(&self, roots: &[usize]) -> Result<bool, midnight_core::FsError> {
+        let sequence = self.context.sequence;
+        let state = self.context.registry.state.lock();
+        let state = state.unwrap_or_else(|error| error.into_inner());
+        match state.records.get(&sequence) {
+            Some(record)
+                if state.turn == Some(sequence)
+                    && record.state != super::FactsState::Quarantined =>
+            {
+                Ok(roots
+                    .iter()
+                    .all(|root| record.exclusions.is_unprotected(*root)))
+            }
+            _ => Err(super::unconfirmed()),
+        }
     }
 }
 

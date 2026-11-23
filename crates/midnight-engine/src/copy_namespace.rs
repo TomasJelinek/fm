@@ -900,12 +900,10 @@ impl Registry {
     }
 }
 
+/// The operation of this module's own errors (`decisions::plain_namespace_error`).
+pub(crate) const OPERATION: &str = "transfer namespace";
 fn failure(kind: io::ErrorKind, message: &str) -> FsError {
-    FsError::from_io(
-        "transfer namespace",
-        Path::new(""),
-        io::Error::new(kind, message),
-    )
+    FsError::from_io(OPERATION, Path::new(""), io::Error::new(kind, message))
 }
 fn cancelled(cancel: &Cancellation) -> Result<(), FsError> {
     if cancel.is_cancelled() {
@@ -2152,6 +2150,12 @@ impl TransferNamespaceChange for Transaction {
                 };
                 (roots, private_alias, access, root_access)
             };
+            // Adapters announce the job's first original pin with every change, to opt it
+            // in. An unprotected root (`Exclusions`) is no claim: it needs no probe.
+            if private_alias.is_none() && !registered.is_empty() && self.unprotected(&registered)? {
+                self.incremental = true;
+                return Ok(true);
+            }
             let probe = match &pin {
                 None => TransferNamespaceProbe::Unknown,
                 Some(pin) => match checked(|| pin.refresh(cancel)) {

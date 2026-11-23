@@ -991,7 +991,13 @@ directories and any names in case-sensitive directories. Every other binding is
 the job's pins. Such a job runs alone (on the system drive, which usually still
 creates 8.3 names, every Copy into it and every Move from or into it), and a job that
 waits for it shows `UnconfirmedFolders`, not `SameFolders`. A source that a Copy only
-reads stays unclaimed instead, so it does not make the Copy run alone.
+reads stays unclaimed instead, so it does not make the Copy run alone. Each change still
+announces the job's first original pin, which opts the change into refreshing only what it
+announced, and that pin may be such a source (a Downloads folder on the system drive copied
+to another volume). The host accepts that announcement without probing the source and adds
+nothing to the job's facts (`Transaction::unprotected` in `copy_namespace_roots.rs`); before
+0.5.1 it refused it as an unknown announcement outside the opaque lane, so every change of
+such a Copy failed.
 Original pins (selected sources and destination entries or
 subtrees) and their directory anchor handles are retained for the job's lifetime. A turn
 that announces every binding it changes refreshes those pins as it finishes; before the
@@ -1054,7 +1060,10 @@ or a replacement publication only before its first namespace change; in that tur
 they never refuse a no-replace restoration or the removal of a directory the turn
 created. Only a binding whose parent's ancestry or lookup rules change during the
 turn needs a later unknown reservation. Outside the exclusive opaque lane the host
-rejects it as `Unsupported` and the turn makes no further change, so what it has
+rejects it as `Unsupported` (the job's question says that the change needs the job to run
+alone and to skip the item and transfer it again later, with the host's own words as
+technical details: `plain_namespace_error` in `copy_decisions.rs`, which rewords every
+error of the host this way) and the turn makes no further change, so what it has
 already moved stays where it is: a Move capture keeps its stage, empty or holding the
 source it could not restore (see [bounded ordinary Move](#bounded-ordinary-move)), and
 a native replacement or publication keeps the displaced original in recovery and

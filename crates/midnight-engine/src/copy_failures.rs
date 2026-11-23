@@ -185,7 +185,7 @@ impl Job {
             ),
         };
         let error = super::super::decisions::vanished_source(
-            error,
+            super::super::decisions::plain_namespace_error(error),
             source.as_deref(),
             self.progress.intent,
         );
