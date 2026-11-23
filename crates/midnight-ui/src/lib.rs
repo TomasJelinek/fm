@@ -84,6 +84,10 @@ mod watch_status_tests;
 pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
 mod archive_passwords;
 mod panel_choices;
+mod update_presentation;
+pub use update_presentation::{
+    UpdatePhase, UpdateView, close_update_dialog, open_update_dialog, show_update,
+};
 mod panel_filter_windows;
 mod panel_models;
 mod panel_pointer;
@@ -681,6 +685,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     window.set_right_bookmark_name(bookmark_name(PaneId::Right));
     window.invoke_refresh_panel_filter_window();
     panel_choices::refresh(window, presenter);
+    update_presentation::refresh(window, presenter);
     archive_passwords::refresh(window, presenter);
     window.invoke_refresh_hot_paths_window();
     let volume_icons = presenter
@@ -1178,6 +1183,7 @@ pub fn install_with_owned(
     commander_presentation::bind(window, &presenter, &send);
     panel_filter_windows::install(window, presenter.clone(), send.clone());
     panel_choices::install(window, presenter.clone(), send.clone());
+    update_presentation::install(window, presenter.clone(), send.clone());
     archive_passwords::install(window, presenter.clone(), send.clone());
     hot_path_windows::install(window, presenter.clone(), send.clone());
     metadata_presentation::bind(window, &presenter, &send);

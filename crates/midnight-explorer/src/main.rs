@@ -23,6 +23,7 @@ mod startup_gate;
 mod startup_recovery;
 mod startup_settings;
 mod thumbnails;
+mod updates;
 mod viewers;
 mod visible_sync;
 mod wake_gate;
@@ -135,9 +136,15 @@ fn options() -> Result<Option<Options>, String> {
 }
 
 fn main() -> std::process::ExitCode {
+    // The updater that "Restart now" starts (a copy of the previous executable): it swaps
+    // the installation and starts the new version, and never opens a window.
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if midnight_update::apply::ApplyRequest::from_arguments(&arguments).is_some() {
+        return std::process::ExitCode::from(midnight_update::apply::run(&arguments));
+    }
     // The Console window launcher of a Run directly command: a console program, not the
     // file manager. It runs the program with exactly its arguments and waits for a key.
-    let mut arguments = std::env::args_os().skip(1);
+    let mut arguments = arguments.into_iter();
     if arguments.next().as_deref() == Some(std::ffi::OsStr::new(RUN_AND_WAIT_ARGUMENT)) {
         let code = midnight_platform::run_and_wait(arguments.collect());
         return std::process::ExitCode::from(u8::try_from(code).unwrap_or(1));
@@ -194,6 +201,9 @@ fn run() -> Result<u8, String> {
     }
     let restart_arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     let restart_cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    // Held until the process exits: an updater waits until no copy runs from the folder.
+    let (_instance, update_start) = updates::at_start();
+    let update_restart = updates::RestartRequest::default();
     let software_status = Cell::new(0);
     // Prestart before run_window can adopt capture factories or start real actors.
     // Owners and retained window-stop fences remain outside UI unwinding.
@@ -216,6 +226,7 @@ fn run() -> Result<u8, String> {
             &options,
             &mut image_spare_retirement,
             &mut content_workers,
+            (update_start.clone(), update_restart.clone()),
         )
     }));
     // Normal close drains mutation cancellation before hiding the window.
@@ -247,8 +258,15 @@ fn run() -> Result<u8, String> {
             software_status.set(startup_recovery::run_child(&mut command)?);
             Ok(())
         },
-    )
-    .map(|()| software_status.get())
+    )?;
+    // "Restart now": the window has closed and the session is saved; the updater waits
+    // for this process to exit, installs the update and starts the new version.
+    if let Some(restart) = update_restart.borrow_mut().take()
+        && let Err(error) = updates::start_updater(restart, restart_arguments, restart_cwd)
+    {
+        eprintln!("Midnight Explorer: {error}");
+    }
+    Ok(software_status.get())
 }
 
 /// Neutral execution context; stop ownership never enters a Service or capture.
@@ -448,6 +466,10 @@ async fn smoke_test(
     result
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Owners that outlive the window's unwinding stay with `run`, one argument each."
+)]
 fn run_window(
     engine_lifetime: midnight_engine::EngineLifetime,
     runtime: &tokio::runtime::Runtime,
@@ -456,6 +478,7 @@ fn run_window(
     options: &Options,
     image_spare_retirement: &mut Option<midnight_viewer_engine::ImageSpareRetirement>,
     content_workers: &mut ContentWorkers,
+    (update_start, update_restart): (updates::AtStart, updates::RestartRequest),
 ) -> Result<startup_recovery::Attempt, String> {
     let filesystem = shared_native.service();
     // Desktop integration and mutations keep their explicit platform services.
@@ -901,6 +924,15 @@ fn run_window(
         }),
         begin_owned.clone(),
     );
+    let revealed_startup = startup.clone();
+    let updates = updates::Updates::install(
+        &window,
+        presenter.clone(),
+        update_start,
+        !options.ui_smoke && wakeup_probe.is_none(),
+        Rc::new(move || revealed_startup.revealed()),
+        update_restart,
+    );
     let (viewers, image_preparation) = viewers::install(
         &window,
         presenter.clone(),
@@ -1016,6 +1048,7 @@ fn run_window(
     window.invoke_close_checksum_windows();
     window.invoke_close_file_list_window();
     retry_pulse.stop();
+    updates.stop();
     size_updates.stop();
     thumbnails.stop();
     drop(thumbnails);

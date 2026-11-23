@@ -5,6 +5,7 @@ import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { NavigationChoiceRow } from "navigation-models.slint";
 import { NavigationButton, HistoryNavigation } from "navigation-controls.slint";
+import { UpdateButton } from "update-controls.slint";
 
 // One application bar, with immutable input context for pressed/open controls.
 export component SharedToolbar inherits Rectangle {
@@ -42,7 +43,12 @@ export component SharedToolbar inherits Rectangle {
     private property <length> gap: Theme.touch ? 6px : 4px;
     private property <length> full-width: 14 * root.tool-width + 3 * root.arrow-width + 13 * root.gap
         + (root.show-custom-commands ? root.tool-width + root.gap : 0px);
-    private property <length> actions-width: max(0px, root.width - 2 * root.tool-width - root.gap - 8px);
+    // Updates, Options and About stay at the right end. A toolbar too narrow to keep a
+    // useful strip of actions beside all three (touch spacing at 320 px) leaves the
+    // update button out; About's Check for updates remains.
+    private property <bool> show-update: root.width - 5 * root.tool-width - 2 * root.gap - 16px >= 120px;
+    private property <length> right-tools: root.show-update ? 3 * root.tool-width + 2 * root.gap : 2 * root.tool-width + root.gap;
+    private property <length> actions-width: max(0px, root.width - root.right-tools - 8px);
     private property <bool> overflowing: root.full-width > root.actions-width - 8px;
     out property <bool> hot-path-popup-open: hot-path-picker.popup-open;
     callback action(int);
@@ -189,6 +195,11 @@ export component SharedToolbar inherits Rectangle {
         label: "›"; hint: "Scroll toolbar right";
         enabled: tools.content-x > min(0px, tools.visible-width - tools.content-width);
         clicked => { tools.content-x = max(tools.visible-width - tools.content-width, tools.content-x - tools.visible-width * 0.8); }
+    }
+    if root.show-update : UpdateButton {
+        x: root.width - 3 * root.tool-width - 2 * root.gap - 4px; y: 3px;
+        width: root.tool-width; height: root.control-height;
+        press-cancelled: root.press-cancelled;
     }
     NavigationButton {
         x: root.width - 2 * root.tool-width - root.gap - 4px; y: 3px;

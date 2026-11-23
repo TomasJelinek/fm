@@ -66,6 +66,7 @@ pub(super) struct EditedFields {
     pub(super) glyph_fitting: bool,
     pub(super) scroll_glide: bool,
     pub(super) wheel_speed: bool,
+    pub(super) updates: bool,
     pub(super) quick_search_filter: bool,
     pub(super) show_hidden_files: bool,
     pub(super) mask_selection: bool,
@@ -341,6 +342,9 @@ impl Presenter {
                 }
                 if edited.wheel_speed {
                     loaded.wheel_speed = local.wheel_speed;
+                }
+                if edited.updates {
+                    loaded.updates = local.updates;
                 }
                 if edited.quick_search_filter {
                     loaded.quick_search_filter = local.quick_search_filter;
@@ -641,6 +645,29 @@ impl Presenter {
         self.update_preferences(preferences, send);
     }
 
+    /// The update choices once the user's settings have been read; `None` before, so
+    /// the startup check never acts on the defaults of a profile that is still loading.
+    pub fn loaded_update_preferences(&self) -> Option<midnight_core::UpdatePreferences> {
+        self.preferences
+            .loaded
+            .then_some(self.preferences.values.updates)
+    }
+
+    /// Options › General › Updates: the startup check and whether previews are offered.
+    /// Part of the Options draft: OK saves it, Cancel restores the previous choices.
+    pub(crate) fn change_update_preferences(
+        &mut self,
+        updates: midnight_core::UpdatePreferences,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.preferences.edited.updates = true;
+        let preferences = UserPreferences {
+            updates,
+            ..self.preferences.values.clone()
+        };
+        self.update_preferences(preferences, send);
+    }
+
     /// Options › Appearance › Scrolling glide. Like the theme it previews at once in
     /// every panel, list and viewer; OK saves it and Cancel restores the previous one.
     pub(crate) fn change_scroll_glide(&mut self, index: i32, send: &dyn Fn(Command) -> bool) {
@@ -867,6 +894,7 @@ impl Presenter {
         edited.glyph_fitting |= preferences.glyph_fitting != previous.glyph_fitting;
         edited.scroll_glide |= preferences.scroll_glide != previous.scroll_glide;
         edited.wheel_speed |= preferences.wheel_speed != previous.wheel_speed;
+        edited.updates |= preferences.updates != previous.updates;
         let filter_changed = preferences.quick_search_filter != previous.quick_search_filter
             || preferences.panel_filters != previous.panel_filters;
         edited.quick_search_filter |=

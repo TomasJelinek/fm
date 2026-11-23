@@ -25,6 +25,8 @@ midnight-work-budget = { path = "../midnight-work-budget", features = ["resident
 midnight-thumbnail-host = { path = "../midnight-thumbnail-host" }
 midnight-plugin-host = { path = "../midnight-plugin-host" }
 midnight-worker-platform = { path = "../midnight-worker-platform" }
+# Update checks, signed downloads and the installation swap; the only network code.
+midnight-update = { path = "../midnight-update" }
 tokio.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030", "unstable-wgpu-30"] }
 # The renderer Slint already draws with, patched to vendor/femtovg in the

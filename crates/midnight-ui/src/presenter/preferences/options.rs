@@ -39,6 +39,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.glyph_fitting = from.glyph_fitting;
     to.scroll_glide = from.scroll_glide;
     to.wheel_speed = from.wheel_speed;
+    to.updates = from.updates;
     to.file_list.destination = from.file_list.destination;
     to.file_list.append = from.file_list.append;
     to.quick_search_filter = from.quick_search_filter;
@@ -90,6 +91,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         glyph_fitting: _,
         scroll_glide: _,
         wheel_speed: _,
+        updates: _,
         quick_search_filter: _,
         size_display: _,
         disk_io_concurrency: _,

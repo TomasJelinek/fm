@@ -1,4 +1,5 @@
 import { VScrollView } from "scroll-view.slint";
+import { UpdateState } from "update-controls.slint";
 import { HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { CompactPicker, Tip } from "controls.slint";
 import { ThemedSlider } from "content-controls.slint";
@@ -486,6 +487,24 @@ export component OptionsBody inherits Rectangle {
                         min-height: Theme.control-height;
                         hint: "Remove remembered commands when Options is saved. Cancel restores history. The current command draft is unchanged.";
                         clicked => { root.command-history-clear(); }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.frame; }
+                Text { text: "Updates"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
+                // Side by side: the page keeps its height, so the controls above stay in view.
+                HorizontalLayout {
+                    spacing: 16px;
+                    WrappingCheckBox {
+                        text: "Check for updates at startup";
+                        checked <=> UpdateState.check-at-startup; min-height: Theme.control-height;
+                        toggled => { UpdateState.options-changed(self.checked, UpdateState.include-previews); }
+                        hint: "Shortly after startup, at most once a day, ask GitHub (api.github.com, over HTTPS) whether a newer version exists. Nothing is downloaded or installed until you choose to. When off, Midnight Explorer contacts no server unless you choose Check for updates.";
+                    }
+                    WrappingCheckBox {
+                        text: "Include preview releases";
+                        checked <=> UpdateState.include-previews; min-height: Theme.control-height;
+                        toggled => { UpdateState.options-changed(UpdateState.check-at-startup, self.checked); }
+                        hint: "Offer releases that GitHub marks as previews (pre-releases). Every release so far is a preview; turning this off waits for the first stable release.";
                     }
                 }
                 // Export and Import when the footer has no room for them.

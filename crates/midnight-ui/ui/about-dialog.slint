@@ -2,6 +2,7 @@ import { AboutSlint } from "std-widgets.slint";
 import { ListView, VScrollView } from "scroll-view.slint";
 import { Theme } from "theme.slint";
 import { HintedActionButton, HintedLineEdit } from "hinted-inputs.slint";
+import { UpdateState } from "update-controls.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
@@ -669,11 +670,17 @@ export component AboutDialog inherits Rectangle {
                                 color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
                             }
                             HorizontalLayout {
-                                alignment: start;
+                                alignment: start; spacing: 8px;
                                 HintedActionButton {
                                     text: "View license"; fallback-icon: FallbackIcons.view;
                                     hint: "Show the full text of the GNU General Public License, version 3.";
                                     clicked => { AboutView.open-own-license(); }
+                                }
+                                HintedActionButton {
+                                    text: "Check for updates";
+                                    fallback-icon: Theme.light ? @image-url("icons/update.svg") : @image-url("icons/update-dark.svg");
+                                    hint: "Ask GitHub whether a newer version of Midnight Explorer is available.";
+                                    clicked => { root.close(); UpdateState.open-dialog(true); }
                                 }
                             }
                         }

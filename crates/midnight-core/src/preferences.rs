@@ -459,6 +459,8 @@ pub struct UserPreferences {
     pub scroll_glide: ScrollGlide,
     /// How far a mouse-wheel notch scrolls, relative to the system's notch.
     pub wheel_speed: WheelSpeed,
+    /// The update check: at startup or not, and whether previews are offered.
+    pub updates: UpdatePreferences,
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
     /// List hidden entries (dot-names on Unix, the hidden attribute on Windows)
@@ -502,6 +504,25 @@ pub struct UserPreferences {
     pub foreign_settings: Arc<Vec<crate::ForeignSetting>>,
 }
 
+/// Options › General › Updates. Both are on by default; settings from before schema 39
+/// read as the defaults, so existing users get the startup check too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UpdatePreferences {
+    /// Ask GitHub for a newer version shortly after startup, at most once a day.
+    pub check_at_startup: bool,
+    /// Offer preview (pre-)releases; every release so far is a preview.
+    pub previews: bool,
+}
+
+impl Default for UpdatePreferences {
+    fn default() -> Self {
+        Self {
+            check_at_startup: true,
+            previews: true,
+        }
+    }
+}
+
 pub const MAX_PANEL_FILTER_HISTORY: usize = 100;
 
 pub const FONT_SIZE_MIN: u16 = 8;
@@ -538,6 +559,7 @@ impl Default for UserPreferences {
             glyph_fitting: GlyphFitting::default(),
             scroll_glide: ScrollGlide::default(),
             wheel_speed: WheelSpeed::default(),
+            updates: UpdatePreferences::default(),
             quick_search_filter: false,
             show_hidden_files: true,
             mask_selection: crate::MaskSelectionPreferences::default(),

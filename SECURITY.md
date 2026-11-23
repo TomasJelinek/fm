@@ -1597,6 +1597,48 @@ a locked listing's folder), never to the row under the cursor. If the pane has l
 session meanwhile, for example through Find's Go to file, OK sends nothing, an accepted
 password opens nothing, and the status line says that the archive was left.
 
+## Update check
+
+The update check ([design](docs/developer/UPDATES.md)) is the application's only
+network code; it lives in `crates/midnight-update` and runs on its own thread.
+
+- **When it connects:** only while "Check for updates at startup" is on (shortly after
+  startup, at most once in 20 hours) or when the user chooses Check now, Download and
+  install or Open release page. With the option off and no such choice, the
+  application contacts no server.
+- **What it sends:** HTTPS `GET` requests to `api.github.com` for the release list,
+  and to `github.com` and GitHub's download hosts (`objects.githubusercontent.com`,
+  `release-assets.githubusercontent.com`) for the release files. The headers are
+  `User-Agent: Midnight-Explorer/<version>`, `Accept` and a range for a resumed
+  download; no credentials, cookies, identifiers, paths or settings. GitHub sees the
+  user's IP address and the requests.
+- **Transport:** HTTPS with certificate validation by the system's stack (WinHTTP on
+  Windows) or rustls with the distribution's certificate store (Linux), TLS 1.2 or
+  later. Redirects are followed by the client only to those hosts over HTTPS on port
+  443; plain HTTP is refused before any connection. Bodies have size limits (4 MiB,
+  64 KiB, 4 KiB, the archive's listed size up to 2 GiB) and every connection
+  timeouts. Downloads go to a folder only the user can change (below
+  `%LOCALAPPDATA%` or `~/.cache`, mode 0700).
+- **Signatures:** an update is installed only when `SHA256SUMS.minisig` is a minisign
+  Ed25519 signature by the release key compiled into the application
+  (`packaging/update-signing.pub`) whose signed comment names exactly the offered
+  release, the archive's SHA-256 matches its signed line, the archive's entries stay
+  below its release folder without links, and the staged `BUILD-INFO.json` names the
+  offered version and target and matches every listed file. The private key is kept
+  by the owner outside the repository. A compromised GitHub account or release page
+  alone cannot deliver an installable update. A build without a key installs nothing.
+- **Installing:** never without the user's Download and install and Restart now. The
+  swap renames entries within the installation folder, which must be one the user can
+  change; the application never elevates to update, and copies that only
+  administrators can change are referred to the release page. The updater is a copy of
+  the previous executable, started from the installation's own `.update` folder with
+  the user's rights; it waits until no copy runs from the folder, keeps the previous
+  version until the new one confirms its start and restores it otherwise. Settings
+  (outside the installation folder) are never touched.
+- **Test endpoint:** only debug builds accept `MIDNIGHT_UPDATE_TEST_SERVER` (plain HTTP
+  to `127.0.0.1`), `MIDNIGHT_UPDATE_TEST_PUBLIC_KEY` and `MIDNIGHT_TEST_DATA_ROOT` (a
+  test profile folder in place of the user's); release builds ignore them.
+
 ## Dependencies
 
 Keep `Cargo.lock`, check advisories against the actual lockfile, and record the

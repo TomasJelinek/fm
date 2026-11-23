@@ -18,6 +18,10 @@ fn rich() -> UserPreferences {
         glyph_fitting: GlyphFitting::Subpixel,
         scroll_glide: ScrollGlide::Short,
         wheel_speed: WheelSpeed::Fast,
+        updates: UpdatePreferences {
+            check_at_startup: false,
+            previews: false,
+        },
         quick_search_filter: true,
         size_display: SizeDisplay::Bytes,
         disk_io_concurrency: DiskIoConcurrency::Manual(8),

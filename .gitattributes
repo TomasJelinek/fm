@@ -14,3 +14,5 @@ vendor/image/** -text -whitespace
 plugins/image-decoder/notices/** -text
 plugins/image-decoder/fonts/OFL.txt -text -whitespace
 plugins/image-decoder/fonts/*.ttf binary
+# Signed test fixtures: their bytes are what the signature covers.
+crates/midnight-update/tests/fixtures/** -text

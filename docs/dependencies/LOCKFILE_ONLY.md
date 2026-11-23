@@ -8,7 +8,7 @@ Linux build compiles them and no package ships them. This list names each of the
 the two lists together account for every third-party package in the lock files of the
 23 inventory workspaces. Workspace names are those of the complete inventory.
 
-192 package/version records; 154 distinct crate names.
+196 package/version records; 157 distinct crate names.
 
 Licenses are the declarations of the pinned versions, read from the package archives in
 the Cargo cache. No build downloads the packages marked †; their licenses are from the
@@ -48,6 +48,7 @@ package in it must appear either in the complete inventory or here.
 | [cookie](https://crates.io/crates/cookie/0.18.2) | 0.18.2 | MIT OR Apache-2.0 | html-viewer | needed only by `cookie_store` 0.22.1, not selected either |
 | [cookie_store](https://crates.io/crates/cookie_store/0.22.1) | 0.22.1 | MIT OR Apache-2.0 | html-viewer | optional in `ureq` 3.5.1, not enabled |
 | [core-foundation](https://crates.io/crates/core-foundation/0.9.4) | 0.9.4 | MIT OR Apache-2.0 | app, renderer-tests | used only on macOS, iOS |
+| [core-foundation](https://crates.io/crates/core-foundation/0.10.1) | 0.10.1 | MIT OR Apache-2.0 | app | needed only by `security-framework` 3.7.0, not selected either |
 | [core-foundation-sys](https://crates.io/crates/core-foundation-sys/0.8.7) | 0.8.7 | MIT OR Apache-2.0 | app, renderer-tests | app: used only on macOS, iOS; renderer-tests: needed only by `core-foundation` 0.9.4, not selected either |
 | [core-graphics](https://crates.io/crates/core-graphics/0.23.2) | 0.23.2 | MIT OR Apache-2.0 | app, renderer-tests | used only on macOS |
 | [core-graphics-types](https://crates.io/crates/core-graphics-types/0.1.3) | 0.1.3 | MIT OR Apache-2.0 | app, renderer-tests | needed only by `core-graphics` 0.23.2, not selected either |
@@ -154,6 +155,9 @@ package in it must appear either in the complete inventory or here.
 | [redox_syscall](https://crates.io/crates/redox_syscall/0.9.5) | 0.9.5 | MIT | app | needed only by `libredox` 0.1.25, not selected either |
 | [rustversion](https://crates.io/crates/rustversion/1.0.22) | 1.0.22 | MIT OR Apache-2.0 † | renderer-tests | needed only by `num_enum` 0.7.6, `wasm-bindgen` 0.2.127, not selected either |
 | [rustybuzz](https://crates.io/crates/rustybuzz/0.20.1) | 0.20.1 | MIT | renderer-tests | optional in `femtovg` 0.27.0, not enabled |
+| [schannel](https://crates.io/crates/schannel/0.1.30) | 0.1.30 | MIT | app | used only on Windows by `rustls-native-certs` 0.8.5, which only Linux selects |
+| [security-framework](https://crates.io/crates/security-framework/3.7.0) | 3.7.0 | MIT OR Apache-2.0 | app | used only on macOS, iOS |
+| [security-framework-sys](https://crates.io/crates/security-framework-sys/2.17.0) | 2.17.0 | MIT OR Apache-2.0 | app | needed only by `security-framework` 3.7.0, not selected either |
 | [serde](https://crates.io/crates/serde/1.0.228) | 1.0.228 | MIT OR Apache-2.0 | renderer-tests | declared under `cfg(any())`, which never holds; optional in `codespan-reporting` 0.13.1, `femtovg` 0.27.0, 4 more, not enabled |
 | [serde_derive](https://crates.io/crates/serde_derive/1.0.228) | 1.0.228 | MIT OR Apache-2.0 | renderer-tests | declared under `cfg(any())`, which never holds |
 | [shlex](https://crates.io/crates/shlex/1.3.0) | 1.3.0 | MIT OR Apache-2.0 | app | needed only by `bindgen` 0.72.1, not selected either |

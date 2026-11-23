@@ -139,7 +139,8 @@ nothing behind when it is refused.
 ## Distribution archives
 
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, plus a
-`SHA256SUMS` file: the [0.1.0](releases/0.1.0.md) and [0.5.0](releases/0.5.0.md) previews. Linux archives
+`SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
+([signing](#signing-the-release)): the [0.1.0](releases/0.1.0.md) and [0.5.0](releases/0.5.0.md) previews. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable is unsigned: the archive checksums establish download
 integrity, not code signing.
@@ -264,3 +265,30 @@ artifacts, run the unpacked executables' filesystem and UI smoke checks, inspect
 ELF requirements and the archive paths and permissions, and verify `SHA256SUMS`. Do not
 include private preferences, caches, toolchains, PDBs or generated intermediate
 objects.
+
+### Signing the release
+
+The update check installs only releases whose `SHA256SUMS` is signed with the
+project's release key ([Updates](developer/UPDATES.md#trust)). With both archives in
+one folder, on the owner's machine (Python 3.11 or later, standard library only):
+
+```powershell
+python -B scripts/release-signing.py checksums `
+    _build/releases/v0.5.1/midnight-explorer-0.5.1-x86_64-pc-windows-msvc.zip `
+    _build/releases/v0.5.1/midnight-explorer-0.5.1-x86_64-unknown-linux-gnu.tar.gz
+python -B scripts/release-signing.py sign --version 0.5.1 `
+    --secret-key <path outside every checkout>\midnight-explorer-release.key `
+    _build/releases/v0.5.1/SHA256SUMS
+python -B scripts/release-signing.py verify --version 0.5.1 _build/releases/v0.5.1/SHA256SUMS
+```
+
+`checksums` writes `SHA256SUMS` (`<sha256>  <archive name>` lines). `sign` asks for the
+key's password, writes `SHA256SUMS.minisig` with the trusted comment
+`timestamp:<now> file:SHA256SUMS release:midnight-explorer-<version>`, verifies it and
+refuses a secret key inside the repository or one that does not belong to
+`packaging/update-signing.pub`. `verify` checks the pair against the repository's
+public key. Upload `SHA256SUMS` and `SHA256SUMS.minisig` with the archives; the asset
+names must stay exactly these. The version must be the workspace version that the
+archives' `BUILD-INFO.json` reports, and the public key in the tagged commit must be
+the one the release was signed with. The key pair is created once with
+`generate-key` (see [Keys](developer/UPDATES.md#keys)).

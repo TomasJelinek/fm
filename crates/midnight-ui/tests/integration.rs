@@ -209,6 +209,7 @@ mod tree_user_commands;
 mod tree_viewers;
 mod tree_watch;
 mod unix_permissions;
+mod update_dialog;
 mod user_command_settings_ui;
 mod user_command_toolbar;
 mod user_menu_forms_ui;

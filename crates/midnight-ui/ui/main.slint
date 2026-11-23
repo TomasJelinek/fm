@@ -5,7 +5,8 @@ import { EmbeddedOperation, OperationPresentation } from "embedded-operation.sli
 import { EmbeddedFileList, FileListPresentation } from "embedded-file-list.slint";
 import { EmbeddedNotice, NoticePresentation } from "embedded-notice.slint";
 import { InstallationNotice, InstallationNoticePresentation } from "installation-notice.slint";
-export { PanelFilterPresentation, PanelChoices, ArchivePasswords, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, InstallationNoticePresentation, PopupFocus }
+import { EmbeddedUpdate, UpdateState } from "update-controls.slint";
+export { PanelFilterPresentation, PanelChoices, ArchivePasswords, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, InstallationNoticePresentation, PopupFocus, UpdateState }
 import { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths } from "find-window.slint";
 export { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths }
 import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft, ChecksumColumnWidths } from "checksum-window.slint";
@@ -120,7 +121,7 @@ export component MainWindow inherits Window {
     // A panel's hold ended: replay its waiting keys.
     callback release-held-keys();
     out property <bool> modal-overlay-open: filter-overlay.active || hot-paths-overlay.active
-        || operation-overlay.active || file-list-overlay.active || notice-overlay.active;
+        || operation-overlay.active || file-list-overlay.active || notice-overlay.active || update-overlay.active;
     out property <bool> embedded-modal-open: root.modal-overlay-open
         || root.options-open || root.about-open || root.comparison-open || root.metadata-token != "";
     changed embedded-modal-open => {
@@ -1187,10 +1188,8 @@ export component MainWindow inherits Window {
                         max(max(0px, self.width) * 0.5, min(320px, self.width - 120px)));
                     private property <length> prompt-width: root.command-directory == "" ? 0px
                         : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve));
-                    // A scrolled prompt shows the folder's start and an ellipsis over the
-                    // strip's start: at most 100px or 30% of the strip, and at least two
-                    // characters, which a start cut shorter would not show. Without room for
-                    // that and a character of the scrolled end, it shows no start.
+                    // A scrolled prompt shows the folder's start (≤ 100px or 30%, ≥ 2
+                    // characters) and an ellipsis, if a character of the end fits too.
                     private property <length> start-room: max(Theme.small-font * 2,
                         min(100px, cwd-scroll.width * 0.3) - 4px);
                     private property <length> start-width: cwd-scroll.content-x < -0.5px
@@ -1464,7 +1463,7 @@ export component MainWindow inherits Window {
             }
         }
     }
-    // About lives inside the main window like the other embedded dialogs; no OS frame.
+    // About is embedded like the other dialogs; no OS frame.
     about-popup := PopupWindow {
         close-policy: no-auto-close;
         x: 0px; y: 0px; width: root.width; height: root.height;
@@ -1647,4 +1646,5 @@ export component MainWindow inherits Window {
     filter-overlay := EmbeddedPanelFilter { x: 0px; y: 0px; width: root.width; height: root.height; }
     hot-paths-overlay := EmbeddedHotPaths { x: 0px; y: 0px; width: root.width; height: root.height; }
     notice-overlay := EmbeddedNotice { x: 0px; y: 0px; width: root.width; height: root.height; }
+    update-overlay := EmbeddedUpdate { x: 0px; y: 0px; width: root.width; height: root.height; }
 }

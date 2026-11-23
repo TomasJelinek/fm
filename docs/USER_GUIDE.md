@@ -1460,6 +1460,51 @@ Progress and scan completion update values without reordering rows; explicitly
 sort again to apply newly completed sizes to the order.
 Quick drive/location buttons sit beside the drive dropdown.
 
+## Updates
+
+The toolbar's update button, between the actions and Options, shows whether a newer
+version exists: its tooltip says "Check for updates", "Checking for updates…",
+"Version X is available" (with an accent dot), the download progress, "Restart to
+update to version X" (with an accent dot) or why the last step failed (with a red dot).
+Click it, or **Check for updates** in About, to open the update dialog:
+
+- **Check now** asks GitHub for the newest release.
+- **Download and install** downloads the offered version in the background, checks
+  its signature and checksums, and prepares it; nothing changes yet, and you can keep
+  working or close the dialog with **Later**.
+- **Restart now** closes Midnight Explorer the usual way (running jobs are offered
+  first), installs the new version into the same folder and starts it again with the
+  same panels and tabs. If the new version does not start correctly, the previous
+  version is restored and started, and the dialog says why.
+- **Skip this version** stops the startup check from mentioning that version; Check
+  now still shows it.
+- **Open release page** shows the release on GitHub in your browser, with its full
+  notes and downloads.
+
+Options › General › Updates has two choices, both on by default:
+
+- **Check for updates at startup:** about 5 seconds after the window opens, at most
+  once a day, ask GitHub whether a newer version exists. It only shows the button's
+  dot; nothing is downloaded or installed until you choose to.
+- **Include preview releases:** offer releases that GitHub marks as previews. Every
+  release so far is a preview, so turning this off waits for the first stable release.
+
+**What is sent:** the check is an HTTPS request to `api.github.com`; downloads come
+from `github.com` and GitHub's download servers (`objects.githubusercontent.com`,
+`release-assets.githubusercontent.com`). The only header that identifies anything is
+`User-Agent: Midnight-Explorer/<version>`; nothing about you, your files or your
+settings is sent, but GitHub sees your IP address, as for any visit. With the startup
+check off, Midnight Explorer contacts no server unless you open the update dialog and
+check, download or open the release page.
+
+**Which copies update themselves:** an extracted release folder that your account can
+change. A copy installed by an administrator (for example below `C:\Program Files` or
+`/opt`), a development build and a copy from another package manager show the reason
+and offer the release page instead; Midnight Explorer never asks for administrator
+rights to update. Builds made without the project's release key install no updates.
+The details, including the signature checks, are in
+[Updates](developer/UPDATES.md).
+
 ## Build output and version control
 
 Build products and diagnostic output share the ignored `_build/` root. Cargo's

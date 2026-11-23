@@ -22,6 +22,7 @@ mod file_comparators;
 mod file_list;
 mod foreign;
 mod thumbnailer_associations;
+mod updates;
 mod user_commands;
 mod viewer_associations;
 mod viewers;
@@ -50,13 +51,15 @@ mod scroll_glide_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod updates_tests;
+#[cfg(test)]
 mod user_command_output_tests;
 #[cfg(test)]
 mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 39;
+const CURRENT_PREFERENCES_VERSION: u32 = 40;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +79,13 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     wheel_speed: Option<u16>,
+    /// Schema 40: the update check choices, written only when one of them is off.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    updates: Option<updates::StoredUpdates>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -527,6 +537,7 @@ fn decode_preferences_impl(
     if stored.version == 38 && stored.wheel_speed.is_none() {
         return Err(invalid("missing schema 38 preferences"));
     }
+    let updates = updates::decode(stored.version, stored.updates)?;
     let wheel_speed = match (stored.version, stored.wheel_speed) {
         (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::WheelSpeed::default(),
         (38..=CURRENT_PREFERENCES_VERSION, Some(percent)) => {
@@ -979,6 +990,7 @@ fn decode_preferences_impl(
         glyph_fitting,
         scroll_glide,
         wheel_speed,
+        updates,
         shortcuts,
         panel_filters,
         panel_filter_history: match (stored.version, stored.panel_filter_history) {
@@ -1083,7 +1095,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         .iter()
         .any(|command| command.output != midnight_core::UserCommandOutput::default())
         || (foreign_commands && user_commands::kept_output(&foreign_settings)?);
-    // Schemas 35 to 39 keep every field that versions 33 and 34 require.
+    // Schema 40: update choices (off-by-default values only).
+    let update_choices = preferences.updates != midnight_core::UpdatePreferences::default();
+    // Schemas 35 to 40 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
@@ -1091,7 +1105,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || layout_choices
         || glide_choices
         || speed_choices
-        || output_choices;
+        || output_choices
+        || update_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1169,6 +1184,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let stored = StoredPreferences {
         scroll_glide: glide_choices.then_some(preferences.scroll_glide.percent()),
         wheel_speed: speed_choices.then_some(preferences.wheel_speed.percent()),
+        updates: update_choices.then(|| updates::StoredUpdates::from(preferences.updates)),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),
@@ -1228,7 +1244,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if output_choices {
+        version: if update_choices {
+            40
+        } else if output_choices {
             39
         } else if speed_choices {
             38

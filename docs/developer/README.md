@@ -118,6 +118,7 @@ application services remain separate from independently developed plugin APIs.
 | [Custom Commands](USER_COMMANDS.md) | The Custom Commands backend: arguments, templates and processes. |
 | [Custom Command settings](USER_COMMAND_SETTINGS.md) | The Custom Commands page of Options. |
 | [Dialog ergonomics](DIALOG_ERGONOMICS.md) | Dialogs, settings forms and their keyboard handling. |
+| [Updates](UPDATES.md) | The update check: protocol, signatures, staging, the installation swap, rollback and the release key. |
 | **Testing and workflow** | |
 | [Test execution](TEST_EXECUTION.md) | Validation scripts, CI jobs and parallel targeted tests. |
 | [Acceptance suite](ACCEPTANCE.md) | The opt-in end-to-end acceptance suite: running it, fixtures and scenarios. |

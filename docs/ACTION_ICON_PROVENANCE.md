@@ -19,8 +19,9 @@ The design references were official guidance, not copied assets:
 
 Artwork lives in crates/midnight-ui/ui/icons/. The colored command names are
 checksums, compare-files, compare-directories, filter, find, folder-sizes, view,
-star, bookmark-add, copy, move, help, settings and attributes. Each has an
-original .svg light variant and a -dark.svg variant.
+star, bookmark-add, copy, move, help, settings, attributes and update (a circular
+arrow around a download arrow, added 23 November 2026). Each has an original .svg
+light variant and a -dark.svg variant.
 
 Action glyphs share one style in every window and on every platform: labelled
 buttons (dialogs, Find, Jobs, the viewer and the comparator included), toolbar

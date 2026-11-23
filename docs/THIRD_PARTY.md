@@ -12,15 +12,15 @@ here is distributed under its own license.
 
 ## Inventories
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **71** package/version
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **78** package/version
   records declared by project crates, including build and test tools.
-- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **665**
-  package/version/source records with **546** distinct crate names, including
+- [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **673**
+  package/version/source records with **551** distinct crate names, including
   transitive dependencies.
 - [Machine-readable CSV](dependencies/cargo-licenses.csv): the complete inventory with
   license, source, workspaces, targets and direct dependants. The About dialog is built
   from it ([distribution notices](#distribution-notices)).
-- [Lock file entries outside the inventory](dependencies/LOCKFILE_ONLY.md): **192**
+- [Lock file entries outside the inventory](dependencies/LOCKFILE_ONLY.md): **196**
   records that the lock files pin but no captured target selects, such as dependencies
   for Android, Apple platforms or WebAssembly and optional dependencies that are off.
 - [Office preview notices](dependencies/OFFICE_PREVIEW_NOTICES.md) and the separate
@@ -50,6 +50,28 @@ lock file's checksum. A regeneration from Cargo's own captures
 ([below](#regenerating-the-inventory)) remains the reference.
 
 ## License notes
+
+### Update check
+
+The update check (`midnight-update`, [Updates](developer/UPDATES.md)) added on 23
+November 2026: `minisign-verify` 0.3.0 (MIT; no dependencies, its own Ed25519 and
+BLAKE2b) on both systems; on Linux only, `ureq` 3.5.2 (MIT OR Apache-2.0) with the
+features `rustls-no-provider` only, `rustls` 0.23.46 (Apache-2.0 OR ISC OR MIT) with
+`ring`, `std`, `tls12` and `logging`, `ring` 0.17.14 (Apache-2.0 AND ISC; its
+`LICENSE`, `LICENSE-BoringSSL` and `LICENSE-other-bits` checked: the BoringSSL-derived
+code is Apache-2.0 or ISC, with no OpenSSL or SSLeay license text, and its `once_cell`
+polyfill is MIT OR Apache-2.0), `rustls-native-certs` 0.8.5 (Apache-2.0 OR ISC OR MIT)
+with `openssl-probe` 0.2.2 (MIT OR Apache-2.0, which only locates certificate files and
+links no OpenSSL), `rustls-webpki` 0.103.17 and `untrusted` 0.9.0 (ISC), and
+`rustls-pki-types`, `http`, `httparse`, `ureq-proto`, `utf8-zero` and `getrandom` 0.2.17
+(MIT OR Apache-2.0). No certificate bundle (`webpki-roots`) and no OpenSSL are linked;
+Windows uses WinHTTP through the existing `windows-sys`. `semver`, `sha2`, `zip`,
+`flate2`, `tar` and `serde_json` were already in the lock file. Tests only:
+`ed25519-compact` 2.6.1 (MIT, default features off) and `blake2` 0.10.6 (MIT OR
+Apache-2.0) sign throwaway test keys. `schannel`, `security-framework` and
+`core-foundation` 0.10.1 are lock-file entries that no captured target selects. The
+inventory tables were updated for the application workspace from Cargo trees of both
+targets before and after the change; the other workspaces are unchanged.
 
 ### Slint
 

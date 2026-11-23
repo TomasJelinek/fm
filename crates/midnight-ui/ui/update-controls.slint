@@ -1,0 +1,289 @@
+import { Theme } from "theme.slint";
+import { NavigationButton } from "navigation-controls.slint";
+import { HintedActionButton } from "hinted-inputs.slint";
+import { VScrollView } from "scroll-view.slint";
+import { DialogFrame, DialogHeader, PopupFocus } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { FormNote } from "form-note.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+// The update check (docs/developer/UPDATES.md). The backend owns every state; this file
+// shows it: the toolbar button beside Options and About, and the update dialog.
+export global UpdateState {
+    // 0 idle, 1 checking, 2 up to date, 3 available, 4 downloading, 5 verifying,
+    // 6 ready to install, 7 failed.
+    in property <int> phase;
+    in property <string> current-version;
+    in property <string> latest-version;
+    in property <string> notes;
+    in property <bool> notes-cut;
+    in property <bool> preview;
+    in property <bool> skipped;
+    in property <string> published;
+    in property <string> last-checked;
+    // The failure of the last step, while `phase` is 7.
+    in property <string> message;
+    // Why this copy or this release is not installed automatically; the release page
+    // is offered instead of Download and install.
+    in property <string> blocked;
+    // How the last update went, shown once after it.
+    in property <string> notice;
+    in property <float> progress;
+    in property <string> progress-text;
+    in property <bool> has-release-page;
+    // Options › General › Updates, part of the Options draft.
+    in-out property <bool> check-at-startup: true;
+    in-out property <bool> include-previews: true;
+    callback options-changed(bool, bool);
+    // Non-empty while the dialog is open; each opening has a new one.
+    in-out property <string> token;
+    callback open-dialog(bool);
+    callback close-dialog();
+    callback check-now();
+    callback download();
+    callback restart();
+    callback skip();
+    callback open-release-page();
+    out property <bool> offer: (root.phase == 3 || root.phase == 4 || root.phase == 5 || root.phase == 6)
+        && root.latest-version != "";
+    // The button's tooltip and accessible name.
+    out property <string> status:
+        root.phase == 1 ? "Checking for updates…"
+        : root.phase == 2 ? "Midnight Explorer " + root.current-version + " is up to date"
+        : root.phase == 3 ? "Version " + root.latest-version + " is available"
+        : root.phase == 4 ? "Downloading version " + root.latest-version + ": " + Math.round(root.progress * 100) + "%"
+        : root.phase == 5 ? "Verifying version " + root.latest-version + "…"
+        : root.phase == 6 ? "Restart to update to version " + root.latest-version
+        : root.phase == 7 ? "Update failed: " + root.message
+        : "Check for updates";
+}
+
+// The toolbar button. A dot marks an available or ready update (accent) or a failure
+// (error colour); a line along the bottom shows checking and download progress.
+export component UpdateButton inherits Rectangle {
+    in property <bool> press-cancelled;
+    private property <int> phase: UpdateState.phase;
+    private property <bool> busy: self.phase == 1 || self.phase == 5;
+    button := NavigationButton {
+        width: root.width; height: root.height;
+        icon: Theme.light ? @image-url("icons/update.svg") : @image-url("icons/update-dark.svg");
+        accessible-label: UpdateState.status;
+        hint: root.phase == 0 || root.phase == 2 ? "Check for updates"
+            : root.phase == 7 ? UpdateState.status + "\nClick to try again."
+            : UpdateState.status;
+        press-cancelled: root.press-cancelled;
+        // Opening checks unless a check, download or install is under way or found something.
+        clicked => { UpdateState.open-dialog(root.phase == 0 || root.phase == 2 || root.phase == 7); }
+    }
+    if (root.phase == 3 && !UpdateState.skipped) || root.phase == 6 || root.phase == 7 : Rectangle {
+        x: root.width - self.width - 3px; y: 3px;
+        width: 8px; height: 8px; border-radius: 4px;
+        border-width: 1px; border-color: Theme.window-background;
+        background: root.phase == 7 ? Theme.error-text : Theme.accent;
+    }
+    if root.busy || root.phase == 4 : Rectangle {
+        x: 4px; y: root.height - 4px; width: root.width - 8px; height: 2px;
+        border-radius: 1px; background: Theme.frame; clip: true;
+        Rectangle {
+            private property <float> sweep: Math.mod(animation-tick() / 1ms, 1200) / 1200;
+            x: root.busy ? (parent.width + self.width) * self.sweep - self.width : 0px;
+            width: root.busy ? parent.width * 0.4 : parent.width * clamp(UpdateState.progress, 0, 1);
+            height: parent.height; border-radius: 1px; background: Theme.accent;
+        }
+    }
+}
+
+component Fact inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <length> label-width: 120px;
+    spacing: 8px;
+    Text { text: root.label; color: Theme.secondary-text; font-size: Theme.small-font; width: root.label-width; vertical-alignment: top; }
+    Text { text: root.value; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; horizontal-stretch: 1; }
+}
+
+// The dialog: versions, release notes, and the action that fits the state.
+export component UpdateDialog inherits Rectangle {
+    in property <bool> input-enabled: true;
+    callback move-dialog(length, length);
+    private property <int> phase: UpdateState.phase;
+    private property <bool> compact: root.height < 300px;
+    private property <bool> installable: UpdateState.blocked == "";
+    // The primary action: 1 download, 2 restart, 3 release page, 4 check.
+    private property <int> primary:
+        root.phase == 6 ? 2
+        : root.phase == 3 && root.installable ? 1
+        : root.phase == 3 ? 3
+        : root.phase == 4 || root.phase == 5 || root.phase == 1 ? 0
+        : 4;
+    private property <string> headline:
+        root.phase == 1 ? "Checking GitHub for a newer version…"
+        : root.phase == 2 ? "Midnight Explorer is up to date."
+        : root.phase == 3 ? "Version " + UpdateState.latest-version + " is available."
+        : root.phase == 4 ? "Downloading version " + UpdateState.latest-version + "…"
+        : root.phase == 5 ? "Verifying the signature and unpacking version " + UpdateState.latest-version + "…"
+        : root.phase == 6 ? "Version " + UpdateState.latest-version + " is ready. Restart Midnight Explorer to finish the update."
+        : root.phase == 7 ? "The update did not succeed."
+        : "Check GitHub for a newer version of Midnight Explorer.";
+    public function begin() {
+        if root.primary != 0 { main.focus(); } else { footer.focus-dismiss(); }
+    }
+    // The focused button may disappear when the state changes; keep the keyboard.
+    changed primary => { root.begin(); }
+    background: Theme.surface; border-radius: 8px;
+    border-width: 1px; border-color: Theme.active-frame;
+    accessible-role: groupbox;
+    accessible-label: "Software update";
+    FocusScope {
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if root.input-enabled && event.text == Key.Escape { UpdateState.close-dialog(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: root.compact ? 8px : 16px; spacing: root.compact ? 4px : 10px;
+            DialogHeader {
+                title: "Software update";
+                fallback-icon: Theme.light ? @image-url("icons/update.svg") : @image-url("icons/update-dark.svg");
+                compact: root.compact; enabled: root.input-enabled;
+                close-label: "Close";
+                close => { UpdateState.close-dialog(); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            VScrollView {
+                min-height: 0px; vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: root.compact ? 6px : 10px; alignment: start; padding-right: 6px;
+                    Text {
+                        text: root.headline; color: Theme.strong-text; wrap: word-wrap;
+                        font-size: Theme.font-size * 1.1; font-weight: 600;
+                        accessible-role: text;
+                    }
+                    if root.phase == 4 : VerticalLayout {
+                        spacing: 4px;
+                        Rectangle {
+                            height: 6px; border-radius: 3px; background: Theme.secondary-surface; clip: true;
+                            accessible-role: progress-indicator;
+                            accessible-value: Math.round(UpdateState.progress * 100) + "%";
+                            Rectangle {
+                                x: 0px; height: parent.height; border-radius: 3px; background: Theme.accent;
+                                width: parent.width * clamp(UpdateState.progress, 0, 1);
+                            }
+                        }
+                        Text { text: UpdateState.progress-text; color: Theme.secondary-text; font-size: Theme.small-font; }
+                    }
+                    if root.phase == 7 : FormNote { text: UpdateState.message; error: true; }
+                    if UpdateState.notice != "" : FormNote { text: UpdateState.notice; }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Fact { label: "Installed version"; value: UpdateState.current-version; }
+                        if UpdateState.latest-version != "" : Fact {
+                            label: "Newest version";
+                            value: UpdateState.latest-version
+                                + (UpdateState.preview ? " (preview)" : "")
+                                + (UpdateState.published != "" ? ", published " + UpdateState.published : "")
+                                + (UpdateState.skipped ? ", skipped" : "");
+                        }
+                        if UpdateState.last-checked != "" : Fact { label: "Last checked"; value: UpdateState.last-checked; }
+                    }
+                    if UpdateState.blocked != "" && (UpdateState.offer || root.phase == 0 || root.phase == 2) : FormNote {
+                        text: UpdateState.blocked;
+                    }
+                    if UpdateState.notes != "" && UpdateState.offer : VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "What's new"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
+                        Rectangle {
+                            background: Theme.secondary-surface; border-radius: 4px;
+                            VerticalLayout {
+                                padding: 8px;
+                                Text {
+                                    text: UpdateState.notes + (UpdateState.notes-cut ? "\n…" : "");
+                                    color: Theme.text; font-size: Theme.small-font; wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                    if UpdateState.has-release-page && UpdateState.latest-version != "" && root.primary != 3 : HorizontalLayout {
+                        alignment: start;
+                        HintedActionButton {
+                            text: "Open release page"; fallback-icon: FallbackIcons.view;
+                            enabled: root.input-enabled; primary: root.primary == 3;
+                            hint: "Show the full release notes and downloads on GitHub in your browser.";
+                            clicked => { UpdateState.open-release-page(); }
+                        }
+                    }
+                    Text {
+                        text: "Checking asks api.github.com over HTTPS for the list of releases; downloads come from github.com. Nothing about you or your files is sent. Updates are installed only when their signature matches the Midnight Explorer release key.";
+                        color: Theme.secondary-text; font-size: Theme.small-font; wrap: word-wrap;
+                    }
+                }
+            }
+            footer := DialogFooter {
+                compact-height: root.compact;
+                dismiss-enabled: root.input-enabled;
+                dismiss-text: root.phase == 3 || root.phase == 4 || root.phase == 6 ? "Later" : "Close";
+                dismiss-hint: root.phase == 4 ? "Close this dialog; the download continues (Escape)." : "Close this dialog (Escape).";
+                dismiss => { UpdateState.close-dialog(); }
+                if root.phase == 3 && !UpdateState.skipped : HintedActionButton {
+                    text: "Skip this version"; enabled: root.input-enabled;
+                    hint: "Do not mention version " + UpdateState.latest-version + " again at startup. Check now still shows it.";
+                    clicked => { UpdateState.skip(); }
+                }
+                main := HintedActionButton {
+                    text: root.primary == 1 ? "Download and install"
+                        : root.primary == 2 ? "Restart now"
+                        : root.primary == 3 ? "Open release page"
+                        : root.primary == 4 ? "Check now"
+                        // Busy: the step under way, disabled.
+                        : root.phase == 1 ? "Checking…"
+                        : root.phase == 4 ? "Downloading…"
+                        : "Verifying…";
+                    primary: true; enabled: root.input-enabled && root.primary != 0;
+                    hint: root.primary == 1 ? "Download the new version in the background, check its signature and prepare it. Nothing changes until you restart."
+                        : root.primary == 2 ? "Close Midnight Explorer, install the new version and open it again with the same panels and tabs."
+                        : root.primary == 3 ? "Show the release on GitHub in your browser to download it there."
+                        : "Ask GitHub for the newest release now.";
+                    clicked => {
+                        if root.primary == 1 { UpdateState.download(); }
+                        else if root.primary == 2 { UpdateState.restart(); }
+                        else if root.primary == 3 { UpdateState.open-release-page(); }
+                        else if root.primary == 4 { UpdateState.check-now(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Hosts the dialog in the main window's popup stack while `UpdateState.token` is set.
+export component EmbeddedUpdate inherits Rectangle {
+    private property <string> token: UpdateState.token;
+    out property <bool> active: root.token != "";
+    background: transparent;
+    changed token => {
+        PopupFocus.update();
+        if root.token != "" { update-popup.close(); update-popup.show(); }
+        else { update-popup.close(); }
+        PopupFocus.update();
+    }
+    update-popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        update-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(520px, Theme.font-size * 30);
+            desired-height: max(460px, Theme.font-size * 30);
+            dim: true; dismiss-on-outside: false;
+            init => { self.reset(); }
+            dismiss => { UpdateState.close-dialog(); }
+            UpdateDialog {
+                x: 0px; y: 0px;
+                width: update-frame.body-width; height: update-frame.body-height;
+                private property <string> occurrence;
+                input-enabled: self.occurrence == UpdateState.token;
+                init => { self.occurrence = UpdateState.token; self.begin(); }
+                move-dialog(dx, dy) => { update-frame.move-by(dx, dy); }
+            }
+        }
+    }
+}

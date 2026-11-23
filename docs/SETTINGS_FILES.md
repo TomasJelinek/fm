@@ -173,8 +173,8 @@ saves to the current location; it never changes the old file.
   when indentation would pass the limit) and end with a newline. The whole file is
   at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 38. When saving or exporting, it writes the lowest version that can
-  hold the settings, at most 38. The latest schemas added:
+  versions 1 to 40. When saving or exporting, it writes the lowest version that can
+  hold the settings, at most 40. The latest schemas added:
   - 33: `file_comparators`, the external comparison rules;
   - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
   - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
@@ -189,11 +189,23 @@ saves to the current location; it never changes the old file.
     percentage of the system's wheel notch: `50` (Very slow), `75`, `150` or `200`
     (Very fast). It is written only when it is not the default Medium (`100`); a file
     without it, including every file of an earlier schema, reads as Medium. Other
-    numbers are refused.
+    numbers are refused;
+  - 39: `invocation.output` of a Run directly (Program) Custom Command: where its output
+    goes (`{"window": "hidden"|"output"|"console", "close_on_success": <bool>}`), written
+    only when it is not the default Hidden; a command without it, including every command
+    of an earlier schema, reads as Hidden;
+  - 40: `updates`, Options › General › **Updates**:
+    `{"check_at_startup": <bool>, "previews": <bool>}` (Check for updates at startup,
+    Include preview releases). It is written only when one of them is off; a file
+    without it, including every file of an earlier schema, reads as both on, so
+    settings saved before this version get the startup check.
 
-  A version is written only for a setting that needs it, so a schema 34, 35, 36, 37 or
-  38 file without any of that version's new fields is refused, and so is a field in a
-  schema older than the one that added it.
+  A version is written only for a setting that needs it, so a schema 34, 35, 36, 37, 38,
+  39 or 40 file without any of that version's new fields is refused, and so is a field in a
+  schema older than the one that added it. The update check's own state (the last check,
+  GitHub's retry time and a skipped version) is not a setting: it is kept in
+  `update-state.json` in the private update folder
+  ([Updates](developer/UPDATES.md#check)).
 - The other top-level fields belong to that schema version. A field that the
   version does not define is an error, not ignored.
 - Native paths are stored losslessly. A path that is valid Unicode is a JSON string.

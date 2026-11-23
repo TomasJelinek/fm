@@ -24,6 +24,9 @@ use windows_sys::Win32::{
 const APPLICATION_DIRECTORY: &str = "Midnight Explorer";
 // Kept verbatim for migration from releases before the application was renamed.
 const LEGACY_APPLICATION_DIRECTORY: &str = "FM";
+/// Debug builds only: an absolute folder that replaces LocalAppData for the profile.
+#[cfg(debug_assertions)]
+const TEST_DATA_ROOT: &str = "MIDNIGHT_TEST_DATA_ROOT";
 
 fn preferences_path(base: &Path) -> io::Result<PathBuf> {
     if !base.is_absolute() {
@@ -36,6 +39,13 @@ fn preferences_path(base: &Path) -> io::Result<PathBuf> {
 }
 
 pub(crate) fn native_preferences_path() -> io::Result<PathBuf> {
+    // Debug builds only: a local end-to-end run keeps the whole profile (settings and
+    // the command artwork beside them) below a test folder and never touches the
+    // user's LocalAppData. Release builds ignore the variable.
+    #[cfg(debug_assertions)]
+    if let Some(root) = std::env::var_os(TEST_DATA_ROOT) {
+        return preferences_path(Path::new(&root));
+    }
     let _com = crate::desktop::ComGuard::initialize(COINIT_MULTITHREADED as u32)
         .ok_or_else(|| io::Error::other("Cannot initialize native configuration lookup"))?;
     let base = crate::desktop::known_folder(&FOLDERID_LocalAppData)

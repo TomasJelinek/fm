@@ -43,6 +43,21 @@ How to read it:
   [Windows acceptance record](developer/acceptance/windows.md); the area records below
   list the runs on both systems.
 
+## Updates
+
+- **Windows and Linux:** the toolbar's update button and About's Check for updates open
+  the update dialog: check GitHub's releases (previews included by default), download in
+  the background on Download and install, verify the minisign signature of
+  `SHA256SUMS` with the built-in release key, the archive's SHA-256 and the staged
+  `BUILD-INFO.json`, and install on Restart now, restoring the previous version when the
+  new one does not confirm its start. Options › General › Updates: Check for updates at
+  startup (on) and Include preview releases (on); schema 40. Releases from 0.5.1 on are signed with the
+  owner's release key, whose public half is built in.
+- **Open:** copies that only administrators can change are not updated in place.
+- **Documents:** [updates](developer/UPDATES.md), [user guide](USER_GUIDE.md#updates),
+  [security](../SECURITY.md#update-check), [release signing](RELEASE_BUILD.md#signing-the-release).
+- **Verified:** [update check record](verification/2026-11-23-update-check.md).
+
 ## Panels and navigation
 
 - **Windows and Linux:** two panels with tabs; history (Alt+Left, Alt+Right and the

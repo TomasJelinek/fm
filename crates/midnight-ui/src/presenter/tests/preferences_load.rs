@@ -100,6 +100,10 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
         glyph_fitting: Default::default(),
         scroll_glide: midnight_core::ScrollGlide::Long,
         wheel_speed: midnight_core::WheelSpeed::Fast,
+        updates: midnight_core::UpdatePreferences {
+            check_at_startup: false,
+            previews: false,
+        },
         desktop_font_size: 18,
         touch_font_size: 23,
         quick_search_filter: true,

@@ -1,0 +1,46 @@
+[package]
+name = "midnight-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+# All tests/*.rs files are modules of one binary; see tests/integration.rs.
+autotests = false
+
+# Update checks, signed downloads, staging and the installation swap
+# (docs/developer/UPDATES.md). The only network code of the application.
+[dependencies]
+minisign-verify = "=0.3.0"
+semver = "=1.0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "=0.10.9"
+zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+tar = { version = "=0.4.46", default-features = false }
+
+# WinHTTP: the system's HTTPS stack and certificate store, no TLS crate.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+
+# rustls with the ring provider and the distribution's certificate store; no OpenSSL.
+[target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "=0.8.5"
+
+[dev-dependencies]
+tempfile.workspace = true
+# Throwaway signing keys for the tests only; never part of the application.
+ed25519-compact = { version = "=2.6.1", default-features = false }
+blake2 = { version = "=0.10.6", default-features = false }
+
+# Everything is tested through the public API in tests/; no empty harnesses.
+[lib]
+test = false
+doctest = false
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
