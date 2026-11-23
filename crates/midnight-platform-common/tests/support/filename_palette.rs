@@ -66,6 +66,7 @@ fn reload(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
         .to_vec()
 }
 
+const SKY_BLUE: RgbColor = RgbColor(35, 170, 242);
 const CYAN: RgbColor = RgbColor(6, 164, 199);
 const BLUE: RgbColor = RgbColor(59, 130, 246);
 const WORD_DOCUMENTS: &str = "*.doc;*.docx;*.odt;*.rtf;*.epub";
@@ -95,8 +96,16 @@ fn interim_defaults() -> Vec<FilenameColorRule> {
     rules
 }
 
+// The palette shipped until 23 November 2026: cyan source code and blue documents and
+// text, with today's masks and other colors.
+fn cyan_source_defaults() -> Vec<FilenameColorRule> {
+    let mut rules = midnight_core::default_filename_colors();
+    rules[0].style.foreground = Some(CYAN);
+    rules
+}
+
 #[test]
-fn defaults_color_source_cyan_and_documents_and_text_blue() {
+fn defaults_color_source_sky_blue_and_documents_and_text_blue() {
     let current = midnight_core::default_filename_colors();
     let colors: Vec<_> = current
         .iter()
@@ -105,7 +114,7 @@ fn defaults_color_source_cyan_and_documents_and_text_blue() {
     assert_eq!(colors[3], (WORD_DOCUMENTS, Some(BLUE)));
     assert_eq!(colors[10], (PLAIN_TEXT, Some(BLUE)));
     assert!(colors[0].0.starts_with("*.rs;*.c;*.h;"), "{}", colors[0].0);
-    assert_eq!(colors[0].1, Some(CYAN));
+    assert_eq!(colors[0].1, Some(SKY_BLUE));
 }
 
 #[test]
@@ -114,9 +123,11 @@ fn unchanged_shipped_twelve_category_palettes_move_to_the_current_defaults() {
     for (name, old) in [
         ("blue source, neutral documents", twelve_category_defaults()),
         ("interim cyan", interim_defaults()),
+        ("cyan source, blue documents", cyan_source_defaults()),
     ] {
         let migrated = reload(old);
         assert_eq!(migrated, current, "{name}");
+        assert_eq!(migrated[0].style.foreground, Some(SKY_BLUE), "{name}");
         assert_eq!(reload(migrated), current, "{name}: migration is stable");
     }
 }
@@ -248,6 +259,35 @@ fn saved_customizations_of_the_twelve_category_palette_keep_their_colors() {
             _ => unreachable!(),
         }
         assert_eq!(reload(custom.clone()), custom, "customization {variation}");
+    }
+}
+
+#[test]
+fn saved_customizations_of_the_cyan_source_palette_keep_their_colors() {
+    let old = cyan_source_defaults();
+    for variation in 0..9 {
+        let mut custom = old.clone();
+        match variation {
+            0 => custom[7].style.foreground = Some(RgbColor(12, 34, 56)),
+            1 => custom[0].style.foreground = Some(RgbColor(6, 164, 200)),
+            2 => custom[0].enabled = false,
+            3 => custom[0].expression.push_str(";*.mdx"),
+            4 => custom[0].style.background = Some(RgbColor(1, 2, 3)),
+            5 => custom[3].style.foreground = Some(SKY_BLUE),
+            6 => custom.swap(0, 1),
+            7 => {
+                custom.pop();
+            }
+            8 => custom.push(rule("*.personal", RgbColor(1, 2, 3))),
+            _ => unreachable!(),
+        }
+        let migrated = reload(custom.clone());
+        assert_eq!(migrated, custom, "customization {variation}");
+        assert_eq!(
+            reload(migrated),
+            custom,
+            "customization {variation}: stable"
+        );
     }
 }
 

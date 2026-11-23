@@ -628,7 +628,7 @@ fn hex([r, g, b]: [u8; 3]) -> String {
 /// cursor fill, still at 4.5:1, while the marked rows keep their selection.
 fn selection_colours(context: &mut Context, failures: &mut Vec<String>) -> Result<(), String> {
     let folder = support::scratch(context, "selection-colours")?;
-    // `.zzz` is in no filename colour rule; `.txt` is (#06A4C7, Plain text).
+    // `.zzz` is in no filename colour rule; `.txt` is (#3B82F6, Plain text).
     for name in ["alpha.zzz", "beta.zzz", "gamma.zzz", "notes.txt"] {
         ps::write(&folder.join(name), name)?;
     }

@@ -683,11 +683,11 @@ fn default_palette_renders_every_category_with_contrast_in_every_theme_and_selec
                             contrast(ink, background) >= 4.5,
                             "{name}: theme {theme}, state {state}, active {active}, alternate {alternate}"
                         );
-                        // Source code is cyan #06A4C7, which dark themes show unchanged on
-                        // ordinary rows. Word documents and plain text/Markdown are blue
+                        // Source code is sky blue #23AAF2, which dark themes show unchanged
+                        // on ordinary rows. Word documents and plain text/Markdown are blue
                         // #3B82F6, which reaches 4.5:1 above like every category.
                         if index == 0 {
-                            assert_eq!(base, Color::from_rgb_u8(6, 164, 199), "{name}");
+                            assert_eq!(base, Color::from_rgb_u8(35, 170, 242), "{name}");
                             if state == 0 && !alternate && !window.global::<Theme>().get_light() {
                                 assert_eq!(ink, base, "{name}: dark theme {theme}");
                             }

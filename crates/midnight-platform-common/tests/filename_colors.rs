@@ -170,8 +170,8 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
         })
         .collect();
     assert_eq!(colors.len(), categories.len());
-    // Source code is cyan; Word documents and plain text with Markdown share the blue
-    // that source code had before.
+    // Source code is sky blue; Word documents and plain text with Markdown share the
+    // blue that source code had before it became cyan.
     let style = |red, green, blue| {
         Some(FilenameStyle {
             foreground: Some(RgbColor(red, green, blue)),
@@ -181,12 +181,16 @@ fn defaults_color_common_file_categories_and_preserve_folder_theme() {
     assert_eq!(
         ["main.rs", "letter.docx", "notes.md"]
             .map(|name| compiled.style(name.as_ref(), EntryKind::File)),
-        [style(6, 164, 199), style(59, 130, 246), style(59, 130, 246)]
+        [
+            style(35, 170, 242),
+            style(59, 130, 246),
+            style(59, 130, 246)
+        ]
     );
     for (names, expected) in [
         (
             &["main.RS", "Makefile", "config.json", "README.rs"][..],
-            "#06a4c7",
+            "#23aaf2",
         ),
         (&["movie.MP4", "clip.mkv"][..], "#8b5cf6"),
         (&["report.pdf", "BOOK.PDF"][..], "#ef5a5a"),

@@ -4,8 +4,9 @@ use std::{collections::HashMap, sync::Arc};
 
 pub const MAX_FILENAME_COLOR_RULES: usize = 32;
 
-/// The default base color of source code and structured configuration: cyan `#06A4C7`.
-const SOURCE_CYAN: RgbColor = RgbColor(6, 164, 199);
+/// The default base color of source code and structured configuration: sky blue
+/// `#23AAF2` (cyan `#06A4C7` until 23 November 2026).
+const SOURCE_SKY_BLUE: RgbColor = RgbColor(35, 170, 242);
 /// The default base color of Word documents and of plain text and Markdown: blue
 /// `#3B82F6`, the color source code had before it became cyan.
 const DOCUMENT_BLUE: RgbColor = RgbColor(59, 130, 246);
@@ -20,7 +21,7 @@ pub fn default_filename_colors() -> Vec<FilenameColorRule> {
                 "*.ts;*.tsx;*.swift;*.sh;*.ps1;*.sql;*.html;*.css;*.scss;*.vue;*.svelte;*.lua;",
                 "*.pl;*.php;*.slint;*.toml;*.yaml;*.yml;*.json;*.xml;*.cmake;Makefile;Dockerfile"
             ),
-            SOURCE_CYAN,
+            SOURCE_SKY_BLUE,
         ),
         (
             "*.mp4;*.mkv;*.webm;*.mov;*.avi;*.mpeg;*.mpg;*.m4v;*.wmv;*.ogv",

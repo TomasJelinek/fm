@@ -131,9 +131,9 @@ fn legacy_defaults() -> Vec<FilenameColorRule> {
 }
 
 // Exact twelve-category preset with blue source code and light cool neutral Word
-// documents and plain text/Markdown. The earlier eleven-rule presets and the interim
-// preset derive from it, not from today's defaults, so that a change of the defaults
-// cannot alter them.
+// documents and plain text/Markdown. The earlier eleven-rule presets, the interim
+// preset and the cyan-source preset derive from it, not from today's defaults, so that
+// a change of the defaults cannot alter them.
 fn twelve_category_defaults() -> Vec<FilenameColorRule> {
     [
         (
@@ -196,14 +196,22 @@ fn twelve_category_defaults() -> Vec<FilenameColorRule> {
 }
 
 // The cyan source code, Word documents and plain text/Markdown shared in the interim
-// twelve-category preset; today only source code keeps it.
+// twelve-category preset; the preset shipped until 23 November 2026 kept it for source
+// code alone.
 const INTERIM_CYAN: RgbColor = RgbColor(6, 164, 199);
+// Word documents and plain text/Markdown since the interim preset.
+const DOCUMENT_BLUE: RgbColor = RgbColor(59, 130, 246);
 
 pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColorRule> {
     let twelve_defaults = twelve_category_defaults();
     let mut interim_defaults = twelve_defaults.clone();
     for index in [0, 3, 10] {
         interim_defaults[index].style.foreground = Some(INTERIM_CYAN);
+    }
+    // Shipped until 23 November 2026: cyan source code, blue documents and text.
+    let mut cyan_source_defaults = interim_defaults.clone();
+    for index in [3, 10] {
+        cyan_source_defaults[index].style.foreground = Some(DOCUMENT_BLUE);
     }
     let mut bright_defaults = twelve_defaults.clone();
     bright_defaults.remove(2);
@@ -218,6 +226,7 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
     let mut migrated = if rules == legacy_defaults()
         || rules == twelve_defaults
         || rules == interim_defaults
+        || rules == cyan_source_defaults
         || rules == bright_defaults
         || rules == slate_defaults
         || rules == amber_defaults
@@ -244,7 +253,7 @@ pub(super) fn migrate_presets(rules: Vec<FilenameColorRule>) -> Vec<FilenameColo
             if rule.style.foreground == Some(RgbColor(100, 116, 139)) {
                 rule.style.foreground = Some(RgbColor(196, 207, 224));
             } else if rule.style.foreground == Some(INTERIM_CYAN) {
-                rule.style.foreground = Some(RgbColor(59, 130, 246));
+                rule.style.foreground = Some(DOCUMENT_BLUE);
             }
         }
     }

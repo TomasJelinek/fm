@@ -49,7 +49,7 @@ base colors:
 
 | Category | Base color |
 | --- | --- |
-| Source code and structured configuration | Cyan `#06A4C7` |
+| Source code and structured configuration | Sky blue `#23AAF2` |
 | Videos | Purple `#8B5CF6` |
 | PDF documents | Coral red `#EF5A5A` |
 | Word documents and ebooks | Blue `#3B82F6` |
@@ -65,7 +65,8 @@ base colors:
 The defaults are defined in `crates/midnight-core/src/filename_colors.rs` (at most 32
 rules, `MAX_FILENAME_COLOR_RULES`). Word documents (`*.doc;*.docx;*.odt;*.rtf;*.epub`) and
 plain text with Markdown (`*.txt;*.md;*.markdown;*.rst;*.log;*.text;README;README.*`)
-share the blue `#3B82F6`.
+share the blue `#3B82F6`. Source code was cyan `#06A4C7` until 23 November 2026, and
+blue `#3B82F6` before that.
 
 The shared contrast policy preserves a readable base color or mixes it toward
 black or white by the smallest RGB change that reaches 4.5:1 against the actual
@@ -78,46 +79,51 @@ use the same policy: categories retain their semantic hues, with foregrounds
 adjusted for each actual row state rather than recolored to blue, teal or violet
 just because that is the active theme's accent.
 
-### Source-code cyan contrast per theme
+### Source-code sky blue contrast per theme
 
-`#06A4C7` is readable on the ordinary rows of every dark theme, which show it
-unchanged (Nord and One Dark lighten it slightly on their alternate rows); it is too
-light for light themes (2.5–2.9:1), which darken it to 4.5:1. Nothing beyond the
-shared policy above is needed. Measured with that policy (WCAG relative luminance)
-against each theme's row colors in `theme-palettes.slint`:
+`#23AAF2` is readable on the ordinary rows of every dark theme (5.13–8.10:1), which show
+it unchanged; only Nord lightens it slightly on its alternate rows (`#27ACF2`). It is
+too light for light themes (2.19–2.59:1), which darken it to 4.5:1 (`#1771A2`–`#1A7DB3`).
+Nothing beyond the shared policy above is needed. Measured with that policy (WCAG
+relative luminance) against each theme's row colors in `theme-palettes.slint`, through
+the UI's `FilenameColorPresentation` (the method reproduces the earlier table for
+`#06A4C7` exactly):
 
-| Theme | Kind | Row | `#06A4C7` on row | Shown on row | Alternate row | `#06A4C7` on it | Shown on it | Lowest shown, focus and selection |
+| Theme | Kind | Row | `#23AAF2` on row | Shown on row | Alternate row | `#23AAF2` on it | Shown on it | Lowest shown, focus and selection |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Amber Terminal | dark | `#162226` | 5.53:1 | unchanged 5.53:1 | `#1B2A2E` | 5.04:1 | unchanged 5.04:1 | 4.53:1 |
-| Blue | dark | `#151C26` | 5.83:1 | unchanged 5.83:1 | `#19212D` | 5.51:1 | unchanged 5.51:1 | 4.50:1 |
-| Carbon Green | dark | `#171B16` | 5.93:1 | unchanged 5.93:1 | `#1C211A` | 5.57:1 | unchanged 5.57:1 | 4.50:1 |
-| Catppuccin Latte | light | `#EFF1F5` | 2.60:1 | #047892 4.52:1 | `#E9ECF2` | 2.48:1 | #04758E 4.50:1 | 4.50:1 |
-| Catppuccin Mocha | dark | `#1E1E2E` | 5.58:1 | unchanged 5.58:1 | `#232335` | 5.24:1 | unchanged 5.24:1 | 4.51:1 |
-| Dark | dark | `#202020` | 5.54:1 | unchanged 5.54:1 | `#252525` | 5.21:1 | unchanged 5.21:1 | 4.51:1 |
-| Deep Ocean | dark | `#091923` | 6.08:1 | unchanged 6.08:1 | `#10232E` | 5.49:1 | unchanged 5.49:1 | 4.50:1 |
-| Dracula | dark | `#282A36` | 4.84:1 | unchanged 4.84:1 | `#2C2E3B` | 4.58:1 | unchanged 4.58:1 | 4.51:1 |
-| Graphite Contrast | dark | `#1B181B` | 5.99:1 | unchanged 5.99:1 | `#221F22` | 5.55:1 | unchanged 5.55:1 | 4.50:1 |
-| Gruvbox Dark | dark | `#282828` | 5.01:1 | unchanged 5.01:1 | `#2D2B29` | 4.80:1 | unchanged 4.80:1 | 4.51:1 |
-| High Contrast Dark | dark | `#000000` | 7.14:1 | unchanged 7.14:1 | `#080808` | 6.81:1 | unchanged 6.81:1 | 5.54:1 |
-| High Contrast Light | light | `#FFFFFF` | 2.94:1 | #05819D 4.53:1 | `#FAFAFA` | 2.82:1 | #057E99 4.52:1 | 4.51:1 |
-| Light | light | `#FFFFFF` | 2.94:1 | #05819D 4.53:1 | `#F6F6F6` | 2.72:1 | #057B96 4.54:1 | 4.51:1 |
-| Nord | dark | `#282E39` | 4.64:1 | unchanged 4.64:1 | `#323A48` | 3.89:1 | #28B1CF 4.51:1 | 4.50:1 |
-| Norton Commander | dark | `#0000AA` | 4.52:1 | unchanged 4.52:1 | `#00009B` | 4.85:1 | unchanged 4.85:1 | 4.50:1 |
-| One Dark | dark | `#282C34` | 4.76:1 | unchanged 4.76:1 | `#2C323C` | 4.39:1 | #0DA7C9 4.54:1 | 4.50:1 |
-| Paper Contrast | light | `#FDFEFE` | 2.91:1 | #05809C 4.54:1 | `#F0F3F8` | 2.64:1 | #047993 4.54:1 | 4.53:1 |
-| Rosé Pine | dark | `#191724` | 6.01:1 | unchanged 6.01:1 | `#1F1D2E` | 5.61:1 | unchanged 5.61:1 | 4.50:1 |
-| Rosé Pine Dawn | light | `#FAF4ED` | 2.69:1 | #047B95 4.50:1 | `#F4EDE8` | 2.54:1 | #047690 4.53:1 | 4.53:1 |
-| Sandstone Contrast | light | `#FFFBF2` | 2.85:1 | #057F9B 4.50:1 | `#F7F0E4` | 2.60:1 | #047892 4.51:1 | 4.51:1 |
-| Slate Blue | dark | `#1F2228` | 5.42:1 | unchanged 5.42:1 | `#242830` | 5.03:1 | unchanged 5.03:1 | 4.52:1 |
-| Slate Teal | dark | `#1F2228` | 5.42:1 | unchanged 5.42:1 | `#242830` | 5.03:1 | unchanged 5.03:1 | 4.51:1 |
-| Slate Violet | dark | `#1F2228` | 5.42:1 | unchanged 5.42:1 | `#242830` | 5.03:1 | unchanged 5.03:1 | 4.51:1 |
-| Solarized Light | light | `#FDF6E3` | 2.73:1 | #057B96 4.55:1 | `#F5EEDB` | 2.54:1 | #047690 4.53:1 | 4.50:1 |
-| Tokyo Night | dark | `#1A1B26` | 5.81:1 | unchanged 5.81:1 | `#202131` | 5.40:1 | unchanged 5.40:1 | 4.52:1 |
-| Verdant Light | light | `#FBFDF8` | 2.87:1 | #057F9B 4.54:1 | `#F1F6EB` | 2.68:1 | #047A95 4.53:1 | 4.50:1 |
+| Amber Terminal | dark | `#162226` | 6.28:1 | unchanged 6.28:1 | `#1B2A2E` | 5.72:1 | unchanged 5.72:1 | 4.53:1 |
+| Blue | dark | `#151C26` | 6.61:1 | unchanged 6.61:1 | `#19212D` | 6.25:1 | unchanged 6.25:1 | 4.50:1 |
+| Carbon Green | dark | `#171B16` | 6.73:1 | unchanged 6.73:1 | `#1C211A` | 6.32:1 | unchanged 6.32:1 | 4.53:1 |
+| Catppuccin Latte | light | `#EFF1F5` | 2.29:1 | #1874A6 4.54:1 | `#E9ECF2` | 2.19:1 | #1771A2 4.53:1 | 4.51:1 |
+| Catppuccin Mocha | dark | `#1E1E2E` | 6.33:1 | unchanged 6.33:1 | `#232335` | 5.94:1 | unchanged 5.94:1 | 4.50:1 |
+| Dark | dark | `#202020` | 6.29:1 | unchanged 6.29:1 | `#252525` | 5.91:1 | unchanged 5.91:1 | 4.50:1 |
+| Deep Ocean | dark | `#091923` | 6.90:1 | unchanged 6.90:1 | `#10232E` | 6.22:1 | unchanged 6.22:1 | 4.51:1 |
+| Dracula | dark | `#282A36` | 5.50:1 | unchanged 5.50:1 | `#2C2E3B` | 5.19:1 | unchanged 5.19:1 | 4.50:1 |
+| Graphite Contrast | dark | `#1B181B` | 6.79:1 | unchanged 6.79:1 | `#221F22` | 6.30:1 | unchanged 6.30:1 | 4.72:1 |
+| Gruvbox Dark | dark | `#282828` | 5.69:1 | unchanged 5.69:1 | `#2D2B29` | 5.44:1 | unchanged 5.44:1 | 4.51:1 |
+| High Contrast Dark | dark | `#000000` | 8.10:1 | unchanged 8.10:1 | `#080808` | 7.73:1 | unchanged 7.73:1 | 6.29:1 |
+| High Contrast Light | light | `#FFFFFF` | 2.59:1 | #1A7DB3 4.54:1 | `#FAFAFA` | 2.48:1 | #197AAE 4.54:1 | 4.50:1 |
+| Light | light | `#FFFFFF` | 2.59:1 | #1A7DB3 4.54:1 | `#F6F6F6` | 2.40:1 | #1978AB 4.50:1 | 4.52:1 |
+| Nord | dark | `#282E39` | 5.26:1 | unchanged 5.26:1 | `#323A48` | 4.42:1 | #27ACF2 4.51:1 | 4.50:1 |
+| Norton Commander | dark | `#0000AA` | 5.13:1 | unchanged 5.13:1 | `#00009B` | 5.50:1 | unchanged 5.50:1 | 4.50:1 |
+| One Dark | dark | `#282C34` | 5.40:1 | unchanged 5.40:1 | `#2C323C` | 4.98:1 | unchanged 4.98:1 | 4.50:1 |
+| Paper Contrast | light | `#FDFEFE` | 2.56:1 | #1A7DB1 4.51:1 | `#F0F3F8` | 2.33:1 | #1876A8 4.50:1 | 4.51:1 |
+| Rosé Pine | dark | `#191724` | 6.81:1 | unchanged 6.81:1 | `#1F1D2E` | 6.36:1 | unchanged 6.36:1 | 4.51:1 |
+| Rosé Pine Dawn | light | `#FAF4ED` | 2.37:1 | #1977AA 4.51:1 | `#F4EDE8` | 2.24:1 | #1873A4 4.50:1 | 4.50:1 |
+| Sandstone Contrast | light | `#FFFBF2` | 2.51:1 | #197BB0 4.52:1 | `#F7F0E4` | 2.29:1 | #1874A6 4.54:1 | 4.53:1 |
+| Slate Blue | dark | `#1F2228` | 6.15:1 | unchanged 6.15:1 | `#242830` | 5.70:1 | unchanged 5.70:1 | 4.51:1 |
+| Slate Teal | dark | `#1F2228` | 6.15:1 | unchanged 6.15:1 | `#242830` | 5.70:1 | unchanged 5.70:1 | 4.51:1 |
+| Slate Violet | dark | `#1F2228` | 6.15:1 | unchanged 6.15:1 | `#242830` | 5.70:1 | unchanged 5.70:1 | 4.51:1 |
+| Solarized Light | light | `#FDF6E3` | 2.40:1 | #1978AC 4.50:1 | `#F5EEDB` | 2.24:1 | #1873A4 4.50:1 | 4.50:1 |
+| Tokyo Night | dark | `#1A1B26` | 6.60:1 | unchanged 6.60:1 | `#202131` | 6.12:1 | unchanged 6.12:1 | 4.54:1 |
+| Verdant Light | light | `#FBFDF8` | 2.53:1 | #1A7CB0 4.50:1 | `#F1F6EB` | 2.36:1 | #1876A9 4.55:1 | 4.52:1 |
 
-The last column is the lowest contrast of the shown cyan on the active and inactive
-cursor rows and on selected rows; each is adjusted to 4.5:1 or more as above.
-Audio keeps teal `#14B8A6`, a neighboring but greener hue.
+The last column is the lowest contrast of the shown sky blue on the active and
+inactive cursor rows and on selected rows; each is adjusted to 4.5:1 or more as above.
+Compared with the earlier cyan `#06A4C7`, the sky blue is lighter: dark themes show it
+at a higher contrast (One Dark no longer adjusts it on its alternate rows), and light
+themes darken it more. Audio keeps teal `#14B8A6`, a greener hue, and documents and
+text keep the deeper blue `#3B82F6`.
 
 ### Document blue contrast per theme
 
@@ -163,8 +169,9 @@ Loading a saved document upgrades only an exact match for a historical shipped
 preset: the original five-rule list, the eleven-category slate/amber list, that
 list after archives became yellow, the eleven-rule palette with bright
 document/text colors, the previous twelve-category palette with blue source code and
-light cool neutral (`#C4CFE0`) documents and text, or the short-lived
-twelve-category palette in which all three were cyan. These
+light cool neutral (`#C4CFE0`) documents and text, the short-lived
+twelve-category palette in which all three were cyan, or the palette shipped until
+23 November 2026 with cyan `#06A4C7` source code and blue documents and text. These
 earlier presets are kept as fixed copies in
 `crates/midnight-platform-common/src/settings/filename_colors.rs`, so a later change
 of the defaults cannot alter what they match. Customizations retain their order,
@@ -177,7 +184,8 @@ included. A saved list that differs from the earlier twelve-category palette in 
 way therefore keeps blue source code and light cool neutral documents and text; one
 customized on the interim build keeps its source-code color, and its document and
 text rules turn blue unless their color, mask, mode, case, target or background was
-changed. Unrelated customized rules remain unchanged.
+changed. A saved list that differs from the 23 November palette in any way keeps its
+cyan source code. Unrelated customized rules remain unchanged.
 New and legacy documents without a stored color list receive the new defaults.
 Settings files store the whole color list once any newer setting, such as the
 window placement, is saved, so this exact-preset match, not the settings schema,
@@ -190,13 +198,14 @@ precedence, so `README.rs` stays a source-code name.
 
 The platform-common filename-color tests check actual mask matching for every
 category and preservation of customized preferences through encode/decode,
-including the move of both unchanged twelve-category palettes to the current
-defaults, the preservation of customizations of the earlier one, and the
+including the move of the three unchanged twelve-category palettes to the current
+defaults, the preservation of customizations of the earliest and the latest of them
+(a cyan source rule included), and the
 rule-by-rule move of interim cyan documents and text to blue with its negative
 cases. The UI filename-color tests inspect actual rendered glyph pixels and the
 contrast of every category, the blue documents and text included, across every
 theme, alternating rows and all active/inactive focus/selection combinations, and
-that dark themes show the source-code cyan unchanged on ordinary rows.
+that dark themes show the source-code sky blue unchanged on ordinary rows.
 
 PDF uses its own rule before other documents. Complete unchanged legacy presets
 still migrate to the twelve-rule palette. In an otherwise customized list, only

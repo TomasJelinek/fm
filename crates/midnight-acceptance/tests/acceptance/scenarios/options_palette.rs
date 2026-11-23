@@ -1,17 +1,18 @@
 //! The filename colour palette as rendered and as migrated (docs/developer/
 //! FILENAME_COLOR_OPTIONS.md):
 //!
-//! - Source code (`.rs`) is cyan `#06A4C7`; word-processor documents (`.docx`) and
+//! - Source code (`.rs`) is sky blue `#23AAF2`; word-processor documents (`.docx`) and
 //!   text and Markdown (`.txt`, `.md`) are blue `#3B82F6`. Each name's rendered glyph
 //!   colour is what the shared readability policy (`midnight_core::readable_rgb`) makes
 //!   of its base colour on the row it is drawn on, measured in the pixels of each name in
 //!   Blue, Dark and Light (the light theme darkens both), at 4.5:1 or more.
 //! - A saved list equal to a shipped palette moves to the current defaults when it is
 //!   loaded: the one shipped until 22 November 2026 (blue source code `#3B82F6`, light
-//!   cool neutral documents and text `#C4CFE0`) and the interim one in which all three
-//!   were cyan. A customised list is kept, except that a document or text rule still
-//!   exactly as the interim build set it (cyan, its default mask) turns blue, rule by
-//!   rule; the source rule in another colour and a differing text rule keep theirs.
+//!   cool neutral documents and text `#C4CFE0`), the interim one in which all three
+//!   were cyan, and the one shipped until 23 November 2026 (cyan source code `#06A4C7`,
+//!   blue documents and text). A customised list is kept, except that a document or text
+//!   rule still exactly as the interim build set it (cyan, its default mask) turns blue,
+//!   rule by rule; the cyan source rule and a differing text rule keep theirs.
 //!   Only the settings codec migrates, so this part runs with the application's own
 //!   settings store in a private child process (`viewers_stage::run_private`),
 //!   restarting on the saved `preferences.json`.
@@ -32,13 +33,16 @@ use std::{fs, path::Path, time::Duration};
 
 const NAMES: [&str; 4] = ["alpha.rs", "brief.docx", "notes.md", "plain.txt"];
 const FONT: &str = "font.ttf";
+/// The source rule's default colour, `#23AAF2`.
+const SKY_BLUE: [u8; 3] = [0x23, 0xAA, 0xF2];
+/// The source rule's default until 23 November 2026, `#06A4C7`.
 const CYAN: [u8; 3] = [0x06, 0xA4, 0xC7];
 const BLUE: [u8; 3] = [0x3B, 0x82, 0xF6];
 /// The fonts rule's default colour, `#92400E`.
 const FONTS: [u8; 3] = [0x92, 0x40, 0x0E];
 /// The base colour each of [`NAMES`] has by default.
 const DEFAULTS: [(&str, [u8; 3]); 4] = [
-    ("alpha.rs", CYAN),
+    ("alpha.rs", SKY_BLUE),
     ("brief.docx", BLUE),
     ("notes.md", BLUE),
     ("plain.txt", BLUE),
@@ -60,7 +64,7 @@ pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "options_palette",
         area: "options",
-        summary: "The filename palette as rendered: .rs cyan #06A4C7, .docx, .md and .txt blue #3B82F6, each shown as the shared readability policy makes it on its row (≥4.5:1) in Blue, Dark and Light; both shipped palettes (blue/neutral, interim all-cyan) move to the defaults on loading, a customised list is kept except its exact interim document/text rules, which turn blue (private child with the real settings store).",
+        summary: "The filename palette as rendered: .rs sky blue #23AAF2, .docx, .md and .txt blue #3B82F6, each shown as the shared readability policy makes it on its row (≥4.5:1) in Blue, Dark and Light; the shipped palettes (blue/neutral, interim all-cyan, cyan source with blue documents) move to the defaults on loading, a customised list is kept (its cyan source rule included) except its exact interim document/text rules, which turn blue (private child with the real settings store).",
         run: palette,
         timeout: TIMEOUT,
     }]
@@ -395,7 +399,15 @@ fn migration(context: &mut Context) -> Result<(), String> {
         ));
     }
     // The interim palette (all three cyan): it moves to the defaults too.
-    let app = save_and_restart(app, &folder, &[(DOCUMENT_RULE, CYAN), (TEXT_RULE, CYAN)])?;
+    let app = save_and_restart(
+        app,
+        &folder,
+        &[
+            (SOURCE_RULE, CYAN),
+            (DOCUMENT_RULE, CYAN),
+            (TEXT_RULE, CYAN),
+        ],
+    )?;
     let wrong = compare(&app, &defaults);
     if !wrong.is_empty() {
         return Err(format!(
@@ -403,22 +415,33 @@ fn migration(context: &mut Context) -> Result<(), String> {
             wrong.join("; ")
         ));
     }
+    // The palette shipped until 23 November (cyan source, blue documents and text): it
+    // moves to the defaults, so the source rule turns sky blue.
+    let app = save_and_restart(app, &folder, &[(SOURCE_RULE, CYAN)])?;
+    let wrong = compare(&app, &defaults);
+    if !wrong.is_empty() {
+        return Err(format!(
+            "the saved palette shipped until 23 November was not moved to the defaults: {}",
+            wrong.join("; ")
+        ));
+    }
     // A customised list is kept, except that its exact interim document rule turns blue:
-    // the source rule in blue and a green text rule keep their colours.
+    // the source rule in cyan, the earlier default, and a green text rule keep their
+    // colours.
     let green = [0x22, 0xC5, 0x5E];
     let custom_font = [0x92, 0x40, 0x0F];
     let app = save_and_restart(
         app,
         &folder,
         &[
-            (SOURCE_RULE, BLUE),
+            (SOURCE_RULE, CYAN),
             (DOCUMENT_RULE, CYAN),
             (TEXT_RULE, green),
             (FONT_RULE, custom_font),
         ],
     )?;
     let kept = [
-        ("alpha.rs", BLUE),
+        ("alpha.rs", CYAN),
         ("brief.docx", BLUE),
         ("notes.md", green),
         ("plain.txt", green),
@@ -438,8 +461,8 @@ fn migration(context: &mut Context) -> Result<(), String> {
         "A customised list kept after a restart, its interim document rule turned blue",
     );
     context.note(format!(
-        "Migration (real settings store): the palette shipped until 22 November and the interim all-cyan one both came back as the defaults (.rs {}, .docx/.md/.txt {}, fonts {}); a customised list kept its blue source rule, green text rule and font colour and turned its interim cyan document rule blue",
-        hex(CYAN),
+        "Migration (real settings store): the palettes shipped until 22 November and until 23 November and the interim all-cyan one all came back as the defaults (.rs {}, .docx/.md/.txt {}, fonts {}); a customised list kept its cyan source rule, green text rule and font colour and turned its interim cyan document rule blue",
+        hex(SKY_BLUE),
         hex(BLUE),
         hex(FONTS)
     ));
