@@ -305,8 +305,9 @@ A drag goes to the application under the pointer as soon as it leaves the window
 release there less than 0.4 s after the press still cancels it (the other application
 sees the drag leave, or under Wayland receives an empty list), and the source panel
 says so. Drops from other applications are not timed. Rows of an archive or the Network
-view cannot be dragged. `MIDNIGHT_WAYLAND_DND=0` limits a Wayland window to dragging
-between its panels.
+view cannot be dragged. A native Wayland window exchanges files with other applications
+only with `MIDNIGHT_WAYLAND_DND=1` (not yet qualified); otherwise it drags between its
+panels.
 Drops from other applications always copy; in a source application that offers only
 Move, hold its Copy key (usually Ctrl). Legacy X11 sources without XDND proxy support
 cannot drop into the application. Incoming drops share the verified copy queue and its

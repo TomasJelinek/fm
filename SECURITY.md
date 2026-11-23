@@ -1335,8 +1335,9 @@ seconds and decoded and admitted exactly like an X11 drop, against the destinati
 still published at the drop position. Outgoing drags offer `text/uri-list` with the
 Copy action and write the list within 5 seconds; a target that never finishes leaves
 the drag unconfirmed. `finish` is sent only when the compositor settled on Copy, as
-the protocol requires. Offers and their announced types are bounded. Setting
-`MIDNIGHT_WAYLAND_DND=0` keeps a Wayland window to dragging between its panels.
+the protocol requires. Offers and their announced types are bounded. This transport
+is opt-in until it is qualified: only `MIDNIGHT_WAYLAND_DND=1` enables it, and without it
+a Wayland window drags between its panels only.
 
 ## Dynamic viewers and filesystem plugins
 

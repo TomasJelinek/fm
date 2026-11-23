@@ -36,12 +36,13 @@ pub(crate) fn host(window: &Window) -> NativeDragWindow {
     }
 }
 
-/// `MIDNIGHT_WAYLAND_DND=0` keeps a native Wayland window to dragging between its own
-/// panels, as before Wayland transport existed, should a compositor misbehave.
+/// Native Wayland transport is opt-in until it is qualified on compositors (PLAT-03):
+/// `MIDNIGHT_WAYLAND_DND=1` enables it; otherwise a native Wayland window drags between its
+/// own panels only, as before. XWayland and X11 windows use XDND regardless.
 fn wayland_transport_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED
-        .get_or_init(|| std::env::var_os("MIDNIGHT_WAYLAND_DND").is_none_or(|value| value != "0"))
+        .get_or_init(|| std::env::var_os("MIDNIGHT_WAYLAND_DND").is_some_and(|value| value == "1"))
 }
 
 pub(crate) fn release_input(window: &Window) -> bool {
