@@ -137,7 +137,7 @@ nothing behind when it is refused.
 ## Distribution archives
 
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, plus a
-`SHA256SUMS` file: the [0.1.0](releases/0.1.0.md) and [0.3.0](releases/0.3.0.md) previews. Linux archives
+`SHA256SUMS` file: the [0.1.0](releases/0.1.0.md) and [0.5.0](releases/0.5.0.md) previews. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable is unsigned: the archive checksums establish download
 integrity, not code signing.
@@ -185,7 +185,7 @@ python -B scripts/package-release.py --binary _build/release/me.exe `
     --dependency-list _build/windows-dependencies.txt `
     --format zip --readme packaging/windows/README.txt `
     --revision (git rev-parse HEAD) --rust-docs "RUST_SYSROOT/share/doc/rust" `
-    --license-overrides packaging/licenses --output _build/releases/v0.3.0
+    --license-overrides packaging/licenses --output _build/releases/v0.5.0
 ```
 
 Replace `RUST_SYSROOT` with the output of `rustc --print sysroot`. For Linux, use the

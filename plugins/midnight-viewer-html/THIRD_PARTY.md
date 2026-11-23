@@ -3,7 +3,7 @@
 This independent workspace consumes only the published `midnight-web-viewer-api`
 0.3.0 contract. The public API retains the repository's terms; this plugin does
 not assign or change them. No private host/application crate is linked. The
-provider's own code is MIT-licensed: its package carries `LICENSE` beside CEF's
+provider's own code is licensed under GPL-3.0-or-later: its package carries `LICENSE` beside CEF's
 `LICENSE.txt`.
 
 The exact Rust lock pins `cef` and `cef-dll-sys` to

@@ -41,14 +41,17 @@ the license of Midnight Explorer or its public API as a side effect of this poli
 **Midnight Explorer's own license (owner's decision, 22 November 2026):** the
 application is licensed under the GNU General Public License, version 3 or (at the
 user's option) any later version, `GPL-3.0-or-later`; the unmodified license text is the
-repository's [LICENSE](../LICENSE) and ships in every release archive. The plugins under
-`plugins/` stay MIT-licensed, each by its author, and the public API/SDK workspaces are
-MIT-licensed so that independent plugins under permissive licenses can depend on them;
-a GPL host loading MIT plugins is compatible. Binary releases are accompanied by their
+repository's [LICENSE](../LICENSE) and ships in every release archive. The same
+license covers every plugin under `plugins/` (each carries the GPL text as its
+`LICENSE` and declares `license = "GPL-3.0-or-later"`) and the public API/SDK
+workspaces (owner's decision, 23 November 2026), whose `LICENSE` files hold the same
+text. The API/SDK crates' Cargo manifests still declare no `license` field: their
+released archives' checksums are pinned in the plugins' lock files, so each crate gains
+the field with its next version. Binary releases are accompanied by their
 corresponding source: each release's tagged commit in the public repository, which the
 release notes, the archives' `README.txt` and `BUILD-INFO.json` name. Every dependency
-shipped with the application must allow distribution of the combined work under
-GPL-3.0; `GPL-2.0-only`, CDDL, EPL-1.0, MPL-1.1, the original four-clause BSD license,
+shipped with the application or linked into a plugin must allow distribution of the
+combined work under GPL-3.0; `GPL-2.0-only`, CDDL, EPL-1.0, MPL-1.1, the original four-clause BSD license,
 the OpenSSL/SSLeay licenses and non-commercial or no-derivatives terms do not.
 
 **Slint 1.18.1:** the application uses Slint under the **GPL-3.0-only** branch of its

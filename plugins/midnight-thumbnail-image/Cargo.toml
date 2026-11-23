@@ -4,6 +4,7 @@ resolver = "2"
 [package]
 name = "midnight-thumbnail-image"
 version = "0.2.0"
+license = "GPL-3.0-or-later"
 edition = "2024"
 rust-version = "1.99"
 publish = false

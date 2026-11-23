@@ -1,4 +1,4 @@
-# Keyboard shortcuts — Midnight Explorer 0.3
+# Keyboard shortcuts — Midnight Explorer 0.5
 
 This map describes the current source; a packaged release may be older.
 

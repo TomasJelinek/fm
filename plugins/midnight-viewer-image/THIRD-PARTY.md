@@ -21,7 +21,7 @@ mp4parse source archive is shipped beside its license. The image-rs patch (a
 decoder-settings constructor and a bounded wait that fails AV1 items without a
 displayable frame) is recorded in notices/image-0.25.10/MIDNIGHT_PATCH.md.
 Only the native decode feature is enabled, not an AVIF encoder. HEIC is not enabled.
-API/SDK and application licenses are not changed by the plugin's MIT license.
+The plugin, the API/SDK and the application share one license, GPL-3.0-or-later.
 
 Original copyright/license files for the pinned cross-platform graph are retained
 under notices/. This table includes normal and test dependencies; it is not a

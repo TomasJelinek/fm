@@ -315,7 +315,7 @@ class RuntimePackages(unittest.TestCase):
                     runtime_inventory(html)
 
     def test_html_package_carries_its_own_licence_beside_the_cef_licence(self):
-        # The provider is MIT (its own LICENSE); CEF's LICENSE.txt covers only CEF.
+        # The provider is GPL-3.0-or-later (its own LICENSE); CEF's LICENSE.txt covers only CEF.
         viewers = self.root / 'viewers'
         package = html_package(viewers, self.target)
         stage = self.root / 'release'

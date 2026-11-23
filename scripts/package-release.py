@@ -685,7 +685,7 @@ def add_notices(stage, metadata, dependency_list, rust_docs, overrides):
         "Adapted palette sources are in THEME_PROVENANCE.md; licenses are in licenses/themes/.\n"
         "Midnight Explorer uses Slint under Slint's GPL-3.0-only option.\n"
         "The About dialog and the release download page display Slint's attribution.\n"
-        "Midnight Explorer itself is licensed under GPL-3.0-or-later; see the LICENSE file.\n"
+        "Midnight Explorer and its plugins are licensed under GPL-3.0-or-later; see the LICENSE file.\n"
         "These notices cover third-party components only.\n",
         encoding="utf-8")
 

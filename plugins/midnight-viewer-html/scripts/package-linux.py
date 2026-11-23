@@ -101,7 +101,7 @@ def package(sdk, destination, launcher, metadata, pin, native):
         if '/' not in relative and relative != 'CMakeLists.txt':
             shutil.copy2(sdk / relative, destination / relative)
     shutil.copytree(sdk / 'locales', destination / 'locales')
-    # LICENSE is the provider's own MIT licence; CEF's LICENSE.txt covers only CEF.
+    # LICENSE is the provider's own licence (GPL-3.0-or-later); CEF's LICENSE.txt covers only CEF.
     for name in ['LICENSE', 'README.md', 'THIRD_PARTY.md']:
         shutil.copy2(PROJECT / name, destination / name)
     if native:

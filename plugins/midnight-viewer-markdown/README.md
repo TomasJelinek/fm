@@ -203,5 +203,5 @@ output feature or CLI dependency is linked. The reviewed upstream README and
 Only those events are transformed into the public semantic API; no parser or
 renderer implementation is imported from the host or another plugin.
 
-The plugin's own code is under its MIT [LICENSE](LICENSE). Third-party versions and
+The plugin's own code is under its GPL-3.0-or-later [LICENSE](LICENSE). Third-party versions and
 license copies are in [THIRD-PARTY.md](THIRD-PARTY.md) and `notices/`.

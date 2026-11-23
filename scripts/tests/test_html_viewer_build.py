@@ -302,7 +302,7 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertEqual((self.package / "midnight-viewer-html.exe").read_bytes(), self.bootstrap)
         self.assertEqual((self.package / "midnight-viewer-html.dll").read_bytes(), library)
         self.assertEqual((self.package / "libcef.dll").read_bytes(), b"CEF fixture libcef.dll\n")
-        # The provider's own MIT licence travels beside CEF's LICENSE.txt.
+        # The provider's own GPL licence travels beside CEF's LICENSE.txt.
         licence = (self.root / "plugins/midnight-viewer-html/LICENSE").read_bytes()
         self.assertEqual((self.package / "LICENSE").read_bytes(), licence)
         self.assertEqual((self.package / "LICENSE.txt").read_bytes(), b"CEF fixture LICENSE.txt\n")
@@ -329,7 +329,7 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertFalse(any("metadata" in call["arguments"] for call in calls))
         # The provider's licence is a package input: a changed one is packaged again.
         licence = self.root / "plugins/midnight-viewer-html/LICENSE"
-        licence.write_bytes(licence.read_bytes().replace(b"MIT License", b"MIT License (changed)"))
+        licence.write_bytes(licence.read_bytes().replace(b"GNU GENERAL PUBLIC LICENSE", b"GNU GENERAL PUBLIC LICENSE (changed)", 1))
         code, output, calls = self.build()
         self.assertEqual(code, 0, output)
         self.assertNotIn("HTML viewer package is current", output)

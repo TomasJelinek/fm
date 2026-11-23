@@ -7,7 +7,7 @@ comparison tools and checksums, and keeps every file name's Unicode intact. View
 filesystems and thumbnailers are separate plugin packages that run isolated from the
 application.
 
-Current version: **0.3.0** (preview).
+Current version: **0.5.0** (preview).
 
 ## Features
 
@@ -59,7 +59,7 @@ the [GitHub Releases page](https://github.com/TomasJelinek/fm/releases), each wi
 (Windows) or `./me` (Linux); its `README.txt` has the details. The Windows executable is
 unsigned, and there is no installer or automatic updater. The archives include every
 plugin, the dependency notices and the license; the release notes say what each
-preview contains ([0.3.0](docs/releases/0.3.0.md)).
+preview contains ([0.5.0](docs/releases/0.5.0.md)).
 
 ## Build from source
 
@@ -135,8 +135,8 @@ either version 3 of the License, or (at your option) any later version
 (`GPL-3.0-or-later`). It is distributed WITHOUT ANY WARRANTY; see [LICENSE](LICENSE)
 for the full text.
 
-The plugins under [plugins/](plugins/) are licensed under the MIT License, as are the
-public API/SDK workspaces. Third-party components keep
+The plugins under [plugins/](plugins/) and the public API/SDK workspaces are licensed
+under the same terms, GPL-3.0-or-later. Third-party components keep
 their own licenses; they are listed in [THIRD_PARTY.md](docs/THIRD_PARTY.md), and
 release archives carry their notices. The source of each release is its tagged commit
 in this repository.

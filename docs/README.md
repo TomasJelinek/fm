@@ -1,6 +1,6 @@
 # Documentation map
 
-This index lists the current documents of Midnight Explorer 0.3. What is implemented is
+This index lists the current documents of Midnight Explorer 0.5. What is implemented is
 in [feature status](FEATURE_STATUS.md), the remaining work in the
 [implementation backlog](IMPLEMENTATION_BACKLOG.md) and the work in flight in
 [active work](ACTIVE_WORK.md). Dated records describe the commit and environment named

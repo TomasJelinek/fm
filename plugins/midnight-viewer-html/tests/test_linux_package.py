@@ -84,7 +84,7 @@ class LinuxBuildValidation(unittest.TestCase):
             self.assertEqual(indexed['libcef.so']['sha256'], PACKAGER.digest(sdk / 'libcef.so'))
             self.assertIn('dependency-metadata.json', indexed)
             self.assertIn('locales/en-US.pak', indexed)
-            # The provider's own MIT licence travels beside CEF's LICENSE.txt.
+            # The provider's own GPL licence travels beside CEF's LICENSE.txt.
             self.assertEqual((destination / 'LICENSE').read_bytes(), (PROJECT / 'LICENSE').read_bytes())
             self.assertEqual(indexed['LICENSE']['sha256'], PACKAGER.digest(PROJECT / 'LICENSE'))
             self.assertEqual((destination / 'LICENSE.txt').read_text(), 'CEF license fixture')

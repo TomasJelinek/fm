@@ -3,8 +3,8 @@
 A dual-pane desktop file manager for Windows and Linux, written in Rust with Slint and
 Tokio.
 
-Product version **0.3** (Cargo SemVer `0.3.0`); the native window title shows
-`Midnight Explorer 0.3 — File Manager`. The displayed version is derived from the
+Product version **0.5** (Cargo SemVer `0.5.0`); the native window title shows
+`Midnight Explorer 0.5 — File Manager`. The displayed version is derived from the
 package version.
 
 Prebuilt Windows/Linux previews are published on the
@@ -1510,7 +1510,7 @@ Salamander sources supplied separately are behavioral reference only; this
 implementation does not copy its source, assets or resource strings. The About
 dialog shows the copyright line, the license and Slint attribution. Midnight
 Explorer is licensed under the GNU General Public License, version 3 or later
-([LICENSE](../LICENSE)); its plugins are MIT-licensed. A macOS port is planned
+([LICENSE](../LICENSE)), as are its plugins. A macOS port is planned
 (PLAT-01 in the [backlog](IMPLEMENTATION_BACKLOG.md)): the application has no
 macOS platform services yet and does not build there; only the independent native
 filesystem plugin has macOS source.

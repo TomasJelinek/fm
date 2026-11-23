@@ -8,7 +8,7 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 22 November 2026, prepared as the [0.3.0 preview](releases/0.3.0.md): link
+Main of 22 November 2026, prepared as the [0.5.0 preview](releases/0.5.0.md): link
 following in the HTML and Markdown viewers, faster archive copy-out with a quick
 Cancel, the two-archive limit with its offer to close one, the archive password-dialog
 fixes, the AppArmor and test-fixture security fixes, and the fixes of the pre-release
@@ -36,7 +36,7 @@ until they land.
 
 - **Acceptance:** reruns that the area records mark as pending, and the scenarios they
   list as not yet written.
-- **Release validation:** the 0.3.0 release and debug builds, whole-suite acceptance
+- **Release validation:** the 0.5.0 release and debug builds, whole-suite acceptance
   runs on Windows and Linux with packages built from the release commit, and the
   packages ([release build](RELEASE_BUILD.md)).
 

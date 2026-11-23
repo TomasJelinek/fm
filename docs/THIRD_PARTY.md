@@ -5,8 +5,10 @@ API/SDK and its independent plugins use, the license choices made for them, and 
 dependency inventory is produced. The rules are in the
 [dependency policy](DEPENDENCY_POLICY.md). These records describe third-party components
 only. Midnight Explorer itself is licensed under the GNU General Public License, version
-3 or later ([LICENSE](../LICENSE)); its plugins and public API/SDK workspaces are
-MIT-licensed. Every component listed here is distributed under its own license.
+3 or later ([LICENSE](../LICENSE)), and so are its plugins and public API/SDK
+workspaces; the API/SDK crates' manifests gain their `license` field with their next
+versions ([policy](DEPENDENCY_POLICY.md#current-decisions)). Every component listed
+here is distributed under its own license.
 
 ## Inventories
 

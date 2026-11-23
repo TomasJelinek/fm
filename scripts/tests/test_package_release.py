@@ -489,6 +489,20 @@ class ProjectLicenseTests(unittest.TestCase):
         manifest = tomllib.loads((self.root / "Cargo.toml").read_text())
         self.assertEqual(manifest["workspace"]["package"]["license"], "GPL-3.0-or-later")
 
+    def test_plugins_and_api_workspaces_carry_the_same_license(self):
+        licence = (self.root / "LICENSE").read_bytes()
+        plugins = sorted(path.parent for path in (self.root / "plugins").glob("*/Cargo.toml"))
+        self.assertGreaterEqual(len(plugins), 15)
+        for plugin in plugins:
+            with self.subTest(plugin=plugin.name):
+                self.assertEqual((plugin / "LICENSE").read_bytes(), licence)
+                package = tomllib.loads((plugin / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+                self.assertEqual(package.get("license"), "GPL-3.0-or-later")
+        for workspace in ("api", "filesystem-api", "image-viewer-api", "thumbnail-api",
+                          "web-viewer-api", "worker-api"):
+            with self.subTest(workspace=workspace):
+                self.assertEqual((self.root / workspace / "LICENSE").read_bytes(), licence)
+
     def test_windows_names_the_license_txt_and_linux_keeps_license(self):
         for target, name, absent in (("x86_64-pc-windows-msvc", "LICENSE.txt", "LICENSE"),
                                      ("x86_64-unknown-linux-gnu", "LICENSE", "LICENSE.txt")):
@@ -524,6 +538,8 @@ class ProjectLicenseTests(unittest.TestCase):
                 packaging.check_release_readme(readme, self.version)
                 self.assertIn(source, readme)
                 self.assertIn(f"see {license_name}.", readme)
+                self.assertIn("The plugins are licensed under the same terms.", readme)
+                self.assertNotIn("MIT", readme)
                 self.assertIn("GNU General Public License, version 3", readme)
         with self.assertRaises(ValueError):
             packaging.check_release_readme(f"Midnight Explorer {self.version} - fixture\n", self.version)
@@ -539,7 +555,8 @@ class ProjectLicenseTests(unittest.TestCase):
         packaging.add_notices(stage, {"packages": [package("midnight-explorer", None)]},
                               "midnight-explorer v0.1.0\n", rust_docs, None)
         notice = (stage / "THIRD-PARTY.txt").read_text(encoding="utf-8")
-        self.assertIn("licensed under GPL-3.0-or-later; see the LICENSE file", notice)
+        self.assertIn("Midnight Explorer and its plugins are licensed under GPL-3.0-or-later; "
+                      "see the LICENSE file", notice)
         self.assertIn("Slint's GPL-3.0-only option", notice)
         self.assertNotIn("do not assign", notice)
 

@@ -1,4 +1,4 @@
-Midnight Explorer 0.3.0 - Linux x86-64 preview
+Midnight Explorer 0.5.0 - Linux x86-64 preview
 
 Extract the archive with tar, then run ./me in a graphical desktop session.
 Keep the viewers, filesystems and thumbnailers folders beside me. The thumbnailers
@@ -92,8 +92,8 @@ F4 opens the external editor configured in Options > Editors. Options > Plugins
 lists installed packages; enabling/disabling a package takes effect after restart.
 License: GNU General Public License, version 3 or (at your option) any later
 version, with no warranty; see LICENSE.
-The plugins' own code is MIT-licensed.
+The plugins are licensed under the same terms.
 Source of this release (its tagged commit; BUILD-INFO.json names the revision):
-https://github.com/TomasJelinek/fm/tree/v0.3.0
+https://github.com/TomasJelinek/fm/tree/v0.5.0
 Releases: https://github.com/TomasJelinek/fm/releases
 Dependency notices and licenses are included alongside the executable.
