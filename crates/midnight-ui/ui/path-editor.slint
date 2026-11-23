@@ -21,7 +21,12 @@ export component PathEditor inherits Rectangle {
     background: Theme.surface;
     min-width: 1px;
     changed text => { PathPasteView.observe(root.pane-id); }
-    changed has-focus => { PathPasteView.observe(root.pane-id); }
+    // Opening the editor (a click on the bar, Ctrl+G, a paste) selects the whole path, so
+    // typing or pasting a new path replaces it, as in a browser's address bar.
+    changed has-focus => {
+        if root.has-focus { input.select-all(); }
+        PathPasteView.observe(root.pane-id);
+    }
     changed preedit => { PathPasteView.observe(root.pane-id); }
     public function invalidate-paste() { PathPasteView.invalidate(root.pane-id); }
     function paste-path() {

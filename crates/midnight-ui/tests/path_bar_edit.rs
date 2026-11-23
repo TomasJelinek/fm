@@ -436,6 +436,14 @@ fn a_click_anywhere_right_of_the_path_components_opens_the_editor() {
             h.requests().is_empty(),
             "opening the editor navigates nowhere"
         );
+        // The whole path is selected, so what is typed (or pasted) replaces it.
+        ui::key(&h.ui.window, "Q");
+        h.draw();
+        assert_eq!(
+            h.ui.window.get_left_path_draft(),
+            "Q",
+            "a click at x={target:.0} selects the whole path"
+        );
         ui::key(&h.ui.window, Key::Escape);
         h.ui.window
             .window()
