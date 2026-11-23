@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import io
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ spec = importlib.util.spec_from_file_location(
     "release_signing", Path(__file__).resolve().parents[1] / "release-signing.py")
 signing = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(signing)
+REPOSITORY = signing.ROOT
 
 
 class Ed25519(unittest.TestCase):
@@ -42,7 +44,15 @@ class Ed25519(unittest.TestCase):
 
 class Keys(unittest.TestCase):
     def setUp(self):
-        self.folder = Path(tempfile.mkdtemp())
+        # The tool refuses a secret key inside the repository, and CI keeps temporary
+        # files in the checkout's _build (TMPDIR): these tests stand in a repository of
+        # their own beside the key folder. Resolved: Windows may spell TEMP in 8.3 form.
+        work = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        self.folder = work / "keys"
+        self.folder.mkdir()
+        self.addCleanup(setattr, signing, "ROOT", signing.ROOT)
+        signing.ROOT = work / "repository"
 
     def generate(self, name="release.key", password=True):
         public = self.folder / "update-signing.pub"
@@ -85,12 +95,14 @@ class Keys(unittest.TestCase):
         self.assertEqual(secret.read_bytes(), before)
 
     def test_refuses_a_secret_key_inside_the_repository(self):
-        inside = signing.ROOT / "_build" / "never-written.key"
-        with self.assertRaises(SystemExit):
-            signing.command_generate(SimpleNamespace(
-                secret_key=str(inside), public_key=str(self.folder / "x.pub"), no_password=True),
-                out=io.StringIO())
-        self.assertFalse(inside.exists())
+        for repository in (REPOSITORY, signing.ROOT):
+            signing.ROOT = repository
+            inside = repository / "_build" / "never-written.key"
+            with self.assertRaises(SystemExit):
+                signing.command_generate(SimpleNamespace(
+                    secret_key=str(inside), public_key=str(self.folder / "x.pub"),
+                    no_password=True), out=io.StringIO())
+            self.assertFalse(inside.exists())
 
     def test_refuses_to_replace_a_real_public_key(self):
         _, public = self.generate(password=False)
