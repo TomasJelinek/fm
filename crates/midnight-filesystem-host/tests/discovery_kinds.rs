@@ -3,7 +3,8 @@ use midnight_core::Cancellation;
 use midnight_filesystem_host::{Catalog, Mount};
 use std::path::Path;
 
-/// Grant another account write access to one package object.
+/// Grant another account write access to one package object. A shared installation still
+/// loads its plugins (SECURITY.md, "Shared installations").
 fn make_shared(path: &Path) {
     #[cfg(unix)]
     {
@@ -19,6 +20,28 @@ fn make_shared(path: &Path) {
             std::process::Command::new("icacls")
                 .arg(path)
                 .args(["/grant", "*S-1-1-0:(M)", "/q"])
+                .stdout(std::process::Stdio::null()),
+        )
+        .unwrap()
+        .wait()
+        .unwrap();
+        assert!(status.success());
+    }
+}
+
+/// Make `link` a directory link (Windows: a junction) to `target`: a redirection, which stays
+/// a refusal wherever it is in a package.
+fn make_link(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    {
+        // A junction needs no symbolic link privilege. Spawned like the icacls probe.
+        let status = midnight_worker_platform::spawn_command(
+            std::process::Command::new("cmd")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
                 .stdout(std::process::Stdio::null()),
         )
         .unwrap()
@@ -69,24 +92,31 @@ fn archive_worker_package_objects_are_validated_at_discovery_and_before_launch()
     install_worker(root.path(), "archive", "archive.fixture");
     let dependency = root.path().join("filesystems/archive/codec.dll");
     std::fs::write(&dependency, b"dependency the OS loader may resolve").unwrap();
+    // Other accounts may change it only through its permissions: accepted.
+    make_shared(&dependency);
     let catalog = Catalog::discover(root.path()).unwrap();
     assert_eq!(catalog.packages.len(), 1, "{:?}", catalog.diagnostics);
-    // A later replaceable dependency is refused before any package code runs.
-    make_shared(&dependency);
+    assert!(catalog.diagnostics.is_empty(), "{:?}", catalog.diagnostics);
+    // A later redirection is refused before any package code runs.
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    // Separate components: mklink refuses forward slashes.
+    let package = root.path().join("filesystems").join("archive");
+    make_link(&elsewhere, &package.join("codecs"));
     let archive = root.path().join("archive.zip");
     std::fs::write(&archive, b"PK").unwrap();
     let source = midnight_plugin_host::CapturedFile::capture(&archive).unwrap();
     let (worker, format) = catalog.choose(&archive).unwrap();
     let error = Mount::open_captured(worker, format, &archive, source, &Cancellation::default())
         .unwrap_err();
-    assert!(error.message.contains("writable"), "{error}");
+    assert!(error.message.contains("redirect"), "{error}");
     let catalog = Catalog::discover(root.path()).unwrap();
     assert!(catalog.packages.is_empty());
     assert!(
         catalog
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.contains("writable")),
+            .any(|diagnostic| diagnostic.contains("redirect")),
         "{:?}",
         catalog.diagnostics
     );
