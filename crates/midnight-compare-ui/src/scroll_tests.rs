@@ -147,11 +147,11 @@ fn comparison_wheel_notch_glides_in_small_steps_with_the_exact_total() {
         steps.iter().all(|&step| step < 0.0 && step > -15.0),
         "{steps:?}"
     );
+    // The platform's notch: 100 px at Windows' three lines, Chromium's fixed 120 on Linux.
+    let notch =
+        midnight_ui_input::notch_pixels_for(midnight_ui_input::WheelSetting::default(), 0.0);
     let total: f32 = steps.iter().sum();
-    assert!(
-        (total + midnight_ui_input::LINE_PIXELS).abs() < 0.01,
-        "{total}"
-    );
+    assert!((total + notch).abs() < 0.01, "{total} of {}", -notch);
 }
 
 #[test]

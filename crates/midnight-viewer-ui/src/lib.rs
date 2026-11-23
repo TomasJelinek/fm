@@ -254,12 +254,14 @@ impl OpenWindow {
             return false;
         }
         let sender = self.input.borrow().clone();
+        // A hover question (what the pointer is over, `links.rs`) is asked whenever the
+        // pointer moves, also while a wheel glide runs: it must not stop the glide.
         let interrupts = !matches!(
             input,
             ViewerInput::Scroll { .. }
                 | ViewerInput::RasterRebase { .. }
                 | ViewerInput::Raster {
-                    input: ViewerRasterInput::PanTo { .. },
+                    input: ViewerRasterInput::PanTo { .. } | ViewerRasterInput::Hover { .. },
                     ..
                 }
         );

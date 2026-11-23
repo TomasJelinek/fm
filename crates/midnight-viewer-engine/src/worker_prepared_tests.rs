@@ -223,7 +223,7 @@ pub(super) struct Report {
     uploads: u64,
     /// The input's distance and how far the content moved.
     travel: f64,
-    moved: f64,
+    pub(super) moved: f64,
     reads: usize,
     /// The most bytes the viewer's prepared strips held at once.
     peak_bytes: usize,

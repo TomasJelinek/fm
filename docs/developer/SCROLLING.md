@@ -154,6 +154,9 @@ duration of `ScrollType::kMouseWheel`):
   to keep it), ending no later than 2.5 times the remaining distance at that speed: a fast
   spin catches up instead of trailing further behind. A notch against the glide drops the
   rest of the old direction (Chromium would finish it first; a deliberate difference).
+  Moving the pointer does not stop a glide: the question a viewer asks the worker about
+  what the pointer is over (links) is not an input that interrupts motion
+  (`acceptance_seams_tests::hover_questions_during_a_glide_*`).
 - **Time:** the presented frames' time, each frame counted up to 50 ms: at 60 Hz, and at
   30 Hz under load, a notch takes its 200 ms of wall-clock time; a longer stall resumes
   where it stopped instead of jumping by pixels nobody saw. Chromium computes the duration
@@ -615,10 +618,12 @@ known limits.
 The strips under the window and one beyond each of its edges are painted before a
 frame is published; the rest are painted between inputs, at most 4 ms per worker
 turn, nearest first along the direction of travel and then against it. A page holds
-the prepared screens and three more along the travel (six screens in all, seven while
+the prepared screens and two more along the travel (five screens in all, six while
 fast): its request's line budget covers them, still at most 512 lines and the byte
-budgets below. The third screen lets a refill come back before the strips need it even
-from a slow plugin; it costs text, not pixels. A refill starts while the
+budgets below. A third screen let PageDown keep ahead of a plugin answering after 133 ms,
+but a page that large read no further after three PageDowns from a file's start
+(`worker_source_scroll_tests::three_page_downs_at_once_move_the_page_past_the_first_row`),
+so it stays two. A refill starts while the
 page holds fewer screens than the strips want along the direction of travel (a quarter
 of a screen against it) and keeps a screen against it, so it comes every two screens
 of travel and the window moves over prepared rows meanwhile. A page that is one layout
@@ -628,7 +633,7 @@ the strips' own thresholds, so it grows to hold the prepared screens, and while 
 refill reads its ranges, one plugin reply each, the camera moves on over the rows the
 page holds and the refill's page takes the camera where it is. A page of rows so long
 that one request cannot read every screen it asks for (`Worker::long_rows`) refills until
-it holds the three screens beyond the strips too, reads on after each refill until it does,
+it holds the two screens beyond the strips too, reads on after each refill until it does,
 and grows at its edge from where it starts when it already keeps the screen against the
 travel. In the Text, Source and hex
 views a camera request at rest (a key, the end of a glide) starts it too, so PageDown

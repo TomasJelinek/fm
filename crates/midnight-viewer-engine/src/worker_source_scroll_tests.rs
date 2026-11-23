@@ -251,3 +251,78 @@ fn measure_source_api_scrolling() {
     }
     println!("{report}");
 }
+
+/// The acceptance suite's large log: rows of about 105 bytes, 8 MiB. PageDown at its start
+/// moves a screen; after a scrollbar position at 40 %, a notch down, a notch up and five
+/// down in a burst move their whole distances.
+#[test]
+fn page_down_and_a_notch_burst_move_in_a_large_log() {
+    for (width, height, scale) in [(1000, 700, 1.0), (2000, 1400, 2.0)] {
+        let size = geometry(width, height, scale);
+        let mut engine = Engine::open(
+            super::frontier::rows(80_000, 105),
+            viewer::MODE_TEXT,
+            size,
+            2,
+        );
+        let mut window = Window::default();
+        assert!(settle(&mut engine, &mut window));
+        let screen = f64::from(height);
+        let moved = super::frontier::gesture(&mut engine, &mut window, &[(screen, true)], false);
+        assert!(
+            (moved - screen).abs() < 1.0,
+            "{scale}x: PageDown moved {moved} of {screen}"
+        );
+        window.seek(&mut engine, 0.4);
+        assert!(settle(&mut engine, &mut window));
+        let notch = 100.0 * f64::from(scale);
+        for (count, sign) in [(1, 1.0), (1, -1.0), (5, 1.0)] {
+            let script = Script {
+                name: "notches",
+                frames: vec![vec![Input::Wheel(sign * notch * f64::from(count))]],
+            };
+            let report = run(&mut engine, &mut window, &script);
+            assert!(
+                (report.moved - sign * notch * f64::from(count)).abs() < 1.0,
+                "{scale}x: {count} notches moved {}",
+                report.moved
+            );
+        }
+    }
+}
+
+/// Three PageDowns at once at the start of the acceptance suite's large log (rows of about
+/// 110 bytes, 8 MiB) move three screens, and the page that holds them no longer starts with
+/// the file's first row: a refill moved it along. With a page of three extra screens beyond
+/// the prepared strips the opening page still held the rows three screens down, read no
+/// further, and the acceptance check that waits for the first row to leave the page failed.
+#[test]
+fn three_page_downs_at_once_move_the_page_past_the_first_row() {
+    for (width, height, scale) in [(1000, 600, 1.0), (1000, 700, 1.0), (2000, 1400, 2.0)] {
+        let size = geometry(width, height, scale);
+        let mut engine = Engine::open(
+            super::frontier::rows(76_000, 110),
+            viewer::MODE_TEXT,
+            size,
+            2,
+        );
+        let mut window = Window::default();
+        assert!(settle(&mut engine, &mut window));
+        let screen = f64::from(height);
+        let moved = super::frontier::gesture(
+            &mut engine,
+            &mut window,
+            &[(screen, true), (screen, true), (screen, true)],
+            true,
+        );
+        assert!(
+            (moved - 3.0 * screen).abs() < 1.0,
+            "{scale}x {height}: moved {moved}"
+        );
+        let start = engine.worker.page.as_ref().map_or(0, |page| page.start);
+        assert!(
+            start > 0,
+            "{scale}x {height}: the page still starts at the file's first row"
+        );
+    }
+}

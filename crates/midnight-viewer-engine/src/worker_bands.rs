@@ -32,10 +32,10 @@ const FAST_STEP: f64 = 1.0 / 16.0;
 /// direction of travel, and a quarter of a screen against it.
 const REFILL_AGAINST: f32 = 0.25;
 /// Laid-out screens a page holds beyond the prepared strips, so that a refill comes only
-/// every few screens of travel and is read before the strips need it, even from a slow
-/// plugin: layout is far cheaper than pixels, text costs no budget. Three: with two, eight
-/// PageDowns 120 ms apart waited for a page answered after 133 ms (eight frames).
-const PAGE_EXTRA: f32 = 3.0;
+/// every few screens of travel: layout is far cheaper than pixels, text costs no budget.
+/// Not three: a page that large read no further after three PageDowns from a file's start
+/// (`three_page_downs_at_once_move_the_page_past_the_first_row`).
+const PAGE_EXTRA: f32 = 2.0;
 /// The newest strip ID in the process: an ID names one strip's pixels in every viewer, so
 /// a window keeps its conversions and images by ID across surfaces and files.
 static LAST_STRIP_ID: AtomicU64 = AtomicU64::new(0);
@@ -706,25 +706,25 @@ mod prefetch_tests {
     use super::*;
 
     /// The prepared window and the page around it, in screens: strips one screen against the
-    /// travel and two along it (three while fast), and a page three screens beyond them, so a
-    /// refill is read before the strips reach the page's edge. The strips' bytes stay within
-    /// the viewer's budget (`raster_budget.rs`), however many screens they want.
+    /// travel and two along it (three while fast), and a page two screens beyond them. The
+    /// strips' bytes stay within the viewer's budget (`raster_budget.rs`), however many
+    /// screens they want.
     #[test]
     fn the_prepared_window_and_its_page_reach_ahead_of_the_travel() {
         let mut bands = Bands::default();
         assert_eq!(bands.screens(), (1.0, 2.0));
-        assert_eq!(bands.page_screens(), 6.0);
-        // Slow travel down: two screens of strips below, a page of six screens.
+        assert_eq!(bands.page_screens(), 5.0);
+        // Slow travel down: two screens of strips below, a page of five screens.
         bands.travel(0.0, 720.0);
         bands.travel(30.0, 720.0);
         assert_eq!(bands.screens(), (1.0, 2.0));
         assert_eq!(bands.refill_thresholds(), (0.25, 2.0));
-        assert_eq!(bands.growth_thresholds(), (0.25, 5.0));
+        assert_eq!(bands.growth_thresholds(), (0.25, 4.0));
         // Fast travel up (more than a sixteenth of a screen per request): three above.
         bands.travel(-30.0, 720.0);
         assert_eq!(bands.screens(), (3.0, 1.0));
-        assert_eq!(bands.page_screens(), 7.0);
+        assert_eq!(bands.page_screens(), 6.0);
         assert_eq!(bands.refill_thresholds(), (3.0, 0.25));
-        assert_eq!(bands.growth_thresholds(), (6.0, 0.25));
+        assert_eq!(bands.growth_thresholds(), (5.0, 0.25));
     }
 }

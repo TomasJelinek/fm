@@ -174,6 +174,41 @@ fn retained_frame(
     ViewerOutput::Frame(frame)
 }
 
+/// `retained_frame` as prepared strips (`ViewerRasterBands`) of 256 rows, as the text,
+/// Source, Markdown and hex views publish it.
+fn banded_frame(open: &OpenWindow, revision: u64, surface: u64, origin: f64) -> ViewerOutput {
+    let ViewerOutput::Frame(mut frame) = retained_frame(open, revision, surface, origin, None)
+    else {
+        unreachable!()
+    };
+    let info = frame.raster.as_mut().unwrap();
+    let viewport = info.viewport;
+    let top = ((origin - 600.0) / 256.0).floor() * 256.0;
+    let count = ((origin + 600.0 + f64::from(viewport[1]) - top) / 256.0).ceil() as u32;
+    let list: std::sync::Arc<[ViewerRasterBand]> = (0..count)
+        .map(|index| ViewerRasterBand {
+            id: 1_000_000 * surface + u64::from(index),
+            top: top + f64::from(index * 256),
+            height: 256,
+            pixels: vec![200; viewport[0] as usize * 256 * 4].into(),
+            gutter: None,
+        })
+        .collect();
+    let bottom = top + f64::from(count * 256);
+    info.raster_origin = [0.0, top];
+    info.coverage_min = [0.0, top];
+    info.coverage_max = [0.0, bottom - f64::from(viewport[1])];
+    info.bands = Some(ViewerRasterBands {
+        width: viewport[0],
+        left: 0.0,
+        gutter_width: 0,
+        list,
+    });
+    frame.height = count * 256;
+    frame.pixels = std::sync::Arc::from([]);
+    ViewerOutput::Frame(frame)
+}
+
 /// The shown camera's world y.
 fn camera(open: &OpenWindow) -> f64 {
     open.retained_raster.borrow().camera.origin[1]
@@ -394,8 +429,183 @@ fn seam_pointer_reaches_an_html_page_as_winits_pointer_does() {
     manager.close_all();
 }
 
+/// One notch down, one up and five down, each after the previous came to rest, as the
+/// acceptance suite's `viewers_scroll` sends them: the five in one burst, then again a
+/// frame apart. Every movement goes its whole distance at the glide scale `glide` (0:
+/// Options › Scrolling glide Off, or the system's less motion).
+fn down_up_and_five_down(seam: bool, glide: f32, banded: bool) {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    *open.input.borrow_mut() = Rc::new(|_| true);
+    let _settings = override_settings(SystemSettings {
+        wheel: Some(WheelSetting::Lines(3)),
+        reduce_motion: Some(false),
+    });
+    midnight_ui_input::set_glide_scale(glide);
+    let mut driver = if seam {
+        Driver::Seam(open.clone())
+    } else {
+        let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
+        bind_kinetic(&open, &mut scroll);
+        Driver::Winit(open.clone(), Box::new(scroll))
+    };
+    let notch = f64::from(midnight_ui_input::notch_pixels_for(
+        WheelSetting::Lines(3),
+        0.0,
+    )) * f64::from(open.window.window().scale_factor());
+    let mut moved = Vec::new();
+    for (surface, frame_apart) in [(70, false), (71, true)] {
+        // Pixels 600 rows around the camera, wherever the previous sequence left it.
+        let origin = if surface == 70 { 4000.0 } else { camera(&open) };
+        image_presentation_tests::present(
+            &open,
+            &service,
+            &|_| {},
+            vec![if banded {
+                banded_frame(&open, surface, surface, origin)
+            } else {
+                retained_frame(&open, surface, surface, origin, None)
+            }],
+        );
+        assert!(open.window.get_retained_raster());
+        driver.run(Duration::from_millis(100));
+        for (count, lines) in [(1, -1.0), (1, 1.0), (5, -1.0)] {
+            let start = camera(&open);
+            for _ in 0..count {
+                driver.wheel(&manager, lines);
+                if frame_apart {
+                    driver.run(midnight_ui_input::WHEEL_FRAME);
+                }
+            }
+            driver.run(Duration::from_secs(1));
+            moved.push((camera(&open) - start).round());
+        }
+    }
+    midnight_ui_input::set_glide_scale(1.0);
+    let once = [notch.round(), -notch.round(), (5.0 * notch).round()];
+    assert_eq!(
+        moved,
+        [once, once].concat(),
+        "seam {seam}, glide {glide}, strips {banded}: down, up, five down; twice"
+    );
+    drop(driver);
+    manager.close_all();
+}
+
+#[test]
+fn down_up_and_five_down_move_their_whole_distances_through_the_seam() {
+    down_up_and_five_down(true, 1.0, false);
+}
+
+#[test]
+fn down_up_and_five_down_move_their_whole_distances_with_winits_frames() {
+    down_up_and_five_down(false, 1.0, false);
+}
+
+#[test]
+fn down_up_and_five_down_move_their_whole_distances_without_gliding() {
+    down_up_and_five_down(true, 0.0, false);
+}
+
+#[test]
+fn down_up_and_five_down_move_their_whole_distances_over_strips() {
+    down_up_and_five_down(true, 1.0, true);
+}
+
+#[test]
+fn down_up_and_five_down_move_their_whole_distances_over_strips_with_winits_frames() {
+    down_up_and_five_down(false, 1.0, true);
+}
+
+#[test]
+fn down_up_and_five_down_move_their_whole_distances_with_a_long_glide() {
+    down_up_and_five_down(true, 4.0, false);
+}
+
+/// The pointer moving over the text while a wheel glide runs asks the worker what it is
+/// over (links, `links.rs`); that question, and the next one once the answer comes, must
+/// not stop the glide. They did: every input other than a camera request counted as
+/// interrupting motion, so a burst of five notches (each with the pointer's position, as
+/// winit reports it) moved 0 to 5 px of 500 once the first hover answer came back
+/// (acceptance `viewers_scroll`, release run of 23 November).
+fn glide_with_hovers(seam: bool) {
+    let (_runtime, manager, open, service) = image_presentation_tests::open();
+    open.timer.stop();
+    let inputs = Rc::new(RefCell::new(Vec::new()));
+    let capture = inputs.clone();
+    *open.input.borrow_mut() = Rc::new(move |input| {
+        capture.borrow_mut().push(input);
+        true
+    });
+    let _settings = override_settings(SystemSettings {
+        wheel: Some(WheelSetting::Lines(3)),
+        reduce_motion: Some(false),
+    });
+    let present = |outputs| image_presentation_tests::present(&open, &service, &|_| {}, outputs);
+    present(vec![banded_frame(&open, 10, 80, 4000.0)]);
+    assert!(open.window.get_retained_raster());
+    let mut driver = if seam {
+        Driver::Seam(open.clone())
+    } else {
+        let mut scroll = midnight_ui_input::NativeScroll::new(&open.window);
+        bind_kinetic(&open, &mut scroll);
+        Driver::Winit(open.clone(), Box::new(scroll))
+    };
+    let notch = f64::from(midnight_ui_input::notch_pixels_for(
+        WheelSetting::Lines(3),
+        0.0,
+    )) * f64::from(open.window.window().scale_factor());
+    let start = camera(&open);
+    let at = middle(&open);
+    for _ in 0..5 {
+        driver.wheel(&manager, -1.0);
+        // The pointer's position reaches the text as winit reports it before each notch.
+        open.window.invoke_hover_point(at.x, at.y);
+    }
+    let hovers = |inputs: &RefCell<Vec<ViewerInput>>| {
+        inputs
+            .borrow_mut()
+            .drain(..)
+            .filter(|input| {
+                matches!(
+                    input,
+                    ViewerInput::Raster {
+                        input: ViewerRasterInput::Hover { .. },
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    assert!(hovers(&inputs) >= 1, "the pointer asked what it is over");
+    // The worker answers during the glide; the window asks its next question.
+    driver.run(3 * midnight_ui_input::WHEEL_FRAME);
+    present(vec![ViewerOutput::LinkHover(None)]);
+    assert!(hovers(&inputs) >= 1, "the next hover question");
+    driver.run(Duration::from_secs(1));
+    let moved = (camera(&open) - start).round();
+    assert_eq!(
+        moved,
+        (5.0 * notch).round(),
+        "seam {seam}: the burst moved {moved}"
+    );
+    drop(driver);
+    manager.close_all();
+}
+
+#[test]
+fn hover_questions_during_a_glide_leave_it_its_whole_distance_through_the_seam() {
+    glide_with_hovers(true);
+}
+
+#[test]
+fn hover_questions_during_a_glide_leave_it_its_whole_distance_with_winits_frames() {
+    glide_with_hovers(false);
+}
+
 /// Overridden settings apply when the window next gains the focus, as the system's do, and
-/// end with their guard: one screen per notch and less motion move a screen at once.
+/// end with their guard: one screen per notch and less motion move a page step (87.5 % of
+/// the view) at once.
 #[test]
 fn overridden_settings_apply_from_the_next_focus_until_their_guard_drops() {
     let (_runtime, manager, open, inputs) = text_viewer();
@@ -422,10 +632,14 @@ fn overridden_settings_apply_from_the_next_focus_until_their_guard_drops() {
             .collect();
         assert_eq!(moving.len(), 1, "less motion glides: {frames:?}");
         assert!(moving[0].0 <= 1, "moved first on frame {}", moving[0].0);
-        let screen = open.window.get_content_height() * open.window.window().scale_factor();
+        // One screen per notch moves Chromium's page step: 87.5 % of the view.
+        let screen = midnight_ui_input::notch_pixels_for(
+            WheelSetting::Page,
+            open.window.get_content_height(),
+        ) * open.window.window().scale_factor();
         assert!(
             (moving[0].1[1] - screen).abs() < 0.5,
-            "a notch moved {} of a {screen} pixel screen",
+            "a notch moved {} of a {screen} pixel page step",
             moving[0].1[1]
         );
     }
