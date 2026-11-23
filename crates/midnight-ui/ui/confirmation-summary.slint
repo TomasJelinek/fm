@@ -1,0 +1,103 @@
+import { Theme } from "theme.slint";
+import { DetailRow } from "navigation-models.slint";
+import { PathText } from "path-text.slint";
+import { Tip } from "controls.slint";
+
+// A confirmation's content, top to bottom: the question it asks, as its headline; right
+// under it the warning (in the error colours, with a glyph, when the action cannot be
+// undone); and after a wider gap the details, label and value, in a subdued block. Names
+// wrap at the width the dialog gives them, so a long one is never clipped or elided. A
+// folder's path (a row marked "path") stays on one line and, when it does not fit, is
+// shortened in the middle as the path bar shortens a path: its start, "...", and its last
+// component (the row's explanation); the whole path is its tooltip and accessible label.
+// Its height is its content's: the dialog sizes itself from it.
+export component ConfirmationSummary inherits Rectangle {
+    in property <string> question;
+    in property <string> warning;
+    // The warning is about an outcome that cannot be undone.
+    in property <bool> danger;
+    in property <[DetailRow]> details;
+    // Every label, one per line: the label column is as wide as the widest of them, and
+    // at most two fifths of the block.
+    in property <string> labels;
+    in property <bool> compact;
+    private property <length> glyph-size: max(14px, round(Theme.font-size / 1px) * 1px);
+    private property <length> label-width: min(labels-measure.preferred-width, root.width * 0.4);
+    private property <length> block-padding: root.compact ? 8px : 10px;
+    // A value's width is set, not left to its row: a wrapped value's height follows the
+    // width it is given, and the block's height must count every wrapped line.
+    private property <length> value-width: max(1px, root.width - 2 * root.block-padding - root.label-width - 12px);
+    min-height: content.preferred-height;
+    preferred-height: content.preferred-height;
+    content := VerticalLayout {
+        spacing: root.compact ? 4px : 6px;
+        alignment: start;
+        Text {
+            text: root.question; wrap: word-wrap; width: root.width;
+            color: Theme.strong-text; font-weight: 600;
+            font-size: round(Theme.font-size * 1.15 / 1px) * 1px;
+        }
+        if root.warning != "" : HorizontalLayout {
+            spacing: 6px;
+            // The glyph sits on the warning's first line.
+            if root.danger : Rectangle {
+                width: root.glyph-size;
+                Rectangle {
+                    x: 0px; y: max(0px, (line.preferred-height - self.height) / 2);
+                    width: root.glyph-size; height: self.width;
+                    border-radius: self.width / 2;
+                    background: Theme.error-text;
+                    Text {
+                        text: "!"; color: Theme.error-background;
+                        font-size: parent.height * 0.75; font-weight: 800;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        accessible-role: none;
+                    }
+                }
+            }
+            Text {
+                text: root.warning; wrap: word-wrap;
+                width: max(1px, root.width - (root.danger ? root.glyph-size + 6px : 0px));
+                color: root.danger ? Theme.error-text : Theme.secondary-text;
+                font-weight: root.danger ? 600 : 400;
+                font-size: Theme.font-size;
+            }
+        }
+        if root.details.length > 0 : VerticalLayout {
+            padding-top: root.compact ? 4px : 8px;
+            Rectangle {
+                background: Theme.secondary-surface;
+                border-radius: 4px;
+                VerticalLayout {
+                    padding-left: root.block-padding; padding-right: root.block-padding;
+                    padding-top: root.compact ? 4px : 8px; padding-bottom: self.padding-top;
+                    spacing: root.compact ? 2px : 4px;
+                    for row in root.details : HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: row.label; width: root.label-width;
+                            color: Theme.muted-text; font-size: Theme.small-font;
+                            overflow: elide;
+                        }
+                        if row.identity != "path" : Text {
+                            text: row.value; wrap: word-wrap; width: root.value-width;
+                            color: Theme.secondary-text; font-size: Theme.small-font;
+                        }
+                        if row.identity == "path" : PathText {
+                            text: row.value; tail: row.explanation; width: root.value-width;
+                            foreground: Theme.secondary-text; font-size: Theme.small-font;
+                            vertical-alignment: top;
+                            Tip { text: row.value; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    labels-measure := Text {
+        visible: false; accessible-role: none;
+        text: root.labels; font-size: Theme.small-font;
+    }
+    // One line of the warning's font, to centre the glyph on its first line.
+    line := Text { visible: false; accessible-role: none; text: "X"; font-size: Theme.font-size; }
+}

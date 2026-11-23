@@ -95,6 +95,9 @@ fn readable(theme: &Theme<'_>, name: &str) {
             theme.get_error_background(),
             minimum,
         ),
+        // Error text on the dialog surface: a dangerous dialog's title and the warning
+        // under a permanent Delete's question.
+        (theme.get_error_text(), theme.get_surface(), minimum),
         (
             theme.get_selection_text(),
             theme.get_selection_background(),

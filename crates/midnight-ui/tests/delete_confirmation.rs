@@ -9,9 +9,9 @@ use i_slint_core::{
     window::{WindowInner, WindowKind},
 };
 use midnight_core::*;
-use midnight_ui::{Presenter, install, refresh};
-use slint::ComponentHandle;
+use midnight_ui::{OperationPresentation, Presenter, install, refresh};
 use slint::platform::{Key, WindowAdapter, software_renderer::MinimalSoftwareWindow};
+use slint::{ComponentHandle, Model};
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 use ui::TestUi;
 
@@ -91,17 +91,18 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         sample: sample.clone(),
     };
     let body = show(&ui, &windows, &state, &commands, preview.clone());
+    // Several targets: the question counts them, the details list the first names.
+    assert!(body.starts_with("Move 2 items to the Trash?\n\n"), "{body}");
+    assert!(body.contains("\nItems: 2 files\n"), "{body}");
     assert!(
-        !body.contains("žluťoučký"),
-        "multiple targets must not list names: {body}"
-    );
-    assert!(!body.contains("second.txt"));
-    assert!(body.contains("2 files"));
-    assert!(body.contains("Files size: 3 000 bytes"), "{body}");
-    assert!(!body.contains("0 folders"));
-    assert!(
-        body.contains("Move these 2 items to the system Trash?"),
+        body.contains("\nNames: žluťoučký 文档 🦀.txt\n  second.txt\n"),
         "{body}"
+    );
+    assert!(body.contains("\nSize: 2,9 KiB (3 000 bytes)\n"), "{body}");
+    assert!(!body.contains("0 folders"));
+    assert_eq!(
+        ui.window.get_operation_warning(),
+        "If the Trash is unavailable, they stay in place."
     );
     assert!(!ui.window.get_operation_dangerous());
     snapshot(&windows, "delete-multiple-files");
@@ -110,19 +111,26 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.file_bytes = Some(1_000);
     preview.sample = vec![sample[0].clone()];
     let body = show(&ui, &windows, &state, &commands, preview.clone());
+    // One target: the question names it, first.
+    assert!(
+        body.starts_with("Move “žluťoučký 文档 🦀.txt” to the Trash?\n\n"),
+        "{body}"
+    );
     assert!(body.contains("Name: žluťoučký 文档 🦀.txt"), "{body}");
+    assert!(body.contains("Type: File"), "{body}");
     assert!(body.contains("Size: 1 000 bytes"), "{body}");
     assert!(
         body.contains("Modified: 6. listopadu 2026 9:05 PM"),
         "{body}"
     );
-    assert!(!body.contains(sample[0].path.to_string_lossy().as_ref()));
-    // One target: the question names it by its kind.
     assert!(
-        body.ends_with(
-            "Move the file “žluťoučký 文档 🦀.txt” to the Trash? If the Trash is unavailable, it stays in place."
-        ),
+        body.contains(&format!("Location: {}", path.display())),
         "{body}"
+    );
+    assert!(!body.contains(sample[0].path.to_string_lossy().as_ref()));
+    assert_eq!(
+        ui.window.get_operation_warning(),
+        "If the Trash is unavailable, it stays in place."
     );
     snapshot(&windows, "delete-single-file");
 
@@ -132,20 +140,24 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.file_bytes = Some(3_000);
     preview.sample = sample.clone();
     let body = show(&ui, &windows, &state, &commands, preview.clone());
-    assert!(body.contains("2 files and 3 folders"), "{body}");
-    assert!(body.contains("Files size: 3 000 bytes"), "{body}");
     assert!(
-        body.contains("Permanently delete these 5 items and folder contents?"),
+        body.starts_with("Permanently delete 5 items?\n\n"),
+        "{body}"
+    );
+    assert!(
+        body.contains("Items: 2 files and 3 folders, including everything in the folders"),
+        "{body}"
+    );
+    assert!(
+        body.contains("Size: 2,9 KiB (3 000 bytes) in the files; folder contents not counted"),
         "{body}"
     );
     // The warning line says it; the question does not repeat it.
-    assert!(
-        ui.window
-            .get_operation_warning()
-            .contains("cannot be undone")
+    assert_eq!(
+        ui.window.get_operation_warning(),
+        "Permanent deletion cannot be undone."
     );
     assert!(!body.contains("cannot be undone"), "{body}");
-    assert!(!body.contains("žluťoučký"));
     assert!(ui.window.get_operation_dangerous());
     snapshot(&windows, "delete-mixed-permanent");
 
@@ -157,16 +169,18 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     preview.sample[0].kind = EntryKind::Directory;
     preview.sample[0].metadata.size = Some(999_999);
     let body = show(&ui, &windows, &state, &commands, preview.clone());
-    assert!(body.contains("1 folder"), "{body}");
-    assert!(!body.contains("0 files"));
-    assert!(!body.contains("bytes"));
+    assert!(
+        body.starts_with("Permanently delete the folder “složka 文档 🦀” and everything in it?"),
+        "{body}"
+    );
+    assert!(body.contains("Type: Folder\n"), "{body}");
+    assert!(
+        !body.contains("bytes"),
+        "an unmeasured folder has no size: {body}"
+    );
     assert!(body.contains("Name: složka 文档 🦀"), "{body}");
     assert!(
         body.contains("Modified: 6. listopadu 2026 9:05 PM"),
-        "{body}"
-    );
-    assert!(
-        body.ends_with("Permanently delete the folder “složka 文档 🦀” and everything in it?"),
         "{body}"
     );
     snapshot(&windows, "delete-single-folder");
@@ -174,20 +188,24 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     // A directory link counts with the folders, yet it is named as a link.
     preview.sample[0].kind = EntryKind::DirectoryLink;
     let body = show(&ui, &windows, &state, &commands, preview.clone());
-    assert!(body.starts_with("1 link\nName: složka 文档 🦀\n"), "{body}");
     assert!(
-        body.ends_with(
-            "Permanently delete the link “složka 文档 🦀”? What it points to is not deleted."
-        ),
+        body.starts_with("Permanently delete the link “složka 文档 🦀”?\n"),
+        "{body}"
+    );
+    assert!(
+        body.contains("Type: Folder link (the folder it points to is kept)"),
         "{body}"
     );
     preview.sample[0].kind = EntryKind::Directory;
 
     preview.folders = 2;
     let body = show(&ui, &windows, &state, &commands, preview.clone());
-    assert!(body.contains("2 folders"), "{body}");
-    assert!(body.contains("these 2 items"), "{body}");
-    assert!(!body.contains("složka"));
+    assert!(body.starts_with("Permanently delete 2 items?"), "{body}");
+    assert!(body.contains("Items: 2 folders"), "{body}");
+    assert!(
+        body.contains("Names: složka 文档 🦀\n  and 1 more"),
+        "{body}"
+    );
 
     preview.files = u64::MAX;
     preview.folders = u64::MAX;
@@ -199,9 +217,12 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
         body.contains("18 446 744 073 709 551 615 folders"),
         "{body}"
     );
-    assert!(body.contains("Files size: Unavailable"), "{body}");
+    assert!(body.contains("Size: Unavailable"), "{body}");
     // The total overflows: the question still asks about every item.
-    assert!(body.contains("Permanently delete these items"), "{body}");
+    assert!(
+        body.starts_with("Permanently delete these items?"),
+        "{body}"
+    );
 
     preview.files = 1;
     preview.folders = 0;
@@ -212,7 +233,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(body.contains("Modified: Unavailable"), "{body}");
     assert!(!body.contains("0 bytes"));
     assert!(
-        body.ends_with("Permanently delete the file “žluťoučký 文档 🦀.txt”?"),
+        body.starts_with("Permanently delete “žluťoučký 文档 🦀.txt”?"),
         "{body}"
     );
 
@@ -272,14 +293,34 @@ fn show(
     modeless::draw(&main, 540, 360, "summary-layout");
     assert!(ui.window.get_embedded_modal_open());
     assert!(!ui.window.get_dialog_input_blocked());
+    // The question, the warning and every detail value are drawn; a folder's path in
+    // full in the label that a shortened path starts with.
+    let form = ui.window.global::<OperationPresentation>();
     let body = ui.window.get_operation_body();
-    // Compact confirmations place the warning in the same scrollable Text as
-    // the summary. Both presentations must retain the complete exact body.
-    let warning_and_body = format!("{}\n\n{body}", ui.window.get_operation_warning());
-    assert!(
-        has_text(popup.clone(), &body) || has_text(popup, &warning_and_body),
-        "the actual embedded confirmation must display the bounded metadata summary"
-    );
+    assert!(body.starts_with(form.get_question().as_str()), "{body}");
+    for text in [form.get_question(), ui.window.get_operation_warning()] {
+        assert!(has_text(popup.clone(), &text), "{text} is drawn");
+    }
+    for row in form.get_details().iter() {
+        assert!(
+            has_text(popup.clone(), &row.label),
+            "{} is drawn",
+            row.label
+        );
+        assert!(
+            has_text(popup.clone(), &row.value),
+            "{} is drawn",
+            row.value
+        );
+        assert!(
+            body.contains(&format!(
+                "{}: {}",
+                row.label,
+                row.value.replace('\n', "\n  ")
+            )),
+            "{body}"
+        );
+    }
     assert!(
         commands.borrow().iter().all(|command| matches!(
             command,

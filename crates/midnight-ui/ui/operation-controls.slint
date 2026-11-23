@@ -8,11 +8,18 @@ import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { FormNote } from "form-note.slint";
 import { Tip } from "controls.slint";
+import { ConfirmationSummary } from "confirmation-summary.slint";
+import { DetailRow } from "navigation-models.slint";
 
 
 export component OperationDialog inherits Rectangle {
     in property <string> title;
     in property <string> body;
+    // A confirmation that asks a question (Delete): the question is its headline, the
+    // warning the line under it, and the details follow, instead of the body.
+    in property <string> question;
+    in property <[DetailRow]> details;
+    in property <string> detail-labels;
     in property <string> policy;
     // The Copy/Move form (`EmbeddedOperation` passes `kind < 0`). `body` is its first
     // line, which names what is copied and ends where the destination field takes over;
@@ -67,7 +74,11 @@ export component OperationDialog inherits Rectangle {
     changed dangerous => { root.armed-name = root.dangerous && root.has-name ? name.text : ""; }
     // The question names the file, so a new warning means a newly armed name.
     changed warning => { root.armed-name = root.dangerous && root.has-name ? name.text : ""; }
-    private property <bool> compact: root.height < 280px;
+    private property <bool> confirmation: !root.transfer && root.question != "";
+    // A confirmation keeps its regular layout at the height it asks for, and turns compact
+    // only when the window cannot give it that height.
+    private property <bool> compact: root.height < 280px
+        && (!root.confirmation || root.height + 0.5px < root.confirmation-height);
     // The name field keeps the stock field's 32 px and the theme's control height; a
     // form without a name gives the hidden field no room.
     private property <length> name-height: !root.has-name ? 0px
@@ -235,7 +246,16 @@ export component OperationDialog inherits Rectangle {
     // Size the initial presentation from its actual wrapped text, measured at the
     // regular layout's width: the compact layout follows the height it decides.
     // Resizing remains independent in DialogFrame; editing never recreates the input.
-    out property <length> preferred-dialog-height: root.transfer ? root.transfer-height : root.classic-height;
+    out property <length> preferred-dialog-height: root.transfer ? root.transfer-height
+        : root.confirmation ? root.confirmation-height : root.classic-height;
+    // A confirmation in its regular layout: the padding, the header and the gaps around
+    // the middle, the question, warning and details at the regular width, and the actions
+    // (as tall as Cancel: the primary action's size follows `compact`, which follows this).
+    private property <length> confirmation-height: clamp(
+        2 * root.form-padding(false) + header.regular-height + 2 * root.regular-row-spacing
+        + confirmation-measure.preferred-height
+        + max(32px, Theme.control-height, cancel-button.min-height),
+        180px, 640px);
     private property <length> classic-height: clamp(
         42px + max(36px, Theme.font-size * 1.2 + 6px)
         + min(280px, summary-measure.preferred-height)
@@ -363,13 +383,17 @@ export component OperationDialog inherits Rectangle {
                 changed content-height => { root.reveal-focused(); }
                 form := VerticalLayout {
                     height: middle.content-height;
-                    // The Copy/Move form spaces its blocks itself.
-                    spacing: root.transfer ? 0px : root.row-spacing; alignment: start;
-                    if !root.transfer && root.warning != "" && !root.compact : Text {
+                    // The Copy/Move form spaces its blocks itself; a confirmation has one block.
+                    spacing: root.transfer || root.confirmation ? 0px : root.row-spacing; alignment: start;
+                    if !root.transfer && !root.confirmation && root.warning != "" && !root.compact : Text {
                         text: root.warning; color: Theme.error-text; font-weight: 600;
                         font-size: Theme.font-size; wrap: word-wrap;
                     }
-                    if !root.transfer : Rectangle {
+                    if root.confirmation : ConfirmationSummary {
+                        question: root.question; warning: root.warning; danger: root.dangerous;
+                        details: root.details; labels: root.detail-labels; compact: root.compact;
+                    }
+                    if !root.transfer && !root.confirmation : Rectangle {
                         height: min(280px, drawn-summary.preferred-height);
                         background: transparent; clip: true;
                         DialogText {
@@ -477,8 +501,11 @@ export component OperationDialog inherits Rectangle {
                     }
                 }
             }
+            // The compact layout's narrower padding would put the primary action against
+            // the resize grip in the corner: the actions keep 16 px from the right edge.
             HorizontalLayout {
                 spacing: 8px;
+                padding-right: root.compact ? 16px - root.form-padding(true) : 0px;
                 cancel-button := HintedActionButton { text: "Cancel"; hint: "Leave files unchanged (Escape)."; clicked => { root.cancel(); } }
                 Rectangle {
                     horizontal-stretch: 1; min-width: 0px;
@@ -491,8 +518,9 @@ export component OperationDialog inherits Rectangle {
                             confirm-button := HintedActionButton {
                                 primary: true; destructive: root.dangerous;
                                 // The operation's own glyph, as in the dialog header; a
-                                // compact form trims the padding that the glyph needs.
-                                fallback-icon: root.fallback-icon; compact: root.compact;
+                                // compact form trims the padding that the glyph needs. A
+                                // confirmation keeps its caption's padding.
+                                fallback-icon: root.fallback-icon; compact: root.compact && !root.confirmation;
                                 text: root.confirm-text; enabled: root.confirm-enabled && (!root.has-name || name.text != "");
                                 accessible-role: none;
                                 // Copy/Move: what the job verifies, which its policy says.
@@ -526,5 +554,14 @@ export component OperationDialog inherits Rectangle {
                 }
             }
         }
+    }
+    // The confirmation at the regular layout's width; nothing it measures follows `compact`.
+    // After the form, so that a search for a shown text meets the shown one first.
+    confirmation-measure := ConfirmationSummary {
+        visible: false; accessible-role: none;
+        x: 0px; y: 0px; width: root.content-width(false);
+        // Empty in other forms: its hidden texts must not stand in for the shown ones.
+        question: root.question; warning: root.confirmation ? root.warning : ""; danger: root.dangerous;
+        details: root.details; labels: root.detail-labels;
     }
 }

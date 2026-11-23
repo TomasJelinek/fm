@@ -1094,9 +1094,13 @@ current keys.
   new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
   explicitly confirm permanent deletion. A Trash failure never permanently deletes.
-  One file shows its name, exact size and modified date/time. Multiple entries show
-  file count/total file bytes and folder count; folder contents are not recursively
-  counted just to open the confirmation.
+  The confirmation asks its question first ("Permanently delete “report.pdf”?",
+  "Move 12 items to the Trash?"), says right under it that a permanent deletion cannot
+  be undone, and lists the details below: for one item its name, type, size (readable,
+  with the exact bytes), modified date/time and folder; for several the files and
+  folders counted, the first names, the files' total size and their folder. Folder
+  contents are not recursively counted just to open the confirmation: a folder's size
+  is shown only when Folder sizes has measured it.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
   Their footer buttons are hidden when these dialogs are unavailable, including
   on Linux. Supported modifier actions such as Ctrl+F11 and Ctrl+F12 remain visible.

@@ -1099,3 +1099,53 @@ fn a_long_first_line_and_a_note_wrap_whole_at_every_width() {
     assert!(cut.is_empty(), "{cut:#?}");
     h.close();
 }
+
+/// The Copy and Move dialogs print no path that a narrow dialog would have to shorten:
+/// the first line names the items, where they come from is its tooltip, whole, and the
+/// destination is the editable field, which keeps every typed character at every width
+/// (an edited path is never shortened).
+#[test]
+fn copy_and_move_print_no_path_and_keep_the_typed_destination_whole() {
+    let h = Harness::new(PreferenceTheme::Dark, UiDensity::Desktop, 12);
+    let mut long = documents();
+    for part in [
+        "Projects",
+        "Midnight Explorer",
+        "release candidates",
+        "2026-11-23 nightly build with symbols",
+        "artifacts",
+        "packages",
+    ] {
+        long.push(part);
+    }
+    let long = long.display().to_string();
+    for (key, verb) in [(Key::F5, "Copy "), (Key::F6, "Move ")] {
+        h.focus(PaneId::Left, "Q3 report.pdf");
+        h.open(key, local());
+        let form = h.main.global::<OperationPresentation>();
+        assert!(form.get_body().starts_with(verb), "{}", form.get_body());
+        assert_eq!(
+            form.get_body_hint(),
+            format!("From: {}", h.folders[0].display())
+        );
+        h.chord(Key::Control, "a");
+        h.key(long.as_str());
+        for (width, height) in [(1340, 820), (520, 400), (320, 200)] {
+            h.layout(width, height);
+            let field = h.item(AccessibleRole::TextInput, "Destination folder");
+            assert_eq!(
+                field
+                    .accessible_string_property(AccessibleStringProperty::Value)
+                    .as_deref(),
+                Some(long.as_str()),
+                "{verb}at {width}: the typed destination stays whole"
+            );
+            assert!(
+                !form.get_body().contains(['\\', '/']),
+                "{verb}at {width}: the first line names no path: {}",
+                form.get_body()
+            );
+        }
+        h.close();
+    }
+}

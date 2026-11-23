@@ -56,6 +56,7 @@ mod copy_dialog;
 mod copy_dialog_polish;
 mod copy_errors;
 mod delete_confirmation;
+mod delete_dialog_polish;
 mod delete_job_resolve;
 mod detail_font;
 mod dialog_drag;

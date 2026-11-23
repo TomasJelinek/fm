@@ -7,8 +7,8 @@ measurement.
 
 ## Settings and dialogs
 
-- Initial form size follows its content. Short Rename/Create/Delete summaries
-  and informational notices use compact heights; long diagnostics grow to a
+- Initial form size follows its content. Short Rename/Create summaries, the Delete
+  confirmations and informational notices use compact heights; long diagnostics grow to a
   bounded height and then scroll. User resizing is retained while the form is
   open. Viewers continue to initially cover the main window, as requested.
 - Settings uses a smaller initial footprint and responsive fields rather than a
@@ -110,6 +110,54 @@ measurement.
   cycle, Enter in the destination, one note at a time, the first line, and a long first
   line with a note at every width from 320 to 600 px. These tests run on Windows; the
   application window on Linux is not covered.
+- The Delete confirmations (`OperationDialog` with a `question`: Move to Trash, Delete
+  or F8; Permanently delete, Shift+Delete or Shift+F8) put their question first, as the
+  headline under the title, in the strong text colour at 1.15 × the font, semibold:
+  "Permanently delete “report.pdf”?", "Permanently delete the folder “Photos” and
+  everything in it?", "Permanently delete the link “x”?", "Move 12 items to the
+  Trash?". Right under it is one short line: "Permanent deletion cannot be undone." in
+  the error colour, semibold, after a round "!" glyph on its first line; for the Trash
+  "If the Trash is unavailable, it stays in place." ("they stay") in the secondary text
+  colour, without a glyph. The rest are details, after a wider gap, in a subdued block on
+  the secondary surface: a label column in the muted colour, as wide as its widest label
+  (at most two fifths of the block), and the values in the secondary colour, both in the
+  small font. One item lists Name, Type ("File", "Folder", "Link (what it points to is
+  kept)", "Folder link (…)", "Special file"), Size, Modified and Location. Several items
+  list Items ("3 files and 2 folders, including everything in the folders"), Links (when
+  the sample holds one: "Only the links go; what they point to is kept"), Names (the
+  first five, or all six, then "and N more"), Size and Location (the folder all sampled
+  items share, when the sample is the whole selection or that folder is the panel's;
+  otherwise "Several folders" or nothing). A size is the panels' readable size with the
+  exact bytes, "24.1 MiB (25,320,511 bytes)" in the system's number format (bytes alone
+  below 1 KiB). Several items count the files' bytes; folder contents count only when
+  every folder is in the sample and Folder sizes has measured it ("At least … (folder
+  sizes not final)" while one is unfinished); otherwise the size says "in the files;
+  folder contents not counted", and folders alone show none. A folder has a size only
+  when it was measured. Everything comes from the worker's preview (at most 32 items)
+  and the sizes the panels hold; opening the confirmation reads nothing from disk.
+  Names wrap, so a long name is never cut. A folder's path (Location) stays on one line
+  and, when it does not fit, is shortened in the middle with the "..." marker of the
+  path bar (`PathText`, which the Find results and lists also use): its start, the
+  marker, and its last component with the separator before it; the whole path is its
+  tooltip and accessible label, and it is shortened again at every width, font, density
+  and scale. The dialog asks for its content's height in the regular layout (padding,
+  header, gaps, the summary measured at the regular width, and the actions), between
+  180 and 640 px, so it shows no empty band, and it turns compact only when the window
+  cannot give it that height. The primary button keeps its caption's 12 px padding in
+  either layout, and in the compact layout the actions keep 16 px from the right edge,
+  clear of the resize grip. Focus starts on the primary action as before; Enter
+  confirms, Escape and Cancel cancel. `operation-body` holds the same content as text,
+  the question first ("Label: value" lines after a blank line), for tests and
+  assistive copies; the warning stays `operation-warning`. The error colour on the
+  dialog surface keeps the palette's text minimum in every theme
+  (`all_themes_are_selectable_and_keep_text_readable`). `tests/delete_dialog_polish.rs`
+  (software-window tests, run on Windows) checks the question first, every detail
+  unclipped, the actions' padding and grip clearance and no empty band, at 8, 12, 20
+  and 32 px and Touch 15 and 32 px, in a large and a 520 × 360 window, and the shortened
+  path at widths from 360 to 1340 px; `delete_summary.rs` tests the texts. The Copy and
+  Move dialogs print no path: the first line names items, the source folder is its
+  tooltip, and the destination is the editable field, whose text is never shortened
+  (`copy_and_move_print_no_path_and_keep_the_typed_destination_whole`).
 - Compare directories compares on Enter from an option or its tolerance field, as
   other dialogs confirm from their options; Space ticks an option, and a held Enter or
   one during a comparison does nothing. In Checksums, Enter in the results or on the

@@ -208,6 +208,28 @@ fn open(
     window.set_option_enabled(true);
     window.set_option_checked(false);
     window.set_dangerous(false);
+    // A Delete confirmation's question and details; other forms draw their body.
+    let delete = match &key {
+        Key::Operation(_) => crate::operation_presentation::delete_form(p),
+        Key::Copy(_) => None,
+    };
+    window.set_question(
+        delete
+            .as_ref()
+            .map(|form| form.question.clone())
+            .unwrap_or_default(),
+    );
+    window.set_detail_labels(
+        delete
+            .as_ref()
+            .map(|form| form.labels.clone())
+            .unwrap_or_default(),
+    );
+    // A path's tooltip may still show from an earlier confirmation's rows.
+    crate::tooltip::dismiss(main.window());
+    window.set_details(slint::ModelRc::new(slint::VecModel::from(
+        delete.map(|form| form.details).unwrap_or_default(),
+    )));
     match &key {
         Key::Copy(_) => copy_draft_windows::initialize(&window, main, p.copy_draft_links_view()),
         Key::Operation(_) => {

@@ -3,6 +3,74 @@ use super::*;
 #[path = "delete_summary.rs"]
 mod delete_summary;
 
+/// A Delete confirmation of `preview`, with the folder sizes the panels have measured
+/// (nothing is read from disk to open it).
+fn delete_confirmation(
+    presenter: &Presenter,
+    preview: &OperationPreview,
+    mode: DeleteMode,
+) -> delete_summary::Confirmation {
+    let folder_size = |path: &std::path::Path| {
+        presenter
+            .panes
+            .iter()
+            .find_map(|pane| pane.folder_sizes.get(path).cloned())
+    };
+    let source = presenter
+        .operations
+        .progress
+        .iter()
+        .find(|progress| progress.id == preview.id)
+        .map(|progress| progress.source_directory.as_path());
+    let context = delete_summary::Context {
+        locale: &presenter.number_locale,
+        folder_size: &folder_size,
+        source,
+    };
+    delete_summary::confirmation(preview, mode, &context)
+}
+
+/// What the shared form draws of the pending Delete confirmation besides its warning.
+pub(super) struct DeleteForm {
+    pub(super) question: SharedString,
+    /// A folder's path is marked `path`, with its last component as the explanation:
+    /// the form shortens it in the middle and keeps that end, as the path bar does.
+    pub(super) details: Vec<DetailRow>,
+    pub(super) labels: SharedString,
+}
+
+pub(super) fn delete_form(presenter: &Presenter) -> Option<DeleteForm> {
+    let preview = presenter.operations.preview.as_ref()?;
+    let MutationKind::Delete(mode) = preview.kind else {
+        return None;
+    };
+    let confirmation = delete_confirmation(presenter, preview, mode);
+    let details = confirmation
+        .details
+        .iter()
+        .enumerate()
+        .map(|(index, (label, value))| {
+            let value = shown_text(value);
+            let path = confirmation.path == Some(index);
+            DetailRow {
+                identity: if path { "path".into() } else { "".into() },
+                explanation: if path {
+                    crate::path_tail(&value)
+                } else {
+                    "".into()
+                },
+                label: (*label).into(),
+                value,
+            }
+        })
+        .collect();
+    Some(DeleteForm {
+        question: shown_text(&confirmation.question),
+        details,
+        labels: confirmation.labels().into(),
+    })
+}
+
 pub(super) fn title(kind: MutationKind) -> &'static str {
     match kind {
         MutationKind::Rename => "Rename",
@@ -77,6 +145,10 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         .iter()
         .find(|progress| progress.id == preview.id)
         .map(|progress| progress.source_directory.as_path());
+    let delete = match kind {
+        MutationKind::Delete(mode) => Some(delete_confirmation(presenter, preview, mode)),
+        _ => None,
+    };
     let body = match kind {
         MutationKind::Rename => preview.sample.first().map_or_else(
             || "Choose a new name.".into(),
@@ -87,24 +159,19 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             |path| format!("Location\n{}", path.display()),
         ),
         MutationKind::EditMetadata => String::new(),
-        MutationKind::Delete(mode) => format!(
-            "{}\n\n{}",
-            delete_summary::summary(preview, &presenter.number_locale),
-            delete_summary::question(preview, mode, &presenter.number_locale)
-        ),
+        // The question first, then the details; the warning is the form's own line.
+        MutationKind::Delete(_) => delete
+            .as_ref()
+            .map(|delete| delete.text())
+            .unwrap_or_default(),
     };
     window.set_operation_title(title(kind).into());
     let (role, kind_id, warning) = match kind {
         MutationKind::Rename => (ActionIcon::Rename, 0, ""),
-        MutationKind::Delete(DeleteMode::Trash) => (
+        MutationKind::Delete(mode) => (
             ActionIcon::Delete,
-            1,
-            "Selected items will be removed from this folder and moved to Trash.",
-        ),
-        MutationKind::Delete(DeleteMode::Permanent) => (
-            ActionIcon::Delete,
-            2,
-            "Permanent deletion cannot be undone.",
+            if mode == DeleteMode::Trash { 1 } else { 2 },
+            delete.as_ref().map_or("", |delete| delete.warning),
         ),
         MutationKind::CreateDirectory => (ActionIcon::NewFolder, 3, ""),
         MutationKind::CreateFile => (ActionIcon::NewFile, 4, ""),

@@ -2,6 +2,7 @@ import { DialogFrame, PopupFocus } from "dialog-frame.slint";
 import { OperationDialog } from "operation-controls.slint";
 import { Theme } from "theme.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { DetailRow } from "navigation-models.slint";
 
 // Presentation values contain no captured provider or filesystem authority.
 export global OperationPresentation {
@@ -10,6 +11,12 @@ export global OperationPresentation {
     in-out property <string> title-text;
     in-out property <int> kind: -1;
     in-out property <string> body;
+    // A Delete confirmation: its question, the headline above `warning`, and its details
+    // under them (a row marked "path" is a folder's path, its explanation the end that a
+    // shortened path keeps), with every label, one per line. Other forms leave them empty.
+    in-out property <string> question;
+    in-out property <[DetailRow]> details;
+    in-out property <string> detail-labels;
     // Copy/Move: where the items come from, the first line's tooltip.
     in-out property <string> body-hint;
     in-out property <string> policy;
@@ -81,6 +88,9 @@ export component EmbeddedOperation inherits Rectangle {
                 // Copy and Move have no mutation kind of their own.
                 transfer: OperationPresentation.kind < 0;
                 body: OperationPresentation.body;
+                question: OperationPresentation.question;
+                details: OperationPresentation.details;
+                detail-labels: OperationPresentation.detail-labels;
                 body-hint: OperationPresentation.body-hint;
                 policy: OperationPresentation.policy;
                 wait-visible: OperationPresentation.wait-visible;
