@@ -9,6 +9,7 @@ mod native;
 mod native_scroll;
 mod placement;
 mod post_window_event;
+mod scroll_keys;
 mod scroll_press;
 mod tooltip;
 mod wheel_lines;
@@ -25,6 +26,7 @@ pub use native_scroll::{
 };
 pub use placement::WindowPlacement;
 pub use post_window_event::{PostWindowEventObserver, observe_post_window_events};
+pub use scroll_keys::{KEY_COLUMN_PIXELS, KEY_LINE_PIXELS, key_scroll};
 pub use scroll_press::PressState;
 pub use tooltip::synchronize_tooltip_anchors;
 pub use wheel_lines::{FIXED_NOTCH_PIXELS, WheelSetting, notch_pixels_for};

@@ -64,6 +64,36 @@ pub fn native_notches(
     Ok(())
 }
 
+/// Turn a mouse wheel by `notches` (positive: towards the end) over `at` in a comparison
+/// window, one native report after the other, as winit delivers them to the comparator's
+/// own native observer (`midnight_compare_ui::acceptance_seams`).
+pub fn comparator_notches(
+    app: &App,
+    window: &midnight_compare_ui::ComparatorWindow,
+    at: LogicalPosition,
+    notches: i32,
+) -> Result<(), String> {
+    let comparators = super::plugins(app)?.comparators.clone();
+    let y = if notches >= 0 { -1.0 } else { 1.0 };
+    for _ in 0..notches.unsigned_abs() {
+        midnight_compare_ui::acceptance_seams::wheel(&comparators, window, at, 0.0, y)
+            .ok_or("the native input seam does not reach this comparison window")?;
+    }
+    Ok(())
+}
+
+/// The logical pixels one wheel notch moves content whose view is `page` logical pixels
+/// tall, at the system's wheel setting as the panels and comparators read it
+/// (`midnight_ui::system_wheel_setting`) and the default Scrolling speed: Chromium's
+/// distance (`midnight_ui_input::notch_pixels_for`).
+pub fn system_notch_pixels(page: f32) -> f32 {
+    match midnight_ui::system_wheel_setting() {
+        WheelSetting::Lines(lines) => NOTCH_PIXELS * lines.clamp(1, 100) as f32 / 3.0,
+        WheelSetting::Page => (page * 0.875).max(1.0),
+        WheelSetting::Fixed => 120.0,
+    }
+}
+
 /// Move the pointer to `at` and, for a press or release, change the left button there, as
 /// winit reports it to the viewer's own native observer: an HTML page's browser reads the
 /// pointer only from winit's events, which Slint's software platform never produces.

@@ -180,7 +180,9 @@ fn comparison_touchpad_flick_coasts_and_stops_at_the_document_end_or_a_click() {
     // The 0.8 s time constant keeps most of the speed: 240 ms after the lift an
     // 8 ms frame still moves about 12 of the 16 px it started with.
     assert!(previous > 9.0, "the glide keeps going: {previous}");
-    // The document end: the position stops changing, so momentum ends.
+    // The document end: the position stops changing there, so momentum ends. (Between the
+    // edges a still position is a wait for the worker's next surface, not an end.)
+    fixture.window.set_position(1.0);
     let mut frames = 0;
     while !fixture.frame(false).is_empty() {
         frames += 1;

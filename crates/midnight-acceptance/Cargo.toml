@@ -31,6 +31,8 @@ acceptance = [
     "dep:tokio",
     "dep:midnight-compare-engine",
     "dep:midnight-compare-ui",
+    # The comparator's acceptance-only native input seam (wheel notches).
+    "midnight-compare-ui/acceptance-seams",
     "dep:midnight-native-filesystem-host",
     "dep:midnight-thumbnail-host",
     "dep:midnight-viewer-engine",

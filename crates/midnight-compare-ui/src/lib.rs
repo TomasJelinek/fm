@@ -1,5 +1,7 @@
 //! Presentation and short input callbacks only. The comparator service owns file work.
 #![deny(unsafe_code)]
+#[cfg(feature = "acceptance-seams")]
+pub mod acceptance_seams;
 mod admission;
 #[cfg(test)]
 mod admission_tests;
@@ -22,7 +24,10 @@ mod raw_paths;
 #[path = "external_outcome_windows_tests.rs"]
 mod raw_paths;
 #[cfg(test)]
+mod scroll_parity_tests;
+#[cfg(test)]
 mod scroll_tests;
+mod text_view;
 // The shared integration-test support names this crate by its public path.
 #[cfg(test)]
 extern crate self as midnight_compare_ui;
@@ -55,6 +60,10 @@ pub use generated::ComparatorWindow;
 pub use midnight_ui_input::WindowPlacement;
 
 pub type KeyResolver = Rc<dyn Fn(&ShortcutChord, bool) -> Option<String>>;
+/// The window's native event observer: what `on_winit_window_event` calls, and the
+/// acceptance seam too (`acceptance_seams`).
+type NativeObserver =
+    Rc<RefCell<dyn FnMut(&slint::winit_030::winit::event::WindowEvent) -> EventResult>>;
 pub type FontListener = Rc<dyn Fn(String)>;
 
 pub struct ComparatorWindows {
@@ -63,6 +72,7 @@ pub struct ComparatorWindows {
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
     appearance: RefCell<Option<appearance::Presentation>>,
+    scroll_preferences: ScrollPreferences,
     #[cfg(test)]
     poll_outputs: bool,
 }
@@ -95,6 +105,14 @@ struct OpenWindow {
     restored_font: RefCell<Option<String>>,
     surfaces: RefCell<images::Surfaces>,
     appearance: appearance::PaletteState,
+    /// The compared text's view (`text_view`): scrolling moves it at once.
+    view: RefCell<text_view::TextView>,
+    /// Gives the worker the scrolling of a view that came to rest (`SETTLE`).
+    settle: Timer,
+    /// The host's sources of the system's wheel setting and of its wish for less motion.
+    scroll_preferences: ScrollPreferences,
+    #[cfg(feature = "acceptance-seams")]
+    seam: acceptance_seams::Seam,
 }
 /// Inputs waiting for room in the bounded session queue.
 const MAX_PENDING: usize = 64;
@@ -102,9 +120,47 @@ const MAX_PENDING: usize = 64;
 /// continuous input reaches the worker at most about once per display frame. An input
 /// after a quiet interval is sent at once.
 const BATCH_INTERVAL: Duration = Duration::from_millis(16);
+/// A view that has not moved for this long is painted at its place: the worker is sent
+/// the scrolling that moved it. Until then it moves over the painted margin.
+const SETTLE: Duration = Duration::from_millis(50);
+
+/// The host's readings of the system's scroll settings, as the viewer windows take them
+/// (`ViewerWindows::set_motion_preference`): the wheel setting (Windows: lines per notch)
+/// and whether the system asks for less motion. Read with a window's first native event
+/// and whenever it gains the focus.
+#[derive(Clone)]
+struct ScrollPreferences {
+    wheel: Rc<RefCell<Rc<dyn Fn() -> midnight_ui_input::WheelSetting>>>,
+    reduce_motion: Rc<RefCell<Rc<dyn Fn() -> bool>>>,
+}
+
+impl Default for ScrollPreferences {
+    fn default() -> Self {
+        Self {
+            wheel: Rc::new(RefCell::new(Rc::new(
+                midnight_ui_input::WheelSetting::default,
+            ))),
+            reduce_motion: Rc::new(RefCell::new(Rc::new(|| false))),
+        }
+    }
+}
+
+impl ScrollPreferences {
+    fn apply(&self, scroll: &mut midnight_ui_input::NativeScroll) {
+        let wheel = self.wheel.borrow().clone();
+        let reduce = self.reduce_motion.borrow().clone();
+        scroll.set_wheel_setting(wheel());
+        scroll.set_reduce_motion(reduce());
+    }
+}
 
 impl OpenWindow {
-    fn new(window: ComparatorWindow, session: Session, appearance: &ViewerAppearance) -> Rc<Self> {
+    fn new(
+        window: ComparatorWindow,
+        session: Session,
+        appearance: &ViewerAppearance,
+        scroll_preferences: ScrollPreferences,
+    ) -> Rc<Self> {
         let appearance = appearance::PaletteState::new(appearance, session.palette_revision());
         Rc::new_cyclic(|me| OpenWindow {
             window,
@@ -128,6 +184,11 @@ impl OpenWindow {
             restored_font: RefCell::new(None),
             surfaces: RefCell::new(images::Surfaces::default()),
             appearance,
+            view: RefCell::new(text_view::TextView::default()),
+            settle: Timer::default(),
+            scroll_preferences,
+            #[cfg(feature = "acceptance-seams")]
+            seam: acceptance_seams::Seam::default(),
         })
     }
     fn send(&self, input: Input) -> bool {
@@ -150,11 +211,54 @@ impl OpenWindow {
             }
             return true;
         }
+        // The view's scrolling goes first: the worker applies inputs in order.
+        if !matches!(input, Input::Scroll { .. }) {
+            self.queue_unsent();
+        }
         queue_input(&mut self.pending.borrow_mut(), input);
         if !self.batch.running() {
             self.flush();
         }
         true
+    }
+    /// Queue the scrolling that moved the view here, for the worker to paint around it.
+    fn queue_unsent(&self) {
+        self.settle.stop();
+        if let Some((x, y)) = self.view.borrow_mut().take() {
+            queue_input(&mut self.pending.borrow_mut(), Input::Scroll { x, y });
+        }
+    }
+    /// Give the worker the view's scrolling now.
+    fn send_unsent(&self) {
+        if self.closed.get() {
+            return;
+        }
+        self.queue_unsent();
+        if !self.batch.running() && !self.pending.borrow().is_empty() {
+            self.flush();
+        }
+    }
+    /// Present the view where it stands: both panes' clips in the painted surface, the
+    /// position bar and where touchpad momentum stands.
+    fn show_view(&self) {
+        let shown = self
+            .view
+            .borrow()
+            .shown(queued_scroll(&self.pending.borrow()));
+        let window = &self.window;
+        window.set_text_view(shown.is_some());
+        let Some(shown) = shown else {
+            return;
+        };
+        window.set_view_left_x(shown.x[0]);
+        window.set_view_right_x(shown.x[1]);
+        window.set_view_left_width(shown.width[0]);
+        window.set_view_right_width(shown.width[1]);
+        window.set_view_y(shown.y);
+        window.set_view_height(shown.height);
+        window.set_view_split(shown.split);
+        window.set_position((shown.position[1] / shown.extent[1].max(1.0)) as f32);
+        window.set_shown_horizontal(shown.position[0] as f32);
     }
     /// Send queued inputs while the session accepts them, then hold later inputs for one
     /// interval. The timer sends what arrived meanwhile or retries what the full queue
@@ -166,7 +270,13 @@ impl OpenWindow {
         let sent = pending
             .iter()
             .take_while(|input| match self.session.send((*input).clone()) {
-                Ok(()) | Err(Refused::Rejected) => true,
+                Ok(()) => {
+                    if let Input::Scroll { x, y } = input {
+                        self.view.borrow_mut().sent(*x, *y);
+                    }
+                    true
+                }
+                Err(Refused::Rejected) => true,
                 Err(error) => {
                     refused = Some(error);
                     false
@@ -241,6 +351,7 @@ impl OpenWindow {
             self.session.close();
             self.batch.stop();
             self.poll.stop();
+            self.settle.stop();
             self.window.set_surface(slint::Image::default());
             self.window.set_left_surface(slint::Image::default());
             self.window.set_right_surface(slint::Image::default());
@@ -259,6 +370,7 @@ impl ComparatorWindows {
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
             appearance: RefCell::new(None),
+            scroll_preferences: ScrollPreferences::default(),
             #[cfg(test)]
             poll_outputs: false,
         }
@@ -270,6 +382,20 @@ impl ComparatorWindows {
             poll_outputs: true,
             ..Self::new(service)
         }
+    }
+    /// The system's wheel setting (Windows: lines per notch), as the host reads it. Each
+    /// window asks with its first native event and whenever it gains the focus; a wheel
+    /// notch then moves the distance the text viewer moves for it. Without a source, the
+    /// platform default.
+    pub fn set_wheel_setting(&self, source: Rc<dyn Fn() -> midnight_ui_input::WheelSetting>) {
+        *self.scroll_preferences.wheel.borrow_mut() = source;
+    }
+    /// Whether the system asks for less motion (Windows: animation effects off), as the
+    /// host reads it, asked like the wheel setting: wheel notches then move at once and no
+    /// touchpad momentum is synthesised, as in the viewer windows. Without a source,
+    /// motion is full.
+    pub fn set_motion_preference(&self, source: Rc<dyn Fn() -> bool>) {
+        *self.scroll_preferences.reduce_motion.borrow_mut() = source;
     }
     /// Persist an explicitly chosen family through the application's preferences backend.
     pub fn set_font_listener(&self, listener: FontListener) {
@@ -342,7 +468,12 @@ impl ComparatorWindows {
         )
         .map_err(|error| error.to_string())?;
         before_palette_read(&session);
-        let open = OpenWindow::new(window, session, &appearance);
+        let open = OpenWindow::new(
+            window,
+            session,
+            &appearance,
+            self.scroll_preferences.clone(),
+        );
         open.appearance.presented(presentation);
         bind(&open, keys, self.service.clone());
         fonts::bind(&open, self.font_listener.clone());
@@ -431,11 +562,26 @@ fn native_scroll(window: &ComparatorWindow) -> midnight_ui_input::NativeScroll {
                 .upgrade()
                 .filter(|window| !window.get_image_mode())
                 .map_or([None; 2], |window| {
-                    [None, Some(f64::from(window.get_position()))]
+                    momentum_position(
+                        f64::from(window.get_shown_horizontal()),
+                        f64::from(window.get_position()),
+                    )
                 })
         }),
     });
     scroll
+}
+
+/// Where the text stands for touchpad momentum, which stops an axis whose position stops
+/// changing: given only at an edge (the left edge, the start or the end), as the text
+/// viewer gives it. Between the edges the view may wait at the end of the painted margin
+/// for the worker's next surface, and momentum must not take that for the text's end.
+fn momentum_position(horizontal: f64, vertical: f64) -> [Option<f64>; 2] {
+    const EDGE: f64 = 1e-6;
+    [
+        (horizontal <= EDGE).then_some(horizontal),
+        (vertical <= EDGE || vertical >= 1.0 - EDGE).then_some(vertical),
+    ]
 }
 
 fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
@@ -492,7 +638,7 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
     let weak = Rc::downgrade(open);
     open.window.on_scroll(move |x, y| {
         if let Some(open) = weak.upgrade() {
-            open.send(Input::Scroll { x, y });
+            scroll_content(&open, x, y);
         }
     });
     let weak = Rc::downgrade(open);
@@ -548,13 +694,36 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
     let native_keys = keys.clone();
     let mut scroll = native_scroll(&open.window);
     let weak = Rc::downgrade(open);
-    open.window.window().on_winit_window_event(move |_, event| {
+    let settled = Rc::downgrade(open);
+    open.settle.start(TimerMode::SingleShot, SETTLE, move || {
+        if let Some(open) = settled.upgrade() {
+            open.send_unsent();
+        }
+    });
+    open.settle.stop();
+    let mut preferences_read = false;
+    let observe = move |event: &slint::winit_030::winit::event::WindowEvent| {
         let Some(open) = weak.upgrade() else {
             return EventResult::Propagate;
         };
         if let slint::winit_030::winit::event::WindowEvent::Focused(active) = event {
             appearance::activation_changed(&open, *active);
         }
+        // The system's settings: read with the first native event and on each focus gain
+        // (the person changes them in another window), never per notch.
+        if !preferences_read
+            || matches!(
+                event,
+                slint::winit_030::winit::event::WindowEvent::Focused(true)
+            )
+        {
+            preferences_read = true;
+            open.scroll_preferences.apply(&mut scroll);
+        }
+        scroll.set_content_page([
+            open.window.get_content_width(),
+            open.window.get_content_height(),
+        ]);
         let scrolled = scroll.observe(open.window.window(), event, None);
         if midnight_ui_input::native_escape_pressed(event) {
             open.close();
@@ -569,6 +738,15 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
         } else {
             EventResult::Propagate
         }
+    };
+    let observer: NativeObserver = Rc::new(RefCell::new(observe));
+    #[cfg(feature = "acceptance-seams")]
+    open.seam.observer.replace(Some(observer.clone()));
+    open.window.window().on_winit_window_event(move |_, event| {
+        // Winit delivers one event at a time: a nested one would find the observer busy.
+        observer
+            .try_borrow_mut()
+            .map_or(EventResult::Propagate, |mut observe| (*observe)(event))
     });
     let weak = Rc::downgrade(open);
     open.window.on_input_key(move |event| {
@@ -585,6 +763,32 @@ fn bind(open: &Rc<OpenWindow>, keys: KeyResolver, service: Service) {
             .and_then(|chord| keys(&chord, !open.window.get_content_focused()))
             .is_some_and(|action| key(&open, &action))
     });
+}
+
+/// A wheel glide frame, touchpad, pointer-drag or scroll-key delta over the compared
+/// content (negative moves down or right). Text and bytes move at once (`text_view`); the
+/// worker is sent the scrolling when the view nears the painted margin's end or comes to
+/// rest. An image comparison's worker pans it.
+fn scroll_content(open: &OpenWindow, x: f32, y: f32) {
+    let queued = queued_scroll(&open.pending.borrow());
+    if !open.view.borrow_mut().scroll(x, y, queued) {
+        open.send(Input::Scroll { x, y });
+        return;
+    }
+    open.show_view();
+    if open.view.borrow().due(queued) {
+        open.send_unsent();
+    } else {
+        open.settle.restart();
+    }
+}
+
+/// The scrolling waiting in the window's input queue, summed per axis as it will be sent.
+fn queued_scroll(pending: &[Input]) -> [f64; 2] {
+    pending.iter().fold([0.0; 2], |sum, input| match input {
+        Input::Scroll { x, y } => [sum[0] + f64::from(*x), sum[1] + f64::from(*y)],
+        _ => sum,
+    })
 }
 
 /// Navigation only moves the view, so a full queue may shed it. Every other input sets
@@ -707,6 +911,15 @@ fn key(open: &OpenWindow, action: &str) -> bool {
         "compare.last-difference" => Input::DifferenceEdge { last: true },
         "viewer.first" => Input::Seek(0.0),
         "viewer.last" => Input::Seek(1.0),
+        // Text and bytes: the text viewer's distances, at once (`text_view`).
+        action
+            if open.view.borrow().active()
+                && let Some((x, y)) =
+                    midnight_ui_input::key_scroll(action, open.window.get_content_height()) =>
+        {
+            scroll_content(open, -x, -y);
+            return true;
+        }
         "viewer.up" => Input::Lines(-1),
         "viewer.down" => Input::Lines(1),
         "viewer.left" => Input::Scroll { x: 48.0, y: 0.0 },
@@ -813,7 +1026,12 @@ mod window_tests {
                 Arc::new(|| false),
             )
             .unwrap();
-        let open = OpenWindow::new(ComparatorWindow::new().unwrap(), session, &appearance);
+        let open = OpenWindow::new(
+            ComparatorWindow::new().unwrap(),
+            session,
+            &appearance,
+            ScrollPreferences::default(),
+        );
         let saved = Rc::new(Cell::new(0));
         let counted = saved.clone();
         let listener: FontListener = Rc::new(move |_| counted.set(counted.get() + 1));

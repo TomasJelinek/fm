@@ -42,8 +42,9 @@ those events never reach. The acceptance-only native input seam (decision A1,
 `viewers_probe` turns the wheel by native notches, moves the system focus away and back,
 moves and clicks the pointer over an HTML page (whose browser reads the pointer only from
 native events; C42), and overrides the system's wheel and reduce-motion settings, which a window reads when it
-next gains the focus, as it reads the system's. The seam reaches viewer windows only, so
-the comparator's notch (F15) is reported `SKIP`. Checks with Slint's own wheel event
+next gains the focus, as it reads the system's. The comparator has a seam of its own
+(`midnight_compare_ui::acceptance_seams`, the same feature) that turns its wheel by native
+notches (F15). Checks with Slint's own wheel event
 measure that a Slint pixel delta moves the content exactly its pixels.
 
 Latest recorded run: the Linux run `20261121-144246` of commit 3f6fff8a (WSL 2,
@@ -258,8 +259,8 @@ Test fixture corrected (C40, not a product finding): `tool.exe` of `viewers_cont
 | F2 | Difference navigation: N, P, F7, Shift+F7, Alt+Down, Alt+Up, Alt+Right, Alt+Left, Alt+Home, Alt+End, the Next and Previous difference buttons | `viewers_compare` › three differences | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | F3 | Find in both files: Find… button, Ctrl+F, Enter, F3, Shift+F3, Shift+Enter, "Match N of M · File · line", Aa, Whole words, Clear Find | `viewers_compare` › Find in the compared files | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | F4 | The text font chooser repaints the comparison | `viewers_compare` › Find in the compared files | PASS or SKIP per machine (passes when another fixed-pitch family renders differently): PASS on Windows `20261122-135339` and Linux `20261122-110817` |
-| F5 | Scrolling: an arrow moves one row, PageDown the visible rows, a Slint pixel delta exactly its 60 px, the position bar | `viewers_compare` › scrolling the compared text | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
-| F15 | One wheel notch in the comparator moves `notch_pixels_for` the system's lines per notch (100 px at three lines) | `viewers_compare` | SKIP: the acceptance seam reaches viewer windows only (`midnight_viewer_ui::acceptance_seams`); the comparator needs a seam of its own |
+| F5 | Scrolling as in the text viewer: an arrow moves 28 logical px, PageDown the whole view, a Slint pixel delta exactly its 60 px, the position bar | `viewers_compare` › scrolling the compared text | PASS (Windows `20261123-211009`: Down 28 px, PageDown and 12 Up 373 px); the earlier row-by-row check passed on Windows `20261122-135339` and Linux `20261122-110817` |
+| F15 | One wheel notch in the comparator moves `notch_pixels_for` the system's lines per notch (100 px at three lines), as in the text viewer; an arrow moves 28 logical px and PageDown the whole view | `viewers_compare` | PASS (Windows `20261123-211009`, through the comparator's acceptance seam `midnight_compare_ui::acceptance_seams`: a notch moved 100 px) |
 | F6 | Images: Side by side, Swipe, Onion skin; the divider and opacity sliders; dragging the divider; Zoom in and out, Ctrl+wheel, Fit; Close | `viewers_compare` › images | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | F7 | Binary pairs in the hex view: summary, navigation keys and button | `viewers_compare` › binary files | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | F8 | The Hex button of a text pair shows its bytes and back | `viewers_compare` › text over the former 4 MiB limit | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
@@ -431,8 +432,6 @@ delegated systemd user scope.
   packages with the Markdown plugin's link targets yet); the address a followed web or mail
   link hands to the desktop service (`Launch::OpenUrl`) in a viewer scenario: the desktop
   stand-in (`Config::desktop`) with the plugin packages starts without a folder in the panels.
-- The comparator's own wheel notch (F15): the acceptance seam reaches viewer windows only;
-  it is reported `SKIP` with that reason.
 - The SVG decoder's note naming what it left out ("Not shown: linked images, scripts.")
   is not shown by any viewer yet (its notice API is deferred), so O21 checks the pixels
   only.

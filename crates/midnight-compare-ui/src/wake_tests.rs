@@ -388,9 +388,12 @@ fn worker_outputs_wake_the_window_and_an_idle_comparator_arms_no_timer() {
     event_loop.wait_for(&window, "present the frame at the new scale", true, || {
         window.get_frame_revision() == window.get_geometry_revision()
     });
-    let surface = window.get_surface().size();
+    // The shown view (the surface also holds content painted around it).
     assert_eq!(
-        (surface.width, surface.height),
+        (
+            (window.get_view_left_width() + window.get_view_right_width()) as u32,
+            window.get_view_height() as u32
+        ),
         ((logical.0 * 2.0) as u32, (logical.1 * 2.0) as u32)
     );
 

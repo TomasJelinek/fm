@@ -10,9 +10,10 @@
 //! Further: every difference key (Shift+F7, Alt+Down, Alt+Up, Alt+Right, Alt+Left) and
 //! the Previous difference button; Find in both files (the Find… button and Ctrl+F,
 //! Enter, F3, Shift+F3, "Match N of M · File · line", Aa, Whole words, Clear Find);
-//! scrolling the compared text (an arrow moves one row, PageDown the rows that were
-//! visible, a Slint pixel delta exactly its pixels, the position bar; the product's own
-//! wheel notch is skipped: the native input seam reaches viewers only); the window's
+//! scrolling the compared text as the text viewer scrolls (an arrow moves 28 logical
+//! pixels, PageDown the whole view, one native wheel notch Chromium's distance through
+//! the comparator's acceptance seam, a Slint pixel delta exactly its pixels, the
+//! position bar); the window's
 //! close request (its ×); the image controls (Fit, Zoom in and out,
 //! Ctrl+wheel, the Swipe divider and Right image opacity sliders, dragging the divider
 //! on the picture); text over the comparator's limits (32 MiB, 1,000,000 lines, a line
@@ -47,6 +48,9 @@ const SAME_TEXT: i32 = 2;
 const DIFFERENT: i32 = 3;
 /// The accessible label of the comparator's Hex button.
 const HEX: &str = "Compare bytes (hex)";
+/// Logical pixels Up and Down move the text, as in the text viewer
+/// (`midnight_ui_input::KEY_LINE_PIXELS`).
+const KEY_LINE: f32 = 28.0;
 
 pub fn compare(context: &mut Context) -> Result<(), String> {
     viewers_stage::run(context, TIMEOUT, run)
@@ -368,13 +372,6 @@ fn run(context: &mut Context) -> Result<(), String> {
         open(&mut app, context, "large-a.log", "large-b.log", DIFFERENT)
             .and_then(|comparing| scrolling(&mut app, context, comparing)),
     );
-    failures.skip(
-        "one wheel notch moves the compared text notch_pixels_for(the system's lines per \
-         notch), 100 px at the default three lines",
-        "needs a native input seam for the comparator: production reads its wheel notches \
-         only from native window events (`on_winit_window_event`), and the acceptance seam \
-         reaches viewer windows only (`midnight_viewer_ui::acceptance_seams`)",
-    );
     input::chord(app.slint(), &[Key::Control], "d");
     failures.check(
         "File A and File B chosen by hand",
@@ -607,42 +604,70 @@ fn font_choice(
     Ok(false)
 }
 
-/// An arrow moves one row, PageDown the rows that were fully visible, a Slint pixel
-/// delta exactly its pixels (the product's own notch is skipped: no native seam reaches
-/// the comparator); the position bar jumps where it is clicked.
+/// The compared text scrolls as the text viewer's: an arrow moves 28 logical pixels and
+/// PageDown the whole view, a native wheel notch (through the comparator's acceptance
+/// seam) glides Chromium's distance for the system's wheel setting, a Slint pixel delta
+/// moves exactly its pixels; the position bar jumps where it is clicked.
 fn scrolling(app: &mut App, context: &mut Context, comparing: Comparing) -> Result<(), String> {
     let result = (|| {
         comparing.click_content(app);
+        // The text viewer's key distances (`midnight_ui_input::key_scroll`): 28 logical
+        // pixels a line, the whole view a page, at once.
+        let scale = comparing.slint().scale_factor();
+        let line = (KEY_LINE * scale).round() as i32;
         let row = comparing.moved(app, |window| input::key(window, Key::DownArrow))?;
         let back = comparing.moved(app, |window| input::key(window, Key::UpArrow))?;
-        if row <= 8 || back != -row {
-            return Err(format!("Down moved {row} px and Up {back} px"));
+        if row.abs_diff(line) > 1 || back != -row {
+            return Err(format!(
+                "Down moved {row} px and Up {back} px; the text viewer moves {line} px"
+            ));
         }
-        let screen =
-            (comparing.window.get_content_height() * comparing.slint().scale_factor()) as i32;
+        let view = comparing.window.get_content_height();
+        let screen = (view * scale).round() as i32;
         // PageDown leaves no row in common: page, then arrows back half a screen.
-        let rows_back = screen / 2 / row;
+        let lines_back = (view / 2.0 / KEY_LINE) as i32;
         let page = comparing.moved(app, |window| {
             input::key(window, Key::PageDown);
-            for _ in 0..rows_back {
+            for _ in 0..lines_back {
                 input::key(window, Key::UpArrow);
             }
-        })? + rows_back * row;
-        let visible = screen / row;
-        if page != visible * row {
+        })?;
+        let expected = ((view - lines_back as f32 * KEY_LINE) * scale).round() as i32;
+        if page.abs_diff(expected) > 1 {
             return Err(format!(
-                "PageDown moved {page} px; {visible} whole rows of {row} px were visible"
+                "PageDown and {lines_back} Up moved {page} px, not {expected} px: PageDown \
+                 moves the whole view ({screen} px) as in the text viewer"
             ));
         }
         let at = slint::LogicalPosition::new(
             comparing.window.get_content_left() + comparing.window.get_content_width() / 2.0,
             comparing.window.get_content_top() + comparing.window.get_content_height() / 2.0,
         );
-        // A Slint pixel delta, not the product's notch (`probe::SLINT_PIXEL_DELTA`).
-        let notch = comparing.moved(app, |window| probe::pixel_deltas(window, at, 1))?;
-        if notch.abs_diff(probe::SLINT_PIXEL_DELTA as i32) > 1 {
+        // One native wheel notch glides the text the text viewer's distance.
+        let notch_pixels = probe::system_notch_pixels(view);
+        let wanted = (notch_pixels * scale).round() as i32;
+        let before = comparing.still(app)?;
+        probe::comparator_notches(app, &comparing.window, at, 1)?;
+        let after = comparing.still(app)?;
+        let notch = match probe::vertical_shift(&before, &after) {
+            Some((shift, share)) if share >= probe::SHIFT_CONFIDENCE => shift,
+            other => {
+                return Err(format!(
+                    "a wheel notch did not move the compared content as one piece: {other:?}"
+                ));
+            }
+        };
+        if notch.abs_diff(wanted) > 1 {
             return Err(format!(
-                "a Slint pixel delta of {} px moved the compared text {notch} px",
+                "one wheel notch moved the compared text {notch} px; the text viewer moves \
+                 {wanted} px ({notch_pixels} logical px)"
+            ));
+        }
+        // A Slint pixel delta, not the product's notch (`probe::SLINT_PIXEL_DELTA`).
+        let delta = comparing.moved(app, |window| probe::pixel_deltas(window, at, 1))?;
+        if delta.abs_diff(probe::SLINT_PIXEL_DELTA as i32) > 1 {
+            return Err(format!(
+                "a Slint pixel delta of {} px moved the compared text {delta} px",
                 probe::SLINT_PIXEL_DELTA
             ));
         }
@@ -663,8 +688,8 @@ fn scrolling(app: &mut App, context: &mut Context, comparing: Comparing) -> Resu
             "large-a.log and large-b.log after a click at three quarters of the position bar",
         );
         context.note(format!(
-            "Comparison scrolling: row {row} px, PageDown {page} px ({visible} rows), Slint pixel \
-             delta {notch} px, position bar {:.3}",
+            "Comparison scrolling: Down {row} px, PageDown and {lines_back} Up {page} px, wheel \
+             notch {notch} px, Slint pixel delta {delta} px, position bar {:.3}",
             comparing.window.get_position()
         ));
         Ok(())

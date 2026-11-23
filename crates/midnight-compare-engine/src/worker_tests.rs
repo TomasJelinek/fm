@@ -292,7 +292,12 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
                     frame.accessible_text.contains("old") && frame.accessible_text.contains("new")
                 );
                 assert!(frame.status.contains("1 difference"));
-                assert_eq!(frame.pixels.len(), 640 * 200 * 4);
+                assert_eq!(
+                    frame.pixels.len(),
+                    (frame.width * frame.height * 4) as usize
+                );
+                let (width, height, _) = frame.view_pixels();
+                assert_eq!((width, height), (640, 200));
                 assert!(!frame.image);
                 break;
             }

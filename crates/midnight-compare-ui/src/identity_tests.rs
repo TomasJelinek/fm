@@ -152,7 +152,12 @@ pub(super) fn open_service(service: &Service) -> Rc<OpenWindow> {
         appearance_revision, 0,
         "The opening palette is revision zero in the approved engine contract"
     );
-    OpenWindow::new(ComparatorWindow::new().unwrap(), session, &appearance)
+    OpenWindow::new(
+        ComparatorWindow::new().unwrap(),
+        session,
+        &appearance,
+        ScrollPreferences::default(),
+    )
 }
 
 pub(super) fn next_choice(open: &OpenWindow) -> FileChoice {
@@ -195,6 +200,7 @@ pub(super) fn frame(generation: u64, identity: IdentityVerdict) -> Output {
             bytes_only: false,
             scanning: false,
             position: 0.0,
+            scroll: None,
         },
         names: [format!("left-{generation}"), format!("right-{generation}")],
     }
@@ -662,8 +668,15 @@ fn font_resize_survives_input_backpressure_without_another_window_resize() {
         accepted.1,
         (window.get_content_height() * window.window().scale_factor()).max(1.0) as u32
     );
-    let surface = window.get_surface().size();
-    assert_eq!((surface.width, surface.height), (accepted.0, accepted.1));
+    // The shown view (the surface also holds content painted around it).
+    assert!(window.get_text_view());
+    assert_eq!(
+        (
+            (window.get_view_left_width() + window.get_view_right_width()) as u32,
+            window.get_view_height() as u32
+        ),
+        (accepted.0, accepted.1)
+    );
     assert_eq!(open.comparison_generation.get(), generation);
     manager.close_all();
     drop(open);

@@ -8,11 +8,19 @@ license.workspace = true
 # All tests/*.rs files are modules of one binary; see tests/integration.rs.
 autotests = false
 
+[features]
+# The acceptance suite's native input seam (src/acceptance_seams.rs); only
+# crates/midnight-acceptance enables it.
+acceptance-seams = ["dep:i-slint-core"]
+
 [dependencies]
 midnight-core.workspace = true
 midnight-compare-engine = { path = "../midnight-compare-engine" }
 midnight-ui-input = { path = "../midnight-ui-input" }
 slint = { workspace = true, features = ["unstable-winit-030"] }
+# The acceptance seam's backend events (feature `acceptance-seams`), at the version and
+# features midnight-ui-input already uses.
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["std"], optional = true }
 
 [build-dependencies]
 # Keep the normal Slint compiler feature unification while reusing the host adapter.

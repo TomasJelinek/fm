@@ -25,6 +25,10 @@ pub(crate) fn install(
         )
         .with_picker_owner(midnight_ui::native_path_picker_owner),
     );
+    // A wheel notch moves the compared text as far as in a viewer, and nothing glides
+    // when the system asks for less motion; the windows read both as the viewers do.
+    windows.set_wheel_setting(Rc::new(midnight_ui::system_wheel_setting));
+    windows.set_motion_preference(Rc::new(midnight_ui::system_reduces_motion));
     let settings = presenter.clone();
     let compare_commands = commands.clone();
     windows.set_font_listener(Rc::new(move |family| {

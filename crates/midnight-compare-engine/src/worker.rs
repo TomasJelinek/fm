@@ -181,6 +181,19 @@ fn read_texts(
 struct Viewport {
     geometry: ViewerGeometry,
     revision: u64,
+    /// Every `Input::Scroll` taken, summed per axis (`ScrollView::scrolled`).
+    scrolled: [f64; 2],
+}
+
+impl Viewport {
+    /// Count a scroll input whether or not it applies, so the window knows which of the
+    /// scrolling it sent a frame includes.
+    fn take(&mut self, input: &Input) {
+        if let Input::Scroll { x, y } = input {
+            self.scrolled[0] += f64::from(*x);
+            self.scrolled[1] += f64::from(*y);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,6 +317,7 @@ pub(crate) fn run(
     let mut viewport = Viewport {
         geometry,
         revision: 0,
+        scrolled: [0.0; 2],
     };
     loop {
         check_cancel(cancel)?;
@@ -408,6 +422,9 @@ fn wait_replacement(
         let Ok(message) = context.receiver.recv() else {
             return Ok(None);
         };
+        if let Message::Input(command) = &message {
+            viewport.take(&command.input);
+        }
         match message {
             Message::Input(Command {
                 input: Input::Close,
@@ -618,6 +635,9 @@ fn compare(
             };
             frame.geometry_revision = viewport.revision;
             frame.comparison_generation = generation;
+            if let Some(view) = &mut frame.scroll {
+                view.scrolled = viewport.scrolled;
+            }
             frame.identity = identity;
             frame.bytes_only = matches!(content, Content::Bytes(_));
             frame.scanning = content.scanning().is_some();
@@ -673,6 +693,7 @@ fn compare(
             let Message::Input(command) = message else {
                 continue;
             };
+            viewport.take(&command.input);
             if matches!(command.input, Input::Close) {
                 return Ok(None);
             }
@@ -770,7 +791,7 @@ trait Rows {
 impl Rows for TextComparison {
     fn scroll_pixels(&mut self, x: f32, y: f32) {
         TextComparison::scroll_pixels(self, y);
-        self.horizontal = (self.horizontal - x).clamp(0.0, 262144.0);
+        self.scroll_horizontal(x);
     }
     fn scroll_rows(&mut self, rows: i64) {
         self.scroll(rows);
@@ -792,7 +813,7 @@ impl Rows for TextComparison {
 impl Rows for BinaryComparison {
     fn scroll_pixels(&mut self, x: f32, y: f32) {
         BinaryComparison::scroll_pixels(self, y);
-        self.horizontal = (self.horizontal - x).clamp(0.0, 262144.0);
+        self.scroll_horizontal(x);
     }
     fn scroll_rows(&mut self, rows: i64) {
         self.scroll(rows);

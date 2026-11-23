@@ -165,6 +165,7 @@ impl Images {
             bytes_only: false,
             scanning: false,
             position: 0.0,
+            scroll: None,
         })
     }
 }

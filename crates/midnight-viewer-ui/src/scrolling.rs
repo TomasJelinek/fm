@@ -13,16 +13,10 @@ pub(super) fn momentum_position(horizontal: f32, vertical: f32) -> [Option<f64>;
         .map(|position| (position <= EDGE || position >= 1.0 - EDGE).then_some(f64::from(position)))
 }
 
+/// A scroll key's distance (`midnight_ui_input::key_scroll`, which the file comparison
+/// shares), in physical pixels.
 pub(super) fn keyboard(action: &str, content_height: f32, scale: f32) -> Option<ViewerInput> {
-    let (x, y) = match action {
-        "viewer.up" => (0.0, -28.0),
-        "viewer.down" => (0.0, 28.0),
-        "viewer.left" => (-40.0, 0.0),
-        "viewer.right" => (40.0, 0.0),
-        "viewer.page-up" => (0.0, -content_height),
-        "viewer.page-down" => (0.0, content_height),
-        _ => return None,
-    };
+    let (x, y) = midnight_ui_input::key_scroll(action, content_height)?;
     Some(ViewerInput::Scroll {
         x: x * scale,
         y: y * scale,

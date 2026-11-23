@@ -290,6 +290,8 @@ pub struct NativeScroll {
     momentum: bool,
     /// `lists_at_once`: without gliding, notches over Slint lists move them at once.
     lists_at_once: bool,
+    /// The visible extent of `glide_content` content per axis, logical pixels (0: unknown).
+    content_page: [f32; 2],
 }
 
 impl NativeScroll {
@@ -321,6 +323,7 @@ impl NativeScroll {
             reduce_motion: false,
             momentum,
             lists_at_once: false,
+            content_page: [0.0; 2],
         }
     }
 
@@ -340,6 +343,12 @@ impl NativeScroll {
         self.reduce_motion = reduce;
         self.kinetic.cancel();
         self.kinetic.enabled = self.momentum && !reduce;
+    }
+
+    /// The visible width and height of the `glide_content` content, logical pixels: one
+    /// screen per notch (`crate::WheelSetting::Page`) moves 87.5 % of it, as in the viewers.
+    pub fn set_content_page(&mut self, page: [f32; 2]) {
+        self.content_page = page;
     }
 
     /// Glide wheel notches over this region of the window too, not only over
@@ -730,13 +739,18 @@ impl NativeScroll {
                 if self.target.as_ref() != Some(&target) {
                     self.cancel_wheel();
                 }
+                let page = match target {
+                    Target::Content { .. } => self.content_page,
+                    _ => [0.0; 2],
+                };
                 self.target = Some(target);
                 self.position = Some(point);
-                let notch = crate::notch_pixels_for(self.wheel_setting, 0.0);
+                let notch = page.map(|page| crate::notch_pixels_for(self.wheel_setting, page));
+                let (x, y) = (x * notch[0], y * notch[1]);
                 let pushed = if self.unglided() {
-                    self.motion.push_direct(x * notch, y * notch, now)
+                    self.motion.push_direct(x, y, now)
                 } else {
-                    self.motion.push(x * notch, y * notch, now)
+                    self.motion.push(x, y, now)
                 };
                 if pushed {
                     if !self.timer.running() {

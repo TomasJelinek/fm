@@ -1,3 +1,4 @@
+use crate::scroll_view::{self, HORIZONTAL_LIMIT, MAX_ROWS, Surface};
 use crate::{Frame, Palette, check_cancel, identity::DecodedText, typeface::Typeface};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
@@ -158,11 +159,14 @@ pub(crate) struct TextComparison {
     renderer: TextRenderer,
     pub typeface: Typeface,
     pub top: usize,
+    /// Physical pixels scrolled to the right.
     pub horizontal: f32,
-    vertical_remainder: f32,
-    /// Logical row height and fully visible rows of the last painted frame.
+    /// The part of the `top` row above the view (0 to 1).
+    fraction: f64,
+    /// Logical row height, fully visible rows and scale of the last painted frame.
     row_height: f32,
     page_rows: usize,
+    scale: f32,
     painted_width: u32,
     decoded_identity: DecodedText,
     pub encodings: Option<[TextEncoding; 2]>,
@@ -349,9 +353,10 @@ impl TextComparison {
             typeface: Typeface::default(),
             top: 0,
             horizontal: 0.0,
-            vertical_remainder: 0.0,
+            fraction: 0.0,
             row_height: 24.0,
             page_rows: 1,
+            scale: 1.0,
             painted_width: 0,
             decoded_identity: DecodedText::default(),
             encodings: None,
@@ -399,28 +404,48 @@ impl TextComparison {
         }
     }
 
+    fn last_row(&self) -> usize {
+        self.rows.len().saturating_sub(1)
+    }
+
     pub fn scroll(&mut self, rows: i64) {
         self.top = self
             .top
             .saturating_add_signed(rows as isize)
-            .min(self.rows.len().saturating_sub(1));
+            .min(self.last_row());
+        if self.top == self.last_row() {
+            self.fraction = 0.0;
+        }
     }
-    /// Wheel distances use the painted row height, so they match the visible rows at
-    /// every font size.
+    /// The view moves by exactly these logical pixels (negative: down), within its rows.
     pub fn scroll_pixels(&mut self, pixels: f32) {
-        self.vertical_remainder -= pixels / self.row_height;
-        let rows = self.vertical_remainder.trunc();
-        self.vertical_remainder -= rows;
-        self.scroll(rows as i64);
+        let (top, fraction) = scroll_view::scroll_rows(
+            self.top as u64,
+            self.fraction,
+            pixels,
+            self.row_height,
+            self.last_row() as u64,
+        );
+        self.top = top as usize;
+        self.fraction = fraction;
+    }
+    /// Logical pixels to the right (negative: right), as a wheel or a key moves them.
+    pub fn scroll_horizontal(&mut self, pixels: f32) {
+        if pixels.is_finite() {
+            self.horizontal = (self.horizontal - pixels * self.scale).clamp(0.0, HORIZONTAL_LIMIT);
+        }
     }
     /// A page moves by the rows that were fully visible, never skipping or repeating one.
     pub fn scroll_pages(&mut self, pages: i32) {
-        self.vertical_remainder = 0.0;
+        self.fraction = 0.0;
         self.scroll(i64::from(pages).saturating_mul(self.page_rows as i64));
     }
+    /// The position bar: that share of the rows, to the pixel.
     pub fn seek(&mut self, amount: f64) {
         if amount.is_finite() {
-            self.top = (amount.clamp(0.0, 1.0) * self.rows.len().saturating_sub(1) as f64) as usize;
+            let (top, fraction) = scroll_view::seek_rows(amount, self.last_row() as u64);
+            self.top = top as usize;
+            self.fraction = fraction;
         }
     }
     pub fn difference(&mut self, backwards: bool) {
@@ -438,7 +463,7 @@ impl TextComparison {
         };
         if let Some(target) = target {
             self.top = *target;
-            self.vertical_remainder = 0.0;
+            self.fraction = 0.0;
         }
     }
 
@@ -449,7 +474,7 @@ impl TextComparison {
             self.differences.first()
         } {
             self.top = *target;
-            self.vertical_remainder = 0.0;
+            self.fraction = 0.0;
         }
     }
 
@@ -463,17 +488,16 @@ impl TextComparison {
         let family = self.typeface.painted().to_owned();
         let family = family.as_str();
         let (width, height) = (geometry.width, geometry.height);
-        let mut pixels = palette.background.repeat(width as usize * height as usize);
         let row_height = (appearance.font_size * geometry.scale * 1.6)
             .ceil()
             .max(12.0) as u32;
-        let count = height.div_ceil(row_height).min(256) as usize;
         self.row_height = row_height as f32 / geometry.scale;
+        self.scale = geometry.scale;
         self.page_rows = (height / row_height).max(1) as usize;
         if self.find.reveal {
             if let Some(hit) = &self.find.selected {
                 self.top = hit.row.saturating_sub(self.page_rows / 2);
-                self.vertical_remainder = 0.0;
+                self.fraction = 0.0;
                 let row = &self.rows[hit.row];
                 let (value, prefix) = self.formatted_line(hit.side, hit.line, row.changed);
                 let page = self
@@ -505,30 +529,58 @@ impl TextComparison {
             self.find.reveal = false;
         }
         self.painted_width = width;
+        self.top = self.top.min(self.last_row());
+        if self.top == self.last_row() {
+            self.fraction = 0.0;
+        }
+        let row = u64::from(row_height);
+        let surface = Surface::plan(
+            width,
+            height,
+            geometry.scale,
+            row_height,
+            [
+                self.horizontal.round().max(0.0) as u64,
+                self.top as u64 * row + scroll_view::fraction_pixels(self.fraction, row_height),
+            ],
+            [HORIZONTAL_LIMIT as u64, self.last_row() as u64 * row],
+        );
+        let surface_width = surface.width() as usize;
+        let surface_height = u64::from(surface.surface_height());
+        let mut pixels = palette
+            .background
+            .repeat(surface_width * surface_height as usize);
+        // The view's rows, for assistive technology; the margins are only painted.
+        let view = surface.margin[1][0] as u64..surface.margin[1][0] as u64 + u64::from(height);
+        let origin = self.horizontal - surface.margin[0][0] as f32;
+        let first = (surface.top() / row) as usize;
         let mut accessible_text = String::new();
-        for visible in 0..count.min(self.rows.len().saturating_sub(self.top)) {
+        for index in first..self.rows.len().min(first + MAX_ROWS as usize) {
+            // The row's first pixel row in the surface; the first one may start above it.
+            let y = (index as u64 * row) as i64 - surface.top() as i64;
+            if y >= surface_height as i64 {
+                break;
+            }
             check_cancel(cancel)?;
-            let row = self.rows[self.top + visible];
+            let row_value = self.rows[index];
+            let shown = (y + row as i64) as u64 > view.start && (y.max(0) as u64) < view.end;
             for side in 0..2 {
-                let left = if side == 0 { 0 } else { width / 2 };
-                let side_width = if side == 0 {
-                    width / 2
-                } else {
-                    width - width / 2
-                };
-                let (value, prefix) = row
+                let (left, side_width) = surface.region(side);
+                let (value, prefix) = row_value
                     .side(side)
-                    .map(|index| self.formatted_line(side, index, row.changed))
+                    .map(|line| self.formatted_line(side, line, row_value.changed))
                     .unwrap_or_default();
                 let selection = self
                     .find
                     .selected
                     .as_ref()
-                    .filter(|hit| hit.row == self.top + visible && hit.side == side)
+                    .filter(|hit| hit.row == index && hit.side == side)
                     .map(|hit| prefix + hit.range.start..prefix + hit.range.end);
-                accessible_text.push_str(&value);
-                accessible_text.push(if side == 0 { '\t' } else { '\n' });
-                let background = if row.changed {
+                if shown {
+                    accessible_text.push_str(&value);
+                    accessible_text.push(if side == 0 { '\t' } else { '\n' });
+                }
+                let background = if row_value.changed {
                     changed_background(palette.background, side)
                 } else {
                     palette.background
@@ -554,8 +606,8 @@ impl TextComparison {
                         &page,
                         Viewport {
                             width: side_width,
-                            height: row_height.min(height),
-                            origin: [self.horizontal, 0.0],
+                            height: row_height,
+                            origin: [origin, 0.0],
                             background,
                             selection_color: palette.selection,
                             selection_text: palette.selection_text,
@@ -563,13 +615,14 @@ impl TextComparison {
                         selection,
                     )
                     .map_err(|error| format!("Cannot render comparison: {error:?}"))?;
-                let y = visible as u32 * row_height;
-                for row_y in 0..row_height.min(height - y) {
-                    let source = row_y as usize * side_width as usize * 4;
-                    let target = ((y + row_y) as usize * width as usize + left as usize) * 4;
-                    pixels[target..target + side_width as usize * 4]
-                        .copy_from_slice(&raster.rgba[source..source + side_width as usize * 4]);
-                }
+                copy_row(
+                    &mut pixels,
+                    surface_width,
+                    surface_height,
+                    &raster.rgba,
+                    (left, side_width),
+                    y,
+                );
             }
         }
         let mut status = format!(
@@ -590,8 +643,8 @@ impl TextComparison {
             comparison_generation: 0,
             identity: crate::IdentityVerdict::Pending,
             mode: None,
-            width,
-            height,
+            width: surface.width(),
+            height: surface.surface_height(),
             pixels,
             layers: None,
             accessible_text,
@@ -600,7 +653,8 @@ impl TextComparison {
             bytes: false,
             bytes_only: false,
             scanning: false,
-            position: self.top as f64 / self.rows.len().saturating_sub(1).max(1) as f64,
+            position: surface.position[1] as f64 / surface.extent[1].max(1) as f64,
+            scroll: Some(Box::new(surface.view(geometry.scale))),
         })
     }
 
@@ -651,6 +705,30 @@ fn push_rows(op: &DiffOp, rows: &mut Vec<Row>, differences: &mut Vec<usize>) {
             },
             changed,
         });
+    }
+}
+
+/// Copy one painted row of `region` (its left edge and width) into a surface of
+/// `width` × `height` pixels at row `y`, which may start above the surface.
+pub(crate) fn copy_row(
+    pixels: &mut [u8],
+    width: usize,
+    height: u64,
+    row: &[u8],
+    (left, region): (u32, u32),
+    y: i64,
+) {
+    let stride = region as usize * 4;
+    for (index, source) in row.chunks_exact(stride).enumerate() {
+        let target_y = y + index as i64;
+        if target_y < 0 {
+            continue;
+        }
+        if target_y as u64 >= height {
+            break;
+        }
+        let target = (target_y as usize * width + left as usize) * 4;
+        pixels[target..target + stride].copy_from_slice(source);
     }
 }
 

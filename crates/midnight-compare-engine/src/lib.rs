@@ -12,6 +12,7 @@ mod images;
 mod policy;
 mod revalidation;
 mod routing;
+mod scroll_view;
 mod text;
 mod typeface;
 mod worker;
@@ -185,6 +186,54 @@ pub struct Frame {
     /// A byte comparison's scan still runs; taking this frame lets the worker go on.
     pub scanning: bool,
     pub position: f64,
+    /// Text and byte frames: where the view stands in the painted surface.
+    pub scroll: Option<Box<ScrollView>>,
+}
+
+#[cfg(test)]
+impl Frame {
+    /// The view of a text or byte frame without its painted margins: both panes side by
+    /// side, as the window shows them at rest (tests).
+    pub(crate) fn view_pixels(&self) -> (u32, u32, Vec<[u8; 4]>) {
+        let Some(view) = self.scroll.as_deref() else {
+            let pixels = self.pixels.as_chunks::<4>().0.to_vec();
+            return (self.width, self.height, pixels);
+        };
+        let [[left, right], [above, _]] = view.margin;
+        let pixels = self.pixels.as_chunks::<4>().0;
+        let mut shown = Vec::new();
+        for y in above..above + view.height {
+            let row = &pixels[(y * self.width) as usize..((y + 1) * self.width) as usize];
+            shown.extend_from_slice(&row[left as usize..(left + view.panes[0]) as usize]);
+            let start = (left + view.panes[0] + right + left) as usize;
+            shown.extend_from_slice(&row[start..start + view.panes[1] as usize]);
+        }
+        (view.panes[0] + view.panes[1], view.height, shown)
+    }
+}
+
+/// Where a text or byte frame's view stands in its surface. The surface holds content
+/// painted around the view (`margin`), so the window moves the view at once by scroll input
+/// the worker has not painted yet, within that margin and the content's edges, as the text
+/// viewer moves over its prepared strips. The two panes' regions lie side by side, each
+/// with its own horizontal margins.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollView {
+    /// The sum of every `Input::Scroll` the worker has taken so far, per axis, as sent.
+    pub scrolled: [f64; 2],
+    /// The view's position from the content's start, logical pixels per axis.
+    pub position: [f64; 2],
+    /// The farthest position per axis, logical pixels.
+    pub extent: [f64; 2],
+    /// Surface pixels per logical pixel.
+    pub scale: f32,
+    /// Each pane's view width, surface pixels.
+    pub panes: [u32; 2],
+    /// The view's height, surface pixels.
+    pub height: u32,
+    /// Surface pixels painted beyond the view: [left, right] beside each pane, and
+    /// [above, below] both.
+    pub margin: [[u32; 2]; 2],
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

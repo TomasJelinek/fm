@@ -114,8 +114,12 @@ known difference).
 Each host reads the system setting and supplies it; nothing queries it per notch. The
 viewer reads `SPI_GETWHEELSCROLLLINES` (`midnight-viewer-ui/src/wheel_setting.rs`)
 with the window's first native event and whenever the window gains the focus; the
-panels do the same (above). A `NativeScroll` glides notches with the setting its host
-gives it (`set_wheel_setting`; the platform default until then). Linux has no such
+panels do the same (above), and so does the comparison window, which takes the panels'
+reading from the application (`ComparatorWindows::set_wheel_setting` with
+`midnight_ui::system_wheel_setting`). A `NativeScroll` glides notches with the setting its
+host gives it (`set_wheel_setting`; the platform default until then); over the
+comparison's content one screen per notch is 87.5 % of the content's height
+(`set_content_page`). Linux has no such
 setting and moves Chromium's 120 px. Touchpad pixels and X11 finger lines are not notches:
 they follow the finger, lines at `LINE_PIXELS`. The Options setting **Scrolling speed**
 scales every line and fixed notch ([Scrolling speed setting](#scrolling-speed-setting)).
@@ -123,10 +127,12 @@ scales every line and fixed notch ([Scrolling speed setting](#scrolling-speed-se
 When the system asks for less motion (Windows: Animation effects off,
 `SPI_GETCLIENTAREAANIMATION`), the viewers do not glide. They read the setting through the
 panels' `motion_preference` module (`midnight_ui::system_reduces_motion`, which the
-application gives the viewer windows with `ViewerWindows::set_motion_preference`), with
-each window's first native event and whenever it gains the focus. A wheel notch and a
-scroll key then move their whole distance on the next frame in the Text, Source, Markdown
-and hex views, over PDF and image tiles and over an HTML page, and the shared
+application gives the viewer windows with `ViewerWindows::set_motion_preference` and the
+comparison windows with `ComparatorWindows::set_motion_preference`), with each window's
+first native event and whenever it gains the focus. A wheel notch and a scroll key then
+move their whole distance on the next frame in the Text, Source, Markdown and hex views,
+over PDF and image tiles, over an HTML page and over compared text and bytes, and the
+shared
 `NativeScroll` synthesises no touchpad momentum (`set_reduce_motion`); a touchpad's own
 system momentum stays the system's. On other systems the setting is not read (a known
 limit). The Options setting **Scrolling glide** Off has the same effect on every
@@ -347,7 +353,11 @@ waits until it ends. X11 touchpad lines over a panel are delivered directly
 (`LINE_PIXELS` per line) instead of being eased like a notch. The comparator
 content also glides wheel notches through `NativeScroll::glide_content`, since it
 takes pixel deltas without easing of its own; a notch with Ctrl, Alt or Super held
-is not glided, because image comparisons zoom once per such wheel event.
+is not glided, because image comparisons zoom once per such wheel event. Compared text
+and bytes take each glide frame, touchpad delta and momentum frame at once, over content
+the worker painted around the view, as the text viewer moves over its prepared strips
+([file comparison](FILE_COMPARISON.md#scrolling-text-and-bytes)); their surface reports
+its position to momentum only at the text's edges, as the text viewer's does.
 
 `NativeScroll::synthesize_momentum` overrides the platform default; tests use it
 so the Linux policy is exercised on every OS.
@@ -383,7 +393,9 @@ pane's half of the request budget);
 backend scroll requests, X11 lines, toolbar) and `web_wheel_tests` (HTML page:
 momentum stops where the page stops painting); `midnight-compare-ui` `scroll_tests`
 (notch glide, Ctrl+wheel, flick, document end, click, momentum in lines for a
-sink, toolbar).
+sink, toolbar) and `scroll_parity_tests` (the real comparison window against the text
+viewer's offsets, frame by frame: notches, reversal, glide and speed settings, a flick
+and its momentum, keys, horizontal scrolling, the position bar, aligned panes).
 
 Not verifiable without hardware: the X11 gap and clear-flick rules against real
 touchpad and TrackPoint report timing (TrackPoint on-button scrolling cannot be

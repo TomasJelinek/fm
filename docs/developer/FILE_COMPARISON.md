@@ -157,10 +157,61 @@ verification starts once the first frame has been taken and publishes its verdic
 new frame, so the chooser list can arrive before, with or after the verdict; every frame
 carries the latest verdict and, once it has arrived, the chooser list.
 
-Arrow keys move exactly one row (`Input::Lines`), Page Up/Down move by the rows that
-were fully visible (`Input::Pages`), and wheel distances are converted with the painted
-row height, so paging neither skips nor repeats lines at any font size. Images pan 24
-logical pixels per line and one viewport per page.
+### Scrolling text and bytes
+
+Compared text and the hex view scroll as the text viewer does, to the pixel: a wheel
+notch glides Chromium's distance on Chromium's curve, touchpad motion follows the finger
+with the shared momentum, and the keys move the text viewer's distances at once (Up and
+Down 28 logical pixels, Left and Right 40, Page Up and Page Down the whole view;
+`midnight_ui_input::key_scroll`, which the viewer uses too). Options › Appearance ›
+Scrolling glide and Scrolling speed apply as everywhere (the comparator runs on the
+application's UI thread), and the window reads the system's wheel setting and its wish
+for less motion from the host (`ComparatorWindows::set_wheel_setting`,
+`set_motion_preference`; the application passes `midnight_ui::system_wheel_setting` and
+`system_reduces_motion`) with its first native event and on each focus gain, as the
+viewer windows do. One screen per notch moves 87.5 % of the content's height
+(`NativeScroll::set_content_page`). Home and End (Ctrl+Home/End), the position bar and
+difference navigation jump, as before; the position bar lands on its share of the
+rows to the pixel, not on a whole row.
+
+The worker paints a **surface** larger than the view: one view height above and below
+and 256 logical pixels beside each pane's view (at most half the pane), cut at the
+content's edges, at 768 rows and at 8 megapixels (`midnight-compare-engine`
+`scroll_view.rs`). The frame describes it (`Frame::scroll`, `ScrollView`: the view's
+position and the farthest one in logical pixels, each pane's view in the surface, the
+margins, and the sum of every `Input::Scroll` the worker has taken). The window
+(`midnight-compare-ui` `text_view.rs`) shows each pane's clip of the surface
+(`source-clip-*` of two `Image`s) and moves both clips at once by every wheel glide frame,
+touchpad delta and scroll key, within the content's edges: one view moves both panes, so
+they cannot drift apart. It sends the worker the scrolling only when the view has moved
+past half a margin towards content beyond it, or after it has rested for 50 ms
+(`SETTLE`), and before any other input; the worker then paints a surface around the new
+place. A frame says how much of the sent scrolling it includes, so presenting it never
+moves the view. Should the view reach the end of the margin before the next surface
+arrives, it waits there, as the text viewer waits at the end of its prepared strips.
+Touchpad momentum reads the shown position only at the text's edges, as in the viewer,
+so a wait for a surface is not taken for the end of the text. The text's position is a
+row and the part of it above the view (`TextComparison::fraction`); a horizontal scroll
+of *n* logical pixels moves *n* × the scale in physical pixels (before, it moved *n*
+physical pixels).
+
+`Input::Lines` (one row) and `Input::Pages` (the rows that were fully visible) remain for
+other senders; the window no longer sends them for text or bytes. Images pan by pixels as
+before: 24 logical pixels per line key and one viewport per page.
+
+Measured on the real window with its engine and a controlled clock
+(`midnight-compare-ui` `scroll_parity_tests`; [record](../verification/2026-11-23-compare-scroll.md)):
+the shown offset of every presented frame is within 1 px of the text viewer's for one
+notch, five quick notches, a reversal, Scrolling glide Off and Very long, Scrolling speed
+Very slow and Very fast, a touchpad flick and its momentum, arrows, Page Down, a
+horizontal notch and Right; the position bar lands within 1 px of its share; both panes
+show the same pixels during and after a glide. Before, the text moved by whole rows a
+frame after each glide step (one notch: four steps of 23 px, ending 8 px short).
+
+Known limits: a new surface is copied into a Slint image on the UI thread when it is
+presented (about 7.6 MB for a 900 × 600 window; 12 ms in a debug build), once per half a
+margin of travel or at rest rather than on every frame. A view larger than the pixel
+budget gets smaller margins, so a fast fling can wait at the margin's end for a surface.
 
 An input that follows a quiet interval is sent to the worker at once. Inputs that
 arrive within 16 ms of a sent batch wait and go together, so continuous input reaches
@@ -214,8 +265,9 @@ Memory is bounded: the scan holds two 256 KiB blocks, exact 64-bit counts and an
 of region starts for navigation with at most 262,144 eight-byte entries. When a pair has
 more regions, the index keeps only starts at least a doubling spacing apart, so nearby
 regions share one navigation stop, and the summary says *regions closer than N bytes
-share a stop*. Painting reads only the bytes around the visible rows (three screens, at
-most 12 KiB per file) through the I/O gate.
+share a stop*. Painting reads only the bytes around the painted rows (the surface's rows
+and as many again before and after: at most 768 rows of 16 bytes, three times over, so
+36 KiB per file) through the I/O gate.
 
 Difference navigation uses the keys and buttons of text comparison: Next and Previous
 difference (F7, N, Alt+Down or Alt+Right; Shift+F7, P, Alt+Up or Alt+Left) move to the
@@ -223,7 +275,7 @@ next or previous row that starts a region and stop at the first and last one; Al
 and Alt+End go to the first and last region. A region the scan has not reached yet is
 shown as soon as it is found (*finding the next difference…*), and Alt+End waits for the
 end of the scan. Arrows, Page Up/Down, Ctrl+Home/End, the position bar and the wheel or
-touchpad (with the same gliding and momentum as text) scroll by rows. The hex view has no
+touchpad scroll by pixels, as text does ([Scrolling text and bytes](#scrolling-text-and-bytes)). The hex view has no
 Find. Tests: `midnight-compare-engine/src/binary_tests.rs`,
 `midnight-compare-engine/src/capture_bytes_tests.rs` and
 `midnight-compare-ui/tests/hex_comparison.rs`.

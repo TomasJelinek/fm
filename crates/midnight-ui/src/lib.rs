@@ -108,6 +108,11 @@ mod scroll_glide;
 pub fn system_reduces_motion() -> bool {
     !motion_preference::animations_enabled()
 }
+/// The system's wheel setting (Windows: lines per notch), as the panels read it; the
+/// comparison windows take it through `ComparatorWindows::set_wheel_setting`.
+pub fn system_wheel_setting() -> midnight_ui_input::WheelSetting {
+    wheel_setting::system_wheel_setting()
+}
 mod presenter;
 // Without the `acceptance-seams` feature the acceptance seam does not exist.
 #[cfg_attr(

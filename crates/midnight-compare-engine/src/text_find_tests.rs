@@ -317,13 +317,7 @@ fn resize_reveals_a_visible_hit_but_preserves_intentional_vertical_and_horizonta
         "narrow viewport must keep its existing hit in view"
     );
     assert_eq!(comparison.top, 75 - comparison.page_rows / 2);
-    assert!(
-        frame
-            .pixels
-            .as_chunks::<4>()
-            .0
-            .contains(&appearance.selection)
-    );
+    assert!(frame.view_pixels().2.contains(&appearance.selection));
     let [left, right] = comparison.find.horizontal_bounds.unwrap();
     assert!(
         ((left + right) / 2.0 - f64::from(comparison.horizontal) - 90.0).abs() < 1.0,
@@ -341,13 +335,7 @@ fn resize_reveals_a_visible_hit_but_preserves_intentional_vertical_and_horizonta
         "resizing must preserve manually scrolled-away rows"
     );
     assert_eq!(comparison.horizontal, old_horizontal);
-    assert!(
-        !frame
-            .pixels
-            .as_chunks::<4>()
-            .0
-            .contains(&appearance.selection)
-    );
+    assert!(!frame.view_pixels().2.contains(&appearance.selection));
 
     comparison.scroll(75);
     comparison.horizontal = 100_000.0;
@@ -363,13 +351,7 @@ fn resize_reveals_a_visible_hit_but_preserves_intentional_vertical_and_horizonta
         (75, 100_000.0),
         "a horizontally scrolled-away hit must stay away after resize"
     );
-    assert!(
-        !frame
-            .pixels
-            .as_chunks::<4>()
-            .0
-            .contains(&appearance.selection)
-    );
+    assert!(!frame.view_pixels().2.contains(&appearance.selection));
 }
 
 #[test]
@@ -409,10 +391,9 @@ fn selected_hit_is_highlighted_and_centered_using_painted_gutter_tabs_and_unicod
             comparison.horizontal > 100.0,
             "long prefix must remain visible through a true horizontal reveal"
         );
-        let colored: Vec<_> = frame
-            .pixels
-            .as_chunks::<4>()
-            .0
+        let (width, _, pixels) = frame.view_pixels();
+        assert_eq!(width, 800);
+        let colored: Vec<_> = pixels
             .iter()
             .enumerate()
             .filter(|(_, rgba)| **rgba == appearance.selection)
@@ -441,11 +422,5 @@ fn selected_hit_is_highlighted_and_centered_using_painted_gutter_tabs_and_unicod
     let frame = comparison
         .paint(geometry, &appearance, palette, &AtomicBool::new(false))
         .unwrap();
-    assert!(
-        !frame
-            .pixels
-            .as_chunks::<4>()
-            .0
-            .contains(&appearance.selection)
-    );
+    assert!(!frame.view_pixels().2.contains(&appearance.selection));
 }

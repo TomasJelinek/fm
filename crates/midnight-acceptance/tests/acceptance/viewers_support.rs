@@ -500,6 +500,10 @@ impl Plugins {
         );
         let fonts = presenter.clone();
         let fonts_send = send.clone();
+        // As the application: the comparators read the system's wheel setting and its
+        // wish for less motion as the panels do.
+        comparators.set_wheel_setting(Rc::new(midnight_ui::system_wheel_setting));
+        comparators.set_motion_preference(Rc::new(midnight_ui::system_reduces_motion));
         comparators.set_font_listener(Rc::new(move |family| {
             fonts.borrow_mut().save_viewer_preferences(
                 midnight_core::ViewerPreferenceChange::ComparisonFont(family),

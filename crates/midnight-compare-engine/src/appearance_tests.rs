@@ -206,7 +206,12 @@ fn an_in_flight_old_paint_cannot_beat_the_latest_palette_with_all_input_slots_fu
     assert_eq!(frame.comparison_generation, initial.comparison_generation);
     assert_eq!(frame.identity, initial.identity);
     assert_eq!(frame.geometry_revision, 9);
-    assert_eq!(frame.position, 3.0 / 7.0);
+    // Half way through the eight rows, to the pixel: three rows and half of the fourth.
+    assert!(
+        (frame.position - 3.5 / 7.0).abs() < 0.01,
+        "{}",
+        frame.position
+    );
     // The 80px viewport at the opening 14px size fits four comparison rows.
     // The application font size in the palette request would fit only one.
     assert_eq!(frame.accessible_text.lines().count(), 4);

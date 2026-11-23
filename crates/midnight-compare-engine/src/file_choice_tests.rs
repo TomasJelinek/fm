@@ -170,10 +170,9 @@ fn manual_choice_retries_invalid_paths_and_compares_real_unicode_files_without_m
         Output::ExternalStarted { .. } => panic!("Built-in fixture launched an external program"),
     };
     assert!(frame.accessible_text.contains("old 🐈") && frame.accessible_text.contains("new 🐈"));
-    assert_eq!(
-        (frame.width, frame.height, frame.geometry_revision),
-        (360, 160, 42)
-    );
+    // The view at the requested geometry; the surface holds content painted around it.
+    let (width, height, _) = frame.view_pixels();
+    assert_eq!((width, height, frame.geometry_revision), (360, 160, 42));
     assert_eq!(
         names,
         paths.each_ref().map(|path| path.display().to_string())

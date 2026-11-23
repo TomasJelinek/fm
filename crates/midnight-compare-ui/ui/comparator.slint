@@ -120,6 +120,18 @@ export component ComparatorWindow inherits Window {
     in property <int> font-index;
     callback change-font(int);
     in property <float> position;
+    // A text or byte frame's surface holds content painted around the view: each pane shows
+    // its clip of it (surface pixels), moved at once by scrolling (`text_view.rs`).
+    in property <bool> text-view;
+    in property <int> view-left-x;
+    in property <int> view-right-x;
+    in property <int> view-left-width;
+    in property <int> view-right-width;
+    in property <int> view-y;
+    in property <int> view-height;
+    in property <float> view-split: 0.5;
+    // Logical pixels the shown text stands scrolled to the right.
+    in property <float> shown-horizontal;
     in property <int> geometry-revision;
     in property <int> frame-revision: -1;
     in property <int> rendered-mode: -1;
@@ -278,7 +290,22 @@ export component ComparatorWindow inherits Window {
                     horizontal-stretch: 1; vertical-stretch: 1; clip: true;
                     background: root.background-color;
                     accessible-role: text; accessible-label: "Compared file contents"; accessible-value: root.accessible-text;
-                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.image-mode; }
+                    // The surfaces never size the canvas: a text surface is larger than its view.
+                    Image { source: root.surface; width: parent.width; height: parent.height; image-fit: fill; visible: !root.image-mode && !root.text-view; preferred-width: 0; preferred-height: 0; }
+                    Image {
+                        source: root.surface; x: 0; y: 0; width: parent.width * root.view-split; height: parent.height; image-fit: fill;
+                        preferred-width: 0; preferred-height: 0;
+                        source-clip-x: root.view-left-x; source-clip-y: root.view-y;
+                        source-clip-width: root.view-left-width; source-clip-height: root.view-height;
+                        visible: !root.image-mode && root.text-view;
+                    }
+                    Image {
+                        source: root.surface; x: parent.width * root.view-split; y: 0; width: parent.width - self.x; height: parent.height; image-fit: fill;
+                        preferred-width: 0; preferred-height: 0;
+                        source-clip-x: root.view-right-x; source-clip-y: root.view-y;
+                        source-clip-width: root.view-right-width; source-clip-height: root.view-height;
+                        visible: !root.image-mode && root.text-view;
+                    }
                     if root.image-mode: ImageComparison {
                         left-source: root.left-surface; right-source: root.right-surface;
                         split-position: root.split-position;

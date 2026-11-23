@@ -75,6 +75,9 @@ impl OpenWindow {
                 window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
                 window.set_search_summary(frame.find.message.as_str().into());
                 window.set_accessible_text(frame.accessible_text.as_str().into());
+                self.view
+                    .borrow_mut()
+                    .present(frame.scroll.as_deref().copied());
                 if let Some(layers) = &frame.layers {
                     self.surfaces.borrow_mut().present(
                         window,
@@ -89,6 +92,7 @@ impl OpenWindow {
                     );
                     window.set_surface(slint::Image::from_rgba8_premultiplied(pixels));
                 }
+                self.show_view();
             }
             Output::Status(message) => {
                 window.set_identity_state(-1);

@@ -7,7 +7,8 @@
 use crate::{
     Frame, IdentityVerdict, Palette, check_cancel,
     identity::IdentityTurn,
-    text::{changed_background, grouped, tinted},
+    scroll_view::{self, HORIZONTAL_LIMIT, MAX_ROWS, Surface},
+    text::{changed_background, copy_row, grouped, tinted},
     typeface::Typeface,
 };
 use midnight_core::{ViewerAppearance, ViewerGeometry};
@@ -30,8 +31,6 @@ const MAX_STOPS: usize = 1 << 18;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 /// Bytes per row, widest first; a narrow pane uses the widest that fits.
 const ROW_BYTES: [u64; 3] = [16, 8, 4];
-/// At most this many rows are painted, like text comparison.
-const MAX_ROWS: u32 = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Jump {
@@ -320,11 +319,14 @@ pub(crate) struct BinaryComparison {
     /// Offset of the first visible row, a multiple of `row_bytes`.
     top: u64,
     row_bytes: u64,
+    /// Physical pixels scrolled to the right.
     pub horizontal: f32,
-    vertical_remainder: f32,
-    /// Logical row height and fully visible rows of the last painted frame.
+    /// The part of the top row above the view (0 to 1).
+    fraction: f64,
+    /// Logical row height, fully visible rows and scale of the last painted frame.
     row_height: f32,
     page_rows: u64,
+    scale: f32,
     /// A jump to a difference the scan has not reached yet.
     pending: Option<Jump>,
     window: Window,
@@ -343,9 +345,10 @@ impl BinaryComparison {
             top: 0,
             row_bytes: ROW_BYTES[0],
             horizontal: 0.0,
-            vertical_remainder: 0.0,
+            fraction: 0.0,
             row_height: 24.0,
             page_rows: 1,
+            scale: 1.0,
             pending: None,
             window: Window::default(),
             advance: None,
@@ -362,33 +365,52 @@ impl BinaryComparison {
 
     fn show_row(&mut self, row: u64) {
         self.top = row.min(self.last_row()) * self.row_bytes;
-        self.vertical_remainder = 0.0;
+        self.fraction = 0.0;
     }
 
     pub fn scroll(&mut self, rows: i64) {
         self.pending = None;
         let row = self.row(self.top).saturating_add_signed(rows);
         self.top = row.min(self.last_row()) * self.row_bytes;
+        if self.row(self.top) == self.last_row() {
+            self.fraction = 0.0;
+        }
     }
 
-    /// Wheel distances use the painted row height, as in text comparison.
+    /// The view moves by exactly these logical pixels (negative: down), as in text
+    /// comparison.
     pub fn scroll_pixels(&mut self, pixels: f32) {
-        self.vertical_remainder -= pixels / self.row_height;
-        let rows = self.vertical_remainder.trunc();
-        self.vertical_remainder -= rows;
-        self.scroll(rows as i64);
+        self.pending = None;
+        let (row, fraction) = scroll_view::scroll_rows(
+            self.row(self.top),
+            self.fraction,
+            pixels,
+            self.row_height,
+            self.last_row(),
+        );
+        self.top = row * self.row_bytes;
+        self.fraction = fraction;
+    }
+
+    /// Logical pixels to the right (negative: right).
+    pub fn scroll_horizontal(&mut self, pixels: f32) {
+        if pixels.is_finite() {
+            self.horizontal = (self.horizontal - pixels * self.scale).clamp(0.0, HORIZONTAL_LIMIT);
+        }
     }
 
     pub fn scroll_pages(&mut self, pages: i32) {
-        self.vertical_remainder = 0.0;
+        self.fraction = 0.0;
         self.scroll(i64::from(pages).saturating_mul(self.page_rows as i64));
     }
 
+    /// The position bar: that share of the rows, to the pixel.
     pub fn seek(&mut self, amount: f64) {
         if amount.is_finite() {
             self.pending = None;
-            let row = (amount.clamp(0.0, 1.0) * self.last_row() as f64) as u64;
-            self.show_row(row);
+            let (row, fraction) = scroll_view::seek_rows(amount, self.last_row());
+            self.top = row * self.row_bytes;
+            self.fraction = fraction;
         }
     }
 
@@ -532,12 +554,11 @@ impl BinaryComparison {
             ..TextOptions::default()
         };
         let (width, height) = (geometry.width, geometry.height);
-        let mut pixels = palette.background.repeat(width as usize * height as usize);
         let row_height = (appearance.font_size * geometry.scale * 1.6)
             .ceil()
             .max(12.0) as u32;
-        let count = height.div_ceil(row_height).min(MAX_ROWS);
         self.row_height = row_height as f32 / geometry.scale;
+        self.scale = geometry.scale;
         self.page_rows = u64::from((height / row_height).max(1));
         let digits = offset_digits(self.scan.total());
         let advance = self.advance(&options)?;
@@ -547,47 +568,71 @@ impl BinaryComparison {
             .find(|&bytes| (line_chars(digits, bytes) + 1) as f32 * advance <= pane)
             .unwrap_or(ROW_BYTES[ROW_BYTES.len() - 1]);
         self.row_bytes = row_bytes;
-        // Keep the wheel's fractional rows: only align and clamp the first row.
+        // Keep the wheel's fractional row: only align and clamp the first row.
         self.top = self.row(self.top).min(self.last_row()) * row_bytes;
-        let visible = self.top..self.top + u64::from(count) * row_bytes;
-        self.load(sources, visible.clone(), cancel)?;
+        if self.row(self.top) == self.last_row() {
+            self.fraction = 0.0;
+        }
+        let row = u64::from(row_height);
+        let surface = Surface::plan(
+            width,
+            height,
+            geometry.scale,
+            row_height,
+            [
+                self.horizontal.round().max(0.0) as u64,
+                self.row(self.top) * row + scroll_view::fraction_pixels(self.fraction, row_height),
+            ],
+            [HORIZONTAL_LIMIT as u64, self.last_row() * row],
+        );
+        let surface_width = surface.width() as usize;
+        let surface_height = u64::from(surface.surface_height());
+        let mut pixels = palette
+            .background
+            .repeat(surface_width * surface_height as usize);
+        let first = surface.top() / row;
+        let count = (surface_height.div_ceil(row) + 1).min(MAX_ROWS);
+        let painted = first * row_bytes..(first + count) * row_bytes;
+        self.load(sources, painted.clone(), cancel)?;
+        // The view's rows, for assistive technology; the margins are only painted.
+        let view = u64::from(surface.margin[1][0])..u64::from(surface.margin[1][0] + height);
+        let origin = self.horizontal - surface.margin[0][0] as f32;
         let mut accessible_text = String::new();
         let mut line = String::new();
         let mut highlights = Vec::new();
+        let mut differs = Vec::with_capacity(row_bytes as usize);
         let total = self.scan.total();
-        for (index, start) in visible.step_by(row_bytes as usize).enumerate() {
-            if start >= total {
+        for (index, start) in painted.step_by(row_bytes as usize).enumerate() {
+            let y = ((first + index as u64) * row) as i64 - surface.top() as i64;
+            if start >= total || y >= surface_height as i64 {
                 break;
             }
             check_cancel(cancel)?;
             let range = start..start + row_bytes;
             let cells = [0, 1].map(|side| self.window.get(side, range.clone()));
-            let differs: Vec<bool> = (0..row_bytes as usize)
-                .map(|column| cells[0].get(column) != cells[1].get(column))
-                .collect();
+            differs.clear();
+            differs.extend(
+                (0..row_bytes as usize).map(|column| cells[0].get(column) != cells[1].get(column)),
+            );
             let changed = differs.iter().any(|&differs| differs);
-            let y = index as u32 * row_height;
-            let rows = row_height.min(height - y);
+            let shown = (y + row as i64) as u64 > view.start && (y.max(0) as u64) < view.end;
             for (side, bytes) in cells.into_iter().enumerate() {
                 line.clear();
                 highlights.clear();
                 if !bytes.is_empty() {
                     format_row(start, digits, bytes, &differs, &mut line, &mut highlights);
                 }
-                accessible_text.push_str(&line);
-                accessible_text.push(if side == 0 { '\t' } else { '\n' });
-                let left = if side == 0 { 0 } else { width / 2 };
-                let side_width = if side == 0 {
-                    width / 2
-                } else {
-                    width - width / 2
-                };
+                if shown {
+                    accessible_text.push_str(&line);
+                    accessible_text.push(if side == 0 { '\t' } else { '\n' });
+                }
+                let (left, side_width) = surface.region(side);
                 let background = if changed {
                     changed_background(palette.background, side)
                 } else {
                     palette.background
                 };
-                let mut raster = background.repeat(side_width as usize * rows as usize);
+                let mut raster = background.repeat(side_width as usize * row_height as usize);
                 if !line.is_empty() {
                     let page = self
                         .renderer
@@ -599,26 +644,27 @@ impl BinaryComparison {
                             .selection_geometry(range.clone())
                             .map_err(|error| format!("Cannot mark differing bytes: {error:?}"))?;
                         for rect in rectangles {
-                            let from = (rect.x0 - f64::from(self.horizontal)).floor();
-                            let to = (rect.x1 - f64::from(self.horizontal)).ceil();
+                            let from = (rect.x0 - f64::from(origin)).floor();
+                            let to = (rect.x1 - f64::from(origin)).ceil();
                             fill_columns(&mut raster, side_width, from, to, marked);
                         }
                     }
-                    let mut target = RasterMut::new(side_width, rows, &mut raster)
+                    let mut target = RasterMut::new(side_width, row_height, &mut raster)
                         .map_err(|error| format!("Cannot render byte comparison: {error:?}"))?;
                     self.renderer
-                        .paint_over_into(&page, &mut target, [self.horizontal, 0.0])
+                        .paint_over_into(&page, &mut target, [origin, 0.0])
                         .map_err(|error| format!("Cannot render byte comparison: {error:?}"))?;
                 }
-                for row_y in 0..rows as usize {
-                    let source = row_y * side_width as usize * 4;
-                    let target = ((y as usize + row_y) * width as usize + left as usize) * 4;
-                    pixels[target..target + side_width as usize * 4]
-                        .copy_from_slice(&raster[source..source + side_width as usize * 4]);
-                }
+                copy_row(
+                    &mut pixels,
+                    surface_width,
+                    surface_height,
+                    &raster,
+                    (left, side_width),
+                    y,
+                );
             }
         }
-        let last_row = self.last_row();
         Ok(Frame {
             find: Arc::default(),
             fonts: self.typeface.fonts.clone(),
@@ -628,8 +674,8 @@ impl BinaryComparison {
             comparison_generation: 0,
             identity: IdentityVerdict::Pending,
             mode: None,
-            width,
-            height,
+            width: surface.width(),
+            height: surface.surface_height(),
             pixels,
             layers: None,
             accessible_text,
@@ -638,7 +684,8 @@ impl BinaryComparison {
             bytes: true,
             bytes_only: false,
             scanning: false,
-            position: self.row(self.top) as f64 / last_row.max(1) as f64,
+            position: surface.position[1] as f64 / surface.extent[1].max(1) as f64,
+            scroll: Some(Box::new(surface.view(geometry.scale))),
         })
     }
 
