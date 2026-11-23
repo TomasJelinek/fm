@@ -753,3 +753,33 @@ fn post_removal_cleanup_failure_reports_residual_and_never_deletes_unexpected_ch
         assert_eq!(destination.join("second").exists(), skipped);
     }
 }
+
+/// From a folder that other accounts can change (as on a data drive), a Move from another
+/// drive copies and verifies each file as Copy does and then removes the source where it
+/// is, through the handle that kept other writers out since preparation.
+#[test]
+fn a_move_from_an_unprotected_folder_removes_each_verified_source_in_place() {
+    let temp = fixture();
+    let parent = temp.path().to_owned();
+    let paths = [parent.join("first"), parent.join("second 文档")];
+    for (index, path) in paths.iter().enumerate() {
+        fs::write(path, vec![7 + index as u8; 300_000]).unwrap();
+    }
+    let destination = parent.join("destination");
+    fs::create_dir(&destination).unwrap();
+    let (mut job, _status) = prepare_move(&paths, &destination, Cancellation::default());
+    job.discover_cross_device_fixture();
+    drive(&mut job);
+    let done = job.finish();
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.source_files_removed, 2, "{done:?}");
+    assert!(paths.iter().all(|path| !path.exists()));
+    for (index, path) in paths.iter().enumerate() {
+        assert_eq!(
+            fs::read(destination.join(path.file_name().unwrap())).unwrap(),
+            vec![7 + index as u8; 300_000]
+        );
+    }
+    // Only the destination is left: no private capture folder.
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+}

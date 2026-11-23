@@ -1002,10 +1002,19 @@ empty-directory-only OS operation. Skips retain the affected source ancestors.
 Overlapping selected roots are rejected before writes in a selection of at most 64
 items. Traversal holds the Move authority of the item it moves and of the folders above it
 within the item, never of the whole selection, and has no count or fixed depth limit (on
-Linux the transfers' descriptor budget bounds the folders held open). A Windows source
-with named alternate data streams, which Copy does not copy, is never removed; a read-only
-file or folder is removed as Delete removes one (the attribute is ignored, never cleared),
-and a file with several names (hard links) loses only the moved name. Links move as links (above); mount crossings and generic provider Move remain
+Linux the transfers' descriptor budget bounds the folders held open). A Move from another
+drive goes to any destination Copy accepts, with Copy's staging, verification and Replace.
+Where its private capture cannot apply (a source folder other accounts can change, a FAT
+or exFAT drive, a network share), a Windows Move removes the source in place through the
+handle it opened when preparing the item, which shares only reading: no other program can
+write to or delete the file until the removal, the file's identity, revision and name are
+checked once more, and the file removed is the one copied and verified; a failed removal
+keeps the source. A Windows source with named alternate data streams, which Copy does not
+copy, is never removed; a read-only file or folder is removed as Delete removes one (the attribute is
+ignored, never cleared), and a file with several names (hard links) loses only the moved
+name. On Linux a source is removed only on a local filesystem (ext2/3/4, XFS, Btrfs, F2FS,
+tmpfs) and only when the user owns it, because the read lease that keeps writers out
+until the removal needs ownership; other items fail alone and keep their sources. Links move as links (above); mount crossings and generic provider Move remain
 unsupported.
 Directory identity validation is live on Linux, not atomic compare-and-unlink;
 see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).

@@ -602,11 +602,25 @@ proof support are checked before its copy.
 A later child that cannot be prepared for Move pauses alone (see the I/O errors
 above); Windows source DELETE authority is obtained
 before each source's copy, separately from Copy's unchanged read-only pin.
-A source that a Move from another drive removes needs a protected parent on a local
-filesystem: local NTFS on Windows; on Linux ext2/3/4, XFS, Btrfs, F2FS or tmpfs, where
-renames and unlinks commit or fail where they run and read leases are granted (network
-and FUSE mounts are left out). Elsewhere the item fails alone and keeps its source, with a
-reason that suggests Copy; there is never permission weakening or a silent fallback.
+On Windows a Move from another drive takes each source aside into a private folder of its
+own folder before removing it where that folder is on a local fixed NTFS volume and no other
+account can change it (a protected parent). Elsewhere (a folder of a data drive that other
+accounts may write, as the folders of a second drive usually inherit; a FAT or exFAT drive;
+a network share) it removes the source in place (`Capture::direct` in
+`transfer_move.rs`): through the handle it opened when it prepared the item, which has
+DELETE access and shares only reading, so no other program can write to the file or delete
+it from then until the removal (on a share the server enforces this); the removal checks
+the file's identity, revision and name in its folder once more and then removes it through
+that same handle as Delete removes a file (POSIX disposition ignoring Read-only, or the
+classic disposition where the volume has none). The file removed is exactly the one copied
+and verified. If that removal fails, or the file changed, the item keeps its source with
+the reason. Where the volume grants no oplock (FAT, some shares) the mapped-writer probe is
+left out, as the held handle refuses new writers; a volume without named streams has none
+to lose. On Linux a source is removed on a local filesystem only: ext2/3/4, XFS, Btrfs,
+F2FS or tmpfs, where renames and unlinks commit or fail where they run and read leases are
+granted (network and FUSE mounts are left out); elsewhere the item fails alone and keeps
+its source, with a reason that suggests Copy. There is never permission weakening or a
+silent fallback.
 Inside the moved tree Linux follows Delete's rule instead: a folder of that tree
 (the selected folder or a folder below it) that the user owns and that lacks owner
 write gets it, through the descriptor the Move retains for it, only for each change

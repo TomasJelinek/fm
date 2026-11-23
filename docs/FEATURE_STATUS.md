@@ -117,8 +117,9 @@ How to read it:
   destinations are refused.
 - **Open:** other times, attributes, ownership, ACLs, extended attributes, streams,
   folder metadata and hard links are not preserved (COPY-03); a Move from another drive
-  keeps a Windows source with named streams, and on Linux removes only sources the user
-  owns on a local filesystem; providers have no Move (MOVE-01); an archive
+  keeps a Windows source with named streams (other Windows sources, from a USB drive or a
+  share included, are removed after their verified copy), and on Linux removes only sources
+  the user owns on a local filesystem; providers have no Move (MOVE-01); an archive
   copy-out of a large selection admits its members one by one: about 20 s before the
   first of 100,001 archive members is written (COPY-06); a job runs one native step at a
   time (IO-01); one namespace turn serves all jobs (IO-02); the shared disk-I/O gate can

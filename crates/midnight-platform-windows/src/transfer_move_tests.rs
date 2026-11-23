@@ -953,7 +953,7 @@ fn an_existing_incompatible_writer_refuses_move_preparation() {
 }
 
 #[test]
-fn unsafe_source_parent_is_refused_before_verified_capture_and_copy_still_works() {
+fn a_world_writable_source_parent_takes_no_capture_folder_and_keeps_the_source_until_removal() {
     use std::{
         mem::size_of,
         os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
@@ -1023,25 +1023,20 @@ fn unsafe_source_parent_is_refused_before_verified_capture_and_copy_still_works(
     );
     drop(file);
     let provider = crate::WindowsFileSystem::new(None);
-    // Metadata-only native rename admission does not need recovery staging.
-    // Both cross-volume proof admission and direct capture still reject it.
+    // A folder that every account may change cannot hold the Move's private capture
+    // folder: the source is removed in place instead (`Capture::direct`), and nothing is
+    // taken aside before its removal.
     let prepared = provider
         .prepare_move_source(&source, &Cancellation::default())
         .unwrap();
-    let error = prepared
+    prepared
         .capture
         .preflight_finalization(&Cancellation::default())
-        .unwrap_err();
-    assert_eq!(error.kind, std::io::ErrorKind::Unsupported);
-    assert!(error.message.contains("Copy"));
-    assert_eq!(
-        prepared
-            .capture
-            .capture(&Cancellation::default())
-            .unwrap_err()
-            .kind,
-        std::io::ErrorKind::Unsupported
-    );
+        .unwrap();
+    assert!(matches!(
+        prepared.capture.capture(&Cancellation::default()).unwrap(),
+        TransferMoveCaptureOutcome::Captured { .. }
+    ));
     drop(prepared);
     assert!(
         provider
@@ -1310,3 +1305,95 @@ mod peer_refusal;
 
 #[path = "transfer_move_durability_tests.rs"]
 mod durability;
+
+/// A folder whose inherited permissions let other accounts change it (as the folders of a
+/// data drive do), where the Move's private capture cannot be trusted.
+fn unprotected_fixture() -> (tempfile::TempDir, PathBuf) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("_build/tmp");
+    fs::create_dir_all(&root).unwrap();
+    let temp = tempfile::tempdir_in(root).unwrap();
+    let parent = temp.path().to_owned();
+    (temp, parent)
+}
+
+/// In a folder other accounts can change, a Move from another drive removes the source
+/// where it is, through the handle it holds from preparation: that handle denies other
+/// writers until the removal, and no private capture folder is made.
+#[test]
+fn an_unprotected_folder_removes_its_source_in_place_through_the_held_handle() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (_temp, parent) = unprotected_fixture();
+    let path = parent.join("in place 文档");
+    fs::write(&path, b"verified original").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { source: at, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("not captured")
+    };
+    assert_eq!(at, path);
+    assert!(path.exists(), "nothing is taken aside");
+    // Another writer is refused while the Move holds the source.
+    let writer = fs::OpenOptions::new().write(true).share_mode(7).open(&path);
+    assert_eq!(
+        writer.unwrap_err().raw_os_error(),
+        Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
+    );
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    assert!(capture.take_stage_cleanup().unwrap().cleanup().is_ok());
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    assert!(!path.exists());
+    assert_eq!(
+        fs::read_dir(&parent).unwrap().count(),
+        0,
+        "no capture folder"
+    );
+}
+
+/// A source removed in place that changed after its copy was verified is kept, with the
+/// reason, and its name stays.
+#[test]
+fn a_source_changed_before_its_removal_in_place_is_kept() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (_temp, parent) = unprotected_fixture();
+    let path = parent.join("changed");
+    fs::write(&path, b"verified original").unwrap();
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    assert!(matches!(
+        capture.capture(&cancel).unwrap(),
+        TransferMoveCaptureOutcome::Captured { .. }
+    ));
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    // Attributes are not data: another program may still change the modified time.
+    let toucher = fs::OpenOptions::new()
+        .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES)
+        .share_mode(7)
+        .open(&path)
+        .unwrap();
+    toucher
+        .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+        .unwrap();
+    drop(toucher);
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Retained { .. }
+    ));
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    assert_eq!(fs::read(&path).unwrap(), b"verified original");
+}

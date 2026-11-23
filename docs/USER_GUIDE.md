@@ -53,9 +53,12 @@ source before continuing; recursive folders use the same per-file checks and rem
 emptied source folders last. A Move from another drive goes wherever Copy goes, a
 network location or a USB drive included: each file is copied and verified as Copy does,
 and its original is removed only after that. On Windows a read-only file is moved as
-Delete removes it. An item whose original cannot be removed safely is left where it is,
-with the reason: on Windows a file with alternate data streams, which a copy cannot
-carry, or one in a folder other accounts can change; on Linux a file owned by another user, or one on a network or FUSE filesystem.
+Delete removes it. Moving from another drive works from any folder, from a USB drive
+or from a network share: each file is copied and verified, other programs cannot change
+it meanwhile, and then exactly that file is deleted. A file is left where it is, with the
+reason, only if deleting it would lose data a copy cannot carry (on Windows, alternate
+data streams) or cannot be done safely (on Linux, a file owned by another user, or one
+on a network filesystem).
 There is no source-recovery mode or journal.
 Copy and Move (F5, F6) ask how to handle links, alike on Windows and Linux. **Copy the
 files links point to** copies a link to a file as that file and a link to a folder as

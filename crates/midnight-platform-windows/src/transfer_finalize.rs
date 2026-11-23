@@ -62,6 +62,9 @@ pub(super) fn qualify_directory(file: &File, path: &Path) -> Result<(), FsError>
     check_streams(file, path, true)
 }
 
+/// `GetVolumeInformation`'s flag of a volume that can store named streams.
+const FILE_NAMED_STREAMS: u32 = 0x0004_0000;
+
 fn check_streams(file: &File, path: &Path, directory: bool) -> Result<(), FsError> {
     // Fixed bound: inability to enumerate every stream is refusal, never omission.
     let mut buffer = vec![0u8; 64 * 1024];
@@ -79,6 +82,12 @@ fn check_streams(file: &File, path: &Path, directory: bool) -> Result<(), FsErro
         // Ordinary NTFS directories have no unnamed data stream. EOF explicitly
         // reports an empty stream list; other errors never authorize removal.
         if directory && failure.raw_os_error() == Some(ERROR_HANDLE_EOF as i32) {
+            return Ok(());
+        }
+        // A volume that cannot store named streams at all (FAT, exFAT) has none to lose.
+        if super::super::link_destination::volume_facts(file)
+            .is_ok_and(|(_, flags, _)| flags & FILE_NAMED_STREAMS == 0)
+        {
             return Ok(());
         }
         return Err(unsupported(
@@ -121,7 +130,14 @@ fn check_streams(file: &File, path: &Path, directory: bool) -> Result<(), FsErro
     }
 }
 
-fn probe_mapped_writers(file: &File, path: &Path) -> Result<(), FsError> {
+/// `tolerate_unsupported`: where the volume grants no oplock at all (FAT, exFAT, some
+/// shares) the probe cannot run; a source removed in place relies on its held handle,
+/// which denies new writers, instead.
+fn probe_mapped_writers(
+    file: &File,
+    path: &Path,
+    tolerate_unsupported: bool,
+) -> Result<(), FsError> {
     // SAFETY: reopens the exact retained native file object, never its pathname.
     let handle = unsafe {
         ReOpenFile(
@@ -169,6 +185,19 @@ fn probe_mapped_writers(file: &File, path: &Path) -> Result<(), FsError> {
         )
     };
     let failure = io::Error::last_os_error();
+    if result == 0
+        && tolerate_unsupported
+        && matches!(
+            failure.raw_os_error().map(|code| code as u32),
+            Some(
+                windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED
+                    | windows_sys::Win32::Foundation::ERROR_INVALID_FUNCTION
+                    | windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER
+            )
+        )
+    {
+        return Ok(());
+    }
     if result != 0 || failure.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
         return Err(unsupported(
             path,
@@ -202,13 +231,15 @@ pub(super) fn prepare(
             "source has no successful matching temporary staging",
         ));
     };
-    let directory = state
-        .retained
-        .as_ref()
-        .ok_or_else(|| invalid(source, "temporary source authority missing"))?
-        .clone();
+    // A source removed where it is (`Capture::direct`) is checked in its own folder.
+    let direct = state.direct == Some(true) && state.retained.is_none();
+    let directory = match &state.retained {
+        Some(directory) => directory.clone(),
+        None if direct => capture.parent.clone(),
+        None => return Err(invalid(source, "temporary source authority missing")),
+    };
     qualify(&capture.file, source)?;
-    probe_mapped_writers(&capture.file, source)?;
+    probe_mapped_writers(&capture.file, source, direct)?;
     let finalizer = Finalizer {
         source: source.clone(),
         receipt: recovery.clone(),
@@ -216,6 +247,7 @@ pub(super) fn prepare(
         name: capture.name.clone(),
         file: capture.file.clone(),
         revision: Revision::of(&capture.file, source)?,
+        direct,
         outcome: None,
         confirmation: None,
         _namespace_owner: super::super::namespace::owner(&[capture.entry.identity]),
@@ -231,6 +263,9 @@ struct Finalizer {
     name: OsString,
     file: Arc<File>,
     revision: Revision,
+    /// The source is removed in its own folder (`Capture::direct`), as Delete removes a
+    /// file, rather than from the Move's private stage.
+    direct: bool,
     outcome: Option<TransferMoveFinalizeOutcome>,
     /// After the disposition: the removal's confirmation, which the engine runs once it has
     /// closed the source's handle (shared with the source and the capture).
@@ -273,9 +308,16 @@ impl TransferMoveFinalizer for Finalizer {
         }
         let removal = self.revalidate(cancel).and_then(|()| {
             checked(cancel, &self.source)?;
+            let direct = self.direct;
             super::super::namespace::change(cancel, |mutation| {
                 mutation
                     .remove(&self.file, cancel, || {
+                        if direct {
+                            // Delete's removal through the held handle: POSIX semantics
+                            // ignoring Read-only, or where the volume has none (FAT,
+                            // exFAT, a share) the classic disposition.
+                            return native::remove_confirmed(&self.file);
+                        }
                         let info = FILE_DISPOSITION_INFO_EX {
                             Flags: FILE_DISPOSITION_FLAG_DELETE
                                 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
@@ -374,7 +416,7 @@ mod tests {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .open(&path)
             .unwrap();
-        assert!(probe_mapped_writers(&reader, &path).is_err());
+        assert!(probe_mapped_writers(&reader, &path, false).is_err());
         // SAFETY: writable owned mapping; edit stays inside its length.
         unsafe {
             view.Value.cast::<u8>().write(99);
@@ -382,7 +424,7 @@ mod tests {
         // SAFETY: releases exactly the successful view, no further view accesses.
         assert_ne!(unsafe { UnmapViewOfFile(view) }, 0);
         drop(mapping);
-        probe_mapped_writers(&reader, &path).unwrap();
+        probe_mapped_writers(&reader, &path, false).unwrap();
         assert_eq!(std::fs::read(path).unwrap()[0], 99);
     }
 }
@@ -424,10 +466,10 @@ mod section_tests {
             .open(&path)
             .unwrap();
         assert!(
-            probe_mapped_writers(&reader, &path).is_err(),
+            probe_mapped_writers(&reader, &path, false).is_err(),
             "future writable views must not escape source quiescence"
         );
         drop(mapping);
-        probe_mapped_writers(&reader, &path).unwrap();
+        probe_mapped_writers(&reader, &path, false).unwrap();
     }
 }

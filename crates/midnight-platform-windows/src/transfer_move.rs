@@ -351,6 +351,9 @@ struct State {
     native_outcome: Option<midnight_core::TransferNativeMoveOutcome>,
     /// The confirmation of this emptied directory's removal (`remove_empty_directory`).
     removal: Option<folder_flush::Removal>,
+    /// Whether a Move from another drive removes this source where it is (`direct`),
+    /// decided once by its folder.
+    direct: Option<bool>,
 }
 struct Capture {
     entry: TransferEntry,
@@ -437,16 +440,10 @@ impl TransferMoveCapture for Capture {
     }
     fn preflight_finalization(&self, cancel: &Cancellation) -> Result<(), FsError> {
         checked(cancel, &self.entry.item.path)?;
-        self.parent.check_recovery_parent(cancel)?;
+        self.direct(cancel)?;
         if self.entry.item.kind == EntryKind::Directory {
-            finalization::qualify_directory(&self.file, &self.entry.item.path)?;
-            return destination::Directory::from_file(
-                self.file
-                    .try_clone()
-                    .map_err(|e| error(&self.entry.item.path, e))?,
-                self.entry.item.path.clone(),
-            )?
-            .check_recovery_parent(cancel);
+            // Each entry of the folder decides for itself by the folder (`direct`).
+            return finalization::qualify_directory(&self.file, &self.entry.item.path);
         }
         finalization::qualify(&self.file, &self.entry.item.path)
     }
@@ -499,35 +496,80 @@ impl TransferMoveCapture for Capture {
     }
     fn take_stage_cleanup(&self) -> Option<Box<dyn midnight_core::TransferMoveStageCleanup>> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state
-            .retained
-            .take()
-            .or_else(|| state.unused.take())
-            .map(|directory| {
-                Box::new(StageCleanup(directory))
-                    as Box<dyn midnight_core::TransferMoveStageCleanup>
-            })
+        if let Some(directory) = state.retained.take().or_else(|| state.unused.take()) {
+            return Some(Box::new(StageCleanup::Stage(directory)));
+        }
+        // A source removed where it is had no stage: nothing is left to clean.
+        (state.direct == Some(true)).then(|| {
+            Box::new(StageCleanup::None(self.parent.path().to_owned()))
+                as Box<dyn midnight_core::TransferMoveStageCleanup>
+        })
     }
 }
-struct StageCleanup(destination::Directory);
+enum StageCleanup {
+    Stage(destination::Directory),
+    /// A source removed in its own folder (`Capture::direct`) leaves no stage.
+    None(PathBuf),
+}
 impl midnight_core::TransferMoveStageCleanup for StageCleanup {
     fn path(&self) -> &Path {
-        self.0.path()
+        match self {
+            Self::Stage(directory) => directory.path(),
+            Self::None(folder) => folder,
+        }
     }
     fn cleanup(self: Box<Self>) -> Result<(), FsError> {
-        self.0.remove_empty_stage()
+        match *self {
+            Self::Stage(directory) => directory.remove_empty_stage(),
+            Self::None(_) => Ok(()),
+        }
     }
 }
 impl Capture {
+    /// Whether a Move from another drive removes this source where it is instead of first
+    /// taking it aside into a private folder of its own folder. That capture needs a
+    /// folder on a local fixed NTFS volume that no other account can change; elsewhere (a
+    /// folder of a data drive that other accounts may write, a FAT or exFAT drive, a
+    /// network share) the source is removed in place, through the handle the Move holds
+    /// from preparation to removal. That handle denies other writers (and deleters), so
+    /// the file removed is exactly the one copied and verified, and nobody wrote to it
+    /// in between; it is removed as Delete removes a file.
+    fn direct(&self, cancel: &Cancellation) -> Result<bool, FsError> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(direct) = state.direct {
+            return Ok(direct);
+        }
+        let direct = match self.parent.check_recovery_parent(cancel) {
+            Ok(()) => false,
+            Err(failure) if failure.kind == io::ErrorKind::Unsupported => true,
+            Err(failure) => return Err(failure),
+        };
+        state.direct = Some(direct);
+        Ok(direct)
+    }
     fn capture_with(
         &self,
         cancel: &Cancellation,
         before_capture: impl FnOnce(),
         after_capture: impl FnOnce(),
     ) -> Result<TransferMoveCaptureOutcome, FsError> {
+        let direct = self.direct(cancel)?;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(outcome) = &state.outcome {
             return Ok(outcome.clone());
+        }
+        if direct {
+            // Nothing moves: the held handle keeps the source as it was verified.
+            self.revalidate(cancel)?;
+            let outcome = TransferMoveCaptureOutcome::Captured {
+                source: self.entry.item.path.clone(),
+                recovery: TransferRecovery {
+                    path: self.entry.item.path.clone(),
+                    identity: Some(self.entry.identity),
+                },
+            };
+            state.outcome = Some(outcome.clone());
+            return Ok(outcome);
         }
         super::namespace::change(cancel, |mutation| {
             self.capture_with_in(&mut state, cancel, before_capture, after_capture, mutation)
