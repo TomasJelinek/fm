@@ -3,7 +3,7 @@
 A dual-pane desktop file manager for Windows and Linux, written in Rust with Slint and
 Tokio.
 
-Product version **0.5** (Cargo SemVer `0.5.0`); the native window title shows
+Product version **0.5** (Cargo SemVer `0.5.1`); the native window title shows
 `Midnight Explorer 0.5 — File Manager`. The displayed version is derived from the
 package version.
 

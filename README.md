@@ -7,7 +7,7 @@ comparison tools and checksums, and keeps every file name's Unicode intact. View
 filesystems and thumbnailers are separate plugin packages that run isolated from the
 application.
 
-Current version: **0.5.0** (preview).
+Current version: **0.5.1** (preview).
 
 ## Features
 
@@ -59,9 +59,10 @@ the [GitHub Releases page](https://github.com/TomasJelinek/fm/releases), each wi
 `SHA256SUMS` file to verify the download. Extract the complete archive and run
 `midnight-explorer.exe` (Windows) or `./midnight-explorer` (Linux); its `README.txt`
 has the details. Releases up to 0.5.0 named the executable `me.exe` and `me`. The
-Windows executable is unsigned, and there is no installer or automatic updater. The archives include every
+Windows executable is unsigned and there is no installer; from 0.5.1 on the application
+checks for, verifies and installs signed updates itself. The archives include every
 plugin, the dependency notices and the license; the release notes say what each
-preview contains ([0.5.0](docs/releases/0.5.0.md)).
+preview contains ([0.5.0](docs/releases/0.5.0.md), [0.5.1](docs/releases/0.5.1.md)).
 
 ## Build from source
 
