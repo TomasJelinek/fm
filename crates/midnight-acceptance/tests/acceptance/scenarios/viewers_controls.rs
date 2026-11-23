@@ -1694,14 +1694,16 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
             ))
         };
         let (web, mail, jump) = (at(0)?, at(1)?, at(2)?);
-        input::move_to(viewing.slint(), web);
+        // The page's browser reads the pointer only from winit's events: through the
+        // native seam, as a person's pointer reaches it.
+        probe::native_pointer(app, &viewing, web, probe::NativePointer::Move)?;
         let hover = format!("Link to {HTML_WEB}");
         viewing.wait(app, "the pointer over the HTML web link", STEP, |window| {
             window.get_link_status() == hover.as_str()
         })?;
         for (position, refused) in [(web, HTML_REFUSED[0]), (mail, HTML_REFUSED[1])] {
             let before = app.launches.all().len();
-            input::click_at(viewing.slint(), position);
+            probe::native_click(app, &viewing, position)?;
             viewing.wait(app, refused, STEP, |window| {
                 window.get_status().contains(refused)
             })?;
@@ -1712,7 +1714,7 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
             }
         }
         let before = app.launches.all().len();
-        input::click_at(viewing.slint(), jump);
+        probe::native_click(app, &viewing, jump)?;
         until(app, &viewing, "the fragment's block in view", |_, _| {
             below_share(&viewing.canvas()) > 0.3
         })?;

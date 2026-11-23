@@ -9,7 +9,9 @@ use super::{Canvas, Failures, Viewing, paint_tool_windows};
 use crate::{Context, app::App, inspect, report};
 use midnight_core::PreferenceTheme;
 use midnight_viewer_ui::acceptance_seams::{self as seams, NativeWheel};
-pub use midnight_viewer_ui::acceptance_seams::{SettingsGuard, SystemSettings, WheelSetting};
+pub use midnight_viewer_ui::acceptance_seams::{
+    NativePointer, SettingsGuard, SystemSettings, WheelSetting,
+};
 use slint::{
     LogicalPosition,
     platform::{PointerEventButton, WindowEvent},
@@ -60,6 +62,27 @@ pub fn native_notches(
         .ok_or("the native input seam does not reach this viewer window")?;
     }
     Ok(())
+}
+
+/// Move the pointer to `at` and, for a press or release, change the left button there, as
+/// winit reports it to the viewer's own native observer: an HTML page's browser reads the
+/// pointer only from winit's events, which Slint's software platform never produces.
+pub fn native_pointer(
+    app: &App,
+    viewing: &Viewing,
+    at: LogicalPosition,
+    action: NativePointer,
+) -> Result<(), String> {
+    let viewers = viewer_windows(app)?;
+    seams::pointer(&viewers, &viewing.window, at, action)
+        .map(drop)
+        .ok_or_else(|| "the native input seam does not reach this viewer window".to_owned())
+}
+
+/// A left click at `at` through the native seam ([`native_pointer`]).
+pub fn native_click(app: &App, viewing: &Viewing, at: LogicalPosition) -> Result<(), String> {
+    native_pointer(app, viewing, at, NativePointer::Press)?;
+    native_pointer(app, viewing, at, NativePointer::Release)
 }
 
 /// The viewer window gains (`true`) or loses the system focus, as winit reports it.

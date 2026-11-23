@@ -4,9 +4,10 @@
 //! The suite drives viewers on Slint's software platform, where winit never runs, so the
 //! window's native observer (the closure winit's events reach through
 //! `on_winit_window_event`) would see nothing: wheel notches converted by the system's
-//! wheel setting, touchpad reports, reduced motion and the inactive selection colours.
-//! [`wheel`] and [`focus`] hand that same closure the events winit would deliver and give
-//! Slint what the observer leaves alone, as winit's backend does. The frames on which wheel
+//! wheel setting, touchpad reports, reduced motion, the inactive selection colours and an
+//! HTML page's pointer. [`wheel`], [`pointer`] and [`focus`] hand that same closure the
+//! events winit would deliver and give Slint what the observer leaves alone, as winit's
+//! backend does. The frames on which wheel
 //! motion and touchpad momentum step (winit's `RedrawRequested`) follow by themselves while
 //! the window moves, also when it moves on after waiting for the backend.
 //! [`override_settings`] replaces the system settings the viewer reads, for this process.
@@ -19,7 +20,7 @@ use i_slint_core::{
 };
 use slint::winit_030::winit::{
     dpi::PhysicalPosition,
-    event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
 };
 #[cfg(not(test))]
 use std::sync::{Mutex, PoisonError};
@@ -281,6 +282,69 @@ pub fn wheel(
                 phase,
             },
         ));
+    }
+    frames(&open);
+    Some(consumed)
+}
+
+/// One native pointer report: the pointer moves to a point, or the left button goes down
+/// or up there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativePointer {
+    Move,
+    Press,
+    Release,
+}
+
+/// Move the pointer to `at` (logical) and, for [`NativePointer::Press`] and
+/// [`NativePointer::Release`], change the left button there, as winit reports them to
+/// `window`: through its native observer first (an HTML page's browser reads the pointer
+/// only there), then what that leaves alone to Slint as winit's backend gives it.
+/// `Some(consumed)` for the last event, or `None` when `viewers` did not open `window` or
+/// it is hidden.
+pub fn pointer(
+    viewers: &ViewerWindows,
+    window: &ViewerWindow,
+    at: slint::LogicalPosition,
+    action: NativePointer,
+) -> Option<bool> {
+    let (open, observer) = observer(viewers, window)?;
+    let target = open.window.window();
+    let scale = f64::from(target.scale_factor());
+    let moved = WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: PhysicalPosition::new(f64::from(at.x) * scale, f64::from(at.y) * scale),
+    };
+    let mut consumed = deliver(&observer, &moved);
+    if !consumed {
+        target.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: at });
+    }
+    let state = match action {
+        NativePointer::Move => None,
+        NativePointer::Press => Some(ElementState::Pressed),
+        NativePointer::Release => Some(ElementState::Released),
+    };
+    if let Some(state) = state {
+        let event = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        };
+        consumed = deliver(&observer, &event);
+        if !consumed {
+            let button = slint::platform::PointerEventButton::Left;
+            target.dispatch_event(if state == ElementState::Pressed {
+                slint::platform::WindowEvent::PointerPressed {
+                    position: at,
+                    button,
+                }
+            } else {
+                slint::platform::WindowEvent::PointerReleased {
+                    position: at,
+                    button,
+                }
+            });
+        }
     }
     frames(&open);
     Some(consumed)

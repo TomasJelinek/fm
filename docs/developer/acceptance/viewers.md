@@ -40,7 +40,8 @@ those events never reach. The acceptance-only native input seam (decision A1,
 `midnight_viewer_ui::acceptance_seams`, compiled only with `midnight-acceptance`'s
 `acceptance` feature) delivers such events to a viewer window through the same observer:
 `viewers_probe` turns the wheel by native notches, moves the system focus away and back,
-and overrides the system's wheel and reduce-motion settings, which a window reads when it
+moves and clicks the pointer over an HTML page (whose browser reads the pointer only from
+native events; C42), and overrides the system's wheel and reduce-motion settings, which a window reads when it
 next gains the focus, as it reads the system's. The seam reaches viewer windows only, so
 the comparator's notch (F15) is reported `SKIP`. Checks with Slint's own wheel event
 measure that a Slint pixel delta moves the content exactly its pixels.

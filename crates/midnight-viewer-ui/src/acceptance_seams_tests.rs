@@ -348,6 +348,52 @@ fn a_notch_up_across_a_corrected_surface_moves_its_whole_distance_with_the_seams
     notch_up_across_a_corrected_surface(true);
 }
 
+/// An HTML page's browser reads the pointer only from winit's events: the seam's move,
+/// press and release reach it as a native pointer does (the HTML link check's hover and
+/// clicks), where Slint's own pointer events reach only Slint.
+#[test]
+fn seam_pointer_reaches_an_html_page_as_winits_pointer_does() {
+    let (_runtime, manager, open, inputs) = text_viewer();
+    open.window.set_image_mode(false);
+    open.window.set_web_mode(true);
+    let window = open.window.clone_strong();
+    let at = middle(&open);
+    let pointers = || -> Vec<(viewer_web::PointerKind, viewer_web::PointerButton)> {
+        inputs
+            .borrow_mut()
+            .drain(..)
+            .filter_map(|input| match input {
+                ViewerInput::Web {
+                    input: viewer_web::CommandKind::Pointer(pointer),
+                    ..
+                } => Some((pointer.kind, pointer.button)),
+                _ => None,
+            })
+            .collect()
+    };
+    inputs.borrow_mut().clear();
+    use viewer_web::{PointerButton as Button, PointerKind as Kind};
+    for (action, expected) in [
+        (NativePointer::Move, vec![(Kind::Move, Button::None)]),
+        (
+            NativePointer::Press,
+            vec![(Kind::Move, Button::None), (Kind::Down, Button::Left)],
+        ),
+        (
+            NativePointer::Release,
+            vec![(Kind::Move, Button::None), (Kind::Up, Button::Left)],
+        ),
+    ] {
+        assert_eq!(pointer(&manager, &window, at, action), Some(true));
+        assert_eq!(pointers(), expected, "{action:?}");
+    }
+    // Outside the page the browser hears nothing of a move.
+    let outside = slint::LogicalPosition::new(at.x, open.window.get_content_top() - 4.0);
+    pointer(&manager, &window, outside, NativePointer::Move);
+    assert_eq!(pointers(), []);
+    manager.close_all();
+}
+
 /// Overridden settings apply when the window next gains the focus, as the system's do, and
 /// end with their guard: one screen per notch and less motion move a screen at once.
 #[test]

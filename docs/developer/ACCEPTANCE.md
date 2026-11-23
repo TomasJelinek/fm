@@ -363,6 +363,11 @@ input to the same observer closure the Winit hook runs:
   with its phase. It returns `Some(true)` when the panels or the viewer took it; what they
   leave alone reaches Slint as Winit's backend converts it (a pointer move, then a wheel of
   lines × 60 or physical pixels ÷ scale, with its phase).
+- `pointer(..., at, NativePointer::Move)` (viewers only) delivers a native pointer move to
+  `at`; `NativePointer::Press` and `NativePointer::Release` also change the left button
+  there. An HTML page's browser reads the pointer only from native events, so its link
+  hover and clicks need this seam; what the observer leaves alone reaches Slint as Slint's
+  own pointer events.
 - `focus(..., focused)` delivers a native focus change, then Slint's activation change.
 - `override_settings(SystemSettings { wheel: Some(WheelSetting::Lines(5)),
   reduce_motion: Some(true) })` sets what they read as the system settings
