@@ -48,10 +48,12 @@ mod previews_tests;
 mod scroll_glide_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 37;
+const CURRENT_PREFERENCES_VERSION: u32 = 38;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +66,13 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     scroll_glide: Option<u16>,
+    /// Schema 38: the mouse-wheel notch distance in percent of the system's.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    wheel_speed: Option<u16>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -511,6 +520,18 @@ fn decode_preferences_impl(
     if stored.version == 37 && stored.scroll_glide.is_none() {
         return Err(invalid("missing schema 37 preferences"));
     }
+    // Version 38 is written only for a wheel speed choice; schema 37 fields stay optional.
+    if stored.version == 38 && stored.wheel_speed.is_none() {
+        return Err(invalid("missing schema 38 preferences"));
+    }
+    let wheel_speed = match (stored.version, stored.wheel_speed) {
+        (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::WheelSpeed::default(),
+        (38..=CURRENT_PREFERENCES_VERSION, Some(percent)) => {
+            midnight_core::WheelSpeed::from_percent(percent)
+                .ok_or_else(|| invalid("unknown wheel speed"))?
+        }
+        _ => return Err(invalid("unexpected wheel speed")),
+    };
     let scroll_glide = match (stored.version, stored.scroll_glide) {
         (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::ScrollGlide::default(),
         (37..=CURRENT_PREFERENCES_VERSION, Some(percent)) => {
@@ -954,6 +975,7 @@ fn decode_preferences_impl(
         thumbnail_size,
         glyph_fitting,
         scroll_glide,
+        wheel_speed,
         shortcuts,
         panel_filters,
         panel_filter_history: match (stored.version, stored.panel_filter_history) {
@@ -1051,13 +1073,15 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let layout_choices =
         preferences.viewer.document_layout != midnight_core::DocumentLayout::default();
     let glide_choices = preferences.scroll_glide != midnight_core::ScrollGlide::default();
-    // Schemas 35 to 37 keep every field that versions 33 and 34 require.
+    let speed_choices = preferences.wheel_speed != midnight_core::WheelSpeed::default();
+    // Schemas 35 to 38 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
         || panel_choices
         || layout_choices
-        || glide_choices;
+        || glide_choices
+        || speed_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1134,6 +1158,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     )?;
     let stored = StoredPreferences {
         scroll_glide: glide_choices.then_some(preferences.scroll_glide.percent()),
+        wheel_speed: speed_choices.then_some(preferences.wheel_speed.percent()),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),
@@ -1193,7 +1218,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if glide_choices {
+        version: if speed_choices {
+            38
+        } else if glide_choices {
             37
         } else if layout_choices {
             36

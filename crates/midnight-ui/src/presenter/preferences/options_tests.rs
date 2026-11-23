@@ -918,3 +918,34 @@ fn scroll_glide_previews_at_once_cancel_restores_ok_saves_and_reset_returns_the_
     p.cancel_options(&|_| panic!("cancel cannot save"));
     assert_eq!(p.preferences.values.scroll_glide, ScrollGlide::VeryLong);
 }
+
+#[test]
+fn wheel_speed_previews_at_once_cancel_restores_ok_saves_and_reset_returns_medium() {
+    use midnight_core::WheelSpeed;
+    let mut p = loaded();
+    assert_eq!(p.preferences.values.wheel_speed, WheelSpeed::Medium);
+    p.begin_options();
+    p.change_wheel_speed(0, &|_| panic!("preview cannot save"));
+    // The presented value is the preview: panels and viewers scroll by it at once.
+    assert_eq!(p.preferences.values.wheel_speed, WheelSpeed::VerySlow);
+    p.cancel_options(&|_| panic!("cancel cannot save"));
+    assert_eq!(p.preferences.values.wheel_speed, WheelSpeed::Medium);
+
+    p.begin_options();
+    p.change_wheel_speed(4, &|_| panic!("preview cannot save"));
+    let commands = RefCell::new(Vec::new());
+    p.accept_options(&|command| {
+        commands.borrow_mut().push(command);
+        true
+    });
+    let writes = saved(&commands.borrow());
+    assert_eq!(writes[0].1.wheel_speed, WheelSpeed::VeryFast);
+    p.preferences_saved(writes[0].0, Ok(()));
+    assert_eq!(p.preferences.values.wheel_speed, WheelSpeed::VeryFast);
+
+    p.begin_options();
+    p.reset_options(&|_| panic!("reset is only preview"));
+    assert_eq!(p.preferences.values.wheel_speed, WheelSpeed::Medium);
+    p.cancel_options(&|_| panic!("cancel cannot save"));
+    assert_eq!(p.preferences.values.wheel_speed, WheelSpeed::VeryFast);
+}

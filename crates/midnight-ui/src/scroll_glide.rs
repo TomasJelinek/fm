@@ -3,7 +3,8 @@
 //! `midnight_ui_input::set_glide_scale`, which the wheel glides and touchpad momentum of
 //! the panels, Slint lists, dialogs, viewer and comparison windows read; all of them run on
 //! this thread. The system's request for less motion forces 0, as Off does. The panels'
-//! row alignment reads the same scale through the window's `glide-scale`.
+//! row alignment reads the same scale through the window's `glide-scale`. Scrolling speed
+//! (`apply_wheel_speed`) goes the same way to `midnight_ui_input::set_wheel_speed_scale`.
 use crate::MainWindow;
 use std::cell::Cell;
 
@@ -29,6 +30,14 @@ pub(crate) fn apply(window: &MainWindow, glide: midnight_core::ScrollGlide) {
     window.set_scroll_glide_index(glide.index());
     let (_, reduce) = STATE.with(Cell::get);
     publish(window, glide.scale(), reduce);
+}
+
+/// Options › Appearance › Scrolling speed: the presented share of the system's notch
+/// distance, which `midnight_ui_input::notch_pixels_for` applies to every wheel notch of
+/// this thread's panels, lists, viewers and comparisons.
+pub(crate) fn apply_wheel_speed(window: &MainWindow, speed: midnight_core::WheelSpeed) {
+    window.set_wheel_speed_index(speed.index());
+    midnight_ui_input::set_wheel_speed_scale(speed.scale());
 }
 
 /// The system's request for less motion, as the panels read it (first native event and

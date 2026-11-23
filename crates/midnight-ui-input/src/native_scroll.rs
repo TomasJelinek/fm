@@ -5,6 +5,7 @@ use crate::kinetic_native::{LINE_PIXELS, NativeKinetic, WheelSource};
 use crate::scroll_press::PressState;
 use crate::{WHEEL_FRAME, WheelMotion};
 use i_slint_core::{
+    input::{BackendMouseEvent, TouchPhase as SlintPhase},
     item_tree::{ItemRc, ItemWeak, ParentItemTraversalMode},
     items::{Flickable, TouchArea},
     lengths::{LogicalPoint, LogicalRect},
@@ -352,7 +353,9 @@ impl NativeScroll {
     /// Without gliding (the glide scale 0, `crate::glide_scale`, or the system's less
     /// motion given to `set_reduce_motion`), deliver wheel notches that would reach
     /// Slint's own wheel easing (ordinary `ScrollView` and `ListView` content) as one
-    /// wheel that Slint applies at once, at Winit's distance. For windows whose content
+    /// wheel that Slint applies at once, at Winit's distance; at a wheel speed other than
+    /// the system's (`crate::wheel_speed_scale`), deliver them at that share of Winit's
+    /// distance, eased by Slint as before. For windows whose content
     /// this observer does not route to a host first; the viewer's content observers take
     /// their own notches.
     pub fn lists_at_once(mut self) -> Self {
@@ -366,23 +369,50 @@ impl NativeScroll {
         self.reduce_motion || crate::glide_scale() <= 0.0
     }
 
-    /// The `lists_at_once` delivery of an unglided notch; false where it does not apply.
-    fn deliver_at_once(&self, window: &slint::Window, point: LogicalPoint, x: f32, y: f32) -> bool {
+    /// The `lists_at_once` delivery of a notch over Slint content: unglided, or at a
+    /// wheel speed other than the system's (`crate::wheel_speed_scale`, which scales
+    /// Winit's distance); false where Winit's own wheel can reach Slint unchanged.
+    fn deliver_list_wheel(
+        &self,
+        window: &slint::Window,
+        point: LogicalPoint,
+        x: f32,
+        y: f32,
+    ) -> bool {
         // Winit's backend turns a line into these logical pixels for Slint.
         const SLINT_LINE_PIXELS: f32 = 60.0;
-        if !self.lists_at_once || !self.unglided() {
+        // A notch with Ctrl, Alt or Super acts (zooms) rather than scrolls: not scaled.
+        let speed = if self.kinetic.wheel_modified() {
+            1.0
+        } else {
+            crate::wheel_speed_scale()
+        };
+        let unglided = self.unglided();
+        if !self.lists_at_once || (!unglided && speed == 1.0) {
             return false;
         }
         if !x.is_finite() || !y.is_finite() || (x == 0.0 && y == 0.0) {
             return false;
         }
-        // A `PointerScrolled` reaches Slint without a phase, which a Flickable applies
-        // directly instead of easing; a control that acts per wheel still gets one.
-        window.dispatch_event(slint::platform::WindowEvent::PointerScrolled {
-            position: slint::LogicalPosition::new(point.x, point.y),
-            delta_x: x * SLINT_LINE_PIXELS,
-            delta_y: y * SLINT_LINE_PIXELS,
-        });
+        let (delta_x, delta_y) = (x * SLINT_LINE_PIXELS * speed, y * SLINT_LINE_PIXELS * speed);
+        // Either way one wheel event, so a control that acts per wheel acts once.
+        let event = if unglided {
+            // Without a phase a Flickable applies it directly instead of easing it.
+            slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(point.x, point.y),
+                delta_x,
+                delta_y,
+            }
+        } else {
+            // As Winit's backend delivers a notch, which Slint eases.
+            slint::platform::WindowEvent::internal(BackendMouseEvent::Wheel {
+                position: point,
+                delta_x,
+                delta_y,
+                phase: SlintPhase::Moved,
+            })
+        };
+        window.dispatch_event(event);
         true
     }
 
@@ -691,7 +721,7 @@ impl NativeScroll {
                 });
                 let Some(target) = target else {
                     self.cancel_wheel();
-                    return self.deliver_at_once(window, point, *x, *y);
+                    return self.deliver_list_wheel(window, point, *x, *y);
                 };
                 if !target.accepts(*x, *y) {
                     self.cancel_wheel();

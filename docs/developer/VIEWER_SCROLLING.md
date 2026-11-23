@@ -8,7 +8,9 @@ Wheel notches, scroll keys and touchpad momentum in every viewer mode (Text, Sou
 Markdown, hex, image, PDF, HTML) and in the comparison window glide for the length that
 Options › Appearance › **Scrolling glide** sets, and move at once when it is Off or the
 system asks for less motion; see
-[Scrolling glide setting](SCROLLING.md#scrolling-glide-setting).
+[Scrolling glide setting](SCROLLING.md#scrolling-glide-setting). A wheel notch travels
+the share of the system's notch that **Scrolling speed** sets
+([Scrolling speed setting](SCROLLING.md#scrolling-speed-setting)).
 
 ## Scrollbar input and text acknowledgements
 

@@ -1370,6 +1370,10 @@ pub fn install_with_owned(
         p.change_glyph_fitting(index, s);
         let _ = w;
     });
+    callback!(on_wheel_speed_changed, |w, p, s, index| {
+        p.change_wheel_speed(index, s);
+        let _ = w;
+    });
     callback!(on_scroll_glide_changed, |w, p, s, index| {
         p.change_scroll_glide(index, s);
         let _ = w;

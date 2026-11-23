@@ -603,3 +603,45 @@ fn scrolling_glide_off_moves_at_once_without_momentum_and_default_glides_again()
     assert_eq!(midnight_ui_input::glide_scale(), 4.0);
     assert_eq!(h.window.get_glide_scale(), 4.0);
 }
+
+/// Options › Appearance › Scrolling speed, through the presenter and the window refresh:
+/// a notch moves the whole rows nearest to that share of the system's notch at each stop,
+/// at once in the open panels; touchpad finger motion moves as far at every stop.
+#[test]
+fn scrolling_speed_scales_a_notch_and_leaves_touchpad_motion_alone() {
+    let h = layout_harness();
+    let system = notch_pixels_for(WheelSetting::default(), 0.0);
+    let row = h.window.get_left_view_row_height();
+    // Without a glide, so each notch lands on the next frame.
+    h.presenter.borrow_mut().change_scroll_glide(0, &|_| true);
+    let at = pointer_at_left_list(&h);
+    for (index, scale) in [(0, 0.5), (1, 0.75), (2, 1.0), (3, 1.5), (4, 2.0)] {
+        h.presenter
+            .borrow_mut()
+            .change_wheel_speed(index, &|_| true);
+        crate::refresh(&h.window, &h.presenter.borrow());
+        assert_eq!(midnight_ui_input::wheel_speed_scale(), scale);
+        assert_eq!(h.window.get_wheel_speed_index(), index);
+        h.settle(400);
+        let before = h.offset(0);
+        assert!(h.wheel(-1.0));
+        frame(&h, 16);
+        let moved = before - h.offset(0);
+        let rows = (system * scale / row).round().max(1.0) * row;
+        assert!(
+            (moved - rows).abs() < 1e-3,
+            "speed {scale}: {moved}, not {rows}"
+        );
+        h.settle(400);
+        let before = h.offset(0);
+        flick(&h, at, -20.0);
+        let fingers = before - h.offset(0);
+        assert!(
+            (fingers - 120.0).abs() < 0.01,
+            "speed {scale}: touchpad {fingers}"
+        );
+    }
+    h.presenter.borrow_mut().change_wheel_speed(2, &|_| true);
+    crate::refresh(&h.window, &h.presenter.borrow());
+    assert_eq!(midnight_ui_input::wheel_speed_scale(), 1.0);
+}

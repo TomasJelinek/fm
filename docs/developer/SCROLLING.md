@@ -117,7 +117,8 @@ with the window's first native event and whenever the window gains the focus; th
 panels do the same (above). A `NativeScroll` glides notches with the setting its host
 gives it (`set_wheel_setting`; the platform default until then). Linux has no such
 setting and moves Chromium's 120 px. Touchpad pixels and X11 finger lines are not notches:
-they follow the finger, lines at `LINE_PIXELS`.
+they follow the finger, lines at `LINE_PIXELS`. The Options setting **Scrolling speed**
+scales every line and fixed notch ([Scrolling speed setting](#scrolling-speed-setting)).
 
 When the system asks for less motion (Windows: Animation effects off,
 `SPI_GETCLIENTAREAANIMATION`), the viewers do not glide. They read the setting through the
@@ -170,6 +171,41 @@ duration of `ScrollType::kMouseWheel`):
 
 Chromium's numbers, with links to its source, and the measurements:
 [scroll speed record](../verification/2026-11-23-scroll-speed.md).
+
+### Scrolling speed setting
+
+Options › Appearance › **Scrolling speed** sets how far one mouse-wheel notch scrolls: a
+slider with five stops, Very slow, Slow, Medium, Fast and Very fast, at 50, 75, 100, 150
+and 200 % of the system's notch (the table above; `midnight_core::WheelSpeed`, stored as
+`wheel_speed`, see [settings files](../SETTINGS_FILES.md)). Medium, the default, is the
+system's distance. The slider takes the same keys as Scrolling glide's and names its stop.
+
+- `midnight-ui`'s `scroll_glide::apply_wheel_speed` publishes the presented value with
+  `midnight_ui_input::set_wheel_speed_scale` on the UI thread, which every window shares.
+  Options previews it at once, OK saves it, Cancel restores it.
+- `notch_pixels_for` multiplies the lines and the fixed notch by
+  `midnight_ui_input::wheel_speed_scale`, so every host that computes a notch's distance
+  scales it per notch, also in open windows: the panels (the rows nearest the scaled
+  distance), `NativeScroll` scrollbar, command-strip and comparison glides, and every
+  viewer mode including HTML pages, whose per-frame wheel commands carry the scaled
+  glide. One screen per notch keeps the system's page.
+- With `NativeScroll::lists_at_once` (main window and dialogs), a notch over an ordinary
+  `ScrollView` or `ListView` reaches Slint as one wheel at that share of Winit's 60 px per
+  line: phased like Winit's, so Slint eases it as before, or unphased when the glide is
+  off. A notch with Ctrl, Alt or Super acts rather than scrolls and is not scaled.
+- Touchpad finger motion (pixels, X11 and Windows touchpad lines at `LINE_PIXELS`), its
+  momentum and keyboard scrolling do not scale.
+
+Tests: `midnight-core` `wheel_speed_tests` (stops, percentages, scales);
+`midnight-platform-common` `settings::wheel_speed_tests` (schema 38, an old file reads as
+Medium, export and import, strict values); `midnight-ui-input` `wheel_lines::tests` (each
+stop scales lines and the fixed notch, never a page) and `wheel_speed::tests`;
+`midnight-ui` `presenter::preferences::options::tests` (preview, Cancel, OK, Reset),
+`scroll_input::pane_tests::kinetic_tests::scrolling_speed_*` (a panel notch at each stop
+through the presenter and the refresh, touchpad motion unchanged), `tests/list_scroll.rs`
+(a Find results notch scaled, eased and at once) and `tests/options.rs` (the slider's
+keys); `midnight-viewer-ui` `web_wheel_tests::the_wheel_speed_scales_*` (a notch in the
+text viewer and over a page at each stop, touchpad pixels unchanged).
 
 ### Scrolling glide setting
 

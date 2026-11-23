@@ -319,6 +319,66 @@ impl ScrollGlide {
     }
 }
 
+/// How far one mouse-wheel notch scrolls, as a share of the system's notch distance
+/// (Windows: lines per notch × 100/3 px; Linux: 120 px). Only wheel notches scale:
+/// one screen per notch, touchpad finger motion and keyboard scrolling keep their
+/// distances. Applies at once everywhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WheelSpeed {
+    VerySlow,
+    Slow,
+    #[default]
+    Medium,
+    Fast,
+    VeryFast,
+}
+
+impl WheelSpeed {
+    /// Slider order, from the slowest to the fastest.
+    pub const ALL: [Self; 5] = [
+        Self::VerySlow,
+        Self::Slow,
+        Self::Medium,
+        Self::Fast,
+        Self::VeryFast,
+    ];
+
+    pub fn index(self) -> i32 {
+        Self::ALL
+            .iter()
+            .position(|choice| *choice == self)
+            .unwrap_or(2) as i32
+    }
+
+    /// Out-of-range slider positions clamp to the nearest end.
+    pub fn from_index(index: i32) -> Self {
+        let last = Self::ALL.len() as i32 - 1;
+        Self::ALL[index.clamp(0, last) as usize]
+    }
+
+    /// The stored value: the notch distance in percent of the system's.
+    pub fn percent(self) -> u16 {
+        match self {
+            Self::VerySlow => 50,
+            Self::Slow => 75,
+            Self::Medium => 100,
+            Self::Fast => 150,
+            Self::VeryFast => 200,
+        }
+    }
+
+    pub fn from_percent(percent: u16) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.percent() == percent)
+    }
+
+    /// Multiplier on the system's notch distance.
+    pub fn scale(self) -> f32 {
+        f32::from(self.percent()) / 100.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SizeDisplay {
     #[default]
@@ -397,6 +457,8 @@ pub struct UserPreferences {
     /// Scrolling glide and momentum length everywhere; the system's request for
     /// less motion still turns it off.
     pub scroll_glide: ScrollGlide,
+    /// How far a mouse-wheel notch scrolls, relative to the system's notch.
+    pub wheel_speed: WheelSpeed,
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
     /// List hidden entries (dot-names on Unix, the hidden attribute on Windows)
@@ -475,6 +537,7 @@ impl Default for UserPreferences {
             touch_font_size: 15,
             glyph_fitting: GlyphFitting::default(),
             scroll_glide: ScrollGlide::default(),
+            wheel_speed: WheelSpeed::default(),
             quick_search_filter: false,
             show_hidden_files: true,
             mask_selection: crate::MaskSelectionPreferences::default(),
@@ -715,6 +778,33 @@ mod scroll_glide_tests {
         assert_eq!(ScrollGlide::from_index(99), ScrollGlide::VeryLong);
         for percent in [1, 99, 101, 150, 401, u16::MAX] {
             assert_eq!(ScrollGlide::from_percent(percent), None, "{percent}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod wheel_speed_tests {
+    use super::{UserPreferences, WheelSpeed};
+
+    #[test]
+    fn the_default_speed_is_the_systems_notch() {
+        assert_eq!(UserPreferences::default().wheel_speed, WheelSpeed::Medium);
+        assert_eq!(WheelSpeed::default().scale(), 1.0);
+        let scales: Vec<f32> = WheelSpeed::ALL.iter().map(|speed| speed.scale()).collect();
+        assert_eq!(scales, [0.5, 0.75, 1.0, 1.5, 2.0]);
+    }
+
+    #[test]
+    fn slider_positions_and_stored_percentages_round_trip() {
+        for (index, speed) in WheelSpeed::ALL.into_iter().enumerate() {
+            assert_eq!(speed.index(), index as i32);
+            assert_eq!(WheelSpeed::from_index(index as i32), speed);
+            assert_eq!(WheelSpeed::from_percent(speed.percent()), Some(speed));
+        }
+        assert_eq!(WheelSpeed::from_index(-1), WheelSpeed::VerySlow);
+        assert_eq!(WheelSpeed::from_index(99), WheelSpeed::VeryFast);
+        for percent in [0, 25, 49, 101, 125, 400, u16::MAX] {
+            assert_eq!(WheelSpeed::from_percent(percent), None, "{percent}");
         }
     }
 }

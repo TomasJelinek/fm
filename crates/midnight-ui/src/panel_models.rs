@@ -65,6 +65,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     window.set_right_free_space(volume_presentation::panel_space(presenter, PaneId::Right).into());
     window.set_glyph_fitting_index(presenter.preferences.values.glyph_fitting.index());
     crate::scroll_glide::apply(window, presenter.preferences.values.scroll_glide);
+    crate::scroll_glide::apply_wheel_speed(window, presenter.preferences.values.wheel_speed);
     window.set_sizes_in_bytes(presenter.preferences.values.size_display == SizeDisplay::Bytes);
     window.set_remember_command_history(presenter.preferences.values.remember_command_history);
     window.set_copy_checksum_verification(presenter.preferences.values.copy_checksum_verification);

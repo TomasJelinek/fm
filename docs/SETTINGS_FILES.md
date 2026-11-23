@@ -21,7 +21,7 @@ dialog only shows the result.
 
 A settings file is a complete snapshot of everything Midnight Explorer saves:
 
-- every Options page: appearance, fonts and spacing, the scrolling glide, General choices, copy
+- every Options page: appearance, fonts and spacing, the scrolling glide and speed, General choices, copy
   verification, disk I/O concurrency, editors, comparators, keyboard remaps,
   custom commands and their toolbar, filename colors, previews and thumbnails,
   viewer and thumbnailer plugin choices and associations, archive associations
@@ -173,8 +173,8 @@ saves to the current location; it never changes the old file.
   when indentation would pass the limit) and end with a newline. The whole file is
   at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 37. When saving or exporting, it writes the lowest version that can
-  hold the settings, at most 37. The latest schemas added:
+  versions 1 to 38. When saving or exporting, it writes the lowest version that can
+  hold the settings, at most 38. The latest schemas added:
   - 33: `file_comparators`, the external comparison rules;
   - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
   - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
@@ -184,10 +184,15 @@ saves to the current location; it never changes the old file.
   - 37: `scroll_glide`, the Options › Appearance › **Scrolling glide** stop as a
     percentage of the default glide: `0` (Off), `25`, `50`, `200` or `400`. It is
     written only when it is not the default (`100`); a file without it, including
-    every file of an earlier schema, reads as the default. Other numbers are refused.
+    every file of an earlier schema, reads as the default. Other numbers are refused;
+  - 38: `wheel_speed`, the Options › Appearance › **Scrolling speed** stop as a
+    percentage of the system's wheel notch: `50` (Very slow), `75`, `150` or `200`
+    (Very fast). It is written only when it is not the default Medium (`100`); a file
+    without it, including every file of an earlier schema, reads as Medium. Other
+    numbers are refused.
 
-  A version is written only for a setting that needs it, so a schema 34, 35, 36 or 37
-  file without any of that version's new fields is refused, and so is a field in a
+  A version is written only for a setting that needs it, so a schema 34, 35, 36, 37 or
+  38 file without any of that version's new fields is refused, and so is a field in a
   schema older than the one that added it.
 - The other top-level fields belong to that schema version. A field that the
   version does not define is an error, not ignored.

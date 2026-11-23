@@ -65,6 +65,7 @@ pub(super) struct EditedFields {
     pub(super) touch_font_size: bool,
     pub(super) glyph_fitting: bool,
     pub(super) scroll_glide: bool,
+    pub(super) wheel_speed: bool,
     pub(super) quick_search_filter: bool,
     pub(super) show_hidden_files: bool,
     pub(super) mask_selection: bool,
@@ -337,6 +338,9 @@ impl Presenter {
                 }
                 if edited.scroll_glide {
                     loaded.scroll_glide = local.scroll_glide;
+                }
+                if edited.wheel_speed {
+                    loaded.wheel_speed = local.wheel_speed;
                 }
                 if edited.quick_search_filter {
                     loaded.quick_search_filter = local.quick_search_filter;
@@ -627,6 +631,16 @@ impl Presenter {
         self.update_preferences(preferences, send);
     }
 
+    /// Options › Appearance › Scrolling speed: previews at once like the glide.
+    pub(crate) fn change_wheel_speed(&mut self, index: i32, send: &dyn Fn(Command) -> bool) {
+        self.preferences.edited.wheel_speed = true;
+        let preferences = UserPreferences {
+            wheel_speed: midnight_core::WheelSpeed::from_index(index),
+            ..self.preferences.values.clone()
+        };
+        self.update_preferences(preferences, send);
+    }
+
     /// Options › Appearance › Scrolling glide. Like the theme it previews at once in
     /// every panel, list and viewer; OK saves it and Cancel restores the previous one.
     pub(crate) fn change_scroll_glide(&mut self, index: i32, send: &dyn Fn(Command) -> bool) {
@@ -852,6 +866,7 @@ impl Presenter {
         edited.touch_font_size |= preferences.touch_font_size != previous.touch_font_size;
         edited.glyph_fitting |= preferences.glyph_fitting != previous.glyph_fitting;
         edited.scroll_glide |= preferences.scroll_glide != previous.scroll_glide;
+        edited.wheel_speed |= preferences.wheel_speed != previous.wheel_speed;
         let filter_changed = preferences.quick_search_filter != previous.quick_search_filter
             || preferences.panel_filters != previous.panel_filters;
         edited.quick_search_filter |=

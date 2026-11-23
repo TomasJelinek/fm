@@ -670,3 +670,51 @@ fn with_the_glide_off_a_list_notch_moves_at_once() {
     h.advance(400);
     near(offset(&viewport), moved, "nothing follows");
 }
+
+/// Scrolling speed: a notch over a list travels that share of Winit's 60 px line, eased by
+/// Slint as before, or at once with the glide off. One wheel event either way.
+#[test]
+fn the_wheel_speed_scales_a_list_notch() {
+    let mut h = Frames::new(FindWindow::new, 860, 620);
+    h.window.set_rows(ModelRc::new(VecModel::from(
+        (0..100)
+            .map(|index| FindRow {
+                token: format!("result-{index}").into(),
+                name: format!("Result {index:02}").into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    h.settle();
+    let row = h.item(AccessibleRole::ListItem, "Result 03 ·  ·  ·  · ");
+    let viewport = scroll_parent(&row);
+    let point = frames::inside(&viewport);
+    h.install_list_scroll();
+    for scale in [0.5, 2.0] {
+        native_scroll::set_wheel_speed_scale(scale);
+        let initial = offset(&viewport);
+        let consumed = h.driver_wheel(point, 0.0, -1.0);
+        h.draw();
+        let first = offset(&viewport);
+        h.advance(400);
+        let rested = offset(&viewport);
+        native_scroll::set_wheel_speed_scale(1.0);
+        assert!(consumed, "speed {scale}: the observer scales the notch");
+        assert!(
+            first > rested + 0.5,
+            "speed {scale}: Slint eases it ({first})"
+        );
+        near(rested, initial - 60.0 * scale, "the scaled notch");
+
+        native_scroll::set_wheel_speed_scale(scale);
+        native_scroll::set_glide_scale(0.0);
+        let initial = offset(&viewport);
+        let consumed = h.driver_wheel(point, 0.0, -1.0);
+        h.draw();
+        let moved = offset(&viewport);
+        native_scroll::set_glide_scale(1.0);
+        native_scroll::set_wheel_speed_scale(1.0);
+        assert!(consumed);
+        near(moved, initial - 60.0 * scale, "the scaled notch at once");
+    }
+}

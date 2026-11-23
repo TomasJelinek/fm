@@ -952,7 +952,11 @@ current keys.
   pixels at the default of three lines per notch (proportionally more or less for other
   settings, and seven eighths of the visible height when Windows scrolls one screen at a
   time), on Linux 120 pixels; at Default each notch glides for a fifth of a second, as in
-  Chrome, and quick successive notches keep their speed. The
+  Chrome, and quick successive notches keep their speed. **Scrolling speed**
+  (Appearance) scales that distance for a mouse wheel in the panels, lists, dialogs and
+  every viewer: Very slow, Slow, Medium, Fast or Very fast, from half to twice the
+  system's distance; Medium, the default, is the system's own speed. Touchpad gestures,
+  keyboard scrolling and Windows' one-screen-at-a-time setting are not affected. The
   [palette provenance](THEME_PROVENANCE.md) describes the theme catalog. Preview
   is immediate and reversible. **OK** validates all pages, saves asynchronously
   and closes after success. **Cancel**, Escape and X discard all edits and restore

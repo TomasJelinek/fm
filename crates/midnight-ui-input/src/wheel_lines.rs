@@ -47,15 +47,18 @@ impl Default for WheelSetting {
 /// along the notch's axis is `page` logical pixels (0 when unknown), as Chromium moves it:
 /// [`LINE_PIXELS`] (100) at three lines, in proportion to other line counts, 87.5 % of
 /// `page` for one screen per notch ([`LINE_PIXELS`] when the page is unknown), and
-/// [`FIXED_NOTCH_PIXELS`] (120) without a setting.
+/// [`FIXED_NOTCH_PIXELS`] (120) without a setting. The lines and the fixed notch are times
+/// the application's wheel speed ([`crate::wheel_speed_scale`], Options › Appearance ›
+/// Scrolling speed); one screen per notch stays the system's page.
 pub fn notch_pixels_for(setting: WheelSetting, page: f32) -> f32 {
+    let speed = crate::wheel_speed_scale();
     match setting {
         WheelSetting::Lines(lines) => {
-            LINE_PIXELS * lines.clamp(1, MAX_LINES) as f32 / DEFAULT_LINES as f32
+            LINE_PIXELS * lines.clamp(1, MAX_LINES) as f32 / DEFAULT_LINES as f32 * speed
         }
         WheelSetting::Page if page.is_finite() && page >= 1.0 => (page * PAGE_FRACTION).max(1.0),
         WheelSetting::Page => LINE_PIXELS,
-        WheelSetting::Fixed => FIXED_NOTCH_PIXELS,
+        WheelSetting::Fixed => FIXED_NOTCH_PIXELS * speed,
     }
 }
 
@@ -85,6 +88,32 @@ mod tests {
         for page in [0.0, -5.0, f32::NAN, f32::INFINITY] {
             assert_eq!(notch_pixels_for(WheelSetting::Page, page), LINE_PIXELS);
         }
+    }
+
+    #[test]
+    fn the_wheel_speed_scales_line_and_fixed_notches_but_not_a_page() {
+        for (scale, lines, fixed) in [
+            (0.5, 50.0, 60.0),
+            (0.75, 75.0, 90.0),
+            (1.0, 100.0, 120.0),
+            (1.5, 150.0, 180.0),
+            (2.0, 200.0, 240.0),
+        ] {
+            crate::set_wheel_speed_scale(scale);
+            assert!((notch_pixels_for(WheelSetting::Lines(3), 700.0) - lines).abs() < 1e-3);
+            assert!((notch_pixels_for(WheelSetting::Fixed, 700.0) - fixed).abs() < 1e-3);
+            assert_eq!(
+                notch_pixels_for(WheelSetting::Page, 800.0),
+                700.0,
+                "{scale}"
+            );
+            assert_eq!(
+                notch_pixels_for(WheelSetting::Page, 0.0),
+                LINE_PIXELS,
+                "{scale}"
+            );
+        }
+        crate::set_wheel_speed_scale(1.0);
     }
 
     #[test]

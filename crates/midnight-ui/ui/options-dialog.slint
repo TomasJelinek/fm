@@ -54,14 +54,16 @@ component OptionPicker inherits Rectangle {
     }
 }
 
-// Scrolling glide: six stops from Off to Very long, each twice the previous glide,
-// with the current one named beside the slider. The stock Slider gives arrows, Home
-// and End one stop or an end; Page Up and Page Down move two stops.
-component GlidePicker inherits Rectangle {
+// A slider of named stops (Scrolling glide, Scrolling speed) with the current one named
+// beside it. The stock Slider gives arrows, Home and End one stop or an end; Page Up and
+// Page Down move two stops.
+component StopPicker inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <[string]> names;
     in property <int> current-index;
     in property <bool> narrow;
     callback selected(int);
-    private property <[string]> names: ["Off", "Very short", "Short", "Default", "Long", "Very long"];
     // The slider assigns its own value on input, which detaches a one-way binding:
     // follow the host's staged value (Reset to defaults, Cancel, an import).
     changed current-index => { slider.value = root.current-index; }
@@ -76,7 +78,7 @@ component GlidePicker inherits Rectangle {
         spacing: root.narrow ? 6px : 12px;
         caption := Text {
             row: 0; col: 0;
-            text: "Scrolling glide"; color: Theme.text; font-size: Theme.font-size;
+            text: root.label; color: Theme.text; font-size: Theme.font-size;
             min-width: 0px;
             preferred-width: root.narrow ? 0px : max(138px, Theme.font-size * 8);
             wrap: word-wrap;
@@ -97,12 +99,12 @@ component GlidePicker inherits Rectangle {
                         width: parent.width; height: parent.height;
                         minimum: 0; maximum: root.names.length - 1; step: 1;
                         value: root.current-index;
-                        accessible-label: "Scrolling glide";
+                        accessible-label: root.label;
                         accessible-value: root.names[root.current-index];
                         changed(value) => { root.choose(value); }
                     }
                 }
-                Tip { text: "How long scrolling glides to its target, and how long a touchpad flick keeps moving: in the panels, lists and every viewer. Off moves every scroll at once. The system's request for less motion (Windows: Animation effects off) also turns it off. Applies at once; OK saves, Cancel restores the previous glide."; }
+                Tip { text: root.hint; }
             }
             Text {
                 text: root.names[root.current-index];
@@ -140,6 +142,7 @@ export component OptionsBody inherits Rectangle {
     in property <int> disk-io-concurrency-index;
     in property <int> glyph-fitting-index;
     in property <int> scroll-glide-index: 3;
+    in property <int> wheel-speed-index: 2;
     in property <bool> command-history-empty;
     in-out property <bool> thumbnails-enabled;
     in-out property <bool> thumbnails-network;
@@ -155,6 +158,7 @@ export component OptionsBody inherits Rectangle {
     callback disk-io-concurrency-changed(bool, int);
     callback glyph-fitting-changed(int);
     callback scroll-glide-changed(int);
+    callback wheel-speed-changed(int);
     callback command-history-clear();
     callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
@@ -573,10 +577,21 @@ export component OptionsBody inherits Rectangle {
                     hint: "How glyphs meet the pixel grid. Sharp puts stems on whole pixel columns; Smooth keeps fractional positions with more anti-aliasing. Takes effect after restarting Midnight Explorer. OK saves; Cancel discards changes.";
                     selected(index) => { root.glyph-fitting-changed(index); }
                 }
-                GlidePicker {
+                StopPicker {
                     narrow: root.narrow;
+                    label: "Scrolling glide";
+                    names: ["Off", "Very short", "Short", "Default", "Long", "Very long"];
+                    hint: "How long scrolling glides to its target, and how long a touchpad flick keeps moving: in the panels, lists and every viewer. Off moves every scroll at once. The system's request for less motion (Windows: Animation effects off) also turns it off. Applies at once; OK saves, Cancel restores the previous glide.";
                     current-index: root.scroll-glide-index;
                     selected(index) => { root.scroll-glide-changed(index); }
+                }
+                StopPicker {
+                    narrow: root.narrow;
+                    label: "Scrolling speed";
+                    names: ["Very slow", "Slow", "Medium", "Fast", "Very fast"];
+                    hint: "How far one mouse-wheel notch scrolls, in the panels, lists and every viewer: half, three quarters, the system's distance (Medium), one and a half or twice it. Touchpad gestures, keyboard scrolling and one screen per notch keep their distances. Applies at once; OK saves, Cancel restores the previous speed.";
+                    current-index: root.wheel-speed-index;
+                    selected(index) => { root.wheel-speed-changed(index); }
                 }
             }
             }

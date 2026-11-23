@@ -972,3 +972,55 @@ fn scrolling_glide_slider_moves_by_keys_and_names_its_stop() {
         "Short"
     );
 }
+
+/// Appearance › Scrolling speed: the same named-stop slider with five stops, Medium (the
+/// system's notch) by default.
+#[test]
+fn scrolling_speed_slider_moves_by_keys_and_names_its_stop() {
+    let mut ui = TestUi::new();
+    ui.window.set_preferences_ready(true);
+    let chosen = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = chosen.clone();
+    let weak = ui.window.as_weak();
+    ui.window.on_wheel_speed_changed(move |index| {
+        captured.borrow_mut().push(index);
+        weak.upgrade().unwrap().set_wheel_speed_index(index);
+    });
+    ui.window.invoke_show_options();
+    ui.draw();
+    ui.options_topic(1);
+    assert_eq!(ui.window.get_wheel_speed_index(), 2);
+    let named = |ui: &TestUi| {
+        ui::popup_item(&ui.window, "Scrolling speed", AccessibleRole::Slider)
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert_eq!(named(&ui), "Medium");
+    click_popup(&ui.window, "Scrolling speed", AccessibleRole::Slider);
+    chosen.borrow_mut().clear();
+    ui.window.set_wheel_speed_index(2);
+    ui.draw();
+    for (step, (pressed, expected)) in [
+        (Key::End, 4),
+        (Key::Home, 0),
+        (Key::PageUp, 2),
+        (Key::PageUp, 4),
+        (Key::RightArrow, 4),
+        (Key::PageDown, 2),
+        (Key::LeftArrow, 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        key(&ui.window, pressed);
+        ui.draw();
+        assert_eq!(
+            ui.window.get_wheel_speed_index(),
+            expected,
+            "after key {step}"
+        );
+    }
+    assert_eq!(*chosen.borrow(), [4, 0, 2, 4, 2, 1]);
+    assert_eq!(named(&ui), "Slow");
+}

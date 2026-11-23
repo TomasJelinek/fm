@@ -619,3 +619,58 @@ fn touchpad_flick_has_no_momentum(fixture: &mut Fixture) {
         "momentum after the finger lifted: {sent:?}"
     );
 }
+
+/// Everything one input sends the text viewer or the page: its own and later frames.
+fn input_travel(fixture: &mut Fixture, input: WindowEvent) -> f64 {
+    let web = fixture.open.window.get_web_mode();
+    fixture.native(input);
+    let mut total = sum(&fixture.take());
+    for _ in 0..60 {
+        total = sum(&[total, sum(&fixture.frame(web))]);
+    }
+    total[1]
+}
+
+/// Options › Appearance › Scrolling speed (`midnight_ui_input::wheel_speed_scale`): a
+/// notch in the text viewer and over a page travels that share of the system's notch at
+/// each stop, applied at once in the open window; touchpad pixels travel as before.
+#[test]
+fn the_wheel_speed_scales_a_notch_but_not_touchpad_pixels() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    for web in [false, true] {
+        if web {
+            fixture.web();
+        } else {
+            fixture.text();
+        }
+        let system = notch_distance(&fixture.open)[1] * fixture.scale();
+        let finger = input_travel(
+            &mut fixture,
+            wheel(
+                MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -20.0)),
+                TouchPhase::Moved,
+            ),
+        );
+        for scale in [0.5, 0.75, 1.0, 1.5, 2.0] {
+            midnight_ui_input::set_wheel_speed_scale(scale);
+            let moved = input_travel(&mut fixture, notch(-1.0));
+            assert!(
+                (moved - system * f64::from(scale)).abs() < 0.5,
+                "web {web}, speed {scale}: {moved} of {system}"
+            );
+            let pixels = input_travel(
+                &mut fixture,
+                wheel(
+                    MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -20.0)),
+                    TouchPhase::Moved,
+                ),
+            );
+            assert!(
+                (pixels - finger).abs() < 0.01,
+                "web {web}, speed {scale}: touchpad {pixels}, not {finger}"
+            );
+        }
+        midnight_ui_input::set_wheel_speed_scale(1.0);
+    }
+    manager.close_all();
+}
