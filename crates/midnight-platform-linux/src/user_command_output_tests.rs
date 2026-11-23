@@ -1,9 +1,10 @@
 //! Run directly with output: a rerun of this test binary is the program, reading its
-//! own arguments after the first `--`.
+//! own arguments after the first `--`; the literal argv, which holds bytes that are not
+//! UTF-8, goes to [`echo_program`] instead.
 use super::*;
 use std::{
     fs,
-    os::unix::ffi::OsStringExt,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -58,10 +59,29 @@ fn literal_arguments() -> Vec<OsString> {
     arguments
 }
 
-fn listed(arguments: &[OsString]) -> String {
+/// The program that echoes its literal argv: `/bin/sh` writing each argument and a line
+/// break to `argv.txt` and to standard output. Not a rerun of this test binary: libtest
+/// reads its own command line with `std::env::args` and panics on an argument that is not
+/// UTF-8 before any test runs.
+fn echo_program(arguments: &[OsString]) -> Vec<OsString> {
+    [
+        "/bin/sh",
+        "-c",
+        r#"printf '%s\n' "$@" > argv.txt && cat argv.txt"#,
+        "sh",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .chain(arguments.iter().cloned())
+    .collect()
+}
+
+/// What [`echo_program`] writes for `arguments` (none holds a line break).
+fn listed(arguments: &[OsString]) -> Vec<u8> {
     arguments
         .iter()
-        .map(|argument| format!("{argument:?}\n"))
+        .flat_map(|argument| argument.as_bytes().iter().chain(b"\n"))
+        .copied()
         .collect()
 }
 
@@ -82,10 +102,6 @@ fn program_fixture() {
     writeln!(out, "{MARKER}").unwrap();
     let mut code = 0;
     match mode.as_str() {
-        "echo" => {
-            fs::write("argv.txt", listed(rest)).unwrap();
-            out.write_all(listed(rest).as_bytes()).unwrap();
-        }
         "interleave" => {
             for index in 0..200 {
                 writeln!(out, "out {index}").unwrap();
@@ -180,17 +196,16 @@ fn after_marker(bytes: &[u8]) -> Vec<u8> {
 fn captured_programs_receive_the_literal_argv_and_an_empty_closed_stdin() {
     let directory = tempfile::tempdir().unwrap();
     let arguments = literal_arguments();
-    let collected =
-        collect(spawn_captured(command(&["echo"], &arguments, directory.path())).unwrap());
+    let program = echo_program(&arguments);
+    let mut echo = Command::new(&program[0]);
+    echo.args(&program[1..]).current_dir(directory.path());
+    let collected = collect(spawn_captured(echo).unwrap());
     assert_eq!(collected.exit, ProgramExit::Code(0));
     assert_eq!(
-        fs::read_to_string(directory.path().join("argv.txt")).unwrap(),
+        fs::read(directory.path().join("argv.txt")).unwrap(),
         listed(&arguments)
     );
-    assert_eq!(
-        after_marker(&collected.stdout),
-        listed(&arguments).as_bytes()
-    );
+    assert_eq!(collected.stdout, listed(&arguments));
     let collected = collect(spawn_captured(command(&["stdin"], &[], directory.path())).unwrap());
     assert_eq!(after_marker(&collected.stdout), b"stdin true 0\n");
 }
@@ -322,21 +337,19 @@ fn console_window_runs_the_launcher_with_the_literal_argv_in_the_terminal() {
 fn the_launcher_runs_the_literal_argv_and_reports_how_it_ended() {
     let directory = tempfile::tempdir().unwrap();
     let arguments = literal_arguments();
-    let executable = std::env::current_exe().unwrap();
-    let mut program = vec![executable.clone().into_os_string()];
-    program.extend(rerun(&["echo"], &arguments));
+    let program = echo_program(&arguments);
     let mut report = Vec::new();
     let code = run_program(program.clone(), Some(directory.path()), &mut report, false);
     assert_eq!(code, 0);
     assert_eq!(
-        fs::read_to_string(directory.path().join("argv.txt")).unwrap(),
+        fs::read(directory.path().join("argv.txt")).unwrap(),
         listed(&arguments)
     );
     let report = String::from_utf8(report).unwrap();
     assert!(
         report.starts_with(&format!(
             "> {}\n",
-            midnight_core::display_command_line(&executable, &program[1..])
+            midnight_core::display_command_line(Path::new(&program[0]), &program[1..])
         )),
         "{report}"
     );
