@@ -36,6 +36,7 @@ use windows_sys::Win32::{
 
 #[path = "shell_menu_host.rs"]
 mod host;
+pub(crate) use host::run_task;
 #[cfg(test)]
 #[path = "shell_menu_tests.rs"]
 mod tests;

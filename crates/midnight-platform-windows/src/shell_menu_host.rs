@@ -1,4 +1,8 @@
 //! A bounded process-lifetime STA keeps Shell windows and COM callbacks alive.
+//!
+//! The Shell shows a menu's dialogs, such as a property sheet, on threads of its own
+//! that keep calling back into the objects created here after the request returns,
+//! so those objects live in this apartment, which never ends and keeps dispatching.
 
 use super::*;
 use std::{
@@ -39,9 +43,14 @@ use windows_sys::Win32::{
 const SHOW_MENU: u32 = WM_APP + 17;
 static WORKER: OnceLock<Result<Worker, String>> = OnceLock::new();
 
-struct Job {
-    request: ShellMenuRequest,
-    reply: SyncSender<Result<ShellMenuOutcome, FsError>>,
+enum Job {
+    Menu {
+        request: ShellMenuRequest,
+        reply: SyncSender<Result<ShellMenuOutcome, FsError>>,
+    },
+    /// Other Shell work given this apartment and its hidden owner window
+    /// ([`run_task`]); the closure sends its own reply.
+    Task(Box<dyn FnOnce(RawWindow) + Send>),
 }
 
 struct Worker {
@@ -50,39 +59,69 @@ struct Worker {
     busy: AtomicBool,
 }
 
-struct BusyGuard<'a>(&'a AtomicBool);
-impl Drop for BusyGuard<'_> {
+struct BusyGuard(&'static AtomicBool);
+impl Drop for BusyGuard {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
 }
 
 pub(super) fn show(request: &ShellMenuRequest) -> Result<ShellMenuOutcome, FsError> {
+    let path = &request.paths[0];
+    let (reply, receiver) = mpsc::sync_channel(1);
+    let job = Job::Menu {
+        request: request.clone(),
+        reply,
+    };
+    let _busy = submit(job, &|message| failure(path, message))?;
+    receiver
+        .recv()
+        .map_err(|_| failure(path, "The native menu worker stopped."))?
+}
+
+/// Runs `task` in the Shell apartment with its hidden owner window and returns its
+/// result. One request at a time shares the apartment with the system menu: a busy
+/// apartment refuses it. `operation` and `path` name a refusal.
+pub(crate) fn run_task<R: Send + 'static>(
+    operation: &'static str,
+    path: &Path,
+    task: impl FnOnce(RawWindow) -> R + Send + 'static,
+) -> Result<R, FsError> {
+    let refused =
+        |message: &str| FsError::from_io(operation, path, io::Error::other(message.to_owned()));
+    let (reply, receiver) = mpsc::sync_channel(1);
+    let job = Job::Task(Box::new(move |window| {
+        let _ = reply.send(task(window));
+    }));
+    let _busy = submit(job, &refused)?;
+    // A panicking task drops its reply sender without sending.
+    receiver
+        .recv()
+        .map_err(|_| refused("The native Shell worker failed."))
+}
+
+/// Hands `job` to the apartment; the returned guard admits the next job once dropped,
+/// after the caller has its reply.
+fn submit(job: Job, refused: &dyn Fn(&str) -> FsError) -> Result<BusyGuard, FsError> {
     let worker = WORKER
         .get_or_init(Worker::start)
         .as_ref()
-        .map_err(|error| failure(&request.paths[0], error.clone()))?;
+        .map_err(|error| refused(error))?;
     worker
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .map_err(|_| failure(&request.paths[0], "A system menu is already open."))?;
-    let _busy = BusyGuard(&worker.busy);
-    let (reply, receiver) = mpsc::sync_channel(1);
-    *worker.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Job {
-        request: request.clone(),
-        reply,
-    });
+        .map_err(|_| refused("A system menu or Properties request is already open."))?;
+    let busy = BusyGuard(&worker.busy);
+    *worker.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(job);
     // SAFETY: the native worker owns this permanent HWND. Only scalar wake messages cross threads.
     if unsafe { PostMessageW(worker.window as RawWindow, SHOW_MENU, 0, 0) } == 0 {
         let error = io::Error::last_os_error();
         // No wake message will consume this job: withdraw it so the next request can
         // still use the process-lifetime worker.
         worker.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-        return Err(failure(&request.paths[0], error));
+        return Err(refused(&error.to_string()));
     }
-    receiver
-        .recv()
-        .map_err(|_| failure(&request.paths[0], "The native menu worker stopped."))?
+    Ok(busy)
 }
 
 impl Worker {
@@ -298,16 +337,22 @@ unsafe extern "system" fn window_proc(
         let host = unsafe { &*state };
         if message == SHOW_MENU {
             let job = host.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(job) = job {
-                // Rust panics must not unwind through the native window procedure.
-                let result = catch_unwind(AssertUnwindSafe(|| host.display(&job.request)))
-                    .unwrap_or_else(|_| {
-                        Err(failure(
-                            &job.request.paths[0],
-                            "The native menu handler failed.",
-                        ))
-                    });
-                let _ = job.reply.send(result);
+            // Rust panics must not unwind through the native window procedure.
+            match job {
+                Some(Job::Menu { request, reply }) => {
+                    let result = catch_unwind(AssertUnwindSafe(|| host.display(&request)))
+                        .unwrap_or_else(|_| {
+                            Err(failure(
+                                &request.paths[0],
+                                "The native menu handler failed.",
+                            ))
+                        });
+                    let _ = reply.send(result);
+                }
+                Some(Job::Task(task)) => {
+                    let _ = catch_unwind(AssertUnwindSafe(|| task(window)));
+                }
+                None => {}
             }
             return 0;
         }

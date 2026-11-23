@@ -146,7 +146,7 @@ How to read it:
   missing parent folders; Shift+F4 creates an empty file and asks before it replaces
   one. F2 renames, with the shared overwrite flow. Attributes, Times and Case edit the
   selected entries, also recursively, after a review step. Alt+Enter opens Properties
-  (the Shell dialog on Windows, a summary on Linux).
+  (the Shell dialog on Windows, one for all selected items; a summary on Linux).
 - **Open:** on Windows, Trash or Rename of a folder that this application itself holds
   open is refused (TRASH-01); a Linux Properties rename that leaves its staging folder
   counts the item as failed (META-04); Linux Rename and permanent Delete on live vfat,

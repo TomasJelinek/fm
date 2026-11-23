@@ -25,6 +25,9 @@ mod input;
 mod inspect;
 #[path = "acceptance/launches.rs"]
 mod launches;
+#[cfg(windows)]
+#[path = "acceptance/native_windows.rs"]
+mod native_windows;
 #[path = "acceptance/options_support.rs"]
 mod options_support;
 #[path = "acceptance/panel.rs"]

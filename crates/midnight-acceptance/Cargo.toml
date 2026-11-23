@@ -62,14 +62,19 @@ i-slint-core = { version = "=1.18.1", default-features = false, features = ["std
 tokio = { workspace = true, optional = true }
 
 # The video scenario's H.264 + AAC movie, written by Windows' own encoders (Media
-# Foundation's Sink Writer) at test time, and the file identities the transfer scenarios
-# read (`GetFileInformationByHandle`, `Win32_Storage_FileSystem`).
+# Foundation's Sink Writer) at test time, the file identities the transfer scenarios
+# read (`GetFileInformationByHandle`, `Win32_Storage_FileSystem`), and the native
+# property sheet the Properties scenario finds, reads and pictures
+# (`Win32_UI_WindowsAndMessaging`, `Win32_Graphics_Gdi`; midnight-platform-windows
+# already enables both, so the resolved feature set does not change).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", optional = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Media_MediaFoundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # `harness = false`: tests/acceptance.rs has its own main that runs the scenarios one

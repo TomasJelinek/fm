@@ -395,9 +395,13 @@ pub struct Config {
     /// locations, icons, property details and link targets; the command line's and the
     /// terminal button's terminals, files opened with their association and system
     /// locations recorded in [`App::launches`] and never started; Properties shows the
-    /// application's own summary. Without it the command line reports "Terminal
+    /// application's own summary unless `native_properties`. Without it the command line reports "Terminal
     /// unavailable" and opening a file is unavailable.
     pub desktop: bool,
+    /// Opt-in, with `desktop`: Properties opens the platform's own dialog, as the
+    /// application does: Windows' property sheet, which the scenario reads and closes
+    /// (`native_windows.rs`). Linux has none and shows the application's summary.
+    pub native_properties: bool,
     /// Opt-in: install the native external editor launcher (F4), as the application does.
     pub editor: bool,
     /// Opt-in: an in-process clipboard (`MemoryClipboard`) for Ctrl+C, Ctrl+X and Ctrl+V.
@@ -434,6 +438,7 @@ impl Config {
             settings: None,
             user_commands: false,
             desktop: false,
+            native_properties: false,
             editor: false,
             clipboard: false,
             restore_tabs: false,
@@ -1536,13 +1541,10 @@ fn install_opt_in_services(
         ));
     }
     if config.desktop {
-        engine
-            .configure_desktop()
-            .unwrap()
-            .install(Arc::new(super::launches::Desktop::new(
-                local.clone(),
-                launches.clone(),
-            )));
+        engine.configure_desktop().unwrap().install(Arc::new(
+            super::launches::Desktop::new(local.clone(), launches.clone())
+                .with_native_properties(config.native_properties),
+        ));
     }
     if config.editor {
         engine.configure_editor().unwrap().install(local.clone());

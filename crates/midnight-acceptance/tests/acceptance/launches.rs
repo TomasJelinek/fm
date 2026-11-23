@@ -168,11 +168,22 @@ impl UserCommandService for UserCommands {
 pub struct Desktop {
     native: Arc<LocalFileSystem>,
     launches: Arc<Launches>,
+    native_properties: bool,
 }
 
 impl Desktop {
     pub fn new(native: Arc<LocalFileSystem>, launches: Arc<Launches>) -> Self {
-        Self { native, launches }
+        Self {
+            native,
+            launches,
+            native_properties: false,
+        }
+    }
+
+    /// Properties opens the platform's own dialog (`Config::native_properties`).
+    pub fn with_native_properties(mut self, native_properties: bool) -> Self {
+        self.native_properties = native_properties;
+        self
     }
 }
 
@@ -273,7 +284,10 @@ impl IconService for Desktop {
 }
 
 impl PropertyService for Desktop {
-    fn show_properties(&self, _paths: &[PathBuf]) -> Result<bool, FsError> {
+    fn show_properties(&self, paths: &[PathBuf]) -> Result<bool, FsError> {
+        if self.native_properties {
+            return self.native.show_properties(paths);
+        }
         Ok(false)
     }
 

@@ -1064,7 +1064,10 @@ current keys.
 
 - Alt+Enter or Ctrl+Alt+Enter: properties of selected items or the focused
   file/folder. Windows
-  opens its Properties dialog. Linux shows a read-only summary. For one item: its
+  opens its Properties dialog; for several items, one dialog for all of them with
+  their combined count, size and attributes, as in Explorer (items from different
+  folders, such as search results, show "Various Folders"). Linux shows a read-only
+  summary. For one item: its
   type, size, owner and group (names, or numeric ids for accounts that
   `/etc/passwd` and `/etc/group` do not list), permissions, created time (when the
   filesystem records it, otherwise "not available"), modified and accessed times; a
