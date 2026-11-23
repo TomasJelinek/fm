@@ -2,8 +2,8 @@
 //! lists the third-party libraries; a library's notices come from the backend. Its
 //! night sky loops every 72 s and holds still while the system asks for less motion,
 //! Saturn and the other scenes keep clear of the title and of each other at every
-//! size, the version pill holds its text at every font size and Slint's badge sits under
-//! the sky or, in a small dialog, at the top right of the About tab.
+//! size, the version pill holds its text at every font size and Slint's pill sits under
+//! the sky beside the tabs or, in a narrow dialog, at the top right of the About tab.
 #[path = "support/owned_commands.rs"]
 mod owned_commands;
 #[path = "support/render.rs"]
@@ -14,8 +14,8 @@ use i_slint_core::{
     cursor::MouseCursorInner,
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{
-        AccessibleRole, BuiltInMouseCursor, ClippedImage, ComplexText, Flickable, ImageItem, Item,
-        Opacity, Path, SimpleText, TouchArea,
+        AccessibleRole, BuiltInMouseCursor, Clip, ClippedImage, ComplexText, Flickable, ImageItem,
+        Item, Opacity, Path, SimpleText, TouchArea,
     },
     layout::Orientation,
     lengths::{LogicalRect, LogicalSize},
@@ -1512,12 +1512,17 @@ fn the_version_pill_holds_its_text_at_every_font_size() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
-/// The part of an item's window bounds that the scroll views around it show, if any.
+/// The part of an item's window bounds that the clipping items and scroll views around
+/// it show, if any.
 fn in_view(item: &ItemRc) -> Option<LogicalRect> {
     let mut shown = bounds(item);
     let mut current = item.parent_item(ParentItemTraversalMode::StopAtPopups);
     while let Some(node) = current {
-        if node.downcast::<Flickable>().is_some() {
+        let clips = node.downcast::<Flickable>().is_some()
+            || node
+                .downcast::<Clip>()
+                .is_some_and(|clip| clip.as_pin_ref().clip());
+        if clips {
             shown = shown.intersection(&bounds(&node))?;
         }
         current = node.parent_item(ParentItemTraversalMode::StopAtPopups);
@@ -1552,21 +1557,29 @@ fn labelled(window: &MainWindow, label: &str) -> Option<LogicalRect> {
 const LIBRARIES: &str = "Every open-source library and bundled component this package ships is listed with its license on the Licenses tab.";
 
 #[test]
-fn slints_badge_sits_under_the_sky_or_at_the_top_right_of_the_about_tab() {
+fn slints_pill_sits_under_the_sky_beside_the_tabs_or_at_the_top_right_of_the_about_tab() {
     let mut about = About::open(1000, 800);
     let mut problems = Vec::new();
-    // The window, how far the dialog's corner is dragged, the dialog that gives and
-    // whether the badge sits under the sky: the default size, a wide dialog, the
-    // narrowest one with room beside the tabs, a narrower and the narrowest dialog with
-    // the whole sky, the smallest window and the smallest dialog.
-    for (width, height, corner, (dialog_width, dialog_height), under_sky) in [
-        (1000, 800, None, (560.0, 660.0), true),
-        (2000, 900, Some((700.0, 0.0)), (1260.0, 660.0), true),
-        (1000, 800, Some((-110.0, 0.0)), (450.0, 660.0), true),
-        (1000, 800, Some((-160.0, 0.0)), (400.0, 660.0), false),
-        (1000, 800, Some((-280.0, 0.0)), (280.0, 660.0), false),
-        (320, 200, None, (312.0, 192.0), false),
-        (1000, 800, Some((-280.0, -480.0)), (280.0, 180.0), false),
+    // The window, how far the dialog's corner is dragged, the dialog that gives, whether
+    // the pill sits under the sky and whether the tabs then stay in the middle: the
+    // default size, a wide dialog, a narrower one, the narrowest with the pill beside the
+    // tabs, the smallest window, and the narrowest dialog with the whole sky and at its
+    // smallest.
+    for (width, height, corner, (dialog_width, dialog_height), under_sky, centred) in [
+        (1000, 800, None, (560.0, 660.0), true, true),
+        (2000, 900, Some((700.0, 0.0)), (1260.0, 660.0), true, true),
+        (1000, 800, Some((-160.0, 0.0)), (400.0, 660.0), true, true),
+        (1000, 800, Some((-260.0, 0.0)), (300.0, 660.0), true, false),
+        (320, 200, None, (312.0, 192.0), true, false),
+        (1000, 800, Some((-280.0, 0.0)), (280.0, 660.0), false, false),
+        (
+            1000,
+            800,
+            Some((-280.0, -480.0)),
+            (280.0, 180.0),
+            false,
+            false,
+        ),
     ] {
         about.window().set_about_open(false);
         about.ui.resize(width, height);
@@ -1586,60 +1599,67 @@ fn slints_badge_sits_under_the_sky_or_at_the_top_right_of_the_about_tab() {
             continue;
         }
         let window = about.window();
-        // A short dialog's About tab may show only the top of the badge until it scrolls.
-        let note = labelled(window, "Version 1.18.1\nhttps://slint.dev/");
-        let Some(logo) =
-            labelled(window, "#MadeWithSlint").filter(|_| note.is_some() || dialog_height < 300.0)
-        else {
-            problems.push(format!("{case}: no Slint badge"));
+        // Only the pill shows: the widget's version and address are cropped.
+        if let Some(note) = labelled(window, "Version 1.18.1\nhttps://slint.dev/") {
+            problems.push(format!(
+                "{case}: Slint's version and address show at {note:?}"
+            ));
+        }
+        let Some(pill) = labelled(window, "#MadeWithSlint") else {
+            problems.push(format!("{case}: no Slint pill"));
             continue;
         };
-        let badge = note.map_or(logo, |note| logo.union(&note));
         let tabs = bounds(&ui::popup_item(window, "About", AccessibleRole::Tab)).union(&bounds(
             &ui::popup_item(window, "Licenses", AccessibleRole::Tab),
         ));
         let close = bounds(&ui::popup_item(window, "Close", AccessibleRole::Button));
-        // The logo keeps its proportions and Slint's minimum height (a short dialog's
-        // scroll view may cut it).
-        if dialog_height >= 300.0
-            && (logo.height() < 47.5 || (logo.width() * 97.0 / 212.0 - logo.height()).abs() > 1.5)
+        // The default font's pill: 32 px high at the logo's 212 × 97 proportions (a short
+        // dialog's scroll view may cut it on the About tab).
+        if (under_sky || dialog_height >= 300.0)
+            && ((pill.height() - 32.0).abs() > 0.5
+                || (pill.width() - 32.0 * 212.0 / 97.0).abs() > 0.5)
         {
-            problems.push(format!("{case}: the logo is {logo:?}"));
+            problems.push(format!("{case}: the pill is {pill:?}"));
         }
-        // Right-aligned with the content: under the sky 12 px in from the dialog's edge,
-        // like Close; on the About tab with its rows.
-        let inset = sky.max_x() - badge.max_x();
         for (name, rect) in [("the tabs", tabs), ("Close", close)] {
-            if rect.intersects(&badge) {
-                problems.push(format!("{case}: the badge {badge:?} meets {name} {rect:?}"));
+            if rect.intersects(&pill) {
+                problems.push(format!("{case}: the pill {pill:?} meets {name} {rect:?}"));
             }
         }
         if under_sky {
-            if (inset - 12.0).abs() > 0.5 {
-                problems.push(format!("{case}: the badge ends {inset} px from the edge"));
+            // Right-aligned with the content, like Close, in the tab row right under the
+            // sky, which it makes no more than 4 px taller; the tabs stand on its line.
+            let inset = sky.max_x() - pill.max_x();
+            let padding = if dialog_height < 300.0 { 8.0 } else { 12.0 };
+            if (inset - padding).abs() > 0.5 {
+                problems.push(format!("{case}: the pill ends {inset} px from the edge"));
             }
-            if badge.min_y() < sky.max_y() || badge.min_y() > sky.max_y() + 8.0 {
+            if pill.min_y() < sky.max_y() || pill.min_y() > sky.max_y() + 4.5 {
                 problems.push(format!(
-                    "{case}: the badge {badge:?} is not under the sky {sky:?}"
+                    "{case}: the pill {pill:?} is not right under the sky {sky:?}"
                 ));
             }
-            // The tabs stay in the middle and stand on the line below the badge.
-            if (tabs.center().x - sky.center().x).abs() > 1.0 || tabs.max_y() + 0.5 < badge.max_y()
-            {
+            if (tabs.max_y() - pill.max_y()).abs() > 0.5 || pill.height() > tabs.height() + 4.5 {
                 problems.push(format!(
-                    "{case}: the tabs {tabs:?} beside the badge {badge:?}"
+                    "{case}: the tabs {tabs:?} beside the pill {pill:?}"
+                ));
+            }
+            let middle = (tabs.center().x - sky.center().x).abs() <= 1.0;
+            if middle != centred || tabs.max_x() + 8.0 > pill.min_x() + 0.5 {
+                problems.push(format!(
+                    "{case}: the tabs {tabs:?} (in the middle: {middle}) beside the pill {pill:?}"
                 ));
             }
         } else {
             let rows = bounds(&ui::popup_item(window, LIBRARIES, AccessibleRole::Text));
-            if (rows.max_x() - badge.max_x()).abs() > 0.5 {
+            if (rows.max_x() - pill.max_x()).abs() > 0.5 {
                 problems.push(format!(
-                    "{case}: the badge {badge:?} and the rows {rows:?} end apart"
+                    "{case}: the pill {pill:?} and the rows {rows:?} end apart"
                 ));
             }
-            if badge.min_y() < tabs.max_y() {
+            if pill.min_y() < tabs.max_y() {
                 problems.push(format!(
-                    "{case}: the badge {badge:?} is not below the tabs {tabs:?}"
+                    "{case}: the pill {pill:?} is not below the tabs {tabs:?}"
                 ));
             }
             for text in [
@@ -1647,14 +1667,12 @@ fn slints_badge_sits_under_the_sky_or_at_the_top_right_of_the_about_tab() {
                 "Built for keyboard and mouse alike: fast panels, tabs, previews, archives as folders and a command line within reach.",
             ] {
                 let rect = bounds(&ui::popup_item(window, text, AccessibleRole::Text));
-                if rect.intersects(&badge) {
-                    problems.push(format!(
-                        "{case}: the badge {badge:?} meets {text:?} {rect:?}"
-                    ));
+                if rect.intersects(&pill) {
+                    problems.push(format!("{case}: the pill {pill:?} meets {text:?} {rect:?}"));
                 }
             }
         }
-        // The Licenses tab keeps the badge under the sky, clear of the filter, or none.
+        // The Licenses tab keeps the pill under the sky, clear of the filter, or none.
         about.click("Licenses", AccessibleRole::Tab);
         let window = about.window();
         let shown = labelled(window, "#MadeWithSlint");
@@ -1665,14 +1683,14 @@ fn slints_badge_sits_under_the_sky_or_at_the_top_right_of_the_about_tab() {
         ));
         match shown {
             Some(rect) if under_sky => {
-                if rect != logo || rect.intersects(&filter) {
+                if rect != pill || rect.intersects(&filter) {
                     problems.push(format!(
-                        "{case}: on the Licenses tab the logo {rect:?} moved from {logo:?} or meets the filter {filter:?}"
+                        "{case}: on the Licenses tab the pill {rect:?} moved from {pill:?} or meets the filter {filter:?}"
                     ));
                 }
             }
             None if !under_sky => {}
-            other => problems.push(format!("{case}: the Licenses tab shows the logo {other:?}")),
+            other => problems.push(format!("{case}: the Licenses tab shows the pill {other:?}")),
         }
         render::snapshot(
             &about.ui,

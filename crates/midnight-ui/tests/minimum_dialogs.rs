@@ -133,7 +133,11 @@ fn findings(root: &ItemRc) -> Vec<String> {
         {
             found.markers.push(rect);
         }
-        let text = text_of(item).filter(|text| text.chars().any(char::is_alphanumeric));
+        // Slint's version and address under its pill in About are cropped on purpose
+        // (about-dialog.slint, `SlintBadge`), as the gate leaves them out.
+        let text = text_of(item).filter(|text| {
+            text.chars().any(char::is_alphanumeric) && !text.ends_with("\nhttps://slint.dev/")
+        });
         // A shown text of no size, where what clips it leaves room (the gate's U-K18).
         if let Some(text) = &text
             && (rect.2 <= 0.0 || rect.3 <= 0.0)

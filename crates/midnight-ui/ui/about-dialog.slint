@@ -238,19 +238,25 @@ component InfoRow inherits HorizontalLayout {
     Text { text: root.value; color: Theme.text; font-size: Theme.small-font; wrap: word-wrap; horizontal-stretch: 1; }
 }
 
-// Slint's attribution: its logo, as wide as the badge, over its version and address.
-// The widget's own 12 px padding is cropped, so the logo lines up with the dialog's
-// content edge. It stays visible whichever of Slint's licenses applies
-// (DEPENDENCY_POLICY.md). The covering TouchArea keeps a click from opening its link:
-// Slint would start the browser with std::process::Command on the UI thread, outside
-// the process-creation lock (WORKER_SDK.md).
+// Slint's attribution, cropped to its Made with Slint pill: the widget's padding and the
+// version and address under the pill are left out, so the pill fits the tab row and lines
+// up with the dialog's content edge. The attribution stays visible whichever of Slint's
+// licenses applies (DEPENDENCY_POLICY.md). The covering TouchArea keeps a click from
+// opening its link: Slint would start the browser with std::process::Command on the UI
+// thread, outside the process-creation lock (WORKER_SDK.md).
 component SlintBadge inherits Rectangle {
-    // The logo keeps its 212 × 97 proportions and Slint's 48 px minimum height; the two
-    // lines under it are what the widget needs beyond its padding, logo and spacing.
-    private property <length> logo-height: max(48px, root.width * 97 / 212);
-    height: root.logo-height + about.min-height - 72px;
+    // The pill's height, at most the 48 px box the widget gives its logo.
+    in property <length> pill-height: 32px;
+    // At its smallest height the widget's logo box is 48 px high and as wide as the
+    // widget less its padding; the logo fits that box (Slint's default for an image in a
+    // layout), so a box as wide as the pill shows the pill in its middle, at its 212 × 97
+    // proportions.
+    width: root.pill-height * 212 / 97; height: root.pill-height;
     clip: true;
-    about := AboutSlint { x: -12px; y: -12px; width: root.width + 24px; height: root.height + 24px; }
+    about := AboutSlint {
+        x: -12px; y: -12px - (48px - root.pill-height) / 2;
+        width: root.width + 24px; height: self.min-height;
+    }
     TouchArea {}
 }
 
@@ -273,7 +279,7 @@ component Sky inherits Rectangle {
     // 0..1 over the whole 72 s loop: slow drift that wraps without a jump.
     private property <float> drift: root.phase / 18.8496;
     // Too short for the icon, the title and the version pill under it: a title strip.
-    out property <bool> compact: root.height < 150px + root.pill-height;
+    private property <bool> compact: root.height < 150px + root.pill-height;
     // Wide enough for the extra scenes to keep clear of the shooting stars.
     private property <bool> roomy: !root.compact && root.width >= 464px;
     background: @linear-gradient(180deg, #050820 0%, #101645 50%, #3b2a72 100%);
@@ -554,14 +560,17 @@ export component AboutDialog inherits Rectangle {
     private property <bool> short: root.height < 300px;
     // The two tabs, side by side in the middle of their row.
     private property <length> tabs-width: 2 * 96px + 4px;
-    // Room for Slint's badge at the right end of the tab row, matched by as much space at
-    // its left end so the tabs stay in the middle.
-    private property <length> badge-room: (root.width - 24px - root.tabs-width) / 2 - 8px;
-    // The badge sits right under the sky, at the tab row's right end, while the sky shows
-    // its whole scene and the row has room for the badge at its smallest. A shorter or
-    // narrower dialog shows it at the top right of the About tab instead.
-    private property <bool> badge-under-sky: !sky.compact && root.badge-room >= 105px;
-    private property <length> badge-width: clamp(root.badge-room, 105px, 128px);
+    private property <length> content-width: root.width - 2 * (root.short ? 8px : 12px);
+    // Slint's pill: as tall as a tab, at least 32 px so its small line stays legible.
+    private property <length> pill-height: min(48px, max(32px, Theme.control-height + 4px));
+    private property <length> pill-width: root.pill-height * 212 / 97;
+    // The pill sits right under the sky at the tab row's right end while the row has
+    // room for the tabs beside it; a narrower dialog shows it at the top right of the
+    // About tab instead.
+    private property <bool> badge-under-sky: root.content-width >= root.tabs-width + 8px + root.pill-width;
+    // With room for as much space left of the tabs as the pill takes, the tabs stay in
+    // the middle; otherwise they move left of it.
+    private property <bool> tabs-centred: root.content-width >= root.tabs-width + 2 * (8px + root.pill-width);
     function select-tab(tab: int) {
         if root.tab != tab { AboutView.retire-hints(); root.tab = tab; }
     }
@@ -584,7 +593,7 @@ export component AboutDialog inherits Rectangle {
             spacing: 0px;
             // A short dialog keeps the title strip, so Close and the tab stay in view. A
             // large font's taller version pill makes the sky taller by as much.
-            sky := Sky {
+            Sky {
                 height: clamp(root.height - 250px, 40px, 176px + max(0px, self.pill-height - 20px));
                 phase: root.phase; logo: root.application-icon; version: root.application-version;
                 dragged(dx, dy) => { root.move-dialog(dx, dy); }
@@ -592,11 +601,11 @@ export component AboutDialog inherits Rectangle {
             VerticalLayout {
                 padding: root.short ? 8px : 12px; padding-top: 4px;
                 spacing: root.short ? 4px : 8px; vertical-stretch: 1;
-                // Both tabs show the badge under the sky, so the tabs keep their place
+                // Both tabs show the pill under the sky, so the tabs keep their place
                 // when the other one is chosen; they stand on the line below.
                 if !AboutView.detail-open : HorizontalLayout {
                     spacing: 8px;
-                    if root.badge-under-sky : Rectangle { width: root.badge-width; }
+                    if root.badge-under-sky && root.tabs-centred : Rectangle { width: root.pill-width; }
                     VerticalLayout {
                         alignment: end;
                         HorizontalLayout {
@@ -613,7 +622,7 @@ export component AboutDialog inherits Rectangle {
                             }
                         }
                     }
-                    if root.badge-under-sky : SlintBadge { width: root.badge-width; }
+                    if root.badge-under-sky : SlintBadge { pill-height: root.pill-height; }
                 }
                 Rectangle { height: 1px; background: Theme.frame; }
                 Rectangle {
@@ -627,7 +636,7 @@ export component AboutDialog inherits Rectangle {
                         width: parent.width; height: parent.height;
                         VerticalLayout {
                             spacing: 10px; alignment: start; padding-right: 6px;
-                            // A dialog without room for the badge under the sky shows it
+                            // A dialog without room for the pill under the sky shows it
                             // here, at the top right, beside the introduction.
                             HorizontalLayout {
                                 spacing: 8px;
@@ -644,7 +653,7 @@ export component AboutDialog inherits Rectangle {
                                 }
                                 if !root.badge-under-sky : VerticalLayout {
                                     alignment: start;
-                                    SlintBadge { width: 105px; }
+                                    SlintBadge { pill-height: root.pill-height; }
                                 }
                             }
                             Rectangle { height: 1px; background: Theme.frame; }

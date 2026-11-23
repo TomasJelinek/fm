@@ -1532,8 +1532,8 @@ Later accepted requirements supersede earlier designs; the
 Salamander sources supplied separately are behavioral reference only; this
 implementation does not copy its source, assets or resource strings. The About
 dialog shows the copyright line, the license and Slint attribution: the Made with
-Slint badge at the top right under its sky (in a small dialog, at the top right of
-the About tab). Midnight
+Slint pill at the right end of the tab row under its sky (in a narrow dialog, at the
+top right of the About tab). Midnight
 Explorer is licensed under the GNU General Public License, version 3 or later
 ([LICENSE](../LICENSE)), as are its plugins. A macOS port is planned
 (PLAT-01 in the [backlog](IMPLEMENTATION_BACKLOG.md)): the application has no

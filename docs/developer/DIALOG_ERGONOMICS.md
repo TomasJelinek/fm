@@ -211,18 +211,22 @@ measurement.
   `the_version_pill_holds_its_text_at_every_font_size` and
   `the_sky_holds_still_while_the_system_asks_for_less_motion` cover both with
   software windows; they do not change the Windows setting itself.
-- About's Made with Slint badge (Slint's `AboutSlint` widget, its own padding cropped)
-  sits right under the sky at the right end of the tab row, aligned with the content
-  edge, on both tabs; the tabs stay in the middle and stand on the line below it. The
-  badge is 105 to 128 px wide, as the room beside the tabs allows; its logo keeps its
-  proportions and Slint's 48 px minimum height. A dialog whose sky shows only the title
-  (shorter than about 420 px) or too narrow for the badge beside the centred tabs
-  (narrower than about 446 px) shows the badge at its smallest at the top right of the
-  About tab instead, beside the introduction, and scrolls it with the tab; the Licenses
-  tab then has none. A covering touch area keeps a click from opening Slint's link. The
-  `about_dialog` test
-  `slints_badge_sits_under_the_sky_or_at_the_top_right_of_the_about_tab` covers both
-  places from 1260 × 660 down to the smallest dialog with software windows.
+- About's Made with Slint pill (Slint's `AboutSlint` widget cropped to its logo: its
+  padding and the version and address lines are left out) sits right under the sky at
+  the right end of the tab row, aligned with the content edge like Close, on both tabs.
+  It is as tall as a tab and at least 32 px (48 px at most, the widget's logo box), at
+  the logo's proportions (70 × 32 px with the default font), so the row is at most 4 px
+  taller than the tabs, which stand on the line below. The tabs stay in the middle while
+  the row has room for as much space left of them as the pill takes (a dialog about
+  376 px wide); a narrower dialog moves them left of the pill. A dialog too narrow for
+  the tabs and the pill side by side (narrower than about 298 px) shows the pill at the
+  top right of the About tab instead, beside the introduction, and scrolls it with the
+  tab; the Licenses tab then has none. A covering touch area keeps a click from opening
+  Slint's link. The `about_dialog` test
+  `slints_pill_sits_under_the_sky_beside_the_tabs_or_at_the_top_right_of_the_about_tab`
+  covers these places from 1260 × 660 down to the smallest dialog with software windows.
+  The cut-off checks (`minimum_dialogs` and the acceptance UI gate) leave the cropped
+  version and address lines out by their text.
 - Filename colors offer a reusable visual color picker: hue, saturation/value,
   numeric RGB values, sample colors, and reset to the theme; each color's hex value
   is edited in its field on the Colors page. Existing automatic

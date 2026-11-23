@@ -660,7 +660,8 @@ frame of the same moment:
   scroll bar thumb beside it and does not scroll when the wheel turns over it (the probe
   scrolls it back before the frame is taken);
 - **content cut off without scrolling**: text or a control reaches outside a clipping
-  container that does not scroll;
+  container that does not scroll (except Slint's version and address lines, which
+  About crops from its Made with Slint pill on purpose);
 - **text clipped without ellipsis**, **wrapped text cut off**, and **elided text without
   full text** (neither its accessible label, an accessible ancestor's label or
   description, nor a tooltip holds the full text);

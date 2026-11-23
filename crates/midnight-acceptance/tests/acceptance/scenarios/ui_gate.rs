@@ -325,6 +325,13 @@ fn has_alnum(text: &str) -> bool {
     text.chars().any(char::is_alphanumeric)
 }
 
+/// Slint's version and address under its Made with Slint pill in About: the dialog
+/// crops its `AboutSlint` widget to the pill on purpose (about-dialog.slint,
+/// `SlintBadge`), so these lines are left out rather than cut off.
+fn cropped_on_purpose(text: &str) -> bool {
+    text.ends_with("\nhttps://slint.dev/")
+}
+
 fn short(text: &str) -> String {
     let flat: String = text
         .chars()
@@ -1021,6 +1028,7 @@ pub fn cut_candidates(nodes: &[Node]) -> Vec<(usize, f32, Rect, bool)> {
             continue;
         }
         let area = match &node.text {
+            Some(text) if cropped_on_purpose(&text.text) => continue,
             Some(text) if has_alnum(&text.text) && !text.input => ink(node, text),
             _ if interactive(node.role) => node.rect,
             _ => continue,
