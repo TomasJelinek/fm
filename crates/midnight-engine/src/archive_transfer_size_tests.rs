@@ -28,6 +28,7 @@ fn copied(rows: Vec<ArchiveNode>) -> Result<Vec<u64>, FsError> {
     let mut folder = Source::new(
         MountReference::new(Arc::new(mount)),
         member(2, 1, EntryKind::Directory, b"folder".to_vec()),
+        Path::new(""),
         0,
         traversal(),
     )?;

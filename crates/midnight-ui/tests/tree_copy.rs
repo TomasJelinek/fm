@@ -23,6 +23,10 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
         archive,
         Arc::new(transfer::Transfer(destination.clone())),
     );
+    // The copy reads its first member for longer than a progress heartbeat.
+    h.calls
+        .slow_read
+        .store(archive, std::sync::atomic::Ordering::SeqCst);
     h.ui.window.invoke_activate(pane.index() as i32);
     for name in ["large", "small"] {
         let row = h.rows().iter().position(|row| row.name == name).unwrap();
@@ -81,6 +85,9 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
         "{progress:?}"
     );
     assert_eq!(progress.files_completed, 2);
+    if archive {
+        archive_progress(&h);
+    }
     let observed = destination.link_policies.lock().unwrap();
     if archive {
         assert!(
@@ -117,6 +124,48 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
         "Every saved byte must be read back for verification"
     );
     assert!(!h.rows().iter().any(|row| row.selected));
+}
+
+/// A copy out of an archive counts its members before it writes the first one and
+/// shows the member it copies by its path inside the archive file, as Copy does for
+/// files on disk.
+fn archive_progress(h: &Harness) {
+    let progress = h.copy_progress.last().unwrap();
+    assert_eq!(
+        progress.discovery.state,
+        DiscoveryState::Complete,
+        "{progress:?}"
+    );
+    assert_eq!(
+        (
+            progress.discovery.files,
+            progress.discovery.directories,
+            progress.discovery.bytes
+        ),
+        (2, 2, Some(1012))
+    );
+    let finished = h.copy_rows.last().unwrap();
+    // On the base the total was unknown: "Files: 2 · Bytes: …" without "of".
+    assert!(
+        finished
+            .transfer_totals
+            .starts_with("Files: 2 of 2 · Bytes: ")
+            && finished.transfer_totals.matches(" of ").count() == 2,
+        "{finished:?}"
+    );
+    let reading = h
+        .copy_rows
+        .iter()
+        .find(|row| row.active && row.transfer_name == "payload.bin")
+        .unwrap_or_else(|| panic!("no row showed the member: {:?}", h.copy_rows));
+    let folder = std::path::Path::new(reading.transfer_directory.as_str());
+    assert!(
+        folder.ends_with("fixture.zip/folder/large")
+            || folder.ends_with("fixture.zip/folder/small"),
+        "{reading:?}"
+    );
+    assert!(reading.determinate, "{reading:?}");
+    assert!(reading.transfer_totals.contains(" of 2 · "), "{reading:?}");
 }
 
 #[test]

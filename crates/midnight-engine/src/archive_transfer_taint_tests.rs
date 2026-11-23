@@ -103,7 +103,14 @@ fn source(mount: Arc<dyn ArchiveMount>, directory: bool) -> Source {
         readable: true,
         access: Default::default(),
     };
-    Source::new(MountReference::new(mount), node, 0, traversal()).unwrap()
+    Source::new(
+        MountReference::new(mount),
+        node,
+        Path::new(""),
+        0,
+        traversal(),
+    )
+    .unwrap()
 }
 
 #[test]

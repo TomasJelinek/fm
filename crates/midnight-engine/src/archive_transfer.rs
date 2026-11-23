@@ -13,6 +13,8 @@ mod names;
 
 /// Rows of a selection or listing handled between two checks of Stop and the source.
 const CHECK_STRIDE: usize = 4096;
+/// Folder levels below a copied member that Copy enters (and discovery counts).
+const MAX_DEPTH: usize = 256;
 
 /// The roots of a captured selection of any size, in the order the panel captured
 /// them. Only the selected members are kept from the folder's listing, moved rather
@@ -81,6 +83,9 @@ pub(super) fn resolve(
         }
     }
     drop(listed);
+    // Progress shows each member where it lies, as a native file shows its folder: the
+    // archive file's path, the folders inside it, then the member's own name.
+    let folder = PathBuf::from(request.location.display_text());
     let visited = Arc::new(Mutex::new(Traversal::default()));
     let mut sources = VecDeque::with_capacity(wanted.len());
     for (index, entry) in selected().enumerate() {
@@ -105,10 +110,13 @@ pub(super) fn resolve(
         {
             return Err(failure("Captured archive member identity changed."));
         }
-        sources.push_back(
-            Box::new(Source::new(mount.clone(), node, 0, visited.clone())?)
-                as Box<dyn TransferSource>,
-        );
+        sources.push_back(Box::new(Source::new(
+            mount.clone(),
+            node,
+            &folder,
+            0,
+            visited.clone(),
+        )?) as Box<dyn TransferSource>);
     }
     if sources.len() != wanted.len() {
         return Err(failure("Captured archive selection is stale."));
@@ -132,6 +140,9 @@ struct Source {
     mount: MountReference,
     member: Member,
     entry: TransferEntry,
+    /// The member's path for progress (`TransferSource::display_path`): the archive's
+    /// display path, the folders inside it and the member's name.
+    shown: PathBuf,
     offset: u64,
     children: Option<VecDeque<ArchiveNode>>,
     depth: usize,
@@ -200,6 +211,7 @@ pub(crate) fn retirement_source_for_test(mount: Arc<dyn ArchiveMount>) -> Box<dy
         Source::new(
             MountReference::new(mount),
             node,
+            Path::new(""),
             0,
             Arc::new(Mutex::new(Traversal::default())),
         )
@@ -210,10 +222,11 @@ impl Source {
     fn new(
         mount: MountReference,
         node: ArchiveNode,
+        folder: &Path,
         depth: usize,
         visited: Arc<Mutex<Traversal>>,
     ) -> Result<Self, FsError> {
-        if depth > 256 || node.id.mount != mount.id() || node.id.entry <= 1 {
+        if depth > MAX_DEPTH || node.id.mount != mount.id() || node.id.entry <= 1 {
             return Err(failure(
                 "Archive copy refuses foreign members and excessive nesting.",
             ));
@@ -252,6 +265,7 @@ impl Source {
                 ));
             }
         }
+        let shown = folder.join(&name);
         let entry = TransferEntry {
             // This is a presentation basename only. Source reads always use mount/entry IDs.
             item: MutationItem {
@@ -276,6 +290,7 @@ impl Source {
                 size: node.size,
             },
             entry,
+            shown,
             offset: 0,
             children: None,
             depth,
@@ -293,6 +308,9 @@ impl TransferSource for Source {
     fn native_identity(&self) -> Option<TransferIdentity> {
         None
     }
+    fn display_path(&self) -> Option<&Path> {
+        Some(&self.shown)
+    }
     /// The archive file is validated by each exchange with its worker (before it starts)
     /// and around each read of the file's bytes (`midnight_filesystem_host::Mount`), so a
     /// member's copy, which reads only through those exchanges, checks Stop here and
@@ -300,6 +318,61 @@ impl TransferSource for Source {
     /// opens of the archive per copied member (WIN-8). A Retry still validates it.
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         stopped(&*self.mount, cancel)
+    }
+    /// Totals for the progress bar and the estimate, from the archive's index in its
+    /// worker: every format lists its members with their lengths (ZIP and 7z from the
+    /// central directory or header, TAR and compressed TAR from the headers indexed
+    /// when the archive was opened, a compressed single file from its decoded length),
+    /// so counting never decodes a member. Each folder is listed once more, as Copy
+    /// then lists it again; only folders still to be counted are kept meanwhile.
+    fn discover(
+        &self,
+        cancel: &Cancellation,
+        visit: &mut dyn FnMut(&MutationItem),
+    ) -> Result<(), FsError> {
+        self.revalidate(cancel)?;
+        // Discovery paths are shown while it counts; each member's is its archive path.
+        visit(&MutationItem {
+            path: self.shown.clone(),
+            ..self.entry.item.clone()
+        });
+        if self.member.kind != EntryKind::Directory {
+            return Ok(());
+        }
+        let mut entered = HashSet::from([self.member.id]);
+        let mut folders = vec![(self.member.id.entry, self.shown.clone(), self.depth)];
+        while let Some((directory, path, depth)) = folders.pop() {
+            stopped(&*self.mount, cancel)?;
+            let children = self.mount.list(directory, cancel);
+            crate::copy_nested_retirement::observe_archive(&*self.mount);
+            for (index, node) in children?.into_iter().enumerate() {
+                if index.is_multiple_of(CHECK_STRIDE) {
+                    stopped(&*self.mount, cancel)?;
+                }
+                if node.parent != directory || node.id.mount != self.mount.id() {
+                    return Err(failure("Archive child belongs to a different directory."));
+                }
+                // A name Copy cannot use fails when Copy reaches it; it still counts.
+                let name = names::native_name(&node.raw_name)
+                    .unwrap_or_else(|_| node.display_name.clone().into());
+                let item = MutationItem {
+                    path: path.join(name),
+                    kind: node.kind,
+                    metadata: EntryMetadata {
+                        size: node.size,
+                        ..EntryMetadata::default()
+                    },
+                };
+                visit(&item);
+                if node.kind == EntryKind::Directory {
+                    if depth >= MAX_DEPTH || !entered.insert(node.id) {
+                        return Err(failure("Archive traversal is cyclic or too deep to count."));
+                    }
+                    folders.push((node.id.entry, item.path, depth + 1));
+                }
+            }
+        }
+        Ok(())
     }
     fn read_chunk(&mut self, buffer: &mut [u8], cancel: &Cancellation) -> Result<usize, FsError> {
         self.revalidate(cancel)?;
@@ -375,6 +448,7 @@ impl TransferSource for Source {
         Source::new(
             self.mount.clone(),
             node,
+            &self.shown,
             self.depth + 1,
             self.visited.clone(),
         )
@@ -449,7 +523,12 @@ pub(crate) fn captured_root(
     {
         return Err(failure("Captured archive member changed."));
     }
-    Ok(Box::new(Source::new(mount, node, 0, traversal)?))
+    // A tree row's location may be the member's own folder rather than its parent's.
+    let mut folder = PathBuf::from(target.location.display_text());
+    if target.location.directory == node.id.entry {
+        folder.pop();
+    }
+    Ok(Box::new(Source::new(mount, node, &folder, 0, traversal)?))
 }
 
 #[cfg(test)]

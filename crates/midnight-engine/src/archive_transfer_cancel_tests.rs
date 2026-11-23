@@ -45,6 +45,7 @@ fn cancelled_member_read_is_discarded_without_terminating_the_shared_mount() {
     let mut source = Source::new(
         MountReference::new(mount.clone()),
         member(3, 2, EntryKind::File, Some(7)),
+        Path::new(""),
         0,
         traversal(),
     )
@@ -73,6 +74,7 @@ fn cancelled_directory_listing_is_discarded_and_the_source_lists_again() {
     let mut source = Source::new(
         MountReference::new(mount.clone()),
         member(2, 1, EntryKind::Directory, None),
+        Path::new(""),
         0,
         traversal(),
     )

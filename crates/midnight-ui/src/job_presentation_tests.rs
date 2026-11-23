@@ -1554,3 +1554,57 @@ fn resolve_brings_up_the_chosen_jobs_question_while_others_wait() {
     assert_eq!(p.active_copy_decision(), None);
     assert_eq!(p.active_rename_decision(), Some((OperationId(2), 1)));
 }
+
+/// A copy out of an archive, as the engine reports it while it extracts a member: the
+/// progress window splits the member's path inside the archive file into its folder and
+/// name, the counted totals make the bar determinate, and the estimate is shown.
+#[test]
+fn archive_extraction_shows_the_member_path_a_determinate_bar_and_an_estimate() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(41);
+    value.phase = CopyOperationPhase::Copying;
+    let folder = PathBuf::from("data").join("backup.zip").join("docs");
+    value.current_path = Some(folder.join("readme.txt"));
+    value.current_destination = Some(PathBuf::from("target").join("docs").join("readme.txt"));
+    value.discovery = OperationDiscovery {
+        state: DiscoveryState::Complete,
+        scope: DiscoveryScope::Recursive,
+        files: 4,
+        directories: 1,
+        bytes: Some(4000),
+        ..Default::default()
+    };
+    value.files_completed = 2;
+    value.completed_directories = 0;
+    value.completed_bytes = 2000;
+    value.copied_bytes = 2000;
+    value.current_file_size = Some(1000);
+    value.current_file_copied = 0;
+    value.remaining_work = Some(TransferRemainingWork {
+        write_bytes: 2000,
+        verification_bytes: 2000,
+    });
+    value.throughput = Arc::new(OperationThroughput {
+        smoothed_transfer_per_second: 100.0,
+        smoothed_verification_per_second: 100.0,
+        ..Default::default()
+    });
+    let row = copy(&p, &value);
+    assert_eq!(row.transfer_directory, folder.to_string_lossy().as_ref());
+    assert_eq!(row.transfer_name, "readme.txt");
+    assert!(row.determinate, "{row:?}");
+    assert_eq!(row.progress, 0.5);
+    assert_eq!(
+        row.transfer_totals,
+        "Files: 2 of 4 · Bytes: 2.0 KiB of 3.9 KiB"
+    );
+    assert!(!row.eta.is_empty(), "{row:?}");
+    assert!(
+        row.detail.contains(&format!(
+            "Current source\n{}",
+            folder.join("readme.txt").display()
+        )),
+        "{}",
+        row.detail
+    );
+}

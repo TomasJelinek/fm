@@ -233,6 +233,7 @@ fn cleanup_receipt_survives(pending_stages: u8) {
     });
     job.current = Some(EntryWork {
         removal: EntryRemoval::Copy,
+        shown: entry.item.path.clone(),
         entry,
         native_identity: source_pin.native_identity(),
         source: None,

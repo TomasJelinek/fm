@@ -1,7 +1,8 @@
 //! Archive panels as Copy/Move sources and targets, through the installed archive
 //! filesystem plugin (a staged process, `viewers_stage::run`): a multi-selection of a
 //! file, a nested folder and an empty folder copied out of a ZIP, the same tree copied
-//! out of a tar.gz (the two copies must be equal), F6 of a member refused with its
+//! out of a tar.gz (the two copies must be equal; each copy counts its members before it
+//! copies them and names each by its path inside the archive), F6 of a member refused with its
 //! reason, and a native file copied into an archive panel refused with the archive left
 //! unchanged. Then F5 of a password-protected archive's members (T-C15): the archive's
 //! password is asked before the Copy dialog; Cancel copies the other members and skips
@@ -16,7 +17,7 @@ use crate::{
     input, panel, viewers_stage,
     viewers_support::{self as viewers, Dismiss, Submit},
 };
-use midnight_core::{CopyOperationState, CopyProgress, PaneId};
+use midnight_core::{CopyOperationState, CopyProgress, DiscoveryState, PaneId};
 use slint::platform::Key;
 use std::{
     collections::BTreeSet,
@@ -105,11 +106,16 @@ fn back_to(app: &mut App, pane: PaneId, folder: &Path) -> Result<(), String> {
 }
 
 /// F5 of the left panel's selection into `destination`, confirmed; its last report.
+/// The job must count the members before it copies them, so that its progress is a
+/// share of known totals with an estimate, and show each member by its path inside
+/// `archive` (the archive file's name), not by its name alone.
 fn copy_out(
     app: &mut App,
     context: &mut Context,
     destination: &Path,
     shot: &str,
+    archive: &str,
+    failures: &mut Vec<String>,
 ) -> Result<std::sync::Arc<midnight_core::CopyProgress>, String> {
     let start = support::start_transfer(
         app,
@@ -121,6 +127,40 @@ fn copy_out(
         },
     )?;
     let done = support::wait_job(app, start);
+    let counted = &done.discovery;
+    if counted.state != DiscoveryState::Complete
+        || counted.files != done.files_completed
+        || counted.bytes != Some(done.copied_bytes)
+    {
+        failures.push(format!(
+            "F5 out of {archive} did not count its members first: {counted:?}, copied {}              files and {} bytes",
+            done.files_completed, done.copied_bytes
+        ));
+    }
+    let id = done.id;
+    let shown: Vec<_> = app.copies[start..]
+        .iter()
+        .filter(|progress| progress.id == id)
+        .filter_map(|progress| progress.current_path.clone())
+        .collect();
+    if let Some(path) = shown.iter().find(|path| {
+        !path
+            .components()
+            .any(|part| part.as_os_str() == std::ffi::OsStr::new(archive))
+    }) {
+        failures.push(format!(
+            "F5 out of {archive} showed {} without the archive's path",
+            path.display()
+        ));
+    }
+    context.note(format!(
+        "F5 out of {archive}: counted {} files, {} folders, {:?} bytes first; {} reports          named a member, the last {:?}",
+        counted.files,
+        counted.directories,
+        counted.bytes,
+        shown.len(),
+        shown.last()
+    ));
     app.settle();
     support::dismiss_all(app);
     Ok(done)
@@ -151,7 +191,14 @@ fn run(context: &mut Context) -> Result<(), String> {
         panel::select_row(&mut app, LEFT, name)?;
         input::key(app.slint(), Key::Insert);
     }
-    let done = copy_out(&mut app, context, &zip_out, "copy-from-zip")?;
+    let done = copy_out(
+        &mut app,
+        context,
+        &zip_out,
+        "copy-from-zip",
+        "bundle.zip",
+        &mut failures,
+    )?;
     if done.state != CopyOperationState::Completed || done.failed != 0 {
         failures.push(format!(
             "F5 of three ZIP members ended {:?} (failed {})",
@@ -206,7 +253,14 @@ fn run(context: &mut Context) -> Result<(), String> {
     back_to(&mut app, LEFT, &root.join("archives"))?;
     open(&mut app, LEFT, "source.tar.gz", &["bundle"])?;
     panel::select_row(&mut app, LEFT, "bundle")?;
-    let done = copy_out(&mut app, context, &tar_out, "copy-from-tar")?;
+    let done = copy_out(
+        &mut app,
+        context,
+        &tar_out,
+        "copy-from-tar",
+        "source.tar.gz",
+        &mut failures,
+    )?;
     if done.state != CopyOperationState::Completed {
         failures.push(format!("F5 of the tar.gz's bundle ended {:?}", done.state));
     }

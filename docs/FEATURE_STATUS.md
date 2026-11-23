@@ -287,7 +287,8 @@ How to read it:
 
 - **Windows and Linux:** installed archive workers browse ZIP, 7z, GZIP, XZ, Bzip2,
   Zstandard and TAR, also compressed. F3 views members, F5 copies them out through the
-  verified queue, archives inside archives open up to four levels deep, and
+  verified queue (with each member's path inside the archive, file and byte totals, a
+  determinate bar and an estimate), archives inside archives open up to four levels deep, and
   password-protected ZIP and 7z archives ask for their password. Archives are
   read-only, and RAR is not supported.
 - **Open:** ARCH-01 to ARCH-09 (content limits, nested archives, writes, Copy permits

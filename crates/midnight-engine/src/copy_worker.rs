@@ -4,7 +4,7 @@ use midnight_platform_common::transfer::{CopyPhase, VerifiedFileCopy};
 use std::{
     collections::{HashSet, VecDeque},
     ffi::OsString,
-    path::Component,
+    path::{Component, PathBuf},
 };
 #[path = "copy_job_construction.rs"]
 mod construction;
@@ -70,6 +70,8 @@ struct RootCompletion {
 struct EntryWork {
     removal: EntryRemoval,
     entry: TransferEntry,
+    /// Where progress shows this entry (`TransferSource::display_path`).
+    shown: PathBuf,
     native_identity: Option<TransferIdentity>,
     source: Option<Box<dyn TransferSource>>,
     copy: Option<VerifiedFileCopy>,
@@ -354,7 +356,7 @@ impl Job {
 
     fn store_progress(&mut self) {
         if let Some(work) = &self.current {
-            self.progress.current_path = Some(work.entry.item.path.clone());
+            self.progress.current_path = Some(work.shown.clone());
         }
         self.progress.current_destination = self
             .current
@@ -773,6 +775,10 @@ impl Job {
         self.current = Some(EntryWork {
             removal,
             entry: source.entry().clone(),
+            shown: source
+                .display_path()
+                .unwrap_or(&source.entry().item.path)
+                .to_path_buf(),
             native_identity: source.native_identity(),
             source: Some(source),
             copy: None,
@@ -792,7 +798,7 @@ impl Job {
 
     fn process(&mut self, work: EntryWork) -> Step {
         let mut work = ownership::Armed::new(work);
-        self.progress.current_path = Some(work.entry().item.path.clone());
+        self.progress.current_path = Some(work.shown.clone());
         self.final_name_collision = false;
         let result = if work.link.is_some() {
             self.link_step(&mut work)

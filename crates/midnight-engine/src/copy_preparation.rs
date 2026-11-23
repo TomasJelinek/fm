@@ -875,6 +875,7 @@ struct SharedSource {
     native_identity: Option<TransferIdentity>,
     native_original_identity: Option<TransferIdentity>,
     virtual_identity: Option<VirtualEntryId>,
+    display_path: Option<PathBuf>,
     source: Arc<Mutex<Box<dyn TransferSource>>>,
 }
 
@@ -885,6 +886,7 @@ impl SharedSource {
             native_identity: source.native_identity(),
             native_original_identity: source.native_original_identity(),
             virtual_identity: source.virtual_identity(),
+            display_path: source.display_path().map(Path::to_path_buf),
             source: Arc::new(Mutex::new(source)),
         }
     }
@@ -934,6 +936,9 @@ impl TransferSource for SharedSource {
     }
     fn virtual_identity(&self) -> Option<VirtualEntryId> {
         self.virtual_identity
+    }
+    fn display_path(&self) -> Option<&Path> {
+        self.display_path.as_deref()
     }
 
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {

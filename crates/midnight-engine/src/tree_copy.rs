@@ -566,6 +566,9 @@ impl TransferSource for LeasedSource {
     fn virtual_identity(&self) -> Option<VirtualEntryId> {
         self.source.virtual_identity()
     }
+    fn display_path(&self) -> Option<&Path> {
+        self.source.display_path()
+    }
     fn revalidate(&self, cancel: &Cancellation) -> Result<(), FsError> {
         self.source.revalidate(cancel)
     }

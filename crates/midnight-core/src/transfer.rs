@@ -424,6 +424,13 @@ pub trait TransferSource: Send {
     fn virtual_identity(&self) -> Option<crate::VirtualEntryId> {
         None
     }
+    /// Where progress shows this source when its entry path alone does not say where it
+    /// lies: an archive member's path through its archive file and the folders inside
+    /// it. Presentation only, never a native path or operation authority. Wrappers
+    /// forward it; None shows the entry path.
+    fn display_path(&self) -> Option<&Path> {
+        None
+    }
     /// Enumerate one no-follow child with explicit native Move authority. Only a
     /// source prepared for Move may implement this; ordinary Copy stays read-only.
     fn next_move_child(

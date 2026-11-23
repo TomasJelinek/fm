@@ -441,6 +441,11 @@ recursive file. Links are not followed by destructive traversal.
 One acknowledged 250 ms heartbeat (at most 4 Hz) coalesces ordinary discovery,
 throughput, verification-pass and wait-state updates. A full outbox leaves the
 latest change unacknowledged for retry on the next tick, including a blocked wait
+A Copy out of an archive counts its members the same way, from the archive's index
+(lengths recorded in the archive, never decoded), and shows each member by its path
+inside the archive file
+([archive members as a source](TRANSFERS.md#archive-members-as-a-source)).
+
 clear; discovery changes do not depend on throughput. Initial, decision and
 terminal boundary delivery remain explicit, as do the boundary snapshots of each
 preparation attempt, the first namespace-grant wait and pause/resume

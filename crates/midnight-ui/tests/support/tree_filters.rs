@@ -40,6 +40,9 @@ pub struct Calls {
     pub fail_save: AtomicBool,
     pub navigations: AtomicUsize,
     pub size_reads: Mutex<Vec<String>>,
+    /// Hold the next member read for longer than a progress heartbeat, so that the
+    /// running copy publishes the member it is reading.
+    pub slow_read: AtomicBool,
     children: Vec<String>,
     size_fixture: bool,
 }
@@ -262,6 +265,9 @@ impl ArchiveMount for Archive {
         _: &Cancellation,
     ) -> Result<Vec<u8>, FsError> {
         if self.0.size_fixture && entry >= 104 {
+            if self.0.slow_read.swap(false, Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(700));
+            }
             let name = &self.0.children[(entry - 104) as usize];
             let size = self.0.size_bytes(name).unwrap();
             return Ok(vec![
@@ -549,6 +555,9 @@ pub struct Harness {
     pub sizes: Option<Arc<TreeSizeSnapshot>>,
     pub size_finished: usize,
     pub copy_progress: Vec<Arc<CopyProgress>>,
+    /// The Jobs rows of copies, as the window showed them after each copy progress.
+    pub copy_rows: Vec<midnight_ui::OperationRow>,
+    copy_applied: bool,
     pub clipboard_publications: usize,
     clipboard_trace: Rc<RefCell<ClipboardTrace>>,
     pub watch_hints: [usize; 2],
@@ -877,6 +886,8 @@ impl Harness {
             sizes: None,
             size_finished: 0,
             copy_progress: Vec::new(),
+            copy_rows: Vec::new(),
+            copy_applied: false,
             clipboard_publications: 0,
             clipboard_trace,
             watch_hints: [0; 2],
@@ -1205,6 +1216,7 @@ impl Harness {
         }
         if let Event::Copy(CopyEvent::Progress(progress)) = &event {
             self.copy_progress.push(progress.clone());
+            self.copy_applied = true;
         }
         if let Event::Tree(tree) = &event {
             match tree.as_ref() {
@@ -1282,6 +1294,13 @@ impl Harness {
 
     fn after_apply(&mut self) {
         refresh(&self.ui.window, &self.presenter.borrow());
+        if std::mem::take(&mut self.copy_applied) {
+            let rows = self.ui.window.get_operations();
+            self.copy_rows.extend(
+                rows.iter()
+                    .filter(|row| row.identity.starts_with("copy-job:")),
+            );
+        }
         self.ui.draw();
         // The application timer samples visible rows even outside thumbnail
         // mode. Drive that real presenter path so background branch probes have

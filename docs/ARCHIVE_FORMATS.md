@@ -213,7 +213,13 @@ archives cannot be read either. RAR is not supported.
 Inside an archive, browsing, sorting, filters, selection, F3, Find, folder sizes,
 previews and Hot Paths work. F5 copies members out through the bounded background
 transfer queue, with progress, conflict handling, safe destination traversal and
-independent SHA-256 destination readback. Copying into an archive and moving archive
+independent SHA-256 destination readback. Its progress window and Jobs show the path of
+the member being copied (the archive file's path, the folders inside it and the member's
+name) and count the files and bytes to copy before the first member is written, so the
+bar shows the share done and Time remaining has an estimate, as for files on disk. The
+count uses the lengths the archive records, which its worker indexed when the archive
+was opened, for every format including compressed TAR and single compressed files, so
+it decodes nothing again. Copying into an archive and moving archive
 members are not implemented. Copy-out validates the archive file as each exchange
 with its worker begins and around each read of the file, not for every chunk, and
 Cancel or Pause takes effect without waiting for the rest of a large selection. The

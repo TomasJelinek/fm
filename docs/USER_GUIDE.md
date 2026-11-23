@@ -1167,9 +1167,13 @@ current keys.
   zoom percentage or press Ctrl+Y to type a zoom (`150`, `150%`, `62,5` in a
   decimal-comma locale); Enter applies it, Escape keeps the current zoom.
 - F5 inside an archive copies the captured members to a native destination using
-  the background queue and SHA-256 destination readback. Archive contents stay
-  read-only. XZ, Bzip2 and Zstandard streams and their TAR variants are supported
-  by the archive plugin alongside ZIP, 7z, GZIP and TAR.
+  the background queue and SHA-256 destination readback. As for files on disk, the
+  progress window and Jobs show the path of the member being copied (the archive
+  file's path, then the folders inside it and the member's name, such as
+  `backup.zip\docs\readme.txt`), the number of files and bytes to copy, the share
+  done and the time remaining. Archive contents stay read-only. XZ, Bzip2 and
+  Zstandard streams and their TAR variants are supported by the archive plugin
+  alongside ZIP, 7z, GZIP and TAR.
 - Password-protected ZIP (ZipCrypto, WinZip AES) and 7z (AES-256) archives open with
   their password. It is asked once, when F3, Enter or F5 first needs it, and kept in
   memory only until the archive is closed: when no panel tab, viewer or copy uses the

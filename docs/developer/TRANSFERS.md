@@ -306,6 +306,26 @@ to an archive long after it was written, which moves only the change time; see
 modification time still count, and the plugin opens only a regular file without
 following links.
 
+Progress names each member as Copy names a native file: by its path, made of the
+archive's display path (`ArchiveLocation::display_text`, which names every enclosing
+archive of an archive inside an archive), the folders inside it and the member's own
+name, for example `D:\data\backup.zip\docs\readme.txt` (`TransferSource::display_path`,
+which wrappers forward). This path is presentation only: the source's entry keeps the
+member's exact name, which alone names the destination, and members are read by their
+mount and member IDs. Before the first member is written, the job counts
+the files, folders and bytes it will copy (`TransferSource::discover` of the archive
+source), so the progress bar is determinate and the estimate has a byte budget, as for
+a native Copy. The count comes from the archive's index, which its worker built when
+the archive was opened: ZIP and 7z record each member's length in their directory and
+headers, TAR (compressed or not) in the headers indexed then, and a compressed single
+file (gz, xz, bz2, zst) its decoded length, so counting decodes no member and reads no
+member data. A selected file counts without any request to the worker; a selected
+folder is listed once for the count, folder by folder, as Copy then lists it again,
+and only the folders still to be counted are kept meanwhile. Stop and Pause end the
+count between listings and within a long listing. A member the copy then skips (for
+example one whose password was not entered) or a count that differs from what was
+copied makes the total unavailable, as for a native source that changed.
+
 A lasting change, found when a reader that the plugin opens on the archive's path reports
 another identity, length or modification time, fails as `InvalidData`
 (`source_failure` in the filesystem host's `session.rs`), and the copy offers Skip, Skip
