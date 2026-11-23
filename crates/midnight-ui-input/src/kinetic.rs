@@ -30,7 +30,9 @@ const MAX_REST: Duration = Duration::from_millis(40);
 /// ends the gesture. Bounded so slow devices neither hitch long nor fling early.
 const MIN_RELEASE_GAP: Duration = Duration::from_millis(30);
 const MAX_RELEASE_GAP: Duration = Duration::from_millis(60);
-/// Exponential decay time constant: total travel is `velocity * TIME_CONSTANT`.
+/// Exponential decay time constant at the default glide scale (`glide.rs`, which
+/// multiplies it when a fling starts; 0 starts none): total travel is
+/// `velocity * TIME_CONSTANT`.
 /// Longer than iOS's default deceleration (0.5 s), as hands-on feedback asked: a
 /// 2000 px/s flick glides about 1600 px, 71% of it within the first second, and
 /// eases out over about four seconds. Every surface shares it, so the same flick
@@ -69,6 +71,8 @@ pub(crate) struct KineticScroll {
 
 struct Fling {
     velocity: [f64; 2],
+    /// [`TIME_CONSTANT`] times the glide scale when the fling started.
+    time_constant: f64,
     updated: Duration,
     /// Last observed content position per axis and when it last changed.
     seen: [Option<(f64, Duration)>; 2],
@@ -185,12 +189,14 @@ impl KineticScroll {
     }
 
     fn start(&mut self, velocity: [f64; 2], now: Duration, threshold: f64) -> bool {
-        if magnitude(&velocity) < threshold {
+        let time_constant = TIME_CONSTANT * f64::from(crate::glide_scale());
+        if magnitude(&velocity) < threshold || time_constant <= 0.0 {
             self.fling = None;
             return false;
         }
         self.fling = Some(Fling {
             velocity,
+            time_constant,
             updated: now,
             seen: [None; 2],
         });
@@ -225,12 +231,13 @@ impl KineticScroll {
         let fling = self.fling.as_mut()?;
         let elapsed = now.saturating_sub(fling.updated).min(MAX_FRAME_TIME);
         fling.updated = now.max(fling.updated);
-        let decay = (-elapsed.as_secs_f64() / TIME_CONSTANT).exp();
+        let time_constant = fling.time_constant;
+        let decay = (-elapsed.as_secs_f64() / time_constant).exp();
         let mut delta = [0.0; 2];
         for (delta, velocity) in delta.iter_mut().zip(&mut fling.velocity) {
             // Exact integral of the exponential decay over this frame, so travel
             // does not depend on the display's frame rate.
-            *delta = *velocity * TIME_CONSTANT * (1.0 - decay);
+            *delta = *velocity * time_constant * (1.0 - decay);
             *velocity *= decay;
             if velocity.abs() < STOP_SPEED {
                 *velocity = 0.0;

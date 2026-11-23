@@ -166,7 +166,7 @@ fn delayed_frontier_resumes_with_small_frames_instead_of_spending_unseen_animati
 fn first_redraw_after_refill_advances_a_bounded_step_without_waiting_an_extra_frame() {
     for direction in [-1.0_f32, 1.0] {
         for scale in [1.0, 2.25] {
-            for (pause_ms, redraw_during_wait) in [(32, true), (960, true), (960, false)] {
+            for (pause_ms, redraw_during_wait) in [(80, true), (960, true), (960, false)] {
                 let mut camera = Camera::default();
                 let mut next = info();
                 let boundary = 400.0 + f64::from(direction) * 5.0 * scale;
@@ -182,7 +182,11 @@ fn first_redraw_after_refill_advances_a_bounded_step_without_waiting_an_extra_fr
                         camera.tick(Duration::from_millis(millis));
                     }
                 } else {
-                    camera.tick(Duration::from_millis(16));
+                    // The glide eases in (Chromium's curve): five frames reach the boundary,
+                    // then the window draws nothing until the refill.
+                    for millis in (16..=80).step_by(16) {
+                        camera.tick(Duration::from_millis(millis));
+                    }
                 }
                 assert_eq!(camera.origin[1], boundary);
                 next.coverage_min[1] = 0.0;

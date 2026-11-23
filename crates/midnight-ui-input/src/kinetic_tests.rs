@@ -278,3 +278,33 @@ fn invalid_input_is_ignored() {
     kinetic.stop_axis(7);
     assert!(!kinetic.active());
 }
+
+#[test]
+fn the_glide_scale_lengthens_momentum_and_zero_starts_none() {
+    // The scale is this thread's; it is restored before the assertions.
+    let travel = |scale: f32| {
+        crate::set_glide_scale(scale);
+        let mut kinetic = KineticScroll::default();
+        stroke(&mut kinetic, -20.0, 6, ms(100), true);
+        let flung = kinetic.release(ms(100));
+        crate::set_glide_scale(1.0);
+        (
+            flung,
+            if flung {
+                coast(&mut kinetic, ms(100))
+            } else {
+                0.0
+            },
+        )
+    };
+    let (flung, normal) = travel(1.0);
+    assert!(flung);
+    let (_, doubled) = travel(2.0);
+    // 2000 px/s decays over 0.8 s, and over 1.6 s at twice the scale: twice the travel,
+    // less the crawl dropped at the end.
+    assert!(
+        (doubled / normal - 2.0).abs() < 0.02,
+        "{normal} and {doubled}"
+    );
+    assert_eq!(travel(0.0), (false, 0.0));
+}

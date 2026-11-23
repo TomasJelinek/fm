@@ -293,7 +293,7 @@ fn keys_reveal(app: &mut App, failures: &mut Vec<String>) -> Result<(), String> 
 /// The left list's offset sampled every couple of milliseconds without drawing (Slint's
 /// timers only, which run the seam's wheel frames and the list's alignment), until it has
 /// been still for 500 ms: the first offset and each change, with the milliseconds since
-/// `since`. Changes as small as an ease-out's last frame (hundredths of a pixel) count.
+/// `since`. Changes as small as an eased glide's last frame (hundredths of a pixel) count.
 fn trace(app: &mut App, since: Instant) -> Vec<(u128, f32)> {
     let mut changes = vec![(
         since.elapsed().as_millis(),
@@ -335,13 +335,15 @@ fn between(changes: &[(u128, f32)], from: f32, to: f32) -> usize {
         .count()
 }
 
-/// The notch distance the panels use (docs/developer/SCROLLING.md, "Wheel distance"):
-/// 100 px at three lines per notch, in proportion to other line counts, and one screen
-/// (the list's visible height) for a screen per notch.
+/// The notch distance the panels use, Chromium's (docs/developer/SCROLLING.md, "Wheel
+/// distance"): 100 px at three lines per notch, in proportion to other line counts, 87.5 %
+/// of the list's visible height for a screen per notch, and 120 px without a setting
+/// (Linux).
 fn notch_pixels(setting: WheelSetting, list: &ListGeometry) -> f32 {
     match setting {
         WheelSetting::Lines(lines) => 100.0 * lines.clamp(1, 100) as f32 / 3.0,
-        WheelSetting::Page => list.height,
+        WheelSetting::Page => (list.height * 0.875).max(1.0),
+        WheelSetting::Fixed => 120.0,
     }
 }
 
@@ -430,12 +432,12 @@ fn half_notch(
     let changes = trace(app, started);
     let rested = panel::wait_rested(app, LEFT)?;
     // The share ends at the sample before the longest pause, the idle interval before
-    // the alignment (an ease-out reaches the last half pixel over several frames).
+    // the alignment (an eased glide reaches the last half pixel over several frames).
     let reached = (0..changes.len().saturating_sub(1))
         .max_by_key(|index| changes[index + 1].0 - changes[*index].0)
         .filter(|index| (changes[*index].1 - share).abs() <= 0.5);
     // The alignment ends with the last change: its final frame lands on the row (an
-    // ease-out comes within half a pixel of it at about 70 % of the glide).
+    // eased glide comes within half a pixel of it well before its end).
     let arrived = reached.and_then(|start| {
         let end = changes.len() - 1;
         (end > start && (changes[end].1 - target).abs() <= 0.5).then_some(end)

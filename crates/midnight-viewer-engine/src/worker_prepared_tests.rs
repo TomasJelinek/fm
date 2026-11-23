@@ -8,7 +8,7 @@
 //! not the simulations) keeps the worker busy for as many frames, and its outputs reach
 //! the window only then, through a mailbox that keeps the newest frame. The plugin
 //! answers a request a frame later. Wheel notches glide as `midnight_ui_input::WheelMotion`
-//! does (200 ms ease-out, only undelivered distance adding up); a key moves its whole
+//! does (Chromium's ease-in-out, only undelivered distance adding up); a key moves its whole
 //! distance at once; a scrollbar drag asks the worker for each position.
 //!
 //! A frame stalls when the camera has travel left but cannot move: the pixels it needs
@@ -22,28 +22,84 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 const FRAME: Duration = Duration::from_nanos(16_666_667);
-/// `midnight_ui_input::WheelMotion`: a notch's ease-out and the longest frame it advances.
-const GLIDE: Duration = Duration::from_millis(200);
-const MAX_GLIDE_FRAME: Duration = Duration::from_millis(16);
+/// `midnight_ui_input::WheelMotion`: the longest frame time a glide advances by.
+const MAX_GLIDE_FRAME: Duration = Duration::from_millis(50);
 
-/// The shared wheel glide, frame by frame (`midnight_ui_input::wheel_motion`).
+/// Chromium's wheel glide as `midnight_ui_input::WheelMotion` runs it (`glide.rs`): a
+/// cubic-bezier(0.42, rise, 0.58, 1) ease over 200 ms up to 120 px, falling to 100 ms
+/// from 480 px; a notch during a glide keeps its speed and ends no later than 2.5 times
+/// the remaining distance at that speed.
 #[derive(Default)]
 struct Glide {
-    elapsed: Duration,
+    elapsed: f64,
+    duration: f64,
+    rise: f64,
     distance: f64,
     delivered: f64,
     active: bool,
 }
 
+/// `PREPARED_GLIDE=quadratic` measures with the glide before Chromium's, for comparisons.
+fn quadratic_glide() -> bool {
+    std::env::var("PREPARED_GLIDE").is_ok_and(|value| value == "quadratic")
+}
+
+fn bezier(t: f64, a: f64, b: f64) -> f64 {
+    let u = 1.0 - t;
+    3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
+}
+
+fn bezier_slope(t: f64, a: f64, b: f64) -> f64 {
+    let u = 1.0 - t;
+    3.0 * u * u * a + 6.0 * u * t * (b - a) + 3.0 * t * t * (1.0 - b)
+}
+
+/// The curve parameter whose x is `x`, by bisection.
+fn parameter(x: f64) -> f64 {
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..50 {
+        let middle = (low + high) / 2.0;
+        if bezier(middle, 0.42, 0.58) < x {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (low + high) / 2.0
+}
+
 impl Glide {
     fn push(&mut self, pixels: f64) {
+        let fraction = if self.duration > 0.0 {
+            (self.elapsed / self.duration).min(1.0)
+        } else {
+            1.0
+        };
+        let speed = if self.active && fraction < 1.0 {
+            let t = parameter(fraction);
+            self.distance * bezier_slope(t, self.rise, 1.0)
+                / bezier_slope(t, 0.42, 0.58)
+                / self.duration
+        } else {
+            0.0
+        };
         let mut remaining = self.distance - self.delivered;
         if remaining.signum() != pixels.signum() {
             remaining = 0.0;
         }
         self.distance = (remaining + pixels).clamp(-2400.0, 2400.0);
         self.delivered = 0.0;
-        self.elapsed = Duration::ZERO;
+        self.elapsed = 0.0;
+        let frames = (12.0 - (self.distance.abs() - 120.0) / 60.0).clamp(6.0, 12.0);
+        self.duration = frames / 60.0;
+        self.rise = 0.0;
+        if quadratic_glide() {
+            // The glide before Chromium's: 200 ms of quadratic ease-out per notch.
+            self.duration = 0.2;
+        } else if speed != 0.0 && speed.signum() == self.distance.signum() {
+            self.duration = self.duration.min(2.5 * self.distance / speed);
+            self.rise = (0.42 * speed * self.duration / self.distance).clamp(0.0, 1.0);
+        }
         self.active = true;
     }
 
@@ -52,9 +108,20 @@ impl Glide {
         if !self.active {
             return 0.0;
         }
-        self.elapsed += FRAME.min(MAX_GLIDE_FRAME);
-        let fraction = (self.elapsed.as_secs_f64() / GLIDE.as_secs_f64()).min(1.0);
-        let eased = 1.0 - (1.0 - fraction) * (1.0 - fraction);
+        let cap = if quadratic_glide() {
+            Duration::from_millis(16)
+        } else {
+            MAX_GLIDE_FRAME
+        };
+        self.elapsed += FRAME.min(cap).as_secs_f64();
+        let fraction = (self.elapsed / self.duration).min(1.0);
+        let eased = if quadratic_glide() {
+            1.0 - (1.0 - fraction) * (1.0 - fraction)
+        } else if fraction >= 1.0 {
+            1.0
+        } else {
+            bezier(parameter(fraction), self.rise, 1.0)
+        };
         let position = self.distance * eased;
         let delta = position - self.delivered;
         self.delivered = position;
@@ -67,7 +134,7 @@ impl Glide {
 
 /// One frame's input.
 #[derive(Clone, Copy, Debug)]
-enum Input {
+pub(super) enum Input {
     /// Wheel notches (or a touchpad's fraction of one), in physical pixels: they glide.
     Wheel(f64),
     /// A key's whole distance, in physical pixels.
@@ -77,12 +144,12 @@ enum Input {
 }
 
 /// A gesture: the inputs of each frame, frame by frame.
-struct Script {
-    name: &'static str,
-    frames: Vec<Vec<Input>>,
+pub(super) struct Script {
+    pub(super) name: &'static str,
+    pub(super) frames: Vec<Vec<Input>>,
 }
 
-fn every(frames: usize, interval: usize, input: Input) -> Vec<Vec<Input>> {
+pub(super) fn every(frames: usize, interval: usize, input: Input) -> Vec<Vec<Input>> {
     (0..frames * interval)
         .map(|frame| {
             if frame % interval == 0 {
@@ -96,7 +163,7 @@ fn every(frames: usize, interval: usize, input: Input) -> Vec<Vec<Input>> {
 
 /// The measured gestures for a window `height` physical pixels tall, with wheel notches of
 /// `notch` physical pixels.
-fn scripts(notch: f64, height: f64) -> Vec<Script> {
+pub(super) fn scripts(notch: f64, height: f64) -> Vec<Script> {
     // A Windows precision touchpad flick arrives as wheel events whose rate decays after
     // the lift: here 30 notches per second at first, decaying with 0.5 s, for 1.5 s.
     let fling = (0..90)
@@ -143,14 +210,14 @@ fn scripts(notch: f64, height: f64) -> Vec<Script> {
 
 /// What one gesture cost and how it looked.
 #[derive(Default)]
-struct Report {
+pub(super) struct Report {
     frames: usize,
     /// Frames on which the camera had travel left and did not move.
-    stalls: usize,
+    pub(super) stalls: usize,
     /// How far the shown camera trailed the input, physical pixels, per frame.
     lag: Vec<f64>,
     /// The worker's turns, milliseconds.
-    turns: Vec<f64>,
+    pub(super) turns: Vec<f64>,
     counts: prepare_counters::Counts,
     /// Pixel bytes the window received that it had not shown before.
     uploads: u64,
@@ -174,7 +241,7 @@ struct Report {
     plain_frames: usize,
 }
 
-fn percentile(values: &[f64], percent: usize) -> f64 {
+pub(super) fn percentile(values: &[f64], percent: usize) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
@@ -184,7 +251,7 @@ fn percentile(values: &[f64], percent: usize) -> f64 {
 }
 
 impl Report {
-    fn line(&self, name: &str) -> String {
+    pub(super) fn line(&self, name: &str) -> String {
         format!(
             "{name:<30} frames {:>4}, stalls {:>3}, lag p50/p95/max {:>6.1}/{:>6.1}/{:>6.1} px, \
              turns {:>3} p50/p95/max {:>5.2}/{:>6.2}/{:>6.2} ms, total {:>7.1} ms, \
@@ -317,7 +384,7 @@ fn timed_frame(engine: &mut Engine, window: &mut Window, line: &mut Timeline, re
 }
 
 /// Run `script` from rest and report it; the content then comes to rest again.
-fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
+pub(super) fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
     assert!(
         settle(engine, window),
         "the view did not come to rest before {:?}: window active {}, worker dirty {}, \
@@ -416,7 +483,7 @@ fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
     report
 }
 
-fn geometry(width: u32, height: u32, scale: f32) -> ViewerGeometry {
+pub(super) fn geometry(width: u32, height: u32, scale: f32) -> ViewerGeometry {
     ViewerGeometry {
         width,
         height,

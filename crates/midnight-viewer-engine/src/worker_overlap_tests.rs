@@ -60,9 +60,11 @@ fn reads_only_the_rows_past_the_shown_page(mode: u16) {
         "mode {mode}, 60-byte rows: {bytes} bytes read"
     );
     let (reads, bytes) = page_reads(mode, 500);
-    assert!(reads <= 40, "mode {mode}, 500-byte rows: {reads} reads");
+    // A page holds three laid-out screens beyond the prepared strips (`PAGE_EXTRA`): over
+    // 500-byte rows the eight keys read up to 43 ranges of at most 8 KiB, 320 KiB.
+    assert!(reads <= 48, "mode {mode}, 500-byte rows: {reads} reads");
     assert!(
-        bytes <= 300 * 1024,
+        bytes <= 340 * 1024,
         "mode {mode}, 500-byte rows: {bytes} bytes read"
     );
 }

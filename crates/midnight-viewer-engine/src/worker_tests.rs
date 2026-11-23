@@ -41,6 +41,8 @@ mod prepared;
 mod row_groups;
 #[path = "worker_seam_tests.rs"]
 mod seam;
+#[path = "worker_source_scroll_tests.rs"]
+mod source_scroll;
 #[path = "worker_syntax_tests.rs"]
 mod syntax;
 

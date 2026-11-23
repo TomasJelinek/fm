@@ -7,8 +7,8 @@
 //! in every viewer (one down, one up, a burst of five), and a native wheel notch (winit's
 //! `LineDelta`, through the viewers' acceptance seam, at three lines per notch) 100 px,
 //! −100 px up and 500 px for five, the HTML viewer included; on the large log six lines
-//! per notch move 200 px, one screen per notch a screen, and with reduced motion a notch
-//! moves in one step instead of gliding. Arrows move a line, PageDown and PageUp exactly
+//! per notch move 200 px, one screen per notch 87.5 % of a screen (Chromium's page step),
+//! and with reduced motion a notch moves in one step instead of gliding. Arrows move a line, PageDown and PageUp exactly
 //! one screen, and Ctrl+End and Ctrl+Home must reach the ends. The PDF shows new frames
 //! while its scrollbar is dragged and sharp text at a typed 400 % zoom. The long line's
 //! horizontal scrollbar is swept too. HTML has no host scrollbar (Chromium draws its
@@ -540,7 +540,8 @@ fn continued(
 }
 
 /// The system's wheel setting and reduced motion, as the large log reads them when it
-/// gains the focus: six lines per notch move 200 px, one screen per notch a screen; a
+/// gains the focus: six lines per notch move 200 px, one screen per notch 87.5 % of a
+/// screen (Chromium's page step); a
 /// notch glides over several frames, and with reduced motion it moves in one step.
 fn wheel_settings(app: &mut App, context: &mut Context, viewing: &Viewing) -> Result<(), String> {
     let scale = viewing.slint().scale_factor();
@@ -549,7 +550,8 @@ fn wheel_settings(app: &mut App, context: &mut Context, viewing: &Viewing) -> Re
     probe::settle(app, viewing, LAND_LIMIT)?;
     let mut problems = Vec::new();
     let screen = (viewing.window.get_content_height() * scale).round() as i32;
-    // A screen leaves no row in common: after that notch, arrows go back half a screen.
+    let page = ((viewing.window.get_content_height() * 0.875).max(1.0) * scale).round() as i32;
+    // A page step leaves few rows in common: after that notch, arrows go back half a screen.
     let back = screen / 2 / ARROW;
     for (setting, expected, what) in [
         (
@@ -557,7 +559,7 @@ fn wheel_settings(app: &mut App, context: &mut Context, viewing: &Viewing) -> Re
             (2.0 * probe::NOTCH_PIXELS * scale).round() as i32,
             "six lines per notch",
         ),
-        (probe::WheelSetting::Page, screen, "one screen per notch"),
+        (probe::WheelSetting::Page, page, "one screen per notch"),
     ] {
         let arrows = if setting == probe::WheelSetting::Page {
             back

@@ -940,7 +940,12 @@ current keys.
   with the arrow keys, Home, End, Page Up and Page Down. Off moves every scroll at once.
   The change applies immediately, also in open viewer windows. When Windows' Animation
   effects are off, scrolling never glides, whatever this setting says; a Windows
-  precision touchpad's own coasting is controlled by Windows. The
+  precision touchpad's own coasting is controlled by Windows. A mouse wheel notch
+  scrolls as far as it does in Chrome and in Electron applications: on Windows 100
+  pixels at the default of three lines per notch (proportionally more or less for other
+  settings, and seven eighths of the visible height when Windows scrolls one screen at a
+  time), on Linux 120 pixels; at Default each notch glides for a fifth of a second, as in
+  Chrome, and quick successive notches keep their speed. The
   [palette provenance](THEME_PROVENANCE.md) describes the theme catalog. Preview
   is immediate and reversible. **OK** validates all pages, saves asynchronously
   and closes after success. **Cancel**, Escape and X discard all edits and restore

@@ -1,25 +1,58 @@
-//! A bounded presentation-only wheel impulse, independent of native input APIs.
+//! A bounded presentation-only wheel glide on Chromium's wheel curve (`glide.rs`),
+//! independent of native input APIs.
+use crate::glide::{
+    VELOCITY_BOUND, glide_duration, glide_scale, progress, progress_slope, rise_for,
+};
 use std::time::Duration;
 
-const WHEEL_DURATION: Duration = Duration::from_millis(200);
 // Wake high-refresh displays often enough; spend time only at a real redraw.
 pub const WHEEL_FRAME: Duration = Duration::from_millis(8);
-const MAX_FRAME_TIME: Duration = Duration::from_millis(16);
+/// A late redraw (a missed vsync, a slow frame) advances the glide by its real time, as
+/// Chromium's wall-clock animation does, down to 20 frames a second. A longer stall resumes
+/// from there instead of jumping by unseen pixels (the touchpad momentum's bound too).
+const MAX_FRAME_TIME: Duration = Duration::from_millis(50);
 const MAX_PENDING_PIXELS: f64 = 2400.0;
 
+/// One wheel glide: each notch adds its distance to what is still to come, and the rest
+/// glides on Chromium's ease-in-out curve over Chromium's duration for that distance
+/// (200 ms up to 120 px, down to 100 ms from 480 px), scaled by [`glide_scale`]. A notch
+/// during a glide keeps its current speed and ends no later than that speed reaches the
+/// new target with Chromium's allowance (`UpdateTarget`). Time is the presented frames'
+/// time, each frame counted up to [`MAX_FRAME_TIME`].
 #[derive(Default)]
 pub struct WheelMotion {
     updated: Option<Duration>,
     elapsed: Duration,
+    duration: Duration,
+    /// The curve's first control point's rise: 0 from rest, more when the glide continues
+    /// a moving one at its speed.
+    rise: f64,
     distance: [f64; 2],
     delivered: [f64; 2],
 }
 
+/// The larger axis of `values`, with its sign.
+fn major(values: [f64; 2]) -> f64 {
+    if values[0].abs() > values[1].abs() {
+        values[0]
+    } else {
+        values[1]
+    }
+}
+
 impl WheelMotion {
+    /// Add a notch's distance; it glides with this thread's [`glide_scale`].
     pub fn push(&mut self, x: f32, y: f32, now: Duration) -> bool {
+        self.push_scaled(x, y, now, glide_scale())
+    }
+
+    /// [`Self::push`] with an explicit glide scale (0: the whole distance on the next frame).
+    pub fn push_scaled(&mut self, x: f32, y: f32, now: Duration, scale: f32) -> bool {
         if !x.is_finite() || !y.is_finite() || (x == 0.0 && y == 0.0) {
             return false;
         }
+        // The speed of the glide in progress along its larger axis, pixels a second.
+        let speed = self.speed();
         for (axis, delta) in [f64::from(x), f64::from(y)].into_iter().enumerate() {
             let mut remaining = self.distance[axis] - self.delivered[axis];
             // A reverse notch expresses a new direction, not a request to finish
@@ -36,7 +69,26 @@ impl WheelMotion {
         // clock indefinitely and starve the queued movement.
         self.updated.get_or_insert(now);
         self.elapsed = Duration::ZERO;
+        let distance = major(self.distance);
+        let mut duration = glide_duration(distance, scale);
+        if speed != 0.0 && speed.signum() == distance.signum() && distance != 0.0 {
+            let bound = VELOCITY_BOUND * distance / speed;
+            if bound.is_finite() && bound >= 0.0 {
+                duration = duration.min(Duration::from_secs_f64(bound));
+            }
+        }
+        self.duration = duration;
+        self.rise = rise_for(speed, distance, duration);
         true
+    }
+
+    /// The current speed along the larger axis, pixels a second (0 at rest).
+    fn speed(&self) -> f64 {
+        if self.updated.is_none() || self.duration.is_zero() {
+            return 0.0;
+        }
+        let fraction = self.elapsed.as_secs_f64() / self.duration.as_secs_f64();
+        major(self.distance) * progress_slope(fraction, self.rise) / self.duration.as_secs_f64()
     }
 
     pub fn tick(&mut self, now: Duration) -> Option<(f32, f32)> {
@@ -45,11 +97,7 @@ impl WheelMotion {
 
     /// Pixel/touchpad input already carries native momentum; add no second coast.
     pub fn push_direct(&mut self, x: f32, y: f32, now: Duration) -> bool {
-        if !self.push(x, y, now) {
-            return false;
-        }
-        self.elapsed = WHEEL_DURATION;
-        true
+        self.push_scaled(x, y, now, 0.0)
     }
 
     /// Only deliver pixels covered by retained content. Missing guard pixels do
@@ -63,12 +111,15 @@ impl WheelMotion {
         }
         let updated = self.updated?;
         self.updated = Some(now.max(updated));
-        // A delayed redraw must not spend animation time on pixels that were
-        // never presented. Preserve the nominal duration at normal cadence and
-        // extend it by missed frames rather than jumping whole rows.
+        // A delayed redraw advances by its real time, up to a bound: a long stall must
+        // not spend animation time on pixels that were never presented.
         self.elapsed += now.saturating_sub(updated).min(MAX_FRAME_TIME);
-        let fraction = (self.elapsed.as_secs_f64() / WHEEL_DURATION.as_secs_f64()).min(1.0);
-        let eased = 1.0 - (1.0 - fraction) * (1.0 - fraction);
+        let fraction = if self.duration.is_zero() {
+            1.0
+        } else {
+            (self.elapsed.as_secs_f64() / self.duration.as_secs_f64()).min(1.0)
+        };
+        let eased = progress(fraction, self.rise);
         let mut delta = [0.0; 2];
         for (axis, delta) in delta.iter_mut().enumerate() {
             let position = self.distance[axis] * eased;
@@ -94,6 +145,8 @@ impl WheelMotion {
         self.distance = self.pending();
         self.delivered = [0.0; 2];
         self.elapsed = Duration::ZERO;
+        self.duration = glide_duration(major(self.distance), glide_scale());
+        self.rise = 0.0;
     }
     pub fn active(&self) -> bool {
         self.updated.is_some()
@@ -207,9 +260,10 @@ mod tests {
         assert!(motion.push(0.0, -60.0, Duration::ZERO));
         assert!(motion.active());
         assert_eq!(motion.tick(Duration::ZERO), None);
+        // Chromium's ease-in-out starts slowly.
         let first = motion.tick(Duration::from_millis(16)).unwrap();
         assert_eq!(first.0, 0.0);
-        assert!(first.1 < -1.0 && first.1 > -20.0);
+        assert!(first.1 < 0.0 && first.1 > -2.0, "{first:?}");
         let mut sum = first.1;
         for millis in (2..=13).map(|frame| (frame * 16).min(200)) {
             let frame = motion.tick(Duration::from_millis(millis)).unwrap();
@@ -222,20 +276,24 @@ mod tests {
     }
 
     #[test]
-    fn delayed_presented_frames_do_not_fast_forward_invisible_pixels() {
+    fn late_frames_advance_by_their_real_time_and_a_stall_by_at_most_fifty_ms() {
+        // 30 Hz presentation: the notch still ends after its 200 ms, in seven frames.
         let mut motion = WheelMotion::default();
         motion.push(0.0, -60.0, Duration::ZERO);
         let mut total = 0.0;
-        for millis in (1..=13).map(|frame| frame * 32) {
-            let (_, pixels) = motion.tick(Duration::from_millis(millis)).unwrap();
-            assert!(
-                pixels < 0.0 && pixels > -20.0,
-                "a delayed presentation still advances a fraction of a row: {pixels}"
-            );
+        let mut frames = 0;
+        while let Some((_, pixels)) = motion.tick(Duration::from_millis((frames + 1) * 32)) {
+            assert!(pixels < 0.0 && pixels > -25.0, "{pixels}");
             total += pixels;
+            frames += 1;
         }
+        assert_eq!(frames, 7);
         assert!((total + 60.0).abs() < 0.001);
-        assert!(!motion.active());
+        // A stall of a second counts as 50 ms: a quarter of the glide, not all of it.
+        motion.push(0.0, -60.0, Duration::from_secs(10));
+        motion.tick(Duration::from_secs(10));
+        let (_, first) = motion.tick(Duration::from_secs(11)).unwrap();
+        assert!(first < 0.0 && first > -10.0, "{first}");
     }
 
     #[test]
@@ -310,5 +368,99 @@ mod tests {
             (0.0, -(MAX_PENDING_PIXELS as f32))
         );
         assert!(!motion.active());
+    }
+
+    /// Presented 60 Hz frames until the glide ends: the frames' deltas and its duration.
+    fn glide(motion: &mut WheelMotion, start: Duration) -> (Vec<f32>, Duration) {
+        let frame = Duration::from_nanos(16_666_667);
+        let mut steps = Vec::new();
+        let mut now = start;
+        while motion.active() && steps.len() < 200 {
+            now += frame;
+            if let Some((_, y)) = motion.tick(now) {
+                steps.push(y);
+            }
+        }
+        (steps, now - start)
+    }
+
+    #[test]
+    fn one_notch_glides_for_chromiums_200_ms_at_60_hz_and_long_glides_are_shorter() {
+        for (pixels, millis) in [(100.0, 200), (120.0, 200), (300.0, 150), (480.0, 100)] {
+            let mut motion = WheelMotion::default();
+            motion.push_scaled(0.0, pixels, Duration::ZERO, 1.0);
+            motion.tick(Duration::ZERO);
+            let (steps, took) = glide(&mut motion, Duration::ZERO);
+            let total: f32 = steps.iter().sum();
+            assert!((total - pixels).abs() < 0.01, "{pixels} px moved {total}");
+            let frames = (f64::from(millis) * 60.0 / 1000.0).ceil() as u128;
+            assert_eq!(
+                took.as_nanos().div_ceil(16_666_667),
+                frames,
+                "{pixels} px took {took:?}, not {millis} ms"
+            );
+            // Ease in and out: the middle frame moves the most.
+            let peak = steps.iter().cloned().fold(0.0, f32::max);
+            assert!(
+                steps[0] < peak / 2.0 && *steps.last().unwrap() < peak / 2.0,
+                "{steps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_notch_during_a_glide_keeps_its_speed_for_chromiums_duration_or_sooner() {
+        let frame = Duration::from_nanos(16_666_667);
+        let mut motion = WheelMotion::default();
+        motion.push_scaled(0.0, 100.0, Duration::ZERO, 1.0);
+        let mut now = Duration::ZERO;
+        let mut last = 0.0;
+        for _ in 0..6 {
+            now += frame;
+            last = motion.tick(now).unwrap().1;
+        }
+        // The second notch at full speed: the next frame is not slower than the last.
+        motion.push_scaled(0.0, 100.0, now, 1.0);
+        let next = motion.tick(now + frame).unwrap().1;
+        assert!(
+            next >= last * 0.95,
+            "the glide slowed from {last} to {next} px a frame"
+        );
+        let (_, rest) = glide(&mut motion, now + frame);
+        assert!(motion.pending() == [0.0, 0.0]);
+        // The remaining 150 px glide for Chromium's duration for 150 px: 191.7 ms.
+        let took = (rest + frame).as_secs_f64() * 1000.0;
+        assert!((took - 191.7).abs() < 17.0, "{took} ms");
+
+        // A small notch late in a fast glide ends no later than its speed reaches the new
+        // target with Chromium's allowance: 2.5 × 250 px at about 8,300 px/s, 76 ms, not the
+        // 164 ms of a 250 px glide from rest.
+        let mut motion = WheelMotion::default();
+        motion.push_scaled(0.0, 480.0, Duration::ZERO, 1.0);
+        let mut now = Duration::ZERO;
+        for _ in 0..3 {
+            now += frame;
+            motion.tick(now);
+        }
+        motion.push_scaled(0.0, 10.0, now, 1.0);
+        let (_, rest) = glide(&mut motion, now);
+        assert!(rest <= Duration::from_millis(84), "{rest:?}");
+    }
+
+    #[test]
+    fn a_glide_scale_lengthens_the_glide_and_zero_moves_at_once() {
+        let mut motion = WheelMotion::default();
+        motion.push_scaled(0.0, 100.0, Duration::ZERO, 0.0);
+        assert_eq!(motion.tick(Duration::ZERO), Some((0.0, 100.0)));
+        assert!(!motion.active());
+        motion.push_scaled(0.0, 100.0, Duration::ZERO, 2.0);
+        motion.tick(Duration::ZERO);
+        let (_, took) = glide(&mut motion, Duration::ZERO);
+        assert_eq!(took.as_nanos().div_ceil(16_666_667), 24);
+        // `push` reads this thread's scale.
+        crate::set_glide_scale(0.0);
+        motion.push(0.0, 50.0, Duration::ZERO);
+        crate::set_glide_scale(1.0);
+        assert_eq!(motion.tick(Duration::ZERO), Some((0.0, 50.0)));
     }
 }

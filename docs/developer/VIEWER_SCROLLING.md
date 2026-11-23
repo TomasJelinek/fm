@@ -103,6 +103,20 @@ budgets. An uncovered frontier pauses displayed motion until usable pixels arriv
 not an inferred end of file. A camera at rest stands on a whole raster pixel, where
 strips are exact.
 
+A wheel notch moves the text, Source, Markdown and hex views, PDF and image tiles, the
+comparison and an HTML page by Chromium's distance on Chromium's glide, wall-clock timed
+([wheel distance](SCROLLING.md#wheel-distance), [wheel glide](SCROLLING.md#wheel-glide)).
+A glide that reaches the edge of the prepared strips waits there and resumes with the
+remaining distance when the strips arrive.
+
+Known limit: the renderer uploads a strip's texture when it first draws it, in the frame
+the strip scrolls into view (about 1.3 MiB at 1312 px wide, 2.6 MiB at 2624 px). The pinned
+Slint FemtoVG renderer keys the texture of a pixel-buffer image by the item that draws it
+and skips items outside the clip, so a strip cannot be uploaded before it is visible
+without renderer changes. Cutting strips into four images of 64 rows, so that a frame
+uploads less, made frames worse in native runs (more items and images per strip) and was
+not kept ([record](../verification/2026-11-23-scroll-speed.md)).
+
 A refill paints only the lines, Markdown blocks, table cells and glyphs whose ink
 can reach the raster. That reach is a conservative bound, not a font guarantee:
 4 em vertically and 8 em horizontally around each glyph origin (stacked marks

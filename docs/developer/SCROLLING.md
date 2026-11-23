@@ -14,7 +14,8 @@ in for CPU timing, and a successful startup does not prove every font/glyph case
 
 ## Input contract
 
-- Unphased mouse-wheel line deltas receive a short, interruptible ease-out.
+- Unphased mouse-wheel line deltas receive a short, interruptible glide on Chromium's
+  wheel curve ([wheel glide](#wheel-glide)).
   Only undelivered displacement accumulates; reversal discards the old tail.
 - Precise pixel deltas and phased touchpad/touch gestures follow the finger
   without easing. Linux X11 and Wayland report no momentum after the lift, so the
@@ -49,7 +50,7 @@ Details and Brief rows settle on a row boundary once a user scroll has come to
 rest: after the wheel glide, the touchpad's fingers and momentum (the system's on
 Windows and macOS, the app's on Linux), a held button or touch, and Slint's own
 wheel easing or fling have all ended and the list has not moved for 100 ms, it
-glides to the nearest row over 200 ms on the wheel glide's ease-out curve. That is
+glides to the nearest row on the [wheel glide](#wheel-glide) (200 ms). That is
 at most half a row; the exact bottom bound stays (its top row may be cut and is
 drawn). The window's `scroll-interaction-active` (wheel glide, held buttons,
 touches and phased touchpad gestures, momentum) holds the alignment; new input,
@@ -61,10 +62,11 @@ pixel position: rounding its tall bands would undo a small gesture. Other lists
 and document viewers do not acquire panel row alignment.
 
 A notch over a panel moves the viewers' notch distance: `midnight_ui_input::
-notch_pixels_for`, the shared line distance (`LINE_PIXELS`) at Windows' default
-three lines per notch, in proportion to other line counts, or one screen (the
-list's visible height). A whole notch moves the rows nearest to that distance, at
-least one (one thumbnail band), on the text viewer's 200 ms glide, and lands on a
+notch_pixels_for`, Chromium's distance for the system's setting (100 px at Windows'
+default three lines per notch, in proportion to other line counts, 87.5 % of the list's
+visible height for one screen, 120 px on Linux; [wheel distance](#wheel-distance)). A
+whole notch moves the rows nearest to that distance, at least one (one thumbnail band),
+on the text viewer's [glide](#wheel-glide), and lands on a
 row boundary even from a cut position, so no alignment follows it (`scroll_input.rs`
 `wheel_distance`). Fractional lines, such as a Windows precision touchpad's and its
 system momentum or a high-resolution wheel's steps, move their share of the notch
@@ -75,8 +77,8 @@ The panels read Windows' lines per notch (`SPI_GETWHEELSCROLLLINES`,
 `wheel_setting.rs`, as the viewer does) and its animation effects
 (`SPI_GETCLIENTAREAANIMATION`, `motion_preference.rs`) with the window's first
 native event and whenever it regains the focus. With animation effects off, panel
-wheel input moves at once and the row alignment is immediate. Other systems use
-three lines per notch, and their reduced-motion settings are not read (a known limit). The viewers
+wheel input moves at once and the row alignment is immediate. Linux has no lines setting
+(a notch moves 120 px), and its reduced-motion settings are not read (a known limit). The viewers
 honour the animation setting too ([wheel distance](#wheel-distance)).
 
 Every cursor-navigation key reveals the cursor row, also where the cursor stays:
@@ -92,20 +94,29 @@ revealed only when it or the folder changes.
 
 ## Wheel distance
 
-One wheel notch (one winit line) moves content by `midnight_ui_input::notch_pixels_for`:
-the shared line distance `LINE_PIXELS`, 100 logical px (Chromium's 100/3 px per line),
-at Windows' default of three lines per notch, in proportion to other settings (1 to 100
-lines), or one screen (the content's visible height) when Windows scrolls one screen at
-a time (`wheel_lines.rs`; `LINE_PIXELS` is in `kinetic_native.rs`). A Windows precision
-touchpad reports its finger motion and its system momentum as wheel lines, so they use
-the same distance per line.
+One wheel notch (one winit line) moves content as far as Chromium moves a page, and so
+as far as Electron applications do (`midnight_ui_input::notch_pixels_for`,
+`wheel_lines.rs`):
+
+| System setting | One notch | Chromium source |
+| --- | --- | --- |
+| Windows, *n* lines to scroll at a time | *n* × 100/3 logical px: 33.3 at one line, 100 at the default three, 200 at six (1 to 100 lines) | `ui/events/blink/web_input_event_builders_win.cc` (`kScrollbarPixelsPerLine`) |
+| Windows, one screen at a time | 87.5 % of the content's visible extent | `cc/input/scroll_utils.h` (`kMinFractionToStepWhenPaging`) |
+| Linux (X11 and Wayland), no setting | 120 logical px | `ui/events/x/events_x_utils.cc` (`kWheelScrollAmount`), Wayland's `value120` |
+
+The distance is in logical pixels (Chromium's DIPs), so it is the same on screen at every
+display scale; `LINE_PIXELS` (100, in `kinetic_native.rs`) is the Windows default. A
+Windows precision touchpad reports its finger motion and its system momentum as wheel
+lines, which follow the finger at `LINE_PIXELS` per line. A tilt wheel's horizontal
+notch moves as far as a vertical one (Chromium reads `SPI_GETWHEELSCROLLCHARS` for it; a
+known difference).
 
 Each host reads the system setting and supplies it; nothing queries it per notch. The
 viewer reads `SPI_GETWHEELSCROLLLINES` (`midnight-viewer-ui/src/wheel_setting.rs`)
 with the window's first native event and whenever the window gains the focus; the
 panels do the same (above). A `NativeScroll` glides notches with the setting its host
-gives it (`set_wheel_setting`; three lines until then). Linux and macOS have no such
-setting and keep three lines. Touchpad pixels and X11 finger lines are not notches:
+gives it (`set_wheel_setting`; the platform default until then). Linux has no such
+setting and moves Chromium's 120 px. Touchpad pixels and X11 finger lines are not notches:
 they follow the finger, lines at `LINE_PIXELS`.
 
 When the system asks for less motion (Windows: Animation effects off,
@@ -120,11 +131,42 @@ system momentum stays the system's. On other systems the setting is not read (a 
 limit). The Options setting **Scrolling glide** Off has the same effect on every
 system ([Scrolling glide setting](#scrolling-glide-setting)).
 
-Tests: `midnight-ui-input` `wheel_lines::tests` (the default, proportions, bounds, one
-screen per notch); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
+Tests: `midnight-ui-input` `wheel_lines::tests` (one, three and six lines, bounds, one
+screen per notch, Linux's fixed notch), `glide::tests` (durations by distance and scale, the
+curve, a carried speed) and `wheel_motion::tests` (a notch's 200 ms at 60 Hz in 12 frames,
+300 px in 150 ms and 480 px in 100 ms, a notch during a glide keeping its speed, 30 Hz
+frames, a stall, scale 0 and 2); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
 (a notch glides `image_motion::notch_pixels` in the text and HTML viewers; with less
 motion it moves whole on the next frame and a touchpad flick has no momentum) and
 `image_key_tests` (a notch and a key move a tiled image at once with less motion).
+
+### Wheel glide
+
+A notch glides on Chromium's wheel animation (`midnight_ui_input::WheelMotion`,
+`glide.rs`; Chromium's `cc/animation/scroll_offset_animation_curve.cc`, the inverse-delta
+duration of `ScrollType::kMouseWheel`):
+
+- **Curve:** cubic-bezier(0.42, 0, 0.58, 1), an ease-in-out.
+- **Duration:** 200 ms for a glide of up to 120 px, falling linearly to 100 ms at 480 px
+  and beyond: a notch at the defaults glides for 200 ms.
+- **Successive notches:** a notch during a glide adds its distance to what is still to
+  come and glides the rest from the current speed (the curve's first control point rises
+  to keep it), ending no later than 2.5 times the remaining distance at that speed: a fast
+  spin catches up instead of trailing further behind. A notch against the glide drops the
+  rest of the old direction (Chromium would finish it first; a deliberate difference).
+- **Time:** the presented frames' time, each frame counted up to 50 ms: at 60 Hz, and at
+  30 Hz under load, a notch takes its 200 ms of wall-clock time; a longer stall resumes
+  where it stopped instead of jumping by pixels nobody saw. Chromium computes the duration
+  from device pixels, so at 200 % its single notch glides for about 178 ms; the viewers use
+  logical pixels and glide 200 ms at every scale.
+- **Scale:** `midnight_ui_input::glide_scale()` multiplies the duration (and touchpad
+  momentum's decay time, below); 1.0 is Chromium's timing and the default, 0 moves a notch
+  at once. It belongs to the UI thread, which runs every window (panels, viewers and the
+  comparator); a host sets it with `set_glide_scale` (the Options page's Scrolling glide
+  setting, below).
+
+Chromium's numbers, with links to its source, and the measurements:
+[scroll speed record](../verification/2026-11-23-scroll-speed.md).
 
 ### Scrolling glide setting
 
@@ -229,7 +271,8 @@ install. Feeding it is `kinetic_native.rs`:
   0.8 s, so a 2000 px/s flick glides about 1600 px, 71% of it within the first
   second, and then eases out over about four seconds. It ends below 12 px/s, 0.2 px
   per 60 Hz frame, so the dropped 9.6 px crawl is invisible. Panels, viewers and the comparator share these values, so the
-  same flick glides as far everywhere.
+  same flick glides as far everywhere. The [glide scale](#wheel-glide) multiplies the
+  time constant when a fling starts; at 0 there is no momentum.
 - Each frame integrates the decay exactly over its real time, so neither travel
   nor speed depends on the refresh rate: a late redraw (a missed vsync, a slow
   debug frame) advances up to 50 ms, and only a longer stall resumes without
@@ -317,12 +360,16 @@ the page one frame at a time:
 
 - A wheel notch over the page glides through the shared `WheelMotion` exactly as in
   the text viewer: the viewer's notch distance (`image_motion::notch_pixels`, see
-  [Wheel distance](#wheel-distance)) over 200 ms, only undelivered distance adding
+  [Wheel distance](#wheel-distance)) on Chromium's [glide](#wheel-glide), only undelivered distance adding
   up, a reversal dropping the old remainder. Each native redraw (8 ms wakes,
   `WHEEL_FRAME` in `wheel_motion.rs`)
   sends that frame's share as one physical-pixel `Wheel` command, so the page travels
   as far, at the same scale, over the same time. A command the backend queue refuses
-  goes out again on the next frame before the glide's clock moves on.
+  goes out again on the next frame before the glide's clock moves on. The provider
+  hands Chromium those DIPs whole (`native/input.rs`, `WheelGesture`), so a notch moves
+  the page exactly Chromium's own distance for the system's setting, on Chromium's own
+  curve: what the page would do in Chrome or an Electron application, never a reduced
+  delta.
 - The provider starts Chromium with `disable-smooth-scrolling`. CEF's windowless
   wheel events are not precise deltas, and Chromium eases each of them over about
   170 ms (one 120 px event painted as 2, 7, 16, … 120 px over 12 frames); every
@@ -568,8 +615,10 @@ known limits.
 The strips under the window and one beyond each of its edges are painted before a
 frame is published; the rest are painted between inputs, at most 4 ms per worker
 turn, nearest first along the direction of travel and then against it. A page holds
-the prepared screens and two more along the travel: its request's line budget covers
-them, still at most 512 lines and the byte budgets below. A refill starts while the
+the prepared screens and three more along the travel (six screens in all, seven while
+fast): its request's line budget covers them, still at most 512 lines and the byte
+budgets below. The third screen lets a refill come back before the strips need it even
+from a slow plugin; it costs text, not pixels. A refill starts while the
 page holds fewer screens than the strips want along the direction of travel (a quarter
 of a screen against it) and keeps a screen against it, so it comes every two screens
 of travel and the window moves over prepared rows meanwhile. A page that is one layout
@@ -579,7 +628,7 @@ the strips' own thresholds, so it grows to hold the prepared screens, and while 
 refill reads its ranges, one plugin reply each, the camera moves on over the rows the
 page holds and the refill's page takes the camera where it is. A page of rows so long
 that one request cannot read every screen it asks for (`Worker::long_rows`) refills until
-it holds the two screens beyond the strips too, reads on after each refill until it does,
+it holds the three screens beyond the strips too, reads on after each refill until it does,
 and grows at its edge from where it starts when it already keeps the screen against the
 travel. In the Text, Source and hex
 views a camera request at rest (a key, the end of a glide) starts it too, so PageDown
