@@ -30,6 +30,20 @@ fn open(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the recent templates: the line template lists them on Down, as every common
+/// edit with recent entries does.
+fn recent_templates(app: &mut App) -> Result<(), String> {
+    input::click(
+        app.slint(),
+        AccessibleRole::TextInput,
+        "File list line template",
+    )?;
+    app.settle();
+    input::key(app.slint(), Key::DownArrow);
+    app.settle();
+    Ok(())
+}
+
 fn template(app: &mut App, text: &str) -> Result<(), String> {
     input::fill(app.slint(), "File list line template", text)?;
     app.settle();
@@ -251,12 +265,7 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     });
     open(&mut app)?;
     // The template history offers the templates used before.
-    input::click(
-        app.slint(),
-        AccessibleRole::Combobox,
-        "File list template history",
-    )?;
-    app.settle();
+    recent_templates(&mut app)?;
     let used = "$(FileNamePart)|$(FileExtension)|$(FileSize)$$$(LF)";
     let offered: Vec<String> = ps::popup_buttons(&app)
         .into_iter()
@@ -303,12 +312,7 @@ pub fn file_list(context: &mut Context) -> Result<(), String> {
     config.settings = Some(store);
     let mut app = App::start(config);
     open(&mut app)?;
-    input::click(
-        app.slint(),
-        AccessibleRole::Combobox,
-        "File list template history",
-    )?;
-    app.settle();
+    recent_templates(&mut app)?;
     let offered: Vec<String> = ps::popup_buttons(&app)
         .into_iter()
         .map(|(label, _)| label)

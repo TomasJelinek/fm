@@ -442,6 +442,18 @@ and [tags](https://fluent2.microsoft.design/components/web/react/core/tag/usage)
 These inform action grouping and dismissal, while existing keyboard behavior,
 native paths, cancellation and settings transactions remain authoritative.
 
+## Make File List layout
+
+The dialog has one content column. The header's close button, the line template, the
+pickers, Output, the destination row, the preview and the footer's Cancel end at the
+same right edge, as far from the dialog's edge as the column starts from the left
+(16 px, 20 px with touch density); the form's scroll bar lies in that right margin,
+left of the resize edge, instead of taking a column from the fields. Fields and pickers
+share one height (the control height, at least the font size and 12 px). Presets and
+Insert variable stand side by side while both captions fit and one above the other
+otherwise; a short dialog scrolls the form and keeps the footer whole. The
+`file_list_layout` tests check this at 8, 12 and 32 px fonts, desktop and touch
+density, Dark and Light, a wide and a narrow window and the 328 × 208 minimum.
 ## Review checklist
 
 Use isolated preferences and owned fixtures. Exercise mouse and keyboard,

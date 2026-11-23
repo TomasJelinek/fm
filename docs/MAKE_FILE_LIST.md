@@ -25,7 +25,11 @@ template:
 - **Full paths**: `$(Drive)$(Path)$(FileName)$(CRLF)`;
 - **Details**: `$(FileName:max)$(TAB)$(FileSize)$(TAB)$(FileDate) $(FileTime)$(TAB)$(FileAttributes)$(CRLF)`.
 
-The history button offers the last 30 different templates that produced a list.
+The line template is the dialogs' common edit: while it has the keyboard and text,
+its × clears it. **Down** (or Alt+Down) in it lists the last 30 different templates
+that produced a list, newest first; Up, Down, Home and End browse, Enter or a click
+puts the template in the line, and Escape closes the list (a second Escape the
+dialog). **Output** is the same kind of dropdown as Presets and Insert variable.
 
 | Variable | Meaning |
 | --- | --- |

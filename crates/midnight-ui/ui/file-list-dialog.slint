@@ -1,6 +1,6 @@
 import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { ScrollView, VScrollView } from "scroll-view.slint";
-import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
+import { HintedActionButton, HistoryList } from "hinted-inputs.slint";
 import { ThemedLineEdit } from "content-controls.slint";
 import { CompactPicker, Tip } from "controls.slint";
 import { Theme } from "theme.slint";
@@ -8,6 +8,7 @@ import { DialogHeader } from "dialog-frame.slint";
 import { DialogFooter } from "dialog-footer.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { FluentScrollMetrics } from "fluent-scroll-metrics.slint";
 
 // The generated list's read-only preview, scrolling both ways. The stock TextEdit
 // selects with Fluent's colours, which reach only 3.98:1 in Light; this one selects
@@ -68,6 +69,11 @@ component ListPreview inherits Rectangle {
 
 // The host captures entries and performs every preview/export on backend workers.
 // This form owns only editable fields, selection offsets and action callbacks.
+//
+// One content column: the header's close button, every field, picker and the preview,
+// and the footer's Cancel end at the same right edge, as far from the dialog's edge as
+// the column starts from the left one. The form's scroll bar lies in that right margin,
+// left of the resize edge, instead of taking a column of its own from the fields.
 export component FileListDialog inherits Rectangle {
     background: Theme.surface; border-color: Theme.active-frame;
     border-width: 1px; border-radius: 6px;
@@ -102,6 +108,16 @@ export component FileListDialog inherits Rectangle {
     private property <bool> compact: root.height < 360px;
     private property <bool> can-submit: !root.busy && root.template-text != ""
         && (root.destination != 2 || root.destination-path != "");
+    // The side margins hold the form's scroll bar clear of the resize edge.
+    private property <length> side: Theme.touch ? 20px : 16px;
+    // Fields and pickers share one height.
+    private property <length> field-height: max(Theme.control-height, Theme.font-size + 12px);
+    // Presets and Insert variable side by side while both captions fit, else stacked.
+    private property <bool> pickers-stacked: form-scroll.visible-width
+        < presets.compact-width + variables.compact-width + 8px;
+    // A list or menu that is open takes Escape first.
+    private property <bool> list-open: history.open || presets.popup-open
+        || variables.popup-open || output.popup-open;
 
     public function begin() {
         if root.busy { scope.focus(); }
@@ -120,12 +136,13 @@ export component FileListDialog inherits Rectangle {
         // A key router, not a Tab stop; begin() still focuses it while busy.
         focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
-            if event.text == Key.Escape { root.cancel(); return accept; }
+            if event.text == Key.Escape && !root.list-open { root.cancel(); return accept; }
             reject
         }
         VerticalLayout {
             x: 0px; y: 0px; width: parent.width; height: parent.height;
-            padding: root.compact ? 4px : 12px;
+            padding-left: root.side; padding-right: root.side;
+            padding-top: root.compact ? 4px : 12px; padding-bottom: root.compact ? 4px : 12px;
             spacing: root.compact ? 4px : 8px;
             DialogHeader {
                 title: root.conflict-pending ? "Confirm existing output" : "Make File List";
@@ -139,11 +156,12 @@ export component FileListDialog inherits Rectangle {
                 text: root.summary; color: Theme.secondary-text; overflow: elide;
                 min-width: 0px; font-size: Theme.small-font;
             }
-            Rectangle {
-                min-height: 0px; min-width: 0px; vertical-stretch: 1; clip: true;
+            body := Rectangle {
+                min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 if root.conflict-pending: VScrollView {
+                    x: 0px; y: 0px; width: body.width + FluentScrollMetrics.overlay-size; height: body.height;
                     VerticalLayout {
-                        spacing: 10px; padding: 8px; alignment: start;
+                        spacing: 10px; padding-top: 8px; padding-bottom: 8px; alignment: start;
                         Text {
                             text: root.append-output ? "Append the generated list to this file?" : "Replace this file with the generated list?";
                             color: Theme.strong-text; wrap: word-wrap; font-weight: 600;
@@ -156,77 +174,55 @@ export component FileListDialog inherits Rectangle {
                     }
                 }
                 form-scroll := VScrollView {
+                    x: 0px; y: 0px; width: body.width + FluentScrollMetrics.overlay-size; height: body.height;
                     visible: !root.conflict-pending;
-                    content-width: self.visible-width;
                     content-height: max(self.visible-height, form.min-height);
                     form := VerticalLayout {
                         height: form-scroll.content-height;
-                        padding-right: 8px; spacing: 8px;
+                        spacing: 8px;
                         Text { text: "Line template"; color: Theme.strong-text; font-weight: 600; }
-                        HorizontalLayout {
-                            spacing: 4px; height: Theme.control-height;
-                            Rectangle {
-                                min-width: 0px; horizontal-stretch: 1;
-                                background: Theme.surface; border-width: 1px; border-radius: 4px;
-                                border-color: template-input.has-focus ? Theme.active-frame : Theme.frame;
-                                ContextMenuArea {
-                                    Menu {
-                                        MenuItem { title: @tr("Undo"); enabled: !root.busy; activated => { template-input.undo(); } }
-                                        MenuItem { title: @tr("Redo"); enabled: !root.busy; activated => { template-input.redo(); } }
-                                        MenuSeparator {}
-                                        MenuItem { title: @tr("Cut"); enabled: !root.busy; activated => { template-input.cut(); } }
-                                        MenuItem { title: @tr("Copy"); activated => { template-input.copy(); } }
-                                        MenuItem { title: @tr("Paste"); enabled: !root.busy; activated => { template-input.paste(); } }
-                                        MenuItem { title: @tr("Select All"); activated => { template-input.select-all(); } }
-                                    }
-                                    Rectangle {
-                                        x: 8px; width: max(1px, parent.width - 16px); height: parent.height;
-                                        clip: true;
-                                        template-input := TextInput {
-                                            private property <length> horizontal-offset;
-                                            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.horizontal-offset));
-                                            width: max(1px, parent.width - self.text-cursor-width, self.preferred-width);
-                                            height: parent.height;
-                                            text <=> root.template-text;
-                                            enabled: !root.busy; single-line: true;
-                                            font-family: root.preview-font-family; font-size: Theme.font-size;
-                                            color: root.busy ? Theme.muted-text : Theme.text;
-                                            selection-foreground-color: Theme.selection-text;
-                                            selection-background-color: Theme.selection-background;
-                                            vertical-alignment: center; accessible-label: "File list line template";
-                                            edited => { root.template-edited(self.text); }
-                                            accepted => { root.submit(); }
-                                            cursor-position-changed(position) => {
-                                                if position.x + self.horizontal-offset < 0px { self.horizontal-offset = -position.x; }
-                                                else if position.x + self.horizontal-offset > parent.width - self.text-cursor-width {
-                                                    self.horizontal-offset = parent.width - position.x - self.text-cursor-width;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Tip { text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."; }
+                        // The common edit, with the recent templates on Down or Alt+Down.
+                        template-input := ThemedLineEdit {
+                            text <=> root.template-text;
+                            enabled: !root.busy; clear-button: true;
+                            height: root.field-height; min-width: 0px;
+                            accessible-label: "File list line template";
+                            accessible-expandable: root.template-history.length > 0;
+                            accessible-expanded: history.open;
+                            accessible-action-expand => { history.open-list(); }
+                            edited(text) => { root.template-edited(text); }
+                            accepted => { root.submit(); }
+                            key-pressed(event) => {
+                                if history.opens(event) { history.open-list(); return accept; }
+                                reject
                             }
-                            CompactPicker {
-                                model: root.template-history; label: ""; width: Theme.control-height;
-                                minimum-control-width: 0px; show-row-icons: false;
-                                enabled: !root.busy && root.template-history.length > 0;
-                                accessible-name: "File list template history";
-                                hint: "Reuse a previously generated file list template.";
-                                selected(index) => { root.select-history(index); }
+                            Tip {
+                                text: "One template is expanded for each selected item. Insert variables, tabs and line endings from the menu."
+                                    + (root.template-history.length > 0 ? "\nDown: recent templates." : "");
+                            }
+                            history := HistoryList {
+                                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                                enabled: !root.busy; entries: root.template-history;
+                                chosen(index) => { root.select-history(index); }
+                                closed => { template-input.focus(); }
                             }
                         }
-                        HorizontalLayout {
+                        // Side by side while both captions fit, else one above the other.
+                        GridLayout {
                             spacing: 8px; vertical-stretch: 0;
-                            CompactPicker {
+                            presets := CompactPicker {
+                                row: 0; col: 0;
                                 model: ["Names", "Full paths", "Details"]; label: "Presets";
+                                control-height: root.field-height;
                                 minimum-control-width: 0px; horizontal-stretch: 1; show-row-icons: false;
                                 enabled: !root.busy; accessible-name: "File list template preset";
                                 hint: "Replace the template with names, full paths or aligned metadata columns.";
                                 selected(index) => { root.select-preset(index); }
                             }
-                            CompactPicker {
+                            variables := CompactPicker {
+                                row: root.pickers-stacked ? 1 : 0; col: root.pickers-stacked ? 0 : 1;
                                 model: root.variable-labels; label: "Insert variable";
+                                control-height: root.field-height;
                                 minimum-control-width: 0px; horizontal-stretch: 1; show-row-icons: false;
                                 enabled: !root.busy && root.variable-labels.length > 0;
                                 accessible-name: "Insert file list variable";
@@ -235,18 +231,21 @@ export component FileListDialog inherits Rectangle {
                             }
                         }
                         Text { text: "Output"; color: Theme.strong-text; font-weight: 600; }
-                        HintedComboBox {
+                        output := CompactPicker {
                             model: ["Clipboard", "Internal viewer", "File"];
-                            current-index <=> root.destination;
-                            min-width: 0px; enabled: !root.busy;
-                            accessible-label: "File list output destination";
+                            current-index: root.destination;
+                            label: root.destination == 1 ? "Internal viewer" : root.destination == 2 ? "File" : "Clipboard";
+                            control-height: root.field-height;
+                            minimum-control-width: 0px; show-row-icons: false;
+                            enabled: !root.busy; accessible-name: "File list output destination";
                             hint: "Choose where the generated list will be sent when you press Create list.";
+                            selected(index) => { root.destination = index; }
                         }
                         if root.destination == 2: HorizontalLayout {
-                            spacing: 6px; min-height: Theme.control-height; vertical-stretch: 0;
-                            // Themed, so that selected text uses the theme's selection colours.
+                            spacing: 8px; vertical-stretch: 0;
                             ThemedLineEdit {
                                 text <=> root.destination-path; min-width: 0px; horizontal-stretch: 1;
+                                height: root.field-height; clear-button: true;
                                 enabled: !root.busy; accessible-label: "File list destination path";
                                 placeholder-text: "Destination file";
                                 accepted => { root.submit(); }
@@ -254,6 +253,7 @@ export component FileListDialog inherits Rectangle {
                             }
                             HintedActionButton {
                                 text: "Browse…"; fallback-icon: FallbackIcons.open-path;
+                                minimum-control-height: 0px; control-height: root.field-height; vertical-padding: 0px;
                                 enabled: !root.busy; accessible-label: "Browse file list destination";
                                 hint: "Choose the output file using the system file dialog.";
                                 clicked => { root.browse(); }

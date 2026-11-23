@@ -1084,11 +1084,8 @@ fn make_file_list_fields_select_with_theme_colours_in_every_theme() {
             "File list destination path",
             "File list preview",
         ] {
-            let item = if label == "File list line template" {
-                host.item(AccessibleRole::TextInput, label)
-            } else {
-                field_input(&host, label)
-            };
+            let item = field_input(&host, label);
+
             let input = item.downcast::<TextInput>().expect("a text input");
             let input = input.as_pin_ref();
             let (foreground, background) = (

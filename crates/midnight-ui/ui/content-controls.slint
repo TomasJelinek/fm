@@ -4,6 +4,10 @@ import { ActionButton } from "action-icons.slint";
 
 // Ordinary text input: its visible native editor owns selection, IME and clipboard.
 // No displayed value is interpreted as a native path or routed through PathPasteView.
+// With `clear-button` it is the dialogs' common edit, as the stock LineEdit
+// (HintedLineEdit) is, for fields that need its caret offsets or the theme's selection
+// colours: while it has the keyboard and text it shows the same inline clear ×
+// (docs/developer/DIALOG_ERGONOMICS.md, "Common edit").
 export component ThemedLineEdit inherits Rectangle {
     in-out property <string> text <=> edit.text;
     in property <bool> enabled: true;
@@ -16,7 +20,14 @@ export component ThemedLineEdit inherits Rectangle {
     // Room kept free at the field's end for a control placed inside it (an inline
     // clear): the text, caret and placeholder end before it.
     in property <length> end-inset;
+    // The inline clear: shown, as the stock LineEdit shows it, while the field has the
+    // keyboard and text and is enabled, editable and not a password. A click empties
+    // the field as an edit (`edited("")`) and keeps the keyboard in it.
+    in property <bool> clear-button;
     out property <bool> has-focus: edit.has-focus;
+    private property <bool> clear-shown: root.clear-button && root.has-focus && root.enabled
+        && !root.read-only && root.text != "" && root.input-type != InputType.password;
+    private property <length> clear-width: root.clear-shown ? 22px : 0px;
     out property <string> preedit: edit.preedit-text;
     out property <int> cursor-position-byte-offset: edit.cursor-position-byte-offset;
     out property <int> anchor-position-byte-offset: edit.anchor-position-byte-offset;
@@ -80,7 +91,8 @@ export component ThemedLineEdit inherits Rectangle {
         }
         viewport := Rectangle {
             x: 6px; y: 1px;
-            width: max(1px, parent.width - 12px - root.end-inset); height: max(1px, parent.height - 2px);
+            width: max(1px, parent.width - 12px - root.end-inset - root.clear-width);
+            height: max(1px, parent.height - 2px);
             clip: true;
             changed width => { root.reveal-caret(); }
             Text {
@@ -117,6 +129,15 @@ export component ThemedLineEdit inherits Rectangle {
                 key-pressed(event) => { root.key-pressed(event) }
                 key-released(event) => { root.key-released(event) }
             }
+        }
+    }
+    if root.clear-shown: Image {
+        x: parent.width - 6px - self.width; y: (parent.height - self.height) / 2;
+        width: 16px; height: 16px;
+        source: @image-url("icons/close.svg"); colorize: Theme.text; image-fit: contain;
+        accessible-role: none;
+        TouchArea {
+            clicked => { root.text = ""; root.edited(""); edit.focus(); }
         }
     }
 }

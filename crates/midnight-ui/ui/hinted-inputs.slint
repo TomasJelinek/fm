@@ -24,38 +24,34 @@ export component HintedLineEdit inherits LineEdit {
     if root.hint != "": Tooltip { TipBody { text: root.hint; } }
 }
 
-// The shared edit line (HintedLineEdit: inline clear, focus underline, hint) with a
-// dropdown of recent entries, newest first. Down or Alt+Down in the line opens it; Up,
-// Down, Home and End browse; Return or a click chooses an entry and `chosen(index)`
-// lets the owner fill the line and whatever else the entry restores. Choosing applies
-// nothing. Escape (or Tab) closes the list and returns to the line; the next Escape
-// reaches the owner. Stock widgets accept no child but a Tooltip, so the list opens
-// from this wrapper, below the line (above it when there is more room there).
-export component HistoryLineEdit inherits Rectangle {
-    in-out property <string> text <=> edit.text;
-    in property <string> placeholder-text <=> edit.placeholder-text;
-    in property <string> hint <=> edit.hint;
+// The recent entries of an edit line, newest first, in a list that opens below the line
+// (above it when there is more room there). Place it over the line, as large as the
+// line: it takes no input itself. `open-list()` opens it; Up, Down, Home and End
+// browse; Return or a click chooses an entry and `chosen(index)` lets the owner fill the
+// line and whatever else the entry restores. Choosing applies nothing. Escape (or Tab)
+// closes the list and `closed()` returns the keyboard to the line; the next Escape
+// reaches the owner. HistoryLineEdit and Make File List's line template use it.
+export component HistoryList inherits Rectangle {
     in property <bool> enabled: true;
-    // Names the text input; the list's rows carry their own labels.
-    in property <string> accessible-name;
     // Entry labels, newest first.
     in property <[string]> entries;
     in property <length> popup-min-width: 320px;
-    out property <bool> list-open;
-    out property <bool> has-focus: edit.has-focus;
-    callback accepted(string);
-    callback edited(string);
+    out property <bool> open;
     callback chosen(int);
+    callback closed();
     private property <int> browsed;
     // Set while `close-list()` closes the list itself.
     private property <bool> closing;
     private property <length> row-height: Theme.control-height;
-    public function focus-line() { edit.focus(); }
-    public function select-all() { edit.select-all(); }
+    // Down or Alt+Down in the line opens the list; owners route their key here.
+    public pure function opens(event: KeyEvent) -> bool {
+        return event.text == Key.DownArrow && !event.modifiers.control && !event.modifiers.shift
+            && !event.modifiers.meta && root.enabled && root.entries.length > 0;
+    }
     public function open-list() {
         if root.enabled && root.entries.length > 0 {
             root.browsed = 0;
-            root.list-open = true;
+            root.open = true;
             list.show();
         }
     }
@@ -63,38 +59,16 @@ export component HistoryLineEdit inherits Rectangle {
         root.closing = true;
         list.close();
         root.closing = false;
-        root.list-open = false;
-        edit.focus();
+        root.open = false;
+        root.closed();
     }
     function choose(index: int) {
         root.close-list();
         if root.enabled && index >= 0 && index < root.entries.length { root.chosen(index); }
     }
-    changed enabled => { if !root.enabled && root.list-open { root.close-list(); } }
-    changed entries => { if root.list-open { root.close-list(); } }
-    min-width: 0px;
-    min-height: edit.min-height;
-    preferred-height: edit.preferred-height;
-    horizontal-stretch: 1; vertical-stretch: 0;
+    changed enabled => { if !root.enabled && root.open { root.close-list(); } }
+    changed entries => { if root.open { root.close-list(); } }
     accessible-role: none;
-    forward-focus: edit;
-    edit := HintedLineEdit {
-        width: parent.width; height: parent.height;
-        enabled: root.enabled; accessible-label: root.accessible-name;
-        accessible-expandable: root.entries.length > 0;
-        accessible-expanded: root.list-open;
-        accessible-action-expand => { root.open-list(); }
-        key-pressed(event) => {
-            if event.text == Key.DownArrow && !event.modifiers.control && !event.modifiers.shift
-                && !event.modifiers.meta && root.entries.length > 0 {
-                root.open-list();
-                return accept;
-            }
-            reject
-        }
-        accepted(text) => { root.accepted(text); }
-        edited(text) => { root.edited(text); }
-    }
     list := PopupWindow {
         private property <length> wanted: root.entries.length * root.row-height + 10px;
         private property <length> below: PopupList.room-below(root.absolute-position.y, root.height);
@@ -108,7 +82,7 @@ export component HistoryLineEdit inherits Rectangle {
         close-policy: close-on-click-outside;
         forward-focus: list-keys;
         list-keys := FocusScope {
-            focus-changed-event => { if !root.closing { root.list-open = self.has-focus; } }
+            focus-changed-event => { if !root.closing { root.open = self.has-focus; } }
             key-pressed(event) => {
                 if event.text == Key.DownArrow {
                     root.browsed = min(root.entries.length - 1, root.browsed + 1);
@@ -150,6 +124,55 @@ export component HistoryLineEdit inherits Rectangle {
                 }
             }
         }
+    }
+}
+
+// The shared edit line (HintedLineEdit: inline clear, focus underline, hint) with its
+// recent entries (HistoryList). Down or Alt+Down in the line lists them. Stock widgets
+// accept no child but a Tooltip, so the list opens from this wrapper.
+export component HistoryLineEdit inherits Rectangle {
+    in-out property <string> text <=> edit.text;
+    in property <string> placeholder-text <=> edit.placeholder-text;
+    in property <string> hint <=> edit.hint;
+    in property <bool> enabled: true;
+    // Names the text input; the list's rows carry their own labels.
+    in property <string> accessible-name;
+    // Entry labels, newest first.
+    in property <[string]> entries;
+    in property <length> popup-min-width: 320px;
+    out property <bool> list-open: history.open;
+    out property <bool> has-focus: edit.has-focus;
+    callback accepted(string);
+    callback edited(string);
+    callback chosen(int);
+    public function focus-line() { edit.focus(); }
+    public function select-all() { edit.select-all(); }
+    public function open-list() { history.open-list(); }
+    min-width: 0px;
+    min-height: edit.min-height;
+    preferred-height: edit.preferred-height;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    accessible-role: none;
+    forward-focus: edit;
+    edit := HintedLineEdit {
+        width: parent.width; height: parent.height;
+        enabled: root.enabled; accessible-label: root.accessible-name;
+        accessible-expandable: root.entries.length > 0;
+        accessible-expanded: root.list-open;
+        accessible-action-expand => { root.open-list(); }
+        key-pressed(event) => {
+            if history.opens(event) { root.open-list(); return accept; }
+            reject
+        }
+        accepted(text) => { root.accepted(text); }
+        edited(text) => { root.edited(text); }
+    }
+    history := HistoryList {
+        width: parent.width; height: parent.height;
+        enabled: root.enabled; entries: root.entries;
+        popup-min-width: root.popup-min-width;
+        chosen(index) => { root.chosen(index); }
+        closed => { edit.focus(); }
     }
 }
 

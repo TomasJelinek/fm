@@ -74,6 +74,7 @@ mod error_notices;
 mod feed_panel_keys;
 mod file_actions_ui;
 mod file_list_actions;
+mod file_list_layout;
 mod file_list_window;
 mod filename_colors;
 mod find_actions;
