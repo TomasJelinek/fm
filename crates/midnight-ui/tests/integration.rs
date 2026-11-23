@@ -45,6 +45,7 @@ mod command_menus;
 mod command_path_overlay;
 mod commander_dialogs;
 mod commander_edges;
+mod common_edits;
 mod compact_controls;
 mod compact_feedback;
 mod compact_surfaces;

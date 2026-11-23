@@ -1,5 +1,7 @@
 //! Show hidden files and Select/Deselect by mask through the real window: keypad
 //! keys, Ctrl+H, the F10 menu, each panel's View menu, Options and the dialog.
+#[path = "support/render.rs"]
+mod render;
 use crate::support::ui;
 
 use i_slint_core::items::AccessibleRole;
@@ -172,6 +174,9 @@ fn keypad_plus_and_minus_open_the_mask_dialog_and_enter_marks_matching_files() {
     ui::key(&window, "t");
     ui::key(&window, "x");
     ui::key(&window, "t");
+    // The mask is the common edit: with the keyboard and text it shows its inline ×.
+    h.ui.draw();
+    render::snapshot(&h.ui, "select-mask-common-edit");
     ui::key(&window, Key::Return);
     h.ui.draw();
     assert!(

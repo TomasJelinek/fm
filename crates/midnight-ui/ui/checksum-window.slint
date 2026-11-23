@@ -271,9 +271,11 @@ export component ChecksumWindow inherits ToolWindow {
                     Text { text: "Checksum file"; color: Theme.strong-text; font-weight: 600; }
                     HorizontalLayout {
                         spacing: 8px;
-                        // Themed, so that selected text uses the theme's selection colours.
+                        // The common edit, themed so that selected text uses the theme's
+                        // selection colours.
                         ThemedLineEdit {
                             text <=> root.manifest-path; accessible-label: "Checksum file to verify";
+                            clear-button: true;
                             enabled: !root.running && !root.saving && !root.picker-busy;
                             min-width: 0px; horizontal-stretch: 1; height: Theme.control-height;
                             accepted => { root.submit-verify(); }

@@ -1,9 +1,7 @@
 import { FallbackIcons } from "action-icons.slint";
-import { HintedCheckBox, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
-import { LineEdit } from "std-widgets.slint";
+import { HintedCheckBox, HintedActionButton, HintedComboBox, HintedLineEdit } from "hinted-inputs.slint";
 import { VScrollView } from "scroll-view.slint";
 import { ListView } from "vlist-view.slint";
-import { TipBody } from "controls.slint";
 import { Theme } from "theme.slint";
 import { ErrorNotice } from "error-notice.slint";
 import { DialogTabs } from "dialog-tabs.slint";
@@ -219,15 +217,13 @@ component PluginExtensionEditor inherits VerticalLayout {
             clicked => { root.reset(); }
         }
     }
-    extension-editor := LineEdit {
+    extension-editor := HintedLineEdit {
         text <=> root.extensions; min-width: 0px;
         accessible-label: root.thumbnailer ? "Thumbnailer extensions" : "Viewer extensions";
         enabled: root.settings-ready;
         edited => { root.edited(self.text); }
-        Tooltip { TipBody {
-            text: root.thumbnailer ? "An empty list disables this thumbnailer's extension matches. Select OK to save."
-                : "Separate extensions with spaces, commas or semicolons. Enter rs, .rs or *.rs. An empty list removes specific matches. Select OK to save.";
-        } }
+        hint: root.thumbnailer ? "An empty list disables this thumbnailer's extension matches. Select OK to save."
+            : "Separate extensions with spaces, commas or semicolons. Enter rs, .rs or *.rs. An empty list removes specific matches. Select OK to save.";
     }
     if root.error != "" : Text {
         private property <string> feedback: root.feedback-revision;

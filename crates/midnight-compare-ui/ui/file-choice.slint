@@ -21,7 +21,7 @@ component FileField inherits VerticalLayout {
         spacing: 6px;
         edit := ThemedLineEdit {
             font-size: root.font-size; control-height: root.control-height;
-            text <=> root.path; enabled: !root.busy;
+            text <=> root.path; enabled: !root.busy; clear-button: true;
             horizontal-stretch: 1; min-width: 40px;
             accessible-label: root.label;
             accepted(value) => { root.submit(); }

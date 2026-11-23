@@ -25,6 +25,7 @@ export component CompareFindBar inherits VerticalLayout {
         edit := ThemedLineEdit {
             font-size: root.font-size; control-height: root.control-height;
             text <=> root.query; placeholder-text: "Find in both files";
+            clear-button: true;
             accessible-label: "Find in compared files";
             accepted => { root.search(false); }
             edited => { root.edited(); }

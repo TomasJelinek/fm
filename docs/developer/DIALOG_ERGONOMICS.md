@@ -442,6 +442,46 @@ and [tags](https://fluent2.microsoft.design/components/web/react/core/tag/usage)
 These inform action grouping and dismissal, while existing keyboard behavior,
 native paths, cancellation and settings transactions remain authoritative.
 
+## Common edit
+
+Every single-line text field in a dialog or tool window is the common edit: a framed
+line that, while it has the keyboard and text and is enabled and editable, shows an
+inline clear × at its right end; a click on the × empties the field as an edit and
+leaves the keyboard in it. A password field shows no × (as Fluent's own field), so the
+archive password clears only while Show password reveals it. There are two
+implementations with that behaviour:
+
+- `HintedLineEdit` (Slint's Fluent `LineEdit` with an optional hint) and
+  `HistoryLineEdit` (the same line with its recent entries), used by Options, Find,
+  Panel filter and About;
+- `ThemedLineEdit` with `clear-button: true`, for fields that need their caret
+  offsets (Make File List inserts variables at the caret) or the theme's selection
+  colours, which the stock `LineEdit` does not let a host set (contrast in Light).
+
+Recent entries open from the line itself (`HistoryList`, Down or Alt+Down), never from
+a picker beside it: Panel filter's expression and Make File List's line template. The
+`common_edits` test scans every `.slint` file of the application, the viewer and the
+comparator and fails for any other text field that is not listed with its reason:
+
+| Field | Why it is not the common edit |
+| --- | --- |
+| Make File List preview | multi-line and read-only |
+| Custom Command script | multi-line |
+| Command line | its own history, completion and path insertion keys |
+| Path bar editor | its own Go button and native path paste |
+| Panel quick search | Escape and Backspace end it; it is not a form field |
+| Date and time segments (Attributes › Times) | each segment steps with the arrows |
+| Number boxes (`ThemedSpinBox`, the colour picker's channels, viewer font size) | they step with − and + or arrows |
+| Viewer zoom entry | a transient editor that leaving cancels, so an × would only cancel |
+| Viewer find bar | its frame already holds its own inline clear |
+| Copy conflict name, Copy/Move/Rename/Create name | pending: they take `clear-button: true` with the Copy/Move/Delete dialog work |
+| Compare directories' time tolerance | pending: it takes `clear-button: true` with the Compare directories work |
+
+Pickers: a dialog uses one kind of dropdown for its fields. Make File List's Presets,
+Insert variable (action menus, which Slint's `ComboBox` cannot be) and Output are all
+`CompactPicker`s, as tall as its fields. Pages that use Slint's `ComboBox` throughout
+(Options pages, Find, Panel filter) keep it.
+
 ## Make File List layout
 
 The dialog has one content column. The header's close button, the line template, the

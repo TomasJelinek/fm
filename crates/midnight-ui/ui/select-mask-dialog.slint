@@ -72,6 +72,7 @@ export component MaskSelectionDialog inherits Rectangle {
                     }
                     pattern := ThemedLineEdit {
                         enabled: root.input-enabled; accessible-label: "Selection mask";
+                        clear-button: true;
                         min-height: root.field-height; preferred-height: root.field-height;
                         min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
                         placeholder-text: "*.txt;*.md";
