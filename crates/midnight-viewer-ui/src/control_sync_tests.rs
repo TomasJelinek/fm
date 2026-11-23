@@ -433,7 +433,7 @@ fn retired_media_cannot_repopulate_controls_or_pixels_after_a_failed_replacement
 }
 
 #[test]
-fn video_status_row_resize_keeps_same_session_advancing_pixels() {
+fn video_status_changes_keep_the_canvas_and_same_session_advancing_pixels() {
     let (_runtime, manager, open, service) = image_presentation_tests::open();
     open.timer.stop();
     let (inputs, _) = capture(&open);
@@ -490,18 +490,24 @@ fn video_status_row_resize_keeps_same_session_advancing_pixels() {
         open.window.get_media_controls().status,
         "Starting playback…"
     );
+    // The status row is always reserved: a pending command neither moves nor resizes
+    // the video, so the backend gets no Resize.
     let pending = window_geometry(&open.window);
-    assert_eq!(pending.width, ready.width);
-    assert!(
-        pending.height < ready.height,
-        "the actual pending-control row must shrink the canvas"
+    assert_eq!(
+        (pending.width, pending.height),
+        (ready.width, ready.height),
+        "a pending command must not resize the canvas"
     );
     pump_geometry(&open);
     let events = std::mem::take(&mut *inputs.borrow_mut());
-    assert!(matches!(events.as_slice(), [
-        ViewerInput::MediaControl(MediaControl { session: MediaSessionId(7), id: MediaControlId(1), action: MediaAction::SetPlaying(true) }),
-        ViewerInput::Resize(geometry),
-    ] if geometry.width == pending.width && geometry.height == pending.height));
+    assert!(matches!(
+        events.as_slice(),
+        [ViewerInput::MediaControl(MediaControl {
+            session: MediaSessionId(7),
+            id: MediaControlId(1),
+            action: MediaAction::SetPlaying(true)
+        }),]
+    ));
     let advancing = frame(11, [211, 37, 61, 255]);
     assert!(open.layout.borrow().accepts_frame(&advancing));
     assert!(
@@ -525,12 +531,9 @@ fn video_status_row_resize_keeps_same_session_advancing_pixels() {
     assert_eq!(open.window.get_caption(), "Playback frame 11");
     assert!(open.window.get_media_controls().status.is_empty());
     let settled = window_geometry(&open.window);
-    assert_eq!(settled.height, ready.height);
+    assert_eq!((settled.width, settled.height), (ready.width, ready.height));
     pump_geometry(&open);
-    assert!(
-        matches!(std::mem::take(&mut *inputs.borrow_mut()).as_slice(), [ViewerInput::Resize(geometry)]
-        if geometry.width == settled.width && geometry.height == settled.height)
-    );
+    assert!(std::mem::take(&mut *inputs.borrow_mut()).is_empty());
     present_outputs(
         &open,
         &service,
@@ -540,7 +543,7 @@ fn video_status_row_resize_keeps_same_session_advancing_pixels() {
     assert_eq!(
         open.frame.get(),
         12,
-        "status collapse also preserves the same media generation"
+        "a cleared status also preserves the same media generation"
     );
     open.window
         .window()

@@ -157,8 +157,10 @@ export component MediaControls inherits Rectangle {
     background: Theme.surface;
     border-width: 1px; border-color: Theme.frame; border-radius: 4px;
     min-width: 0px; horizontal-stretch: 1; vertical-stretch: 0;
-    min-height: root.control-height + root.inset * 2
-        + (root.message == "" ? 0px : root.message-height + 2px);
+    // The status row is always reserved: a press shows "Starting playback…", "Pausing…" or
+    // "Seeking…" until the helper confirms it, and a row that came and went with that
+    // text shrank and grew the video above on every press.
+    min-height: root.control-height + root.inset * 2 + root.message-height + 2px;
     preferred-height: self.min-height;
     VerticalLayout {
         padding: root.inset;
@@ -195,12 +197,15 @@ export component MediaControls inherits Rectangle {
                 accessible-value: root.state.time;
             }
         }
-        if root.message != "" : Text {
+        Rectangle {
             height: root.message-height;
-            text: root.message; font-size: root.status-size;
-            color: root.state.error == "" ? Theme.muted-text : Theme.error-text;
-            overflow: elide; vertical-alignment: center;
-            accessible-role: text; accessible-label: root.message;
+            if root.message != "" : Text {
+                width: parent.width; height: parent.height;
+                text: root.message; font-size: root.status-size;
+                color: root.state.error == "" ? Theme.muted-text : Theme.error-text;
+                overflow: elide; vertical-alignment: center;
+                accessible-role: text; accessible-label: root.message;
+            }
         }
     }
 }

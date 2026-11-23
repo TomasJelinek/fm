@@ -18,9 +18,11 @@
 //! H.264 or AAC decoder: the H.264 movie reaches the system's decoders, on Windows
 //! through the Media Foundation helpers and on Linux through the distribution's FFmpeg
 //! libraries, then GStreamer, after the bundled helpers report that they have no decoder
-//! for it. The first ten frames are magenta, the last ten green: both colours read the
-//! same as RGB or BGR, and stay far apart after lossy compression and the decoders'
-//! colour conversion.
+//! for it. On Windows the viewer opens an `.mp4` with the Media Foundation helper first,
+//! so there the plain videos reach the bundled helper after that one cannot open them.
+//! The report notes each video's time from F3 to its first frame. The first ten frames
+//! are magenta, the last ten green: both colours read the same as RGB or BGR, and stay
+//! far apart after lossy compression and the decoders' colour conversion.
 use crate::{
     Context,
     app::{self, App, Config},
@@ -205,17 +207,23 @@ fn tile(app: &App, name: &str) -> Option<Canvas> {
 /// button work by pointer and keyboard.
 fn playback(app: &mut App, context: &mut Context, name: &str) -> Result<(), String> {
     panel::select_row(app, PaneId::Left, name)?;
+    let pressed = Instant::now();
     let viewing = support::view(app, false, OPEN_LIMIT)?;
     let result = (|| {
         viewing.result.clone()?;
         wait_frame(&viewing, app, "the first frame", FIRST, |state| {
             state.can_play_pause && state.can_seek
         })?;
+        let first = pressed.elapsed();
+        context.note(format!(
+            "{name}: F3 to the first frame took {} ms",
+            first.as_millis()
+        ));
         support::save_canvas(
             context,
             &viewing.canvas(),
             &format!("video-{name}-first"),
-            &format!("{name}: the first frame"),
+            &format!("{name}: the first frame, {} ms after F3", first.as_millis()),
         );
         // A click at three quarters of the position slider.
         let slider = inspect::find(viewing.slint(), AccessibleRole::Slider, "Playback position")

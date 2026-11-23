@@ -8,6 +8,11 @@ pub(super) struct PreparedOpening {
     /// needs no viewport, so it overlaps native window and swapchain creation;
     /// the first viewport is still requested only after the acknowledgement.
     pub image: Option<crate::image_worker::ImageWorker>,
+    /// A video helper started likewise: it starts and loads its decoders meanwhile, and
+    /// opens the video when the canvas size is known.
+    pub video: Option<VideoView>,
+    /// The helper that opens a video first, chosen by its container.
+    pub video_first: VideoWorker,
 }
 
 impl Worker {
@@ -23,9 +28,16 @@ impl Worker {
     /// A started image provider closes like a displayed one: the next opening waits
     /// for its actor instead of joining it on this worker.
     pub(super) fn retire_pending_layout(&mut self) {
-        if let Some(mut image) = self.pending_layout.take().and_then(|opening| opening.image) {
+        let Some(opening) = self.pending_layout.take() else {
+            return;
+        };
+        if let Some(mut image) = opening.image {
             image.cancel();
             self.closing_image = Some(image);
+        }
+        if let Some(mut video) = opening.video {
+            video.cancel();
+            self.closing_video = Some(video);
         }
     }
 
@@ -167,10 +179,19 @@ impl Worker {
                 }
             }
         };
+        let video_first = self
+            .video_installation
+            .as_ref()
+            .filter(|_| self.mode == VIEWER_MODE_VIDEO)
+            .map_or(VideoWorker::Bundled, |installation| {
+                installation.first_worker(path)
+            });
         Ok(PreparedOpening {
             file,
             route,
             image: None,
+            video: None,
+            video_first,
         })
     }
 
@@ -188,6 +209,19 @@ impl Worker {
                     self.wake.clone(),
                     self.image_startup.clone(),
                 )?);
+            }
+            if self.mode == VIEWER_MODE_VIDEO
+                && let Some(installation) = self.video_installation.clone()
+            {
+                // A failure to start is reported when the opening starts it again.
+                opening.video = VideoView::start(
+                    installation,
+                    opening.file.clone(),
+                    self.positions.generation,
+                    opening.video_first,
+                    self.wake.clone(),
+                )
+                .ok();
             }
             self.pending_layout = Some(opening);
             output.put(ViewerOutput::LayoutSelected {
@@ -228,7 +262,13 @@ impl Worker {
         opening: PreparedOpening,
         output: &Mailbox,
     ) -> Result<(), String> {
-        let PreparedOpening { file, route, image } = opening;
+        let PreparedOpening {
+            file,
+            route,
+            image,
+            video,
+            video_first,
+        } = opening;
         self.chains.clear();
         self.session = match route {
             crate::routing::Route::Office { renderer } => {
@@ -252,16 +292,25 @@ impl Worker {
                     .clone()
                     .ok_or("Selected video viewer is unavailable.")?;
                 let generation = self.positions.generation;
-                let video = VideoView::start(
-                    installation,
-                    file,
-                    generation,
-                    self.geometry.width,
-                    self.geometry.height,
-                    self.wake.clone(),
-                );
+                let video = match video {
+                    Some(video) if video.session_id() == MediaSessionId(generation) => Ok(video),
+                    stale => {
+                        if let Some(mut stale) = stale {
+                            stale.cancel();
+                            self.closing_video = Some(stale);
+                        }
+                        VideoView::start(
+                            installation,
+                            file,
+                            generation,
+                            video_first,
+                            self.wake.clone(),
+                        )
+                    }
+                };
                 match video {
-                    Ok(video) => {
+                    Ok(mut video) => {
+                        video.show(self.geometry.width, self.geometry.height);
                         output.put(ViewerOutput::MediaSnapshot(video.presentation()));
                         self.video = Some(video);
                     }

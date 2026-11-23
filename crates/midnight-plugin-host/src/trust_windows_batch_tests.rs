@@ -36,4 +36,26 @@ fn another_package_validation_rejects_changed_file_or_ancestor_permissions() {
             .contains("writable or replaceable")
     );
     crate::validate_plugin_package(&directory).unwrap();
+
+    // Objects in a nested folder are checked on their own after their folder, which is
+    // checked as an object of the package: a writable notice or folder is still refused.
+    let notices = directory.join("notices");
+    std::fs::create_dir(&notices).unwrap();
+    let notice = notices.join("LICENSE.txt");
+    std::fs::write(&notice, b"fixture").unwrap();
+    crate::validate_plugin_package(&directory).unwrap();
+    for path in [&notice, &notices] {
+        fixture_acl(path, "D:P(A;;FA;;;WD)").unwrap();
+        let changed = crate::validate_plugin_package(&directory);
+        protect_fixture(path).unwrap();
+        assert!(
+            changed
+                .unwrap_err()
+                .to_string()
+                .contains("writable or replaceable"),
+            "{}",
+            path.display()
+        );
+    }
+    crate::validate_plugin_package(&directory).unwrap();
 }

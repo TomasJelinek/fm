@@ -104,6 +104,15 @@ mod trust {
             "Native plugin permission validation unsupported on this platform".into(),
         ))
     }
+    pub struct EntryCheck;
+    impl EntryCheck {
+        pub fn new() -> Result<Self, crate::Error> {
+            check(std::path::Path::new("")).map(|()| Self)
+        }
+        pub fn check(&self, path: &std::path::Path) -> Result<(), crate::Error> {
+            check(path)
+        }
+    }
 }
 
 use std::{

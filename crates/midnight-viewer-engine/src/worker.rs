@@ -6,7 +6,7 @@ use crate::{
     video_actor::{VideoUpdate, VideoView},
 };
 use midnight_core::*;
-use midnight_media_host::video_installation::{VIDEO_PROVIDER_ID, VideoInstallation};
+use midnight_media_host::video_installation::{VIDEO_PROVIDER_ID, VideoInstallation, VideoWorker};
 use midnight_plugin_host::{
     EventKind, OPEN_REQUEST_ID, Runtime, Session,
     api::{messages, viewer},

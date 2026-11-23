@@ -15,6 +15,8 @@ fn prepare_html(worker: &mut Worker) -> (tempfile::TempDir, super::super::layout
             file,
             route: crate::routing::Route::Process { index: 0 },
             image: None,
+            video: None,
+            video_first: midnight_media_host::video_installation::VideoWorker::Bundled,
         },
     )
 }
@@ -292,6 +294,8 @@ fn video_layout_waits_for_matching_canvas_before_admitting_the_capture() {
                 file,
                 route: crate::routing::Route::Process { index: 0 },
                 image: None,
+                video: None,
+                video_first: midnight_media_host::video_installation::VideoWorker::Bundled,
             },
             &output,
         )
@@ -384,6 +388,8 @@ fn prepare_image(
             file,
             route: crate::routing::Route::Process { index: 0 },
             image: None,
+            video: None,
+            video_first: midnight_media_host::video_installation::VideoWorker::Bundled,
         },
     )
 }

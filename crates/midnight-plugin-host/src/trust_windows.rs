@@ -39,6 +39,21 @@ pub(crate) fn check(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Checks the objects inside a folder that [`check`] has just accepted with every folder
+/// above it: each object's own owner and ACL, as [`check`] tests a path's first component,
+/// without repeating the ancestors for every object.
+pub(crate) struct EntryCheck(Identity);
+
+impl EntryCheck {
+    pub(crate) fn new() -> Result<Self, Error> {
+        Ok(Self(Identity::current()?))
+    }
+
+    pub(crate) fn check(&self, path: &Path) -> Result<(), Error> {
+        check_one(path, &self.0, MODIFY_RIGHTS)
+    }
+}
+
 struct Identity {
     user: Vec<u64>,
     installer: [u32; 17],

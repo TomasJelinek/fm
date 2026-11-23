@@ -332,7 +332,12 @@ tried), the viewer starts the platform helper on the same capture: on Windows th
 Media Foundation helper, which decodes H.264, HEVC, AV1, MPEG-2/4, VC-1/WMV and Motion
 JPEG with AAC, MP3 or Windows Media Audio, the usual content of `.mp4` and `.wmv`
 files; on Linux the helper that loads the distribution's FFmpeg, else GStreamer, which
-also read `.wmv` and `.asf` (ASF) files. A
+also read `.wmv` and `.asf` (ASF) files. On Windows, a file named `.mp4`, `.m4v`,
+`.mov`, `.3gp`, `.asf`, `.wmv` or `.avi` (by its suffix; the host does not parse the
+video) starts with the Media Foundation helper instead, and the bundled helper follows
+when that one cannot open it for any reason but cancellation. The first helper starts
+while the viewer window lays out its canvas, as an image provider does, and opens the
+video once the canvas size is known. A
 codec that neither has is named with what provides it, for example "This video uses
 HEVC; Windows has no decoder for it installed (HEVC Video Extensions)", on Windows N
 "... (Media Feature Pack)", or on Linux the distribution's packages ("This video uses

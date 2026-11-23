@@ -1,27 +1,49 @@
 use crate::Error;
 use std::{os::unix::fs::MetadataExt, path::Path};
 pub(crate) fn check(path: &Path) -> Result<(), Error> {
-    // SAFETY: get effective UID has no pointer arguments or side effects.
-    let user = unsafe { libc::geteuid() };
+    let user = effective_user();
     for (index, component) in path.ancestors().enumerate() {
-        let metadata = std::fs::symlink_metadata(component)?;
-        if metadata.file_type().is_symlink()
-            || !matches!(metadata.uid(), 0) && metadata.uid() != user
-        {
-            return Err(Error(format!(
-                "Plugin path is redirected or owned by another account: {}",
-                component.display()
-            )));
-        }
-        // A trusted-owned sticky ancestor such as /tmp prevents other users replacing
-        // the already validated child. The installation directory itself is never shared.
-        let sticky_parent = index != 0 && metadata.is_dir() && metadata.mode() & 0o1000 != 0;
-        if metadata.mode() & 0o022 != 0 && !sticky_parent {
-            return Err(Error(format!(
-                "Plugin path is writable or replaceable by another account: {}",
-                component.display()
-            )));
-        }
+        check_one(component, index, user)?;
+    }
+    Ok(())
+}
+
+fn effective_user() -> u32 {
+    // SAFETY: get effective UID has no pointer arguments or side effects.
+    unsafe { libc::geteuid() }
+}
+
+/// Checks the objects inside a folder that [`check`] has just accepted with every folder
+/// above it: each object on its own, as [`check`] tests a path's first component, without
+/// repeating the ancestors for every object.
+pub(crate) struct EntryCheck(u32);
+
+impl EntryCheck {
+    pub(crate) fn new() -> Result<Self, Error> {
+        Ok(Self(effective_user()))
+    }
+
+    pub(crate) fn check(&self, path: &Path) -> Result<(), Error> {
+        check_one(path, 0, self.0)
+    }
+}
+
+fn check_one(component: &Path, index: usize, user: u32) -> Result<(), Error> {
+    let metadata = std::fs::symlink_metadata(component)?;
+    if metadata.file_type().is_symlink() || !matches!(metadata.uid(), 0) && metadata.uid() != user {
+        return Err(Error(format!(
+            "Plugin path is redirected or owned by another account: {}",
+            component.display()
+        )));
+    }
+    // A trusted-owned sticky ancestor such as /tmp prevents other users replacing
+    // the already validated child. The installation directory itself is never shared.
+    let sticky_parent = index != 0 && metadata.is_dir() && metadata.mode() & 0o1000 != 0;
+    if metadata.mode() & 0o022 != 0 && !sticky_parent {
+        return Err(Error(format!(
+            "Plugin path is writable or replaceable by another account: {}",
+            component.display()
+        )));
     }
     Ok(())
 }

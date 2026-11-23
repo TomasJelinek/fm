@@ -27,6 +27,8 @@ mod links;
 mod links_tests;
 mod media_controls;
 #[cfg(test)]
+mod media_layout_tests;
+#[cfg(test)]
 mod opening_retirement_tests;
 #[cfg(test)]
 mod opening_tests;

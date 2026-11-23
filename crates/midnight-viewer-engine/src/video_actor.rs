@@ -4,8 +4,7 @@ use midnight_core::{
 };
 use midnight_media_host::{
     CpuBudget, PlaybackEpoch, PlaybackSnapshot, PlaybackState, ResourcePolicy,
-    system_decoders::MissingDecoder,
-    video_installation::{VideoInstallation, VideoWorker},
+    video_installation::{VideoInstallation, VideoWorker, both_failed, fallback_worker},
     video_process::{CapturedVideoSource, VideoProcess, VideoRetirement},
     video_session::{DecoderReply, DecoderRequest, VideoSession},
     video_transport::{
@@ -148,6 +147,8 @@ impl ControlProgress {
 pub(crate) struct VideoView {
     cancelled: Arc<AtomicBool>,
     command: Option<SyncSender<DecoderRequest>>,
+    /// Gives the broker the canvas size it waits for before opening the video.
+    size: Option<SyncSender<OutputBounds>>,
     replies: Receiver<Reply>,
     broker: Option<JoinHandle<io::Result<()>>>,
     decoder_finished: Arc<AtomicBool>,
@@ -167,6 +168,7 @@ impl VideoView {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
             command: None,
+            size: None,
             replies,
             broker: None,
             decoder_finished: Arc::new(AtomicBool::new(true)),
@@ -180,12 +182,14 @@ impl VideoView {
         }
     }
 
+    /// Start `first` of the installed helpers on `file`. The helper starts at once, while
+    /// the viewer still lays out its canvas; it opens the video when [`Self::show`] gives
+    /// it the canvas size.
     pub(crate) fn start(
         installation: VideoInstallation,
         file: CapturedFile,
         generation: u64,
-        width: u32,
-        height: u32,
+        first: VideoWorker,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
         let id = NonZeroU64::new(generation).ok_or("Invalid video session identity")?;
@@ -195,6 +199,7 @@ impl VideoView {
         let finished = decoder_finished.clone();
         let (command, incoming) = mpsc::sync_channel(1);
         let (results, replies) = mpsc::sync_channel(2);
+        let (size, sized) = mpsc::sync_channel(1);
         let broker = thread::Builder::new()
             .name("video-decoder-broker".into())
             .spawn(move || {
@@ -210,15 +215,14 @@ impl VideoView {
                     wake();
                     Ok::<(), io::Error>(())
                 };
-                let bounds = OutputBounds {
-                    width: width.clamp(1, 1920),
-                    height: height.clamp(1, 1080),
-                };
                 let result = run(
-                    installation,
-                    file,
-                    SessionGeneration(id),
-                    bounds,
+                    Opening {
+                        installation,
+                        file,
+                        first,
+                        session: SessionGeneration(id),
+                        size: sized,
+                    },
                     incoming,
                     &stop,
                     &publish,
@@ -234,6 +238,7 @@ impl VideoView {
         Ok(Self {
             cancelled,
             command: Some(command),
+            size: Some(size),
             replies,
             broker: Some(broker),
             decoder_finished,
@@ -245,6 +250,19 @@ impl VideoView {
             notice: None,
             retirement_error: None,
         })
+    }
+
+    /// The canvas is laid out at `width` x `height` physical pixels: the helper opens the
+    /// video and decodes frames within these bounds. Only the first call counts.
+    pub(crate) fn show(&mut self, width: u32, height: u32) {
+        if let Some(size) = self.size.take() {
+            // The broker takes the one size the channel holds; a broker that already
+            // stopped reports its own failure.
+            let _ = size.try_send(OutputBounds {
+                width: width.clamp(1, 1920),
+                height: height.clamp(1, 1080),
+            });
+        }
     }
 
     pub(crate) fn presentation(&self) -> MediaSnapshot {
@@ -403,6 +421,8 @@ impl VideoView {
     pub(crate) fn cancel(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         self.command.take();
+        // A broker still waiting for the canvas size stops waiting.
+        self.size.take();
         // Detach audible output before waiting for a previous source reader or
         // the restricted process to retire. These calls stay on the same worker.
         if let Some(mut session) = self.session.take() {
@@ -461,21 +481,35 @@ struct BrokerResult {
     retired: io::Result<()>,
 }
 
-fn run(
+/// What the broker opens: `file` in the `first` helper, then the other when the first
+/// cannot open it, at the canvas size size delivers.
+struct Opening {
     installation: VideoInstallation,
     file: CapturedFile,
+    first: VideoWorker,
     session: SessionGeneration,
-    bounds: OutputBounds,
+    size: Receiver<OutputBounds>,
+}
+
+fn run(
+    opening: Opening,
     incoming: Receiver<DecoderRequest>,
     cancel: &Arc<AtomicBool>,
     publish: &impl Fn(Reply) -> io::Result<()>,
 ) -> BrokerResult {
-    let deadline = Instant::now() + STARTUP;
+    let Opening {
+        installation,
+        file,
+        first,
+        session,
+        size,
+    } = opening;
     let mut retirement = None;
     let playback = (|| {
         // The owners and the transports share one consuming capture wrapper.
         let source = CapturedVideoSource::new(file, false);
-        let open = |which, retirement: &mut Option<VideoRetirement>| {
+        let launch = |which, retirement: &mut Option<VideoRetirement>| {
+            let deadline = Instant::now() + STARTUP;
             let permit = DecoderPermit::acquire(cancel, deadline)?;
             // The platform helper also maps the system's media frameworks.
             let memory_bytes = match which {
@@ -494,36 +528,39 @@ fn run(
                 (source.clone(), permit),
             )?;
             *retirement = Some(process.retirement());
+            Ok::<_, io::Error>(process)
+        };
+        // The first helper starts while the viewer lays out its canvas; only opening the
+        // video needs the canvas size. A closed viewer drops the sender.
+        let process = launch(first, &mut retirement);
+        let bounds = size
+            .recv()
+            .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
+        let open = |process: io::Result<VideoProcess>| {
             VideoTransport::open(
-                process,
+                process?,
                 source.clone(),
                 session,
                 bounds,
                 VideoIo {
-                    deadline,
+                    deadline: Instant::now() + STARTUP,
                     cancelled: cancel,
                 },
             )
         };
-        let mut transport = match open(VideoWorker::Bundled, &mut retirement) {
+        let mut transport = match open(process) {
             Ok(transport) => transport,
             Err(error) => {
-                // The bundled profile has no decoder for this video: the platform's decoders
-                // may. The first helper retires and returns its decoder slot before the second.
-                let Some(bundled) = MissingDecoder::find(&error)
-                    .filter(|_| installation.platform_worker().is_some())
-                else {
+                let platform = installation.platform_worker().is_some();
+                let Some(second) = fallback_worker(first, &error, platform) else {
                     return Err(error);
                 };
+                // The first helper retires and returns its decoder slot before the second.
                 if let Some(finished) = retirement.take() {
-                    finished.wait(deadline)?;
+                    finished.wait(Instant::now() + STARTUP)?;
                 }
-                open(VideoWorker::Platform, &mut retirement).map_err(|error| {
-                    match MissingDecoder::find(&error) {
-                        Some(platform) => bundled.then(platform).into(),
-                        None => error,
-                    }
-                })?
+                open(launch(second, &mut retirement))
+                    .map_err(|later| both_failed(first, error, later))?
             }
         };
         publish(Reply::Opened(transport.identity(), transport.metadata()))?;

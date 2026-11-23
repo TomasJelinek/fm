@@ -58,16 +58,83 @@ struct Manifest {
 /// Which installed playback helper decodes a session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoWorker {
-    /// The bundled FFmpeg profile, tried first.
+    /// The bundled FFmpeg profile.
     Bundled,
-    /// The platform's decoders, for a video the bundled profile has no decoder for.
+    /// The platform's decoders.
     Platform,
+}
+
+/// Containers that usually hold video the bundled profile has no decoder for (H.264, HEVC,
+/// Windows Media) and the system's decoders play: their first helper is the platform's,
+/// so an opening does not start, probe and retire a bundled helper first.
+#[cfg(windows)]
+const PLATFORM_FIRST: &[&str] = &["mp4", "m4v", "mov", "3gp", "asf", "wmv", "avi"];
+#[cfg(not(windows))]
+const PLATFORM_FIRST: &[&str] = &[];
+
+/// Whether the platform's helper should open `name` first (by its suffix alone: the host
+/// never parses the video).
+fn platform_first(name: &Path) -> bool {
+    name.extension()
+        .and_then(|suffix| suffix.to_str())
+        .is_some_and(|suffix| {
+            PLATFORM_FIRST
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(suffix))
+        })
+}
+
+/// The helper to try when `first` could not open a video with `error`, if any. The bundled
+/// helper hands over only a video it has no decoder for; the platform's helper hands over
+/// whatever it could not open (a container or codec its decoders do not read, or decoders
+/// that are not installed), unless the opening was cancelled.
+pub fn fallback_worker(
+    first: VideoWorker,
+    error: &io::Error,
+    platform_installed: bool,
+) -> Option<VideoWorker> {
+    match first {
+        VideoWorker::Bundled => (platform_installed
+            && crate::system_decoders::MissingDecoder::find(error).is_some())
+        .then_some(VideoWorker::Platform),
+        VideoWorker::Platform => {
+            (error.kind() != io::ErrorKind::Interrupted).then_some(VideoWorker::Bundled)
+        }
+    }
+}
+
+/// The error to report when both helpers failed: the decoders both lacked, or the error of
+/// the helper whose failure says more. A platform helper that had a decoder but failed
+/// explains more than the bundled profile's missing decoder.
+pub fn both_failed(
+    first: VideoWorker,
+    first_error: io::Error,
+    second_error: io::Error,
+) -> io::Error {
+    use crate::system_decoders::MissingDecoder;
+    let (bundled, platform) = match first {
+        VideoWorker::Bundled => (first_error, second_error),
+        VideoWorker::Platform => (second_error, first_error),
+    };
+    match (
+        MissingDecoder::find(&bundled),
+        MissingDecoder::find(&platform),
+    ) {
+        (Some(bundled), Some(platform)) => bundled.then(platform).into(),
+        (Some(_), None) => platform,
+        _ => bundled,
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct VideoInstallation {
     package: PathBuf,
     manifest: Manifest,
+    /// The descriptor's bytes when it was discovered: each launch reads it again and
+    /// compares the content. Not its native revision: NTFS moves a file's ChangeTime for
+    /// changes that leave content alone (a hard link made or removed, an attribute or a
+    /// security scan's stream), and a stale revision then refused every later video until
+    /// the application restarted. The helpers' code is pinned on its own.
     descriptor_revision: Vec<u8>,
     /// Whether the platform helper is installed beside the bundled helpers.
     platform: bool,
@@ -100,6 +167,15 @@ impl VideoInstallation {
 
     pub fn extensions(&self) -> &[String] {
         &self.manifest.extensions
+    }
+
+    /// The helper that opens `name` first; [`fallback_worker`] names the other.
+    pub fn first_worker(&self, name: &Path) -> VideoWorker {
+        if self.platform && platform_first(name) {
+            VideoWorker::Platform
+        } else {
+            VideoWorker::Bundled
+        }
     }
 
     /// The platform helper, when it is installed.
@@ -234,7 +310,8 @@ fn read_descriptor(capture: &CapturedFile) -> io::Result<(Manifest, Vec<u8>)> {
     if content.len() as u64 != length {
         return Err(invalid_descriptor());
     }
-    Ok((parse_manifest(&content)?, capture.stable_version()))
+    let manifest = parse_manifest(&content)?;
+    Ok((manifest, content))
 }
 
 fn parse_manifest(content: &[u8]) -> io::Result<Manifest> {
@@ -318,5 +395,73 @@ mod tests {
                 io::ErrorKind::InvalidData
             );
         }
+    }
+
+    #[test]
+    fn the_container_chooses_the_first_helper_and_the_other_is_the_fallback() {
+        use crate::system_decoders::{MissingDecoder, TRIED_BUNDLED, TRIED_MEDIA_FOUNDATION};
+        for name in [
+            "clip.mp4", "CLIP.MOV", "a.m4v", "a.3gp", "a.asf", "a.wmv", "a.avi",
+        ] {
+            assert_eq!(platform_first(Path::new(name)), cfg!(windows), "{name}");
+        }
+        for name in ["clip.webm", "clip.mkv", "clip.ogv", "mp4", "clip.mp4.part"] {
+            assert!(!platform_first(Path::new(name)), "{name}");
+        }
+
+        let missing = |tried| io::Error::from(MissingDecoder { codec: 1, tried });
+        let damaged = || io::Error::new(io::ErrorKind::InvalidData, "damaged");
+        let cancelled = || io::Error::from(io::ErrorKind::Interrupted);
+        // The bundled helper hands over only a missing decoder, and only to an installed
+        // platform helper.
+        assert_eq!(
+            fallback_worker(VideoWorker::Bundled, &missing(TRIED_BUNDLED), true),
+            Some(VideoWorker::Platform)
+        );
+        assert_eq!(
+            fallback_worker(VideoWorker::Bundled, &missing(TRIED_BUNDLED), false),
+            None
+        );
+        assert_eq!(
+            fallback_worker(VideoWorker::Bundled, &damaged(), true),
+            None
+        );
+        // The platform helper hands over whatever it could not open, unless cancelled.
+        for error in [missing(TRIED_MEDIA_FOUNDATION), damaged()] {
+            assert_eq!(
+                fallback_worker(VideoWorker::Platform, &error, true),
+                Some(VideoWorker::Bundled)
+            );
+        }
+        assert_eq!(
+            fallback_worker(VideoWorker::Platform, &cancelled(), true),
+            None
+        );
+
+        // Both lacked a decoder: the report names everything that was tried.
+        for first in [VideoWorker::Bundled, VideoWorker::Platform] {
+            let (one, two) = match first {
+                VideoWorker::Bundled => (missing(TRIED_BUNDLED), missing(TRIED_MEDIA_FOUNDATION)),
+                VideoWorker::Platform => (missing(TRIED_MEDIA_FOUNDATION), missing(TRIED_BUNDLED)),
+            };
+            assert_eq!(
+                MissingDecoder::find(&both_failed(first, one, two)),
+                Some(MissingDecoder {
+                    codec: 1,
+                    tried: TRIED_BUNDLED | TRIED_MEDIA_FOUNDATION
+                })
+            );
+        }
+        // A platform decoder that failed says more than the bundled profile's missing one,
+        // and a bundled failure that is not a missing decoder is the bundled helper's.
+        let report = both_failed(VideoWorker::Platform, damaged(), missing(TRIED_BUNDLED));
+        assert_eq!(report.kind(), io::ErrorKind::InvalidData);
+        let report = both_failed(
+            VideoWorker::Platform,
+            missing(TRIED_MEDIA_FOUNDATION),
+            damaged(),
+        );
+        assert_eq!(report.kind(), io::ErrorKind::InvalidData);
+        assert!(MissingDecoder::find(&report).is_none());
     }
 }
