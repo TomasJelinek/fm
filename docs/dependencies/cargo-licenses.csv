@@ -583,9 +583,9 @@ vtable,0.5.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-i
 vtable-macro,0.5.0,MIT OR Apache-2.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,
 walkdir,2.5.0,Unlicense/MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
 wayland-backend,0.3.15,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
-wayland-backend,0.3.17,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
+wayland-backend,0.3.17,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,midnight-platform-linux
 wayland-client,0.31.14,MIT,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux,
-wayland-client,0.31.15,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,
+wayland-client,0.31.15,MIT,registry+https://github.com/rust-lang/crates.io-index,app,Linux,midnight-platform-linux
 wayland-csd-frame,0.3.0,MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 wayland-cursor,0.31.14,MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,
 wayland-protocols,0.32.13,MIT,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux,

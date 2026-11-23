@@ -12,7 +12,7 @@ here is distributed under its own license.
 
 ## Inventories
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **78** package/version
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **80** package/version
   records declared by project crates, including build and test tools.
 - [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **673**
   package/version/source records with **551** distinct crate names, including
@@ -310,7 +310,7 @@ their versions vary by installation.
 | GNU libc (`libc`, `libm`, loader) | Linux runtime | LGPL-2.1-or-later with exceptions ([upstream](https://sourceware.org/glibc/)) |
 | GCC `libgcc_s` | Linux unwinding | GPL-3.0-or-later WITH GCC-exception-3.1 ([terms](https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html)) |
 | X11/XCB libraries | Linux windows and input | MIT/X11/BSD family, per component ([X.Org notices](https://xorg.freedesktop.org/archive/current/doc/xorg-docs/License.html)) |
-| Wayland client libraries | Linux Wayland windows | MIT family ([upstream](https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/COPYING)) |
+| Wayland client libraries | Linux Wayland windows and Wayland drag and drop (opened at run time) | MIT family ([upstream](https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/COPYING)) |
 | libxkbcommon | Linux keyboard handling | MIT/ISC/X11-style terms ([license](https://raw.githubusercontent.com/xkbcommon/libxkbcommon/master/LICENSE)) |
 | libudev | Linux device discovery | LGPL-2.1-or-later ([systemd](https://raw.githubusercontent.com/systemd/systemd/main/README)) |
 | Vulkan loader | Linux graphics | Apache-2.0 ([license](https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/main/LICENSE.txt)) |

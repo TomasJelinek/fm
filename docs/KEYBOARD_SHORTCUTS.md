@@ -299,17 +299,18 @@ choice follows the volumes as described above. Editors, toolbars, dialogs and th
 hidden panel do not receive file drops.
 
 Dragging out to Windows applications offers Copy and Move; Explorer as the target
-moves on the same volume and copies to another one, Ctrl copies and Shift moves.
-Dragging out under X11/XWayland offers Copy only. Native Wayland supports dragging
-inside the application only (PLAT-03 in the
-[implementation backlog](IMPLEMENTATION_BACKLOG.md)).
-A drag reaches other applications only once its button has been held for 0.4 s:
-until then the window keeps the pointer, so a quicker release outside it is
-cancelled as above. Drops from other applications are not timed.
+moves on the same volume and copies to another one, Ctrl copies and Shift moves, as
+Explorer decides. Dragging out under X11, XWayland or native Wayland offers Copy only.
+A drag goes to the application under the pointer as soon as it leaves the window; a
+release there less than 0.4 s after the press still cancels it (the other application
+sees the drag leave, or under Wayland receives an empty list), and the source panel
+says so. Drops from other applications are not timed. Rows of an archive or the Network
+view cannot be dragged. `MIDNIGHT_WAYLAND_DND=0` limits a Wayland window to dragging
+between its panels.
 Drops from other applications always copy; in a source application that offers only
 Move, hold its Copy key (usually Ctrl). Legacy X11 sources without XDND proxy support
 cannot drop into the application. Incoming drops share the verified copy queue and its
-conflict prompts. On Windows and X11/XWayland, an incoming drop refused after the Copy
+conflict prompts. On Windows, X11/XWayland and Wayland, an incoming drop refused after the Copy
 cursor was shown (for example more than 1,000,000 items, a full copy queue, a destination
 that changed, or a source that does not deliver its file list) shows its reason in the
 status line instead of ending silently; a drop that never showed the Copy cursor ends

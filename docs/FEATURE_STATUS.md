@@ -27,8 +27,8 @@ How to read it:
 - **Windows and Linux:** `build.bat` and `build.sh` build the application together with
   every plugin package; release packages contain every viewer, filesystem and
   thumbnailer package.
-- **Linux specifics:** native Wayland supports drag and drop between the panels only
-  (PLAT-03). On Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which
+- **Linux specifics:** native Wayland drag and drop with other applications is new and
+  not yet qualified on a compositor (PLAT-03). On Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which
   it offers to install; Chromium never runs without its sandbox.
 - **Open:** macOS (PLAT-01); native and manual qualification on other distributions,
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
@@ -193,13 +193,20 @@ How to read it:
 
 - **Windows and Linux:** files dragged between the panels move on a proven same volume
   and are copied otherwise (Ctrl forces Copy, Shift forces Move); drops from other
-  applications are copied. Windows uses OLE; Linux uses X11 or XWayland XDND and the X11
-  file clipboard.
-- **Open:** native Wayland exchange with other applications (PLAT-03).
+  applications are copied. A drag leaving the window goes to the other application at
+  once; released within 0.4 s of the press it is cancelled there too. Windows uses OLE
+  with a Shell data object and the Shell drag image, and takes drops from .NET programs;
+  Linux uses X11 or XWayland XDND and the X11 file clipboard, and under native Wayland
+  the window's own data device. Archive and Network rows say why they do not drag.
+- **Open:** native Wayland exchange is implemented but not qualified on a compositor,
+  and the Linux changes have not run on Linux (PLAT-03); drops from other applications
+  land in a panel's current folder, never in a folder row.
 - **Documents:** [keyboard shortcuts](KEYBOARD_SHORTCUTS.md),
   [security requirements](../SECURITY.md#file-drag-and-drop).
 - **Verified:** `files_clipboard_drag`, `journeys_pointer_only`; statuses in the
-  [transfers record](developer/acceptance/transfers.md) (Clipboard and drag and drop).
+  [transfers record](developer/acceptance/transfers.md) (Clipboard and drag and drop);
+  drags to and from other Windows applications by real mouse in the
+  [drag and drop record](verification/file-drag-drop.md#2026-11-23-dragging-to-and-from-other-applications).
 
 ## Find
 

@@ -139,12 +139,15 @@ Mouse file dragging uses the same verified copy queue for drops into either pane
 displayed directory. In flat panels, ordinary file rows and image tiles target the
 panel's current folder; folder rows target that folder. Dragging a selected row keeps
 the selected group; dragging an unselected row targets that item. Native exchange
-with other applications uses Windows OLE or Linux X11/XWayland XDND. Native Wayland
-currently supports internal panel dragging only. Internal drops move on a proven same
-volume and otherwise copy; Ctrl forces Copy and Shift forces Move. A drag released
-less than 0.4 s after the button press is cancelled wherever it ends, and other
-applications receive a drag only once its press is that old. Incoming native drops
-copy and retain sources; copying out is performed by the receiving application.
+with other applications uses Windows OLE, Linux X11/XWayland XDND or, in a native
+Wayland session, the Wayland data device. A drag that leaves the window goes to the
+application under the pointer at once, which shows what a drop there would do; Windows
+targets also see the Shell's drag image with the item count. Internal drops move on a
+proven same volume and otherwise copy; Ctrl forces Copy and Shift forces Move. A drag
+released less than 0.4 s after the button press is cancelled wherever it ends, in
+another application too. Incoming native drops copy into the panel's current folder
+and retain sources; copying out is performed by the receiving application. Items in
+an archive or the Network view cannot be dragged; copy archive items with F5.
 See [drag/drop controls](KEYBOARD_SHORTCUTS.md)
 and the [native boundary](../SECURITY.md#file-drag-and-drop).
 

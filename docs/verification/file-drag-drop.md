@@ -286,3 +286,86 @@ Four of these tests check the 400 ms rule on a test clock, each comparing a rele
 Logs: `_build/qa/g-ui-drag-lib.log` and `_build/qa/g-ui-drag-integration.log`.
 These tests dispatch software pointer events; no physical desktop gesture and no
 drag into another application was performed.
+
+## 2026-11-23: Dragging to and from other applications
+
+The owner reported dragging outside the application as missing on Windows and Linux.
+Before changing anything, the unmodified application (base `77a22d64`, unoptimized
+build, `--ui-smoke-test --software` with in-memory settings and private folders) was
+dragged with the real mouse on Windows 11 (build 26200, 200 % scaling) to and from a
+private WinForms probe window that logs what OLE delivers. The probe and its driver
+stay under `_build/dnd-probe/`; they are diagnostics, not product code. Linux could
+not be run here: the findings below for Linux come from the source and the existing
+Xvfb tests.
+
+| Scenario | System | Before | Why | Now |
+| --- | --- | --- | --- | --- |
+| A file dragged out of a panel to another application's window | Windows | Worked, poorly: the target got CF_HDROP only, no Shell item list, no drag image | Our own data object carried one format; no drag image helper | Shell data object (Shell item list, file descriptors and the same CF_HDROP list), Shell drag image with the item count |
+| The same, moved there quickly and held | Windows | The operating system took the drag only once the press was 0.4 s old; until then the target showed nothing | The drag bridge waited for 0.4 s and for the pointer to leave the window | The drag goes to the operating system as soon as it leaves the window; the target reacts at once |
+| A quick flick out of the window, released within 0.4 s | Windows | Cancelled, the target never saw it | As above | Still cancelled with the note "Drag cancelled: released within 0.4 s"; the target sees the drag enter and leave, never a drop |
+| Explorer windows and the desktop as targets | Windows | Same-volume Move, cross-volume Copy, Ctrl/Shift as Explorer decides (2026-11-10 Shell tests); not tried against live Explorer windows | — | Unchanged; Explorer now also gets its Shell item list. Not re-run against live Explorer windows (the owner's desktop) |
+| Move to a target that moves the files itself (optimized Move) | Windows | Reported Moved; the source panel refreshes | — | Unchanged, now read from the Shell object; covered by the real-mouse test below |
+| Files dropped in from a .NET program (WinForms, WPF) | Windows | Failed: "The dropped file list is malformed or not Unicode", nothing copied | Their DROPFILES header writes `fWide` as -1; the decoder accepted only 1 | Any nonzero BOOL is Unicode; the probe's file was copied into the panel. Clipboard paste from such programs shares the decoder |
+| Files dropped in from Explorer and other native programs | Windows | Copied | — | Unchanged |
+| Drop onto a folder row | Windows, Linux | Copied into the panel's current folder, not into the folder | Native drop targets are whole panels | Open: native targets are still whole panels (folder rows only for drags between panels) |
+| Drop onto tabs, the path bar, drive buttons | Windows, Linux | No drop | By design: they are not drop targets | Unchanged |
+| Rows of an archive or the Network view dragged | Windows, Linux | Nothing happened, without a reason | Such rows have no native file to hand over | The status line says "Items in an archive or the Network view cannot be dragged; copy archive items with F5." No virtual-file export |
+| Drag out to Nautilus, Dolphin, a browser, another instance (X11, XWayland) | Linux | Copy-only XDND with `text/uri-list` (Xvfb peer tests) | — | Same transport; the drag starts on leaving the window and a release before 0.4 s sends XdndLeave instead of XdndDrop. Not run against real desktops here |
+| Any external drag in or out of a native Wayland window | Linux | Refused: panel to panel only | No same-connection seat or data device | Implemented on winit's own connection (`wl_data_device`, `text/uri-list`, Copy). Compiled and linted for Linux; its unit tests and a compositor qualification have not run |
+
+### Windows evidence
+
+Commands, from the checkout root with `CARGO_TARGET_DIR` set to a private folder:
+
+```powershell
+cargo test -p midnight-platform-windows -p midnight-engine -p midnight-ui --lib --locked --offline --no-run
+midnight_platform_windows-<hash>.exe file_drag_drop file_clipboard
+midnight_platform_windows-<hash>.exe real_mouse_drag_out_reaches_a_foreign_target --ignored --nocapture --test-threads=1
+midnight_platform_windows-<hash>.exe real_mouse_handoff_to_worker_sta --ignored --nocapture --test-threads=1
+midnight_ui-<hash>.exe drag_bridge presenter::tests::drag_drop presenter::drag_drop
+midnight_engine-<hash>.exe drag_drop
+cargo test -p midnight-ui --test integration --locked --offline -- drag_
+```
+
+| Run | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| Windows platform `file_drag_drop` and `file_clipboard` | 24 | 0 | 6 |
+| Real-mouse drag out to a foreign OLE target (desktop lease) | 1 | 0 | 0 |
+| Real-mouse handoff to the worker STA (existing, desktop lease) | 1 | 0 | 0 |
+| UI library `drag_bridge` and presenter drag tests | 26 | 0 | 0 |
+| Engine `drag_drop` | 43 | 0 | 0 |
+| UI integration `drag_` | 33 | 0 | 0 |
+| Acceptance `files_clipboard_drag`, `journeys_pointer_only` (run `20261123-212637`) | 2 | 0 | 0 |
+
+Workspace Clippy (`--workspace --all-targets --features midnight-acceptance/acceptance
+-- -D warnings`), `cargo fmt --all --check` and the source-size check pass.
+
+The real-mouse test presses on an owned window, lets the production drop source run
+the drag, moves onto a foreign target window on another STA and releases: with Copy
+the target saw the Shell item list, the drag image and Copy|Move offered, read the
+exact Unicode path and the outcome was Copied; with an optimized Move report it was
+Moved; released before its earliest drop time the target saw the drag leave and no
+drop, and the outcome was ReleasedTooSoon. Red before the fix: the .NET header test and
+the bridge's handoff test failed on the old code (`_build/qa/red-hdrop.log`,
+`red-bridge.log`), and the probe logged CF_HDROP alone, no drag image and a refused
+.NET drop. With the fixes the application, dragged by the real mouse, gave the probe
+`Shell IDList Array`, `DragImageBits`, `FileGroupDescriptorW` and the file; a release
+0.24 s after the press showed the target the drag entering and leaving, no drop, and
+the note on the source panel; a drop from the probe was copied.
+
+A drop target helper (`IDropTargetHelper`, drag images and "Copy to" descriptions over
+this window) was tried and removed: it deadlocked the existing marshalled-target test,
+in which the window's thread waits in a COM call while the helper waits for that
+window. A drag image from another program over this window is therefore whatever that
+program draws itself.
+
+### Linux
+
+`cargo clippy --locked --offline --target x86_64-unknown-linux-gnu -p midnight-platform-linux
+-p midnight-engine -p midnight-core --all-targets -- -D warnings` passes on the Windows
+host. The UI crate's Linux adapter (`drag_input_linux.rs`) needs fontconfig to build for
+Linux and was not compiled here. Owed on Linux: the platform library tests, including
+the new `file_drag_drop::wayland::tests` and the isolated Xvfb XDND scenarios; a native
+Wayland qualification (for example Weston's headless backend with a test client, then
+GNOME and KDE) of drags in and out, Escape, a release within 0.4 s and a stale serial;
+and drags to Nautilus, Dolphin and a browser under X11 and XWayland.

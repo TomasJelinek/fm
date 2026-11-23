@@ -79,6 +79,8 @@ Licenses retain upstream alternatives; see [policy](../DEPENDENCY_POLICY.md).
 | [windows](https://crates.io/crates/windows/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-media-output, midnight-platform-windows, midnight-thumbnail-video |
 | [windows-core](https://crates.io/crates/windows-core/0.62.2) | 0.62.2 | MIT OR Apache-2.0 | midnight-platform-windows, midnight-thumbnail-video |
 | [windows-sys](https://crates.io/crates/windows-sys/0.61.2) | 0.61.2 | MIT OR Apache-2.0 | midnight-elevation, midnight-filesystem-native-windows, midnight-filesystem-network, midnight-platform-windows, midnight-plugin-host, midnight-ui, midnight-update, midnight-viewer-ui, midnight-worker-platform, midnight-worker-sdk |
+| [wayland-backend](https://crates.io/crates/wayland-backend/0.3.17) | 0.3.17 | MIT | midnight-platform-linux |
+| [wayland-client](https://crates.io/crates/wayland-client/0.31.15) | 0.31.15 | MIT | midnight-platform-linux |
 | [wl-clipboard-rs](https://crates.io/crates/wl-clipboard-rs/0.9.5) | 0.9.5 | MIT OR Apache-2.0 | midnight-platform-linux |
 | [x11-dl](https://crates.io/crates/x11-dl/2.21.0) | 2.21.0 | MIT | midnight-ui |
 | [x11rb](https://crates.io/crates/x11rb/0.13.2) | 0.13.2 | MIT OR Apache-2.0 | midnight-platform-linux |

@@ -53,11 +53,13 @@ receipts cannot revive a released gesture or retarget work after navigation.
 Canceled and rejected provider capabilities are retired on backend workers.
 
 Internal gestures remain in the application until the pointer leaves its client
-area and the press is at least 400 ms old. Until then the window keeps the pointer
-grab and sees the release, so a quicker drop outside it is cancelled like one
-inside; once the operating system runs the drag, no drop can come sooner, and the
-receiving application needs no timing of its own. Incoming drops have no press in
-this application and are not timed. External handoff then releases UI capture only
+area. Since 2026-11-23 the operating system then takes a prepared drag at once, so the
+application under the pointer shows its feedback immediately; the drag carries its
+earliest drop time (the press plus 400 ms) and the drop source cancels a sooner
+release (Windows: Cancel; X11: XdndLeave; Wayland, whose compositor delivers drops
+itself: an empty list). Until 2026-11-23 the window kept the pointer until the press
+was 400 ms old, which left other applications without feedback during that time.
+Incoming drops have no press in this application and are not timed. External handoff then releases UI capture only
 after arming the exact live drag token. Windows' backend STA temporarily attaches
 its input queue to the validated same-process window thread while calling
 DoDragDrop, and detaches on every exit. COM, path serialization and file work remain on the backend. A real
@@ -72,8 +74,9 @@ Move that asks this source to delete is refused with a retained-source notice.
 Missing or inconsistent completion feedback is reported as unconfirmed. A positive
 target report is not independent filesystem verification by Midnight Explorer.
 
-Linux X11/XWayland outgoing transport remains Copy-only. Native Wayland external
-dragging is unavailable; internal transfers still use the typed backend route.
+Linux X11/XWayland outgoing transport remains Copy-only, and so does native Wayland
+transport (added 2026-11-23, not yet qualified on a compositor); internal transfers
+still use the typed backend route.
 Native incoming drops remain Copy-only on both platforms. Internal Move support
 does not change those incoming protocol guarantees.
 

@@ -632,7 +632,8 @@ inspected as possibly holding the item; neither is described as unneeded.
   it only in named modules: the generated Slint bindings, the native dialog, drag-input
   and window-position adapters, the Windows motion and wheel settings, audio output, and
   Linux calls that rustix does not wrap (locale, sort keys, `setrlimit` before `exec`,
-  `fchmodat2`, the XFS geometry query and the Move's read lease). FFI lives in the
+  `fchmodat2`, the XFS geometry query and the Move's read lease), and the Linux Wayland
+  drag-and-drop adapter's two handle conversions of winit's display and surface. FFI lives in the
   Windows platform adapter, the plugin host, the native filesystem host, the worker
   platform and the elevation helper. By the [code style](CODE_STYLE.md) every unsafe
   block carries a `SAFETY` explanation; review enforces this, not the compiler.
@@ -1242,8 +1243,14 @@ Windows outgoing OLE offers Copy|Move. Only the receiving app performs an extern
 Move; bounded performed/logical feedback never authorizes this source to delete
 files. Explicit unoptimized source-cleanup requests report retained sources;
 missing or inconsistent completion reports remain unconfirmed. Positive reports
-are target claims, not our independent verification. Linux X11/XWayland outgoing
-transport and native incoming transport on both platforms remain Copy-only.
+are target claims, not our independent verification. Linux X11, XWayland and Wayland
+outgoing transport and native incoming transport on both platforms remain Copy-only.
+On Windows the offer is a Shell data object: when every dragged item lies in one folder
+and its path converts back exactly through the Shell's item IDs (at most 256 items, no
+network path), the Shell builds it from those items, so Explorer gets its item list and
+the same CF_HDROP list; otherwise the Shell object wraps our own lossless CF_HDROP list.
+It is set synchronous, so a target finishes before the drag returns and its completion
+report is read on return. The Shell's drag image shows the items and their count.
 The receiving app owns its transfer and integrity checks. A native "accepted" response means queue
 admission, not completed or verified work. See the
 [current drag contract](docs/superpowers/specs/2026-11-10-folder-drag-and-native-handoff.md).
@@ -1296,19 +1303,40 @@ calls remain in that actor's message-pumped STA. During DoDragDrop only, the act
 attaches to the validated same-process window thread's input queue and detaches
 on every exit. Arming the exact drag token precedes releasing UI pointer capture;
 synthetic release callbacks cannot cancel that handoff. The drag bridge
-(`crates/midnight-ui/src/drag_bridge.rs`) hands an outgoing drag to the operating
-system, and so to other applications, only once the pointer has left the window and
-the press that started the drag is at least 400 ms old. Until then the window keeps
-the pointer, so a release sooner than 400 ms after the press, inside the window or
-outside it, cancels the drag and transfers nothing.
+(`crates/midnight-ui/src/drag_bridge.rs`) hands a prepared outgoing drag to the
+operating system as soon as the pointer leaves the window, so the application under
+the pointer shows its feedback at once, as with Explorer. A drag starts only after
+the pointer moved 6 pixels with the button held, so a click never leaves the window
+as a drag. The 400 ms rule still holds outside the window: the drag carries its
+earliest drop time (the press plus 400 ms), and a release before it cancels the drag
+and transfers nothing. On Windows the drop source answers Cancel (the target sees the
+drag leave); on X11 and XWayland the source sends XdndLeave, never XdndDrop. Under
+native Wayland the compositor delivers the drop itself; the source then withholds the
+file list, so the target receives an empty list and copies nothing. In every case the
+source panel says "Drag cancelled: released within 0.4 s".
 
 Linux uses a verified worker-owned XDND proxy. The host window's XDND advertisement
 is removed while the proxy is installed, preventing normal legacy sources from
-using winit's lossy UI-thread parser. The proxy advertises XDND v5; native Wayland
-external transport is unavailable until same-connection seat/data-device support
-exists. Internal panel dragging remains available. X11 incremental transfers are
-bounded and timed out. Move proposals may negotiate Copy only when the source
-explicitly offers Copy; a Move-only offer is rejected.
+using winit's lossy UI-thread parser. The proxy advertises XDND v5. X11 incremental
+transfers are bounded and timed out. Move proposals may negotiate Copy only when the
+source explicitly offers Copy; a Move-only offer is rejected.
+
+A native Wayland window exchanges files through the core `wl_data_device` protocol on
+winit's own connection (`crates/midnight-platform-linux/src/file_drag_drop_wayland.rs`):
+a second connection would see no input serials and could not start a drag. The UI
+lends winit's `wl_display` and the window's `wl_surface` to the backend actor for the
+window's lifetime; that module is the Linux crate's only other unsafe code (two FFI
+handle conversions). The actor binds its own `wl_seat` and `wl_pointer` (for the
+press serial that starts a drag) and a data device on a private event queue that
+only it dispatches; it never holds a prepared read longer than one bounded poll, so
+winit's reads never wait on it. Incoming offers are taken only as `text/uri-list` from
+sources that permit Copy; the list is read through a pipe of at most 4 MiB within 5
+seconds and decoded and admitted exactly like an X11 drop, against the destination
+still published at the drop position. Outgoing drags offer `text/uri-list` with the
+Copy action and write the list within 5 seconds; a target that never finishes leaves
+the drag unconfirmed. `finish` is sent only when the compositor settled on Copy, as
+the protocol requires. Offers and their announced types are bounded. Setting
+`MIDNIGHT_WAYLAND_DND=0` keeps a Wayland window to dragging between its panels.
 
 ## Dynamic viewers and filesystem plugins
 

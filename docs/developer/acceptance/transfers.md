@@ -244,6 +244,11 @@ until it lands.
 | T-X12 | More selected items than the 64 a Move once took: F5 of 65 marked files copies all of them, Ctrl+X, Ctrl+V of them in an empty folder moves all of them there, and F6 from there moves all of them back | `files_clipboard_drag` | each job Completed; the trees equal the files as they were; the emptied folders empty | PASS (Windows `20261123-011352`); the refusal it replaced was red in `20261122-072703` and `20261122-173744`. Linux not run. A drag of 65 is not covered |
 | T-X13 | A drop released within 0.4 s of the press is cancelled ("Drag cancelled: released within 0.4 s" on the source panel's status line), starts no dialog or job and moves nothing; one released later moves | `files_clipboard_drag` (the scenario clock held: press, 0.15 s, drag to the other panel, then 0.1 s or 0.3 s before the release) | the note; jobs; disk | PASS (Linux `20261122-165133`, Windows `20261122-171856`); red in `20261122-173744` and `20261122-173443` |
 
+Drags to and from other applications are outside this suite: its software windows
+have no native window, and the desktop drag hand-off is not installed (`app.rs`). Their
+evidence is the real-mouse platform test and the probe runs in the
+[drag and drop record](../../verification/file-drag-drop.md#2026-11-23-dragging-to-and-from-other-applications).
+
 Finding O-2 (T-X12) is superseded: a Move no longer has a limit of its own and takes as
 many selected items as Copy (up to 1,000,000), so T-X12 now checks that F6 and Ctrl+X,
 Ctrl+V of 65 items move all of them (a drag of 65 is not covered).

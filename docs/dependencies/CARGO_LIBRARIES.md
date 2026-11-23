@@ -644,9 +644,9 @@ captures and does not prove that old captures match today's source files.
 | [vtable-macro](https://crates.io/crates/vtable-macro/0.5.0) | 0.5.0 | MIT OR Apache-2.0 | app | Linux, Windows | — |
 | [walkdir](https://crates.io/crates/walkdir/2.5.0) | 2.5.0 | Unlicense/MIT | app | Linux | — |
 | [wayland-backend](https://crates.io/crates/wayland-backend/0.3.15) | 0.3.15 | MIT | renderer-tests | Linux | — |
-| [wayland-backend](https://crates.io/crates/wayland-backend/0.3.17) | 0.3.17 | MIT | app | Linux | — |
+| [wayland-backend](https://crates.io/crates/wayland-backend/0.3.17) | 0.3.17 | MIT | app | Linux | yes |
 | [wayland-client](https://crates.io/crates/wayland-client/0.31.14) | 0.31.14 | MIT | renderer-tests | Linux | — |
-| [wayland-client](https://crates.io/crates/wayland-client/0.31.15) | 0.31.15 | MIT | app | Linux | — |
+| [wayland-client](https://crates.io/crates/wayland-client/0.31.15) | 0.31.15 | MIT | app | Linux | yes |
 | [wayland-csd-frame](https://crates.io/crates/wayland-csd-frame/0.3.0) | 0.3.0 | MIT | app, renderer-tests | Linux | — |
 | [wayland-cursor](https://crates.io/crates/wayland-cursor/0.31.14) | 0.31.14 | MIT | app, renderer-tests | Linux | — |
 | [wayland-protocols](https://crates.io/crates/wayland-protocols/0.32.13) | 0.32.13 | MIT | app, renderer-tests | Linux | — |

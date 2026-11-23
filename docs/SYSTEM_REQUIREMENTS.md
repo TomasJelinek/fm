@@ -125,8 +125,8 @@ Windows PowerShell are part of Windows; the PowerShell choice uses PowerShell 7
 or Wayland client libraries, libudev, the Vulkan loader and the graphics driver's
 runtime libraries. Desktop integration also uses `xdg-open` (`xdg-utils`) and an
 installed terminal ([which terminals](USER_GUIDE.md#linux--ubuntu--mint)). External file
-drag and drop works through X11/XWayland; under native Wayland, files can be dragged
-only inside the application (PLAT-03).
+drag and drop works through X11/XWayland and, not yet qualified, the native Wayland data
+device (PLAT-03).
 
 In a source checkout, `sh scripts/setup-linux.sh --install` installs the build
 packages and then these runtime libraries; it prints the plan without `--install`. On
