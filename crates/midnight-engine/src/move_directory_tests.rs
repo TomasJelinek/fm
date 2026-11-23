@@ -164,10 +164,8 @@ fn recursive_move_merge_skip_retains_skipped_child_and_ancestors() {
     assert_eq!(fs::read(destination.join("tree/keep")).unwrap(), b"winner");
 }
 
-/// Children that gain another name (a hard link) while the Move runs: Windows moves them
-/// as Delete removes such a file, taking only the moved name, and the other names keep
-/// the data; Linux removes only single-link files, so they stop without undoing the
-/// completed file.
+/// Children that gain another name (a hard link) while the Move runs are moved as Delete
+/// removes such a file, taking only the moved name; the other names keep the data.
 #[test]
 fn recursive_move_later_hardlinked_child_keeps_the_data_under_its_other_name() {
     let (_temp, parent) = tree_fixture();
@@ -200,31 +198,16 @@ fn recursive_move_later_hardlinked_child_keeps_the_data_under_its_other_name() {
     }
     drive(&mut job);
     let done = job.finish();
-    if cfg!(windows) {
-        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
-        assert_eq!(done.source_files_removed, 3);
-        assert!(!source.exists());
-        for index in 0..remaining.len() {
-            assert_eq!(
-                fs::read(parent.join(format!("alias-{index}"))).unwrap(),
-                b"original"
-            );
-        }
-        assert_eq!(fs::read_dir(destination.join("tree")).unwrap().count(), 3);
-        return;
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.source_files_removed, 3);
+    assert!(!source.exists());
+    for index in 0..remaining.len() {
+        assert_eq!(
+            fs::read(parent.join(format!("alias-{index}"))).unwrap(),
+            b"original"
+        );
     }
-    assert_eq!(
-        done.state,
-        CopyOperationState::CompletedWithErrors,
-        "{done:?}"
-    );
-    assert_eq!(done.source_files_removed, 1);
-    assert_eq!(done.files_completed, 1);
-    assert_eq!(done.source_residual_count, 0);
-    for path in remaining {
-        assert_eq!(fs::read(path).unwrap(), b"original");
-    }
-    assert_eq!(fs::read_dir(destination.join("tree")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(destination.join("tree")).unwrap().count(), 3);
 }
 
 #[test]

@@ -57,11 +57,10 @@ pub struct TransferLinkDestination {
     /// the volume serial number, and for a network location its share's (the server
     /// volume's number with the share's name, so that two shares are two volumes).
     pub volume: Option<u64>,
-    /// A Move from another drive cannot end here. Such a Move copies each item, verifies
-    /// the copy and only then removes the original, which needs a destination that keeps
-    /// a replaced file recoverable: on Windows an NTFS folder on a fixed drive, on Linux
-    /// ext2, ext3 or ext4, never a network location. False when nothing tells: the Move
-    /// job still refuses such a destination itself.
+    /// A Move from another drive cannot end here. The native adapters never set it: such
+    /// a Move copies and verifies each item as Copy does and removes its source after that,
+    /// so it goes wherever Copy goes. A provider whose destination cannot take one says so
+    /// here, and the Copy/Move dialog, a drag and the Move job refuse it up front.
     pub refuses_cross_volume_move: bool,
 }
 

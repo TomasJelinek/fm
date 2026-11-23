@@ -161,38 +161,25 @@ mod identity_windows {
     }
 }
 
-/// What a Move from another drive into `folder` says before any job when the folder
-/// cannot keep a replaced file recoverable (finding O-1): "Items from another drive
-/// cannot be moved <here>: …". Its start and its end.
+/// What a Move from another drive said before any job where the destination could not
+/// keep a replaced file recoverable (finding O-1, superseded: such a Move now goes wherever
+/// Copy goes). The scenarios fail when they still see it. Its start and its end.
 pub const MOVE_REFUSED_START: &str = "Items from another drive cannot be moved ";
 pub const MOVE_REFUSED_END: &str =
     "Move cannot verify their copies there before removing the originals. Copy them instead.";
-
-/// The whole O-1 refusal for a destination the product names `here` ("to a network
-/// location", "to this drive (FAT)", "to this drive").
-pub fn move_refused(here: &str) -> String {
-    format!("{MOVE_REFUSED_START}{here}: {MOVE_REFUSED_END}")
-}
 
 /// Whether `text` is an O-1 refusal, whatever destination it names.
 pub fn is_move_refusal(text: &str) -> bool {
     text.contains(MOVE_REFUSED_START) && text.contains(MOVE_REFUSED_END)
 }
 
-/// Whether a Move from another drive may go into `folder`: only a filesystem that keeps a
-/// replaced file recoverable takes one (Linux ext2/3/4; Windows NTFS on a fixed drive,
-/// which the drives these checks use are). On Linux the filesystem is read from the mount
-/// table; `None` when it cannot be told.
+/// Whether a Move from another drive may go into `folder`: wherever Copy goes, so the
+/// native adapters refuse none up front (the Move then moves or, where an item cannot be
+/// removed, keeps that source). `None` is not given any more; the parameter stays for the
+/// scenarios that name the folder.
 pub fn takes_cross_volume_move(folder: &Path) -> Option<bool> {
-    #[cfg(windows)]
-    {
-        let _ = folder;
-        Some(true)
-    }
-    #[cfg(not(windows))]
-    {
-        filesystem_type(folder).map(|kind| matches!(kind.as_str(), "ext2" | "ext3" | "ext4"))
-    }
+    let _ = folder;
+    Some(true)
 }
 
 /// The type of the filesystem mounted at the longest mount point that holds `folder`

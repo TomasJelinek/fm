@@ -1107,7 +1107,9 @@ impl Job {
                         if let Some(stage) = move_work.stages.remove(&source.entry().identity) {
                             stage
                         } else if move_work.metadata_policy == TransferMetadataPolicy::ContentOnly {
-                            work.destination.stage_file(&self.cancel)?
+                            // Staged as Copy stages: in the job's staging folder where the
+                            // destination has one (`stage_job_file`).
+                            work.destination.stage_job_file(&self.cancel)?
                         } else {
                             work.destination
                                 .stage_file_with_metadata(move_work.metadata_policy, &self.cancel)?

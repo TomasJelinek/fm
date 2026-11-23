@@ -191,13 +191,6 @@ impl Job {
         let Some(move_work) = self.move_work.as_ref() else {
             return Ok(());
         };
-        if work.native_fallback && !work.destination.capabilities().recoverable_replacement {
-            return Err(move_error(
-                work.destination.path(),
-                io::ErrorKind::Unsupported,
-                "Cross-volume Move requires a qualified verified-copy destination; the source was retained.",
-            ));
-        }
         if work.move_preflight_done {
             return Ok(());
         }

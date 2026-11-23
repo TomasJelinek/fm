@@ -95,7 +95,7 @@ measurement.
   and 8 px, keeps the header and the actions fixed and scrolls the rest. At most one
   note shows, a glyph and its text under the control it concerns, first of: Enter's
   request for a destination; a refusal (a destination that is not an existing folder, a
-  Move from another drive to a location that refuses one, more than 64 items to move;
+  Move from another drive to a provider's location that refuses one;
   error colours) under the destination; and what keeping links does where none are
   created (`keep_warning`, the first Enter's hold) under the Links box (a warning).
   The compact layout shows every note under the destination, near the top. Why the

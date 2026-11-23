@@ -299,9 +299,8 @@ pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
     supported_volume(&directory.file)
 }
 
-/// Whether the volume that holds `folder` keeps a replaced file recoverable, as a verified
-/// Move from another drive needs: NTFS on a fixed drive. Also what the Copy/Move dialog
-/// is told before such a Move starts (`TransferLinkDestination::refuses_cross_volume_move`).
+/// Whether the volume that holds `folder` keeps a replaced file recoverable, as Replace
+/// needs (`TransferCapabilities::recoverable_replacement`): NTFS on a fixed drive.
 pub(in crate::transfer) fn supported_volume(folder: &File) -> bool {
     // The volume GUID root names the volume that holds the directory even when it is
     // mounted in a folder of another drive (a DOS path's drive letter would not).

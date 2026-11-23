@@ -106,8 +106,10 @@ fn an_existing_writable_mapping_refuses_move_admission_after_writer_fd_closes() 
     assert_eq!(fs::read(path).unwrap(), vec![42; 4096]);
 }
 
+/// A file with another name (a hard link) is moved as Delete removes it: the Move takes
+/// only the moved name, and the other name keeps the data.
 #[test]
-fn unverified_hardlink_alias_refuses_move_admission() {
+fn a_hardlinked_source_loses_only_the_moved_name() {
     let Some((_temp, parent)) = fixture() else {
         return;
     };
@@ -116,10 +118,19 @@ fn unverified_hardlink_alias_refuses_move_admission() {
     fs::hard_link(&path, parent.join("alias")).unwrap();
     let cancel = Cancellation::default();
     let (source, capture) = prepare_native(&path, &cancel).unwrap();
-    assert!(capture.preflight_finalization(&cancel).is_err());
+    capture.preflight_finalization(&cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { .. } = capture.capture(&cancel).unwrap() else {
+        panic!("not captured")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    drop(finalizer);
     drop(source);
     drop(capture);
-    assert_eq!(fs::read(path).unwrap(), b"original");
+    assert!(!path.exists());
     assert_eq!(fs::read(parent.join("alias")).unwrap(), b"original");
 }
 

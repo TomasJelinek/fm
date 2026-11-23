@@ -62,8 +62,9 @@ pub(super) fn link_destination(
             .flatten()
             .unwrap_or(device),
     );
-    // The same check that a Move from another drive makes before it removes anything.
-    facts.refuses_cross_volume_move = !super::destination::recovery::supported_type(filesystem);
+    // A Move from another drive goes wherever Copy goes: it copies and verifies each item
+    // as Copy does and removes its source after that, so no destination refuses it.
+    facts.refuses_cross_volume_move = false;
     facts.removable = !facts.network
         && removable_device(
             rustix::fs::major(device),

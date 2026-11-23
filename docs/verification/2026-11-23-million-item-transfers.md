@@ -55,6 +55,34 @@ files, which the identity pass and the second open per item explain. An earlier 
 2 ms under that load. A file's totals now come from the entry read as it is opened
 (`copy_streamed_roots.rs`), and the 20,000-file runs above are with that change.
 
+### Through the copy actor, 1,000,000 files of 16 bytes in one folder (release)
+
+The run stopped at file 46,024 after 1,074 s, when the volume ran out of space (other
+builds on the machine filled it); until then it copied about 45 files/s, with the first
+file done after about 0.3 s, a peak working set of 224 MB and at most 159 handles. The rate
+is the folder's: opening a file of that 1,000,000-entry NTFS folder that nothing had opened
+yet took about 18 ms (PowerShell `OpenRead`, 500 files), against about 0.3 ms in a
+20,000-entry folder, and a 20,000-item streamed Copy run at the same time copied 214
+files/s. The copy process used about a quarter of one core.
+
+### Move on the same volume, 1,000,000 files in one folder (release)
+
+`measure_transfer` with `MIDNIGHT_STREAMED_INTENT=move`, cancelled after 600 s
+(`MIDNIGHT_STREAMED_SECONDS`): 87,338 items renamed into another folder of the same volume
+(about 146 per second), the pass 852,000 items ahead; the job ended Cancelled at once with
+the remaining items where they were; peak working set 208 MB, at most 283 handles. The
+same folder effect applies: every rename opens a file of the 1,000,000-entry folder for
+Move.
+
+### Move to another volume, 20,000 files of 16 bytes (release)
+
+From an owner-only folder on C: (a protected source parent) to D:, through the copy actor,
+with full SHA-256 verification: Completed in 387.8 s (52 files/s), the first file done
+after 0.26 s; peak working set 35 MB, at most 181 handles. Every source was removed, the
+20,000 copies arrived, and no staging or capture folder was left. Each file is copied and
+read back, then its source is taken aside, read back again against the copy and removed,
+so a Move from another drive reads each file about three times more than a Copy.
+
 ## Per-item memory
 
 The unit test `a_streamed_selection_keeps_about_a_hundred_bytes_per_item_beside_its_paths`

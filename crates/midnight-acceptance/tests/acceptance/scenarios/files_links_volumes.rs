@@ -144,9 +144,8 @@ fn links_volumes(context: &mut Context) -> Result<(), String> {
 
 /// What the Move dialog does with a Move from another drive to a destination (O-1).
 enum MoveRule {
-    /// It is refused before any job, in these words.
-    Refused(String),
-    /// Refused in the O-1 words or admitted: a removable drive's filesystem decides.
+    /// Admitted, or refused in the O-1 words where a provider refuses it: the native
+    /// adapters refuse none (a Move from another drive goes wherever Copy goes).
     Either,
 }
 
@@ -176,9 +175,9 @@ impl Proposal {
                  are copied."
             ),
             warnings: Some([warning(""), warning(" and stays where it is")]),
-            moves: MoveRule::Refused(support::move_refused(&format!(
-                "to this drive ({filesystem})"
-            ))),
+            // A Move from another drive goes wherever Copy goes (O-1 superseded); on
+            // Linux Copy itself refuses a FAT drive (no O_TMPFILE).
+            moves: MoveRule::Either,
         }
     }
 
@@ -195,7 +194,7 @@ impl Proposal {
                      to are copied."
                 .into(),
             warnings: Some([warning(""), warning(" and stays where it is")]),
-            moves: MoveRule::Refused(support::move_refused("to a network location")),
+            moves: MoveRule::Either,
         }
     }
 
@@ -271,9 +270,10 @@ fn proposed_copy(
         let destination = crate::fixtures::create_fresh(folder, verb)?;
         let mut app = App::start(Config::new(&base, &destination));
         panel::select_row(&mut app, LEFT, "proj")?;
-        let refusal = match (&proposal.moves, key) {
-            (MoveRule::Refused(words), Key::F6) => Some(words.as_str()),
-            _ => None,
+        // No destination refuses a Move from another drive up front any more (O-1
+        // superseded); the words are checked where a provider still refuses one.
+        let refusal: Option<&str> = match proposal.moves {
+            MoveRule::Either => None,
         };
         let warning = proposal.warning(key);
         let shot = format!("{}-{}-keep-links", proposal.label, verb.to_lowercase());

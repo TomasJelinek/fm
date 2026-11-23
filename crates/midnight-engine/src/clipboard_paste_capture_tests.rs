@@ -133,7 +133,14 @@ async fn read_copied(
             &mut tasks,
         )
         .await;
-    let event = tokio::time::timeout(Duration::from_secs(3), events.recv())
+    // A hang guard, not a deadline: a list of a million paths takes seconds to build and
+    // read in a debug build on a busy machine.
+    let guard = if copied > 10_000 {
+        Duration::from_secs(300)
+    } else {
+        Duration::from_secs(3)
+    };
+    let event = tokio::time::timeout(guard, events.recv())
         .await
         .unwrap()
         .unwrap();

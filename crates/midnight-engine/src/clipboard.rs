@@ -788,7 +788,7 @@ fn error(kind: io::ErrorKind, message: &str) -> FsError {
 /// and Paste copies or moves at most `MAX_NATIVE_TRANSFER_ROOTS` of them, refused here
 /// before any confirmation.
 fn pasteable(files: FileClipboard) -> Result<FileClipboard, FsError> {
-    files.validate()?;
+    // The count first: a longer list is refused without checking each of its paths.
     if files.paths.len() > MAX_NATIVE_TRANSFER_ROOTS {
         return Err(error(
             io::ErrorKind::InvalidInput,
@@ -799,6 +799,7 @@ fn pasteable(files: FileClipboard) -> Result<FileClipboard, FsError> {
             ),
         ));
     }
+    files.validate()?;
     Ok(files)
 }
 

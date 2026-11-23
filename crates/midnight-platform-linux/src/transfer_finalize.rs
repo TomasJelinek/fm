@@ -4,15 +4,24 @@ use super::super::destination::recovery::Revision;
 use super::*;
 use midnight_core::{TransferMoveFinalizeOutcome, TransferMoveFinalizer, TransferSourceRemoval};
 
+/// Whether a Move may remove the regular file `file` once its copy is verified. A file
+/// with other names (hard links) loses only the moved name, as Delete removes it. A file
+/// owned by another user is kept: the read lease that keeps writers out between the last
+/// check and the removal needs ownership, and without it a write made meanwhile would be
+/// lost with the source.
 pub(super) fn qualify(file: &File, path: &Path) -> Result<(), FsError> {
     let metadata = file.metadata().map_err(|e| error(path, e))?;
-    if !metadata.is_file()
-        || metadata.nlink() != 1
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-    {
+    if !metadata.is_file() {
         return Err(unsupported(
             path,
-            "Verified Move requires an owned single-link regular file; source removal refused",
+            "Verified Move removes only regular files; source removal refused",
+        ));
+    }
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(unsupported(
+            path,
+            "it belongs to another user, so a Move cannot keep other programs from writing \
+             to it while it removes it; it stays where it is. Copy it instead",
         ));
     }
     Ok(())

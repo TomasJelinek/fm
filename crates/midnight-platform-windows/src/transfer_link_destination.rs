@@ -30,9 +30,9 @@ pub(super) fn link_destination(
         TransferLinkStorage::Supported
     };
     let removable = !network && crate::storage_kind::removable(path);
-    // The same volume check that a Move from another drive makes before it removes
-    // anything (`TransferCapabilities::recoverable_replacement`).
-    let refuses_cross_volume_move = !super::destination::recovery::supported_volume(&folder);
+    // A Move from another drive goes wherever Copy goes: it copies and verifies each item
+    // as Copy does and removes its source after that, so no destination refuses it.
+    let refuses_cross_volume_move = false;
     let volume = if network {
         share_volume(&folder, u64::from(serial))
     } else {
@@ -225,11 +225,12 @@ mod tests {
         );
         assert_ne!(shared.volume, local.volume);
         assert!(!local.same_volume_as(&shared));
-        assert!(shared.refuses_cross_volume_move, "{shared:?}");
+        // A Move from the drive to its share copies, as Copy does; nothing refuses it.
+        assert!(!shared.refuses_cross_volume_move, "{shared:?}");
         assert!(
             TransferLinkFacts::new(shared, Some(&local))
                 .move_refusal()
-                .is_some()
+                .is_none()
         );
         let filesystem = crate::WindowsFileSystem::new(None);
         assert_ne!(

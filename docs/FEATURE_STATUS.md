@@ -107,8 +107,8 @@ How to read it:
   Links choice, defaulted from the destination, copies the files that links point to or
   keeps links as links; on Windows a junction is recreated without privilege, while a
   symbolic link needs Developer Mode or administrator rights. A Move on one volume
-  renames without reading contents; across volumes each file is verified before its
-  source is removed. Copy and Move take up to 1,000,000 selected items: a large selection
+  renames without reading contents; across volumes it goes wherever Copy goes and each
+  file is copied and verified as Copy does before its source is removed. Copy and Move take up to 1,000,000 selected items: a large selection
   starts copying its first item at once, totals the rest while it copies and opens each
   item only when it reaches it. I/O errors pause for Retry, Skip, Skip all or Cancel.
   "Preserve exact modified time" keeps the modification times of up to 64 copied files.
@@ -116,9 +116,9 @@ How to read it:
   `O_TMPFILE` (ext4, XFS, Btrfs, tmpfs); FAT, exFAT, NTFS, NFS, SMB, sshfs and GVfs
   destinations are refused.
 - **Open:** other times, attributes, ownership, ACLs, extended attributes, streams,
-  folder metadata and hard links are not preserved (COPY-03); a Windows cross-volume
-  Move leaves a source with named streams in place, a Linux one removes only owned
-  single-link regular files on ext, and providers have no Move (MOVE-01); an archive
+  folder metadata and hard links are not preserved (COPY-03); a Move from another drive
+  keeps a Windows source with named streams, and on Linux removes only sources the user
+  owns on a local filesystem; providers have no Move (MOVE-01); an archive
   copy-out of a large selection admits its members one by one: about 20 s before the
   first of 100,001 archive members is written (COPY-06); a job runs one native step at a
   time (IO-01); one namespace turn serves all jobs (IO-02); the shared disk-I/O gate can

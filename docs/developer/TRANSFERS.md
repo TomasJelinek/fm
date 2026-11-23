@@ -77,9 +77,9 @@ own beside its final name, so a write-only drop folder still receives its files,
 folder that refuses new files refuses each file before it is copied. Any other failure to
 create the staging folder (a quota, a cancellation) fails that file's stage. A paused job keeps its staging folders and stages in them
 again when resumed. Outside a job (checksum, file-list and other single outputs),
-elsewhere than local fixed NTFS, for the files a cross-volume Move removes once they are
-copied and for required-metadata stages, each stage is a `.me-*` entry of its own in the
-destination folder, created in a turn of its own.
+elsewhere than local fixed NTFS and for required-metadata stages, each stage is a
+`.me-*` entry of its own in the destination folder, created in a turn of its own. A Move
+from another drive stages its files as Copy does.
 
 The staging folder's DACL is not inheritable, so each stage is created with the
 descriptor that a file created directly in the destination folder gets, computed from
@@ -602,8 +602,11 @@ proof support are checked before its copy.
 A later child that cannot be prepared for Move pauses alone (see the I/O errors
 above); Windows source DELETE authority is obtained
 before each source's copy, separately from Copy's unchanged read-only pin.
-Protected source parents and local NTFS (Windows) or ext2/3/4 (Linux) are required;
-unsupported parents suggest Copy, never permission weakening or silent fallback.
+A source that a Move from another drive removes needs a protected parent on a local
+filesystem: local NTFS on Windows; on Linux ext2/3/4, XFS, Btrfs, F2FS or tmpfs, where
+renames and unlinks commit or fail where they run and read leases are granted (network
+and FUSE mounts are left out). Elsewhere the item fails alone and keeps its source, with a
+reason that suggests Copy; there is never permission weakening or a silent fallback.
 Inside the moved tree Linux follows Delete's rule instead: a folder of that tree
 (the selected folder or a folder below it) that the user owns and that lacks owner
 write gets it, through the descriptor the Move retains for it, only for each change
@@ -676,8 +679,12 @@ reason, and the job asks Retry, Skip or Cancel. A read-only file is removed as D
 removes one, ignoring its read-only attribute without clearing it, and a file with other
 names (hard links) loses only the name the Move took; the other names keep the data.
 
-Linux supports live-validated removal of owned, single-link regular files on
-local ext2/3/4 filesystems with protected source parents. Preflight retains
+Linux supports live-validated removal of owned regular files on those local
+filesystems with protected source parents; a file with other names (hard links) loses
+only the moved name. A file owned by another user keeps its source, failing alone with
+that reason: the read lease that keeps writers out between the last check and the
+removal needs ownership (or `CAP_LEASE`), and without it a write made meanwhile would be
+lost with the source. Preflight retains
 a read lease before publication, refusing existing writers or writable mappings.
 A dedicated thread blocks only its own SIGIO, receives the thread-directed
 lease-break notifications and releases a breaking lease at once, so another program
@@ -760,15 +767,16 @@ held-object deletion and no read-only or ACL weakening.
 A same-volume native Move renames without reading or hashing contents.
 Cross-volume Move and explicit directory merges use per-file verification under
 the job's immutable full/quick policy before source removal. A Move from another drive
-needs a destination that keeps a replaced file recoverable (`recoverable_replacement`:
-an NTFS folder on a fixed drive on Windows, ext2/3/4 on Linux); elsewhere, a network
-location included, the job refuses it ("Cross-volume Move requires a qualified
-verified-copy destination; the source was retained."). The dialog (F6, a pasted Cut), a
-drag and the Move job's own admission refuse it before any job starts, from the
-destination's facts (`TransferLinkDestination::refuses_cross_volume_move`) and the
-selection's volume: "Items from another drive cannot be moved to a network location: Move
-cannot verify their copies there before removing the originals. Copy them instead." (or
-"to this drive (exFAT)"; the dialog shows it as the note under its destination). All three
+goes wherever Copy goes, a network location or a FAT or exFAT drive included: it stages
+each file as Copy does, verifies it as Copy does and offers Replace where Copy does (a
+destination that keeps a replaced file recoverable, `recoverable_replacement`). The
+native adapters never refuse it (`TransferLinkDestination::refuses_cross_volume_move` is
+false); a provider whose destination cannot take one sets it, and then the dialog (F6, a
+pasted Cut), a drag and the Move job's own admission refuse it before any job starts, from
+those facts and the selection's volume ("Items from another drive cannot be moved to …
+Copy them instead.", the note under the dialog's destination). On a network location a
+copy's read-back can be served by the client's cache, so it proves less there than on a
+local drive; this is Copy's verification, which a Move from another drive takes. All three
 decide by one determination (`TransferLinkDestination::same_volume_as`, through the
 engine's `transfer_destination::move_facts` and `move_refusal`), so the dialog never
 offers a Move that admission then refuses: the selection's folder is on the destination's
@@ -776,8 +784,8 @@ volume only where both name the same volume and reach it the same way, both loca
 both through a network location. A share is a volume of its own: on Windows its name
 (`\\server\share`, with mapped drives resolved) joins the server volume's serial number,
 so a loopback or mapped share of a local drive (such as `\\localhost\D$`) is never that
-drive's volume, a Move there from the drive is refused up front and a drag there proposes
-Copy; on Linux the volume is the mount (`statx` `STATX_MNT_ID`,
+drive's volume, a Move there from the drive copies and removes as from another drive, and a
+drag there proposes Copy; on Linux the volume is the mount (`statx` `STATX_MNT_ID`,
 `transfer_native_location.rs`), since bind mounts share a device number but no rename. A
 Move on the destination's own volume renames and is not refused; where the destination's
 facts cannot be read, the job decides. A selection's folder whose facts cannot be read is

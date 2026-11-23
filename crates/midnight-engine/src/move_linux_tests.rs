@@ -307,3 +307,61 @@ fn linux_raw_name_move_with_required_time_completes_without_any_source_residual(
     assert_eq!(fs::metadata(published).unwrap().modified().unwrap(), time);
     assert_eq!(fs::read_dir(parent).unwrap().count(), 2);
 }
+
+/// A folder of the memory filesystem (`/dev/shm`, tmpfs) that the test owns, or None where
+/// the system has none.
+fn tmpfs_folder() -> Option<tempfile::TempDir> {
+    let shm = Path::new("/dev/shm");
+    shm.is_dir()
+        .then(|| tempfile::Builder::new().prefix("me-move-").tempdir_in(shm))
+        .and_then(Result::ok)
+}
+
+/// A Move from another filesystem goes wherever Copy goes: from ext4 to tmpfs, which
+/// cannot keep a replaced file recoverable (once refused), and back from tmpfs (a source
+/// once refused for not being ext). Each file is copied, verified and its source removed;
+/// a file with another name (a hard link) loses only the moved name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_between_ext4_and_tmpfs_copies_verifies_and_removes_each_source() {
+    let Some(memory) = tmpfs_folder() else {
+        eprintln!("SKIP: no /dev/shm");
+        return;
+    };
+    let (_temp, root) = protected_fixture();
+    let source = root.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("a.txt"), b"first").unwrap();
+    fs::write(source.join("b.txt"), b"second").unwrap();
+    fs::hard_link(source.join("b.txt"), root.join("b-alias")).unwrap();
+    let there = memory.path().join("there");
+    fs::create_dir(&there).unwrap();
+    let mut harness = Harness::native();
+    let paths = [source.join("a.txt"), source.join("b.txt")];
+    harness
+        .controller
+        .enqueue_move(request(1, &paths, &there))
+        .await;
+    let moved = harness.terminal(1).await;
+    assert_eq!(moved.state, CopyOperationState::Completed, "{moved:?}");
+    assert_eq!(moved.native_entries_moved, 0, "{moved:?}");
+    assert_eq!(moved.source_files_removed, 2, "{moved:?}");
+    assert!(!source.join("a.txt").exists() && !source.join("b.txt").exists());
+    assert_eq!(fs::read(there.join("a.txt")).unwrap(), b"first");
+    assert_eq!(fs::read(root.join("b-alias")).unwrap(), b"second");
+    // Back from tmpfs to ext4.
+    let back = [there.join("a.txt"), there.join("b.txt")];
+    harness
+        .controller
+        .enqueue_move(request(2, &back, &source))
+        .await;
+    let returned = harness.terminal(2).await;
+    assert_eq!(
+        returned.state,
+        CopyOperationState::Completed,
+        "{returned:?}"
+    );
+    assert_eq!(returned.source_files_removed, 2, "{returned:?}");
+    assert_eq!(fs::read(source.join("b.txt")).unwrap(), b"second");
+    assert_eq!(fs::read_dir(&there).unwrap().count(), 0);
+    harness.close().await;
+}

@@ -28,8 +28,19 @@ pub(in crate::transfer) fn supported(directory: &Directory) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether a filesystem of `statfs` type `magic` keeps a replaced file recoverable, as a
-/// verified Move from another drive needs (`TransferLinkDestination::refuses_cross_volume_move`).
+/// Whether a Move may take its source out of `directory` and remove it once its copy is
+/// verified: a local filesystem whose renames and unlinks commit or fail where they run
+/// and that grants read leases (ext2/3/4, XFS, Btrfs, F2FS, tmpfs). Network and FUSE
+/// mounts are left out, where a failed request can have executed on the server.
+pub(in crate::transfer) fn move_source_supported(directory: &Directory) -> bool {
+    const LOCAL: [u64; 5] = [0xef53, 0x5846_5342, 0x9123_683e, 0xf2f5_2010, 0x0102_1994];
+    rustix::fs::fstatfs(&*directory.file)
+        .map(|stat| LOCAL.contains(&(stat.f_type as u64)))
+        .unwrap_or(false)
+}
+
+/// Whether a filesystem of `statfs` type `magic` keeps a replaced file recoverable, as
+/// Replace needs (`TransferCapabilities::recoverable_replacement`).
 pub(in crate::transfer) fn supported_type(magic: u64) -> bool {
     // Qualify local ext filesystems first. Never extend local commit/error claims to
     // NFS/SMB/unknown mounts, where a failed request can have executed on the server.

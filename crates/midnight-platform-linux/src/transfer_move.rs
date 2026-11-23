@@ -621,10 +621,11 @@ impl Capture {
     }
     fn read_lease(&self, cancel: &Cancellation) -> Result<Arc<lease::ReadLease>, FsError> {
         checked(cancel, &self.entry.item.path)?;
-        if !destination::recovery::supported(&self.parent) {
+        if !destination::recovery::move_source_supported(&self.parent) {
             return Err(unsupported(
                 &self.entry.item.path,
-                "Verified cross-device Move requires a qualified local ext source",
+                "A Move from another drive removes sources only on a local filesystem (ext, \
+                 XFS, Btrfs, F2FS, tmpfs); it stays where it is. Copy it instead",
             ));
         }
         finalization::qualify(&self._file, &self.entry.item.path)?;

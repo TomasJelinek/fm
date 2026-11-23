@@ -416,8 +416,9 @@ impl CopyInput {
             _ => None,
         };
         if let Some(files) = clipboard {
-            files.validate()?;
+            // The count first: a longer list is refused without checking each path.
             check_native_roots(&self.destination, files.paths.len())?;
+            files.validate()?;
             if files.intent == FileClipboardIntent::Move && self.intent == TransferIntent::Copy {
                 return Err(error(
                     &self.destination,
