@@ -52,8 +52,33 @@ pub fn program(context: &Context, name: &str) -> Result<PathBuf, String> {
     {
         let this = std::env::current_exe()
             .map_err(|error| format!("cannot locate this test executable: {error}"))?;
-        stand_in(context, &this, name)
+        let path = stand_in(context, &this, name)?;
+        warm(&path);
+        Ok(path)
     }
+}
+
+/// Start a stand-in once, without arguments (it refuses them and exits), before a
+/// scenario times one of its starts: the first start of a new link to this executable of
+/// over 100 MB can take seconds (in the Windows run of 0aba1c1a the first `cp` of
+/// `find_result_actions` wrote its copy only after about 15 s), which is no part of what
+/// a scenario checks. Once per path and process.
+#[cfg(not(unix))]
+fn warm(path: &Path) {
+    use std::process::{Command, Stdio};
+    static WARMED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut warmed) = WARMED.lock() else {
+        return;
+    };
+    if warmed.iter().any(|done| done == path) {
+        return;
+    }
+    let _ = Command::new(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    warmed.push(path.to_path_buf());
 }
 
 /// This executable `this` as `<name>.exe`. The test executable is over 100 MB, and a

@@ -918,9 +918,10 @@ pub fn review_shot(app: &mut App, context: &mut Context, name: &str, caption: &s
 }
 
 /// Wait (bounded) until `path` exists and its size holds still across two looks 50 ms
-/// apart (a writer has finished its bytes), pumping the application meanwhile.
+/// apart (a writer has finished its bytes), pumping the application meanwhile. The bound
+/// leaves room for a slow start of the program that writes it (a busy Windows host).
 pub fn wait_file(app: &mut App, path: &Path, what: &str) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut size: Option<u64> = None;
     loop {
         let now = std::fs::metadata(path).ok().map(|metadata| metadata.len());

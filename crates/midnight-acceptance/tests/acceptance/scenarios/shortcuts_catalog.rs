@@ -570,10 +570,14 @@ fn sorted(names: &[&str]) -> Vec<String> {
 }
 
 /// The Checksums window shows its Calculate page, and Calculate can start. The sweep
-/// does not lay the new window out, so its items are looked up without geometry.
+/// shows new windows at 0 × 0, where the footer keeps no action beside Close (it moves
+/// even Calculate into More…), so the window is first laid out at its preferred size,
+/// the size it opens at (`dialog_native::place_initial`).
 fn checksums_ready(app: &App) -> Result<(), String> {
     let window =
         tools::tool_titled(app, "Checksums · Midnight Explorer").ok_or("no Checksums window")?;
+    let (_, (width, height)) = crate::scenarios::ui_gate::window_sizes(window.window());
+    crate::app::layout_tool(&window, width.round() as u32, height.round() as u32);
     // The page tab is a "Calculate" button too, on either page, but a checkable one.
     let (mut tab, mut footer) = (None, None);
     for root in inspect::roots(window.window()) {

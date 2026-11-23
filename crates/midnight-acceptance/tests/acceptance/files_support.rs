@@ -182,26 +182,6 @@ pub fn takes_cross_volume_move(folder: &Path) -> Option<bool> {
     Some(true)
 }
 
-/// The type of the filesystem mounted at the longest mount point that holds `folder`
-/// (`/proc/self/mounts`).
-#[cfg(not(windows))]
-pub fn filesystem_type(folder: &Path) -> Option<String> {
-    let folder = fs::canonicalize(folder).ok()?;
-    let mounts = fs::read_to_string("/proc/self/mounts").ok()?;
-    mounts
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split(' ');
-            let _device = fields.next()?;
-            // Spaces in mount points are written as \040.
-            let point = PathBuf::from(fields.next()?.replace("\\040", " "));
-            let kind = fields.next()?.to_owned();
-            folder.starts_with(&point).then_some((point, kind))
-        })
-        .max_by_key(|(point, _)| point.as_os_str().len())
-        .map(|(_, kind)| kind)
-}
-
 /// The root of the filesystem holding `path`, where Ctrl+Backspace goes: `/` on Unix,
 /// the drive's root (`D:\`) on Windows.
 pub fn filesystem_root(path: &Path) -> PathBuf {

@@ -184,7 +184,15 @@ fn run(context: &mut Context) -> Result<(), String> {
         &root,
     )?;
     support::stage(context, &["readonly"], &root.join("perm"))?;
+    // `many` four times over: a delete of one copy can end, and its window close, before
+    // the window's Pause is pressed (Linux run of 0aba1c1a).
     crate::scenarios::transfers::copy_tree(&context.fixture.path("many"), &root.join("bulk"))?;
+    for copy in 1..=3 {
+        crate::scenarios::transfers::copy_tree(
+            &context.fixture.path("many"),
+            &root.join(format!("bulk/again-{copy}")),
+        )?;
+    }
     let ro_parent = root.join("ro-parent");
     fs::create_dir(&ro_parent).map_err(|error| io_error(&ro_parent, error))?;
     for name in ["a.txt", "b.txt", "c.txt"] {
@@ -521,7 +529,7 @@ fn run(context: &mut Context) -> Result<(), String> {
 
     // A long permanent delete: its window holds still while paused, then Cancel
     // operation stops it, and every file left is whole.
-    let originals = tree_facts(&context.fixture.path("many"))?;
+    let originals = tree_facts(&root.join("bulk"))?;
     panel::select_row(&mut app, LEFT, "bulk")?;
     let start = app.operations.len();
     let before = app.tool_windows().len();
@@ -547,14 +555,20 @@ fn run(context: &mut Context) -> Result<(), String> {
             ended(&app).map(|progress| progress.state)
         )),
         Some(window) => {
+            // Pause before settling where it can: a successful delete closes its window,
+            // and every settle before the click is time for it to end.
             crate::app::layout_tool(&window, 760, 560);
+            let mut paused = tools::click_last(window.window(), "Pause");
             app.settle();
+            if paused.is_err() && ended(&app).is_none() {
+                paused = tools::click_last(window.window(), "Pause");
+            }
             let held = |app: &App| {
                 app.operations[start..]
                     .last()
                     .map(|progress| progress.processed_entries)
             };
-            if tools::click_last(window.window(), "Pause").is_ok() {
+            if paused.is_ok() {
                 let watched = window.clone();
                 let deadline = Instant::now() + Duration::from_secs(20);
                 while !inspect::visible_texts(watched.window())
@@ -575,6 +589,12 @@ fn run(context: &mut Context) -> Result<(), String> {
                 }
                 app.screenshot_window(context, &window, "delete-paused", "A paused delete");
                 let _ = tools::click_last(window.window(), "Resume");
+            } else if let Some(progress) = ended(&app) {
+                // Its window closed with the end, so there was no Pause to press.
+                context.note(format!(
+                    "the delete of bulk/ ended {:?} before its Pause could be pressed",
+                    progress.state
+                ));
             } else {
                 failures.push(format!(
                     "the delete's window has no Pause: {:?}",
