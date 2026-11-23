@@ -22,6 +22,9 @@ failed save leave the active limit unchanged.
   participating disk work runs beside it.
 - **Copy and Move.** Up to that many transfers do their disk work at the same time
   when they use different files and folders; each transfer copies one file at a time.
+  A transfer of more than 64 selected items counts as using the whole folders it copies
+  from and into: where another transfer changes one of those folders, one of the two
+  waits for the other.
   A transfer that is paused, or waiting for your decision or for another transfer,
   holds no slot. A running transfer lets waiting reads go first at its next step, so
   they wait for at most one step of it, never for the whole transfer.

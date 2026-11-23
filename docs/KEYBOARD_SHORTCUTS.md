@@ -182,7 +182,7 @@ or remove that assignment in Options → Keyboard to free the number.
 | Num * in files | Invert files only, or top-level files and folders when Select by mask last had Include folders checked; without a keypad, Ctrl+I and Ctrl+Shift+I invert the same two ways. Search results fed to a panel invert the same way. Configurable as `selection.mask-invert` |
 | Ctrl+H | Show or hide hidden files in both panels (`panel.hidden-files`); also in F10, each panel's View menu and Options → General |
 | Ctrl+C / Ctrl+V in files | Publish selected/focused files to the native clipboard / paste into the captured active folder; a Cut clipboard opens Move confirmation |
-| Ctrl+X in files | Publish a Cut clipboard for captured native files and folders. Paste opens the same Move confirmation as F6 (at most 64 selected items; links as its link choice says); archive Move is unavailable |
+| Ctrl+X in files | Publish a Cut clipboard for captured native files and folders. Paste opens the same Move confirmation as F6 (up to 1,000,000 selected items; links as its link choice says); archive Move is unavailable |
 | F5 | Copy the captured selection or focused item, including selected nested native/archive folders in expanded trees; edit the destination folder, initially the other panel. Tab reaches the **Links** choice, where Up and Down choose between copying the files links point to and keeping links as links. Enter queues the copy; Escape cancels the dialog |
 | F6 | Move captured native files or folders, including selected nested directories in expanded native trees, to an editable destination initially set to the other panel. Same-volume native rename reads no content; copied files are verified before source removal. Links move as links, or (Copy the files links point to) their files are copied and only the links removed. Archive Move is unavailable |
 | Ctrl+F / Alt+F7 | Open a separate Find window for the active native folder: masks, multiple roots, subfolders and optional UTF-8 content text or per-line regular expression, optionally inside archives (every archive and member, however large, until the search ends or Stop). Feed to panel shows the results as a list in the panel: the panel keys (F3, F4, F5, F6, F8, Shift+F8, Insert, Space, Enter) act on the results, Backspace returns to the folder. Up/Down moves through the results; Ctrl+click, Shift+click, Shift with the cursor keys, Space, Insert, Ctrl+A and Ctrl+D select several (see [Find result actions](#find-result-actions)); Enter or Go to file validates the result and locates it in its originating panel; F1 shows or hides syntax help for the chosen match mode and moves the keyboard into it (Up/Down and Page Up/Page Down scroll it); Escape first closes the help or the Add folder entry, and otherwise closes that Find window. In a viewer, Ctrl+F searches the opened file instead. |
@@ -309,7 +309,7 @@ Drops from other applications always copy; in a source application that offers o
 Move, hold its Copy key (usually Ctrl). Legacy X11 sources without XDND proxy support
 cannot drop into the application. Incoming drops share the verified copy queue and its
 conflict prompts. On Windows and X11/XWayland, an incoming drop refused after the Copy
-cursor was shown (for example more than 4,096 items, a full copy queue, a destination
+cursor was shown (for example more than 1,000,000 items, a full copy queue, a destination
 that changed, or a source that does not deliver its file list) shows its reason in the
 status line instead of ending silently; a drop that never showed the Copy cursor ends
 without a message. The target application performs an outgoing operation under its
@@ -407,8 +407,8 @@ empty-match searches cannot activate a leftover nonmatching keyboard cursor.
 F5 Copy opens the destination dialog without changing the clipboard. The selection
 and other-panel destination are captured at the gesture; later panel changes do
 not retarget it. Edited destinations must be absolute paths to existing folders.
-F6 opens the same captured-destination workflow for moves of at most 64 native
-roots, including ordinary directories and selected nested directories in adopted
+F6 opens the same captured-destination workflow for moves of up to 1,000,000
+native items, including ordinary directories and selected nested directories in adopted
 native trees. Ctrl+X publishes a Cut clipboard from native flat or captured tree
 selections; Ctrl+V then opens Move confirmation. Tree clipboard actions retain
 provider identities and their original selection scope.

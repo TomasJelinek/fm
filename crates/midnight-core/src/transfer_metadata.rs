@@ -19,11 +19,10 @@ pub enum TransferMetadataPolicy {
 /// itself, before any source is captured, whatever the dialog offered.
 pub const MAX_REQUIRED_METADATA_ROOTS: usize = 64;
 
-/// Why a Copy under `TransferMetadataPolicy::RequireModifiedTime` of more than
-/// `MAX_REQUIRED_METADATA_ROOTS` roots does not start. A Move of as many gives
-/// `MOVE_ROOTS_REFUSAL`, the sentence every Move entry point gives.
+/// Why a Copy or Move under `TransferMetadataPolicy::RequireModifiedTime` of more than
+/// `MAX_REQUIRED_METADATA_ROOTS` roots does not start.
 pub const REQUIRED_METADATA_ROOTS_REFUSAL: &str = "Required modified time accepts at most 64 \
-     distinct native regular files; choose content-only Copy for larger selections.";
+     distinct native regular files; transfer larger selections without it.";
 
 /// Provider-owned source handle and pre-read revision. No pathname reopening.
 pub trait TransferModifiedTimePin: Send {

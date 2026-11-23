@@ -432,32 +432,39 @@ fn admission_takes_every_selected_row_beyond_the_former_4096_targets() {
 }
 
 #[test]
-fn a_tree_transfer_takes_at_most_the_native_roots_one_copy_holds_open() {
-    // The capture takes the whole selection, but Copy and Move keep every native root
-    // open until it is copied: such a capture is refused before anything is prepared.
-    let count = midnight_core::MAX_NATIVE_TRANSFER_ROOTS + 1;
-    let (mut session, mount, _directory) = batch_fixture(count);
-    let selected = select(
-        &mut session,
-        TreeSelectionAction::Bulk(SelectionOperation::All),
-    );
-    let capacity = Arc::new(Semaphore::new(4));
-    let result = session.capture_transfer(
-        &midnight_core::TreeTransferRequest {
-            intent: midnight_core::TransferIntent::Copy,
-            view: selected.view.clone(),
-            request: TreeRequestId(1),
-            selection_revision: selected.selection_revision,
-            selection: selected.selection.clone(),
-            fallback: None,
-            cancel: Cancellation::default(),
-        },
-        &capacity,
-        &Cancellation::default(),
-    );
-    assert!(matches!(result, Err(ProviderError::ResourceLimited)));
-    assert_eq!(mount.calls.load(Ordering::Relaxed), count);
-    assert_eq!(capacity.available_permits(), 4);
+fn a_tree_transfer_takes_more_native_items_than_the_4096_it_once_took() {
+    // A Copy or Move takes up to `MAX_NATIVE_TRANSFER_ROOTS` native items, far more than a
+    // tree projection shows: the capture of every selected row is taken, for Copy and for
+    // Move (a Move once took 64).
+    let count = 4_097;
+    for intent in [
+        midnight_core::TransferIntent::Copy,
+        midnight_core::TransferIntent::Move,
+    ] {
+        let (mut session, mount, _directory) = batch_fixture(count);
+        let selected = select(
+            &mut session,
+            TreeSelectionAction::Bulk(SelectionOperation::All),
+        );
+        let capacity = Arc::new(Semaphore::new(4));
+        let result = session.capture_transfer(
+            &midnight_core::TreeTransferRequest {
+                intent,
+                view: selected.view.clone(),
+                request: TreeRequestId(1),
+                selection_revision: selected.selection_revision,
+                selection: selected.selection.clone(),
+                fallback: None,
+                cancel: Cancellation::default(),
+            },
+            &capacity,
+            &Cancellation::default(),
+        );
+        assert!(result.is_ok(), "{intent:?}: {:?}", result.err());
+        drop(result);
+        assert_eq!(capacity.available_permits(), 4);
+        assert_eq!(mount.calls.load(Ordering::Relaxed), count);
+    }
 }
 
 #[test]

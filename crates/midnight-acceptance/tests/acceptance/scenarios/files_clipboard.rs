@@ -1,6 +1,6 @@
 //! Clipboard and drag and drop between the panels, F5 with marked files during a
-//! filename search, the Move limit of 64 selected items (F6 and Ctrl+X, Ctrl+V of 65
-//! refused before any job, F5 of 65 copied), drags across volumes (a Move refused up
+//! filename search, more selected items than the 64 a Move once took (F5 of 65 copied,
+//! Ctrl+X, Ctrl+V of them moved, F6 of them moved back), drags across volumes (a Move refused up
 //! front where the volume cannot keep a replaced file recoverable) and, with the scenario
 //! clock held, a drop released within 0.4 s of the press cancelled.
 //!
@@ -26,9 +26,8 @@ const RIGHT: PaneId = PaneId::Right;
 const COPY: i32 = 3;
 const MOVE: i32 = 4;
 const REFUSED: i32 = 5;
-/// The most items one Move takes, and what a larger selection is told.
+/// The most items one Move once took: the selection below is one more.
 const LIMIT: usize = 64;
-const TOO_MANY: &str = "Move accepts at most 64 selected roots. Choose a smaller selection.";
 
 fn write(path: &Path, text: &str) -> Result<(), String> {
     fs::write(path, text).map_err(|error| io_error(path, error))
@@ -337,8 +336,8 @@ pub fn clipboard_and_drag(context: &mut Context) -> Result<(), String> {
     // marked files, not the search's match.
     quick_search_copy(&mut app, context, &source, &target, &mut failures)?;
 
-    // Move takes at most 64 selected items: 65 are refused by F6 and by Ctrl+X, Ctrl+V,
-    // in the limit's words, and nothing moves; F5 copies all 65.
+    // More items than a Move once took: F5 copies all 65, Ctrl+X, Ctrl+V moves them all
+    // and F6 moves them all back.
     selection_limits(&mut app, context, &source, &target, &mut failures)?;
 
     // Escape during a drag drops nothing; a drop on a file row lands in that panel's
@@ -826,52 +825,9 @@ fn quick_search_copy(
     Ok(())
 }
 
-/// How a Move of too many items ended, in one line, and whether it was refused up front
-/// (by the dialog or a notice, before any job) with [`TOO_MANY`]. A job admitted for it
-/// is no refusal, whatever it reports (finding O-2: a Move of more than 64 items is
-/// refused before a job, in words that say Move).
-fn refusal(app: &mut App, start: usize) -> (bool, String) {
-    app.until("the Move to be refused or admitted", move |app| {
-        app.copies.len() > start
-            || support::shown_notice(app).is_some()
-            || (!app.window.get_copy_draft_token().is_empty()
-                && !app.window.get_copy_draft_error().is_empty())
-    });
-    if !app.window.get_copy_draft_token().is_empty() {
-        let error = app.window.get_copy_draft_error().to_string();
-        support::dismiss_all(app);
-        return (
-            error.contains(TOO_MANY),
-            format!("the dialog refused it: {error}"),
-        );
-    }
-    if app.copies.len() == start {
-        let notice = support::take_notice(app);
-        let said = notice
-            .as_ref()
-            .is_some_and(|(title, body)| format!("{title} {body}").contains(TOO_MANY));
-        return (said, format!("a notice refused it: {notice:?}"));
-    }
-    let job = support::wait_job(app, start);
-    app.settle();
-    let notice = support::take_notice(app);
-    support::dismiss_all(app);
-    (
-        false,
-        format!(
-            "a job was admitted and ended {:?}: {} {:?}; notice {notice:?}",
-            job.state,
-            job.message,
-            job.errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        ),
-    )
-}
-
-/// 65 marked files: F6 and Ctrl+X, Ctrl+V are refused before any job, in the Move
-/// limit's words, and move nothing; F5 copies all of them.
+/// 65 marked files, one more than a Move once took: F5 copies all of them, Ctrl+X and
+/// Ctrl+V in an empty folder move all of them there, and F6 from there moves all of them
+/// back, each a Move of every item, verified against the files as they were.
 fn selection_limits(
     app: &mut App,
     context: &mut Context,
@@ -887,39 +843,50 @@ fn selection_limits(
         fs::create_dir(folder).map_err(|error| io_error(folder, error))?;
     }
     panel::enter(app, LEFT, "many65")?;
-    let mark_all = |app: &mut App| -> Result<(), String> {
-        panel::focus_list(app, LEFT)?;
+    let mark_all = |app: &mut App, pane: PaneId| -> Result<(), String> {
+        panel::focus_list(app, pane)?;
         input::chord(app.slint(), &[Key::Control], "a");
         app.settle();
-        let marked = support::selected_names(app, LEFT).len();
+        let marked = support::selected_names(app, pane).len();
         if marked == LIMIT + 1 {
             Ok(())
         } else {
             Err(format!("Ctrl+A marked {marked} of {} files", LIMIT + 1))
         }
     };
+    let compare = |what: &str, folder: &Path, failures: &mut Vec<String>| -> Result<(), String> {
+        let differences = support::compare_trees(&before, &tree_facts(folder)?, false);
+        if !differences.is_empty() {
+            failures.push(format!(
+                "{what} of {} files left differences: {:?}",
+                LIMIT + 1,
+                differences.iter().take(5).collect::<Vec<_>>()
+            ));
+        }
+        Ok(())
+    };
 
-    // F6 of all 65 into an empty folder.
-    mark_all(app)?;
-    let start = app.copies.len();
-    input::key(app.slint(), Key::F6);
-    app.until("the Move dialog", |app| {
-        !app.window.get_copy_draft_token().is_empty()
-    });
-    input::fill(app.slint(), "Destination folder", &moved.to_string_lossy())?;
-    app.settle();
-    input::key(app.slint(), Key::Return);
-    let (refused, f6) = refusal(app, start);
-    context.note(format!("F6 of {} files: {f6}", LIMIT + 1));
-    if !refused {
-        failures.push(format!(
-            "finding O-2: F6 of {} files was not refused before a job with {TOO_MANY:?}: {f6}",
-            LIMIT + 1
-        ));
+    // F5 of all 65 copies every one.
+    mark_all(app, LEFT)?;
+    match support::transfer(
+        app,
+        context,
+        TransferSpec {
+            destination: Some(copied.as_path()),
+            ..TransferSpec::copy()
+        },
+    ) {
+        Err(error) => failures.push(format!("F5 of {} files: {error}", LIMIT + 1)),
+        Ok(run) => {
+            if let Err(error) = support::completed(&run, "F5 of 65 files") {
+                failures.push(error);
+            }
+            compare("F5", &copied, failures)?;
+        }
     }
 
-    // Ctrl+X, then Ctrl+V in the empty folder.
-    mark_all(app)?;
+    // Ctrl+X, then Ctrl+V in the empty folder, moves every one.
+    mark_all(app, LEFT)?;
     let clipboard = app.clipboard.clone().ok_or("no clipboard installed")?;
     input::chord(app.slint(), &[Key::Control], "x");
     let held = clipboard.clone();
@@ -936,57 +903,61 @@ fn selection_limits(
     panel::enter(app, RIGHT, "moved65")?;
     let start = app.copies.len();
     input::chord(app.slint(), &[Key::Control], "v");
-    app.until("Ctrl+V of the cut files to answer", move |app| {
-        app.copies.len() > start
-            || !app.window.get_copy_draft_token().is_empty()
-            || support::shown_notice(app).is_some()
-    });
-    if !app.window.get_copy_draft_token().is_empty() {
-        input::key(app.slint(), Key::Return);
-    }
-    let (refused, pasted) = refusal(app, start);
-    context.note(format!("Ctrl+X, Ctrl+V of {} files: {pasted}", LIMIT + 1));
-    if !refused {
-        failures.push(format!(
-            "finding O-2: Ctrl+X, Ctrl+V of {} files was not refused before a job with \
-             {TOO_MANY:?}: {pasted}",
-            LIMIT + 1
-        ));
-    }
-    panel::leave(app, RIGHT)?;
-    if !support::names_on_disk(&moved).is_empty() || tree_facts(&many)? != before {
-        failures.push(format!(
-            "a refused Move of {} files changed the source or wrote {:?}",
-            LIMIT + 1,
-            support::names_on_disk(&moved)
-        ));
-    }
-
-    // F5 of the same 65 files copies every one.
-    mark_all(app)?;
-    match support::transfer(
+    match finish_answering(
         app,
-        context,
-        TransferSpec {
-            destination: Some(copied.as_path()),
-            ..TransferSpec::copy()
-        },
+        start,
+        "Ctrl+V of the 65 cut files",
+        &support::Choice::CancelJob,
     ) {
-        Err(error) => failures.push(format!("F5 of {} files: {error}", LIMIT + 1)),
-        Ok(run) => {
-            if let Err(error) = support::completed(&run, "F5 of 65 files") {
-                failures.push(error);
-            }
-            let differences = support::compare_trees(&before, &tree_facts(&copied)?, false);
-            if !differences.is_empty() {
+        Err(error) => failures.push(format!("Ctrl+X, Ctrl+V of {} files: {error}", LIMIT + 1)),
+        Ok((done, asked)) => {
+            context.note(format!(
+                "Ctrl+X, Ctrl+V of {} files: {:?}, {} of {} items moved",
+                LIMIT + 1,
+                done.state,
+                done.completed_roots,
+                done.requested_roots
+            ));
+            if done.state != CopyOperationState::Completed || !asked.is_empty() {
                 failures.push(format!(
-                    "F5 of {} files copied with differences: {:?}",
+                    "Ctrl+X, Ctrl+V of {} files ended {:?} after {asked:?}: {}",
                     LIMIT + 1,
-                    differences.iter().take(5).collect::<Vec<_>>()
+                    done.state,
+                    done.message
                 ));
             }
         }
     }
+    support::dismiss_all(app);
+    compare("Ctrl+X, Ctrl+V", &moved, failures)?;
+    if !support::names_on_disk(&many).is_empty() {
+        failures.push(format!(
+            "Ctrl+X, Ctrl+V of {} files left {:?} in the source",
+            LIMIT + 1,
+            support::names_on_disk(&many)
+        ));
+    }
+
+    // F6 from there moves every one back to the left panel's folder.
+    support::wait_row(app, RIGHT, "m000.txt", true);
+    mark_all(app, RIGHT)?;
+    match support::transfer(app, context, TransferSpec::moving()) {
+        Err(error) => failures.push(format!("F6 of {} files: {error}", LIMIT + 1)),
+        Ok(run) => {
+            if let Err(error) = support::completed(&run, "F6 of 65 files") {
+                failures.push(error);
+            }
+        }
+    }
+    compare("F6", &many, failures)?;
+    if !support::names_on_disk(&moved).is_empty() {
+        failures.push(format!(
+            "F6 of {} files left {:?} behind",
+            LIMIT + 1,
+            support::names_on_disk(&moved)
+        ));
+    }
+    panel::leave(app, RIGHT)?;
     panel::focus_list(app, LEFT)?;
     input::chord(app.slint(), &[Key::Control], "d");
     panel::leave(app, LEFT)?;

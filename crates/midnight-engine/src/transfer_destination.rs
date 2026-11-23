@@ -234,13 +234,13 @@ pub(crate) fn move_refusal<'a>(
     if destination.cross_volume_move_refusal().is_none() {
         return Ok(None);
     }
-    let mut folders: Vec<&std::path::Path> = Vec::new();
+    // Each distinct folder is read once, however many selected items it holds.
+    let mut folders = std::collections::HashSet::new();
     for source in sources {
         let folder = source.parent().unwrap_or(source);
-        if folders.contains(&folder) {
+        if !folders.insert(folder) {
             continue;
         }
-        folders.push(folder);
         let facts = transfers.link_destination(folder, cancel);
         admission_current(cancel, folder, &facts)?;
         let refusal = TransferLinkFacts::new(destination.clone(), Some(&facts?)).move_refusal();

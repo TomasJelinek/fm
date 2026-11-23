@@ -16,11 +16,47 @@ struct Frame {
     children: VecDeque<Child>,
     cursor: Cursor,
 }
+/// The folder depth that the discovery of a mutation other than a transfer stops at.
+const MUTATION_DEPTH: usize = 128;
+
 pub(crate) fn walk(
     parent: &File,
     source: &File,
     name: &OsStr,
     path: &Path,
+    cancel: &Cancellation,
+    visit: &mut dyn FnMut(&MutationItem),
+) -> Result<(), FsError> {
+    walk_within(
+        parent,
+        source,
+        name,
+        path,
+        Some(MUTATION_DEPTH),
+        cancel,
+        visit,
+    )
+}
+
+/// The discovery of a Copy or Move: as deep as the transfer itself goes, which keeps no
+/// fixed depth limit on Windows (each level holds one listing handle meanwhile).
+pub(crate) fn walk_transfer(
+    parent: &File,
+    source: &File,
+    name: &OsStr,
+    path: &Path,
+    cancel: &Cancellation,
+    visit: &mut dyn FnMut(&MutationItem),
+) -> Result<(), FsError> {
+    walk_within(parent, source, name, path, None, cancel, visit)
+}
+
+fn walk_within(
+    parent: &File,
+    source: &File,
+    name: &OsStr,
+    path: &Path,
+    max_depth: Option<usize>,
     cancel: &Cancellation,
     visit: &mut dyn FnMut(&MutationItem),
 ) -> Result<(), FsError> {
@@ -59,7 +95,7 @@ pub(crate) fn walk(
         if kind != EntryKind::Directory {
             continue;
         }
-        if depth >= 128 {
+        if max_depth.is_some_and(|limit| depth >= limit) {
             return Err(failure(
                 "discover",
                 &path,

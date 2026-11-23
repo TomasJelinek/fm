@@ -19,6 +19,11 @@ use windows_sys::Win32::{
     },
 };
 
+/// Whether a Move may remove the copied regular file `file` once its copy is verified:
+/// only where the copy carries all of its data. A file with named alternate data streams
+/// keeps them, which Copy does not copy, so it is refused (the Move leaves it in place).
+/// A read-only file is removed as Delete removes one, and a file with other names (hard
+/// links) loses only the name the Move took, as Delete does: neither loses data.
 pub(super) fn qualify(file: &File, path: &Path) -> Result<(), FsError> {
     let mut standard = FILE_STANDARD_INFO::default();
     // SAFETY: live handle and a writable structure with its exact native size.
@@ -33,18 +38,10 @@ pub(super) fn qualify(file: &File, path: &Path) -> Result<(), FsError> {
     {
         return Err(error(path, io::Error::last_os_error()));
     }
-    if standard.Directory
-        || standard.NumberOfLinks != 1
-        || file
-            .metadata()
-            .map_err(|e| error(path, e))?
-            .file_attributes()
-            & FILE_ATTRIBUTE_READONLY
-            != 0
-    {
+    if standard.Directory {
         return Err(unsupported(
             path,
-            "Verified Move removal requires a single-link regular file without the readonly attribute. Choose Copy to retain the source.",
+            "Verified Move removal requires a regular file. Choose Copy to retain the source.",
         ));
     }
     check_streams(file, path, false)
@@ -55,10 +52,11 @@ pub(super) fn qualify_directory(file: &File, path: &Path) -> Result<(), FsError>
     // A cloud placeholder or other non-surrogate reparse directory is an ordinary
     // directory; a link (junction, symbolic link, mount point) never qualifies.
     let native = Native::of(file, metadata.file_attributes()).map_err(|e| error(path, e))?;
-    if !native.directory() || native.link() || native.attributes & FILE_ATTRIBUTE_READONLY != 0 {
+    // A read-only folder is removed once emptied, as Delete removes one.
+    if !native.directory() || native.link() {
         return Err(unsupported(
             path,
-            "Directory Move requires an ordinary directory without the readonly attribute.",
+            "Directory Move requires an ordinary directory.",
         ));
     }
     check_streams(file, path, true)
@@ -281,11 +279,14 @@ impl TransferMoveFinalizer for Finalizer {
                         let info = FILE_DISPOSITION_INFO_EX {
                             Flags: FILE_DISPOSITION_FLAG_DELETE
                                 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
-                                | FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK,
+                                | FILE_DISPOSITION_FLAG_FORCE_IMAGE_SECTION_CHECK
+                                | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
                         };
-                        // SAFETY: live DELETE-capable source handle, fixed native structure. No
-                        // readonly override. POSIX removes this staged link when our DELETE
-                        // owners close; other read handles may still retain physical storage.
+                        // SAFETY: live DELETE-capable source handle, fixed native structure.
+                        // As Delete does, the read-only attribute is ignored, never cleared,
+                        // so the file's other names keep it. POSIX removes this staged name
+                        // when our DELETE owners close; other names and other read handles
+                        // may still retain the data.
                         if unsafe {
                             SetFileInformationByHandle(
                                 self.file.as_raw_handle(),

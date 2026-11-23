@@ -6,6 +6,8 @@ use std::{
     ffi::OsString,
     path::Component,
 };
+#[path = "copy_job_construction.rs"]
+mod construction;
 #[cfg(test)]
 #[path = "copy_constructor_seal_tests.rs"]
 mod constructor_seal_tests;
@@ -21,6 +23,8 @@ mod metadata_job;
 mod move_job;
 #[path = "move_native.rs"]
 mod native_move;
+#[path = "copy_streamed_roots.rs"]
+mod streamed;
 #[path = "copy_work_budget.rs"]
 mod work_budget;
 
@@ -116,6 +120,12 @@ pub(super) struct Job {
     /// The namespace claim's count of `roots` not taken yet: the job's close probes only
     /// the pins of the roots it took (`copy_namespace::Claim::revalidate_before_close`).
     unstarted: Option<crate::copy_namespace::Unstarted>,
+    /// The items of a selection too large to prepare before the job starts, which the
+    /// job takes one at a time after `roots` (`streamed`).
+    streamed: Option<streamed::StreamedRoots>,
+    /// A conflict's target that waits until every streamed item's identity is read
+    /// (`Job::identities_ready`); `current` holds its entry meanwhile.
+    awaiting_identities: Option<TransferEntry>,
     protected_roots: HashSet<TransferIdentity>,
     stack: Vec<Frame>,
     /// The name of a child that the top folder's enumeration reached but could not
@@ -186,12 +196,6 @@ impl Drop for Awaited {
     }
 }
 
-pub(super) fn check_move_bounds<'a>(
-    destination: &Path,
-    paths: impl IntoIterator<Item = &'a Path>,
-) -> Result<(), FsError> {
-    move_job::check_root_bounds(destination, paths)
-}
 impl Job {
     pub(super) fn set_retirement_witness(
         &mut self,
@@ -221,436 +225,6 @@ impl Job {
         self.verification = verification;
         self.progress.verification = verification;
     }
-    pub(super) fn prepare_move_sources(
-        destination: std::path::PathBuf,
-        roots: VecDeque<PreparedTransferMove>,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-    ) -> Result<Self, FsError> {
-        move_job::prepare_sources(destination, roots, service, cancel, status, metadata)
-    }
-
-    pub(super) fn prepare_move_entries(
-        destination: std::path::PathBuf,
-        roots: VecDeque<PreparedTransferMoveEntry>,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-        links: CopyLinkPolicy,
-    ) -> Result<Self, FsError> {
-        move_job::prepare_entries(destination, roots, service, cancel, status, metadata, links)
-    }
-
-    pub(super) fn prepare_with_metadata(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-    ) -> Result<Self, FsError> {
-        if metadata == TransferMetadataPolicy::ContentOnly {
-            return Self::prepare(request, service, cancel, status);
-        }
-        move_job::check_bounds(&request)?;
-        let mut job = ownership::Armed::new(Self::prepare(request, service, cancel, status)?);
-        let permit = match move_job::permit(&job.cancel, &job.progress.destination_directory) {
-            Ok(permit) => permit,
-            Err(error) => {
-                drop(job.into_inner());
-                return Err(error);
-            }
-        };
-        if let Err(error) = job.prepare_metadata(metadata) {
-            drop(job.into_inner());
-            return Err(error);
-        }
-        drop(permit);
-        Ok(job.into_inner())
-    }
-    pub(super) fn prepare_move_with_metadata(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-    ) -> Result<Self, FsError> {
-        if metadata == TransferMetadataPolicy::ContentOnly {
-            return Self::prepare_move(request, service, cancel, status);
-        }
-        move_job::prepare_with_metadata(request, service, cancel, status, metadata)
-    }
-    pub(super) fn prepare_move_with_options(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-        links: CopyLinkPolicy,
-    ) -> Result<Self, FsError> {
-        if links == CopyLinkPolicy::Reject {
-            return Self::prepare_move_with_metadata(request, service, cancel, status, metadata);
-        }
-        move_job::prepare_with_options(request, service, cancel, status, metadata, links)
-    }
-
-    pub(super) fn prepare_move(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-    ) -> Result<Self, FsError> {
-        move_job::prepare(request, service, cancel, status)
-    }
-    pub(super) fn prepare(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-    ) -> Result<Self, FsError> {
-        Self::prepare_native(request, service, cancel, status, CopyLinkPolicy::Reject)
-    }
-
-    pub(super) fn prepare_with_options(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-        links: CopyLinkPolicy,
-    ) -> Result<Self, FsError> {
-        let links = input::source_link_policy(links, metadata);
-        if links == CopyLinkPolicy::Reject {
-            return Self::prepare_with_metadata(request, service, cancel, status, metadata);
-        }
-        link_job::validate_options(&request.destination, &status, metadata, links)?;
-        Self::prepare_native(request, service, cancel, status, links)
-    }
-
-    fn prepare_native(
-        request: CopyRequest,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        links: CopyLinkPolicy,
-    ) -> Result<Self, FsError> {
-        let destination = service.prepare_transfer_destination(&request.destination, &cancel)?;
-        if destination.path() != request.destination {
-            return Err(error(
-                &request.destination,
-                io::ErrorKind::InvalidInput,
-                "Provider returned a different destination.",
-            ));
-        }
-        let mut seen = HashSet::new();
-        let mut roots = VecDeque::new();
-        for path in &request.clipboard.paths {
-            if cancel.is_cancelled() {
-                return Err(error(path, io::ErrorKind::Interrupted, "Copy cancelled."));
-            }
-            if !seen.insert(path) {
-                continue;
-            }
-            let source = service.prepare_transfer_source_with_policy(
-                path,
-                links,
-                TRANSFER_REVISIONS,
-                &cancel,
-            )?;
-            if source.entry().item.path != *path {
-                return Err(error(
-                    path,
-                    io::ErrorKind::InvalidInput,
-                    "Provider returned a different source.",
-                ));
-            }
-            if source.entry().item.kind == EntryKind::Directory {
-                destination.reject_source_ancestor(source.entry().identity, &cancel)?;
-            }
-            roots.push_back(source);
-        }
-        link_job::admit_roots(&roots, links, &cancel)?;
-        let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
-        job.links = links;
-        job.set_verification(request.verification);
-        Ok(job.into_inner())
-    }
-
-    pub(super) fn prepare_archive(
-        path: std::path::PathBuf,
-        roots: VecDeque<Box<dyn TransferSource>>,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-    ) -> Result<Self, FsError> {
-        let destination = service.prepare_transfer_destination(&path, &cancel)?;
-        if destination.path() != path {
-            return Err(error(
-                &path,
-                io::ErrorKind::InvalidInput,
-                "Provider returned a different destination.",
-            ));
-        }
-        Ok(Self::from_sources(destination, roots, cancel, status))
-    }
-
-    pub(super) fn prepare_sources(
-        path: std::path::PathBuf,
-        roots: VecDeque<Box<dyn TransferSource>>,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-    ) -> Result<Self, FsError> {
-        Self::prepare_captured(
-            path,
-            roots,
-            service,
-            cancel,
-            status,
-            metadata,
-            CopyLinkPolicy::Reject,
-        )
-    }
-
-    pub(super) fn prepare_sources_with_options(
-        path: std::path::PathBuf,
-        roots: VecDeque<Box<dyn TransferSource>>,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-        links: CopyLinkPolicy,
-    ) -> Result<Self, FsError> {
-        let links = input::source_link_policy(links, metadata);
-        if links == CopyLinkPolicy::Reject {
-            return Self::prepare_sources(path, roots, service, cancel, status, metadata);
-        }
-        link_job::validate_options(&path, &status, metadata, links)?;
-        Self::prepare_captured(path, roots, service, cancel, status, metadata, links)
-    }
-
-    fn prepare_captured(
-        path: std::path::PathBuf,
-        roots: VecDeque<Box<dyn TransferSource>>,
-        service: &dyn TransferService,
-        cancel: Cancellation,
-        status: Status,
-        metadata: TransferMetadataPolicy,
-        links: CopyLinkPolicy,
-    ) -> Result<Self, FsError> {
-        // Link-aware callers validate their options before entering preparation.
-        if roots.is_empty() {
-            return Err(error(
-                &path,
-                io::ErrorKind::InvalidInput,
-                "Invalid captured Copy root count.",
-            ));
-        }
-        // Only native roots hold handles open until copied; archive members take any count.
-        super::input::check_native_roots(
-            &path,
-            roots
-                .iter()
-                .filter(|source| source.native_identity().is_some())
-                .count(),
-        )?;
-        if metadata != TransferMetadataPolicy::ContentOnly {
-            let paths = roots
-                .iter()
-                .map(|source| source.entry().item.path.clone())
-                .collect();
-            move_job::check_bounds(&CopyRequest {
-                start_policy: TransferStartPolicy::Immediate,
-                verification: snapshot(&status).verification,
-                id: snapshot(&status).id,
-                clipboard: FileClipboard {
-                    paths,
-                    intent: FileClipboardIntent::Copy,
-                },
-                destination: path.clone(),
-            })?;
-        }
-        let destination = service.prepare_transfer_destination(&path, &cancel)?;
-        if destination.path() != path {
-            return Err(error(
-                &path,
-                io::ErrorKind::InvalidInput,
-                "Provider returned a different destination.",
-            ));
-        }
-        let mut identities = HashSet::new();
-        for source in &roots {
-            source.revalidate(&cancel)?;
-            if !matches!(
-                source.entry().item.kind,
-                EntryKind::File | EntryKind::Directory
-            ) && !(links.recreates_links() && link_job::is_link_kind(source.entry().item.kind))
-            {
-                return Err(error(
-                    &path,
-                    io::ErrorKind::Unsupported,
-                    "Captured Copy source kind is unsupported by this link policy.",
-                ));
-            }
-            if let Some(id) = source.native_identity() {
-                if id != source.entry().identity {
-                    return Err(error(
-                        &path,
-                        io::ErrorKind::InvalidData,
-                        "Native Copy source identity is inconsistent.",
-                    ));
-                }
-                let original = if links.materializes_directory_links() {
-                    source.native_original_identity().ok_or_else(|| {
-                        error(
-                            &source.entry().item.path,
-                            io::ErrorKind::InvalidData,
-                            "Native Copy is missing the original source identity.",
-                        )
-                    })?
-                } else {
-                    id
-                };
-                if !identities.insert(original) {
-                    return Err(error(
-                        &path,
-                        io::ErrorKind::InvalidInput,
-                        "Duplicate native Copy roots.",
-                    ));
-                }
-                if source.entry().item.kind == EntryKind::Directory {
-                    destination.reject_source_ancestor(id, &cancel)?;
-                }
-            }
-        }
-        // Read-only ancestry authority avoids requiring writes to source parents.
-        let directories: Vec<_> = roots
-            .iter()
-            .filter(|source| source.entry().item.kind == EntryKind::Directory)
-            .filter_map(|source| source.native_identity())
-            .collect();
-        let mut parents = Vec::new();
-        if !directories.is_empty() {
-            // Roots of one selection usually share a parent: check each distinct parent
-            // once (O(distinct parents x directory roots)), not once per root.
-            let mut checked = HashSet::new();
-            for source in roots
-                .iter()
-                .filter(|source| source.native_identity().is_some())
-            {
-                let source_path = &source.entry().item.path;
-                let parent = source_path.parent().ok_or_else(|| {
-                    error(
-                        source_path,
-                        io::ErrorKind::InvalidInput,
-                        "Copy source needs a parent.",
-                    )
-                })?;
-                if !checked.insert(parent.to_path_buf()) {
-                    continue;
-                }
-                let directory = service.prepare_checksum_directory(parent, &cancel)?;
-                if directory.path() != parent {
-                    return Err(error(
-                        parent,
-                        io::ErrorKind::InvalidData,
-                        "Provider returned a different source parent.",
-                    ));
-                }
-                for id in &directories {
-                    directory.reject_source_ancestor(*id, &cancel)?;
-                }
-                parents.push(directory);
-            }
-        }
-        for source in &roots {
-            source.revalidate(&cancel)?;
-        }
-        link_job::admit_roots(&roots, links, &cancel)?;
-        let mut job = ownership::Armed::new(Self::from_sources(destination, roots, cancel, status));
-        job.links = links;
-        if metadata != TransferMetadataPolicy::ContentOnly {
-            // Input resolution refuses more roots before any capture (`copy_input`); the
-            // job keeps its own guard, in the same words.
-            if job.roots.len() > midnight_core::MAX_REQUIRED_METADATA_ROOTS {
-                let error = error(
-                    &path,
-                    io::ErrorKind::Unsupported,
-                    midnight_core::REQUIRED_METADATA_ROOTS_REFUSAL,
-                );
-                drop(job.into_inner());
-                return Err(error);
-            }
-            if let Err(error) = job.prepare_metadata(metadata) {
-                drop(job.into_inner());
-                return Err(error);
-            }
-        }
-        // A provider-backed parent destructor must run before the Job leaves
-        // armed storage, even after successful metadata preflight.
-        drop(parents);
-        Ok(job.into_inner())
-    }
-
-    fn from_sources(
-        destination: Arc<dyn TransferDirectory>,
-        roots: VecDeque<Box<dyn TransferSource>>,
-        cancel: Cancellation,
-        status: Status,
-    ) -> Self {
-        let protected_roots = roots
-            .iter()
-            .filter_map(|source| source.native_identity())
-            .collect();
-        let mut progress = snapshot(&status);
-        progress.requested_roots = roots.len() as u64;
-        let link_retirement = Arc::new(link_job::LinkRetirement::new());
-        Self {
-            retirement_witness: None,
-            locale: None,
-            progress,
-            tracker: Arc::new(Mutex::new(Tracker::default())),
-            pass_ids: crate::operation_throughput::PassIds::default(),
-            finish_started: false,
-            namespace_busy: None,
-            final_name_collision: false,
-            status,
-            cancel,
-            destination,
-            roots,
-            unstarted: None,
-            protected_roots,
-            stack: vec![],
-            failed_child: None,
-            reopened_child: None,
-            reprepared_child: None,
-            current: None,
-            conflict: None,
-            failure: None,
-            failure_context: failures::Context::Entry,
-            committed: None,
-            skipped_errors: HashSet::new(),
-            halt: false,
-            decision: None,
-            version: 0,
-            skip_all: false,
-            replace_all: false,
-            merge_all: false,
-            move_work: None,
-            metadata: None,
-            verification: TransferVerification::default(),
-            links: CopyLinkPolicy::Reject,
-            work_budget: work_budget::Budget::default(),
-            active_root: None,
-            completed_root: None,
-            drop_retention: None,
-            drop_completions: None,
-            link_retirement,
-        }
-    }
 
     pub(super) fn attach_tracker(&mut self, tracker: Arc<Mutex<Tracker>>) {
         self.tracker = tracker;
@@ -658,7 +232,7 @@ impl Job {
 
     /// From now on, keep the namespace claim's count of the roots this job has not taken.
     pub(super) fn report_unstarted(&mut self, unstarted: crate::copy_namespace::Unstarted) {
-        unstarted.set(self.roots.len());
+        unstarted.set(self.unstarted_roots());
         self.unstarted = Some(unstarted);
     }
 
@@ -963,6 +537,11 @@ impl Job {
         if self.halt {
             return Step::Done;
         }
+        if let Some(target) = self.awaiting_identities.take()
+            && let Some(work) = self.current.take()
+        {
+            return self.wait_for_conflict(work, target);
+        }
         if let Some(work) = self.current.take() {
             return self.process(work);
         }
@@ -970,28 +549,12 @@ impl Job {
             .move_work
             .as_ref()
             .is_some_and(move_job::MoveWork::has_pending)
-            || (self.move_work.is_some() && self.roots.is_empty() && self.stack.is_empty())
+            || (self.move_work.is_some() && !self.roots_left() && self.stack.is_empty())
         {
             return self.advance_move();
         }
         self.progress.phase = CopyOperationPhase::Planning;
         self.progress.current_path = None;
-        let active_projection_bytes = if self.move_work.is_some()
-            && self
-                .stack
-                .last()
-                .is_some_and(|frame| frame.removal != EntryRemoval::Ordinary)
-        {
-            self.stack
-                .iter()
-                .filter(|frame| frame.removal == EntryRemoval::Copy)
-                .fold(0usize, |total, frame| {
-                    total
-                        .saturating_add(move_job::proof_path_bytes(&frame.source.entry().item.path))
-                })
-        } else {
-            0
-        };
         let next = if let Some(frame) = self.stack.last_mut() {
             let next = if frame.enumeration_complete {
                 Ok(None)
@@ -1037,11 +600,8 @@ impl Job {
                         // Followed contents use Copy readers and cannot produce Move
                         // captures, even if an ordinary provider could grant them.
                         if let Some(move_work) = self.move_work.as_mut() {
-                            move_work.admit_projected_child(
-                                &*source,
-                                &frame.source.entry().item.path,
-                                active_projection_bytes,
-                            )?;
+                            move_work
+                                .admit_projected_child(&*source, &frame.source.entry().item.path)?;
                         }
                         Ok(Some(Ok((source, EntryRemoval::Copy))))
                     }
@@ -1147,7 +707,20 @@ impl Job {
                 }
             }
         } else {
-            self.roots.pop_front().map(|source| {
+            let taken = match self.roots.pop_front() {
+                Some(source) => Some(source),
+                None => match self.take_streamed_root() {
+                    streamed::Taken::Root(source) => Some(source),
+                    streamed::Taken::Done => None,
+                    streamed::Taken::Waiting | streamed::Taken::Repeated => {
+                        return Step::Continue;
+                    }
+                    streamed::Taken::Failed(error) => {
+                        return self.wait_for_failure(error, failures::Context::Root);
+                    }
+                },
+            };
+            taken.map(|source| {
                 if let Some(unstarted) = &self.unstarted {
                     unstarted.set(self.roots.len());
                 }
@@ -1451,15 +1024,6 @@ impl Job {
         source.open_for_reading(&self.cancel)?;
         match source.entry().item.kind {
             EntryKind::Directory => {
-                if self.move_work.is_some()
-                    && self.stack.len() >= move_job::MAX_MOVE_DIRECTORY_DEPTH
-                {
-                    return Err(error(
-                        &source.entry().item.path,
-                        io::ErrorKind::Unsupported,
-                        "Recursive Move exceeds the 128-directory traversal-depth budget.",
-                    ));
-                }
                 if let Some(identity) = source.native_identity() {
                     work.destination
                         .reject_source_ancestor(identity, &self.cancel)?;
@@ -1499,6 +1063,7 @@ impl Job {
                             merged.reject_source_ancestor(identity, &self.cancel)?;
                         }
                     }
+                    self.reject_streamed_ancestors(merged.as_ref())?;
                     merged
                 } else {
                     let created = work.destination.create_directory(&work.name, &self.cancel);
@@ -1760,6 +1325,13 @@ impl Job {
     }
 
     fn wait_for_conflict(&mut self, work: EntryWork, target: TransferEntry) -> Step {
+        // Neither Replace nor Merge may reach a selected item: a streamed selection reads
+        // every item's identity first, a slice per step.
+        if !self.skip_all && !self.identities_ready() {
+            self.current = Some(work);
+            self.awaiting_identities = Some(target);
+            return Step::Continue;
+        }
         self.current = Some(work);
         if self.skip_all {
             self.skip_current();
@@ -1784,7 +1356,11 @@ impl Job {
                 work.destination.supports_native_move_replacement(identity)
             });
         let distinct = work.native_identity() != Some(target.identity)
-            && !self.protected_roots.contains(&target.identity);
+            && !self.protected_roots.contains(&target.identity)
+            && !self
+                .streamed
+                .as_ref()
+                .is_some_and(|roots| roots.protects(target.identity));
         let guarded = work.target.is_some() && distinct;
         let target_kind = target.item.kind;
         let source_kind = work.entry().item.kind;
@@ -2099,7 +1675,7 @@ impl Job {
         self.move_work = Some(work.into_inner());
         match result {
             Ok(false) => Step::Continue,
-            Ok(true) if self.roots.is_empty() && self.stack.is_empty() => Step::Done,
+            Ok(true) if !self.roots_left() && self.stack.is_empty() => Step::Done,
             Ok(true) => Step::Continue,
             Err(error) => {
                 let error = match self.peer_refusal(&error) {

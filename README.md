@@ -17,7 +17,8 @@ Current version: **0.5.0** (preview).
 - **Copy and Move** (F5, F6, the clipboard and drag and drop): one background queue
   that reads every copied file back and compares it by SHA-256 by default; Skip, a new
   name, folder Merge or a Replace that keeps the original recoverable; Retry, Skip or
-  Cancel on I/O errors; a progress window per job with Pause, and a Jobs list.
+  Cancel on I/O errors; a progress window per job with Pause, and a Jobs list; up to
+  1,000,000 selected items per job.
 - **Delete, create and rename:** Delete to the system Trash or permanently, new folders
   and files, rename, attributes, times and case.
 - **Viewers (F3):** text and hex, source code with syntax highlighting, Markdown,

@@ -12,6 +12,10 @@ pub(super) enum Context {
     Child,
     DirectoryRemoval,
     Move,
+    /// A selected item of a streamed selection cannot be taken (opened, prepared for
+    /// Move, or it is no longer the item read): Retry takes it again, Skip leaves it out
+    /// and the job goes on with the next one.
+    Root,
     /// An uncertain commit or cleanup of one entry (`Job::committed`). Its error and
     /// recovery facts are already in the job's results and its data stays where it
     /// is; Skip goes on with the next entry, and there is no Retry, which could
@@ -169,6 +173,16 @@ impl Job {
                 let committed = self.committed.as_ref().expect("committed failure");
                 (committed.stage, committed.source.clone(), false, true)
             }
+            Context::Root => (
+                if self.move_work.is_some() {
+                    CopyErrorStage::MovingSource
+                } else {
+                    CopyErrorStage::Preparing
+                },
+                self.failed_streamed_root(),
+                true,
+                true,
+            ),
         };
         let error = super::super::decisions::vanished_source(
             error,
@@ -273,7 +287,8 @@ impl Job {
                     Context::Enumeration => unreachable!("enumeration cannot advertise retry"),
                     Context::Committed => unreachable!("a committed failure cannot be retried"),
                     Context::Child => self.reopen_failed_child(),
-                    Context::DirectoryRemoval => Ok(()),
+                    // The next step takes the same item again.
+                    Context::DirectoryRemoval | Context::Root => Ok(()),
                 };
                 self.progress.message.clear();
                 match result {
@@ -292,6 +307,7 @@ impl Job {
                 match self.failure_context {
                     Context::Committed => self.go_on_after_committed(),
                     Context::Entry => self.skip_current(),
+                    Context::Root => self.skip_streamed_root(),
                     Context::Child => {
                         self.failed_child = None;
                         // The skipped child stays in its folder, so a Move keeps that

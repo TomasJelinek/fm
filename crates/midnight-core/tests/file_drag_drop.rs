@@ -76,7 +76,7 @@ fn rectangle_arithmetic_does_not_wrap_and_drop_requests_are_copy_only() {
 }
 
 #[test]
-fn a_drop_takes_at_most_the_native_roots_one_copy_holds_open() {
+fn a_drop_takes_at_most_the_native_roots_one_copy_takes() {
     let root = std::env::current_dir().unwrap();
     let request = |count: usize| FileDropRequest {
         files: FileClipboard {
@@ -92,9 +92,9 @@ fn a_drop_takes_at_most_the_native_roots_one_copy_holds_open() {
         .unwrap_err();
     assert_eq!(error.kind, io::ErrorKind::InvalidInput);
     assert!(
-        error.message.contains(&format!(
-            "A drop copies at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
-        )),
+        error
+            .message
+            .contains("A drop copies at most 1,000,000 items at once"),
         "{error}"
     );
 }

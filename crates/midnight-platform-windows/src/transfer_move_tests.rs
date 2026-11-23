@@ -1113,16 +1113,32 @@ fn finalization_cancel_and_drop_preserve_original() {
     }
 }
 
+/// A file with another name (a hard link) is moved as Delete removes it: the Move takes
+/// only its own name, and the other name keeps the data.
 #[test]
-fn finalization_preflight_refuses_unverified_hardlink_aliases() {
+fn finalization_removes_one_name_of_a_hardlinked_file_and_the_other_keeps_the_data() {
     let (_temp, parent) = fixture();
     let path = parent.join("linked-source");
     fs::write(&path, b"original").unwrap();
     fs::hard_link(&path, parent.join("alias")).unwrap();
     let cancel = Cancellation::default();
-    let (_, capture) = prepare_native(&path, &cancel).unwrap();
-    assert!(capture.preflight_finalization(&cancel).is_err());
-    assert_eq!(fs::read(&path).unwrap(), b"original");
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    drop(finalizer);
+    drop(source);
+    drop(capture);
+    assert!(!recovery.path.exists());
+    assert!(!path.exists());
+    assert_eq!(fs::read(parent.join("alias")).unwrap(), b"original");
 }
 
 #[test]
@@ -1146,24 +1162,43 @@ fn finalization_preflight_refuses_named_streams_including_empty_streams() {
     }
 }
 
+/// A read-only file is moved as Delete removes one: its read-only attribute is ignored,
+/// never cleared, so another name of it (a hard link) keeps it.
 #[test]
-fn finalization_preflight_refuses_readonly_without_changing_attributes() {
+fn finalization_removes_a_readonly_file_without_clearing_its_attribute() {
     let (_temp, parent) = fixture();
     let path = parent.join("readonly-source");
     fs::write(&path, b"original").unwrap();
-    let original = fs::metadata(&path).unwrap().permissions();
-    let mut readonly = original.clone();
+    fs::hard_link(&path, parent.join("alias")).unwrap();
+    let mut readonly = fs::metadata(&path).unwrap().permissions();
     readonly.set_readonly(true);
     fs::set_permissions(&path, readonly).unwrap();
-    let (_, capture) = prepare_native(&path, &Cancellation::default()).unwrap();
-    assert!(
-        capture
-            .preflight_finalization(&Cancellation::default())
-            .is_err()
-    );
+    let cancel = Cancellation::default();
+    let (source, capture) = prepare_native(&path, &cancel).unwrap();
+    capture.preflight_finalization(&cancel).unwrap();
     assert!(fs::metadata(&path).unwrap().permissions().readonly());
+    let TransferMoveCaptureOutcome::Captured { recovery, .. } = capture.capture(&cancel).unwrap()
+    else {
+        panic!("capture failed")
+    };
+    let mut finalizer = capture.prepare_finalization(&cancel).unwrap();
+    assert!(matches!(
+        finalizer.finalize(&cancel),
+        midnight_core::TransferMoveFinalizeOutcome::Removed { .. }
+    ));
+    drop(finalizer);
+    drop(source);
     drop(capture);
-    fs::set_permissions(path, original).unwrap();
+    assert!(!recovery.path.exists() && !path.exists());
+    let alias = parent.join("alias");
+    assert!(fs::metadata(&alias).unwrap().permissions().readonly());
+    let mut writable = fs::metadata(&alias).unwrap().permissions();
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "the fixture's cleanup"
+    )]
+    writable.set_readonly(false);
+    fs::set_permissions(alias, writable).unwrap();
 }
 
 #[test]

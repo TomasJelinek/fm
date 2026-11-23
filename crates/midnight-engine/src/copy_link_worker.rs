@@ -38,24 +38,34 @@ pub(super) fn admit_roots(
     links: CopyLinkPolicy,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
+    for source in roots {
+        admit_root(source.as_ref(), links, cancel)?;
+    }
+    Ok(())
+}
+
+/// `admit_roots` for one root, which a streamed selection checks as the job takes it.
+pub(super) fn admit_root(
+    source: &dyn TransferSource,
+    links: CopyLinkPolicy,
+    cancel: &Cancellation,
+) -> Result<(), FsError> {
     if !links.recreates_links() {
         return Ok(());
     }
-    for source in roots {
-        validate_native_source(source.as_ref())?;
-        source.revalidate(cancel)?;
-        match source.entry().item.kind {
-            EntryKind::File | EntryKind::Directory => {}
-            EntryKind::Symlink | EntryKind::DirectoryLink => {
-                source.link_representation(cancel)?;
-            }
-            EntryKind::Other => {
-                return Err(error(
-                    &source.entry().item.path,
-                    io::ErrorKind::Unsupported,
-                    "Preserving this native source kind is unsupported.",
-                ));
-            }
+    validate_native_source(source)?;
+    source.revalidate(cancel)?;
+    match source.entry().item.kind {
+        EntryKind::File | EntryKind::Directory => {}
+        EntryKind::Symlink | EntryKind::DirectoryLink => {
+            source.link_representation(cancel)?;
+        }
+        EntryKind::Other => {
+            return Err(error(
+                &source.entry().item.path,
+                io::ErrorKind::Unsupported,
+                "Preserving this native source kind is unsupported.",
+            ));
         }
     }
     Ok(())

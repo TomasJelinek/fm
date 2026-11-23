@@ -320,9 +320,9 @@ impl TransferService for Unreachable {
 
 #[test]
 fn a_drag_between_panels_beyond_the_native_root_bound_is_refused_before_opening_any() {
-    // A dragged file list takes any number of paths (more than 4,096 were refused as
-    // malformed); a drop between the panels copies or moves native roots, which one
-    // transfer holds open, so the hover check and the release refuse it at once.
+    // A dragged file list takes any number of paths; a drop between the panels copies or
+    // moves native roots, at most as many as one transfer takes, so the hover check and
+    // the release refuse more at once.
     let root = std::env::temp_dir();
     let files = FileClipboard {
         paths: (0..=MAX_NATIVE_TRANSFER_ROOTS)
@@ -339,9 +339,9 @@ fn a_drag_between_panels_beyond_the_native_root_bound_is_refused_before_opening_
     .unwrap_err();
     assert_eq!(error.kind, io::ErrorKind::InvalidInput);
     assert!(
-        error.message.contains(&format!(
-            "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
-        )),
+        error
+            .message
+            .contains("Copy and Move take at most 1,000,000 items at once"),
         "{error}"
     );
 }

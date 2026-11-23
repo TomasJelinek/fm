@@ -371,8 +371,8 @@ enum State {
     MoveRefused,
     /// F5 of two files and a folder.
     Several,
-    /// F6 of 65 files, confirmed: refused (O-2).
-    MoveRoots,
+    /// F6 of 65 files: more than a Move once took, now an ordinary Move.
+    MoveMany,
 }
 
 const STATES: [State; 5] = [
@@ -380,7 +380,7 @@ const STATES: [State; 5] = [
     State::LinkNote,
     State::MoveRefused,
     State::Several,
-    State::MoveRoots,
+    State::MoveMany,
 ];
 
 impl Harness {
@@ -410,12 +410,11 @@ impl Harness {
                 self.select(PaneId::Left, &marked);
                 self.open(Key::F5, local());
             }
-            State::MoveRoots => {
+            State::MoveMany => {
                 self.focus(PaneId::Right, &photo(1));
                 let photos: Vec<String> = (1..=PHOTOS).map(photo).collect();
                 self.select(PaneId::Right, &photos);
                 self.open(Key::F6, local());
-                self.key(Key::Return);
             }
         }
     }
@@ -482,7 +481,7 @@ fn capture_states(theme: PreferenceTheme, font: u16, look: &str) {
         (State::LinkNote, "3-link-note"),
         (State::MoveRefused, "4-move-refused-network"),
         (State::Several, "2-copy-several"),
-        (State::MoveRoots, "5-move-65-refused"),
+        (State::MoveMany, "5-move-65"),
     ] {
         h.show(state);
         h.capture(1340, 820, &format!("{name}-{look}"));
@@ -522,7 +521,7 @@ fn capture_minimum(density: UiDensity, font: u16, look: &str) {
         (State::LinkNote, "3-link-note"),
         (State::MoveRefused, "4-move-refused-network"),
         (State::Several, "2-copy-several"),
-        (State::MoveRoots, "5-move-65-refused"),
+        (State::MoveMany, "5-move-65"),
     ] {
         h.show(state);
         let mut pixels = Vec::new();
@@ -583,7 +582,7 @@ fn fits(density: UiDensity, font: u16) {
     let h = Harness::new(PreferenceTheme::Dark, density, font);
     for state in STATES {
         h.show(state);
-        let action = if matches!(state, State::MoveRefused | State::MoveRoots) {
+        let action = if matches!(state, State::MoveRefused | State::MoveMany) {
             "Move"
         } else {
             "Copy"
@@ -992,22 +991,35 @@ fn one_note_at_a_time_sits_under_its_control() {
         "the refusal sits under the destination: {note:?} under {field:?}"
     );
     h.close();
-    // 65 items: the mandated sentence, as the only note, under the destination.
-    h.show(State::MoveRoots);
+    // 65 items: no note, and Enter starts the Move of all of them.
+    h.show(State::MoveMany);
     h.layout(1340, 820);
     let texts = h.drawn();
     assert!(
-        texts.iter().any(|text| text == MOVE_ROOTS_REFUSAL),
+        !texts.iter().any(|text| text.contains("at most")),
         "{texts:?}"
     );
-    assert_eq!(
-        MOVE_ROOTS_REFUSAL,
-        "Move accepts at most 64 selected roots. Choose a smaller selection."
+    h.key(Key::Return);
+    assert!(
+        !h.main.global::<OperationPresentation>().get_active(),
+        "Enter starts the Move"
     );
-    let field = modeless::edges(&h.item(AccessibleRole::TextInput, "Destination folder"));
-    let note = modeless::edges(&h.item(AccessibleRole::Text, MOVE_ROOTS_REFUSAL));
-    assert!(note.1 >= field.3, "{note:?} under {field:?}");
-    h.close();
+    let commands = h.commands.borrow();
+    let moved = commands.iter().find_map(|command| match command {
+        Command::EnqueueSelectedMove(request) => Some(request.files.selection.len()),
+        Command::EnqueueCopyWithOptions(request) => match &request.input {
+            CopyOptionsInput::Native(request) if request.intent == TransferIntent::Move => {
+                Some(match &request.input {
+                    MetadataTransferInput::Selected(request) => request.files.selection.len(),
+                    MetadataTransferInput::Paths(request) => request.clipboard.paths.len(),
+                    MetadataTransferInput::Clipboard(request) => request.clipboard.paths.len(),
+                })
+            }
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(moved, Some(PHOTOS as usize), "{commands:?}");
 }
 
 /// The first line names what is copied, with what the draft already knows, and ends right
@@ -1021,7 +1033,7 @@ fn the_first_line_says_what_is_copied_where() {
             "Copy \u{201c}\u{2066}Q3 report.pdf\u{2069}\u{201d} (1.2 MiB) to:",
         ),
         (State::Several, "Copy 2 files and 1 folder to:"),
-        (State::MoveRoots, "Move 65 files (197.0 MiB) to:"),
+        (State::MoveMany, "Move 65 files (197.0 MiB) to:"),
     ] {
         h.show(state);
         h.layout(1340, 820);
@@ -1034,7 +1046,7 @@ fn the_first_line_says_what_is_copied_where() {
             "{state:?}: the line sits right above the destination: {first:?} {field:?}"
         );
         let from = form.get_body_hint();
-        let folder = h.folders[usize::from(state == State::MoveRoots)]
+        let folder = h.folders[usize::from(state == State::MoveMany)]
             .display()
             .to_string();
         assert_eq!(from, format!("From: {folder}"), "{state:?}");

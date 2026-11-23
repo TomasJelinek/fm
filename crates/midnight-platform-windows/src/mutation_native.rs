@@ -455,7 +455,7 @@ pub(crate) fn remove(source: &File) -> io::Result<()> {
     posix_dispose(source, 0)
 }
 
-fn remove_confirmed(source: &File) -> io::Result<()> {
+pub(crate) fn remove_confirmed(source: &File) -> io::Result<()> {
     // The user explicitly confirmed permanent deletion. Ignore only the DOS
     // read-only attribute, without changing it on surviving hard links. DELETE
     // access, identity pins and no-follow traversal are still required.

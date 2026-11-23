@@ -502,10 +502,10 @@ path, member caption or extraction filename is interpreted as a native target.
 Four capture permits (`CAPTURE_CAPACITY`) are shared with F5/F6, followed by the
 16-request clipboard queue (`clipboard.rs`). The common capture admits as many targets as
 the projection holds (10,000 rows) and 16 MiB of newly owned capture data
-(`tree_action_capture.rs`); each consumer keeps its own bound: Copy takes at most 4,096
-native items (archive members are not counted) and a Move at most 64 roots, Delete 4,096
-pinned roots, Custom Commands 4,096 items, metadata edits 256, and the clipboard 4 MiB of
-names; checksums take every captured row. Rejected,
+(`tree_action_capture.rs`); each consumer keeps its own bound: Copy and Move take every
+captured item (a transfer takes up to 1,000,000 native items, archive members not
+counted), Delete 4,096 pinned roots, Custom Commands 4,096 items, metadata edits 256, and
+the clipboard 256 MiB of names; checksums take every captured row. Rejected,
 canceled and stale captures are retired on backend workers, including queue
 refusal and pending engine-command destruction during shutdown. The presenter
 keeps one pending clipboard capture and retries outer command-channel pressure

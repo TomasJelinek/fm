@@ -200,9 +200,9 @@ impl FileDropRequest {
         // for its answer, rather than after the drop was accepted.
         if self.files.paths.len() > crate::MAX_NATIVE_TRANSFER_ROOTS {
             return Err(failure(&format!(
-                "A drop copies at most {} items at once, because each stays open until it \
-                 is copied; drop fewer items at a time.",
-                crate::MAX_NATIVE_TRANSFER_ROOTS
+                "A drop copies at most {} items at once; drop fewer items at a time, or their \
+                 folder.",
+                crate::MAX_NATIVE_TRANSFER_ROOTS_TEXT
             )));
         }
         Ok(())

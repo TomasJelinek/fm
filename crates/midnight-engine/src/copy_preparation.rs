@@ -24,6 +24,9 @@ pub(super) struct Preparation {
     service: RetainedService,
     planned: Option<PlannedInput>,
     endpoints: Option<EndpointPins>,
+    /// Which planned endpoints the job reads, for a streamed selection, whose endpoints
+    /// are folders rather than a (source, destination) pair per item.
+    folder_reads: Option<Vec<bool>>,
     destination_pin: Option<PinnedDirectory>,
     input: CopyInput,
     finished: bool,
@@ -49,6 +52,7 @@ impl Preparation {
             service: RetainedService::qualified(service),
             planned: None,
             endpoints: None,
+            folder_reads: None,
             destination_pin: None,
             input: input.into_inner(),
             finished: false,
@@ -156,6 +160,17 @@ impl Preparation {
                 Err(error) => return Err(error),
             }
         }
+        if let Some(PlannedInput::Streamed(request)) = &self.planned {
+            let request = request.clone();
+            let (endpoints, reads) = streamed_endpoints(&self.service, &request, cancel)?;
+            status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .requested_roots = request.paths.paths.len() as u64;
+            self.folder_reads = Some(reads);
+            self.endpoints = Some(endpoints.clone());
+            return Ok(endpoints);
+        }
         let links = input::source_link_policy(self.input.links, self.input.metadata);
         let roots =
             self.planned
@@ -198,6 +213,13 @@ impl Preparation {
         }
         self.endpoints = Some(endpoints.clone());
         Ok(endpoints)
+    }
+
+    /// Which of the endpoints `pin_endpoints` returned the job reads, where they are not
+    /// a (source, destination) pair per selected item: a streamed selection plans its
+    /// folders (`streamed_endpoints`).
+    pub(super) fn folder_reads(&self) -> Option<Vec<bool>> {
+        self.folder_reads.clone()
     }
 
     pub(super) fn attempt(
@@ -245,6 +267,7 @@ impl Preparation {
             Resolved::Native(request) | Resolved::NativeMove(request) => {
                 request.clipboard.paths.len()
             }
+            Resolved::Streamed(request) => request.paths.paths.len(),
             Resolved::Archive { sources, .. } => sources.len(),
             Resolved::Captured { sources, .. } => match sources {
                 PreparedCapturedTransfer::Copy(roots) => roots.len(),
@@ -257,6 +280,13 @@ impl Preparation {
             .unwrap_or_else(|error| error.into_inner())
             .requested_roots = requested_roots as u64;
         let mut job = ownership::Armed::new(match resolved {
+            Resolved::Streamed(request) => worker::Job::prepare_streamed(
+                request,
+                self.service.service.clone(),
+                cancel,
+                status,
+                links,
+            ),
             Resolved::NativeMove(request) => worker::Job::prepare_move_with_options(
                 request,
                 &self.service,
@@ -334,12 +364,14 @@ impl Preparation {
         self.planned = None;
         self.destination_pin = None;
         self.endpoints = None;
+        self.folder_reads = None;
         Ok(job.into_inner())
     }
 }
 
 enum PlannedInput {
     Native(CopyRequest, bool),
+    Streamed(input::StreamedRequest),
     Copy(PathBuf, Vec<SharedSource>, bool),
     Move(PathBuf, Vec<(SharedSource, Arc<dyn TransferMoveCapture>)>),
     MoveWithDirectoryLinks(PathBuf, Vec<PlannedMoveEntry>),
@@ -389,6 +421,7 @@ impl PlannedInput {
         match resolved {
             Resolved::Native(request) => Self::Native(request, false),
             Resolved::NativeMove(request) => Self::Native(request, true),
+            Resolved::Streamed(request) => Self::Streamed(request),
             Resolved::Archive {
                 destination,
                 sources,
@@ -433,6 +466,7 @@ impl PlannedInput {
                     Resolved::Native(request.clone())
                 }
             }
+            Self::Streamed(request) => Resolved::Streamed(request.clone()),
             Self::Copy(destination, roots, archive) => {
                 let sources = roots
                     .iter()
@@ -497,6 +531,8 @@ impl PlannedInput {
                         .map(|source| source.source)
                 })
                 .collect(),
+            // A streamed selection plans its folders instead (`streamed_endpoints`).
+            Self::Streamed(_) => Ok(Vec::new()),
             Self::Copy(_, roots, _) => Ok(roots.clone()),
             Self::Move(_, roots) => Ok(roots.iter().map(|(source, _)| source.clone()).collect()),
             Self::MoveWithDirectoryLinks(_, roots) => {
@@ -1042,3 +1078,88 @@ fn check_cancel(path: &Path, cancel: &Cancellation) -> Result<(), FsError> {
 #[cfg(test)]
 #[path = "copy_preparation_tests.rs"]
 mod tests;
+
+/// The most distinct source folders whose namespace a streamed selection claims one by
+/// one. A selection from more folders (search results, say) claims an unknown footprint
+/// instead: its job runs alone.
+const MAX_STREAMED_FOLDERS: usize = 64;
+
+/// A streamed selection's namespace plan: each distinct folder of its items (read by a
+/// Copy, changed by a Move) and the destination folder (changed through announced
+/// changes only), each as the whole subtree, with which of them the job reads. This
+/// claims more than the items themselves, so another job that uses the same folders
+/// waits for this one where it would not wait for a smaller selection; it never claims
+/// less. A folder without a native footprint is an unknown one.
+fn streamed_endpoints(
+    service: &RetainedService,
+    request: &input::StreamedRequest,
+    cancel: &Cancellation,
+) -> Result<(EndpointPins, Vec<bool>), FsError> {
+    let access = if request.moved {
+        TransferNamespaceAccess::Write
+    } else {
+        TransferNamespaceAccess::Read
+    };
+    let mut folders = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut unknown = false;
+    for path in &request.paths.paths {
+        let folder = path.parent().unwrap_or(path);
+        if seen.insert(folder) {
+            if folders.len() == MAX_STREAMED_FOLDERS {
+                unknown = true;
+                break;
+            }
+            folders.push(folder);
+        }
+    }
+    let mut endpoints = Vec::with_capacity(folders.len() + 1);
+    let mut reads = Vec::with_capacity(folders.len() + 1);
+    if unknown {
+        endpoints.push((access, None));
+        reads.push(true);
+    } else {
+        for folder in folders {
+            endpoints.push((access, folder_pin(service, folder, cancel)?));
+            reads.push(true);
+        }
+    }
+    endpoints.push((
+        TransferNamespaceAccess::Write,
+        folder_pin(service, &request.destination, cancel)?,
+    ));
+    reads.push(false);
+    Ok((endpoints, reads))
+}
+
+/// The namespace pin of folder `path` as a whole subtree, or None (an unknown footprint)
+/// where it cannot be read as one.
+fn folder_pin(
+    service: &RetainedService,
+    path: &Path,
+    cancel: &Cancellation,
+) -> Result<Option<Arc<dyn TransferNamespacePin>>, FsError> {
+    check_cancel(path, cancel)?;
+    let pin = service
+        .service
+        .prepare_transfer_source_with_policy(
+            path,
+            CopyLinkPolicy::Reject,
+            TRANSFER_REVISIONS,
+            cancel,
+        )
+        .and_then(|folder| {
+            if folder.entry().item.kind != EntryKind::Directory {
+                return Ok(None);
+            }
+            folder.native_namespace_scope(cancel)
+        });
+    match pin {
+        Ok(pin) => Ok(pin),
+        Err(error) if error.kind == io::ErrorKind::Interrupted => Err(error),
+        Err(_) => {
+            check_cancel(path, cancel)?;
+            Ok(None)
+        }
+    }
+}

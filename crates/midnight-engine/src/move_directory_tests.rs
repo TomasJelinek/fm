@@ -164,8 +164,12 @@ fn recursive_move_merge_skip_retains_skipped_child_and_ancestors() {
     assert_eq!(fs::read(destination.join("tree/keep")).unwrap(), b"winner");
 }
 
+/// Children that gain another name (a hard link) while the Move runs: Windows moves them
+/// as Delete removes such a file, taking only the moved name, and the other names keep
+/// the data; Linux removes only single-link files, so they stop without undoing the
+/// completed file.
 #[test]
-fn recursive_move_later_hardlinked_child_stops_without_undoing_completed_file() {
+fn recursive_move_later_hardlinked_child_keeps_the_data_under_its_other_name() {
     let (_temp, parent) = tree_fixture();
     let source = parent.join("tree");
     let destination = parent.join("destination");
@@ -196,6 +200,19 @@ fn recursive_move_later_hardlinked_child_stops_without_undoing_completed_file() 
     }
     drive(&mut job);
     let done = job.finish();
+    if cfg!(windows) {
+        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        assert_eq!(done.source_files_removed, 3);
+        assert!(!source.exists());
+        for index in 0..remaining.len() {
+            assert_eq!(
+                fs::read(parent.join(format!("alias-{index}"))).unwrap(),
+                b"original"
+            );
+        }
+        assert_eq!(fs::read_dir(destination.join("tree")).unwrap().count(), 3);
+        return;
+    }
     assert_eq!(
         done.state,
         CopyOperationState::CompletedWithErrors,
@@ -257,15 +274,20 @@ fn recursive_move_destination_inside_source_is_refused_before_creation() {
     assert_eq!(fs::read(source.join("file")).unwrap(), b"keep");
 }
 
+/// A Move has no fixed depth limit, as Copy has none: a tree deeper than the 128 folders
+/// it once stopped at moves whole. (On Linux the folders it is inside count against the
+/// transfers' descriptor budget, which a test process with the usual 1,024 descriptors
+/// sets at 85 levels; the depth there stays within it.)
 #[test]
-fn recursive_move_depth_budget_retains_unfinished_tree() {
+fn recursive_move_of_a_tree_deeper_than_128_folders_moves_it_whole() {
     let (_temp, parent) = tree_fixture();
     let source = parent.join("tree");
     let destination = parent.join("destination");
-    let deepest = (0..128).fold(source.clone(), |path, _| path.join("d"));
+    let depth = if cfg!(windows) { 130 } else { 80 };
+    let deepest = (0..depth).fold(source.clone(), |path, _| path.join("d"));
     fs::create_dir_all(&deepest).unwrap();
     fs::create_dir(&destination).unwrap();
-    fs::write(deepest.join("retained"), b"keep").unwrap();
+    fs::write(deepest.join("moved"), b"keep").unwrap();
     let (mut job, _) = prepare(
         std::slice::from_ref(&source),
         &destination,
@@ -273,10 +295,11 @@ fn recursive_move_depth_budget_retains_unfinished_tree() {
     );
     drive(&mut job);
     let done = job.finish();
-    assert_eq!(done.failed, 1, "{done:?}");
-    assert!(done.message.contains("traversal-depth budget"), "{done:?}");
-    assert_eq!(done.source_files_removed, 0);
-    assert_eq!(fs::read(deepest.join("retained")).unwrap(), b"keep");
+    assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.source_files_removed, 1);
+    let moved = (0..depth).fold(destination.join("tree"), |path, _| path.join("d"));
+    assert_eq!(fs::read(moved.join("moved")).unwrap(), b"keep");
+    assert!(!source.exists());
 }
 
 #[test]

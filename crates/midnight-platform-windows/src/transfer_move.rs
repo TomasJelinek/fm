@@ -406,10 +406,11 @@ impl TransferMoveCapture for Capture {
         }
         finalization::qualify_directory(&self.file, path)?;
         checked(cancel, path)?;
-        // Exact held DELETE handle; the kernel refuses a nonempty directory.
+        // Exact held DELETE handle; the kernel refuses a nonempty directory. A read-only
+        // folder is removed as Delete removes one, ignoring the attribute.
         super::namespace::change(cancel, |mutation| {
             mutation
-                .remove(&self.file, cancel, || native::remove(&self.file))
+                .remove(&self.file, cancel, || native::remove_confirmed(&self.file))
                 .map_err(|e| error(path, e))
         })?;
         // The folder's name leaves its parent only when its handle (shared with the

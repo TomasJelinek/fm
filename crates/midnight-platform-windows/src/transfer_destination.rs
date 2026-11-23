@@ -236,6 +236,23 @@ impl TransferDirectory for Directory {
         }
         self.revalidate(cancel)
     }
+    fn ancestor_identities(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Vec<TransferIdentity>>, FsError> {
+        self.revalidate(cancel)?;
+        // The same walk as `reject_source_ancestor`: the retained handle's actual path,
+        // then the native identity of each ancestor, this folder first.
+        let actual = final_path(&self.file, VOLUME_NAME_DOS).map_err(|e| error(&self.path, e))?;
+        let mut identities = Vec::new();
+        for ancestor in actual.ancestors().filter(|p| p.has_root()) {
+            checked(cancel, &self.path)?;
+            let file = native::open_parent(ancestor).map_err(|e| error(&self.path, e))?;
+            identities.push(identity(&file, ancestor)?);
+        }
+        self.revalidate(cancel)?;
+        Ok(Some(identities))
+    }
     fn create_directory(
         &self,
         name: &OsStr,

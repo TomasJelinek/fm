@@ -13,8 +13,14 @@ struct DeliveryState {
     closed: bool,
 }
 
+/// The root-completion notices that wait for the UI before a job that completes more
+/// roots waits for room (`CopyOutbox::send`): they fit even while the UI's first delivery
+/// is blocked. A job of more items (an archive copy-out, a streamed selection) waits for
+/// the UI as its notices are taken, never dropping one.
+pub(super) const ROOT_NOTICES: usize = 4_096 + 2;
+
 /// Most completed roots that one delivered notice carries. A job queues a notice per
-/// completed root (up to `MAX_NATIVE_TRANSFER_ROOTS + 2` wait for the UI), and the UI
+/// completed root (up to `ROOT_NOTICES` wait for the UI), and the UI
 /// takes a few events per frame: joined, a full queue reaches it as 9 events instead of
 /// 4,098, so a cancelled selection's terminal progress no longer waits minutes behind
 /// them. The bound keeps one notice's work in the UI (a lookup and an insert per root)
@@ -122,12 +128,10 @@ impl CopyOutbox {
         controls: Controls,
         cancel: Cancellation,
     ) -> Self {
-        // Root-completion notices are provider-free. The notices of every root of a
-        // native job (at most MAX_NATIVE_TRANSFER_ROOTS) plus one decision notice and a
-        // spare fit even while initial UI delivery is blocked. An archive copy may take
-        // more roots: once the UI takes no notices it waits for room before announcing
-        // more (`send`), never dropping one. Progress coalesces.
-        let (notices, receiver) = mpsc::channel(MAX_NATIVE_TRANSFER_ROOTS + 2);
+        // Root-completion notices are provider-free. `ROOT_NOTICES` of them fit even
+        // while initial UI delivery is blocked; a job that completes more roots waits for
+        // room before announcing more (`send`), never dropping one. Progress coalesces.
+        let (notices, receiver) = mpsc::channel(ROOT_NOTICES);
         Self {
             sender: Sender {
                 sender: outbox.sender,

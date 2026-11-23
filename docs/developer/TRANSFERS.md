@@ -582,25 +582,25 @@ content/proof preparation. The content-copy proofs and source-removal staging
 below apply to cross-volume fallback and explicitly merged children; they are not
 required for a successful native rename.
 
-Content-only Move accepts at most 64 ordinary native file or directory roots
-(`MAX_MOVE_ROOTS` in `file_clipboard.rs`), with a conservative 4 MiB reservation for the
-paths that its sources, captures, stages and proofs hold (`MAX_PROOF_PATH_BYTES` in
-`move_worker.rs`). Every Move entry point refuses a larger selection before a job starts,
-with the sentence "Move accepts at most 64 selected roots. Choose a smaller selection."
-(`MOVE_ROOTS_REFUSAL`): the dialog for F6 and for a pasted Cut, and the drop admission
-for a drag (`drag_drop_internal::admit_move`). The job still refuses it, naming the
-operation `move files`, as every error of a step that only Move takes does
-(`copy_operations::move_error`). A Copy has no such limit.
-Duplicate identities, overlapping roots (including a selected file beneath a
-selected directory), a destination inside a source directory, unsupported root
-authority and exceeded root budgets are rejected before writes. Preparation pins
-all root authorities and root-file stages. Recursive traversal admits one child
-at a time, with at most 128 active directory frames and 100,000 admitted entries
-(`MAX_MOVE_DIRECTORY_DEPTH` and `MAX_MOVE_ENTRIES` in `move_worker.rs`);
-the child's native authority and file proof support are checked before its copy.
+A Move takes as many selected items as a Copy, at most 1,000,000
+(`MAX_NATIVE_TRANSFER_ROOTS`; [selection sizes](#selection-sizes)), and works item by item:
+on the source's own volume it renames the item, and across volumes it copies the item as
+Copy does, under the job's verification policy, and removes its source only once that copy
+is verified; a skipped or failed item keeps its source. A selection of more than 64 items
+streams: no item is prepared for Move before the job takes it, so the job holds the Move
+authority of the item it moves and of the folders above it within that item, never of the
+whole selection.
+In a selection of at most 64 items, duplicate identities, overlapping roots (including
+a selected file beneath a selected directory), a destination inside a source directory
+and unsupported root authority are rejected before writes, and preparation pins all root
+authorities. A streamed selection checks each item as the job takes it: a folder that
+contains the destination fails alone, and the same folder selected under a second path
+is moved once. Recursive traversal admits one child at a time, without a count or fixed
+depth limit, as Copy's does (on Linux the folders it is inside count against the
+[descriptor budget](#folders-held-open-on-linux)); the child's native authority and file
+proof support are checked before its copy.
 A later child that cannot be prepared for Move pauses alone (see the I/O errors
-above); an exceeded traversal budget stops unfinished work and retains earlier
-completed moves. Windows source DELETE authority is obtained
+above); Windows source DELETE authority is obtained
 before each source's copy, separately from Copy's unchanged read-only pin.
 Protected source parents and local NTFS (Windows) or ext2/3/4 (Linux) are required;
 unsupported parents suggest Copy, never permission weakening or silent fallback.
@@ -669,9 +669,12 @@ identities stay protected from later replacement, without retaining their files.
 publication. `prepare_finalization` requires a matching successful capture and
 returns an opaque `TransferMoveFinalizer`; its `revalidate` checks the retained
 object/temporary binding, and `finalize` reports actual Removed/Retained facts.
-Drop never removes originals. Regular-file removal on Windows requires local fixed NTFS and single-link native
-files. Windows refuses readonly files and any named alternate
-data stream, including empty streams that were not copied and verified.
+Drop never removes originals. Regular-file removal on Windows requires a local fixed
+NTFS source. It refuses a file with any named alternate data stream, including an empty
+one, because Copy copies only the unnamed stream: such an item keeps its source, with that
+reason, and the job asks Retry, Skip or Cancel. A read-only file is removed as Delete
+removes one, ignoring its read-only attribute without clearing it, and a file with other
+names (hard links) loses only the name the Move took; the other names keep the data.
 
 Linux supports live-validated removal of owned, single-link regular files on
 local ext2/3/4 filesystems with protected source parents. Preflight retains
@@ -707,8 +710,8 @@ made. These checks are repeated before removal, and a late stream change refuses
 A skip retains that entry or subtree and all of its active source ancestors.
 Other siblings can still finish. Source directories are removed in postorder,
 after their source/destination bindings are checked. Windows uses the retained
-DELETE handle and refuses readonly directories or unverified directory streams
-both at admission and final removal. Linux checks the held parent and no-follow
+DELETE handle, refuses unverified directory streams both at admission and final
+removal, and removes a read-only folder as Delete does. Linux checks the held parent and no-follow
 directory identity before `unlinkat(AT_REMOVEDIR)`. Linux has no inode-CAS rmdir;
 the same live-operation namespace boundary applies. An unexpected child makes
 empty-only removal fail. A skipped ancestor is retained without attempting removal.
@@ -795,13 +798,12 @@ Requests and constructors default to `ContentOnly`. An explicit
 `Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
 `TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
 selection or shared clipboard input, with an explicit Copy/Move intent.
-It accepts at most 64 distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`)
-within the 4 MiB proof-path reservation. The backend enforces this whatever the dialog
-offered: input resolution refuses more roots before any source is captured
-(`copy_input.rs`), a Copy with "Required modified time accepts at most 64 distinct native
-regular files; choose content-only Copy for larger selections."
-(`REQUIRED_METADATA_ROOTS_REFUSAL`) and a Move with `MOVE_ROOTS_REFUSAL`, the sentence
-every Move entry point gives. There is no content-only fallback. Directories, links,
+It accepts at most 64 distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`),
+each pinned and staged before anything is copied. The backend enforces this whatever the
+dialog offered: input resolution refuses more roots before any source is captured
+(`copy_input.rs`), for a Copy and a Move alike with "Required modified time accepts at
+most 64 distinct native regular files; transfer larger selections without it."
+(`REQUIRED_METADATA_ROOTS_REFUSAL`). There is no content-only fallback. Directories, links,
 virtual sources and
 unsupported providers are refused without a policy downgrade. The UI option is
 described separately in [transfer options](TRANSFER_OPTIONS.md).
@@ -885,29 +887,57 @@ before native root/loaded-branch reconciliation. See the
 ## Selection sizes
 
 A file list on the clipboard or in a drag and drop holds any number of paths. Its names
-are bounded instead, at most 4 MiB (`MAX_FILE_CLIPBOARD_BYTES`), which bounds the memory
+are bounded instead, at most 256 MiB (`MAX_FILE_CLIPBOARD_BYTES`): 1,000,000 paths of about
+130 UTF-16 characters (Windows) or 260 bytes (Linux URI lists). This bounds the memory
 that a payload from another program can take. CF_HDROP and URI lists have no item limit,
 and neither have the decoders, Ctrl+C, a drag to another application or the panel
 selection resolved for them (`file_targets::resolve_payload`).
 
-One Copy, Move, Paste or drop of native items takes at most 4,096 of them
-(`MAX_NATIVE_TRANSFER_ROOTS`). Preparation opens every selected item and its parent
-folder (two handles; on Linux, two descriptors of the open-file limit), and the job keeps
-each one open and pinned until it is copied. A larger request is refused before anything
-is opened, saying why: F5/F6 and Paste (before any Move confirmation) with a message, a
-drop from another application with "no effect" and its reason, a drag between the panels
-with the no-drop cursor, and an inline-tree Copy or Move as unavailable. Archive members
-hold no native handle: a flat copy-out of archive members takes a selection of any size,
-and an inline-tree one every member its capture takes (`prepare_captured` counts only
-native roots). Content-only Move keeps its own limit of 64 roots.
+One Copy, Move, Paste or drop of native items takes at most 1,000,000 of them
+(`MAX_NATIVE_TRANSFER_ROOTS`). A larger request is refused before anything is opened,
+saying why: F5/F6 and Paste (before any Move confirmation) with a message, a drop from
+another application with "no effect" and its reason, a drag between the panels with the
+no-drop cursor. Archive members are not counted: a flat copy-out of archive members takes
+a selection of any size.
+
+A selection of at most 64 items (`MAX_PREPARED_NATIVE_ROOTS` in `copy_input.rs`) is
+prepared before the job starts: each item is opened and pinned, and one that fails can be
+left out before anything is copied. A larger selection streams (`copy_streamed_roots.rs`):
+
+- The job keeps the selected paths, shared with its request (never copied), and per item
+  its identity, read in one pass that opens each item and closes it again: about 100 bytes
+  per item beside its path, with no handle, namespace pin or Move capture.
+- The pass also totals the discovery item by item. The job takes item *i* only once the
+  pass has read and totalled it, and each time it takes an item the pass reads ahead for
+  2 ms, so the first item is copied as soon as it is read, and the totals grow while the
+  job copies ("Scanning" until the pass has read every item).
+- Taking an item opens it again (a Move prepares it for Move) and checks that it is still
+  the item the pass read: the same native identity and, for a file, the same length and
+  modified time (a file deleted and created again can reuse an inode number). One that is
+  gone fails alone with Retry and Skip; one replaced or changed fails alone with Skip and
+  is never copied as something else. A folder is compared by identity only, as its
+  entries are checked one by one when it is listed.
+- A conflict reads every remaining item's identity first, a slice per step, so that
+  Replace and Merge never reach a selected item; a folder merged into must not be inside a
+  selected folder that the job takes later (`TransferDirectory::ancestor_identities`, one
+  walk for any number of folders).
+- The job's namespace claim is its folders rather than its items: each distinct folder of
+  the items (read by a Copy, changed by a Move) and the destination folder, each as a whole
+  subtree (`preparation::streamed_endpoints`, `Claim::plan_folders`). Another job that uses
+  the same folders waits for this one where it would not wait for a smaller selection. A
+  selection from more than 64 folders (search results, say) claims an unknown footprint
+  and runs alone.
 
 Inline-tree captures take every row their projection can select, within the projection's
 own bounds: 10,000 rows and 16 MiB of newly owned target memory
-(`TreeProjection::MAX_ROWS` and `MAX_BYTES`, applied in `tree_action_capture.rs`).
+(`TreeProjection::MAX_ROWS` and `MAX_BYTES`, applied in `tree_action_capture.rs`), and
+prepare each of their items before the job starts.
 Each consumer bounds what it holds per item: an inline-tree Delete pins at most 4,096
 roots before its confirmation (`MAX_CAPTURED_DELETE_ROOTS`); Custom Commands, Properties
 and system menus take 4,096 items; metadata edits take 256 (`MAX_METADATA_TARGETS`);
 checksums take every captured row.
+
+Measurements: [1,000,000-item Copy and Move](../verification/2026-11-23-million-item-transfers.md).
 
 ## Windows namespace pins
 
@@ -1283,14 +1313,15 @@ filesystem and resolves links and mount points on a target's way; Windows follow
 these.
 
 Only links followed inside one another count against the budget of 128, wherever they
-lead: Copy has no fixed depth limit for ordinary folders under any policy (Move keeps its
-own limit of 128 folders and 100,000 entries; on Linux the folders that transfers hold
-open, a followed one on another filesystem too, count against a
-[descriptor budget](#folders-held-open-on-linux)), and `Preserve` and `EmptyDirectories`
-keep no ancestry at all. A followed link back to a folder on the current path is a cycle,
+lead: Copy and Move have no fixed depth limit for ordinary folders under any policy (on
+Linux the folders that transfers hold open, a followed one on another filesystem too,
+count against a [descriptor budget](#folders-held-open-on-linux)), and `Preserve` and
+`EmptyDirectories` keep no ancestry at all. A followed link back to a folder on the current path is a cycle,
 compared by device and inode (Windows: volume serial and file ID) across filesystems.
-Recursive totals (discovery) still stop after 128 nested folders, as without a link
-policy; the job then copies without them.
+Recursive totals (discovery) follow the transfer's own depth rule: no fixed limit on
+Windows, the descriptor budget on Linux. Only the totals of a followed link's contents
+still stop after 128 nested folders (Linux walks them recursively, and the bound keeps
+that walk's stack small); the job then copies without them.
 
 ### Recreating a link
 
@@ -1456,7 +1487,6 @@ sources and earlier completed moves. Remaining directory metadata preservation
 needs its own declared postorder capability. Physical storage reclamation and
 atomic tree snapshots remain outside the contract.
 
-Known limit: one native transfer takes at most 4,096 roots
-([selection sizes](#selection-sizes)), because preparation keeps every root open. Opening
-roots one at a time, so that open handles follow folder depth instead of selection size,
-is planned but not implemented.
+One native transfer takes at most 1,000,000 items ([selection sizes](#selection-sizes)),
+the bound on the memory of their list; a larger selection streams item by item, so open
+handles follow folder depth, not selection size.

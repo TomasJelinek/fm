@@ -141,9 +141,10 @@ impl Session {
                 }
             }
         }
-        // Native roots stay open from preparation until each is copied, so one transfer
-        // takes at most `MAX_NATIVE_TRANSFER_ROOTS` of them; archive members hold no
-        // native handle, and a capture may take as many of them as its projection shows.
+        // One transfer takes at most `MAX_NATIVE_TRANSFER_ROOTS` native items. A capture
+        // holds at most the rows its projection shows (`TreeProjection::MAX_ROWS`), far
+        // fewer, and prepares each of its items before the job starts; archive members
+        // hold no native handle.
         let mut native = 0_usize;
         for target in &capture.targets {
             native += usize::from(matches!(
@@ -377,7 +378,6 @@ impl Sources {
                 }
             }
         }
-        crate::copy_operations::check_move_bounds(Path::new(""), paths.iter().copied())?;
         let mut roots = VecDeque::new();
         for (target, path) in self.lease.capture.targets.iter().zip(paths) {
             let prepared = if links == CopyLinkPolicy::Reject {

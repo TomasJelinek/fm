@@ -168,10 +168,10 @@ async fn captured_paste_refuses_ambiguous_intent_and_cancelled_destination_befor
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn paste_refuses_more_native_roots_than_one_copy_holds_open_as_it_reads_them() {
-    // The clipboard holds a list of any length (more than 4,096 paths were refused as
-    // unreadable); Paste copies or moves native roots and says at once that it takes at
-    // most MAX_NATIVE_TRANSFER_ROOTS, before any Move confirmation.
+async fn paste_refuses_more_native_roots_than_one_copy_takes_as_it_reads_them() {
+    // The clipboard holds a list of any length; Paste copies or moves native roots and
+    // says at once that it takes at most MAX_NATIVE_TRANSFER_ROOTS, before any Move
+    // confirmation.
     let (event, reads, _) =
         read_copied(1, false, false, false, MAX_NATIVE_TRANSFER_ROOTS + 1).await;
     assert_eq!(reads, 1);
@@ -182,9 +182,9 @@ async fn paste_refuses_more_native_roots_than_one_copy_holds_open_as_it_reads_th
         panic!("a paste beyond the native root bound was read")
     };
     assert!(
-        error.message.contains(&format!(
-            "Paste copies or moves at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
-        )),
+        error
+            .message
+            .contains("Paste copies or moves at most 1,000,000 items at once"),
         "{error}"
     );
     let (event, _, _) = read_copied(1, false, false, false, MAX_NATIVE_TRANSFER_ROOTS).await;

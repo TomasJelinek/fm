@@ -389,7 +389,7 @@ async fn a_root_announcement_waiting_for_the_ui_returns_the_disk_slot() {
             entry,
         })],
     };
-    for entry in 0..MAX_NATIVE_TRANSFER_ROOTS as u64 + 2 {
+    for entry in 0..delivery::ROOT_NOTICES as u64 {
         outbox.send(Event::Copy(root(entry))).await;
     }
     let reader = Consumer::queue(&gate, Admission::Shared);

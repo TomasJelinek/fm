@@ -1171,7 +1171,29 @@ impl Claim {
         let reads = (0..pins.len()).map(|index| index % 2 == 0).collect();
         self.plan(pins, reads, 2, io, cancel)
     }
-    /// `per_item`: planned roots per selected item, in item order.
+    /// Plan a streamed selection's folders (`Preparation::folder_reads`): each a whole
+    /// subtree that the job reads (`reads`) or changes only through announced changes.
+    /// They are not per item, so the job's close probes every one of them.
+    pub(crate) fn plan_folders(
+        &self,
+        pins: Vec<(
+            TransferNamespaceAccess,
+            Option<Arc<dyn TransferNamespacePin>>,
+        )>,
+        reads: Vec<bool>,
+        io: Arc<Permit>,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        if reads.len() != pins.len() {
+            return Err(failure(
+                io::ErrorKind::InvalidInput,
+                "Every planned folder needs its access.",
+            ));
+        }
+        self.plan(pins, reads, 0, io, cancel)
+    }
+    /// `per_item`: planned roots per selected item, in item order; 0 where the roots are
+    /// not per item.
     fn plan(
         &self,
         pins: Vec<(

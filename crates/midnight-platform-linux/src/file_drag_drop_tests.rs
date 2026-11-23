@@ -804,8 +804,8 @@ fn refused_drop_lists_are_reported_in_one_fixed_text_without_source_bytes() {
         assert!(!refusal.to_string().contains("secret"), "{refusal}");
     }
     // A URI list has no item limit and neither has its decoder (lists of more than
-    // 4,096 items were once refused here); one Copy takes at most the native roots it
-    // can hold open, and core validation says so.
+    // 4,096 items were once refused here); one Copy takes at most
+    // `MAX_NATIVE_TRANSFER_ROOTS` native items, and core validation says so.
     let list = |count: usize| {
         let mut bytes = Vec::new();
         for index in 0..count {
@@ -818,9 +818,9 @@ fn refused_drop_lists_are_reported_in_one_fixed_text_without_source_bytes() {
     let refusal =
         selection::drop_request(&list(MAX_NATIVE_TRANSFER_ROOTS + 1), &candidate).unwrap_err();
     assert!(
-        refusal.message.starts_with(&format!(
-            "A drop copies at most {MAX_NATIVE_TRANSFER_ROOTS} items"
-        )),
+        refusal
+            .message
+            .starts_with("A drop copies at most 1,000,000 items"),
         "{refusal}"
     );
     assert!(!refusal.to_string().contains("secret"), "{refusal}");

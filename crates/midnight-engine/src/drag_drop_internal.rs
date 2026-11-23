@@ -404,9 +404,9 @@ pub(super) fn execute(
 #[path = "drag_drop_retirement_tests.rs"]
 mod retirement_tests;
 
-/// Whether a drop that moves may start: not with more than `MAX_MOVE_ROOTS` items, and not
-/// from another drive to a destination that refuses such a Move (a network location, a
-/// drive that cannot keep a replaced file recoverable), decided as the Copy/Move dialog
+/// Whether a drop that moves may start: not from another drive to a destination that
+/// refuses such a Move (a network location, a drive that cannot keep a replaced file
+/// recoverable), decided as the Copy/Move dialog
 /// and a Move job decide it (`transfer_destination::move_refusal`). Decided before the
 /// drop is accepted, so no job starts. Where the destination's facts are unknown, the job
 /// decides.
@@ -416,12 +416,6 @@ pub(super) fn admit_move(
     destination: &Path,
     cancel: &Cancellation,
 ) -> Result<(), FsError> {
-    if files.paths.len() > midnight_core::MAX_MOVE_ROOTS {
-        return Err(error(
-            io::ErrorKind::Unsupported,
-            midnight_core::MOVE_ROOTS_REFUSAL,
-        ));
-    }
     let Some(service) = service else {
         return Ok(());
     };

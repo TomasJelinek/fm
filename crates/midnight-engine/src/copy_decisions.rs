@@ -94,13 +94,16 @@ impl NamespacePlan {
         io: Arc<midnight_work_budget::Permit>,
         cancel: &Cancellation,
     ) -> Result<bool, FsError> {
-        self.poll_grant(claim, endpoints, io, cancel)
+        self.poll_grant(claim, endpoints, None, io, cancel)
             .map(|grant| grant == Grant::Granted)
     }
+    /// `folder_reads`: the endpoints are folders, which the job reads where true, rather
+    /// than a (source, destination) pair per selected item.
     fn poll_grant(
         &mut self,
         claim: &crate::copy_namespace::Claim,
         endpoints: Endpoints,
+        folder_reads: Option<Vec<bool>>,
         io: Arc<midnight_work_budget::Permit>,
         cancel: &Cancellation,
     ) -> Result<Grant, FsError> {
@@ -109,7 +112,10 @@ impl NamespacePlan {
             // revalidates those same owners; it must not install again. The endpoints
             // are (source, destination) pairs (`Preparation::pin_endpoints`).
             self.installed = true;
-            claim.plan_transfer(endpoints, io, cancel)?;
+            match folder_reads {
+                Some(reads) => claim.plan_folders(endpoints, reads, io, cancel)?,
+                None => claim.plan_transfer(endpoints, io, cancel)?,
+            }
         } else {
             // Any revalidation clones close under the caller's sealed context.
             drop(endpoints);
@@ -190,6 +196,7 @@ pub(super) async fn prepare_job(
                     } else {
                         Vec::new()
                     };
+                    let reads = scope.folder_reads();
                     let resources = scope.resources_mut();
                     let io = resources.real_io.as_ref().cloned().ok_or_else(|| {
                         error(
@@ -205,7 +212,7 @@ pub(super) async fn prepare_job(
                             "Preparation has no namespace claim.",
                         )
                     })?;
-                    let grant = plan.poll_grant(claim, endpoints, io, &cancel)?;
+                    let grant = plan.poll_grant(claim, endpoints, reads, io, &cancel)?;
                     if grant != Grant::Granted {
                         return Ok(Err(grant));
                     }

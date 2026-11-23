@@ -12,9 +12,10 @@ and leaves it out elsewhere. Cached selection/index facts determine availability
 unknown native/clipboard kinds still require authoritative backend preflight.
 The UI never opens paths or enumerates selected rows to decide availability. The
 backend enforces the limit itself, whatever the dialog offered: more than 64 roots are
-refused before any source is captured (`MAX_REQUIRED_METADATA_ROOTS`; a Copy with
-`REQUIRED_METADATA_ROOTS_REFUSAL`, a Move with `MOVE_ROOTS_REFUSAL`, the sentence every
-Move gives), never copied content-only instead.
+refused before any source is captured (`MAX_REQUIRED_METADATA_ROOTS`, with
+`REQUIRED_METADATA_ROOTS_REFUSAL` for a Copy and a Move alike), never copied content-only
+instead. Without the option, Copy and Move take up to 1,000,000 items
+([selection sizes](TRANSFERS.md#selection-sizes)).
 
 An explicit choice maps to `Command::EnqueueTransferWithMetadata` with
 `TransferMetadataPolicy::RequireModifiedTime`, retaining the captured Selected or

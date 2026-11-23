@@ -19,7 +19,14 @@ pub(crate) fn resolve(
     fallback: Option<&Path>,
     cancel: &Cancellation,
 ) -> Result<Vec<PathBuf>, FsError> {
-    resolve_within(selection, view, fallback, cancel, Some(MAX_ITEMS), true)
+    resolve_within(
+        selection,
+        view,
+        fallback,
+        cancel,
+        Some(MAX_ITEMS),
+        Some(MAX_FILE_CLIPBOARD_BYTES),
+    )
 }
 
 /// The selected paths in display order, any number of them whatever their names' total
@@ -30,7 +37,7 @@ pub(crate) fn resolve_all(
     fallback: Option<&Path>,
     cancel: &Cancellation,
 ) -> Result<Vec<PathBuf>, FsError> {
-    resolve_within(selection, view, fallback, cancel, None, false)
+    resolve_within(selection, view, fallback, cancel, None, None)
 }
 
 /// The selected paths in display order for a native file list (the clipboard, a drag
@@ -42,7 +49,14 @@ pub(crate) fn resolve_payload(
     fallback: Option<&Path>,
     cancel: &Cancellation,
 ) -> Result<Vec<PathBuf>, FsError> {
-    resolve_within(selection, view, fallback, cancel, None, true)
+    resolve_within(
+        selection,
+        view,
+        fallback,
+        cancel,
+        None,
+        Some(MAX_FILE_CLIPBOARD_BYTES),
+    )
 }
 
 fn resolve_within(
@@ -51,7 +65,7 @@ fn resolve_within(
     fallback: Option<&Path>,
     cancel: &Cancellation,
     items: Option<usize>,
-    bounded_names: bool,
+    name_bytes: Option<usize>,
 ) -> Result<Vec<PathBuf>, FsError> {
     use std::io;
     let failure = |kind, message| {
@@ -86,11 +100,10 @@ fn resolve_within(
                 "This action takes at most 4096 selected items at once.",
             ));
         }
-        if (bounded_names && bytes > MAX_FILE_CLIPBOARD_BYTES) || raw.contains(&0) {
+        if name_bytes.is_some_and(|limit| bytes > limit) || raw.contains(&0) {
             return Err(failure(
                 io::ErrorKind::InvalidInput,
-                "The selected names exceed the 4 MiB that a file list holds, or one \
-                 contains NUL.",
+                "The selected names exceed what a file list holds, or one contains NUL.",
             ));
         }
         paths.push((position, path.to_owned()));
@@ -247,17 +260,25 @@ mod tests {
     /// a file list holds. An empty path, parent navigation or NUL is still refused.
     #[test]
     fn checksums_take_any_number_of_items_and_names_of_any_total_length() {
+        // More names than a bound of 4 MiB holds (the file-list bound once).
         let names: Vec<_> = (0..5_000)
             .map(|i| format!("{i:05}-{}", "n".repeat(994)))
             .collect();
-        assert!(names.iter().map(String::len).sum::<usize>() > MAX_FILE_CLIPBOARD_BYTES);
+        let bound = 4 << 20;
+        assert!(names.iter().map(String::len).sum::<usize>() > bound);
         let large = index(&names.iter().map(String::as_str).collect::<Vec<_>>());
         let mut bits = vec![u64::MAX; 79];
         bits[78] = 0xff;
         let selected = SelectionSnapshot::from_bits(large.clone(), bits).unwrap();
         let cancel = Cancellation::default();
         assert!(resolve(&selected, &large, None, &cancel).is_err());
-        assert!(resolve_payload(&selected, &large, None, &cancel).is_err());
+        assert!(resolve_within(&selected, &large, None, &cancel, None, Some(bound)).is_err());
+        assert_eq!(
+            resolve_payload(&selected, &large, None, &cancel)
+                .unwrap()
+                .len(),
+            5_000
+        );
         let all = resolve_all(&selected, &large, None, &cancel).unwrap();
         assert_eq!(all.len(), 5_000);
         assert_eq!(all[4_999], PathBuf::from(&names[4_999]));

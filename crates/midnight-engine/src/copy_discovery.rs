@@ -13,6 +13,11 @@ const DISCOVERY_PUBLISH_INTERVAL: Duration = if cfg!(test) {
 
 impl Job {
     pub(in crate::copy_operations) fn prepare_discovery(&mut self) {
+        // A streamed selection totals its items as the job reaches them.
+        if self.streamed.is_some() {
+            self.start_streamed_discovery();
+            return;
+        }
         // Native rename must stay constant-time. Mixed batches use selected roots too
         // rather than disguise unscanned descendants or native moves as copied work.
         let native_rename_candidate = self.move_work.as_ref().is_some_and(|work| {
@@ -31,6 +36,11 @@ impl Job {
     }
     #[cfg(test)]
     pub(in crate::copy_operations) fn discover_cross_device_fixture(&mut self) {
+        if self.streamed.is_some() {
+            self.progress.discovery = OperationDiscovery::scanning(DiscoveryScope::Recursive);
+            self.store_progress();
+            return;
+        }
         // The fixture injects CrossDevice eligibility while preserving real native
         // identities on one owned volume. Production scope selection stays above.
         self.discover_scope(DiscoveryScope::Recursive);

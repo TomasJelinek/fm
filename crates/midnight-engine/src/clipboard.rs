@@ -785,16 +785,16 @@ fn error(kind: io::ErrorKind, message: &str) -> FsError {
 }
 
 /// A file list read for Paste. The clipboard holds any number of paths within its bytes,
-/// but Paste copies or moves native roots, which stay open until each is copied: it takes
-/// at most `MAX_NATIVE_TRANSFER_ROOTS` of them, refused here before any confirmation.
+/// and Paste copies or moves at most `MAX_NATIVE_TRANSFER_ROOTS` of them, refused here
+/// before any confirmation.
 fn pasteable(files: FileClipboard) -> Result<FileClipboard, FsError> {
     files.validate()?;
     if files.paths.len() > MAX_NATIVE_TRANSFER_ROOTS {
         return Err(error(
             io::ErrorKind::InvalidInput,
             &format!(
-                "Paste copies or moves at most {MAX_NATIVE_TRANSFER_ROOTS} items at once, \
-                 because each stays open until it is copied; the clipboard holds {}.",
+                "Paste copies or moves at most {} items at once; the clipboard holds {}.",
+                midnight_core::MAX_NATIVE_TRANSFER_ROOTS_TEXT,
                 files.paths.len()
             ),
         ));

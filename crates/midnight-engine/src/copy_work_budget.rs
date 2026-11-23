@@ -32,6 +32,11 @@ impl Budget {
             _ => self.readback = None,
         }
     }
+    /// The read-back total of a discovery that completed while the job already published
+    /// and removed files: those counts stay.
+    pub(super) fn adopt_readback(&mut self, discovered: &Self) {
+        self.readback = discovered.readback;
+    }
     pub(super) fn published(&mut self, length: Option<u64>, policy: TransferVerification) {
         self.published = add_file(self.published, length, policy);
     }

@@ -108,16 +108,18 @@ How to read it:
   keeps links as links; on Windows a junction is recreated without privilege, while a
   symbolic link needs Developer Mode or administrator rights. A Move on one volume
   renames without reading contents; across volumes each file is verified before its
-  source is removed. I/O errors pause for Retry, Skip, Skip all or Cancel. "Preserve
-  exact modified time" keeps the modification times of copied files.
+  source is removed. Copy and Move take up to 1,000,000 selected items: a large selection
+  starts copying its first item at once, totals the rest while it copies and opens each
+  item only when it reaches it. I/O errors pause for Retry, Skip, Skip all or Cancel.
+  "Preserve exact modified time" keeps the modification times of up to 64 copied files.
 - **Linux specifics:** Copy and cross-volume Move write only to filesystems with
   `O_TMPFILE` (ext4, XFS, Btrfs, tmpfs); FAT, exFAT, NTFS, NFS, SMB, sshfs and GVfs
   destinations are refused.
 - **Open:** other times, attributes, ownership, ACLs, extended attributes, streams,
   folder metadata and hard links are not preserved (COPY-03); a Windows cross-volume
-  Move refuses read-only, multi-link and named-stream sources, and providers have no
-  Move (MOVE-01); Copy and Move take at most 4,096 selected native items at once
-  (COPY-04), and admitting a large selection takes time per item: about 20 s before the
+  Move leaves a source with named streams in place, a Linux one removes only owned
+  single-link regular files on ext, and providers have no Move (MOVE-01); an archive
+  copy-out of a large selection admits its members one by one: about 20 s before the
   first of 100,001 archive members is written (COPY-06); a job runs one native step at a
   time (IO-01); one namespace turn serves all jobs (IO-02); the shared disk-I/O gate can
   stall behind one hung call (IO-03); Linux syncs the folder after each copied file

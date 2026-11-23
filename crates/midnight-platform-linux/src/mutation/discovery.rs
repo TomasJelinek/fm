@@ -12,7 +12,13 @@ struct Frame {
     directory: Arc<File>,
     entries: Dir,
     path: PathBuf,
+    /// What the folder level holds while discovery is inside it (`Enter`).
+    _level: Option<Box<dyn std::any::Any>>,
 }
+/// Admits one more folder level at `depth` (0 for the selected folder): what the level
+/// holds until discovery leaves the folder, or an error that stops the discovery.
+pub(crate) type Enter<'a> =
+    dyn FnMut(&Path, usize) -> Result<Option<Box<dyn std::any::Any>>, FsError> + 'a;
 /// Visits `source` (pinned by the caller, which revalidates its binding) and its
 /// descendants. The root is opened through its pinned handle, so a selected root
 /// that is itself a mount point can be enumerated.
@@ -21,6 +27,27 @@ pub(crate) fn walk(
     path: &Path,
     cancel: &Cancellation,
     visit: &mut dyn FnMut(&MutationItem),
+) -> Result<(), FsError> {
+    walk_with(source, path, cancel, visit, &mut |path, depth| {
+        if depth >= 128 {
+            return Err(error(
+                path,
+                ErrorKind::Unsupported,
+                "Discovery exceeds the 128-directory depth budget",
+            ));
+        }
+        Ok(None)
+    })
+}
+
+/// `walk`, admitting each folder level through `enter` instead of the fixed depth of 128:
+/// a transfer's discovery takes the transfers' descriptor budget, as the transfer does.
+pub(crate) fn walk_with(
+    source: &File,
+    path: &Path,
+    cancel: &Cancellation,
+    visit: &mut dyn FnMut(&MutationItem),
+    enter: &mut Enter<'_>,
 ) -> Result<(), FsError> {
     check_cancel(cancel, path)?;
     let mut stack = Vec::new();
@@ -32,7 +59,8 @@ pub(crate) fn walk(
             Mode::empty(),
         )
     };
-    if let Some(frame) = inspect(source, path, root, cancel, visit)? {
+    if let Some(mut frame) = inspect(source, path, root, cancel, visit)? {
+        frame._level = enter(path, 0)?;
         stack.push(frame);
     }
     while let Some(frame) = stack.last_mut() {
@@ -77,14 +105,8 @@ pub(crate) fn walk(
                 CHILD,
             )
         };
-        if let Some(child) = inspect(&source, &path, child, cancel, visit)? {
-            if stack.len() >= 128 {
-                return Err(error(
-                    &path,
-                    ErrorKind::Unsupported,
-                    "Discovery exceeds the 128-directory depth budget",
-                ));
-            }
+        if let Some(mut child) = inspect(&source, &path, child, cancel, visit)? {
+            child._level = enter(&path, stack.len())?;
             stack.push(child);
         }
     }
@@ -136,5 +158,6 @@ fn inspect(
         directory: Arc::new(directory),
         entries,
         path: path.to_owned(),
+        _level: None,
     }))
 }

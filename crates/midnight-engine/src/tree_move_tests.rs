@@ -201,7 +201,7 @@ fn tree_move_descendant_capture_keeps_provider_and_permit_after_source_close() {
 }
 
 #[test]
-fn tree_copy_and_move_share_capture_capacity_and_move_root_budget() {
+fn tree_copy_and_move_share_capture_capacity_and_a_move_takes_more_than_64_roots() {
     let (_temp, parent) = moves::protected_fixture();
     let source = parent.join("file");
     fs::write(&source, b"source").unwrap();
@@ -225,13 +225,13 @@ fn tree_copy_and_move_share_capture_capacity_and_move_root_budget() {
             path
         })
         .collect();
+    // More than the 64 roots a Move once took: every one is prepared for Move.
     let (captured, _) = capture_paths(&paths, TransferIntent::Move, &capacity);
     let provider = midnight_platform::LocalFileSystem::new(None);
-    assert!(
-        captured
-            .sources
-            .prepare(&provider, &Cancellation::default())
-            .is_err()
-    );
+    let prepared = captured
+        .sources
+        .prepare(&provider, &Cancellation::default())
+        .unwrap();
+    drop(prepared);
     assert!(paths.iter().all(|path| path.exists()));
 }

@@ -846,10 +846,10 @@ fn clipboard_copy_without_a_dialog_always_submits_immediately() {
     assert!(p.copies.draft.is_none());
 }
 
-/// F6 of more than 64 items, and Ctrl+X then Ctrl+V of them, start no Move: the dialog
-/// says so in the sentence every Move entry point uses. F5 of the same items copies them.
+/// F6 of more than the 64 items a Move once took, and Ctrl+X then Ctrl+V of them, start a
+/// Move of all of them, as F5 of the same items starts a Copy.
 #[test]
-fn a_move_of_65_items_does_not_start_from_f6_or_a_paste_but_a_copy_does() {
+fn a_move_of_65_items_starts_from_f6_and_from_a_paste_as_a_copy_does() {
     let root = std::env::temp_dir().join("sixty-five");
     let target = root.join("target");
     let entries: Vec<_> = (0..65u64)
@@ -890,18 +890,14 @@ fn a_move_of_65_items_does_not_start_from_f6_or_a_paste_but_a_copy_does() {
             },
         );
         let commands = confirmed(&mut p);
-        if intent == TransferIntent::Move {
-            assert!(commands.is_empty(), "{commands:?}");
-            assert_eq!(
-                p.copies.draft.as_ref().unwrap().error,
-                midnight_core::MOVE_ROOTS_REFUSAL
-            );
-        } else {
-            let [Command::EnqueueSelectedCopy(request)] = commands.as_slice() else {
-                panic!("F5 copies all 65 items: {commands:?}");
-            };
-            assert_eq!(request.files.selection.len(), 65);
-        }
+        let selection = match (intent, commands.as_slice()) {
+            (TransferIntent::Move, [Command::EnqueueSelectedMove(request)])
+            | (TransferIntent::Copy, [Command::EnqueueSelectedCopy(request)]) => {
+                request.files.selection.len()
+            }
+            _ => panic!("{intent:?} of all 65 items: {commands:?}"),
+        };
+        assert_eq!(selection, 65);
     }
     let mut p = Presenter::new(root.clone(), target.clone());
     p.start_copy(
@@ -913,9 +909,8 @@ fn a_move_of_65_items_does_not_start_from_f6_or_a_paste_but_a_copy_does() {
         &|_| true,
     );
     let commands = confirmed(&mut p);
-    assert!(commands.is_empty(), "{commands:?}");
-    assert_eq!(
-        p.copies.draft.as_ref().unwrap().error,
-        midnight_core::MOVE_ROOTS_REFUSAL
-    );
+    let [Command::EnqueueClipboardMove(request)] = commands.as_slice() else {
+        panic!("a pasted Cut of 65 items moves them: {commands:?}");
+    };
+    assert_eq!(request.clipboard.paths.len(), 65);
 }

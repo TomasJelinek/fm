@@ -714,11 +714,14 @@ record](docs/verification/2026-11-11-directory-authorization.md).
 
 Ctrl+C publishes lossless native paths; Ctrl+V captures the destination path and
 queues verified copying. Native identities are opened and pinned when that job
-starts. An external rename before then is not a snapshot of the original namespace.
-Clipboard payloads are untrusted: at most 4 MiB of names, any number of paths, with
+starts; in a selection of more than 64 items, each item's identity is read by one pass
+that closes it again, and the item is opened just before it is copied and checked against
+that identity (and a file's length and modified time): one replaced or changed in between
+fails alone and is never copied as something else. An external rename before then is not a snapshot of the original namespace.
+Clipboard payloads are untrusted: at most 256 MiB of names, any number of paths, with
 whole-request rejection of malformed/NUL/relative data. Paste, Copy, Move and drops
-take at most 4,096 native items at once, because each stays open until it is copied;
-larger requests are refused with that reason before anything starts. No shell command parses a filename.
+take at most 1,000,000 native items at once (the memory of their list, about 200 bytes
+per item); larger requests are refused with that reason before anything starts. No shell command parses a filename.
 Adopted native trees capture the exact acknowledged projection and selection,
 or the focused occurrence when no items are marked. Parent/context rows never
 grant clipboard authority. Copy/Cut share four capture permits with F5/F6, retain
@@ -759,10 +762,12 @@ scheduler. HDD, network, unknown or failed classification on either endpoint req
 one stream per job; an SSD at the other endpoint does not override this.
 
 Ordinary Copy leaves source files untouched. Untrusted Move clipboard intent through the
-ordinary Copy route is rejected. Explicit native Move accepts at most 64 ordinary
-file/directory roots with a conservative 4 MiB active proof-path reservation. Archive
-members, duplicate/overlapping sources and unsupported locations are rejected before
-mutation; links follow the link rules below. Qualified same-volume native Move uses held
+ordinary Copy route is rejected. Explicit native Move takes as many items as Copy and
+works item by item: across volumes it removes an item's source only after that item's copy
+is verified, and a skipped or failed item keeps its source. Archive members and
+unsupported locations are rejected before mutation; duplicate and overlapping sources
+are rejected before writes in a selection of at most 64 items, and checked item by item
+as the job takes them in a larger one; links follow the link rules below. Qualified same-volume native Move uses held
 source/destination identities and no-replace rename without content reads, CRC or SHA
 computation. Whether a Move stays on one volume is one determination for the Copy/Move
 dialog, drops and Move jobs (`TransferLinkDestination::same_volume_as`): the same volume
@@ -903,8 +908,7 @@ failure even if publication succeeded.
 Explicit RequireModifiedTime (**Preserve exact modified time**) accepts at most 64
 distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`), for Copy and Move
 alike: the dialog offers it only for 1 to 64 of them, and the backend refuses a larger
-request before a job starts, never falling back to content-only, within the Move's 4 MiB
-proof-path reservation. It captures metadata from retained source handles before data
+request before a job starts, never falling back to content-only. It captures metadata from retained source handles before data
 reads and preflights every source pin and owned destination stage before content writes.
 After the selected content-verification gate, the exact stage modified time is set,
 synced and independently read back without rounding tolerance. Value-specific precision
@@ -995,9 +999,13 @@ copy-fallback/merge Move grants each child separate source-removal authority thr
 held parent. Verified regular files are removed individually; directories are
 removed postorder only after fresh source/destination identity checks and an
 empty-directory-only OS operation. Skips retain the affected source ancestors.
-Overlapping selected roots are rejected before writes. Traversal is bounded to
-64 roots, 128 active directory frames, 100,000 entries and a 4 MiB active path/proof
-budget. Links move as links (above); mount crossings and generic provider Move remain
+Overlapping selected roots are rejected before writes in a selection of at most 64
+items. Traversal holds the Move authority of the item it moves and of the folders above it
+within the item, never of the whole selection, and has no count or fixed depth limit (on
+Linux the transfers' descriptor budget bounds the folders held open). A Windows source
+with named alternate data streams, which Copy does not copy, is never removed; a read-only
+file or folder is removed as Delete removes one (the attribute is ignored, never cleared),
+and a file with several names (hard links) loses only the moved name. Links move as links (above); mount crossings and generic provider Move remain
 unsupported.
 Directory identity validation is live on Linux, not atomic compare-and-unlink;
 see [recursive Move evidence](docs/verification/2026-11-08-recursive-move.md).
@@ -1226,7 +1234,7 @@ latest undelivered refusal, outside the bounded event queue, and reports it once
 UI accepts events again, unless the drop window has closed by then. Linux X11 drops
 report the same kinds of refusal, in fixed texts (the Windows ones for a changed
 destination and a missing file list), once per drop that showed the Copy status: an
-undecodable file list, a drop of more than 4,096 items, an over-4 MiB transfer, a failed validation
+undecodable file list, a drop of more than 1,000,000 items, an over-256 MiB transfer, a failed validation
 or admission, a destination change (at XdndDrop the drop goes to the panel target now
 at the last position, as on Windows, and is refused when there is none; while the list
 is read, only a republish of the same folder keeps it), and a source that does not
@@ -1241,7 +1249,7 @@ CancelCopy that could arrive before the job exists. Transient native grab failur
 must not permanently disable a healthy session or revive an ended gesture.
 
 Payloads retain raw UTF-16 on Windows and raw filename bytes through X11 URI
-encoding. Payloads hold at most 4 MiB of names, and a drop copies at most 4,096
+encoding. Payloads hold at most 256 MiB of names, and a drop copies at most 1,000,000
 native items; malformed and
 non-local URI lists are rejected as a whole. Native serialization/admission never
 canonicalizes paths or probes filesystem objects on the UI thread. The copy worker

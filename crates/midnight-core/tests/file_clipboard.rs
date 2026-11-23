@@ -1,4 +1,4 @@
-use midnight_core::{FileClipboard, FileClipboardIntent};
+use midnight_core::{FileClipboard, FileClipboardIntent, MAX_FILE_CLIPBOARD_BYTES};
 use std::path::PathBuf;
 
 #[test]
@@ -19,17 +19,20 @@ fn file_clipboard_keeps_absolute_paths_and_copy_or_move_intent() {
 #[test]
 fn file_clipboard_rejects_empty_relative_and_oversized_payloads_whole() {
     let root = std::env::current_dir().unwrap();
-    for paths in [
-        Vec::new(),
-        vec![PathBuf::from("relative.txt")],
-        vec![root.join("x".repeat(4 * 1024 * 1024))],
+    let oversized: [&dyn Fn() -> Vec<PathBuf>; 4] = [
+        &Vec::new,
+        &|| vec![PathBuf::from("relative.txt")],
+        &|| vec![root.join("x".repeat(MAX_FILE_CLIPBOARD_BYTES))],
         // Enough paths for their names to exceed the payload's bytes.
-        (0..4 * 1024 * 1024 / root.as_os_str().len().max(1))
-            .map(|n| root.join(n.to_string()))
-            .collect(),
-    ] {
+        &|| {
+            (0..=MAX_FILE_CLIPBOARD_BYTES / (1 << 20))
+                .map(|n| root.join(format!("{n}-{}", "y".repeat(1 << 20))))
+                .collect()
+        },
+    ];
+    for paths in oversized {
         let clipboard = FileClipboard {
-            paths,
+            paths: paths(),
             intent: FileClipboardIntent::Copy,
         };
         assert!(clipboard.validate().is_err());

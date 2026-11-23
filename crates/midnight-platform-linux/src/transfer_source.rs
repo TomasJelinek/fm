@@ -312,7 +312,19 @@ impl TransferSource for Source {
                 visit,
             )?;
         } else {
-            crate::mutation::discovery::walk(&self.file, &self.entry.item.path, cancel, visit)?;
+            // As deep as the transfer itself goes: each folder level counts against the
+            // transfers' descriptor budget while discovery is inside it.
+            crate::mutation::discovery::walk_with(
+                &self.file,
+                &self.entry.item.path,
+                cancel,
+                visit,
+                &mut |path, _| {
+                    descriptor_budget::levels()
+                        .enter(path)
+                        .map(|level| Some(Box::new(level) as Box<dyn std::any::Any>))
+                },
+            )?;
         }
         self.revalidate(cancel)
     }

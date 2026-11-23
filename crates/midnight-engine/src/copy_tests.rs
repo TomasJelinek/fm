@@ -57,6 +57,8 @@ mod replacement;
 mod scheduler;
 #[path = "copy_stage_retry_tests.rs"]
 mod stage_retry;
+#[path = "copy_streamed_tests.rs"]
+mod streamed;
 #[path = "copy_throughput_tests.rs"]
 mod throughput;
 // Manual timings on the native Linux adapter (ignored; procfs CPU time).
@@ -906,36 +908,37 @@ impl TransferService for BlockingService {
     }
 }
 
-/// A Move of more than 64 selected items that still reaches the engine (every entry point
-/// refuses it first) ends before it moves anything, naming Move and giving the sentence
-/// the entry points use; a Copy of the same items copies them all.
+/// A Move of more than the 64 selected items it once took moves them all, as a Copy of
+/// the same items copies them all: such a selection streams (each item is prepared for
+/// Move only when the job takes it).
 #[tokio::test]
-async fn a_move_of_65_items_is_refused_as_a_move_and_a_copy_of_them_copies_all() {
-    let temp = fixture();
-    let destination = temp.path().join("destination");
-    fs::create_dir(&destination).unwrap();
+async fn a_move_of_65_items_moves_them_all_as_a_copy_copies_them_all() {
+    let (_temp, root) = moves::protected_fixture();
+    let copied_to = root.join("copied");
+    let moved_to = root.join("moved");
+    fs::create_dir(&copied_to).unwrap();
+    fs::create_dir(&moved_to).unwrap();
     let paths: Vec<_> = (0..65u8)
         .map(|index| {
-            let path = temp.path().join(format!("file-{index:02}"));
+            let path = root.join(format!("file-{index:02}"));
             fs::write(&path, [index]).unwrap();
             path
         })
         .collect();
     let mut h = Harness::native();
-    h.controller
-        .enqueue_move(request(1, &paths, &destination))
-        .await;
-    let refused = h.terminal(1).await;
-    assert_eq!(refused.state, CopyOperationState::Failed, "{refused:?}");
-    assert_eq!(refused.errors[0].operation, "move files", "{refused:?}");
-    assert_eq!(refused.errors[0].message, midnight_core::MOVE_ROOTS_REFUSAL);
-    assert!(paths.iter().all(|path| path.exists()));
-    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-    h.controller.enqueue(request(2, &paths, &destination)).await;
-    let copied = h.terminal(2).await;
+    h.controller.enqueue(request(1, &paths, &copied_to)).await;
+    let copied = h.terminal(1).await;
     assert_eq!(copied.state, CopyOperationState::Completed, "{copied:?}");
     assert_eq!(copied.files_completed, 65, "{copied:?}");
-    assert_eq!(fs::read_dir(&destination).unwrap().count(), 65);
+    assert_eq!(fs::read_dir(&copied_to).unwrap().count(), 65);
+    h.controller
+        .enqueue_move(request(2, &paths, &moved_to))
+        .await;
+    let moved = h.terminal(2).await;
+    assert_eq!(moved.state, CopyOperationState::Completed, "{moved:?}");
+    assert_eq!(moved.completed_roots, 65, "{moved:?}");
+    assert!(paths.iter().all(|path| !path.exists()));
+    assert_eq!(fs::read_dir(&moved_to).unwrap().count(), 65);
     h.close().await;
 }
 

@@ -241,13 +241,12 @@ until it lands.
 | T-X09 | A drop on a file row lands in that panel's folder, beside the file | `files_clipboard_drag` | the copy beside the untouched file | PASS (Linux `20261122-165133`, Windows `20261122-171856`); red in `20261122-072703` |
 | T-X10 | Across volumes a plain drag offers and does Copy; Shift+drag offers Move where the other volume takes a Move from another drive (Windows: the private installation's NTFS drive), which moves the file or keeps the source untouched; where it cannot keep a replaced file recoverable (Linux: tmpfs), the drag refuses the Move up front ("Not allowed here") and starts nothing (finding O-1) | `files_clipboard_drag` (`$XDG_RUNTIME_DIR`; Windows: the private installation's drive when the run is on another one) | feedback 3, and 4 or 5; jobs; disk | PASS (Linux `20261122-165133`: tmpfs, feedback 5 "Not allowed here", no job, source kept; Windows `20261122-171856`: the NTFS drive takes the Move, which ends Failed with the source kept); red in `20261122-173744` |
 | T-X11 | F5 with two marked files during a filename search closes the search and copies both marked files, not the search's match | `files_clipboard_drag` | search inactive; the two copies | PASS (Linux `20261122-165133`, Windows `20261122-171856`); red in `20261122-072703` |
-| T-X12 | Move takes at most 64 selected items: F6 and Ctrl+X, Ctrl+V of 65 are refused with "Move accepts at most 64 selected roots. Choose a smaller selection." and move nothing; F5 of the 65 copies all | `files_clipboard_drag` | refused before any job (the dialog or a notice), in those words; disk | PASS (Linux `20261122-165133`, Windows `20261122-171856`): refused in the dialog before any job (O-2 fixed); F5 of the 65 copies all; red in `20261122-072703` and `20261122-173744`. A drag of 65 is not covered |
+| T-X12 | More selected items than the 64 a Move once took: F5 of 65 marked files copies all of them, Ctrl+X, Ctrl+V of them in an empty folder moves all of them there, and F6 from there moves all of them back | `files_clipboard_drag` | each job Completed; the trees equal the files as they were; the emptied folders empty | PASS (Windows `20261123-011352`); the refusal it replaced was red in `20261122-072703` and `20261122-173744`. Linux not run. A drag of 65 is not covered |
 | T-X13 | A drop released within 0.4 s of the press is cancelled ("Drag cancelled: released within 0.4 s" on the source panel's status line), starts no dialog or job and moves nothing; one released later moves | `files_clipboard_drag` (the scenario clock held: press, 0.15 s, drag to the other panel, then 0.1 s or 0.3 s before the release) | the note; jobs; disk | PASS (Linux `20261122-165133`, Windows `20261122-171856`); red in `20261122-173744` and `20261122-173443` |
 
-Finding O-2 (T-X12): a Move of more than 64 items is admitted as a job, which ends Failed
-and names the operation "copy files". Decided (Architect): F6, Ctrl+X, Ctrl+V and a drag
-of more than 64 items are refused before any job, and the words say Move. Fixed in
-0a6d5a4a; T-X12 checks F6 and Ctrl+X, Ctrl+V (a drag of 65 is not covered).
+Finding O-2 (T-X12) is superseded: a Move no longer has a limit of its own and takes as
+many selected items as Copy (up to 1,000,000), so T-X12 now checks that F6 and Ctrl+X,
+Ctrl+V of 65 items move all of them (a drag of 65 is not covered).
 
 ## Delete
 

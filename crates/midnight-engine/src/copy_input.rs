@@ -11,7 +11,7 @@ mod start_policy_tests;
 
 #[derive(Clone)]
 enum Sources {
-    Paths(FileClipboard),
+    Paths(Arc<FileClipboard>),
     SharedPaths(Arc<FileClipboard>),
     Selection(SelectedFiles),
     Archive(ArchiveOwner),
@@ -95,9 +95,26 @@ impl From<ArchiveCopyRequest> for CopyInput {
     }
 }
 
+/// A native selection of more items than a job prepares before it starts
+/// (`MAX_PREPARED_NATIVE_ROOTS`): the job keeps the paths, shared with its input, and
+/// takes the items one at a time (`worker::streamed`).
+#[derive(Clone)]
+pub(super) struct StreamedRequest {
+    pub(super) destination: PathBuf,
+    pub(super) verification: TransferVerification,
+    pub(super) paths: Arc<FileClipboard>,
+    pub(super) moved: bool,
+}
+
+/// The most native items that a Copy or Move prepares before it starts: it opens and
+/// pins each of them, and a failing one can be left out before anything is copied. A
+/// larger selection streams instead (`StreamedRequest`).
+pub(super) const MAX_PREPARED_NATIVE_ROOTS: usize = 64;
+
 pub(super) enum Resolved {
     Native(CopyRequest),
     NativeMove(CopyRequest),
+    Streamed(StreamedRequest),
     Captured {
         destination: PathBuf,
         sources: PreparedCapturedTransfer,
@@ -137,7 +154,7 @@ impl From<CopyRequest> for CopyInput {
             links: CopyLinkPolicy::Reject,
             _completions: None,
             audited_native_children: None,
-            sources: Sources::Paths(request.clipboard),
+            sources: Sources::Paths(Arc::new(request.clipboard)),
         }
     }
 }
@@ -159,10 +176,10 @@ impl From<SelectedCopyRequest> for CopyInput {
     }
 }
 
-/// Native roots stay open from preparation until each is copied, and every root is pinned
-/// when the job starts: one Copy or Move takes at most `MAX_NATIVE_TRANSFER_ROOTS` of them.
-/// A file list of any length reaches here (the clipboard, a drop, a panel selection).
-pub(super) fn check_native_roots(
+/// One Copy or Move takes at most `MAX_NATIVE_TRANSFER_ROOTS` native items: it keeps their
+/// paths and a few bytes per item until each is copied. A file list of any length reaches
+/// here (the clipboard, a drop, a panel selection).
+pub(crate) fn check_native_roots(
     destination: &std::path::Path,
     count: usize,
 ) -> Result<(), FsError> {
@@ -171,9 +188,9 @@ pub(super) fn check_native_roots(
             destination,
             io::ErrorKind::InvalidInput,
             &format!(
-                "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once, because \
-                 each stays open until it is copied; these are {count}. Copy fewer items at a \
-                 time, or their folder."
+                "Copy and Move take at most {} items at once; these are {count}. Copy or move \
+                 their folder instead, or fewer items at a time.",
+                midnight_core::MAX_NATIVE_TRANSFER_ROOTS_TEXT
             ),
         ));
     }
@@ -183,11 +200,9 @@ pub(super) fn check_native_roots(
 /// Required modified time pins and stages every root before anything is copied: the
 /// backend takes at most `MAX_REQUIRED_METADATA_ROOTS` of them, whatever the dialog
 /// offered, and refuses more before any source is captured, never as a content-only
-/// transfer. A Copy says so in the policy's words, a Move in the sentence every Move
-/// entry point gives.
+/// transfer, in the policy's words for a Copy and a Move alike.
 fn check_required_metadata_roots(
     destination: &std::path::Path,
-    intent: TransferIntent,
     metadata: TransferMetadataPolicy,
     count: usize,
 ) -> Result<(), FsError> {
@@ -197,10 +212,7 @@ fn check_required_metadata_roots(
         return Err(error(
             destination,
             io::ErrorKind::Unsupported,
-            match intent {
-                TransferIntent::Copy => midnight_core::REQUIRED_METADATA_ROOTS_REFUSAL,
-                TransferIntent::Move => midnight_core::MOVE_ROOTS_REFUSAL,
-            },
+            midnight_core::REQUIRED_METADATA_ROOTS_REFUSAL,
         ));
     }
     Ok(())
@@ -287,8 +299,7 @@ impl CopyInput {
             return None;
         }
         let files = match &self.sources {
-            Sources::Paths(files) => files,
-            Sources::SharedPaths(files) => files.as_ref(),
+            Sources::Paths(files) | Sources::SharedPaths(files) => files.as_ref(),
             _ => return None,
         };
         let mut seen = std::collections::HashSet::with_capacity(files.paths.len());
@@ -303,10 +314,10 @@ impl CopyInput {
             .cloned()
             .collect();
         let count = paths.len() as u64;
-        self.sources = Sources::Paths(FileClipboard {
+        self.sources = Sources::Paths(Arc::new(FileClipboard {
             paths,
             intent: files.intent,
-        });
+        }));
         Some(count)
     }
 
@@ -401,8 +412,7 @@ impl CopyInput {
             ));
         }
         let clipboard = match &self.sources {
-            Sources::Paths(files) => Some(files),
-            Sources::SharedPaths(files) => Some(files.as_ref()),
+            Sources::Paths(files) | Sources::SharedPaths(files) => Some(files.as_ref()),
             _ => None,
         };
         if let Some(files) = clipboard {
@@ -446,12 +456,7 @@ impl CopyInput {
                         "Captured transfer intent changed.",
                     ));
                 }
-                check_required_metadata_roots(
-                    &self.destination,
-                    self.intent,
-                    self.metadata,
-                    expected,
-                )?;
+                check_required_metadata_roots(&self.destination, self.metadata, expected)?;
                 let prepared = sources.prepare_with_links(service, links, cancel)?;
                 let count = match &prepared {
                     PreparedCapturedTransfer::Copy(roots)
@@ -491,8 +496,7 @@ impl CopyInput {
                     sources: prepared,
                 });
             }
-            Sources::Paths(files) => files,
-            Sources::SharedPaths(files) => Arc::unwrap_or_clone(files),
+            Sources::Paths(files) | Sources::SharedPaths(files) => files,
             Sources::Selection(files) => {
                 let paths = crate::file_targets::resolve_payload(
                     &files.selection,
@@ -501,10 +505,10 @@ impl CopyInput {
                     cancel,
                 )?;
                 check_native_roots(&self.destination, paths.len())?;
-                FileClipboard {
+                Arc::new(FileClipboard {
                     paths,
                     intent: FileClipboardIntent::Copy,
-                }
+                })
             }
             Sources::Archive(request) => {
                 let sources = super::archive_source::resolve(&request, cancel)?;
@@ -515,17 +519,24 @@ impl CopyInput {
             }
         };
         clipboard.validate()?;
-        check_required_metadata_roots(
-            &self.destination,
-            self.intent,
-            self.metadata,
-            clipboard.paths.len(),
-        )?;
+        check_required_metadata_roots(&self.destination, self.metadata, clipboard.paths.len())?;
+        // More items than a job prepares before it starts stream: the job takes them one
+        // at a time. Required modified time prepares every root first (and takes few).
+        if clipboard.paths.len() > MAX_PREPARED_NATIVE_ROOTS
+            && self.metadata == TransferMetadataPolicy::ContentOnly
+        {
+            return Ok(Resolved::Streamed(StreamedRequest {
+                destination: self.destination,
+                verification: self.verification,
+                paths: clipboard,
+                moved: self.intent == TransferIntent::Move,
+            }));
+        }
         let request = CopyRequest {
             verification: self.verification,
             start_policy: self.start_policy,
             id: self.id,
-            clipboard,
+            clipboard: Arc::unwrap_or_clone(clipboard),
             destination: self.destination,
         };
         Ok(if self.intent == TransferIntent::Move {

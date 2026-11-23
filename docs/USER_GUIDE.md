@@ -44,7 +44,9 @@ templates to the clipboard, the internal viewer or a UTF-8 file.
 F5 and Ctrl+C/Ctrl+V copy files and folders through a background queue with
 independent SHA-256 destination readback by default. Existing names prompt for Skip,
 a different name, explicit folder Merge or recoverable Replace; replacement retains
-the displaced original. F6 and Ctrl+X/Ctrl+V move native files and folders. A Move
+the displaced original. F6 and Ctrl+X/Ctrl+V move native files and folders. Copy and
+Move take up to 1,000,000 selected items at once; a large selection starts with its
+first item at once and totals the rest while it copies. A Move
 within one volume uses native rename without reading file contents. A Move from
 another drive copies and independently verifies each file, then deletes that exact
 source before continuing; recursive folders use the same per-file checks and remove
@@ -52,6 +54,8 @@ emptied source folders last. Such a Move needs a destination where it can verify
 copies before it removes the originals: an NTFS folder on a fixed drive on Windows,
 or ext2, ext3 or ext4 on Linux (where the source must be on one of them too), never a
 network location; elsewhere a note under the destination says so and suggests Copy.
+On Windows a read-only file is moved as Delete removes it, and a file with named
+alternate data streams stays where it is, because a copy cannot carry those streams.
 There is no source-recovery mode or journal.
 Copy and Move (F5, F6) ask how to handle links, alike on Windows and Linux. **Copy the
 files links point to** copies a link to a file as that file and a link to a folder as

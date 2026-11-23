@@ -227,6 +227,9 @@ pub(super) fn execute(
     }
 }
 
+/// The dragged items that a hover and a drop check one by one.
+const CHECKED_ITEMS: usize = 64;
+
 pub(super) fn validate(
     service: &dyn TransferService,
     files: &FileClipboard,
@@ -235,18 +238,36 @@ pub(super) fn validate(
 ) -> Result<(), FsError> {
     files.validate()?;
     // A drop between panes is a Copy or Move of native roots (`MAX_NATIVE_TRANSFER_ROOTS`):
-    // refuse a larger drag before opening each source to check it.
-    if files.paths.len() > MAX_NATIVE_TRANSFER_ROOTS {
-        return Err(error(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once, because \
-                 each stays open until it is copied; drag fewer items at a time."
-            ),
-        ));
-    }
+    // refuse a larger drag before opening any source to check it.
+    crate::copy_operations::check_native_roots(destination, files.paths.len())?;
     let directory = service.prepare_transfer_destination(destination, cancel)?;
-    for path in &files.paths {
+    // Each of the first items is checked here; the job checks every item again as it
+    // takes it, so a larger drag is not opened item by item before its drop. The folders
+    // of the others are checked instead: a drop into one of them would target its items.
+    let (checked, others) = files.paths.split_at(files.paths.len().min(CHECKED_ITEMS));
+    let mut folders = std::collections::HashSet::new();
+    for folder in others.iter().filter_map(|path| path.parent()) {
+        if folders.len() == CHECKED_ITEMS {
+            break;
+        }
+        if !folders.insert(folder) {
+            continue;
+        }
+        if cancel.is_cancelled() {
+            return Err(error(
+                io::ErrorKind::Interrupted,
+                "Hover preview cancelled.",
+            ));
+        }
+        let folder = service.prepare_transfer_source(folder, cancel)?;
+        if folder.native_identity() == Some(directory.identity()) {
+            return Err(error(
+                io::ErrorKind::InvalidInput,
+                "The drop would target the source itself.",
+            ));
+        }
+    }
+    for path in checked {
         if cancel.is_cancelled() {
             return Err(error(
                 io::ErrorKind::Interrupted,

@@ -580,7 +580,7 @@ impl TransferSource for Source {
             self.discover_projection(cancel, visit)?;
             return self.revalidate(cancel);
         }
-        crate::mutation::discovery::walk(
+        crate::mutation::discovery::walk_transfer(
             &self.parent,
             &self.file,
             &self.name,

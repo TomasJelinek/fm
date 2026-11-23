@@ -250,7 +250,6 @@ impl Fixture {
             active: Some((PathBuf::from("source/original"), recovery())),
             reading: false,
             buffer: Vec::new(),
-            admitted: 1,
             refresh_parents: Vec::new(),
             failed_phase: None,
             retryable_failure: false,

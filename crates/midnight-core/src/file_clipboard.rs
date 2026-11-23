@@ -7,23 +7,22 @@ use std::{
 };
 
 /// Bytes of native paths that one file list holds at most: the memory bound on a native
-/// clipboard or drag-and-drop payload, which another program may supply. Each path takes
-/// at least a few of them, so this also bounds how many paths a list holds; the native
-/// formats themselves (CF_HDROP, URI lists) have no count limit, and neither has this.
-pub const MAX_FILE_CLIPBOARD_BYTES: usize = 4 * 1024 * 1024;
-/// Native roots that one Copy, Move or drop takes at most. Each root keeps its source
-/// and parent folder open (two handles or descriptors) from preparation until it is
-/// copied, and every root is pinned when the job starts; on Linux these count against
-/// the process's open-file limit. Clipboard and drag payloads themselves are bounded only
-/// by `MAX_FILE_CLIPBOARD_BYTES`. Archive members hold no native handle and are exempt.
-pub const MAX_NATIVE_TRANSFER_ROOTS: usize = 4096;
-/// The most selected items one Move takes. Every Move entry point (the dialog, a pasted
-/// Cut, a drag) refuses a larger selection with `MOVE_ROOTS_REFUSAL` before a job starts;
-/// Copy has no such limit.
-pub const MAX_MOVE_ROOTS: usize = 64;
-/// Why a Move of more than `MAX_MOVE_ROOTS` items does not start.
-pub const MOVE_ROOTS_REFUSAL: &str =
-    "Move accepts at most 64 selected roots. Choose a smaller selection.";
+/// clipboard or drag-and-drop payload, which another program may supply. It carries
+/// `MAX_NATIVE_TRANSFER_ROOTS` paths of about 130 UTF-16 characters (Windows) or 260 bytes
+/// (Linux URI lists). Each path takes at least a few of them, so this also bounds how many
+/// paths a list holds; the native formats themselves (CF_HDROP, URI lists) have no count
+/// limit, and neither has this.
+pub const MAX_FILE_CLIPBOARD_BYTES: usize = 256 * 1024 * 1024;
+/// The bound of `MAX_FILE_CLIPBOARD_BYTES` in the words of its refusals.
+pub const MAX_FILE_CLIPBOARD_TEXT: &str = "256 MiB";
+/// Native items that one Copy, Move or drop takes at most. A job keeps only the selected
+/// paths and a few bytes per item (its identity and kind, captured in one pass that closes
+/// each item again) and opens each item just before copying it, so the bound is the memory
+/// of that list, about 200 bytes per item. Clipboard and drag payloads themselves are
+/// bounded only by `MAX_FILE_CLIPBOARD_BYTES`. Archive members are exempt.
+pub const MAX_NATIVE_TRANSFER_ROOTS: usize = 1_000_000;
+/// `MAX_NATIVE_TRANSFER_ROOTS` in the words of its refusals.
+pub const MAX_NATIVE_TRANSFER_ROOTS_TEXT: &str = "1,000,000";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileClipboardIntent {
@@ -64,10 +63,26 @@ impl FileClipboard {
             bytes = bytes.saturating_add(native.len());
             if bytes > MAX_FILE_CLIPBOARD_BYTES {
                 return Err(invalid(
-                    "File clipboard paths exceed their 4 MiB resource budget.",
+                    "File clipboard paths exceed their 256 MiB resource budget.",
                 ));
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_refusal_texts_name_the_bounds() {
+        let digits: String = MAX_NATIVE_TRANSFER_ROOTS_TEXT
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect();
+        assert_eq!(digits, MAX_NATIVE_TRANSFER_ROOTS.to_string());
+        assert_eq!(MAX_FILE_CLIPBOARD_TEXT, "256 MiB");
+        assert_eq!(MAX_FILE_CLIPBOARD_BYTES, 256 << 20);
     }
 }

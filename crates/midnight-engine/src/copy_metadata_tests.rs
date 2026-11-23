@@ -226,8 +226,8 @@ async fn required_modified_time_preparation_failure_offers_no_skip() {
 
 /// Required modified time pins and stages every root before anything is copied, so the
 /// backend itself takes at most 64 distinct native regular files: 65 are refused before
-/// anything is copied, captured or moved, a Copy in words that name the policy and a
-/// Move in the sentence every Move gives, never as a content-only transfer; 64 still go.
+/// anything is copied, captured or moved, in words that name the policy, for a Copy and a
+/// Move alike, never as a content-only transfer; 64 still go.
 #[tokio::test]
 async fn required_modified_time_takes_at_most_64_files_for_copy_and_move() {
     for intent in [TransferIntent::Copy, TransferIntent::Move] {
@@ -255,13 +255,9 @@ async fn required_modified_time_takes_at_most_64_files_for_copy_and_move() {
             let case = format!("{intent:?} of {count} files");
             if count > 64 {
                 assert_eq!(done.state, CopyOperationState::Failed, "{case}: {done:?}");
-                let refusal = match intent {
-                    TransferIntent::Copy => {
-                        "Required modified time accepts at most 64 distinct native regular \
-                         files; choose content-only Copy for larger selections."
-                    }
-                    TransferIntent::Move => midnight_core::MOVE_ROOTS_REFUSAL,
-                };
+                // Copy and Move refuse in the same words, which name the policy.
+                let refusal = midnight_core::REQUIRED_METADATA_ROOTS_REFUSAL;
+                assert!(refusal.starts_with("Required modified time accepts at most 64"));
                 assert_eq!(done.errors[0].message, refusal, "{case}: {done:?}");
                 assert_eq!(done.files_completed, 0, "{case}");
                 assert_eq!(done.source_names_staged, 0, "{case}");

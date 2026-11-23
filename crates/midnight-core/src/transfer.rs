@@ -759,6 +759,17 @@ pub trait TransferDirectory: Send + Sync {
         name: &OsStr,
         cancel: &Cancellation,
     ) -> Result<Option<TransferEntry>, FsError>;
+    /// This folder's native identity, then those of its ancestors through the native
+    /// root, read in one walk of its actual ancestry, so that a caller checks any number of
+    /// sources against it with one walk (`reject_source_ancestor` walks once per source).
+    /// None where the provider does not report them: the caller then asks
+    /// `reject_source_ancestor` for each source.
+    fn ancestor_identities(
+        &self,
+        _cancel: &Cancellation,
+    ) -> Result<Option<Vec<TransferIdentity>>, FsError> {
+        Ok(None)
+    }
     /// Fail when this destination is the source directory or below it (native ancestry).
     fn reject_source_ancestor(
         &self,

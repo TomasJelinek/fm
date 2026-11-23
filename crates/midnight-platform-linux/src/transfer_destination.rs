@@ -342,6 +342,30 @@ impl TransferDirectory for Directory {
         }
         self.revalidate(cancel)
     }
+    fn ancestor_identities(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<Option<Vec<TransferIdentity>>, FsError> {
+        self.revalidate(cancel)?;
+        // The same walk as `reject_source_ancestor`, through `..` from the held folder.
+        let mut identities = Vec::new();
+        let mut current = self.file.try_clone().map_err(|e| error(&self.path, e))?;
+        loop {
+            checked(cancel, &self.path)?;
+            let id = identity(&current, &self.path)?;
+            identities.push(id);
+            let parent = File::from(
+                openat(&current, "..", DIRECTORY, Mode::empty())
+                    .map_err(|e| error(&self.path, e.into()))?,
+            );
+            if identity(&parent, &self.path)? == id {
+                break;
+            }
+            current = parent;
+        }
+        self.revalidate(cancel)?;
+        Ok(Some(identities))
+    }
     fn create_directory(
         &self,
         name: &OsStr,

@@ -47,6 +47,7 @@ use ownership::{Owned, Scope};
 mod worker;
 pub(crate) use admission::{Admission, Reservation};
 use input::CopyInput;
+pub(crate) use input::check_native_roots;
 /// Copy and Move compare every pinned native revision (sources, conflict pins and Move
 /// captures) under this policy: a new change time alone (Windows ChangeTime, Linux ctime),
 /// which endpoint protection gives freshly written files, is no change (VIEW-05). User
@@ -81,12 +82,6 @@ pub(crate) fn prepare_ordinary_move_source(
 /// uses for its operation ID (`input::copy_command_id`).
 pub(crate) fn is_copy_command(command: &Command) -> bool {
     input::copy_command_id(command).is_some()
-}
-pub(crate) fn check_move_bounds<'a>(
-    destination: &Path,
-    paths: impl IntoIterator<Item = &'a Path>,
-) -> Result<(), FsError> {
-    worker::check_move_bounds(destination, paths)
 }
 type Status = Arc<Mutex<CopyProgress>>;
 type Registry = Arc<Mutex<HashMap<OperationId, Registered>>>;
@@ -1118,8 +1113,8 @@ async fn execute_input(
     }
 }
 
-/// Announce a root the job completed. An archive copy can complete more roots than the
-/// notice queue holds (`MAX_NATIVE_TRANSFER_ROOTS` and two more), and once the UI takes
+/// Announce a root the job completed. A job can complete more roots than the notice
+/// queue holds (`delivery::ROOT_NOTICES`), and once the UI takes
 /// no notices the announcement waits for room. No native call is outstanding here, so
 /// the disk slot goes back first, as for a decision: other transfers and call-scoped
 /// reads never wait for this job's UI, and the next step readmits it (`ready_for_io`).

@@ -1,5 +1,5 @@
-//! One Copy or Move takes at most the native roots it can hold open, however long the
-//! file list that the clipboard, a drop or a panel selection hands it.
+//! One Copy or Move takes at most `MAX_NATIVE_TRANSFER_ROOTS` native items, however long
+//! the file list that the clipboard, a drop or a panel selection hands it.
 use super::*;
 
 fn paths(count: usize) -> CopyRequest {
@@ -21,17 +21,18 @@ fn paths(count: usize) -> CopyRequest {
 fn refused(error: &FsError, count: usize) {
     assert_eq!(error.kind, io::ErrorKind::InvalidInput);
     assert!(
-        error.message.contains(&format!(
-            "Copy and Move take at most {MAX_NATIVE_TRANSFER_ROOTS} items at once"
-        )) && error.message.contains(&format!("these are {count}")),
+        error
+            .message
+            .contains("Copy and Move take at most 1,000,000 items at once")
+            && error.message.contains(&format!("these are {count}")),
         "{error}"
     );
 }
 
 #[test]
-fn a_file_list_of_more_native_roots_than_one_copy_holds_open_is_refused_at_admission() {
-    // A file list itself takes any number of paths within its bytes (the clipboard
-    // refused more than 4,096); Copy bounds the roots it prepares and keeps open.
+fn a_file_list_of_more_native_roots_than_one_copy_takes_is_refused_at_admission() {
+    // A file list itself takes any number of paths within its bytes; Copy bounds the
+    // items it keeps.
     CopyInput::from(paths(MAX_NATIVE_TRANSFER_ROOTS))
         .validate()
         .unwrap();

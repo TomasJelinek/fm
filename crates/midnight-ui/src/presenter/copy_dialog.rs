@@ -627,11 +627,6 @@ impl Presenter {
             draft.error = "These captured items support Copy only.".into();
             return;
         }
-        // F6, a pasted Cut and a drag refuse a larger Move before any job starts.
-        if intent == TransferIntent::Move && draft.input.roots() > midnight_core::MAX_MOVE_ROOTS {
-            draft.error = midnight_core::MOVE_ROOTS_REFUSAL.into();
-            return;
-        }
         // The folder the dialog proposed (the other panel's) and a panel's folder now
         // exist. A typed folder is checked first, so that a missing one is refused
         // here instead of starting a job that cannot run.

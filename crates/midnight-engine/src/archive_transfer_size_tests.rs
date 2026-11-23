@@ -175,8 +175,8 @@ fn a_selection_of_more_than_4096_members_is_copied_one_root_at_a_time() {
 #[test]
 fn captured_archive_roots_beyond_the_native_root_bound_are_prepared() {
     // An inline-tree copy-out of archive members prepares them as captured roots, which
-    // took at most 4,096 roots; only native roots, which stay open until copied, count.
-    let (mount, rows) = files(MAX_NATIVE_TRANSFER_ROOTS as u64 + 1);
+    // took at most 4,096 roots; only native roots count.
+    let (mount, rows) = files(4_097);
     let temp = destination();
     let request = request(Arc::new(mount), &rows, temp.path());
     let cancel = Cancellation::default();
