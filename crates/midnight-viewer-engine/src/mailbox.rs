@@ -194,6 +194,10 @@ impl Mailbox {
                 ViewerOutput::LinkFocus { .. } => {
                     matches!(pending[index], ViewerOutput::LinkFocus { .. })
                 }
+                ViewerOutput::LinkHistory { .. } => {
+                    matches!(pending[index], ViewerOutput::LinkHistory { .. })
+                }
+                ViewerOutput::WebCursor(_) => matches!(pending[index], ViewerOutput::WebCursor(_)),
                 ViewerOutput::LinkRequest(_) => false,
                 ViewerOutput::CopyText(_) => matches!(pending[index], ViewerOutput::CopyText(_)),
                 ViewerOutput::Copying(_) => matches!(pending[index], ViewerOutput::Copying(_)),
@@ -243,6 +247,8 @@ impl Mailbox {
             ViewerOutput::SandboxNotice(_)
                 | ViewerOutput::LinkHover(_)
                 | ViewerOutput::LinkFocus { .. }
+                | ViewerOutput::LinkHistory { .. }
+                | ViewerOutput::WebCursor(_)
                 | ViewerOutput::LinkRequest(_)
                 | ViewerOutput::CopyText(_)
                 | ViewerOutput::Copying(_)

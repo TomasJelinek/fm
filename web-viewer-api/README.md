@@ -1,7 +1,7 @@
-# Interactive web viewer API and SDK 0.3.0
+# Interactive web viewer API and SDK 0.4.0
 
 This independent Rust 2024 / Rust 1.99 workspace has no third-party dependencies.
-The SDK depends only on `midnight-web-viewer-api =0.3.0`. Providers consume released
+The SDK depends only on `midnight-web-viewer-api =0.4.0`. Providers consume released
 registry packages; this workspace never depends on the application, Slint, Tokio,
 CEF or a private host crate. Existing semantic and raster protocols are unchanged.
 
@@ -55,13 +55,18 @@ enum HostShortcut {
 enum ErrorCode {
     InvalidRequest, Denied, MissingResource, ResourceChanged, Unsupported, Runtime, BudgetExceeded,
 }
+enum Cursor {
+    Default, Pointer, Text, VerticalText, Crosshair, Wait, Progress, Help, Move, AllScroll,
+    NotAllowed, Grab, Grabbing, ColResize, RowResize, EwResize, NsResize, NeswResize,
+    NwseResize, ZoomIn, ZoomOut, Copy, Alias, ContextMenu, Cell, None,
+}
 enum EventKind {
     Ready, Frame(Frame), State(State), FindResult(FindResult), Selection(String),
     ResourceResolve { request: u64, base: u64, url: String },
     ResourceRead { request: u64, resource: u64, offset: u64, length: u32 },
     ResourceRelease { resource: u64 }, HostShortcut(HostShortcut),
     Error { code: ErrorCode, message: String }, Closed,
-    LinkHover { target: String }, LinkActivated { target: String },
+    LinkHover { target: String }, LinkActivated { target: String }, Cursor(Cursor),
 }
 fn read_message(reader: &mut impl std::io::Read) -> std::io::Result<Message>;
 fn write_message(writer: &mut impl std::io::Write, message: &Message) -> std::io::Result<()>;
@@ -107,8 +112,8 @@ settle; the host acknowledges with Released. URL strings request broker resoluti
 only; they never grant native paths or authority. The host validates scheme,
 synthetic origin, scope containment, encoding, links and source revision.
 
-Policy defaults to offline and scripts disabled. Version one rejects scripts
-without network. Switching offline must disable scripts in the same policy.
+Policy defaults to offline and scripts disabled. Since API 0.4 every combination is
+valid, including scripts without network (see below); API 0.3 and earlier reject it.
 Permissions reset for each different file. No native paths, handles, UI objects,
 CEF values or executable callbacks cross this API. This protocol is not a process
 sandbox: the provider/host must enforce browser sandboxing and request policy.
@@ -190,6 +195,28 @@ notice saying that it leads above the folder levels the viewer can tell apart. A
 requests are unchanged: their relative URLs in `ResourceResolve` are still relative to
 the document's folder, and assets above it are still denied.
 
+## Offline scripts and cursor reports (API/SDK 0.4)
+
+The Rust package version is 0.4 because the new `Cursor` event changes exhaustive source
+matches. The wire remains MWV1 version 1 and manifest schema 1 / protocol 1; every
+earlier tag and encoding is unchanged.
+
+`Policy { network: false, scripts: true }` is valid: the provider runs the page's scripts
+and keeps them from every network and from reading host resources (the bundled provider
+sandboxes the document with an opaque origin, refuses every connection by CSP, turns
+network prediction off and removes WebRTC; see the
+[web viewer contract](../docs/developer/WEB_VIEWER_API.md)). Providers of 0.3 and earlier
+decode such a policy as an invalid message, which ends their session, so a host sends it
+only to a provider it knows implements 0.4.
+
+`Cursor(Cursor)` (event tag 14, one discriminant in the declaration order above, no raw
+section) reports the pointer cursor the page asks for, when it changes. A host that
+decodes it launches the provider with `MIDNIGHT_WEB_VIEWER_CURSOR=cursor-v1`
+(`CURSOR_ENV`, `CURSOR_V1`) in its cleared environment; only for this exact value does a
+provider send it. Cursors without a counterpart (custom images, drag cursors) are
+`Default`; `None` hides the cursor. Old hosts never set the value and old providers
+ignore it.
+
 ## MWV1 version 1 wire
 
 All integers and IEEE-754 f64 values use little endian. The 16-byte fixed prefix is
@@ -200,7 +227,7 @@ bytes. Booleans are exactly 0 or 1. Modifiers are one u8: Shift bit0, Control bi
 Alt bit2, Meta bit3; other bits are invalid. Nested enums use one u8 discriminant
 in declaration order starting at zero. All enums reject unknown tags.
 
-Command tags 1..=15 and event tags 1..=13 follow their declaration order above.
+Command tags 1..=15 and event tags 1..=14 follow their declaration order above.
 ResourceReply Data's `bytes` and Frame's `rgba` are the raw section; no vector
 length is duplicated in control. All other variants require zero raw length.
 Control (including Header) is 24..=65,536 bytes. Data raw length is at most
@@ -254,7 +281,7 @@ build is required. `pwsh web-viewer-api/scripts/package.ps1` on Windows or
 `python web-viewer-api/scripts/package.py` on Linux creates a fresh
 immutable `_build/html-viewer/sdk/release-*/` registry bundle. It prints its Cargo
 config path; pass that path as `cargo --config PATH` when building an independent
-provider that declares `version = "=0.3.0", registry = "midnight"`. The bundle
+provider that declares `version = "=0.4.0", registry = "midnight"`. The bundle
 contains normalized Cargo packages, SHA-256 index entries and artifacts.json.
 Source path dependencies never enter the released manifests. This only packages
 the public API/SDK and is not evidence of native Chromium execution.

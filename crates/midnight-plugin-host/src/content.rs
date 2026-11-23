@@ -32,6 +32,13 @@ pub enum RevisionPolicy {
 pub trait ContentResources: Send + Sync + std::fmt::Debug {
     fn capture(&self, segments: &[String]) -> Result<CapturedFile, Error>;
 
+    /// How many folders above its root this scope captures from: `capture` then accepts
+    /// up to that many leading `..` segments, each one folder further up, before at least
+    /// one name. None unless the scope says so.
+    fn ancestor_levels(&self) -> usize {
+        0
+    }
+
     /// Consume this reference on a backend worker. Known implementations release
     /// only their reference when shared, and acknowledge actual child teardown
     /// when last. An error or unwind must retain every unconfirmed owner.

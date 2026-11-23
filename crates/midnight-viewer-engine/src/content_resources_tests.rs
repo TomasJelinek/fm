@@ -281,3 +281,50 @@ fn released_assets_and_scope_confirm_teardown_and_close_their_handles() {
     document.release_on_worker().unwrap();
     assert_eq!(closed(&state.closed_directories), 1);
 }
+
+/// Generated documentation keeps its stylesheets in folders above a page: a scope with
+/// ancestors pins each such folder once, when an asset first names it, and reaches no
+/// further than its levels.
+#[test]
+fn ancestor_assets_pin_their_folder_once_and_never_beyond_the_levels() {
+    let (_directory, _path, main, _state, root) = fixture(true);
+    let plain = captured_directory_resources(root.clone(), main.clone()).unwrap();
+    assert_eq!(plain.ancestor_levels(), 0);
+    assert!(plain.capture(&["..".into(), "文档.css".into()]).is_err());
+    let above = Arc::new(State::default());
+    let pins_made = Arc::new(AtomicUsize::new(0));
+    let (made, folder_state) = (pins_made.clone(), above.clone());
+    let pins: AncestorPins = Arc::new(move |levels| {
+        made.fetch_add(1, Ordering::Relaxed);
+        (levels == 1).then(|| {
+            Arc::new(Directory {
+                state: folder_state.clone(),
+                seekable: true,
+            }) as Arc<dyn TransferDirectory>
+        })
+    });
+    let scope = captured_directory_resources_with_ancestors(root, main, Some((2, pins))).unwrap();
+    assert_eq!(scope.ancestor_levels(), 2);
+    for _ in 0..2 {
+        let asset = scope.capture(&["..".into(), "文档.css".into()]).unwrap();
+        assert_eq!(asset.read_at(0, 6).unwrap(), b"body{}");
+        asset.release_on_worker().unwrap();
+    }
+    assert_eq!(pins_made.load(Ordering::Relaxed), 1);
+    assert!(above.opens.load(Ordering::Relaxed) >= 2);
+    // Two levels up has no folder here; three is beyond the scope; names stay checked.
+    assert!(
+        scope
+            .capture(&["..".into(), "..".into(), "a.css".into()])
+            .is_err()
+    );
+    assert!(
+        scope
+            .capture(&["..".into(), "..".into(), "..".into(), "a.css".into()])
+            .is_err()
+    );
+    assert!(scope.capture(&["..".into()]).is_err());
+    assert!(scope.capture(&["..".into(), "a/b".into()]).is_err());
+    assert_eq!(pins_made.load(Ordering::Relaxed), 2);
+    scope.release_on_worker().unwrap();
+}

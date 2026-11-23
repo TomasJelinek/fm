@@ -426,6 +426,9 @@ pub enum ViewerLinkInput {
     /// The document a link was followed from, and back again.
     Back,
     Forward,
+    /// Read the shown document again from its file, where it was (F5, Ctrl+R). An HTML
+    /// page keeps its Online and JavaScript choices.
+    Reload,
 }
 
 /// What following a link asks outside the viewer window. The viewer itself shows files,
@@ -523,7 +526,11 @@ pub enum ViewerOutput {
         /// fixed offline previews are false. The backend enforces the ceiling.
         policy_change_allowed: bool,
         zoom: f64,
+        /// The page is loading (its browser's own report).
+        loading: bool,
     },
+    /// The pointer cursor an HTML page asks for while the pointer is over it.
+    WebCursor(viewer_web::Cursor),
     /// Host-owned commands from an interactive viewer, after browser arbitration.
     WebShortcut(viewer_web::HostShortcut),
     Frame(Box<ViewerFrame>),
@@ -557,6 +564,11 @@ pub enum ViewerOutput {
     LinkFocus {
         count: u32,
         focused: Option<u32>,
+    },
+    /// Whether Back and Forward have a document to go to; sent when either changes.
+    LinkHistory {
+        back: bool,
+        forward: bool,
     },
     /// Something only the main window or the system can do for a followed link.
     LinkRequest(ViewerLinkRequest),

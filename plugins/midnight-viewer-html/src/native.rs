@@ -23,6 +23,29 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(2);
 /// costs one turn instead of one pump plus a fixed sleep each.
 const MAX_COMMANDS_PER_TURN: usize = 64;
 
+/// The web viewer API extensions the host launched this provider with: each only for its
+/// exact launch value.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct OptIns {
+    /// Physical Backspace/Alt arrows (`physical-v1`, API 0.2).
+    pub host_shortcuts: bool,
+    /// Host link routing (`host-v1`, API 0.3).
+    pub links: bool,
+    /// Cursor reports (`cursor-v1`, API 0.4).
+    pub cursor: bool,
+}
+
+impl OptIns {
+    fn from_environment() -> Self {
+        let value = |name| std::env::var(name).ok();
+        Self {
+            host_shortcuts: crate::host_keys::enabled(value(api::HOST_SHORTCUTS_ENV).as_deref()),
+            links: crate::links::enabled(value(api::LINKS_ENV).as_deref()),
+            cursor: value(api::CURSOR_ENV).as_deref() == Some(api::CURSOR_V1),
+        }
+    }
+}
+
 pub(super) struct Document {
     header: api::Header,
     source: api::Resource,
@@ -43,6 +66,9 @@ pub(super) struct Document {
     /// Host link routing (`MIDNIGHT_WEB_VIEWER_LINKS=host-v1`), or None: links load in
     /// the browser as without the opt-in.
     links: Option<Mutex<crate::links::Links>>,
+    /// Cursor reports (`MIDNIGHT_WEB_VIEWER_CURSOR=cursor-v1`, API 0.4): the cursor the
+    /// host was sent last, or None without the opt-in.
+    cursor: Option<Mutex<Option<api::Cursor>>>,
     navigation: Mutex<admission::Navigation>,
     bootstrap: AtomicBool,
 }
@@ -54,8 +80,7 @@ impl Document {
         policy: crate::policy::DocumentPolicy,
         viewport: api::Viewport,
         output: Arc<Output>,
-        host_shortcuts: bool,
-        links: bool,
+        opt_ins: OptIns,
     ) -> Result<Self, &'static str> {
         let navigation =
             admission::Navigation::new(header.session, header.document, source.clone());
@@ -79,8 +104,9 @@ impl Document {
             selection: Mutex::new(crate::selection::Selection::default()),
             mouse_buttons: AtomicU64::new(0),
             wheel_gesture: Mutex::default(),
-            host_shortcuts,
-            links: links.then(Mutex::default),
+            host_shortcuts: opt_ins.host_shortcuts,
+            links: opt_ins.links.then(Mutex::default),
+            cursor: opt_ins.cursor.then(Mutex::default),
             navigation: Mutex::new(navigation),
             bootstrap: AtomicBool::new(true),
         })
@@ -165,8 +191,7 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         )?,
         viewport,
         output,
-        crate::host_keys::enabled(std::env::var(api::HOST_SHORTCUTS_ENV).ok().as_deref()),
-        crate::links::enabled(std::env::var(api::LINKS_ENV).ok().as_deref()),
+        OptIns::from_environment(),
     )?);
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::record(
@@ -182,6 +207,21 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         None,
     )
     .ok_or("cannot create isolated request context")?;
+    // No speculative connection or name lookup (`<link rel=preconnect>`, DNS prefetch,
+    // prefetch and prerender) ever leaves a document's context: those bypass request
+    // interception. A context that cannot be configured this way is not used.
+    if let Err(error) = handlers::disable_network_prediction(&mut context) {
+        return Err(format!(
+            "cannot disable speculative network connections: {error}"
+        ));
+    }
+    // The renderer removes WebRTC, whose peer connections bypass request interception,
+    // from every page of an offline document (`handlers::Renderer`).
+    let mut extra = dictionary_value_create().ok_or("cannot create browser parameters")?;
+    extra.set_bool(
+        Some(&CefString::from(handlers::OFFLINE)),
+        i32::from(!policy.network),
+    );
     let settings = BrowserSettings {
         javascript: if policy.scripts {
             State::ENABLED
@@ -206,7 +246,7 @@ fn open(command: api::Command, output: Arc<Output>) -> Result<BrowserInstance, S
         Some(&mut client),
         Some(&CefString::from(document.policy.main_url().as_str())),
         Some(&settings),
-        None,
+        Some(&mut extra),
         Some(&mut context),
     )
     .ok_or("sandboxed Chromium browser creation failed")?;

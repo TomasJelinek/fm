@@ -29,6 +29,12 @@ pub const LINKS_HOST_V1: &str = "host-v1";
 /// Longest link target in UTF-8 bytes.
 pub const MAX_LINK_TARGET_BYTES: usize = 8192;
 
+/// Explicit host launch opt-in for pointer cursor reports (API 0.4). Never inherit this
+/// value. Providers emit `Cursor` events only for the exact value below.
+pub const CURSOR_ENV: &str = "MIDNIGHT_WEB_VIEWER_CURSOR";
+/// Reports the pointer cursor the page asks for whenever it changes.
+pub const CURSOR_V1: &str = "cursor-v1";
+
 /// Identities are scoped to one process; zero is reserved and invalid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -47,7 +53,8 @@ pub struct Viewport {
     pub scale: f64,
 }
 
-/// Explicit document permissions. Scripts require network in protocol version one.
+/// Explicit document permissions. Before API 0.4 scripts required network; since 0.4 a
+/// policy may enable scripts offline, and the provider keeps them from any network.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Policy {
     pub network: bool,
@@ -225,6 +232,72 @@ pub struct FindResult {
     pub complete: bool,
 }
 
+/// The pointer cursor a page asks for (API 0.4, `Cursor` event). Cursors without a
+/// counterpart here (custom images included) are reported as `Default`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    Default,
+    /// The link hand.
+    Pointer,
+    Text,
+    VerticalText,
+    Crosshair,
+    Wait,
+    Progress,
+    Help,
+    Move,
+    AllScroll,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    ColResize,
+    RowResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ZoomIn,
+    ZoomOut,
+    Copy,
+    Alias,
+    ContextMenu,
+    Cell,
+    /// The page hides the cursor.
+    None,
+}
+
+impl Cursor {
+    /// Every cursor in wire order: a cursor's discriminant is its index.
+    pub const ALL: [Cursor; 26] = [
+        Cursor::Default,
+        Cursor::Pointer,
+        Cursor::Text,
+        Cursor::VerticalText,
+        Cursor::Crosshair,
+        Cursor::Wait,
+        Cursor::Progress,
+        Cursor::Help,
+        Cursor::Move,
+        Cursor::AllScroll,
+        Cursor::NotAllowed,
+        Cursor::Grab,
+        Cursor::Grabbing,
+        Cursor::ColResize,
+        Cursor::RowResize,
+        Cursor::EwResize,
+        Cursor::NsResize,
+        Cursor::NeswResize,
+        Cursor::NwseResize,
+        Cursor::ZoomIn,
+        Cursor::ZoomOut,
+        Cursor::Copy,
+        Cursor::Alias,
+        Cursor::ContextMenu,
+        Cursor::Cell,
+        Cursor::None,
+    ];
+}
+
 /// Explicit host actions, arbitrated by the browser's current editable focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostShortcut {
@@ -310,6 +383,9 @@ pub enum EventKind {
     LinkActivated {
         target: String,
     },
+    /// The pointer cursor the page asks for, sent when it changes (API 0.4). Sent only
+    /// under the cursor-v1 launch opt-in.
+    Cursor(Cursor),
 }
 
 #[derive(Clone, Debug, PartialEq)]

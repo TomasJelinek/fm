@@ -476,11 +476,12 @@ Viewer windows have their own configurable shortcut context:
 | Keys | Viewer action |
 | --- | --- |
 | Escape | Close the viewer, including when search has focus; while a whole-file copy runs, the first Escape stops it instead |
-| Space / Alt+Right in content | Next regular file in captured panel order, wrapping at the end; in very large folders the order is a window around the opened file |
-| Backspace / Alt+Left in content | Previous regular file in the same captured order, wrapping at the beginning |
+| Space / Alt+Right in content | Next regular file in captured panel order, wrapping at the end; in very large folders the order is a window around the opened file. In an HTML page with a page to go forward to, Alt+Right goes forward instead |
+| Backspace / Alt+Left in content | Previous regular file in the same captured order, wrapping at the beginning. In an HTML page with a page to go back to, Alt+Left goes back instead |
 | Tab / Shift+Tab in content | Next / previous link of the shown Markdown page, with a focus ring; Tab starts at the first link in view (`viewer.next-link`, `viewer.previous-link`). From the last link Tab moves on to the window's controls, and so does Shift+Tab without a focused link. HTML pages keep these keys |
 | Enter in content | Follow the focused link (`viewer.follow-link`) |
-| Alt+Shift+Left / Alt+Shift+Right in content, mouse Back / Forward | Back to the document a link was followed from, and forward again (`viewer.link-back`, `viewer.link-forward`); nothing happens without a document in that direction. This also works in HTML pages |
+| Alt+Shift+Left / Alt+Shift+Right in content, mouse Back / Forward | Back to the document a link was followed from, and forward again (`viewer.link-back`, `viewer.link-forward`); nothing happens without a document in that direction. This also works in HTML pages, whose Back and Forward buttons do the same |
+| F5 / Ctrl+R in content | Read the shown file again from disk where it was (`viewer.reload`); an HTML page keeps its Online and JavaScript choices. Also the HTML row's Reload button |
 | Ctrl+F | Focus search |
 | Enter in search / F3 | Next match |
 | Shift+F3 | Previous match |
@@ -530,14 +531,18 @@ cycling uses only the browser-arbitrated chords above. Other Previous/Next-file
 remaps, such as Q or Ctrl+J, remain page input in HTML; they still work in the
 other viewer modes. In an HTML page, Tab, Shift+Tab and Enter stay with the page;
 Alt+Shift+Left/Right and the mouse's Back and Forward buttons go back and forward
-through the documents opened from links, as in Markdown.
+through the documents opened from links, as in Markdown. As in a browser, Alt+Left and
+Alt+Right do so too while there is a page in that direction (the Back and Forward buttons
+are enabled then), after Chromium kept them for a focused text field; otherwise they keep
+their file action. Backspace stays Previous file, since browsers no longer use it for
+Back. F5 and Ctrl+R reload the page from its file instead of reaching Chromium.
 
 Links follow one policy in every viewer: `#name` stays in the document, a local file
 that a viewer shows opens in the same window, a folder opens in the active panel, any
 other local file is shown in the active panel with the cursor on it, and `http`,
 `https` and `mailto` links go to the system's default handler; a link never runs a
-program. The five link actions are configurable viewer-content actions and do not
-apply in comparisons; Alt+Left/Right still cycle files.
+program. The five link actions and Reload are configurable viewer-content actions and do
+not apply in comparisons; Alt+Left/Right still cycle files outside HTML pages.
 
 Search retains ordinary text editing, clipboard keys, spaces and Backspace. Previous/next
 file actions apply only to viewer content; every alias can be remapped or removed in

@@ -29,12 +29,31 @@ Existing destination originals, unfinished sources and earlier completed files a
 preserved; a filesystem refusal cannot be reported as successful cleanup.
 
 The Chromium HTML viewer has a separate browser-process profile. CEF's renderer sandbox
-remains enabled; the decoder's single-process policy is not weakened. HTML starts
-offline with scripts disabled. Enabling online mode revokes all local relative resources
-and recreates the browser/context; scripts require explicit online permission. Captured
-main-document content can then be read and transmitted by scripts. Local paths, shell
-execution, downloads and permission prompts are unavailable to web content. Office
-previews use the same browser with online mode refused. The backend owns private session
+remains enabled, without any unsandboxed fallback; the decoder's single-process policy is
+not weakened. HTML starts offline with its JavaScript running (a deliberate change of
+0.5.1; the JavaScript box turns it off for the page and the following pages of its
+window). Offline, nothing a page does reaches a network: the document is sandboxed
+without `allow-same-origin` (an opaque origin) under a CSP with `connect-src 'none'`,
+no worker, frame, plugin or form, and assets only from its private origin, `data:` and
+`blob:`, so fetch, XHR, WebSocket, EventSource, beacons, WebTransport, workers, service
+workers and remote subresources are refused; Chromium's network prediction (preconnect,
+DNS prefetch, prefetch, prerender) is off for every document's context; WebRTC is removed
+from every page context before its scripts run, as is reading back pixels (canvas,
+WebCodecs), because Chromium marks no intercepted local image cross-origin; navigations a
+script starts are refused, and a web address it navigates to inside a click handler opens
+in the user's browser only when it is the link under the pointer (or keyboard focus),
+which the status line shows. Scripts cannot read local files: every asset is cross-origin
+to the sandboxed page and `connect-src 'none'` blocks reads; stylesheets, images, fonts
+and scripts still render or run. Local assets come only through the host's captured
+directory capabilities: below the document's folder and, for stylesheets and other assets
+of generated documentation, up to 16 folders above it, each pinned by its native path when
+an asset first names it, with links refused below it; never `file://`. A page can still
+display or run what it reaches there, and a link the user follows can carry what the
+page's own content holds. Enabling online mode revokes all local relative resources and
+recreates the browser/context; online, scripts need the JavaScript box and can read and
+transmit the main document. Local paths, shell execution, downloads, new windows and
+permission prompts are unavailable to web content. Office previews use the same browser
+with online mode and scripts refused. The backend owns private session
 state, resource containment, process-tree budgets and cleanup: on Windows a job object
 limits the browser to 32 processes and 2 GiB and ends them when it closes; on Linux the
 browser starts only in its own cgroup inside a writable cgroup-v2 delegation, limited to

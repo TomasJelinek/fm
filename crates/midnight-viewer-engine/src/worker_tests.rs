@@ -168,6 +168,7 @@ pub(super) fn worker() -> (Worker, Mailbox) {
         image_startup: None,
         web_providers: Arc::from([]),
         web: None,
+        web_choices: super::web::Choices::default(),
         closing_web: None,
         web_retirement_error: None,
         // Nothing offers an installation unless a test supplies its own offer.

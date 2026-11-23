@@ -229,5 +229,13 @@ pub(crate) fn event(b: &mut Encoder, kind: &EventKind) -> io::Result<u8> {
             b.text(target)?;
             13
         }
+        EventKind::Cursor(cursor) => {
+            let index = Cursor::ALL
+                .iter()
+                .position(|value| value == cursor)
+                .unwrap_or_default();
+            b.u8(index as u8);
+            14
+        }
     })
 }

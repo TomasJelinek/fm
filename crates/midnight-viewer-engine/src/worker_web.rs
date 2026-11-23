@@ -8,6 +8,28 @@ mod tests;
 const WEB_BATCH: usize = 32;
 /// Shown once per browser session when it stopped accepting input.
 const BROWSER_CLOSED: &str = "Browser closed; reopen the document.";
+/// The longest page title the status line shows, in characters.
+const MAX_TITLE_CHARS: usize = 160;
+/// A web address a script of an offline page tried to open without the user following a
+/// link to it.
+const SCRIPT_ADDRESS_REFUSED: &str = "A script of this offline page tried to open a web address; only links you follow open in your browser.";
+
+/// The window's HTML choices that outlive one document: whether scripts run in the next
+/// page it opens (JavaScript is on until the user turns it off in this window), and the
+/// policy a Reload keeps for the file it reloads, and for no other.
+pub(super) struct Choices {
+    pub scripts: bool,
+    pub reload: Option<(PathBuf, api::Policy)>,
+}
+
+impl Default for Choices {
+    fn default() -> Self {
+        Self {
+            scripts: true,
+            reload: None,
+        }
+    }
+}
 
 /// The browser session operations the worker uses: `midnight_web_viewer_host::Session`,
 /// or a scripted session in tests. The worker owns the session and calls these on its own
@@ -253,14 +275,30 @@ pub(super) struct WebView {
     /// accepted command does not: input sent before the host marks a failed session
     /// stopped is accepted and never handled.
     reason: bool,
+    /// The page's title (its browser's report), or the file's name before it has one.
+    title: String,
+    name: String,
+    loading: bool,
+    /// The link target the pointer or keyboard focus is on, as the browser reported it.
+    hover: String,
 }
 
 impl WebView {
+    #[cfg(test)]
     pub(super) fn new(session: Box<dyn Browser>, viewport: api::Viewport, floor: u64) -> Self {
+        Self::with_policy(session, viewport, floor, api::Policy::default())
+    }
+
+    pub(super) fn with_policy(
+        session: Box<dyn Browser>,
+        viewport: api::Viewport,
+        floor: u64,
+        policy: api::Policy,
+    ) -> Self {
         Self {
             session,
             viewport,
-            policy: api::Policy::default(),
+            policy,
             zoom: 1.0,
             find_result: None,
             source_change: SourceChange::default(),
@@ -269,8 +307,70 @@ impl WebView {
             context_floor: floor,
             ended: false,
             reason: false,
+            title: String::new(),
+            name: String::new(),
+            loading: false,
+            hover: String::new(),
         }
     }
+
+    /// The policy in force.
+    pub(super) fn policy(&self) -> api::Policy {
+        self.policy
+    }
+
+    /// The status line: the page's title (or file name), or that it loads, then the
+    /// policy, a notice and the Find result. An Office preview shows no title.
+    fn status(&self) -> String {
+        let status = web_presentation_status(
+            self.policy,
+            self.session.policy_change_allowed(),
+            self.find_result.as_deref(),
+            self.source_change.reported,
+            self.action_notice.text(),
+        );
+        // An Office preview's generated pages keep their fixed status.
+        if !self.session.policy_change_allowed() {
+            return status;
+        }
+        let page = if self.title.is_empty() {
+            &self.name
+        } else {
+            &self.title
+        };
+        match (self.loading, page.is_empty()) {
+            (true, _) => format!("Loading… · {status}"),
+            (false, true) => status,
+            (false, false) => format!("{page} · {status}"),
+        }
+    }
+
+    fn state(&self, generation: u64) -> ViewerOutput {
+        ViewerOutput::WebState {
+            generation,
+            policy: self.policy,
+            policy_change_allowed: self.session.policy_change_allowed(),
+            zoom: self.zoom,
+            loading: self.loading,
+        }
+    }
+}
+
+/// A title for the status line: its visible characters, at most `MAX_TITLE_CHARS`.
+fn shown_title(title: &str) -> String {
+    let mut shown: String = title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_TITLE_CHARS + 1)
+        .collect();
+    if shown.chars().count() > MAX_TITLE_CHARS {
+        shown = shown.chars().take(MAX_TITLE_CHARS - 1).collect();
+        shown.push('…');
+    }
+    shown
 }
 
 impl Worker {
@@ -349,20 +449,42 @@ impl Worker {
             height: self.geometry.height,
             scale: f64::from(self.geometry.scale),
         };
-        let session = midnight_web_viewer_host::Session::open_with_links(
+        // A Reload keeps the page's choices. Otherwise each page opens offline, and with
+        // JavaScript unless the user turned it off in this window. Previews stay offline
+        // without scripts.
+        let current = self.files.get(self.current).cloned();
+        let reload = (self.web_choices.reload.take())
+            .filter(|(path, _)| current.as_ref() == Some(path))
+            .map(|(_, policy)| policy);
+        let policy = match ceiling {
+            midnight_web_viewer_host::PolicyCeiling::OfflineOnly => api::Policy::default(),
+            midnight_web_viewer_host::PolicyCeiling::UserChoice => reload.unwrap_or(api::Policy {
+                network: false,
+                scripts: self.web_choices.scripts,
+            }),
+        };
+        let name = midnight_core::visible_name(&file.display_name()).into_owned();
+        let session = midnight_web_viewer_host::Session::open_with_options(
             provider,
             file,
             resources,
             viewport,
             self.wake.clone(),
-            ceiling,
-            links,
+            midnight_web_viewer_host::OpenOptions {
+                ceiling,
+                links,
+                policy,
+            },
         )?;
-        self.web = Some(WebView::new(
+        let mut web = WebView::with_policy(
             Box::new(session),
             viewport,
             self.frames.latest_revision().saturating_add(1),
-        ));
+            policy,
+        );
+        web.name = name;
+        web.loading = true;
+        self.web = Some(web);
         self.mode = VIEWER_MODE_HTML;
         self.modes = vec![VIEWER_MODE_HTML];
         self.binary = false;
@@ -461,10 +583,11 @@ impl Worker {
                 input: api::CommandKind::Policy(policy),
                 ..
             } => {
-                if policy.scripts && !policy.network {
-                    return true;
-                }
                 web.policy = *policy;
+                // The next page of this window opens with the scripts choice made here.
+                if web.session.policy_change_allowed() {
+                    self.web_choices.scripts = policy.scripts;
+                }
                 web.find_result = None;
                 web.context_floor = self.frames.latest_revision().saturating_add(1);
                 // Host revokes grants and recreates the context before admitting new input.
@@ -528,13 +651,7 @@ impl Worker {
         if !web.session.send(command) {
             self.browser_closed(output);
         } else if notice_cleared {
-            let status = web_presentation_status(
-                web.policy,
-                web.session.policy_change_allowed(),
-                web.find_result.as_deref(),
-                web.source_change.reported,
-                web.action_notice.text(),
-            );
+            let status = web.status();
             self.status(status, output);
         }
         if policy_change || matches!(input, ViewerInput::Resize(_)) {
@@ -572,13 +689,7 @@ impl Worker {
             if let Some(web) = self.web.as_mut()
                 && web.action_notice.observe(&event.kind)
             {
-                let status = web_presentation_status(
-                    web.policy,
-                    web.session.policy_change_allowed(),
-                    web.find_result.as_deref(),
-                    web.source_change.reported,
-                    web.action_notice.text(),
-                );
+                let status = web.status();
                 self.status(status, output);
                 continue;
             }
@@ -624,33 +735,26 @@ impl Worker {
                         horizontal_position: 0.0,
                         horizontal_extent: 1.0,
                         caption: self.caption.clone(),
-                        status: web_presentation_status(
-                            web.policy,
-                            web.session.policy_change_allowed(),
-                            web.find_result.as_deref(),
-                            web.source_change.reported,
-                            web.action_notice.text(),
-                        ),
+                        status: web.status(),
                     })));
-                    output.put(ViewerOutput::WebState {
-                        generation: self.positions.generation,
-                        policy: web.policy,
-                        policy_change_allowed: web.session.policy_change_allowed(),
-                        zoom: web.zoom,
-                    });
+                    output.put(web.state(self.positions.generation));
                 }
                 api::EventKind::Selection(text) => output.put(ViewerOutput::CopyText(text)),
                 api::EventKind::State(state) => {
                     if let Some(web) = self.web.as_mut() {
                         web.zoom = state.zoom;
-                        output.put(ViewerOutput::WebState {
-                            generation: self.positions.generation,
-                            policy: web.policy,
-                            policy_change_allowed: web.session.policy_change_allowed(),
-                            zoom: web.zoom,
-                        });
+                        let title = shown_title(&state.title);
+                        let shown = web.loading != state.loading || web.title != title;
+                        web.loading = state.loading;
+                        web.title = title;
+                        output.put(web.state(self.positions.generation));
+                        if shown {
+                            let status = web.status();
+                            self.status(status, output);
+                        }
                     }
                 }
+                api::EventKind::Cursor(cursor) => output.put(ViewerOutput::WebCursor(cursor)),
                 // The status a frame shows: the page's state, then the Find result. A
                 // frame that came before this reply must not leave the bare count.
                 api::EventKind::FindResult(result) => {
@@ -658,13 +762,7 @@ impl Worker {
                     let status = match self.web.as_mut() {
                         Some(web) => {
                             web.find_result = Some(message);
-                            web_presentation_status(
-                                web.policy,
-                                web.session.policy_change_allowed(),
-                                web.find_result.as_deref(),
-                                web.source_change.reported,
-                                web.action_notice.text(),
-                            )
+                            web.status()
                         }
                         None => message,
                     };
@@ -673,8 +771,17 @@ impl Worker {
                 // The page's links: where the pointer is, and a followed one.
                 api::EventKind::LinkHover { target } => {
                     output.put(ViewerOutput::LinkHover(self.web_link_status(&target)));
+                    if let Some(web) = self.web.as_mut() {
+                        web.hover = target;
+                    }
                 }
-                api::EventKind::LinkActivated { target } => self.follow_link(&target, output),
+                api::EventKind::LinkActivated { target } => {
+                    if self.web.as_ref().is_some_and(|web| web.refuses(&target)) {
+                        self.web_link_notice(SCRIPT_ADDRESS_REFUSED.into(), output);
+                    } else {
+                        self.follow_link(&target, output);
+                    }
+                }
                 api::EventKind::HostShortcut(shortcut) => {
                     output.put(ViewerOutput::WebShortcut(shortcut))
                 }
@@ -708,13 +815,7 @@ impl Worker {
             code: api::ErrorCode::Denied,
             message,
         });
-        let status = web_presentation_status(
-            web.policy,
-            web.session.policy_change_allowed(),
-            web.find_result.as_deref(),
-            web.source_change.reported,
-            web.action_notice.text(),
-        );
+        let status = web.status();
         self.status(status, output);
     }
 
@@ -742,13 +843,32 @@ fn find_status(result: &api::FindResult) -> String {
     }
 }
 
+impl WebView {
+    /// Whether a followed link must not open: offline, the page's scripts run without any
+    /// network, so a web address (anything with a scheme, `mailto:` included) opens only
+    /// when it is the link the pointer or keyboard focus is on, which the status line
+    /// shows. Another one comes from a script, such as a click handler that navigates;
+    /// opening it would carry the page's data to the network. Local targets still open.
+    fn refuses(&self, target: &str) -> bool {
+        self.policy.scripts
+            && !self.policy.network
+            && matches!(
+                midnight_core::classify_link(target),
+                midnight_core::LinkTarget::External(_)
+            )
+            && target != self.hover
+    }
+}
+
 fn web_status(policy: api::Policy, policy_change_allowed: bool) -> &'static str {
     if !policy_change_allowed {
         "Office preview · Offline · JavaScript off"
-    } else if policy.scripts {
+    } else if policy.network && policy.scripts {
         "Online · scripts can read and transmit this document · local assets unavailable"
     } else if policy.network {
         "Online · document only · JavaScript off · local assets unavailable"
+    } else if policy.scripts {
+        "Offline · JavaScript on"
     } else {
         "Offline · JavaScript off"
     }

@@ -322,6 +322,7 @@ fn html_surface_keeps_search_zoom_and_policy_in_normal_viewer() {
                 },
                 policy_change_allowed: true,
                 zoom: 1.0,
+                loading: false,
             },
         ],
     );
@@ -349,10 +350,21 @@ fn html_surface_keeps_search_zoom_and_policy_in_normal_viewer() {
     assert_eq!(open.frame.get(), 2, "pre-policy pixels must remain blocked");
     open.window.invoke_web_policy(false, true);
     assert!(!open.window.get_web_network());
+    // Web viewer API 0.4: going offline keeps scripts, which then reach no network.
     assert!(
-        !open.window.get_web_scripts(),
-        "offline always disables scripts"
+        open.window.get_web_scripts(),
+        "offline keeps the scripts choice"
     );
+    assert!(matches!(
+        inputs.borrow().last(),
+        Some(ViewerInput::Web {
+            input: viewer_web::CommandKind::Policy(viewer_web::Policy {
+                network: false,
+                scripts: true
+            }),
+            ..
+        })
+    ));
     close(&open);
 }
 

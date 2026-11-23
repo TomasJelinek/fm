@@ -769,16 +769,44 @@ fn local_targets_open_in_the_window_reveal_files_no_viewer_shows_and_open_folder
     assert!(
         matches!(&worker.links.arrival, Some(Arrival::Fragment(fragment)) if fragment == "top")
     );
+    // The window learns that Back has a document to go to (its HTML buttons follow it).
+    let history = |output: &Mailbox| {
+        output
+            .take()
+            .into_iter()
+            .rev()
+            .find_map(|output| match output {
+                ViewerOutput::LinkHistory { back, forward } => Some((back, forward)),
+                _ => None,
+            })
+    };
+    assert_eq!(history(&output), None, "requests() took the first report");
     // Back and Forward through the documents opened from links; nothing beyond them.
     worker.input(ViewerInput::Link(ViewerLinkInput::Back), &output);
     assert_eq!(worker.files, before);
     assert!(matches!(worker.links.arrival, Some(Arrival::Position(0))));
+    assert_eq!(history(&output), Some((false, true)));
     worker.input(ViewerInput::Link(ViewerLinkInput::Back), &output);
     assert_eq!(worker.files, before, "no history behind the first document");
+    assert_eq!(
+        history(&output),
+        None,
+        "an unchanged history is not repeated"
+    );
     worker.input(ViewerInput::Link(ViewerLinkInput::Forward), &output);
     assert_eq!(&worker.files[..], [folder.path().join("notes.md")]);
+    assert_eq!(history(&output), Some((true, false)));
     worker.input(ViewerInput::Link(ViewerLinkInput::Forward), &output);
     assert_eq!(&worker.files[..], [folder.path().join("notes.md")]);
+    // Reload reads the shown document again and keeps the history.
+    worker.input(ViewerInput::Link(ViewerLinkInput::Reload), &output);
+    assert_eq!(&worker.files[..], [folder.path().join("notes.md")]);
+    assert!(matches!(worker.links.arrival, Some(Arrival::Position(_))));
+    assert_eq!(history(&output), None);
+    assert_eq!(
+        (worker.links.back.len(), worker.links.forward.len()),
+        (1, 0)
+    );
 }
 
 #[test]

@@ -1728,8 +1728,22 @@ embedded Chromium inside the normal viewer. Its runtime is a separate plugin
 package included by the normal build helpers; building `midnight-explorer.exe` alone does not
 install Chromium. Build/package steps are in the
 [independent provider README](../plugins/midnight-viewer-html/README.md).
-Ctrl+F searches and Escape closes the viewer. HTML starts offline with JavaScript
-disabled. It has been tested with real Chromium on Windows and, on Linux, on Ubuntu
+Ctrl+F searches and Escape closes the viewer. It works as a small browser: the row above
+the page has **Back** and **Forward**, enabled while there is a page to go to, and
+**Reload**, which reads the file again from disk (F5 or Ctrl+R; Alt+Left and Alt+Right go
+back and forward too while there is a page in that direction, and otherwise still cycle
+files). The status line shows the page's title, or "Loading…" while it loads, and the
+pointer changes over links (a hand), text (an I-beam) and anything the page styles.
+
+HTML starts offline with its JavaScript running, so local pages, saved pages and
+generated documentation behave as in a browser; offline, a page's scripts reach no
+network and cannot read other files. Untick **JavaScript** to turn scripts off for the
+page; the next pages of that viewer window keep that choice. **Online** allows network
+for that document only and removes access to its local files; online, scripts can read
+and transmit the document. A page shows with its own stylesheets, fonts and images,
+also from a page saved "complete" (its `_files` folder) and from folders above it, as
+generated documentation (rustdoc, MkDocs, Sphinx, Javadoc) keeps them, up to 16 levels.
+It has been tested with real Chromium on Windows and, on Linux, on Ubuntu
 24.04 under WSL (XWayland) ([Linux record](verification/2026-11-10-html-linux.md));
 a test on a native Linux desktop is pending (PLAT-02 in the
 [backlog](IMPLEMENTATION_BACKLOG.md)).
@@ -1761,8 +1775,11 @@ Pointing at a link shows its target on the status line, and a click follows it. 
 Markdown page, Tab and Shift+Tab move a focus ring through the links and Enter follows
 the focused one; an HTML page keeps these keys. Alt+Shift+Left and Alt+Shift+Right,
 or the mouse's Back and Forward buttons, go back to the document a link was followed
-from and forward again, in Markdown and HTML alike; Alt+Left and Alt+Right still
-cycle files ([keyboard map](KEYBOARD_SHORTCUTS.md)).
+from and forward again, in Markdown and HTML alike. Alt+Left and Alt+Right cycle files,
+except in an HTML page with a page to go back or forward to, as the **Back** and
+**Forward** buttons show ([keyboard map](KEYBOARD_SHORTCUTS.md)). An offline HTML page's
+script cannot open a web or mail address in your browser by itself: only the link under
+the pointer, which the status line shows, opens.
 
 Plugins are independent Cargo projects in `plugins/`, with their own tests and locks.
 Only built packages under `viewers/<package>/plugin.toml` (text/source/Markdown),

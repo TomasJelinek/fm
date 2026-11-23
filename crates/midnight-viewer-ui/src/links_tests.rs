@@ -337,3 +337,69 @@ fn a_request_goes_to_the_main_window_and_its_answer_back_to_the_worker() {
     )));
     close(&open);
 }
+
+/// The HTML row's Back and Forward buttons follow the worker's history state; they, the
+/// Reload button and F5/Ctrl+R (`viewer.reload`) reach the worker; Alt+Left and Alt+Right,
+/// once Chromium handed them back, go through the history while there is a page in that
+/// direction and otherwise keep their file action.
+#[test]
+fn html_browser_controls_follow_the_history_and_alt_arrows_prefer_it() {
+    let (_runtime, _manager, open, service) = image_presentation_tests::open();
+    let inputs = captured(&open);
+    present_outputs(&open, &service, &|_| {}, vec![frame(10)]);
+    open.window.set_image_mode(false);
+    open.window.set_web_mode(true);
+    open.window.invoke_focus_content();
+    assert!(!open.window.get_link_back_available() && !open.window.get_link_forward_available());
+    let history = |back, forward| ViewerOutput::LinkHistory { back, forward };
+    present_outputs(&open, &service, &|_| {}, vec![history(true, false)]);
+    assert!(open.window.get_link_back_available() && !open.window.get_link_forward_available());
+    // The default bindings: Alt+Left and Alt+Right cycle files.
+    *open.key_resolver.borrow_mut() = Rc::new(|chord: &ShortcutChord, _| {
+        let action = match (chord.key.as_str(), chord.alt) {
+            ("Left", true) => "viewer.previous-file",
+            ("Right", true) => "viewer.next-file",
+            ("F5", false) => "viewer.reload",
+            _ => return None,
+        };
+        Some(action.to_owned())
+    });
+    let shortcut = |value| {
+        present_outputs(
+            &open,
+            &service,
+            &|_| {},
+            vec![ViewerOutput::WebShortcut(value)],
+        )
+    };
+    shortcut(viewer_web::HostShortcut::AltLeft);
+    shortcut(viewer_web::HostShortcut::AltRight);
+    assert_eq!(links(&inputs), [ViewerLinkInput::Back]);
+    assert!(
+        matches!(inputs.borrow().last(), Some(ViewerInput::NextFile)),
+        "no page forward: Alt+Right keeps the next file"
+    );
+    present_outputs(&open, &service, &|_| {}, vec![history(false, true)]);
+    shortcut(viewer_web::HostShortcut::AltRight);
+    shortcut(viewer_web::HostShortcut::AltLeft);
+    assert_eq!(
+        links(&inputs),
+        [ViewerLinkInput::Back, ViewerLinkInput::Forward]
+    );
+    assert!(matches!(
+        inputs.borrow().last(),
+        Some(ViewerInput::PreviousFile)
+    ));
+    open.window.invoke_link_history(true);
+    open.window.invoke_reload();
+    assert!(dispatch_key(&open, "viewer.reload"));
+    assert_eq!(
+        links(&inputs)[2..],
+        [
+            ViewerLinkInput::Back,
+            ViewerLinkInput::Reload,
+            ViewerLinkInput::Reload
+        ]
+    );
+    close(&open);
+}

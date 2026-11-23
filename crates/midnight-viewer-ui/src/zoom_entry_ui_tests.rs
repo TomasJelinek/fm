@@ -248,6 +248,7 @@ fn the_shown_zoom_uses_the_users_decimal_separator() {
                 policy: viewer_web::Policy::default(),
                 policy_change_allowed: true,
                 zoom: 1.24,
+                loading: false,
             },
         ],
     );

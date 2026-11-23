@@ -1321,3 +1321,146 @@ fn a_raster_hover_over_an_html_page_is_answered_with_no_link() {
         .collect();
     assert_eq!(answers, [None]);
 }
+
+fn offline_scripts(worker: &mut Worker) {
+    worker.web.as_mut().unwrap().policy = api::Policy {
+        network: false,
+        scripts: true,
+    };
+}
+
+fn opened_externally(outputs: &[ViewerOutput]) -> Vec<String> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            ViewerOutput::LinkRequest(midnight_core::ViewerLinkRequest::OpenExternal(url)) => {
+                Some(url.as_str().to_owned())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Offline, a page's scripts reach no network; a web address they navigate to (a click
+/// handler carries the click's gesture) does not open in the system browser. The link
+/// the pointer is on, which the status line shows, still does, and so do local targets.
+#[test]
+fn offline_scripts_cannot_open_a_web_address_the_user_did_not_point_at() {
+    let hovered = "https://example.org/shown";
+    let (mut worker, output) = web_worker(Stopped::after(vec![
+        event(api::EventKind::LinkHover {
+            target: hovered.into(),
+        }),
+        event(api::EventKind::LinkActivated {
+            target: "https://collector.example/?data=secret".into(),
+        }),
+        event(api::EventKind::LinkActivated {
+            target: "mailto:collector@example.org?body=secret".into(),
+        }),
+    ]));
+    offline_scripts(&mut worker);
+    worker.poll_web(&output);
+    let outputs = output.take();
+    assert!(opened_externally(&outputs).is_empty(), "{outputs:?}");
+    assert!(
+        worker.status.contains(SCRIPT_ADDRESS_REFUSED),
+        "{}",
+        worker.status
+    );
+    // The link under the pointer opens; the same refusal does not apply online or without
+    // scripts.
+    for policy in [
+        None,
+        Some(api::Policy {
+            network: true,
+            scripts: true,
+        }),
+        Some(api::Policy::default()),
+    ] {
+        let (mut worker, output) = web_worker(Stopped::after(vec![
+            event(api::EventKind::LinkHover {
+                target: hovered.into(),
+            }),
+            event(api::EventKind::LinkActivated {
+                target: if policy.is_none() {
+                    hovered.into()
+                } else {
+                    "https://example.org/other".into()
+                },
+            }),
+        ]));
+        offline_scripts(&mut worker);
+        if let Some(policy) = policy {
+            worker.web.as_mut().unwrap().policy = policy;
+        }
+        worker.poll_web(&output);
+        assert_eq!(opened_externally(&output.take()).len(), 1, "{policy:?}");
+    }
+}
+
+#[test]
+fn offline_pages_say_whether_javascript_runs_and_show_their_title_and_loading() {
+    assert_eq!(
+        web_status(
+            api::Policy {
+                network: false,
+                scripts: true
+            },
+            true
+        ),
+        "Offline · JavaScript on"
+    );
+    let (mut worker, output) = web_worker(Stopped::after(vec![
+        event(api::EventKind::State(api::State {
+            title: "  Crate \u{7}docs\n index ".into(),
+            url: String::new(),
+            loading: true,
+            editable: false,
+            zoom: 1.0,
+        })),
+        event(api::EventKind::Cursor(api::Cursor::Text)),
+        event(api::EventKind::State(api::State {
+            title: "Crate docs".into(),
+            url: String::new(),
+            loading: false,
+            editable: false,
+            zoom: 1.0,
+        })),
+    ]));
+    offline_scripts(&mut worker);
+    worker.web.as_mut().unwrap().name = "index.html".into();
+    assert_eq!(
+        worker.web.as_ref().unwrap().status(),
+        "index.html · Offline · JavaScript on"
+    );
+    worker.poll_web(&output);
+    let outputs = output.take();
+    let statuses: Vec<_> = outputs
+        .iter()
+        .filter_map(|output| match output {
+            ViewerOutput::Status(status) => Some(status.as_str()),
+            _ => None,
+        })
+        .collect();
+    // The status line said "Loading…" first; the newest status replaced it.
+    assert_eq!(statuses, ["Crate docs · Offline · JavaScript on"]);
+    assert_eq!(worker.status, "Crate docs · Offline · JavaScript on");
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, ViewerOutput::WebCursor(api::Cursor::Text)))
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, ViewerOutput::WebState { loading: false, .. }))
+    );
+    assert_eq!(
+        shown_title("  Crate \u{7}docs\n index "),
+        "Crate docs index"
+    );
+    assert_eq!(
+        shown_title(&"x".repeat(400)).chars().count(),
+        MAX_TITLE_CHARS
+    );
+}

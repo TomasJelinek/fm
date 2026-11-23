@@ -172,6 +172,7 @@ pub(super) fn spawn(
     let mut environment = Vec::<u16>::new();
     for key in [
         "LOCALAPPDATA",
+        super::CURSOR_ENV,
         super::HOST_SHORTCUTS_ENV,
         super::LINKS_ENV,
         "MIDNIGHT_WEB_VIEWER_PROFILE",
@@ -180,7 +181,9 @@ pub(super) fn spawn(
         "TMP",
     ] {
         let value = match key {
-            super::HOST_SHORTCUTS_ENV | super::LINKS_ENV => extensions.value(key).map(Into::into),
+            super::CURSOR_ENV | super::HOST_SHORTCUTS_ENV | super::LINKS_ENV => {
+                extensions.value(key).map(Into::into)
+            }
             "MIDNIGHT_WEB_VIEWER_PROFILE" | "TEMP" | "TMP" => {
                 Some(profile.path().as_os_str().to_owned())
             }

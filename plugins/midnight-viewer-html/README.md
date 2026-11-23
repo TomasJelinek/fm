@@ -1,7 +1,7 @@
 # Independent Chromium HTML viewer
 
 This required runtime plugin is its own Rust workspace and lockfile. It consumes only
-the released `midnight-web-viewer-api` 0.3.0 registry package. Removing its
+the released `midnight-web-viewer-api` 0.4.0 registry package. Removing its
 installed viewer directory removes HTML capability without changing the host, but
 normal builds and distribution validation require the complete package.
 Use `bash scripts/build-html-viewer.sh debug` or
@@ -103,7 +103,18 @@ document directory. `State.url` always reports
 `https://mewv-<generation>.invalid/mewv-document/` (not the page shown after an
 in-scope navigation), and `State.editable` is always false. Online exposes
 only the captured main document and permits HTTP(S); relative native/archive assets
-are revoked. Scripts require explicit online mode. Navigation, redirects, downloads,
+are revoked. Offline, scripts run only in a sandboxed document with an opaque origin
+(`DocumentPolicy::csp`: `sandbox allow-scripts allow-popups`, `connect-src 'none'`, no
+worker, frame, object or form); every document's request context has network prediction
+off, and the renderer (`native/handlers.rs`, `Renderer`) replaces WebRTC and pixel
+readback in each context of an offline page before its scripts run. Assets above the
+document's folder are requested as `../` references within the 16 synthetic levels
+(`DocumentPolicy::captured_path`); the host decides how far up it reaches, and the
+browser navigates to no document there itself. Under `MIDNIGHT_WEB_VIEWER_CURSOR=cursor-v1`
+(API 0.4) Chromium's cursor changes (`OnCursorChange`) become `Cursor` events. Run
+`cargo test ... --test native_browser -- --ignored --nocapture` like `native_runtime` to
+check offline scripts against loopback TCP and UDP listeners, the local styles of a page
+and the cursor. Navigation, redirects, downloads,
 popups, file dialogs, permissions and external protocols cannot grant native
 authority. Select-control popup surfaces are separately bounded and composited into
 owned RGBA frames; without a visible popup each converted paint moves into its

@@ -9,7 +9,10 @@
 //!   follows the focused one with Enter, while there is a link to move to (an HTML page
 //!   keeps these keys);
 //! - goes back and forward through the documents opened from links with
-//!   Alt+Shift+Left/Right and the mouse's Back and Forward buttons;
+//!   Alt+Shift+Left/Right, the mouse's Back and Forward buttons and, for an HTML page, the
+//!   Back and Forward buttons, which are enabled while there is a document to go to, and
+//!   Alt+Left/Right (`web_input::browser_history`); Reload (F5, Ctrl+R, its button) reads
+//!   the shown file again;
 //! - hands what only the main window or the system can do to the listener the
 //!   application installs (`ViewerWindows::set_link_listener`).
 use super::*;
@@ -76,6 +79,23 @@ pub(super) fn bind(open: &Rc<OpenWindow>) {
             history(&open, back);
         }
     });
+    let weak = Rc::downgrade(open);
+    open.window.on_reload(move || {
+        if let Some(open) = weak.upgrade() {
+            reload(&open);
+        }
+    });
+}
+
+/// Whether Back and Forward have a document to go to, as the worker reported.
+pub(super) fn history_state(open: &OpenWindow, back: bool, forward: bool) {
+    open.window.set_link_back_available(back);
+    open.window.set_link_forward_available(forward);
+}
+
+/// Read the shown document again from its file.
+pub(super) fn reload(open: &OpenWindow) -> bool {
+    open.enqueue(ViewerInput::Link(ViewerLinkInput::Reload))
 }
 
 /// The pointer moved to `point` over the text, or left it (None).
@@ -148,6 +168,8 @@ fn show(open: &OpenWindow, status: Option<&str>) {
     open.window.set_link_hover(status.is_some());
     open.window
         .set_link_status(status.unwrap_or_default().into());
+    // Over an HTML page Slint does not see the pointer: the hand is set natively.
+    web_cursor::apply(open);
 }
 
 /// The shown page's links and which one has the keyboard focus.
@@ -173,6 +195,7 @@ pub(super) fn shortcut(open: &OpenWindow, action: &str) -> Option<bool> {
     let input = match action {
         "viewer.link-back" => return Some(history(open, true)),
         "viewer.link-forward" => return Some(history(open, false)),
+        "viewer.reload" => return Some(reload(open)),
         "viewer.next-link" | "viewer.previous-link" | "viewer.follow-link" => {
             if open.window.get_web_mode() {
                 return Some(false);

@@ -79,18 +79,43 @@ not make opening ready: a real frame is required. The public plugin API/wire
 protocol is unchanged; fixed-viewport `Service::open` consumers retain their
 explicit-initial-geometry behavior.
 
-HTML starts offline with JavaScript disabled. Explicit online mode grants only
-the captured main document, embedded data and remote resources; relative local
-assets are unavailable. Enabling JavaScript requires online mode and the UI warns
-that scripts can read/transmit the main document. Each transition revokes resource
-IDs, clears pending presentation, and recreates the Chromium browser/context and
-origin. Permissions reset on a different file. The provider serves the captured
-document at its folder's URL, 16 synthetic folder levels below
-`https://mewv-<generation>.invalid/mewv-document/` (see
-[link routing](#link-routing-apisdk-03) for why); offline relative assets and, without
-host link routing, relative navigation to other captured files in scope resolve below
-it, while references that climb above it (`../`) or are root-relative are denied rather
-than substituted. `State.url` reports `https://mewv-<generation>.invalid/mewv-document/`,
+HTML starts offline with JavaScript running (web viewer API 0.4). The host opens the
+first document with the consumer's policy (`Session::open_with_options`,
+`OpenOptions::policy`); the viewer engine opens each page offline with scripts unless the
+user turned JavaScript off in that window, and a Reload keeps the page's choices.
+Offline with scripts the provider serves the document sandboxed without
+`allow-same-origin` (`sandbox allow-scripts allow-popups`, an opaque origin) under a CSP
+that allows assets only from its private origin, `data:` and `blob:`, with
+`connect-src 'none'` and no worker, frame, child, object, manifest or form. Every asset
+is cross-origin to the page, so its scripts read none; fonts and module scripts get
+`Access-Control-Allow-Origin: *` to load. Every document's request context has network
+prediction off (`net.network_prediction_options` 2: no preconnect, DNS prefetch,
+prefetch or prerender, which bypass request interception), every response carries
+`X-DNS-Prefetch-Control: off`, and before any script of an offline page runs, the
+renderer replaces WebRTC and pixel readback (canvas `getImageData`, `toDataURL`, `toBlob`,
+`captureStream`, `OffscreenCanvas`, WebCodecs) in each of its contexts with fixed values a
+script cannot redefine: Chromium marks no intercepted response cross-origin, so a canvas
+would not be tainted by a local image (`plugins/midnight-viewer-html/src/native/handlers.rs`).
+The opt-in native test `tests/native_browser.rs` checks that fetch, XHR, WebSocket,
+EventSource, beacons, images, module imports, workers, service workers, preconnect,
+prefetch, speculation rules, a script navigation and WebRTC reach neither a loopback TCP
+nor a UDP listener, that `file://` is refused and that no window opens. Explicit online
+mode grants only the captured main document, embedded data and remote resources;
+relative local assets are unavailable, and the UI warns that scripts can read and
+transmit the main document. Each transition revokes resource IDs, clears pending
+presentation, and recreates the Chromium browser/context and origin. Online permission
+resets on a different file. The provider serves the captured document at its folder's
+URL, 16 synthetic folder levels below `https://mewv-<generation>.invalid/mewv-document/`
+(see [link routing](#link-routing-apisdk-03) for why); offline relative assets and,
+without host link routing, relative navigation to other captured files in scope resolve
+below it. An asset reference that climbs above it (`../css/site.css`, as rustdoc, MkDocs,
+Sphinx and Javadoc pages use) is requested as that `../` reference (at most 16), which the
+host resolves within the folders its scope reaches (`Resources::ancestor_levels`; the
+application's directory scope reaches up to 16 folders above the document's, each pinned
+by its native path when an asset first names it); the browser itself navigates to no
+document above it, and a root-relative reference is denied rather than substituted. Asset
+MIME types follow the extension, also before a saved page's `.download` suffix, and a
+stylesheet of unknown type is served as CSS. `State.url` reports `https://mewv-<generation>.invalid/mewv-document/`,
 as before the synthetic levels existed, and `State.editable` is always false. Cookies
 are disabled entirely. File URLs, external protocols, downloads, popups, file pickers,
 device permissions and extension loading are denied; with host link routing a popup
@@ -174,12 +199,12 @@ the matches and reports none active, while a follow-up, also with another query 
 case, activates the nearest match on from the active one, as the text viewer searches
 on from where it stands. From Chromium's reply on, the status line follows the
 page's state with "Match 2 of 3", "1 match" or "3 matches" while no match is active,
-or "No matches" ("Offline · JavaScript off · Match 2 of 3", or for an Office preview
-"Office preview · Offline · JavaScript off · Match 2 of 3"), whether the page's next
+or "No matches" ("Page title · Offline · JavaScript on · Match 2 of 3", or for an Office
+preview "Office preview · Offline · JavaScript off · Match 2 of 3"), whether the page's next
 frame comes before or after the reply. Pointer, keyboard
 and IME input target the displayed content generation. Space, Backspace and
 Alt+Left/Right are arbitrated inside Chromium using its actual editable focus, so
-typing into an HTML input does not change the viewed file. Clipboard text returns through the host's explicit
+typing into an HTML input does not change the viewed file (nor go Back or Forward). Clipboard text returns through the host's explicit
 clipboard command.
 
 Find, Copy and zoom use the user key resolver before browser forwarding.
@@ -239,6 +264,13 @@ browser's cleared environment.
 | 0.1 | Commands 1–15, events 1–11, host shortcuts 0–9 | — |
 | 0.2 | `HostShortcut` Backspace = 10, AltLeft = 11, AltRight = 12 | `MIDNIGHT_WEB_VIEWER_HOST_SHORTCUTS=physical-v1` |
 | 0.3 | Events `LinkHover` = 12 and `LinkActivated` = 13 | `MIDNIGHT_WEB_VIEWER_LINKS=host-v1` |
+| 0.4 | Event `Cursor` = 14; `Policy { network: false, scripts: true }` is valid | `MIDNIGHT_WEB_VIEWER_CURSOR=cursor-v1` (the cursor only) |
+
+A provider of API 0.3 or earlier refuses an offline policy with scripts as an invalid
+message and stops, so the 0.4 host sends one only to the bundled 0.4 provider it ships
+with; a consumer that may face an older provider opens with the default policy. The
+application host always adds the cursor opt-in; a 0.3 provider ignores it, and the window
+then shows the hand over a link from `LinkHover` alone.
 
 | Host | 0.2 provider | 0.3 provider |
 | --- | --- | --- |
@@ -248,7 +280,8 @@ browser's cleared environment.
 
 The application host always adds the physical-v1 opt-in. Every host built against
 0.3 decodes tags 12 and 13; a host built against 0.2 would refuse them, which is why
-the provider sends them only for the exact link opt-in.
+the provider sends them only for the exact link opt-in. Every host built against 0.4
+decodes tag 14 too; the provider sends it only for the exact cursor opt-in.
 
 ## Link routing (API/SDK 0.3)
 
@@ -326,5 +359,28 @@ opens ordinary HTML documents with `LinkRouting::Host` and the Office preview wi
 pointer cursor, and a `LinkActivated` target is followed by the same host link policy
 as a Markdown link ([links](VIEWER_PREFERENCES.md#links)): a relative target resolves
 against the document's folder, and another generation's private origin (a `.invalid`
-host) is refused. A refusal or result stays on the status line as the browser's notice
-until the next user action.
+host) is refused. Offline with scripts, an activated target with a scheme (a web or mail
+address) is followed only when it equals the newest `LinkHover` target: a navigation a
+script starts in a click or key handler carries the gesture, and without this check it
+would carry the page's data to the user's browser. A refusal or result stays on the
+status line as the browser's notice until the next user action.
+
+## The small browser (application)
+
+The HTML row of the viewer window has Back, Forward and Reload buttons before the Online
+and JavaScript boxes. Back and Forward go through the documents opened from links in that
+window (`ViewerLinkInput::Back`/`Forward`); the engine reports whether each has a document
+to go to (`ViewerOutput::LinkHistory`), which enables the buttons. Reload
+(`ViewerLinkInput::Reload`, `viewer.reload`, F5 and Ctrl+R) captures the shown file again
+and reopens it where it was, keeping the history and an HTML page's Online and JavaScript
+choices for that file only. After Chromium's editable-focus arbitration, Alt+Left and
+Alt+Right go Back and Forward while there is a page in that direction and otherwise keep
+their bound file action (`web_input::browser_history`); the mouse's Back and Forward
+buttons go through the history. The status line shows the page's title (the file name
+until it has one) or "Loading…", then the policy, a notice and the Find result; the row
+shows "Loading…" too (`ViewerOutput::WebState::loading`). The page's cursor
+(`EventKind::Cursor`, from CEF's `OnCursorChange`) reaches the window as
+`ViewerOutput::WebCursor` and is set on the native window through winit while the pointer
+is over the page, on Windows and Linux alike (`crates/midnight-viewer-ui/src/web_cursor.rs`):
+Slint never sees the pointer there, because those events go to the browser. Leaving the
+page restores the window's default cursor.

@@ -178,6 +178,7 @@ pub(super) mod tests {
             wheel_gesture: Mutex::default(),
             host_shortcuts: false,
             links: None,
+            cursor: None,
             navigation: Mutex::new(admission::Navigation::new(
                 1,
                 1,
@@ -201,7 +202,12 @@ pub(super) mod tests {
             .unwrap()
             .active
             .insert(7, stream.clone());
-        let handler = CapturedResource::new(doc.clone(), stream, format!("{}a.css", main_url()));
+        let handler = CapturedResource::new(
+            doc.clone(),
+            stream,
+            format!("{}a.css", main_url()),
+            ResourceType::STYLESHEET,
+        );
         handler.cancel();
         assert!(doc.requests.lock().unwrap().active.is_empty());
         reply(
@@ -318,8 +324,12 @@ pub(super) mod tests {
     fn admitted_response_cursor_releases_once_at_eof_without_postallow_host_read() {
         let (doc, mut events) = document();
         let stream = Arc::new(Mutex::new(Stream::new(&doc, Some(admitted(&doc)))));
-        let handler =
-            CapturedResource::new(doc.clone(), stream.clone(), format!("{}a", main_url()));
+        let handler = CapturedResource::new(
+            doc.clone(),
+            stream.clone(),
+            format!("{}a", main_url()),
+            ResourceType::MAIN_FRAME,
+        );
         let mut bytes = [0_u8; 2];
         let mut count = 0;
         assert_eq!(
@@ -440,6 +450,37 @@ impl Drop for Stream {
     }
 }
 
+/// The MIME type and headers of a captured response to a request of `kind`.
+///
+/// A stylesheet whose name gives no type (a saved page's `css?family=…`, an extensionless
+/// asset) is served as CSS, as a browser serves a local stylesheet; nothing else is
+/// sniffed, so a script or data file of unknown type still never runs. A sandboxed
+/// document's fonts and module scripts need `Access-Control-Allow-Origin`
+/// (`DocumentPolicy::sandboxed`); its scripts still read nothing (`connect-src 'none'`).
+pub(super) fn response_headers_for(
+    policy: &crate::policy::DocumentPolicy,
+    mime: &str,
+    kind: ResourceType,
+) -> (String, Vec<(&'static str, String)>) {
+    let mime = if mime == "application/octet-stream" && kind == ResourceType::STYLESHEET {
+        "text/css"
+    } else {
+        mime
+    };
+    let mut headers = vec![
+        ("Content-Security-Policy", policy.csp()),
+        ("Cache-Control", "no-store".into()),
+        ("X-Content-Type-Options", "nosniff".into()),
+        ("X-DNS-Prefetch-Control", "off".into()),
+        ("Referrer-Policy", "no-referrer".into()),
+        ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), usb=(), serial=(), payment=(), clipboard-read=(), clipboard-write=()".into()),
+    ];
+    if policy.sandboxed() && matches!(kind, ResourceType::FONT_RESOURCE | ResourceType::SCRIPT) {
+        headers.push(("Access-Control-Allow-Origin", "*".into()));
+    }
+    (mime.to_owned(), headers)
+}
+
 pub(super) fn reply(doc: &Document, reply: api::ResourceReply) {
     let reply = match doc.navigation.lock() {
         Ok(mut navigation) => navigation.receive(reply, Instant::now()).err(),
@@ -518,6 +559,7 @@ wrap_resource_handler! {
         doc: Arc<Document>,
         stream: Arc<Mutex<Stream>>,
         url: String,
+        kind: ResourceType,
     }
     impl ResourceHandler {
         fn open(&self, _request: Option<&mut Request>, handle_request: Option<&mut i32>, _callback: Option<&mut Callback>) -> i32 {
@@ -564,16 +606,15 @@ wrap_resource_handler! {
             drop(finished);
             if let Some(response) = response {
                 response.set_status(if failed { 403 } else { 200 });
+                let mime = resource.as_ref().map_or("", |resource| resource.mime.as_str());
+                let (mime, headers) = response_headers_for(&self.doc.policy, mime, self.kind);
                 if let Some(resource) = &resource {
-                    response.set_mime_type(Some(&CefString::from(resource.mime.as_str())));
+                    response.set_mime_type(Some(&CefString::from(mime.as_str())));
                     if let Some(length) = response_length { *length = i64::try_from(resource.length).unwrap_or(-1); }
                 }
-                for (name, value) in [
-                    ("Content-Security-Policy", self.doc.policy.csp()),
-                    ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
-                    ("Referrer-Policy", "no-referrer"),
-                    ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), usb=(), serial=(), payment=(), clipboard-read=(), clipboard-write=()"),
-                ] { response.set_header_by_name(Some(&CefString::from(name)), Some(&CefString::from(value)), 1); }
+                for (name, value) in headers {
+                    response.set_header_by_name(Some(&CefString::from(name)), Some(&CefString::from(value.as_str())), 1);
+                }
             }
         }
         fn read_response(&self, data_out: *mut u8, bytes_to_read: i32, bytes_read: Option<&mut i32>, callback: Option<&mut Callback>) -> i32 {
@@ -659,7 +700,7 @@ wrap_resource_request_handler! {
             let admitted = if self.admission.ordinary() { None } else {
                 Some(self.admission.take_response(&self.doc, browser.as_deref(), frame.as_deref(), request)?)
             };
-            Some(CapturedResource::new(self.doc.clone(), Arc::new(Mutex::new(Stream::new(&self.doc, admitted))), url))
+            Some(CapturedResource::new(self.doc.clone(), Arc::new(Mutex::new(Stream::new(&self.doc, admitted))), url, request.resource_type()))
         }
         fn on_resource_redirect(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>, _request: Option<&mut Request>, _response: Option<&mut Response>, new_url: Option<&mut CefString>) {
             if let Some(url) = new_url

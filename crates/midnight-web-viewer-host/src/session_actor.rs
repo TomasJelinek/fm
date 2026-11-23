@@ -515,11 +515,13 @@ pub(super) fn run(
 }
 
 /// The web-viewer API extensions this host accepts from a browser it launches: always the
-/// physical-v1 shortcuts, and link routing only for a session that routes links to the host.
+/// physical-v1 shortcuts and cursor reports, and link routing only for a session that
+/// routes links to the host.
 fn launch_extensions(links: LinkRouting) -> midnight_worker_platform::browser::Extensions {
     midnight_worker_platform::browser::Extensions {
         host_shortcuts: true,
         links: links == LinkRouting::Host,
+        cursor: true,
     }
 }
 
@@ -619,11 +621,11 @@ fn forward(
     viewport: &mut api::Viewport,
     shared: &Shared,
 ) -> Result<End, String> {
-    let main = store.reset(1, false)?.main;
+    let main = store.reset(1, shared.policy.network)?.main;
     wire.send(api::CommandKind::Open {
         source: main,
         viewport: *viewport,
-        policy: api::Policy::default(),
+        policy: shared.policy,
     })?;
     let mut event_sequence = 0;
     while let Some(turn) = shared.signal.take(&shared.closed)? {
@@ -833,9 +835,13 @@ fn only_a_session_that_routes_links_to_the_host_launches_with_the_link_opt_in() 
         (
             Extensions {
                 host_shortcuts: true,
-                links: false
+                links: false,
+                cursor: true
             },
-            vec![(api::HOST_SHORTCUTS_ENV, api::HOST_SHORTCUTS_PHYSICAL_V1)]
+            vec![
+                (api::HOST_SHORTCUTS_ENV, api::HOST_SHORTCUTS_PHYSICAL_V1),
+                (api::CURSOR_ENV, api::CURSOR_V1)
+            ]
         )
     );
     assert_eq!(
@@ -843,13 +849,22 @@ fn only_a_session_that_routes_links_to_the_host_launches_with_the_link_opt_in() 
         (
             Extensions {
                 host_shortcuts: true,
-                links: true
+                links: true,
+                cursor: true
             },
             vec![
                 (api::HOST_SHORTCUTS_ENV, api::HOST_SHORTCUTS_PHYSICAL_V1),
-                (api::LINKS_ENV, api::LINKS_HOST_V1)
+                (api::LINKS_ENV, api::LINKS_HOST_V1),
+                (api::CURSOR_ENV, api::CURSOR_V1)
             ]
         )
+    );
+    assert_eq!(
+        (
+            midnight_worker_platform::browser::CURSOR_ENV,
+            midnight_worker_platform::browser::CURSOR_V1
+        ),
+        (api::CURSOR_ENV, api::CURSOR_V1)
     );
 }
 
@@ -881,15 +896,14 @@ pub(super) fn send_resource_reply(
 }
 
 /// The actor checks the immutable ceiling even for commands bypassing Session admission.
+/// Any policy is allowed under the user's choice: scripts may run offline (web viewer API
+/// 0.4), where the provider keeps them from every network.
 pub(super) fn validated_policy(
     ceiling: PolicyCeiling,
     next: api::Policy,
 ) -> Result<api::Policy, String> {
     if ceiling == PolicyCeiling::OfflineOnly {
         return Err("This document has a fixed offline policy".into());
-    }
-    if next.scripts && !next.network {
-        return Err("Scripts require online mode".into());
     }
     Ok(next)
 }

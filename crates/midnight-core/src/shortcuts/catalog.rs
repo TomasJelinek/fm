@@ -228,6 +228,12 @@ fn build() -> Vec<ShortcutDefinition> {
         ViewerOnlyContent,
         &["Alt+Shift+Right"],
     );
+    add(
+        "viewer.reload",
+        "Reload the viewed file",
+        ViewerOnlyContent,
+        &["F5", "Ctrl+R"],
+    );
     add("viewer.find", "Find in viewed file", ViewerAny, &["Ctrl+F"]);
     add("viewer.wrap", "Wrap viewer text", ViewerAny, &["Ctrl+W"]);
     add(

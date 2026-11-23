@@ -1039,10 +1039,9 @@ fn web_policy_widgets_require_backend_permission_for_pointer_actions() {
             for network in [false, true] {
                 for (label, enabled) in [
                     ("Allow network for this document only", allowed),
-                    (
-                        "Allow scripts to read and transmit this document",
-                        allowed && network,
-                    ),
+                    // Offline scripts are allowed since web viewer API 0.4: the JavaScript box
+                    // follows the policy permission alone, not the network choice.
+                    ("Run this page's JavaScript", allowed),
                 ] {
                     // Each control starts from the same backend policy. Clicking Online
                     // updates its two-way network binding before the JavaScript case.
@@ -1776,7 +1775,7 @@ fn rows_above_the_text_give_way_to_find_in_short_windows_and_come_back() {
             "html",
             &[
                 "Allow network for this document only",
-                "Allow scripts to read and transmit this document",
+                "Run this page's JavaScript",
                 "Zoom HTML out",
                 "Zoom HTML in",
             ],

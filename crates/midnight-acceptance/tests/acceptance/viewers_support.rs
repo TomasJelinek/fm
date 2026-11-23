@@ -686,8 +686,27 @@ fn viewer_capture(
         if cancel.load(Ordering::Acquire) {
             return Err("Viewer closed".into());
         }
+        // As the application (`native_content.rs`): folders above the file's folder are
+        // pinned by path when an asset first names them.
+        let levels = parent
+            .ancestors()
+            .skip(1)
+            .take(midnight_viewer_engine::MAX_ANCESTOR_LEVELS)
+            .count();
+        let (folder, folders, flag) = (parent.to_path_buf(), directories.clone(), cancel.clone());
+        let pins: midnight_viewer_engine::AncestorPins = Arc::new(move |up| {
+            let ancestor = folder.ancestors().nth(up)?;
+            folders
+                .prepare_checksum_directory(ancestor, &Cancellation::observing(flag.clone()))
+                .ok()
+        });
         match directory.and_then(|directory| {
-            midnight_viewer_engine::captured_directory_resources(directory, main.clone()).ok()
+            midnight_viewer_engine::captured_directory_resources_with_ancestors(
+                directory,
+                main.clone(),
+                (levels > 0).then_some((levels, pins)),
+            )
+            .ok()
         }) {
             Some(resources) => Ok(main.with_resources(resources)),
             None => Ok(main),

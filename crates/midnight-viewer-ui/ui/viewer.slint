@@ -168,6 +168,7 @@ export component ViewerWindow inherits Window {
     in-out property <bool> web-network;
     in-out property <bool> web-scripts;
     in property <bool> web-policy-change-allowed: false;
+    in property <bool> web-loading;
     // Shown in the page's place when the system refused the HTML viewer's browser its
     // sandbox, or a document failed with diagnostic details. The backend decides the text
     // and whether Install… is offered; Copy details copies `sandbox-details` when set.
@@ -270,6 +271,11 @@ export component ViewerWindow inherits Window {
     callback hover-exit();
     callback release-point(float, float);
     callback link-history(bool);
+    // Whether Back and Forward have a document to go to (the HTML row's buttons), and
+    // Reload, which reads the shown file again (F5, Ctrl+R).
+    in property <bool> link-back-available;
+    in property <bool> link-forward-available;
+    callback reload();
     in property <bool> link-hover;
     in property <string> link-status;
     // A video's playback status and errors take the status line's front, so the media bar
@@ -344,20 +350,48 @@ export component ViewerWindow inherits Window {
             }
             if root.web-row-requested && !root.find-displaces-rows: HorizontalLayout {
                     spacing: 4px; height: root.tool-row-height;
+                    // A small browser's controls: Back and Forward through the pages opened
+                    // from links, and Reload of the shown file. A narrow window keeps the
+                    // policy boxes and zoom instead; Alt+Left/Right, the mouse buttons and
+                    // F5/Ctrl+R still go back, forward and reload.
+                    if root.width >= 3 * 36px + root.effective-ui-size * 20 + 240px: HorizontalLayout {
+                    spacing: 4px; horizontal-stretch: 0;
+                    TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; min-width: 36px; max-width: 36px;
+                        text: "Back"; glyph-only: true; fallback-icon: FallbackIcons.back;
+                        enabled: root.link-back-available;
+                        accessible-description: "Back to the page a link was followed from";
+                        tip: "Back (Alt+Left, mouse Back)";
+                        clicked => { root.link-history(true); content-focus.focus(); } }
+                    TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; min-width: 36px; max-width: 36px;
+                        text: "Forward"; glyph-only: true; fallback-icon: FallbackIcons.forward;
+                        enabled: root.link-forward-available;
+                        accessible-description: "Forward to the page a link opened";
+                        tip: "Forward (Alt+Right, mouse Forward)";
+                        clicked => { root.link-history(false); content-focus.focus(); } }
+                    TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; min-width: 36px; max-width: 36px;
+                        text: "Reload"; glyph-only: true; fallback-icon: FallbackIcons.refresh;
+                        accessible-description: "Read the page again from its file";
+                        tip: "Reload (F5, Ctrl+R)";
+                        clicked => { root.reload(); content-focus.focus(); } }
+                    }
                     WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: "Online"; checked <=> root.web-network; enabled: root.web-policy-change-allowed; horizontal-stretch: 0;
                         accessible-name: "Allow network for this document only";
                         Tooltip { text: root.web-policy-change-allowed
-                            ? @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets. Turning Online off also disables JavaScript.")
+                            ? @markdown("Allow network for this document only. This creates a fresh browser context and removes access to local assets.")
                             : @markdown("Network and JavaScript cannot be enabled for this preview."); }
-                        toggled => { root.web-policy(self.checked, root.web-scripts && self.checked); content-focus.focus(); } }
-                    WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: root.compact ? "JS" : "JavaScript"; checked <=> root.web-scripts; enabled: root.web-policy-change-allowed && root.web-network; horizontal-stretch: 0;
-                        accessible-name: "Allow scripts to read and transmit this document";
-                        Tooltip { text: root.web-policy-change-allowed
-                            ? @markdown("Allow JavaScript to read and transmit this document. Requires Online. Local assets remain unavailable.")
-                            : @markdown("Network and JavaScript cannot be enabled for this preview."); }
+                        toggled => { root.web-policy(self.checked, root.web-scripts); content-focus.focus(); } }
+                    WrappingCheckBox { font-size: root.effective-ui-size; control-height: root.control-height; text: root.compact ? "JS" : "JavaScript"; checked <=> root.web-scripts; enabled: root.web-policy-change-allowed; horizontal-stretch: 0;
+                        accessible-name: "Run this page's JavaScript";
+                        Tooltip { text: !root.web-policy-change-allowed
+                            ? @markdown("Network and JavaScript cannot be enabled for this preview.")
+                            : root.web-network
+                            ? @markdown("Run this page's JavaScript. Online, scripts can read and transmit this document.")
+                            : @markdown("Run this page's JavaScript. Offline, scripts reach no network and cannot read other files; the next page in this window keeps this choice."); }
                         toggled => { root.web-policy(root.web-network, self.checked); content-focus.focus(); } }
-                    // A typed zoom's hint, beside the zoom field (see `ZoomField`).
-                    Text { horizontal-stretch: 1; min-width: 0px; text: root.zoom-hint; color: Theme.text;
+                    // A typed zoom's hint, beside the zoom field (see `ZoomField`), or that
+                    // the page loads.
+                    Text { horizontal-stretch: 1; min-width: 0px; color: Theme.text;
+                        text: root.zoom-hint != "" ? root.zoom-hint : root.web-loading ? "Loading…" : "";
                         font-size: root.effective-ui-size; overflow: elide;
                         horizontal-alignment: right; vertical-alignment: center; }
                     TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; text: "−"; min-width: 36px; max-width: 36px;

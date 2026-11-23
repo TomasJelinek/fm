@@ -1204,14 +1204,23 @@ fn html_controls(app: &mut App, context: &mut Context, viewing: &Viewing) -> Res
     let scripts = inspect::find(
         viewing.slint(),
         AccessibleRole::Checkbox,
-        "Allow scripts to read and transmit this document",
+        "Run this page's JavaScript",
     )
     .ok_or("no JavaScript box")?;
-    if viewing.window.get_web_network() || viewing.window.get_web_scripts() {
-        return Err("a new document starts online or with scripts".into());
+    // Web viewer API 0.4: a new document starts offline with its scripts running.
+    if viewing.window.get_web_network() || !viewing.window.get_web_scripts() {
+        return Err("a new document starts online or without its scripts".into());
     }
-    if tools::enabled(&scripts) {
-        return Err("JavaScript can be ticked while Online is off".into());
+    if !tools::enabled(&scripts) {
+        return Err("JavaScript cannot be turned off while Online is off".into());
+    }
+    // The small browser's buttons: nothing to go back or forward to yet, Reload ready.
+    for (label, enabled) in [("Back", false), ("Forward", false), ("Reload", true)] {
+        let button = inspect::find(viewing.slint(), AccessibleRole::Button, label)
+            .ok_or_else(|| format!("no {label} button"))?;
+        if tools::enabled(&button) != enabled {
+            return Err(format!("{label} is enabled {}, not {enabled}", !enabled));
+        }
     }
     context.note(format!(
         "HTML: zoom {start}% → {larger}% → back; Ctrl+0 100%; Online enabled {}, policy change \
@@ -1229,9 +1238,10 @@ fn html_controls(app: &mut App, context: &mut Context, viewing: &Viewing) -> Res
     input::key(viewing.slint(), Key::Return);
     // Worded as the comparator's Find (worker_web.rs `find_status`): the count alone
     // ("1 match") until Chromium activates the match, then "Match 1 of 1", after the
-    // page's policy (`web_presentation_status`; the boxes are unchecked again here).
-    const FOUND: &str = "Offline · JavaScript off · Match 1 of 1";
-    const ABSENT: &str = "Offline · JavaScript off · No matches";
+    // page's title and policy (`WebView::status`).
+    const FOUND: &str = "Long page · Offline · JavaScript on · Match 1 of 1";
+    const ABSENT: &str = "Long page · Offline · JavaScript on · No matches";
+    const RELOADED: &str = "Long page · Offline · JavaScript on";
     viewing.wait(app, &format!("the status {FOUND:?}"), STEP, |window| {
         window.get_status() == FOUND
     })?;
@@ -1255,6 +1265,11 @@ fn html_controls(app: &mut App, context: &mut Context, viewing: &Viewing) -> Res
         "html-controls",
         "page.html after the zoom controls and Find",
     );
+    // Reload reads the file again: the page loads anew, and its Find result is gone.
+    input::click(viewing.slint(), AccessibleRole::Button, "Reload")?;
+    viewing.wait(app, &format!("the status {RELOADED:?}"), STEP, |window| {
+        window.get_status() == RELOADED && !window.get_web_loading()
+    })?;
     Ok(())
 }
 

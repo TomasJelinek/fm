@@ -241,6 +241,7 @@ struct Worker {
     image_startup: Option<crate::image_startup::Startup>,
     web_providers: Arc<[midnight_web_viewer_host::Provider]>,
     web: Option<web::WebView>,
+    web_choices: web::Choices,
     closing_web: Option<Box<dyn web::Browser>>,
     web_retirement_error: Option<String>,
     /// The permission Chromium's sandbox lacks where the system refused it.
@@ -430,6 +431,7 @@ pub(crate) fn run(
         web_providers: web,
         image_startup: Some(image_startup),
         web: None,
+        web_choices: web::Choices::default(),
         closing_web: None,
         web_retirement_error: None,
         sandbox: sandbox::Sandbox::new(sandbox::system_offer()),

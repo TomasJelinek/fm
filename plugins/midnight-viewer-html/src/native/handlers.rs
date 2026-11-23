@@ -1,6 +1,97 @@
 use super::*;
 use crate::policy::Access;
 
+/// The browser parameter that tells the renderer a document is offline (`Renderer`).
+pub(super) const OFFLINE: &str = "midnight-offline";
+
+/// Chromium's network prediction preference, set to "never": no preconnect, DNS prefetch,
+/// prefetch or prerender, which open connections or look names up outside request
+/// interception. Chromium's reason when the context does not take it.
+pub(super) fn disable_network_prediction(context: &mut RequestContext) -> Result<(), String> {
+    const NETWORK_PREDICTION_NEVER: i32 = 2;
+    let name = CefString::from("net.network_prediction_options");
+    let mut value = value_create().ok_or("no value")?;
+    if value.set_int(NETWORK_PREDICTION_NEVER) == 0 {
+        return Err("no integer value".into());
+    }
+    // An owned string: CEF refuses the call when its error out-parameter is null, which a
+    // default (borrowed, empty) CefString converts to.
+    let mut error = CefString::from("");
+    if context.set_preference(Some(&name), Some(&mut value), Some(&mut error)) == 0 {
+        return Err(format!(
+            "{error} (known {}, settable {})",
+            context.has_preference(Some(&name)),
+            context.can_set_preference(Some(&name))
+        ));
+    }
+    Ok(())
+}
+
+/// What an offline page loses before any of its scripts runs, in every context of it.
+///
+/// WebRTC: a peer connection reaches the network (STUN, TURN, ICE candidates) outside
+/// request interception and the page's CSP.
+///
+/// Pixel readback (canvas `getImageData`, `toDataURL`, `toBlob`, `captureStream`,
+/// `OffscreenCanvas.convertToBlob`, WebCodecs frames and image decoding): Chromium marks
+/// no intercepted response cross-origin, so a canvas would not be tainted by a captured
+/// image (local files the page displays, also from folders above it).
+///
+/// Each is replaced by a fixed value that a script cannot define again.
+const OFFLINE_REMOVAL: &str = "(()=>{const fix=(o,n,v)=>{if(!o)return;try{delete o[n]}catch(e){}try{Object.defineProperty(o,n,{value:v,writable:false,configurable:false,enumerable:false})}catch(e){}};const no=function(){throw new DOMException('Reading pixels is not available in an offline page.','SecurityError')};for(const n of ['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','RTCIceTransport','RTCDtlsTransport','RTCSctpTransport','RTCIceCandidate','RTCSessionDescription','VideoFrame','ImageDecoder','VideoEncoder','VideoDecoder','ImageCapture','MediaStreamTrackProcessor'])fix(globalThis,n,undefined);const p=c=>globalThis[c]&&globalThis[c].prototype;for(const n of ['toDataURL','toBlob','captureStream','transferControlToOffscreen'])fix(p('HTMLCanvasElement'),n,no);fix(p('CanvasRenderingContext2D'),'getImageData',no);fix(p('OffscreenCanvasRenderingContext2D'),'getImageData',no);fix(p('OffscreenCanvas'),'convertToBlob',no);fix(p('Navigator'),'gpu',undefined)})()";
+/// The renderer's offline browsers, by identifier (`OFFLINE`).
+static OFFLINE_BROWSERS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// The API cursor of a Chromium cursor type. Custom cursor images and drag cursors have
+/// no counterpart and are the default arrow.
+pub(super) fn page_cursor(cursor: CursorType) -> api::Cursor {
+    match cursor {
+        CursorType::HAND => api::Cursor::Pointer,
+        CursorType::IBEAM => api::Cursor::Text,
+        CursorType::VERTICALTEXT => api::Cursor::VerticalText,
+        CursorType::CROSS => api::Cursor::Crosshair,
+        CursorType::WAIT => api::Cursor::Wait,
+        CursorType::PROGRESS => api::Cursor::Progress,
+        CursorType::HELP => api::Cursor::Help,
+        CursorType::MOVE => api::Cursor::Move,
+        CursorType::MIDDLEPANNING
+        | CursorType::MIDDLE_PANNING_VERTICAL
+        | CursorType::EASTPANNING
+        | CursorType::NORTHPANNING
+        | CursorType::NORTHEASTPANNING
+        | CursorType::NORTHWESTPANNING
+        | CursorType::SOUTHPANNING
+        | CursorType::SOUTHEASTPANNING
+        | CursorType::SOUTHWESTPANNING
+        | CursorType::WESTPANNING => api::Cursor::AllScroll,
+        CursorType::NOTALLOWED | CursorType::NODROP => api::Cursor::NotAllowed,
+        CursorType::GRAB => api::Cursor::Grab,
+        CursorType::GRABBING => api::Cursor::Grabbing,
+        CursorType::COLUMNRESIZE => api::Cursor::ColResize,
+        CursorType::ROWRESIZE => api::Cursor::RowResize,
+        CursorType::EASTRESIZE | CursorType::WESTRESIZE | CursorType::EASTWESTRESIZE => {
+            api::Cursor::EwResize
+        }
+        CursorType::NORTHRESIZE | CursorType::SOUTHRESIZE | CursorType::NORTHSOUTHRESIZE => {
+            api::Cursor::NsResize
+        }
+        CursorType::NORTHEASTRESIZE
+        | CursorType::SOUTHWESTRESIZE
+        | CursorType::NORTHEASTSOUTHWESTRESIZE => api::Cursor::NeswResize,
+        CursorType::NORTHWESTRESIZE
+        | CursorType::SOUTHEASTRESIZE
+        | CursorType::NORTHWESTSOUTHEASTRESIZE => api::Cursor::NwseResize,
+        CursorType::ZOOMIN => api::Cursor::ZoomIn,
+        CursorType::ZOOMOUT => api::Cursor::ZoomOut,
+        CursorType::COPY => api::Cursor::Copy,
+        CursorType::ALIAS => api::Cursor::Alias,
+        CursorType::CONTEXTMENU => api::Cursor::ContextMenu,
+        CursorType::CELL => api::Cursor::Cell,
+        CursorType::NONE => api::Cursor::None,
+        _ => api::Cursor::Default,
+    }
+}
+
 fn bounded_text(value: Option<&CefString>, limit: usize) -> String {
     value
         .filter(|text| text.as_slice().is_none_or(|s| s.len() <= limit / 3))
@@ -115,6 +206,37 @@ wrap_app! {
                 command_line.append_switch(Some(&CefString::from(input::SMOOTH_SCROLLING_OFF)));
                 #[cfg(feature = "diagnostic-software-compositing")]
                 command_line.append_switch(Some(&CefString::from("disable-gpu-compositing")));
+            }
+        }
+        fn render_process_handler(&self) -> Option<RenderProcessHandler> { Some(Renderer::new()) }
+    }
+}
+
+// Runs in Chromium's sandboxed renderer processes, which execute this same program.
+wrap_render_process_handler! {
+    pub(super) struct Renderer;
+    impl RenderProcessHandler {
+        fn on_browser_created(&self, browser: Option<&mut Browser>, extra_info: Option<&mut DictionaryValue>) {
+            let offline = extra_info.is_some_and(|info| info.bool(Some(&CefString::from(OFFLINE))) != 0);
+            if let (true, Some(browser), Ok(mut browsers)) = (offline, browser, OFFLINE_BROWSERS.lock()) {
+                browsers.push(browser.identifier());
+            }
+        }
+        fn on_browser_destroyed(&self, browser: Option<&mut Browser>) {
+            if let (Some(browser), Ok(mut browsers)) = (browser, OFFLINE_BROWSERS.lock()) {
+                let id = browser.identifier();
+                browsers.retain(|offline| *offline != id);
+            }
+        }
+        fn on_context_created(&self, browser: Option<&mut Browser>, _frame: Option<&mut Frame>, context: Option<&mut V8Context>) {
+            // A poisoned or missing record counts as offline: removing WebRTC never grants.
+            let offline = browser.is_none_or(|browser| {
+                OFFLINE_BROWSERS.lock().map_or(true, |browsers| browsers.contains(&browser.identifier()))
+            });
+            if let (true, Some(context)) = (offline, context) {
+                let mut result = None;
+                let mut exception = None;
+                context.eval(Some(&CefString::from(OFFLINE_REMOVAL)), None, 0, Some(&mut result), Some(&mut exception));
             }
         }
     }
@@ -303,6 +425,15 @@ wrap_display_handler! {
         fn on_status_message(&self, _browser: Option<&mut Browser>, value: Option<&CefString>) {
             navigation::status(&self.doc, value);
         }
+        // The cursor the page asks for, to the host when it changed (API 0.4 opt-in). The
+        // windowless browser has no window of its own to set it on.
+        fn on_cursor_change(&self, _browser: Option<&mut Browser>, _cursor: cef::sys::cef_cursor_handle_t, type_: CursorType, _custom_cursor_info: Option<&CursorInfo>) -> i32 {
+            let cursor = page_cursor(type_);
+            let changed = self.doc.cursor.as_ref().and_then(|last| last.lock().ok())
+                .is_some_and(|mut last| last.replace(cursor) != Some(cursor));
+            if changed { self.doc.emit(api::EventKind::Cursor(cursor)); }
+            1
+        }
     }
 }
 
@@ -348,6 +479,27 @@ wrap_context_menu_handler! { struct NoMenus; impl ContextMenuHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chromium_cursors_map_to_the_page_cursor_a_host_shows() {
+        for (chromium, page) in [
+            (CursorType::POINTER, api::Cursor::Default),
+            (CursorType::HAND, api::Cursor::Pointer),
+            (CursorType::IBEAM, api::Cursor::Text),
+            (CursorType::WAIT, api::Cursor::Wait),
+            (CursorType::EASTWESTRESIZE, api::Cursor::EwResize),
+            (CursorType::WESTRESIZE, api::Cursor::EwResize),
+            (CursorType::NORTHWESTRESIZE, api::Cursor::NwseResize),
+            (CursorType::NODROP, api::Cursor::NotAllowed),
+            (CursorType::MIDDLE_PANNING_VERTICAL, api::Cursor::AllScroll),
+            (CursorType::GRABBING, api::Cursor::Grabbing),
+            (CursorType::NONE, api::Cursor::None),
+            (CursorType::CUSTOM, api::Cursor::Default),
+            (CursorType::DND_LINK, api::Cursor::Default),
+        ] {
+            assert_eq!(page_cursor(chromium), page, "{chromium:?}");
+        }
+    }
 
     #[test]
     fn screen_and_view_rectangles_are_the_same_dip_rectangle() {

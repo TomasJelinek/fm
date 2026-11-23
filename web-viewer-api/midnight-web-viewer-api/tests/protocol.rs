@@ -1,3 +1,4 @@
+use midnight_web_viewer_api::Cursor as WebCursor;
 use midnight_web_viewer_api::*;
 use std::io::{self, Cursor, Read};
 
@@ -191,10 +192,6 @@ fn rejects_invalid_values_before_writing_any_bytes() {
     invalid_viewport.scale = f64::NAN;
     let cases = vec![
         command(CommandKind::Resize(invalid_viewport)),
-        command(CommandKind::Policy(Policy {
-            network: false,
-            scripts: true,
-        })),
         command(CommandKind::Zoom(f64::INFINITY)),
         command(CommandKind::Zoom(0.0)),
         command(CommandKind::Text("x".repeat(65_536))),
@@ -476,12 +473,59 @@ fn received_link_events_are_checked_before_they_reach_a_host() {
     assert!(read_message(&mut activated_nothing.as_slice()).is_err());
     let hover_cleared = unchecked_event(12, b"");
     assert!(read_message(&mut hover_cleared.as_slice()).is_ok());
-    // Tag 14 is not an event, and link events carry no raw section.
+    // Tag 15 is not an event, and link events carry no raw section.
     for bytes in [
-        prefix(1, 14, 24, 0),
+        prefix(1, 15, 24, 0),
         prefix(1, 12, 28, 1),
         prefix(1, 13, 28, 1),
     ] {
         assert!(read_message(&mut bytes.as_slice()).is_err());
     }
+}
+
+#[test]
+fn offline_scripts_policy_round_trips_since_api_0_4() {
+    // API 0.3 refused scripts without network; 0.4 providers contain offline scripts.
+    for policy in [
+        Policy {
+            network: false,
+            scripts: true,
+        },
+        Policy {
+            network: true,
+            scripts: true,
+        },
+        Policy::default(),
+    ] {
+        let message = command(CommandKind::Policy(policy));
+        assert_eq!(
+            read_message(&mut encode(&message).as_slice()).unwrap(),
+            message
+        );
+        let open = command(CommandKind::Open {
+            source: resource(),
+            viewport: viewport(),
+            policy,
+        });
+        assert_eq!(read_message(&mut encode(&open).as_slice()).unwrap(), open);
+    }
+}
+
+#[test]
+fn cursor_events_round_trip_as_tag_14_with_one_discriminant() {
+    assert_eq!(CURSOR_ENV, "MIDNIGHT_WEB_VIEWER_CURSOR");
+    assert_eq!(CURSOR_V1, "cursor-v1");
+    for (index, cursor) in WebCursor::ALL.into_iter().enumerate() {
+        let message = event(EventKind::Cursor(cursor));
+        let bytes = encode(&message);
+        assert_eq!(&bytes[..8], &[b'M', b'W', b'V', b'1', 1, 0, 1, 14]);
+        assert_eq!(bytes.len(), 41);
+        assert_eq!(bytes[40], index as u8);
+        assert_eq!(read_message(&mut bytes.as_slice()).unwrap(), message);
+    }
+    // Discriminants past the last cursor and a raw section are refused.
+    let mut unknown = encode(&event(EventKind::Cursor(WebCursor::Default)));
+    unknown[40] = WebCursor::ALL.len() as u8;
+    assert!(read_message(&mut unknown.as_slice()).is_err());
+    assert!(read_message(&mut prefix(1, 14, 25, 1).as_slice()).is_err());
 }

@@ -39,6 +39,18 @@ pub enum LinkRouting {
     Host,
 }
 
+/// How a session opens: its immutable policy ceiling, who follows links, and the policy
+/// of its first document. The first policy must be one the ceiling allows; with
+/// [`PolicyCeiling::OfflineOnly`] that is the default (offline, scripts off). Scripts
+/// without network (web viewer API 0.4) need a provider of API 0.4 or newer, which
+/// refuses no such policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpenOptions {
+    pub ceiling: PolicyCeiling,
+    pub links: LinkRouting,
+    pub policy: api::Policy,
+}
+
 #[derive(Default)]
 struct Output {
     events: VecDeque<api::Event>,
@@ -245,6 +257,8 @@ struct Shared {
     generation: Arc<Generation>,
     ceiling: PolicyCeiling,
     links: LinkRouting,
+    /// The first document's policy (`OpenOptions::policy`).
+    policy: api::Policy,
     cleanup: CleanupStatus,
     terminal: Arc<Mutex<Option<Result<(), String>>>>,
 }
@@ -332,6 +346,33 @@ impl Session {
         ceiling: PolicyCeiling,
         links: LinkRouting,
     ) -> Result<Self, String> {
+        Self::open_with_options(
+            provider,
+            source,
+            resources,
+            viewport,
+            wake,
+            OpenOptions {
+                ceiling,
+                links,
+                policy: api::Policy::default(),
+            },
+        )
+    }
+
+    /// Open `source` in `provider`'s browser as `options` say: see [`OpenOptions`] and
+    /// [`Self::open_with_links`]. A first policy the ceiling does not allow is refused.
+    pub fn open_with_options(
+        provider: Provider,
+        source: CapturedFile,
+        resources: Option<Arc<dyn Resources>>,
+        viewport: api::Viewport,
+        wake: Arc<dyn Fn() -> bool + Send + Sync>,
+        options: OpenOptions,
+    ) -> Result<Self, String> {
+        if options.policy != api::Policy::default() {
+            actor::validated_policy(options.ceiling, options.policy)?;
+        }
         let resources = resources.or_else(|| {
             source
                 .resources()
@@ -339,7 +380,7 @@ impl Session {
         });
         let cleanup = Arc::new(Mutex::new(None));
         let owner = SourceOwner::new(source, resources, cleanup.clone());
-        Self::start(wake, ceiling, links, cleanup, move |shared| {
+        Self::start(wake, options, cleanup, move |shared| {
             actor::run(provider, owner, viewport, shared)
         })
     }
@@ -352,26 +393,21 @@ impl Session {
         resources: Option<Arc<dyn Resources>>,
         viewport: api::Viewport,
         limits: actor::Limits,
-        links: LinkRouting,
+        options: OpenOptions,
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Self, String> {
         let cleanup = Arc::new(Mutex::new(None));
         let owner = SourceOwner::new(source, resources, cleanup.clone());
-        Self::start(
-            wake,
-            PolicyCeiling::UserChoice,
-            links,
-            cleanup,
-            move |shared| actor::run_with(transport, owner, viewport, shared, limits),
-        )
+        Self::start(wake, options, cleanup, move |shared| {
+            actor::run_with(transport, owner, viewport, shared, limits)
+        })
     }
 
     /// Run `actor` on the session's thread, supervised (see `supervise`). The thread
     /// publishes its exit and wakes the consumer last (see `Exit`).
     fn start(
         wake: Arc<dyn Fn() -> bool + Send + Sync>,
-        ceiling: PolicyCeiling,
-        links: LinkRouting,
+        options: OpenOptions,
         cleanup: CleanupStatus,
         actor: impl FnOnce(&Shared) -> Result<actor::End, String> + Send + 'static,
     ) -> Result<Self, String> {
@@ -388,8 +424,9 @@ impl Session {
             generation: Arc::new(Generation::with_wake(Arc::new(move || {
                 resource_signal.resources_ready();
             }))),
-            ceiling,
-            links,
+            ceiling: options.ceiling,
+            links: options.links,
+            policy: options.policy,
             cleanup,
             terminal: Arc::new(Mutex::new(None)),
         };
@@ -606,6 +643,9 @@ struct CapturedResources(Arc<dyn midnight_plugin_host::ContentResources>);
 impl Resources for CapturedResources {
     fn capture(&self, segments: &[String]) -> Result<CapturedFile, String> {
         self.0.capture(segments).map_err(|error| error.to_string())
+    }
+    fn ancestor_levels(&self) -> usize {
+        self.0.ancestor_levels()
     }
     fn release_on_worker(self: Arc<Self>) -> Result<(), String> {
         match Arc::try_unwrap(self) {
@@ -1004,8 +1044,7 @@ mod tests {
                     count.fetch_add(1, Ordering::SeqCst);
                     true
                 }),
-                PolicyCeiling::UserChoice,
-                LinkRouting::Browser,
+                OpenOptions::default(),
                 Arc::new(Mutex::new(None)),
                 move |shared| Err(actor::launch_failed(shared, &error)),
             )

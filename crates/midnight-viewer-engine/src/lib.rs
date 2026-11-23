@@ -13,7 +13,10 @@ mod catalog_startup;
 mod content_resources;
 mod document_render;
 mod document_view;
-pub use content_resources::captured_directory_resources;
+pub use content_resources::{
+    AncestorPins, MAX_ANCESTOR_LEVELS, captured_directory_resources,
+    captured_directory_resources_with_ancestors,
+};
 #[cfg(test)]
 mod capture_tests;
 #[cfg(test)]

@@ -21,7 +21,7 @@ diagnostic-software-compositing = ["diagnostic-timing"]
 
 [dependencies]
 cef = { version = "=156.4.0", default-features = false, features = ["sandbox"], optional = true }
-midnight-web-viewer-api = { version = "=0.3.0", registry = "midnight" }
+midnight-web-viewer-api = { version = "=0.4.0", registry = "midnight" }
 
 [[bin]]
 name = "midnight-html-linux-launcher"

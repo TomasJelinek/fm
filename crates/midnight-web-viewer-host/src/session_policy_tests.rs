@@ -125,16 +125,27 @@ fn ordinary_html_retains_explicit_online_script_opt_in() {
         actor::validated_policy(PolicyCeiling::UserChoice, policy).unwrap(),
         policy
     );
-    assert!(
-        actor::validated_policy(
-            PolicyCeiling::UserChoice,
-            api::Policy {
-                network: false,
-                scripts: true
-            }
-        )
-        .is_err()
+}
+
+/// Web viewer API 0.4: scripts may run offline, contained by the provider without any
+/// network, and an offline-only preview still cannot enable them.
+#[test]
+fn offline_scripts_are_a_user_choice_but_never_for_an_offline_only_preview() {
+    let offline_scripts = api::Policy {
+        network: false,
+        scripts: true,
+    };
+    let session = endpoint(PolicyCeiling::UserChoice);
+    assert!(session.send(api::CommandKind::Policy(offline_scripts)));
+    assert!(matches!(session.signal.pop_command().unwrap().kind,
+        api::CommandKind::Policy(value) if value == offline_scripts));
+    assert_eq!(
+        actor::validated_policy(PolicyCeiling::UserChoice, offline_scripts).unwrap(),
+        offline_scripts
     );
+    assert!(actor::validated_policy(PolicyCeiling::OfflineOnly, offline_scripts).is_err());
+    let preview = endpoint(PolicyCeiling::OfflineOnly);
+    assert!(!preview.send(api::CommandKind::Policy(offline_scripts)));
 }
 
 #[test]

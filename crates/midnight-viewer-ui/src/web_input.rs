@@ -63,6 +63,40 @@ pub(super) struct Native {
     /// Touchpad reports and momentum sent at once: when the stream began, and when its
     /// newest delta went out.
     stream: Option<(Began, Duration)>,
+    /// The cursor the page asked for last (`web_cursor.rs`), whether the pointer is over
+    /// the page, and the native cursor set last (unknown after Slint may have set one).
+    page_cursor: Option<api::Cursor>,
+    inside: bool,
+    shown_cursor: Option<Option<slint::winit_030::winit::window::CursorIcon>>,
+}
+
+impl Native {
+    pub(super) fn page_cursor(&self) -> Option<api::Cursor> {
+        self.page_cursor
+    }
+    pub(super) fn set_page_cursor(&mut self, cursor: api::Cursor) {
+        self.page_cursor = Some(cursor);
+    }
+    pub(super) fn pointer_inside(&self) -> bool {
+        self.inside
+    }
+    /// Record `cursor` as the native one; false when it already is.
+    pub(super) fn shown_cursor(
+        &mut self,
+        cursor: Option<slint::winit_030::winit::window::CursorIcon>,
+    ) -> bool {
+        self.shown_cursor.replace(cursor) != Some(cursor)
+    }
+    /// The pointer is over the page or not: Some(true) when it came onto it, Some(false)
+    /// when it left. Slint may have set its own cursor meanwhile, so it is unknown.
+    fn pointer_over(&mut self, inside: bool) -> Option<bool> {
+        if self.inside == inside {
+            return None;
+        }
+        self.inside = inside;
+        self.shown_cursor = None;
+        Some(inside)
+    }
 }
 
 /// Wheel notches over the page glide exactly as in the text viewer: the shared
@@ -437,7 +471,7 @@ pub(super) fn received(open: &OpenWindow, value: api::HostShortcut) {
             };
             let action = (open.key_resolver.borrow())(&chord, false);
             if let Some(action) = action {
-                dispatch_key(open, &action);
+                dispatch_key(open, browser_history(open, value, &action));
             }
         }
         // An unbound key has no file action. Replaying it would re-enter arbitration.
@@ -475,6 +509,30 @@ pub(super) fn received(open: &OpenWindow, value: api::HostShortcut) {
         );
     } else {
         shortcut(open, value);
+    }
+}
+
+/// As in a browser, Alt+Left and Alt+Right go Back and Forward through the pages opened
+/// from links while there is a page in that direction. Without one they keep the file
+/// action they are bound to (previous and next file by default); a key bound to anything
+/// else keeps that.
+pub(super) fn browser_history<'a>(
+    open: &OpenWindow,
+    shortcut: api::HostShortcut,
+    action: &'a str,
+) -> &'a str {
+    match (shortcut, action) {
+        (api::HostShortcut::AltLeft, "viewer.previous-file")
+            if open.window.get_link_back_available() =>
+        {
+            "viewer.link-back"
+        }
+        (api::HostShortcut::AltRight, "viewer.next-file")
+            if open.window.get_link_forward_available() =>
+        {
+            "viewer.link-forward"
+        }
+        _ => action,
     }
 }
 
@@ -547,8 +605,12 @@ pub(super) fn observe_native(
     }
     // A notice in the page's place (a refused browser) takes input like any control.
     if !open.window.get_web_mode() || open.window.get_sandbox_notice_visible() {
+        if open.web_native.borrow_mut().pointer_over(false) == Some(false) {
+            web_cursor::restore(open);
+        }
         return false;
     }
+    track_page_cursor(open, event);
     // Embedded SDK popups own pointer, wheel, keyboard and IME input even when
     // their geometry overlaps the browser surface. Keep the cursor current for
     // the first wheel after dismissal; native focus loss still reaches Chromium.
@@ -776,14 +838,36 @@ pub(super) fn observe_native(
     )
 }
 
+/// The page's cursor while the pointer is over the page, the window's default once it
+/// leaves (`web_cursor.rs`).
+fn track_page_cursor(open: &OpenWindow, event: &WindowEvent) {
+    let inside = match event {
+        WindowEvent::CursorMoved { position, .. } => {
+            let (scale, _) = surface_scale(open);
+            let x = position.x - f64::from(open.window.get_content_left()) * scale;
+            let y = position.y - f64::from(open.window.get_content_top()) * scale;
+            x >= 0.0
+                && y >= 0.0
+                && x < f64::from(open.window.get_content_width()) * scale
+                && y < f64::from(open.window.get_content_height()) * scale
+        }
+        WindowEvent::CursorLeft { .. } => false,
+        _ => return,
+    };
+    let changed = open.web_native.borrow_mut().pointer_over(inside);
+    match changed {
+        Some(true) => web_cursor::apply(open),
+        Some(false) => web_cursor::restore(open),
+        None => {}
+    }
+}
+
 pub(super) fn bind(open: &Rc<OpenWindow>) {
     let weak = Rc::downgrade(open);
     open.window.on_web_policy(move |network, scripts| {
         if let Some(open) = weak.upgrade() {
-            let policy = api::Policy {
-                network,
-                scripts: network && scripts,
-            };
+            // Scripts run offline too (web viewer API 0.4), contained without network.
+            let policy = api::Policy { network, scripts };
             if send(&open, api::CommandKind::Policy(policy)) {
                 present_policy(&open, policy);
                 open.text_position.borrow_mut().changing_content();

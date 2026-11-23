@@ -58,6 +58,7 @@ mod scrolling;
 mod text_position;
 #[cfg(test)]
 mod text_presentation_tests;
+mod web_cursor;
 mod web_input;
 #[cfg(test)]
 mod web_input_tests;
@@ -1455,6 +1456,10 @@ fn present_controlled_outputs(
             ViewerOutput::SandboxNotice(notice) => sandbox_notice::present(open, notice.as_ref()),
             ViewerOutput::LinkHover(status) => links::answered(open, status.as_deref()),
             ViewerOutput::LinkFocus { count, focused } => links::focus(open, *count, *focused),
+            ViewerOutput::LinkHistory { back, forward } => {
+                links::history_state(open, *back, *forward)
+            }
+            ViewerOutput::WebCursor(cursor) => web_cursor::received(open, *cursor),
             ViewerOutput::LinkRequest(request) => links::request(open, request.clone()),
             ViewerOutput::ImageUnavailable {
                 generation,
@@ -1489,6 +1494,7 @@ fn present_controlled_outputs(
                 policy,
                 policy_change_allowed,
                 zoom,
+                loading,
             } => {
                 if *generation >= open.frame_generation.get()
                     && *generation >= open.layout.borrow().generation_floor
@@ -1496,6 +1502,7 @@ fn present_controlled_outputs(
                     && open.text_position.borrow().context_available()
                 {
                     window.set_web_policy_change_allowed(*policy_change_allowed);
+                    window.set_web_loading(*loading);
                     web_input::present_policy(open, *policy);
                     show_zoom(open, (zoom * 100.0) as f32);
                 }

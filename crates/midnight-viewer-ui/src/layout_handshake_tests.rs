@@ -376,6 +376,7 @@ fn layout_metadata_cannot_grant_web_permissions_or_accept_content_input_before_a
         },
         policy_change_allowed: true,
         zoom: 1.0,
+        loading: false,
     };
 
     fixture.deliver(vec![policy()]);
@@ -423,6 +424,7 @@ fn web_state(generation: u64, policy_change_allowed: bool) -> ViewerOutput {
         },
         policy_change_allowed,
         zoom: 1.25,
+        loading: false,
     }
 }
 

@@ -276,8 +276,14 @@ pub(crate) fn factory_with_resources(
         if cancel.load(Ordering::Acquire) {
             return Err("Viewer closed".into());
         }
+        let ancestors = ancestor_pins(parent, directories.clone(), cancel.clone());
         match directory.and_then(|directory| {
-            midnight_viewer_engine::captured_directory_resources(directory, main.clone()).ok()
+            midnight_viewer_engine::captured_directory_resources_with_ancestors(
+                directory,
+                main.clone(),
+                ancestors,
+            )
+            .ok()
         }) {
             Some(resources) => Ok(main.with_resources(resources)),
             // A denied/unavailable scope never gains a native path fallback. The main document
@@ -285,6 +291,31 @@ pub(crate) fn factory_with_resources(
             None => Ok(main),
         }
     })
+}
+
+/// The folders above a viewed file's folder its assets may come from (an HTML page's
+/// `../css/site.css`), each pinned by its native path only when an asset first names it.
+/// The original selected native parent is the reference, never a display name. Below each
+/// pinned folder, the scope refuses links as below the file's own folder.
+fn ancestor_pins(
+    parent: &Path,
+    directories: Arc<dyn midnight_core::TransferService>,
+    cancel: Arc<AtomicBool>,
+) -> Option<(usize, midnight_viewer_engine::AncestorPins)> {
+    let levels = parent
+        .ancestors()
+        .skip(1)
+        .take(midnight_viewer_engine::MAX_ANCESTOR_LEVELS)
+        .count();
+    let parent = parent.to_path_buf();
+    let pins: midnight_viewer_engine::AncestorPins = Arc::new(move |up| {
+        let folder = parent.ancestors().nth(up)?;
+        let cancelled = midnight_core::Cancellation::observing(cancel.clone());
+        directories
+            .prepare_checksum_directory(folder, &cancelled)
+            .ok()
+    });
+    (levels > 0).then_some((levels, pins))
 }
 
 pub(crate) fn thumbnail(capture: Capture, path: PathBuf, confirmed_ssd: bool) -> service::Capture {

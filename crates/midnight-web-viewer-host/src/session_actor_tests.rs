@@ -437,14 +437,36 @@ fn open_routing(
     limits: Limits,
     links: LinkRouting,
 ) -> Harness {
+    open_options(
+        transport,
+        browser,
+        source,
+        resources,
+        limits,
+        OpenOptions {
+            links,
+            ..OpenOptions::default()
+        },
+    )
+}
+
+fn open_options(
+    transport: Transport,
+    browser: Browser,
+    source: CapturedFile,
+    resources: Option<Arc<dyn Resources>>,
+    limits: Limits,
+    options: OpenOptions,
+) -> Harness {
     let consumer = Arc::new(Consumer::default());
     let wake = {
         let consumer = consumer.clone();
         Arc::new(move || consumer.wake())
     };
-    let session =
-        Session::with_transport(transport, source, resources, VIEWPORT, limits, links, wake)
-            .unwrap();
+    let session = Session::with_transport(
+        transport, source, resources, VIEWPORT, limits, options, wake,
+    )
+    .unwrap();
     consumer.exited.set(session.exited.clone()).unwrap();
     Harness {
         session,
@@ -1072,4 +1094,45 @@ fn link_targets_beyond_the_protocol_bounds_stop_the_session_before_the_consumer_
             "tag {tag}"
         );
     }
+}
+
+/// The first document opens with the policy the consumer chose: offline with scripts
+/// (web viewer API 0.4) reaches the browser in its Open, and the page's cursor reports
+/// reach the consumer in the browser's order.
+#[test]
+fn the_first_open_carries_the_chosen_policy_and_cursor_reports_pass_on() {
+    let (transport, browser) = browser(Script::Ready);
+    let policy = api::Policy {
+        network: false,
+        scripts: true,
+    };
+    let harness = open_options(
+        transport,
+        browser,
+        document(),
+        None,
+        Limits::default(),
+        OpenOptions {
+            links: LinkRouting::Host,
+            policy,
+            ..OpenOptions::default()
+        },
+    );
+    assert!(matches!(
+        harness.browser.receive(),
+        api::CommandKind::Open { policy: opened, .. } if opened == policy
+    ));
+    harness
+        .browser
+        .emit(api::EventKind::Cursor(api::Cursor::Pointer));
+    harness
+        .consumer
+        .until("the cursor report", |woken| woken.count >= 3);
+    assert!(
+        harness
+            .session
+            .drain(16)
+            .iter()
+            .any(|event| event.kind == api::EventKind::Cursor(api::Cursor::Pointer))
+    );
 }

@@ -22,8 +22,7 @@ fn document() -> (Arc<Document>, crate::output::Receiver) {
         crate::policy::DocumentPolicy::new(1, false, false).unwrap(),
         viewport,
         output,
-        false,
-        false,
+        OptIns::default(),
     )
     .unwrap();
     (Arc::new(doc), events)
@@ -53,6 +52,7 @@ fn canceled_resolution_releases_late_resource_without_releasing_main_authority()
         doc.clone(),
         stream,
         format!("{}a.css", doc.policy.main_url()),
+        ResourceType::STYLESHEET,
     );
     handler.cancel();
     assert!(doc.requests.lock().unwrap().active.is_empty());
@@ -135,6 +135,7 @@ fn excess_captured_requests_wait_for_a_slot_instead_of_being_cancelled() {
         doc.clone(),
         waiting,
         format!("{}img/x.png", doc.policy.main_url()),
+        ResourceType::IMAGE,
     );
     handler.cancel();
     let next = admitted[0].0;
@@ -245,4 +246,56 @@ fn captured_paths_stay_below_the_document_root_and_inside_the_url_budget() {
         policy.captured_path(&format!("{}/css/site.css", policy.origin())),
         None
     );
+}
+
+/// Saved and generated pages render with their own stylesheets and fonts: an untyped
+/// stylesheet is served as CSS, and a sandboxed (offline scripts) document's fonts and
+/// module scripts may load cross-origin, while nothing else becomes readable.
+#[test]
+fn captured_responses_serve_untyped_stylesheets_and_sandboxed_fonts() {
+    let offline = crate::policy::DocumentPolicy::new(1, false, false).unwrap();
+    let sandboxed = crate::policy::DocumentPolicy::new(1, false, true).unwrap();
+    let header = |headers: &[(&str, String)], name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.clone())
+    };
+    let (mime, headers) = response_headers_for(
+        &offline,
+        "application/octet-stream",
+        ResourceType::STYLESHEET,
+    );
+    assert_eq!(mime, "text/css");
+    assert_eq!(
+        header(&headers, "X-DNS-Prefetch-Control").as_deref(),
+        Some("off")
+    );
+    assert_eq!(header(&headers, "Access-Control-Allow-Origin"), None);
+    for kind in [ResourceType::SCRIPT, ResourceType::XHR, ResourceType::IMAGE] {
+        let (mime, _) = response_headers_for(&offline, "application/octet-stream", kind);
+        assert_eq!(mime, "application/octet-stream", "{kind:?}");
+    }
+    for (kind, cors) in [
+        (ResourceType::FONT_RESOURCE, true),
+        (ResourceType::SCRIPT, true),
+        (ResourceType::XHR, false),
+        (ResourceType::IMAGE, false),
+        (ResourceType::STYLESHEET, false),
+        (ResourceType::MAIN_FRAME, false),
+    ] {
+        let (_, headers) = response_headers_for(&sandboxed, "font/woff2", kind);
+        assert_eq!(
+            header(&headers, "Access-Control-Allow-Origin").is_some(),
+            cors,
+            "{kind:?}"
+        );
+        assert!(
+            header(&headers, "Content-Security-Policy")
+                .unwrap()
+                .starts_with("sandbox allow-scripts")
+        );
+        let (_, headers) = response_headers_for(&offline, "font/woff2", kind);
+        assert_eq!(header(&headers, "Access-Control-Allow-Origin"), None);
+    }
 }

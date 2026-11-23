@@ -207,8 +207,11 @@ How to read it:
 
 - **Windows and Linux:** F3 opens the installed viewer for the file's type: images
   (PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, SVG, AVIF), PDF with page layouts, Markdown,
-  source code with syntax highlighting, HTML in embedded Chromium (offline, with
-  scripts off until allowed), the Office preview of DOCX, XLSX, PPTX, ODT, ODS and ODP
+  source code with syntax highlighting, HTML in embedded Chromium as a small browser
+  (Back, Forward, Reload, the page's title and cursor; offline with its JavaScript
+  running and contained without network, local stylesheets, fonts and images also of
+  saved pages and of generated documentation's parent folders; Online on request), the
+  Office preview of DOCX, XLSX, PPTX, ODT, ODS and ODP
   contents (shown through the HTML viewer), video playback, and the basic text and hex
   viewer. Alt+F3 forces text. Viewers search (Ctrl+F), wrap, select and copy text (Ctrl+A
   selects the whole file in text, source and Markdown views, and Ctrl+C copies up to
@@ -220,7 +223,8 @@ How to read it:
   or any other file is shown in the active panel, and web and mail links open with the
   system's default handler; other schemes are refused. Alt+Shift+Left and
   Alt+Shift+Right, or the mouse's Back and Forward buttons, go back and forth through
-  the documents opened from links.
+  the documents opened from links; in HTML also the Back and Forward buttons and
+  Alt+Left/Right while there is a page in that direction.
 - **Video decoding:** a bundled FFmpeg profile decodes VP8, VP9, Theora, FFV1 and raw
   video; other codecs use Media Foundation on Windows and the distribution's FFmpeg or
   GStreamer on Linux.
@@ -233,7 +237,10 @@ How to read it:
   a document is open (VIEW-04); some readers still treat a change of the change time
   alone as a change (VIEW-05); image decode notes and failure kinds need image viewer
   API 0.4.0 (VIEW-06); each HTML document starts its own browser, about 0.9 s
-  (VIEW-08); HTML wheel glides can end early on a loaded machine (VIEW-09); text
+  (VIEW-08); HTML wheel glides can end early on a loaded machine (VIEW-09); the HTML
+  JavaScript choice lasts for one viewer window, with no Options setting yet, and an
+  offline page's scripts cannot use local storage, cookies, workers or `fetch` of its
+  own files (the sandbox that keeps them from reading files); text
   scrolling pacing is not measured on Linux or with a physical wheel, and rows longer
   than one layout show in pieces (VIEW-PERF-01, SCROLL-02).
 - **Documents:** [viewer presentation](developer/VIEWER_PRESENTATION.md),
@@ -405,7 +412,7 @@ How to read it:
 
 - **Implemented:** the viewer C ABI 1.0 with plugin API and SDK 0.2.0; the archive
   worker API 0.5.0; the native filesystem plugin ABI 1.4 with API and SDK 0.2.0; the
-  image viewer API 0.3.0 with SDK 0.4.0; the web viewer API and SDK 0.3.0; the
+  image viewer API 0.3.0 with SDK 0.4.0; the web viewer API and SDK 0.4.0; the
   thumbnail API 0.1.0 with SDK 0.2.0; the worker SDK 0.2.0. The text, source and
   Markdown viewers and the native and Network Neighborhood filesystems load as native
   libraries; the image and PDF viewers, thumbnailers, video playback and the archive

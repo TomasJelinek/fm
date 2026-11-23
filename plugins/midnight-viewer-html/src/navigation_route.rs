@@ -51,7 +51,13 @@ pub(crate) fn classify(policy: &DocumentPolicy, facts: &BrowseFacts<'_>) -> Brow
         return route_link(policy, facts);
     }
     let access = policy.access(facts.target);
-    if access == Access::Deny {
+    // Assets may come from folders above the document's (`DocumentPolicy::captured_path`),
+    // but the browser shows no document of them by itself: only the host opens those.
+    if access == Access::Deny
+        || (facts.main_frame
+            && access == Access::Captured
+            && !facts.target.starts_with(&policy.main_url()))
+    {
         return BrowseRoute::Refuse;
     }
     if !facts.main_frame || access != Access::Captured || !facts.get_no_post {

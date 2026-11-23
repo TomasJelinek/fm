@@ -40,8 +40,16 @@ impl ResourceCancellation {
 /// Captured, host-owned directory/mount authority. Segments have already been decoded and
 /// validated; implementations must enforce containment and revision checks on actual handles.
 /// Neither display paths nor a viewer-generated temporary path can create this capability.
+/// Segments start with at most [`Self::ancestor_levels`] `..` segments, each one folder
+/// above the scope root, followed by at least one name.
 pub trait Resources: Send + Sync + std::fmt::Debug {
     fn capture(&self, segments: &[String]) -> Result<CapturedFile, String>;
+
+    /// How many folders above its root this scope can capture from (`..` segments). None
+    /// unless the scope says so.
+    fn ancestor_levels(&self) -> usize {
+        0
+    }
 
     fn capture_with_cancellation(
         &self,
@@ -80,6 +88,8 @@ pub(crate) struct Store {
     main_length: u64,
     main_mime: &'static str,
     path_policy: ResourcePathPolicy,
+    /// Folders above the scope root relative URLs may climb to (`Resources::ancestor_levels`).
+    ancestors: usize,
     entries: HashMap<u64, Entry>,
     pending: HashMap<u64, Pending>,
     main: u64,
@@ -88,7 +98,11 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    pub fn new(main: &CapturedFile, path_policy: ResourcePathPolicy) -> Result<Self, String> {
+    pub fn new(
+        main: &CapturedFile,
+        path_policy: ResourcePathPolicy,
+        ancestors: usize,
+    ) -> Result<Self, String> {
         if path_policy == ResourcePathPolicy::CanonicalRoot && main.length() > 1024 * 1024 {
             return Err("Generated HTML exceeds its 1 MiB resource limit".into());
         }
@@ -105,6 +119,7 @@ impl Store {
                 "text/html"
             },
             path_policy,
+            ancestors: ancestors.min(MAX_ANCESTORS),
             entries: HashMap::new(),
             pending: HashMap::new(),
             main: 0,
@@ -180,7 +195,9 @@ impl Store {
             .get(&base)
             .ok_or("Unknown HTML base resource")?;
         let segments = match self.path_policy {
-            ResourcePathPolicy::RelativeAssets => resolve_segments(&entry.segments, url)?,
+            ResourcePathPolicy::RelativeAssets => {
+                resolve_segments(&entry.segments, url, self.ancestors)?
+            }
             ResourcePathPolicy::CanonicalRoot => canonical_segments(url)?,
         };
         let id = self.next_id()?;
@@ -308,10 +325,15 @@ fn canonical_segments(url: &str) -> Result<Vec<String>, String> {
     Ok(segments.into_iter().map(str::to_owned).collect())
 }
 
+/// Most folders above the document's folder a relative asset may come from: as many as
+/// the bundled provider's synthetic levels tell apart.
+pub(crate) const MAX_ANCESTORS: usize = 16;
+
 /// The provider removes its own synthetic origin before requesting a relative URL.
 /// Reject schemes, authority changes and traversal above the captured scope, even when
-/// percent encoded. `..` resolves lexically, like a browser, within the scope.
-fn resolve_segments(base: &[String], url: &str) -> Result<Vec<String>, String> {
+/// percent encoded. `..` resolves lexically, like a browser, within the scope and up to
+/// `ancestors` folders above its root, which the result names with leading `..` segments.
+fn resolve_segments(base: &[String], url: &str, ancestors: usize) -> Result<Vec<String>, String> {
     let path = url.split(['?', '#']).next().unwrap_or("");
     if path.is_empty() || path.starts_with('/') || path.starts_with('\\') {
         return Err("An HTML asset must use a relative URL".into());
@@ -329,10 +351,13 @@ fn resolve_segments(base: &[String], url: &str) -> Result<Vec<String>, String> {
         }
     }
     let decoded = String::from_utf8(bytes).map_err(|_| "HTML URL must be UTF-8")?;
+    // A decoded `#` or `?` is part of a file name (`C# notes_files`), never a URL part
+    // again: the names below are passed on literally. `%` stays refused, so nothing is
+    // decoded twice.
     if decoded.starts_with('/')
         || decoded
             .chars()
-            .any(|c| c.is_control() || matches!(c, '\\' | ':' | '%' | '?' | '#'))
+            .any(|c| c.is_control() || matches!(c, '\\' | ':' | '%'))
     {
         return Err("Forbidden HTML resource URL".into());
     }
@@ -345,10 +370,17 @@ fn resolve_segments(base: &[String], url: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if segment == ".." {
-            // `css/site.css` may name `../img/logo.png`; nothing may leave the scope root.
-            result
-                .pop()
-                .ok_or("HTML resource traversal above the document folder is forbidden")?;
+            // `css/site.css` may name `../img/logo.png`. Above the scope root a parent
+            // folder is one more leading `..`, as far as the scope reaches.
+            if result.last().is_some_and(|last| last != "..") {
+                result.pop();
+            } else if result.len() < ancestors {
+                result.push("..".into());
+            } else {
+                return Err(
+                    "HTML resource traversal above the document folder is forbidden".into(),
+                );
+            }
             continue;
         }
         if segment.ends_with(['.', ' ']) {
@@ -356,35 +388,54 @@ fn resolve_segments(base: &[String], url: &str) -> Result<Vec<String>, String> {
         }
         result.push(segment.to_owned());
     }
-    if result.is_empty() {
+    if result.last().is_none_or(|last| last == "..") {
         return Err("Empty HTML resource path".into());
     }
     Ok(result)
 }
 
+/// The MIME type of an asset, by its name's extension. Browsers saving a "complete" page
+/// name scripts and other assets `<name>.<ext>.download`; the extension before
+/// `.download` counts then.
 pub(crate) fn mime_type(name: &str) -> &'static str {
-    match name
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "html" | "htm" => "text/html",
+    let lower = name.to_ascii_lowercase();
+    let name = lower
+        .strip_suffix(".download")
+        .filter(|inner| inner.contains('.'))
+        .unwrap_or(&lower);
+    match name.rsplit('.').next().unwrap_or("") {
+        "html" | "htm" | "shtml" => "text/html",
         "xhtml" => "application/xhtml+xml",
         "css" => "text/css",
         "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
+        "apng" => "image/apng",
+        "jpg" | "jpeg" | "jfif" | "pjpeg" | "pjp" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
-        "ico" => "image/x-icon",
+        "ico" | "cur" => "image/x-icon",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
         "otf" => "font/otf",
-        "js" | "mjs" => "text/javascript",
+        "eot" => "application/vnd.ms-fontobject",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "json" | "map" => "application/json",
+        "wasm" => "application/wasm",
+        "xml" | "xsl" | "xslt" => "application/xml",
         "txt" => "text/plain",
+        "csv" => "text/csv",
+        "vtt" => "text/vtt",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "ogv" => "video/ogg",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
         _ => "application/octet-stream",
     }
 }

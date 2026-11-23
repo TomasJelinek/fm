@@ -163,6 +163,7 @@ pub(crate) fn event(b: &mut Decoder<'_>, tag: u8) -> io::Result<EventKind> {
         11 => EventKind::Closed,
         12 => EventKind::LinkHover { target: b.text()? },
         13 => EventKind::LinkActivated { target: b.text()? },
+        14 => EventKind::Cursor(*Cursor::ALL.get(usize::from(b.u8()?)).ok_or_else(invalid)?),
         _ => return Err(invalid()),
     })
 }

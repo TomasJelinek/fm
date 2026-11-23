@@ -10,7 +10,7 @@ use i_slint_core::{
 use slint::platform::{Key, WindowEvent};
 
 const ONLINE: &str = "Allow network for this document only";
-const SCRIPTS: &str = "Allow scripts to read and transmit this document";
+const SCRIPTS: &str = "Run this page's JavaScript";
 
 fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
     if item
@@ -757,6 +757,7 @@ fn web_policy_boxes_show_policy_in_force_after_document_change_and_refusal() {
         policy: viewer_web::Policy::default(),
         policy_change_allowed: true,
         zoom: 1.0,
+        loading: false,
     };
 
     present(text_frame(10, 7, VIEWER_MODE_HTML, &html));
@@ -806,4 +807,18 @@ fn web_policy_boxes_show_policy_in_force_after_document_change_and_refusal() {
         vec![text_frame(12, 9, VIEWER_MODE_HTML, &html), state(9)],
     );
     assert_eq!([checked(ONLINE), checked(SCRIPTS)], ["false", "false"]);
+    // Scripts run offline too (web viewer API 0.4): the box works without Online.
+    accept.set(true);
+    control(&open, SCRIPTS).accessible_action(&AccessibilityAction::Default);
+    assert_eq!([checked(ONLINE), checked(SCRIPTS)], ["false", "true"]);
+    assert!(matches!(
+        inputs.borrow().last(),
+        Some(ViewerInput::Web {
+            input: viewer_web::CommandKind::Policy(viewer_web::Policy {
+                network: false,
+                scripts: true
+            }),
+            ..
+        })
+    ));
 }

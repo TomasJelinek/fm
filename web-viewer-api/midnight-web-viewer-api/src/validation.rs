@@ -43,9 +43,10 @@ impl Viewport {
 }
 
 impl Policy {
-    /// Protocol one cannot enable scripts without enabling online requests.
+    /// Every combination is valid since API 0.4: scripts may run offline, where the
+    /// provider keeps them from any network. API 0.3 and earlier refuse scripts without
+    /// network, so a host sends such a policy only to a provider of API 0.4 or newer.
     pub fn validate(self) -> io::Result<Self> {
-        check(!self.scripts || self.network)?;
         Ok(self)
     }
 }

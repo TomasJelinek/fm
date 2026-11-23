@@ -108,9 +108,22 @@ fn assets_keep_their_relative_urls_and_refusals_below_the_synthetic_folders() {
         ("./fonts/./a.woff2", Access::Captured, Some("fonts/a.woff2")),
         // The document itself is no asset.
         ("", Access::Captured, None),
-        // Assets never leave the document's folder.
-        ("../site.css", Access::Deny, None),
-        ("../../css/site.css", Access::Deny, None),
+        // Assets of folders above the document's go to the host as `../` references
+        // (rustdoc's `../static.files/`, MkDocs' `../css/`); the host decides how far up
+        // it reaches.
+        ("../site.css", Access::Captured, Some("../site.css")),
+        (
+            "../../css/site.css?v=1#x",
+            Access::Captured,
+            Some("../../css/site.css?v=1"),
+        ),
+        (
+            "../../static.files/main%20page.js",
+            Access::Captured,
+            Some("../../static.files/main%20page.js"),
+        ),
+        // A folder names no asset; nothing above the 16 levels or root-relative leaves.
+        ("../", Access::Deny, None),
         (seventeen.as_str(), Access::Deny, None),
         ("/site.css", Access::Deny, None),
     ] {
@@ -122,12 +135,54 @@ fn assets_keep_their_relative_urls_and_refusals_below_the_synthetic_folders() {
             "{reference}"
         );
     }
-    let online = DocumentPolicy::new(1, true, false).unwrap();
+    let sixteen = format!("{}x.css", "../".repeat(16));
     assert_eq!(
-        online.access(&resolved(&main, "css/site.css")),
-        Access::Deny
+        policy.captured_path(&resolved(&main, &sixteen)).as_deref(),
+        Some(sixteen.as_str())
     );
+    let online = DocumentPolicy::new(1, true, false).unwrap();
+    for reference in ["css/site.css", "../site.css"] {
+        assert_eq!(
+            online.access(&resolved(&main, reference)),
+            Access::Deny,
+            "{reference}"
+        );
+    }
     assert_eq!(online.access(&resolved(&main, "?q")), Access::Captured);
+}
+
+/// Web viewer API 0.4: offline scripts run in a sandboxed document with an opaque origin
+/// that reaches no network and reads no captured file.
+#[test]
+fn offline_scripts_run_sandboxed_without_any_connection() {
+    let policy = DocumentPolicy::new(3, false, true).unwrap();
+    assert!(policy.sandboxed());
+    let csp = policy.csp();
+    let directives: Vec<_> = csp.split("; ").collect();
+    assert_eq!(directives[0], "sandbox allow-scripts allow-popups");
+    assert!(!csp.contains("allow-same-origin") && !csp.contains("'self'"));
+    for directive in [
+        "connect-src 'none'",
+        "object-src 'none'",
+        "frame-src 'none'",
+        "child-src 'none'",
+        "worker-src 'none'",
+        "form-action 'none'",
+        "default-src https://mewv-3.invalid data: blob:",
+        "base-uri https://mewv-3.invalid",
+    ] {
+        assert!(directives.contains(&directive), "{directive} in {csp}");
+    }
+    assert!(!csp.contains("http:") && !csp.contains("https: "));
+    // Offline without scripts and online stay as they were.
+    assert!(!offline().sandboxed());
+    assert!(offline().csp().contains("script-src 'none'"));
+    for scripts in [false, true] {
+        let online = DocumentPolicy::new(3, true, scripts).unwrap();
+        assert!(!online.sandboxed());
+        assert!(!online.csp().contains("sandbox"));
+    }
+    assert!(DocumentPolicy::new(0, false, true).is_err());
 }
 
 #[test]

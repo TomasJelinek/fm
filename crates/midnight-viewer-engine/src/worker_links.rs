@@ -7,8 +7,9 @@
 //!   starts the document, otherwise through a bounded, cancellable scan of the document's
 //!   pages that shows its progress after `SCAN_PROGRESS`.
 //! - A local file a viewer shows opens in this window, with Back and Forward through the
-//!   documents opened from links; a folder opens, and any other file is revealed, in the
-//!   active panel. The file system is looked at on a thread of its own.
+//!   documents opened from links (the window is told whether each has a document to go
+//!   to) and Reload reading the shown one again; a folder opens, and any other file is
+//!   revealed, in the active panel. The file system is looked at on a thread of its own.
 //! - `http`, `https` and `mailto` go to the system's default handler.
 //! - Anything else is refused, and the status line says why.
 //!
@@ -67,6 +68,8 @@ pub(super) struct Links {
     resolving: Option<Arc<Mutex<Option<LinkAction>>>>,
     back: Vec<Visit>,
     forward: Vec<Visit>,
+    /// Whether Back and Forward had a document to go to when the window was told last.
+    told_history: Option<(bool, bool)>,
     /// Where to go once the opened document's first page is shown, and whether it is.
     arrival: Option<Arrival>,
     arrived: bool,
@@ -120,6 +123,7 @@ impl Links {
             resolving: None,
             back: Vec::new(),
             forward: Vec::new(),
+            told_history: None,
             arrival: None,
             arrived: false,
             scan: None,
@@ -252,7 +256,36 @@ impl Worker {
             }
             ViewerLinkInput::Back => self.link_history(true, output),
             ViewerLinkInput::Forward => self.link_history(false, output),
+            ViewerLinkInput::Reload => self.reload(output),
         }
+    }
+
+    /// Tell the window whether Back and Forward have a document to go to, when that
+    /// changed.
+    pub(super) fn tell_link_history(&mut self, output: &Mailbox) {
+        let history = (!self.links.back.is_empty(), !self.links.forward.is_empty());
+        if self.links.told_history != Some(history) {
+            self.links.told_history = Some(history);
+            output.put(ViewerOutput::LinkHistory {
+                back: history.0,
+                forward: history.1,
+            });
+        }
+    }
+
+    /// Read the shown document again from its file, where it was shown. The history stays;
+    /// an HTML page keeps its Online and JavaScript choices.
+    fn reload(&mut self, output: &Mailbox) {
+        self.cancel_link_work();
+        let visit = self.visit();
+        self.web_choices.reload = self
+            .web
+            .as_ref()
+            .zip(self.files.get(self.current))
+            .map(|(web, path)| (path.clone(), web.policy()));
+        self.replace_order(visit.files, visit.current, visit.order, visit.on_disk);
+        self.links.arrival = Some(Arrival::Position(visit.position));
+        self.open(output);
     }
 
     /// Tab moves the focus to the next link, the first one in view to begin with; Shift+Tab
@@ -647,6 +680,7 @@ impl Worker {
         let visit = self.visit();
         push_bounded(&mut self.links.back, visit);
         self.links.forward.clear();
+        self.tell_link_history(output);
         self.replace_order(Arc::from([path]), 0, order, on_disk);
         self.links.arrival = fragment.map(Arrival::Fragment);
         self.open(output);
@@ -706,6 +740,7 @@ impl Worker {
         } else {
             push_bounded(&mut self.links.back, current);
         }
+        self.tell_link_history(output);
         self.replace_order(visit.files, visit.current, visit.order, visit.on_disk);
         self.links.arrival = Some(Arrival::Position(visit.position));
         self.open(output);

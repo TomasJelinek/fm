@@ -378,7 +378,11 @@ impl ResourceJobs {
             .map_or(crate::ResourcePathPolicy::default(), |scope| {
                 scope.path_policy()
             });
-        let store = Store::new(main, policy)?;
+        let ancestors = owner
+            .scope
+            .as_ref()
+            .map_or(0, |scope| scope.ancestor_levels());
+        let store = Store::new(main, policy, ancestors)?;
         let status = owner.status.clone();
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),

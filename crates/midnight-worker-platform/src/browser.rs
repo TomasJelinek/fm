@@ -151,6 +151,10 @@ pub const HOST_SHORTCUTS_PHYSICAL_V1: &str = "physical-v1";
 pub const LINKS_ENV: &str = "MIDNIGHT_WEB_VIEWER_LINKS";
 /// Exact capability value accepted by web-viewer API 0.3 providers.
 pub const LINKS_HOST_V1: &str = "host-v1";
+/// Public web-viewer API launch contract of pointer cursor reports (API 0.4).
+pub const CURSOR_ENV: &str = "MIDNIGHT_WEB_VIEWER_CURSOR";
+/// Exact capability value accepted by web-viewer API 0.4 providers.
+pub const CURSOR_V1: &str = "cursor-v1";
 
 /// The web-viewer API extensions a launching host accepts. A provider uses an extension
 /// only when its exact value is in the environment the host launches it with.
@@ -161,6 +165,8 @@ pub struct Extensions {
     /// Link hover and activation events instead of in-browser navigation (API 0.3):
     /// [`LINKS_ENV`].
     pub links: bool,
+    /// Pointer cursor events (API 0.4): [`CURSOR_ENV`].
+    pub cursor: bool,
 }
 
 impl Extensions {
@@ -174,6 +180,7 @@ impl Extensions {
                 HOST_SHORTCUTS_PHYSICAL_V1,
             ),
             (self.links, LINKS_ENV, LINKS_HOST_V1),
+            (self.cursor, CURSOR_ENV, CURSOR_V1),
         ]
         .into_iter()
         .filter_map(|(accepted, key, value)| accepted.then_some((key, value)))
@@ -197,15 +204,15 @@ mod tests {
         assert_eq!(none.environment().count(), 0);
         let shortcuts = Extensions {
             host_shortcuts: true,
-            links: false,
+            ..Default::default()
         };
         assert_eq!(
             shortcuts.environment().collect::<Vec<_>>(),
             [(HOST_SHORTCUTS_ENV, HOST_SHORTCUTS_PHYSICAL_V1)]
         );
         let links = Extensions {
-            host_shortcuts: false,
             links: true,
+            ..Default::default()
         };
         assert_eq!(
             links.environment().collect::<Vec<_>>(),
@@ -214,6 +221,7 @@ mod tests {
         let both = Extensions {
             host_shortcuts: true,
             links: true,
+            cursor: false,
         };
         assert_eq!(
             both.environment().collect::<Vec<_>>(),
@@ -228,6 +236,25 @@ mod tests {
         assert_eq!(
             (LINKS_ENV, LINKS_HOST_V1),
             ("MIDNIGHT_WEB_VIEWER_LINKS", "host-v1")
+        );
+        let all = Extensions {
+            host_shortcuts: true,
+            links: true,
+            cursor: true,
+        };
+        assert_eq!(
+            all.environment().collect::<Vec<_>>(),
+            [
+                (HOST_SHORTCUTS_ENV, HOST_SHORTCUTS_PHYSICAL_V1),
+                (LINKS_ENV, LINKS_HOST_V1),
+                (CURSOR_ENV, CURSOR_V1)
+            ]
+        );
+        assert_eq!(all.value(CURSOR_ENV), Some("cursor-v1"));
+        assert_eq!(both.value(CURSOR_ENV), None);
+        assert_eq!(
+            (CURSOR_ENV, CURSOR_V1),
+            ("MIDNIGHT_WEB_VIEWER_CURSOR", "cursor-v1")
         );
     }
 }

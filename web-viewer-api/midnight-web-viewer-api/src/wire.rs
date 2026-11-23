@@ -24,7 +24,7 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
                 raw_len == 0
             }
         }
-        1 if (1..=13).contains(&tag) => {
+        1 if (1..=14).contains(&tag) => {
             if tag == 2 {
                 raw_len <= MAX_FRAME_BYTES
             } else {

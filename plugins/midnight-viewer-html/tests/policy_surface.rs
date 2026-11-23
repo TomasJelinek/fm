@@ -29,8 +29,16 @@ fn offline_origin_never_falls_through_to_network() {
 }
 
 #[test]
-fn online_only_exposes_main_document_and_scripts_require_network() {
-    assert!(DocumentPolicy::new(1, false, true).is_err());
+fn online_only_exposes_main_document_and_offline_scripts_are_sandboxed() {
+    // Web viewer API 0.4: scripts may run offline, in a sandboxed opaque-origin document.
+    let offline = DocumentPolicy::new(1, false, true).unwrap();
+    assert!(
+        offline.sandboxed()
+            && offline
+                .csp()
+                .starts_with("sandbox allow-scripts allow-popups;")
+    );
+    assert_eq!(offline.access("https://example.com/asset"), Access::Deny);
     let policy = DocumentPolicy::new(2, true, true).unwrap();
     let main = policy.main_url();
     assert_eq!(policy.access(&main), Access::Captured);

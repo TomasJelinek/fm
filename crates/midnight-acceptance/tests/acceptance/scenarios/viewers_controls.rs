@@ -1084,6 +1084,30 @@ fn prepare_links(context: &mut Context) -> Result<(), String> {
         b"MZ\x90\0\x03\0\0\0\x04\0\0\0not a program\0\0\0\0",
     )?;
     generated::write(&folder, "page.html", PAGE)?;
+    generated::write(&folder, "next.html", NEXT)?;
+    generated::write(&folder, "saved.html", SAVED)?;
+    for (name, text) in [
+        (
+            "style.css",
+            "@import \"layout.css\";\n#header { height: 200px; background: #b0f0c0; }\n",
+        ),
+        (
+            "layout.css",
+            "#content { height: 200px; background: #e0c0ff; }\n",
+        ),
+        (
+            "app.js.download",
+            "document.addEventListener('DOMContentLoaded', () => { const b = document.createElement('div'); b.style.cssText = 'height:150px;background:#ffc0c0'; document.body.appendChild(b); });\n",
+        ),
+    ] {
+        generated::write(&folder, &format!("Saved page ž_files/{name}"), text)?;
+    }
+    // One folder above the page's, as generated documentation keeps its stylesheets.
+    generated::write(
+        &context.work,
+        "links-styles/next.css",
+        "#styled { height: 240px; background: #c0e0ff; }\n",
+    )?;
     Ok(())
 }
 
@@ -1585,17 +1609,46 @@ const PAGE: &str = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>
 html, body { margin: 0; padding: 0; background: #ffffff; font: 20px sans-serif; }\n\
 a { display: block; height: 160px; line-height: 160px; padding-left: 60px; color: #000000; }\n\
 #web { background: #dde8ff; } #mail { background: #ffe8dd; } #jump { background: #e0ffe0; }\n\
+#next { height: 100px; line-height: 100px; background: #fff0b0; }\n\
 .filler { height: 4000px; background: #ffffff; }\n\
 #below { height: 2000px; background: #202020; color: #ffffff; }\n\
 </style></head><body>\n\
 <a id=\"web\" href=\"https://example.com/page\">The web page</a>\n\
 <a id=\"mail\" href=\"mailto:help@example.com?subject=Hi&amp;attach=report.pdf\">Mail</a>\n\
 <a id=\"jump\" href=\"#below\">Below</a>\n\
+<a id=\"next\" href=\"next.html\">The next page</a>\n\
 <div class=\"filler\"></div>\n\
 <div id=\"below\">Below the filler</div>\n\
 </body></html>\n";
-/// The link bands' colours (web, mail, fragment) and the fragment's block.
-const BANDS: [[u8; 3]; 3] = [[0xdd, 0xe8, 0xff], [0xff, 0xe8, 0xdd], [0xe0, 0xff, 0xe0]];
+/// `links/next.html`, which `page.html`'s fourth band opens: a band coloured by a stylesheet
+/// one folder above (`../links-styles/next.css`) and one its script adds offline.
+const NEXT: &str = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Next</title>\n\
+<link rel=\"stylesheet\" href=\"../links-styles/next.css\">\n\
+<style>html, body { margin: 0; background: #ffffff; }</style></head><body>\n\
+<div id=\"styled\">Styled from above</div>\n\
+<script>const block = document.createElement('div'); block.style.height = '240px';\n\
+block.style.background = '#ffd0a0'; block.textContent = 'Added by a script';\n\
+document.body.appendChild(block);</script>\n\
+</body></html>\n";
+const STYLED: [u8; 3] = [0xc0, 0xe0, 0xff];
+const SCRIPTED: [u8; 3] = [0xff, 0xd0, 0xa0];
+/// `links/saved.html`: a page saved "complete", with its assets in a `_files` folder whose
+/// name has a space and a non-ASCII letter: a stylesheet that `@import`s another and a
+/// script named `.js.download` that adds a block.
+const SAVED: &str = "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Saved page</title>\n\
+<link rel=\"stylesheet\" href=\"./Saved page ž_files/style.css\">\n\
+<script src=\"./Saved page ž_files/app.js.download\"></script>\n\
+<style>html, body { margin: 0; background: #ffffff; }</style></head><body>\n\
+<div id=\"header\">Saved page</div><div id=\"content\">Saved content</div>\n\
+</body></html>\n";
+const SAVED_COLOURS: [[u8; 3]; 3] = [[0xb0, 0xf0, 0xc0], [0xe0, 0xc0, 0xff], [0xff, 0xc0, 0xc0]];
+/// The link bands' colours (web, mail, fragment, the next page) and the fragment's block.
+const BANDS: [[u8; 3]; 4] = [
+    [0xdd, 0xe8, 0xff],
+    [0xff, 0xe8, 0xdd],
+    [0xe0, 0xff, 0xe0],
+    [0xff, 0xf0, 0xb0],
+];
 const BELOW: [u8; 3] = [0x20, 0x20, 0x20];
 /// The HTML page's web link, and the addresses the Engine refuses to open here, before
 /// the reason (the mail link's without its `attach` field).
@@ -1693,7 +1746,7 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
                 viewing.window.get_content_top() + y as f32 / scale,
             ))
         };
-        let (web, mail, jump) = (at(0)?, at(1)?, at(2)?);
+        let (web, mail, jump, next) = (at(0)?, at(1)?, at(2)?, at(3)?);
         // The page's browser reads the pointer only from winit's events: through the
         // native seam, as a person's pointer reaches it.
         probe::native_pointer(app, &viewing, web, probe::NativePointer::Move)?;
@@ -1713,6 +1766,36 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
                 return Err(format!("a link launched {launched:?}"));
             }
         }
+        // The small browser: a local page opens in the same window, styled by a stylesheet
+        // one folder above and by its script, which runs offline; Back returns.
+        probe::native_click(app, &viewing, next)?;
+        viewing.wait(app, "next.html from its link", OPEN_LIMIT, |window| {
+            window.get_link_back_available() && window.get_status().starts_with("Next · ")
+        })?;
+        until(
+            app,
+            &viewing,
+            "next.html styled from above and by its script",
+            |_, _| {
+                let canvas = viewing.canvas();
+                canvas.count_near(STYLED, 8) > 2000 && canvas.count_near(SCRIPTED, 8) > 2000
+            },
+        )?;
+        app.screenshot_window(
+            context,
+            &viewing.software,
+            "html-next-styled",
+            "HTML: next.html styled from a folder above and by its offline script",
+        );
+        input::click(viewing.slint(), AccessibleRole::Button, "Back")?;
+        viewing.wait(app, "page.html again after Back", OPEN_LIMIT, |window| {
+            !window.get_link_back_available()
+                && window.get_link_forward_available()
+                && window.get_status().starts_with("Links · ")
+        })?;
+        until(app, &viewing, "page.html's link bands again", |_, _| {
+            band_centre(&viewing.canvas(), BANDS[2]).is_some()
+        })?;
         let before = app.launches.all().len();
         probe::native_click(app, &viewing, jump)?;
         until(app, &viewing, "the fragment's block in view", |_, _| {
@@ -1732,5 +1815,21 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
             Err(format!("the fragment link launched {launched:?}"))
         }
     })();
-    result.and(viewing.close(app))
+    result.and(viewing.close(app))?;
+    // A page saved "complete": its stylesheet, the one it imports and its `.js.download`
+    // script, from a `_files` folder with a space and a non-ASCII letter in its name.
+    let saved = open_in(app, PaneId::Right, "saved.html")?;
+    let result = until(app, &saved, "saved.html with its assets", |_, _| {
+        let canvas = saved.canvas();
+        SAVED_COLOURS
+            .iter()
+            .all(|colour| canvas.count_near(*colour, 8) > 2000)
+    });
+    app.screenshot_window(
+        context,
+        &saved.software,
+        "html-saved-page",
+        "HTML: a page saved complete, with its stylesheets and script",
+    );
+    result.and(saved.close(app))
 }

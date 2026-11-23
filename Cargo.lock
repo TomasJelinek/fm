@@ -3188,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-web-viewer-api"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "midnight-web-viewer-host"
@@ -3205,7 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-web-viewer-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "midnight-web-viewer-api",
 ]
