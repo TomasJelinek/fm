@@ -89,6 +89,14 @@ impl<'a, T> ServiceSlot<'a, T> {
 }
 
 impl Engine {
+    /// Check at startup whether other accounts can change the running installation, report
+    /// it once ([`midnight_core::InstallationEvent::Checked`]) and serve the notice's
+    /// buttons. Off by default, so engines made by tests and tools never inspect their
+    /// executable's folder.
+    pub fn enable_installation_notice(&mut self) {
+        self.services.installation_notice = true;
+    }
+
     /// Admit the service used only for explicit correlated authorization retries.
     /// Returns an error if it is already configured, before accepting any service.
     pub fn configure_elevated_directories(

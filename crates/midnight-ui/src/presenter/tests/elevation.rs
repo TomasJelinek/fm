@@ -75,10 +75,9 @@ fn a_refused_authorized_retry_states_the_installation_requirement() {
     let retry = NavigationId(p.panes[0].generation);
     assert!(retry > navigation);
     // The fixed refusal of a helper in an unprotected folder (midnight-elevation).
-    let requirement = "Authorized listing requires midnight-elevated-listing.exe to be \
-        installed by an administrator in a protected folder that standard users cannot \
-        change, such as a folder under C:\\Program Files. C:\\Users\\me\\資料\\helper.exe \
-        is writable by its user.";
+    let requirement = "Retry with authorization needs Midnight Explorer installed where only \
+        administrators can change it, such as a folder under C:\\Program Files. \
+        C:\\Users\\me\\資料\\helper.exe is writable by its user.";
     p.apply(Event::ListingFailed {
         pane: PaneId::Left,
         navigation: retry,

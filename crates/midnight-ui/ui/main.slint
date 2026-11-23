@@ -4,7 +4,8 @@ import { EmbeddedHotPaths, HotPathsPresentation } from "embedded-hot-paths.slint
 import { EmbeddedOperation, OperationPresentation } from "embedded-operation.slint";
 import { EmbeddedFileList, FileListPresentation } from "embedded-file-list.slint";
 import { EmbeddedNotice, NoticePresentation } from "embedded-notice.slint";
-export { PanelFilterPresentation, PanelChoices, ArchivePasswords, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, PopupFocus }
+import { InstallationNotice, InstallationNoticePresentation } from "installation-notice.slint";
+export { PanelFilterPresentation, PanelChoices, ArchivePasswords, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, InstallationNoticePresentation, PopupFocus }
 import { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths } from "find-window.slint";
 export { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths }
 import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft, ChecksumColumnWidths } from "checksum-window.slint";
@@ -916,6 +917,7 @@ export component MainWindow inherits Window {
             volume-key(event) => { return root.volume-key(event); }
             focus-files => { root.focus-files(); }
         }
+        InstallationNotice { }
         panels := Rectangle {
             vertical-stretch: 1;
             private property <length> gutter: root.panel-zoomed ? 0px : (Theme.touch ? 12px : 6px);

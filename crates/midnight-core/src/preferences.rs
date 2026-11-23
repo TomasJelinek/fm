@@ -746,6 +746,15 @@ pub trait SettingsService: Send + Sync + 'static {
         preferences: UserPreferences,
         comparators: crate::ComparatorValidationProof<'_>,
     ) -> Result<(), FsError>;
+    /// Keys of notices dismissed for good, stored beside the preferences but outside their
+    /// versioned schema. Adapters without such a store remember nothing.
+    fn load_dismissed_notices(&self) -> Result<Vec<String>, FsError> {
+        Ok(Vec::new())
+    }
+    /// Replace the dismissed notice keys.
+    fn save_dismissed_notices(&self, _keys: &[String]) -> Result<(), FsError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

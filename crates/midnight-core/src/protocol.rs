@@ -302,6 +302,8 @@ pub enum Command {
     ListFontFamilies,
     /// The About dialog's notices for one library; a newer request replaces a queued one.
     ReadLicenseNotice(Box<crate::LicenseNoticeRequest>),
+    /// A button of the shared-installation notice.
+    Installation(crate::InstallationRequest),
     ResolveDefaultEditor,
     EditCapturedFile {
         request: DesktopRequestId,
@@ -689,6 +691,7 @@ pub enum Event {
         result: Result<crate::DiagnosticTextPreview, FsError>,
     },
     LicenseNoticeReady(Box<crate::LicenseNotice>),
+    Installation(Box<crate::InstallationEvent>),
     SizeWarningsReady {
         request: DesktopRequestId,
         result: Result<Arc<dyn crate::GeneratedTextSource>, FsError>,

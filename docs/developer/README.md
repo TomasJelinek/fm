@@ -196,8 +196,10 @@ protected launcher pointer for the build's `midnight-explorer.exe` path selects 
 executable keeps the size and modification time recorded at deployment, which
 checked the copy's SHA-256 against the build; `MIDNIGHT_VERIFY_RUNTIME_SHA256=1`
 instead requires the running host and the registered copy to have the same SHA-256.
-See [runtime discovery](RUNTIME_DISCOVERY.md). The current working directory is not
-the plugin root. A native viewer package contains
+Without a registration, a shared installation (one that other accounts can change
+only through permissions) discovers its own packages and is reported once; release
+packages never need a registration. See [runtime discovery](RUNTIME_DISCOVERY.md).
+The current working directory is not the plugin root. A native viewer package contains
 `plugin.toml`, its native library and distribution notices. The directory name
 need not equal the manifest ID. Native discovery reads metadata without loading
 code; first use loads and checks the ABI descriptor. Duplicate IDs disable all

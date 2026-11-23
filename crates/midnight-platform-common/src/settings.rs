@@ -30,6 +30,7 @@ mod filename_colors;
 use archive_associations::StoredArchiveAssociations;
 use archive_extensions::StoredArchiveExtensions;
 use filename_colors::StoredFilenameColor;
+pub mod dismissed_notices;
 mod window_geometry;
 use window_geometry::StoredWindowGeometry;
 mod native_path;

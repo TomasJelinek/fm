@@ -24,7 +24,8 @@ discovery does not load or launch a plugin.
 
 Application services first call `installed_executable()` on a backend worker.
 Windows can resolve an explicitly registered private copy for an identical shared
-host build; trusted portable installations retain adjacent discovery. The trusted
+host build; trusted portable installations, and shared ones without a registration,
+retain adjacent discovery. The trusted
 portable check uses the launch file's native final spelling, so letter-case, 8.3,
 SUBST and mapped-drive aliases of a protected installation are accepted (and the
 canonical path is returned), while reparse points in the entered spelling are
@@ -53,22 +54,27 @@ unsupported pending its loader/signing and identity implementation.
 Windows loads an absolute entry path with DLL-directory/system-directory search
 flags. Linux uses absolute `dlopen` with `RTLD_NOW | RTLD_LOCAL`. Package, manifest
 and entry-library canonical paths must remain in their expected location. Discovery
-and first load also validate native ownership and write/rename permissions. Linux
-accepts current-user/root ownership and rejects group/other writes, including unsafe
-ancestors; a trusted-owned sticky ancestor such as `/tmp` is permitted. Windows
-checks owner and DACL trustees against the current process user, System,
-Administrators and the OS-resolved TrustedInstaller service. Installation objects
-must not grant other accounts modification rights. Ancestors must not grant rename,
-delete-child, DACL/owner or reparse-relevant modification rights; ordinary permission
-to create a new directory at `C:\` does not permit replacing existing `C:\Users`.
-Conditional/object ACL forms are conservatively refused rather than misinterpreted.
-These checks do not prevent trusted owners/administrators or native plugin code
-itself from changing their own process or files.
+and first load also validate native ownership and the canonical, link-free path of the
+package and every ancestor. Linux accepts current-user/root ownership; Windows checks
+owners against the current process user, System, Administrators and the OS-resolved
+TrustedInstaller service. Conditional/object ACL forms are conservatively refused
+rather than misinterpreted. Other accounts' modification rights (Windows ACL entries
+that grant write, delete, DACL/owner or reparse-relevant rights on an object, or
+rename and delete-child rights on an ancestor; Linux group/other write bits outside a
+trusted-owned sticky ancestor such as `/tmp`) make the installation **shared**: it is
+accepted, because those accounts could replace the application executable as well,
+and `installation_sharing` reports it for the application's one-time notice.
+`secure_installation` and `copy_installation` implement that notice's two remedies;
+`trust::check_private` keeps the strict policy for runtime registrations and the
+deployments they select. Ordinary permission to create a new directory at `C:\`
+does not make existing `C:\Users` shared. These checks do not prevent trusted
+owners/administrators or native plugin code itself from changing their own process or
+files.
 
 Discovery and first load validate every local package object, including dependency
 libraries in subdirectories, under a 4096-entry budget. Redirected paths and
 nonregular objects are refused. Checking only the entry library would allow an
-otherwise private package to load a shared-writable companion library. Native
+otherwise private package to load a redirected companion library. Native
 plugins still retain application authority and must select trusted dependencies
 outside their own package.
 

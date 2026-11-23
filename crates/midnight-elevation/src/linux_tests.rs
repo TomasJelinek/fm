@@ -78,7 +78,7 @@ fn helper_outside_a_root_owned_installation_is_refused_with_guidance() {
     let error = protected_helper(&helper).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let message = error.to_string();
-    assert!(message.contains("root-owned installation"), "{message}");
+    assert!(message.contains("only root can change it"), "{message}");
     assert!(message.contains("/opt/midnight-explorer"), "{message}");
 }
 

@@ -54,8 +54,26 @@ pub fn installed_executable() -> Result<std::path::PathBuf, Error> {
     INSTALLATION.get_or_init(installation::resolve).clone()
 }
 /// Shared installation trust check for host-owned executable plugin discovery.
+///
+/// Refuses links and other redirections (also a path that is not already canonical), objects
+/// owned by an account other than the user, SYSTEM, Administrators or TrustedInstaller (Linux:
+/// the user or root) and unsupported permission entries, for `path` and every ancestor. An
+/// object that other accounts can change only through its permissions (a folder extracted
+/// below a drive root on Windows, group- or world-writable modes on Linux) is accepted: they
+/// could replace the application executable as well. [`installation_sharing`] reports it.
 pub fn validate_plugin_path(path: &std::path::Path) -> Result<(), Error> {
     trust::check(path)?;
+    if path.canonicalize()? != path {
+        return Err(Error(
+            "Plugin path redirects outside its installation".into(),
+        ));
+    }
+    Ok(())
+}
+/// [`validate_plugin_path`] that also refuses an object or ancestor other accounts can change.
+#[cfg(windows)]
+pub(crate) fn validate_private_path(path: &std::path::Path) -> Result<(), Error> {
+    trust::check_private(path)?;
     if path.canonicalize()? != path {
         return Err(Error(
             "Plugin path redirects outside its installation".into(),
@@ -68,6 +86,11 @@ pub fn validate_plugin_path(path: &std::path::Path) -> Result<(), Error> {
 pub fn validate_plugin_package(directory: &std::path::Path) -> Result<(), Error> {
     package_trust::check(directory)
 }
+mod installation_sharing;
+pub use installation_sharing::{
+    CopiedInstallation, CopyInstallationError, InstallationSharing, SecuredInstallation,
+    copy_installation, installation_sharing, profile_installation_folder, secure_installation,
+};
 mod events;
 pub use events::{EventKind, HostEvent};
 mod session;
@@ -99,18 +122,48 @@ mod trust;
 mod trust;
 #[cfg(not(any(windows, target_os = "linux")))]
 mod trust {
-    pub fn check(_: &std::path::Path) -> Result<(), crate::Error> {
-        Err(crate::Error(
-            "Native plugin permission validation unsupported on this platform".into(),
-        ))
+    use crate::Error;
+    use std::path::{Path, PathBuf};
+    fn unsupported() -> Error {
+        Error("Native plugin permission validation unsupported on this platform".into())
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Access {
+        Private,
+        Shared,
+    }
+    pub fn check(_: &Path) -> Result<(), Error> {
+        Err(unsupported())
+    }
+    pub fn inspect_split(_: &Path) -> Result<(Access, Option<PathBuf>), Error> {
+        Err(unsupported())
     }
     pub struct EntryCheck;
     impl EntryCheck {
-        pub fn new() -> Result<Self, crate::Error> {
-            check(std::path::Path::new("")).map(|()| Self)
+        pub fn new() -> Result<Self, Error> {
+            Err(unsupported())
         }
-        pub fn check(&self, path: &std::path::Path) -> Result<(), crate::Error> {
-            check(path)
+        pub fn check(&self, _: &Path) -> Result<(), Error> {
+            Err(unsupported())
+        }
+        pub fn inspect(&self, _: &Path) -> Result<Access, Error> {
+            Err(unsupported())
+        }
+    }
+    pub mod repair {
+        use crate::Error;
+        use std::path::Path;
+        pub fn require_owner(_: &Path) -> Result<(), Error> {
+            Err(super::unsupported())
+        }
+        pub fn secure_folder(_: &Path) -> Result<(), Error> {
+            Err(super::unsupported())
+        }
+        pub fn secure_entry(_: &Path) -> Result<(), Error> {
+            Err(super::unsupported())
+        }
+        pub fn copy_permissions(_: &Path, _: &Path) -> Result<(), Error> {
+            Err(super::unsupported())
         }
     }
 }

@@ -1331,11 +1331,40 @@ classifications.
   before loading code, checks platform/ABI/identity, and never searches the active
   panel, working directory, PATH or an archive for executable extensions. Native
   dependency lookup is constrained by separate platform loader implementations.
-- Discovery and lazy loading reject untrusted ownership/write permissions on the
-  package and unsafe replacement permissions on its ancestors. Windows uses native
-  DACL/owner checks; Linux uses native uid/mode and sticky-directory rules. A private
-  child inside a replaceable parent is insufficient. This does not turn trusted
-  native code into a sandbox or authenticate a publisher's identity.
+- Discovery and lazy loading refuse a package, its contents or an ancestor that is a link
+  or other redirection (also a path that is not already canonical, so nothing escapes the
+  installation), that is owned by an account other than the user, SYSTEM,
+  Administrators or TrustedInstaller (Linux: the user or root), or whose Windows ACL holds
+  an entry the check does not interpret (a conditional or object entry). Package
+  descriptors, pins, the workers' AppContainer/sandbox and their process and job limits
+  apply as before. This does not turn trusted native code into a sandbox or authenticate
+  a publisher's identity.
+- **Shared installations.** Write or replace permissions that other accounts hold only
+  through the ACL (Windows) or group/other mode bits (Linux) do not refuse plugins. A
+  folder extracted directly below a Windows drive root inherits Modify for Authenticated
+  Users, so every account on the PC can change it. Whoever can change those files can
+  replace the application executable too, which the user starts directly; refusing the
+  plugins added almost no protection while it made a portable installation unusable
+  (0.5.0 refused every plugin there, including the native filesystem that lists drives).
+  Plugins therefore load, and the application reports the condition once per
+  installation folder in a non-modal notice above the panels, until dismissed. It
+  offers **Secure this folder** (without administrator rights, for a folder the user
+  owns: the folder inherits its permissions from its parent again when the parent passes
+  on nothing that other accounts can change, which also repairs entries a same-volume
+  move kept from the former location; otherwise it gets a protected ACL granting only
+  the user, SYSTEM and Administrators, and every object below inherits it, keeping its own
+  entries except those that let other accounts change it, such as the workers' read and
+  execute grants; Linux removes group and other write bits from objects the user owns)
+  and **Move to my profile…** (a copy, never a move, into
+  `%LOCALAPPDATA%\Programs\Midnight Explorer` or `$XDG_DATA_HOME/midnight-explorer/app`,
+  each file verified by size and SHA-256, the copy's permissions checked again, a restart
+  offered only from a private copy, the original never deleted). Folders above the
+  installation are never changed; securing reports one that other accounts can still
+  rename or replace. A file that another non-administrative account owns stays a
+  refusal: it shows that another account placed or took over that object, and its owner
+  can always grant itself access again, so securing the folder could not repair it. The
+  elevated authorization helper is unaffected: it never runs from a location that
+  non-administrators can change ([directory authorization helper](#directory-authorization-helper)).
 - Plugin projects share one Git repository but depend only on the public API/SDK, except
   the in-repository path dependencies that the [developer
   guide](docs/developer/README.md) lists (PLUGIN-01 in the
@@ -1363,7 +1392,10 @@ classifications.
   package is copied or trusted automatically at startup. The process caches the
   resolved location; existing discovery/load checks still validate code. The
   pointer and the hash only match builds; they do **not** authenticate a publisher
-  or make an already launched shared executable safe. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
+  or make an already launched shared executable safe. Release packages need no
+  registration: without one, a shared installation runs from its own folder (see
+  shared installations above), and an installation refused for another reason explains
+  itself without developer instructions. See [runtime discovery](docs/developer/RUNTIME_DISCOVERY.md).
 - Host-owned leases scope content services; no Rust allocator, future, Tokio
   runtime or Slint object crosses the ABI. Buffers have explicit ownership and
   release functions. Loaded code outlives every worker, callback, session and

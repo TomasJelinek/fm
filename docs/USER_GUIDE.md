@@ -353,8 +353,9 @@ build, `build.bat` deploys the complete bundle to a new private installation (a
 its launch path and the host executable's SHA-256
 ([runtime resolution](developer/RUNTIME_DISCOVERY.md)). The build output's
 `midnight-explorer.exe` then loads its plugins from that protected installation, even when the
-checkout is on a shared drive; plugin code is never loaded from a folder that other
-users can change. Each `build.bat` run removes the earlier installations it deployed
+checkout is on a shared drive. Without a registration, a build output that other
+users can change loads its own plugins and reports the folder once
+([shared installations](#shared-installations)). Each `build.bat` run removes the earlier installations it deployed
 for the same build output, except any that is still running or selected by another
 registration. Concurrent `build.bat` runs for the same build output in one logon
 session deploy one at a time. After a raw Cargo build, or after adding or removing
@@ -1797,17 +1798,42 @@ startup. Missing or disabled plugins remove their
 capability; the host has no built-in parser fallback. At most four viewer windows
 may be open. Reading, parsing, search, layout and rasterization run on backend workers.
 
-Native plugin code is trusted application code, **not sandboxed**. The loader rejects
-installations writable or replaceable by untrusted users, including unsafe ancestors.
-Build artifacts in a shared checkout may therefore be refused. Deploy the executable
-with its `viewers/`, `filesystems/` and `thumbnailers/` folders into a private
-user-owned or administrator-owned installation; do not relax the check or install
-DLLs from the directory being browsed. On Linux, the installation, its files and
-every folder above them must be owned by you or root, must not be symbolic links and
-must not be writable by group or others (a sticky folder such as `/tmp` above it is
-allowed). On Windows, keep modification rights restricted to your account,
-Administrators and SYSTEM. See the
+Native plugin code is trusted application code, **not sandboxed**. Keep the executable
+with its `viewers/`, `filesystems/` and `thumbnailers/` folders together, and never
+install DLLs from the directory being browsed. The loader refuses an installation, a
+file in it or a folder above it that is a link leading elsewhere, or that belongs to
+an account other than you, the system or administrators (Linux: you or root). See the
 [resolution and security contract](developer/RUNTIME_DISCOVERY.md).
+
+### Shared installations
+
+A release package runs from any folder you extract it to; no script or installer is
+needed. When other accounts can change the installation (a folder created directly
+below a Windows drive root such as `C:\Tools`, which every account may modify, or on
+Linux group- or world-writable files), plugins still load: anyone who can change those
+files could replace Midnight Explorer itself. A notice above the panels says so once
+for that folder:
+
+- **Secure this folder** (no administrator rights; only for a folder you own) limits the
+  folder and everything in it to you, the system and administrators. On Windows it
+  inherits its permissions from its parent again when that is private (this repairs a
+  folder you moved there from a shared location, which keeps its old permissions), and
+  otherwise gets permissions of its own. Linux removes group and other write
+  permissions. Folders above the installation are never changed; the notice names one
+  that other accounts can still rename or replace.
+- **Move to my profile…** copies the complete installation to
+  `%LOCALAPPDATA%\Programs\Midnight Explorer` (Linux:
+  `$XDG_DATA_HOME/midnight-explorer/app`, by default `~/.local/share/...`), verifies
+  every file by size and SHA-256, asks before replacing an earlier copy and, when the
+  copy is private, offers **Restart from the copy**. The original folder stays; **Open
+  the original folder** shows it in the active panel so you can delete it.
+- **Dismiss** hides the notice for this installation folder for good (it is
+  remembered in `dismissed-notices.json` beside the preferences).
+
+Moving the folder yourself with Windows Explorer on the same drive keeps its old
+permissions; copy it or use the buttons instead. **Retry with authorization** still
+needs an installation that only administrators can change, such as a folder under
+`C:\Program Files` ([directory authorization helper](../SECURITY.md#directory-authorization-helper)).
 
 On Windows, `build.bat` therefore deploys each build to a new private installation
 under your user profile and registers it, so that `_build\release\midnight-explorer.exe` can use
@@ -1825,7 +1851,7 @@ recorded at deployment; startup then hashes no executable. With
 `MIDNIGHT_VERIFY_RUNTIME_SHA256=1`, startup instead hashes the running host, selects
 the registration named by that SHA-256 and requires the registered executable to have
 the same hash. Protected portable installations still discover their adjacent
-plugins directly.
+plugins directly, and so do shared ones without a registration.
 
 Options → Editors configures F4. Ordered editor rules match the file name with
 wildcard masks or a regular expression; F4 uses the first enabled match, and the

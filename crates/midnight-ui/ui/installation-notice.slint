@@ -1,0 +1,75 @@
+import { Theme } from "theme.slint";
+import { ActionButton } from "action-icons.slint";
+
+// The once-per-installation notice that other accounts can change the installation folder.
+// It sits above the panels and never takes the keyboard or blocks the window.
+export global InstallationNoticePresentation {
+    in-out property <bool> visible;
+    in-out property <string> body;
+    in-out property <string> detail;
+    in-out property <bool> busy;
+    // Buttons before Dismiss; `act` reports the index of the one pressed.
+    in-out property <[string]> actions;
+    callback act(int);
+    callback dismiss();
+}
+
+export component InstallationNotice inherits Rectangle {
+    private property <length> inset: 8px;
+    private property <length> glyph-size: max(16px, round(Theme.font-size * 1.1 / 1px) * 1px);
+    visible: InstallationNoticePresentation.visible;
+    vertical-stretch: 0;
+    min-height: self.visible ? content.min-height : 0px;
+    preferred-height: self.visible ? content.preferred-height : 0px;
+    max-height: self.visible ? content.preferred-height : 0px;
+    background: Theme.secondary-surface;
+    border-radius: 4px; border-width: 1px; border-color: Theme.frame;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: "Installation notice";
+    content := HorizontalLayout {
+        padding: root.inset; spacing: 8px;
+        alignment: stretch;
+        VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: root.glyph-size; height: root.glyph-size;
+                border-radius: self.width / 2;
+                background: #f4c542;
+                Text {
+                    text: "!"; color: #27210c; font-weight: 800;
+                    font-size: parent.height * 0.75;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    accessible-role: none;
+                }
+            }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            horizontal-stretch: 1;
+            Text {
+                text: InstallationNoticePresentation.body;
+                wrap: word-wrap; color: Theme.text; font-size: Theme.font-size;
+                accessible-role: text;
+            }
+            if InstallationNoticePresentation.detail != "": Text {
+                text: InstallationNoticePresentation.detail;
+                wrap: word-wrap; color: Theme.text; font-size: Theme.small-font;
+                accessible-role: text;
+            }
+            HorizontalLayout {
+                spacing: 8px; alignment: start;
+                for action[index] in InstallationNoticePresentation.actions: ActionButton {
+                    text: action; compact: true;
+                    primary: index == 0;
+                    enabled: !InstallationNoticePresentation.busy;
+                    clicked => { InstallationNoticePresentation.act(index); }
+                }
+                ActionButton {
+                    text: "Dismiss"; compact: true;
+                    clicked => { InstallationNoticePresentation.dismiss(); }
+                }
+            }
+        }
+    }
+}

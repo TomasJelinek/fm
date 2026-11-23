@@ -4,10 +4,14 @@ Extract the archive with tar, then run ./midnight-explorer in a graphical deskto
 session. Keep the viewers, filesystems and thumbnailers folders beside
 midnight-explorer. The thumbnailers
 folder includes both image/video helpers and their required runtime and notices.
-Native plugins require a private user-owned
-or administrator-managed installation, with no group/other-writable package or
-replaceable parent directory. Native Linux filesystems are recommended; a shared
-Windows mount with permissive drvfs modes will be refused.
+Prefer a folder that only you (or root) can change. If other accounts can write
+to the extracted folder (group/other-writable modes, or a Windows drive mounted with
+permissive drvfs modes), the application still works and says so once: "Secure
+this folder" removes the group and other write permissions from the files you own,
+and "Move to my profile..." copies the complete installation to
+$XDG_DATA_HOME/midnight-explorer/app (by default ~/.local/share/midnight-explorer/app),
+verifies it and offers to restart from the copy. Plugins are still refused when a
+file belongs to another account or a symbolic link leads out of the folder.
 Built on Ubuntu 24.04 / glibc 2.39. Requires GNU/glibc, not Alpine/musl.
 Rust is not needed to run the application.
 

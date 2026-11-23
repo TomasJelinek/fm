@@ -1,8 +1,8 @@
 use crate::WindowsFileSystem;
 use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
 use midnight_platform_common::settings::{
-    encode_preferences, encode_preferences_prepared, publish_atomic, read_preferences,
-    read_preferences_for_acceptance,
+    dismissed_notices, encode_preferences, encode_preferences_prepared, publish_atomic,
+    read_preferences, read_preferences_for_acceptance,
 };
 use std::{
     fs::{self, File, OpenOptions},
@@ -160,7 +160,42 @@ fn save_encoded(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+fn dismissed_notices_path() -> io::Result<PathBuf> {
+    Ok(native_preferences_path()?.with_file_name(dismissed_notices::FILE_NAME))
+}
+
+fn load_dismissed(path: &Path) -> io::Result<Vec<String>> {
+    if inspect_existing(path)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    check_metadata(&file.metadata()?)?;
+    // SAFETY: this is a live handle owned by File; GetFileType only inspects its type.
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dismissed notices cannot be a device or pipe",
+        ));
+    }
+    dismissed_notices::read(file)
+}
+
 impl SettingsService for WindowsFileSystem {
+    fn load_dismissed_notices(&self) -> Result<Vec<String>, FsError> {
+        let path = dismissed_notices_path()
+            .map_err(|error| FsError::from_io("resolve notices", Path::new(""), error))?;
+        load_dismissed(&path).map_err(|error| FsError::from_io("load notices", &path, error))
+    }
+    fn save_dismissed_notices(&self, keys: &[String]) -> Result<(), FsError> {
+        let path = dismissed_notices_path()
+            .map_err(|error| FsError::from_io("resolve notices", Path::new(""), error))?;
+        dismissed_notices::encode(keys)
+            .and_then(|bytes| save_encoded(&path, &bytes))
+            .map_err(|error| FsError::from_io("save notices", &path, error))
+    }
     fn font_families(&self) -> Result<Vec<String>, FsError> {
         crate::fonts::families()
     }

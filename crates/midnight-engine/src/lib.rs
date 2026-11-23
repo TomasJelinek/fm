@@ -71,6 +71,7 @@ mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
 mod hidden_entries;
+mod installation_notice;
 mod license_notices;
 mod listing_refresh;
 mod mask_selection;
@@ -254,6 +255,8 @@ pub struct Engine {
 
 #[derive(Clone)]
 struct EngineServices {
+    /// Whether to check the installation at startup (`enable_installation_notice`).
+    installation_notice: bool,
     shared_native: Option<midnight_native_filesystem_host::SharedInstalledProvider>,
     qualified_transfers: Option<transfer_composition::QualifiedTransferInstallation>,
     qualified_locale: Option<transfer_composition::QualifiedLocaleInstallation>,
@@ -383,6 +386,7 @@ impl Engine {
         wakeup: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let services = EngineServices {
+            installation_notice: false,
             shared_native: None,
             qualified_transfers: None,
             qualified_locale: None,
@@ -575,6 +579,15 @@ impl EngineServices {
             &mut tasks,
         );
         let viewer_plugins = viewer_plugins::Controller::new(self.outbox.clone(), &mut tasks);
+        let installation = self.installation_notice.then(|| {
+            let environment = installation_notice::Environment::installed(self.settings.clone());
+            installation_notice::Controller::new(
+                scope.clone(),
+                self.outbox.clone(),
+                environment,
+                &mut tasks,
+            )
+        });
         let settings = self.settings.map(|service| {
             preferences::Controller::new(
                 scope.clone(),
@@ -1138,6 +1151,9 @@ impl EngineServices {
                             fonts.list();
                         }
                         Some(Command::ReadLicenseNotice(request)) => license_notices.request(*request),
+                        Some(Command::Installation(request)) => {
+                            if let Some(installation) = &installation { installation.request(request, &mut tasks); }
+                        }
                         Some(Command::LoadPreferences) => {
                             if let Some(settings) = &settings { settings.load(); }
                             else {

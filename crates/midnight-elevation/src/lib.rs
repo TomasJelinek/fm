@@ -204,9 +204,9 @@ mod tests {
         assert!(message.ends_with(HELPER_REQUIREMENT), "{message}");
         // The same requirement that a refused, unprotected helper location explains.
         let (installer, location) = if cfg!(windows) {
-            ("installed by an administrator", r"C:\Program Files")
+            ("only administrators can change it", r"C:\Program Files")
         } else {
-            ("root-owned installation", "/opt/midnight-explorer")
+            ("only root can change it", "/opt/midnight-explorer")
         };
         assert!(message.contains(installer), "{message}");
         assert!(message.contains(location), "{message}");

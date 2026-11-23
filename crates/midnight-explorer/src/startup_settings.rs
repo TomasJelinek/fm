@@ -98,6 +98,15 @@ impl SettingsService for StartupSettings {
         self.wait_for_window()?;
         self.native.save_preferences_prepared(preferences, proof)
     }
+
+    fn load_dismissed_notices(&self) -> Result<Vec<String>, FsError> {
+        self.native.load_dismissed_notices()
+    }
+
+    fn save_dismissed_notices(&self, keys: &[String]) -> Result<(), FsError> {
+        self.wait_for_window()?;
+        self.native.save_dismissed_notices(keys)
+    }
 }
 
 #[cfg(test)]

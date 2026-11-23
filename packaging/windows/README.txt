@@ -2,10 +2,18 @@ Midnight Explorer 0.5.0 - Windows x64 preview
 
 Extract the complete ZIP to a folder, then run midnight-explorer.exe.
 Keep the viewers, filesystems and thumbnailers folders beside midnight-explorer.exe,
-including
-the thumbnail helpers' adjacent runtime libraries and notices. Use a private folder in your user profile
-or an administrator-managed installation: native plugins are refused if other
-accounts can replace their files or installation directory.
+including the thumbnail helpers' adjacent runtime libraries and notices. No script or
+installer is needed; the application runs from any folder you extract it to.
+Prefer a folder in your user profile, for example
+%LOCALAPPDATA%\Programs\Midnight Explorer, or an administrator-managed
+installation. A folder created directly below a drive root, such as C:\Tools,
+lets every account on the PC change its files. The application still works there
+and says so once: "Secure this folder" limits the folder to you, the system and
+administrators (no administrator rights needed), and "Move to my profile..." copies
+the complete installation into your profile, verifies it and offers to restart
+from the copy. Moving the extracted folder yourself within the same drive keeps
+its old permissions; extract or copy it instead. Plugins are still refused when a
+file in the folder belongs to another account or a link leads out of the folder.
 Retry with authorization (UAC) for a folder you cannot open runs the included
 midnight-elevated-listing.exe as Administrator. It is used only when an administrator
 installs the complete folder where standard users cannot change it, for example

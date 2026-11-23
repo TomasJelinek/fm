@@ -10,7 +10,21 @@ messages. Explicit-root host APIs remain available for integration tests.
 
 On Windows, a protected executable and parent directory take precedence. Adjacent
 packages in a manually assembled installation may be absent; their absence never triggers fallback to another
-installation. Linux and other platform implementations retain executable-relative
+installation.
+
+An executable that is refused only because other accounts can change it or its folder
+through the ACL (a **shared installation**, for example a release package extracted
+below `C:\`, which grants Authenticated Users Modify) still consults the registrations
+below, which only developers create. Without a valid registration, a missing or stale
+pointer, it resolves to itself: release packages need no script, and the application
+reports the shared folder once (`installation_sharing`, the shared-installation notice;
+see [SECURITY.md](../../SECURITY.md)). Before 0.5.1 this case refused every plugin with
+an error that pointed end users at a developer script. An executable refused for
+another reason (a redirection, another account's file, an unsupported ACL entry) keeps
+the earlier behaviour: without a registration it runs only without plugin folders, and
+the error says to extract the download again into a folder of the user's own.
+Registration roots, records, pointers and their targets are still checked strictly:
+a shared registration is refused. Linux and other platform implementations retain executable-relative
 discovery and their loader support and limitations.
 
 For a shared Windows executable, `MIDNIGHT_VERIFY_RUNTIME_SHA256` selects

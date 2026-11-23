@@ -26,8 +26,9 @@ the [startup implementation](../../worker-api/midnight-worker-sdk/src/startup.rs
 and [policy types](../../worker-api/midnight-worker-sdk/src/policy.rs).
 
 This is a contract with trusted installed code, not attestation of arbitrary
-downloaded programs. Discovery checks installation ownership, write permissions
-and redirect-free paths. Unsupported containment fails closed. No untrusted
+downloaded programs. Discovery checks installation ownership and redirect-free
+paths; other accounts' write permissions are reported as a shared installation,
+not refused ([shared installations](../../SECURITY.md)). Unsupported containment fails closed. No untrusted
 decoder runs inline in the application.
 
 Both launch forms return a process guard and pipes. Each service enforces its

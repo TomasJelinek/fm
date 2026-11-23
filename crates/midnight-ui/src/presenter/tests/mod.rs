@@ -20,6 +20,7 @@ mod file_actions;
 mod filename_colors;
 mod folder_presence;
 mod font_preferences;
+mod installation_notice;
 mod keyboard;
 mod metadata;
 mod navigation;

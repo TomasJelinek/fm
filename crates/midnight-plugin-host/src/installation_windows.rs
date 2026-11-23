@@ -108,23 +108,48 @@ fn resolve_at_with_digest(
     // mapped-drive aliases name the same file, so trust is decided for the handle's
     // native final spelling (both spellings are reparse-checked by `open`). Every
     // later package path then derives from this canonical directory.
-    let (executable, launch, direct_error) = match launch_path::open(&executable) {
+    let (executable, launch, direct) = match launch_path::open(&executable) {
         Ok(launch) => match trusted_executable(&launch.executable) {
             Ok(()) => return Ok(launch.executable),
-            Err(error) => (launch.executable.clone(), Some(launch), error),
+            Err(error) => {
+                // Other accounts' permission entries alone do not refuse the installation:
+                // they could replace this executable too. A registered private deployment
+                // still takes precedence below; otherwise the installation runs as it is and
+                // the application reports it as shared.
+                let shared = shared_executable(&launch.executable).is_ok();
+                (
+                    launch.executable.clone(),
+                    Some(launch),
+                    Direct { error, shared },
+                )
+            }
         },
         // Fallbacks keep their previous entered-spelling behavior.
-        Err(error) => (executable, None, error),
+        Err(error) => (
+            executable,
+            None,
+            Direct {
+                error,
+                shared: false,
+            },
+        ),
     };
     match verification {
         RuntimeVerification::Disabled => {
-            resolve_by_pointer(executable, launch, registration_root, direct_error)
+            resolve_by_pointer(executable, launch, registration_root, direct)
         }
         RuntimeVerification::Sha256 => {
             drop(launch);
-            resolve_by_sha256(executable, registration_root, direct_error, &mut digest)
+            resolve_by_sha256(executable, registration_root, direct, &mut digest)
         }
     }
+}
+
+/// Why the launch executable was not trusted directly, and whether only other accounts'
+/// permission entries were the reason.
+struct Direct {
+    error: Error,
+    shared: bool,
 }
 
 fn registration_directory(registration_root: Option<&Path>) -> Result<Option<PathBuf>, Error> {
@@ -147,17 +172,17 @@ fn registration_directory(registration_root: Option<&Path>) -> Result<Option<Pat
 fn resolve_by_sha256(
     executable: PathBuf,
     registration_root: Option<&Path>,
-    direct_error: Error,
+    direct: Direct,
     digest: &mut impl FnMut(&Path, ExecutableRole) -> Result<String, Error>,
 ) -> Result<PathBuf, Error> {
     // Opt-in preserves the original order, content reads and snapshot verification.
     let expected_digest = digest(&executable, ExecutableRole::Launch)?;
     let Some(registration_root) = registration_directory(registration_root)? else {
-        return missing_registration(executable, direct_error);
+        return missing_registration(executable, direct);
     };
     let record = registration_root.join(format!("{expected_digest}.toml"));
     if !exists_without_following(&record)? {
-        return missing_registration(executable, direct_error);
+        return missing_registration(executable, direct);
     }
     let target = registered_target(&record, &expected_digest)?;
     if digest(&target, ExecutableRole::RegisteredTarget)? != expected_digest {
@@ -172,14 +197,14 @@ fn resolve_by_pointer(
     executable: PathBuf,
     launch: Option<launch_path::LaunchFile>,
     registration_root: Option<&Path>,
-    direct_error: Error,
+    direct: Direct,
 ) -> Result<PathBuf, Error> {
     let Some(registration_root) = registration_directory(registration_root)? else {
-        return missing_launcher_pointer(executable, direct_error);
+        return missing_launcher_pointer(executable, direct);
     };
     let launchers = registration_root.join("launchers");
     if !exists_without_following(&launchers)? {
-        return missing_launcher_pointer(executable, direct_error);
+        return missing_launcher_pointer(executable, direct);
     }
     protected_path(&launchers)?;
     if !fs::symlink_metadata(&launchers)?.is_dir() {
@@ -194,13 +219,13 @@ fn resolve_by_pointer(
     };
     let pointer_path = launchers.join(format!("{}.toml", launch_path_key(&launch.utf16)));
     if !exists_without_following(&pointer_path)? {
-        return missing_launcher_pointer(executable, direct_error);
+        return missing_launcher_pointer(executable, direct);
     }
     let pointer = read_launcher_pointer(&pointer_path)?;
     if pointer.schema_version != 1 || !lowercase_sha256(&pointer.registration_sha256) {
         return Err(Error(
-            "Plugin runtime launcher pointer has an unsupported schema or invalid registration hash; \
-             run scripts/deploy-private.ps1 -RegisterRuntime and restart."
+            "Plugin runtime launcher pointer has an unsupported schema or invalid registration \
+             hash; register this build's private runtime again"
                 .into(),
         ));
     }
@@ -210,7 +235,7 @@ fn resolve_by_pointer(
     {
         return missing_deployment(
             executable,
-            direct_error,
+            direct,
             &format!(
                 "The protected plugin runtime launcher pointer for {:?} is stale",
                 launch.executable
@@ -219,7 +244,7 @@ fn resolve_by_pointer(
     }
     let record = registration_root.join(format!("{}.toml", pointer.registration_sha256));
     if !exists_without_following(&record)? {
-        return missing_launcher_pointer(executable, direct_error);
+        return missing_launcher_pointer(executable, direct);
     }
     let target = registered_target(&record, &pointer.registration_sha256)?;
     drop(launch);
@@ -247,35 +272,41 @@ fn registered_target(record: &Path, expected_digest: &str) -> Result<PathBuf, Er
     Ok(target)
 }
 
-fn missing_registration(executable: PathBuf, direct_error: Error) -> Result<PathBuf, Error> {
+fn missing_registration(executable: PathBuf, direct: Direct) -> Result<PathBuf, Error> {
     missing_deployment(
         executable,
-        direct_error,
+        direct,
         "No private plugin runtime is registered for this build",
     )
 }
 
-fn missing_launcher_pointer(executable: PathBuf, direct_error: Error) -> Result<PathBuf, Error> {
+fn missing_launcher_pointer(executable: PathBuf, direct: Direct) -> Result<PathBuf, Error> {
     missing_deployment(
         executable,
-        direct_error,
+        direct,
         "A protected plugin runtime launcher pointer is missing or stale",
     )
 }
 
-fn missing_deployment(
-    executable: PathBuf,
-    direct_error: Error,
-    reason: &str,
-) -> Result<PathBuf, Error> {
+/// No registered private deployment applies. A shared installation runs as it is; an
+/// installation refused for another reason (another account's object, an unsupported
+/// permission entry) runs only without plugin folders. `reason` names the missing
+/// registration for diagnostics; end users never register one.
+fn missing_deployment(executable: PathBuf, direct: Direct, reason: &str) -> Result<PathBuf, Error> {
+    if direct.shared {
+        return Ok(executable);
+    }
     let parent = executable
         .parent()
         .ok_or_else(|| Error("Executable has no installation directory".into()))?;
     for directory in ["viewers", "filesystems", "thumbnailers"] {
         if exists_without_following(&parent.join(directory))? {
             return Err(Error(format!(
-                "{direct_error}. {reason}; \
-                 run scripts/deploy-private.ps1 -RegisterRuntime for this build and restart."
+                "Midnight Explorer cannot load its plugins from {}: {}. Extract the complete \
+                 download again into a folder of your own, for example in your user profile \
+                 ({reason}).",
+                parent.display(),
+                direct.error
             )));
         }
     }
@@ -292,18 +323,32 @@ fn exists_without_following(path: &Path) -> io::Result<bool> {
     }
 }
 
+/// An executable that only the user, SYSTEM and Administrators can change, in such a folder.
 fn trusted_executable(path: &Path) -> Result<(), Error> {
-    protected_path(path)?;
+    executable_with(path, protected_path)
+}
+
+/// [`trusted_executable`] that accepts other accounts' permission entries.
+fn shared_executable(path: &Path) -> Result<(), Error> {
+    executable_with(path, |path| {
+        plain_path(path)?;
+        crate::validate_plugin_path(path)
+    })
+}
+
+fn executable_with(path: &Path, check: impl Fn(&Path) -> Result<(), Error>) -> Result<(), Error> {
+    check(path)?;
     regular_file(&fs::symlink_metadata(path)?)?;
-    protected_path(
+    check(
         path.parent()
             .ok_or_else(|| Error("Executable has no installation directory".into()))?,
     )
 }
 
+/// Registrations and the deployments they select confer authority: they must be private.
 fn protected_path(path: &Path) -> Result<(), Error> {
     plain_path(path)?;
-    crate::validate_plugin_path(path)
+    crate::validate_private_path(path)
 }
 
 fn plain_path(path: &Path) -> Result<(), Error> {

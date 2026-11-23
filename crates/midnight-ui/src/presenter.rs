@@ -47,6 +47,7 @@ mod find_windows_tests;
 mod folder_error_notice;
 mod folder_presence;
 mod fonts;
+pub(crate) mod installation_notice;
 mod job_controls;
 mod job_history;
 pub(crate) mod keyboard;
@@ -298,6 +299,7 @@ pub struct Presenter {
     pub(crate) viewer_plugins: viewer_plugins::ViewerPluginsState,
     pub(crate) fonts: fonts::FontsState,
     pub(crate) about_notice: crate::about_licenses::NoticeState,
+    pub(crate) installation_notice: installation_notice::InstallationNotice,
     pub(crate) keyboard: keyboard::KeyboardState,
     pub(crate) operations: operations::OperationsState,
     pub(crate) job_charts: crate::job_speed::Charts,
@@ -365,6 +367,7 @@ impl Presenter {
             viewer_plugins: viewer_plugins::ViewerPluginsState::default(),
             fonts: fonts::FontsState::default(),
             about_notice: Default::default(),
+            installation_notice: Default::default(),
             keyboard: keyboard::KeyboardState::default(),
             operations: operations::OperationsState::default(),
             job_charts: crate::job_speed::Charts::default(),
@@ -1087,6 +1090,10 @@ impl Presenter {
         }
         if let Event::LicenseNoticeReady(notice) = event {
             self.about_notice.receive(notice);
+            return;
+        }
+        if let Event::Installation(event) = event {
+            self.installation_notice_event(*event);
             return;
         }
         if let Event::ArchiveUnlocked { request, result } = event {

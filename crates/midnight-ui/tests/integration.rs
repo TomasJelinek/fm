@@ -98,6 +98,7 @@ mod hidden_icons;
 mod hover_feedback;
 mod icon_edges;
 mod information_window_lifetime;
+mod installation_notice;
 mod interaction_controls;
 mod interaction_performance;
 mod job_footer_glyphs;

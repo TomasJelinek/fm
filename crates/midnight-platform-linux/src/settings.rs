@@ -1,8 +1,8 @@
 use crate::LinuxFileSystem;
 use midnight_core::{ComparatorValidationProof, FsError, SettingsService, UserPreferences};
 use midnight_platform_common::settings::{
-    encode_preferences, encode_preferences_prepared, publish_atomic, read_preferences,
-    read_preferences_for_acceptance,
+    dismissed_notices, encode_preferences, encode_preferences_prepared, publish_atomic,
+    read_preferences, read_preferences_for_acceptance,
 };
 use rustix::fs::{Mode, OFlags, open};
 use std::{
@@ -139,7 +139,44 @@ fn save_encoded(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+fn load_dismissed(path: &Path) -> io::Result<Vec<String>> {
+    if inspect_existing(path)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY,
+        Mode::empty(),
+    )?;
+    let file = File::from(descriptor);
+    if !file.metadata()?.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dismissed notices must be a regular file",
+        ));
+    }
+    dismissed_notices::read(file)
+}
+
+impl LinuxFileSystem {
+    fn dismissed_notices_path(&self) -> Result<PathBuf, FsError> {
+        preferences_path(std::env::var_os("XDG_CONFIG_HOME"), self.home.as_deref())
+            .map(|path| path.with_file_name(dismissed_notices::FILE_NAME))
+            .map_err(|error| FsError::from_io("resolve notices", Path::new(""), error))
+    }
+}
+
 impl SettingsService for LinuxFileSystem {
+    fn load_dismissed_notices(&self) -> Result<Vec<String>, FsError> {
+        let path = self.dismissed_notices_path()?;
+        load_dismissed(&path).map_err(|error| FsError::from_io("load notices", &path, error))
+    }
+    fn save_dismissed_notices(&self, keys: &[String]) -> Result<(), FsError> {
+        let path = self.dismissed_notices_path()?;
+        dismissed_notices::encode(keys)
+            .and_then(|bytes| save_encoded(&path, &bytes))
+            .map_err(|error| FsError::from_io("save notices", &path, error))
+    }
     fn font_families(&self) -> Result<Vec<String>, FsError> {
         Ok(crate::fonts::families())
     }

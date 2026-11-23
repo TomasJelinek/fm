@@ -347,6 +347,7 @@ async fn smoke_test(
 ) -> Result<(), String> {
     let (sender, mut events) = mpsc::channel(16);
     let mut engine = Engine::new(engine_lifetime, filesystem.clone(), sender);
+    engine.enable_installation_notice();
     engine
         .configure_archive_capture()
         .map_err(|error| error.to_string())?
@@ -380,8 +381,9 @@ async fn smoke_test(
     let result = tokio::time::timeout(Duration::from_secs(30), async {
         let mut completed = [false; 2];
         let mut volumes_ready = false;
+        let mut installation_checked = false;
         let mut failure = None;
-        while !completed.into_iter().all(|done| done) || !volumes_ready {
+        while !completed.into_iter().all(|done| done) || !volumes_ready || !installation_checked {
             match events
                 .recv()
                 .await
@@ -402,6 +404,20 @@ async fn smoke_test(
                 Event::ListingFailed { pane, error, .. } => {
                     failure = Some(error.to_string());
                     completed[pane.index()] = true;
+                }
+                Event::Installation(event) => {
+                    if let midnight_core::InstallationEvent::Checked(status) = *event {
+                        match status {
+                            None => println!("installation: private"),
+                            Some(status) => println!(
+                                "installation: shared; other accounts can change {} objects \
+                                 in {}",
+                                status.shared_count,
+                                status.folder.display()
+                            ),
+                        }
+                        installation_checked = true;
+                    }
                 }
                 _ => {}
             }
@@ -594,6 +610,7 @@ fn run_window(
         .configure_settings()
         .map_err(|error| error.to_string())?
         .install(settings);
+    engine.enable_installation_notice();
     if let Some(network) = network {
         engine
             .configure_network()

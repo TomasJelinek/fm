@@ -8,8 +8,10 @@ fn fixture() -> tempfile::TempDir {
     root
 }
 
+/// Shared ACLs no longer refuse a package; each validation still reads every object's
+/// current owner and ACL, so a later inspection reports the change.
 #[test]
-fn another_package_validation_rejects_changed_file_or_ancestor_permissions() {
+fn another_package_validation_rereads_changed_file_or_ancestor_permissions() {
     let root = fixture();
     let directory = root.path().join("package");
     std::fs::create_dir(&directory).unwrap();
@@ -18,24 +20,28 @@ fn another_package_validation_rejects_changed_file_or_ancestor_permissions() {
     let directory = directory.canonicalize().unwrap();
     crate::validate_plugin_package(&directory).unwrap();
     fixture_acl(&file, "D:P(A;;FA;;;WD)").unwrap();
-    assert!(
-        crate::validate_plugin_package(&directory)
-            .unwrap_err()
-            .to_string()
-            .contains("writable or replaceable")
+    crate::validate_plugin_package(&directory).unwrap();
+    assert_eq!(
+        crate::installation_sharing(&directory).unwrap().shared,
+        [file.canonicalize().unwrap()]
     );
     protect_fixture(&file).unwrap();
     crate::validate_plugin_package(&directory).unwrap();
     fixture_acl(root.path(), "D:P(A;OICI;FA;;;WD)").unwrap();
     let changed = crate::validate_plugin_package(&directory);
+    let sharing = crate::installation_sharing(&directory).unwrap();
     protect_fixture(root.path()).unwrap();
-    assert!(
-        changed
-            .unwrap_err()
-            .to_string()
-            .contains("writable or replaceable")
+    changed.unwrap();
+    assert_eq!(
+        sharing.shared_ancestor,
+        Some(root.path().canonicalize().unwrap()),
+        "{sharing:?}"
     );
-    crate::validate_plugin_package(&directory).unwrap();
+    assert!(
+        crate::installation_sharing(&directory)
+            .unwrap()
+            .is_private()
+    );
 
     // Objects in a nested folder are checked on their own after their folder, which is
     // checked as an object of the package: a writable notice or folder is still refused.
@@ -47,15 +53,10 @@ fn another_package_validation_rejects_changed_file_or_ancestor_permissions() {
     for path in [&notice, &notices] {
         fixture_acl(path, "D:P(A;;FA;;;WD)").unwrap();
         let changed = crate::validate_plugin_package(&directory);
+        let sharing = crate::installation_sharing(&directory).unwrap();
         protect_fixture(path).unwrap();
-        assert!(
-            changed
-                .unwrap_err()
-                .to_string()
-                .contains("writable or replaceable"),
-            "{}",
-            path.display()
-        );
+        changed.unwrap();
+        assert!(sharing.shared.contains(path), "{sharing:?}");
     }
     crate::validate_plugin_package(&directory).unwrap();
 }

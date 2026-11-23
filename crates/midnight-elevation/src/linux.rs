@@ -79,9 +79,9 @@ pub(crate) fn protected_helper(helper: &Path) -> io::Result<()> {
 }
 /// Where the helper must be installed. A refused helper location and a missing helper (which
 /// per-user deployments omit) both explain authorization with this sentence.
-pub(crate) const HELPER_REQUIREMENT: &str = "Authorized listing requires \
-    midnight-elevated-listing in a root-owned installation that only root can change, such as \
-    /opt/midnight-explorer installed with sudo.";
+pub(crate) const HELPER_REQUIREMENT: &str = "Retry with authorization needs Midnight Explorer \
+    installed where only root can change it, such as /opt/midnight-explorer installed with \
+    sudo.";
 
 fn unprotected(path: &Path, reason: &str) -> io::Error {
     io::Error::new(

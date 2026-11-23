@@ -48,6 +48,7 @@ mod font_model;
 mod history_models;
 mod hot_path_windows;
 mod information_windows;
+mod installation_notice_bridge;
 mod job_presentation;
 mod job_row_cache;
 mod job_speed;
@@ -544,6 +545,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     commander_presentation::refresh(window, presenter);
     metadata_presentation::refresh(window, presenter);
     about_licenses::refresh(window, presenter);
+    installation_notice_bridge::refresh(window, presenter);
     shortcut_bridge::refresh_bindings(window, presenter);
     shell_bridge::update(window, presenter);
     operation_presentation::refresh(window, presenter);
@@ -1155,6 +1157,7 @@ pub fn install_with_owned(
     dialog_focus::install(window);
     about_licenses::install(window, presenter.clone(), send.clone());
     information_windows::install(window, presenter.clone(), send.clone());
+    installation_notice_bridge::install(window, presenter.clone(), send.clone());
     shortcut_bridge::install(window, presenter.clone(), send.clone());
     path_paste::install(window, presenter.clone(), send.clone());
     find_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());

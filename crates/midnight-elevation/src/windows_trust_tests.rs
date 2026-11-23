@@ -115,6 +115,18 @@ fn only_administrative_owners_and_writers_are_accepted() {
             REPLACE_RIGHTS,
             "non-administrative",
         ),
+        // A folder extracted below a drive root inherits Modify for Authenticated Users:
+        // plugins load from it, but the elevated helper never runs from it.
+        (
+            "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;ID;0x1301bf;;;AU)",
+            MODIFY_RIGHTS,
+            "non-administrative",
+        ),
+        (
+            "O:SYD:AI(A;ID;FA;;;BA)(A;ID;0x1301bf;;;AU)(A;ID;0x1200a9;;;BU)",
+            REPLACE_RIGHTS,
+            "non-administrative",
+        ),
         // DLL planting into the helper's own folder, or rewriting the helper.
         ("O:BAD:P(A;;0x2;;;BU)", MODIFY_RIGHTS, "non-administrative"),
         ("O:BAD:P(A;;0x4;;;AU)", MODIFY_RIGHTS, "non-administrative"),
@@ -159,7 +171,7 @@ fn user_owned_installation_is_refused_with_an_actionable_message() {
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     let message = error.to_string();
     assert!(
-        message.contains("installed by an administrator"),
+        message.contains("only administrators can change it"),
         "{message}"
     );
     assert!(message.contains("Program Files"), "{message}");

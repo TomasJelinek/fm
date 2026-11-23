@@ -1,5 +1,11 @@
 use crate::Error;
-use std::{io, os::windows::ffi::OsStrExt, path::Path, ptr, sync::OnceLock};
+use std::{
+    io,
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    ptr,
+    sync::OnceLock,
+};
 use windows_sys::Win32::{
     Foundation::{GENERIC_ALL, GENERIC_WRITE, LocalFree},
     Security::{Authorization::*, *},
@@ -23,20 +29,66 @@ const RENAME_RIGHTS: u32 = DELETE
     | FILE_WRITE_EA;
 const MODIFY_RIGHTS: u32 = RENAME_RIGHTS | FILE_WRITE_DATA | FILE_APPEND_DATA;
 
+/// Whether other accounts may change an object through its ACL. That alone is not an
+/// integrity failure: plugins still load from such a folder, and the application reports the
+/// shared installation once (see `installation_sharing`). Redirection, an owner other than the
+/// user, SYSTEM, Administrators or TrustedInstaller, and unsupported ACEs stay refusals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Access {
+    Private,
+    Shared,
+}
+
+/// Validate `path` and every ancestor, accepting objects that only other accounts' ACL entries
+/// make shared.
 pub(crate) fn check(path: &Path) -> Result<(), Error> {
-    let identity = Identity::current()?;
-    for (index, component) in path.ancestors().enumerate() {
-        check_one(
-            component,
-            &identity,
-            if index == 0 {
-                MODIFY_RIGHTS
-            } else {
-                RENAME_RIGHTS
-            },
-        )?;
+    inspect(path).map(drop)
+}
+
+/// [`check`] that also refuses an object or ancestor other accounts can change. Used where a
+/// location confers authority (runtime registrations and the deployments they select).
+pub(crate) fn check_private(path: &Path) -> Result<(), Error> {
+    match inspect(path)? {
+        None => Ok(()),
+        Some(shared) => Err(shared_error(&shared)),
     }
-    Ok(())
+}
+
+/// The first of `path` and its ancestors that other accounts can change, after validating all
+/// of them: an integrity failure anywhere is returned even above a shared folder.
+pub(crate) fn inspect(path: &Path) -> Result<Option<PathBuf>, Error> {
+    Ok(match inspect_split(path)? {
+        (Access::Shared, _) => Some(path.to_owned()),
+        (Access::Private, ancestor) => ancestor,
+    })
+}
+
+/// [`inspect`] that keeps `path`'s own access apart from the first shared ancestor.
+pub(crate) fn inspect_split(path: &Path) -> Result<(Access, Option<PathBuf>), Error> {
+    let identity = Identity::current()?;
+    let mut own = Access::Private;
+    let mut ancestor = None;
+    for (index, component) in path.ancestors().enumerate() {
+        let rights = if index == 0 {
+            MODIFY_RIGHTS
+        } else {
+            RENAME_RIGHTS
+        };
+        let access = inspect_one(component, &identity, rights)?;
+        if index == 0 {
+            own = access;
+        } else if access == Access::Shared && ancestor.is_none() {
+            ancestor = Some(component.to_owned());
+        }
+    }
+    Ok((own, ancestor))
+}
+
+pub(crate) fn shared_error(path: &Path) -> Error {
+    Error(format!(
+        "Plugin path is writable or replaceable by another account: {}",
+        path.display()
+    ))
 }
 
 /// Checks the objects inside a folder that [`check`] has just accepted with every folder
@@ -50,7 +102,11 @@ impl EntryCheck {
     }
 
     pub(crate) fn check(&self, path: &Path) -> Result<(), Error> {
-        check_one(path, &self.0, MODIFY_RIGHTS)
+        self.inspect(path).map(drop)
+    }
+
+    pub(crate) fn inspect(&self, path: &Path) -> Result<Access, Error> {
+        inspect_one(path, &self.0, MODIFY_RIGHTS)
     }
 }
 
@@ -136,6 +192,27 @@ impl Identity {
         // SAFETY: GetTokenInformation initialized the aligned TOKEN_USER and its contained SID.
         unsafe { (*(self.user.as_ptr().cast::<TOKEN_USER>())).User.Sid }
     }
+    fn user_sid_string(&self) -> Result<String, Error> {
+        let mut raw = ptr::null_mut();
+        // SAFETY: valid retained user SID; Win32 allocates a terminated SID string.
+        if unsafe { ConvertSidToStringSidW(self.user_sid(), &mut raw) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let owned = Local(raw.cast());
+        let mut length = 0;
+        // SID strings have a bounded native representation, and returned memory is terminated.
+        while length < 256 && unsafe { *raw.add(length) } != 0 {
+            length += 1;
+        }
+        if length == 256 {
+            return Err(Error("Oversized user SID string".into()));
+        }
+        // SAFETY: `length` initialized units precede the terminator found above.
+        let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length) })
+            .map_err(|_| Error("Invalid user SID string".into()));
+        drop(owned);
+        sid
+    }
     fn trusted(&self, sid: PSID) -> bool {
         if sid.is_null() {
             return false;
@@ -151,7 +228,7 @@ impl Identity {
     }
 }
 
-fn check_one(path: &Path, identity: &Identity, mutable: u32) -> Result<(), Error> {
+fn inspect_one(path: &Path, identity: &Identity, mutable: u32) -> Result<Access, Error> {
     let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut owner = ptr::null_mut();
     let mut acl = ptr::null_mut();
@@ -176,12 +253,19 @@ fn check_one(path: &Path, identity: &Identity, mutable: u32) -> Result<(), Error
         )));
     }
     let _descriptor = Local(descriptor);
-    if !identity.trusted(owner) || acl.is_null() {
+    // Another account's object is not repaired by the user's ACL changes: its owner can
+    // always grant itself access again.
+    if !identity.trusted(owner) {
         return Err(Error(format!(
-            "Untrusted owner or unrestricted DACL on {}",
+            "Plugin path is owned by another account: {}",
             path.display()
         )));
     }
+    // A missing DACL grants everyone full access.
+    if acl.is_null() {
+        return Ok(Access::Shared);
+    }
+    let mut access = Access::Private;
     // SAFETY: GetNamedSecurityInfo returned a valid OS-owned ACL until descriptor is freed.
     for index in 0..unsafe { (*acl).AceCount } {
         let mut raw = ptr::null_mut();
@@ -201,10 +285,7 @@ fn check_one(path: &Path, identity: &Identity, mutable: u32) -> Result<(), Error
                 let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
                 let sid = ptr::addr_of!(ace.SidStart).cast_mut().cast();
                 if ace.Mask & mutable != 0 && !identity.trusted(sid) {
-                    return Err(Error(format!(
-                        "Plugin path is writable or replaceable by another account: {}",
-                        path.display()
-                    )));
+                    access = Access::Shared;
                 }
             }
             _ => {
@@ -215,7 +296,7 @@ fn check_one(path: &Path, identity: &Identity, mutable: u32) -> Result<(), Error
             }
         }
     }
-    Ok(())
+    Ok(access)
 }
 
 struct Local(*mut std::ffi::c_void);
@@ -227,41 +308,81 @@ impl Drop for Local {
     }
 }
 
+/// A DACL parsed from SDDL, kept alive by its security descriptor.
+struct SddlAcl {
+    _descriptor: Local,
+    acl: *mut ACL,
+}
+
+impl SddlAcl {
+    fn parse(sddl: &str) -> Result<Self, Error> {
+        let sddl: Vec<_> = sddl.encode_utf16().chain(Some(0)).collect();
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: owned terminated SDDL and writable output; Win32 allocates the descriptor.
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        let descriptor = Local(descriptor);
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl = ptr::null_mut();
+        // SAFETY: a descriptor Win32 just allocated; outputs are writable locals.
+        if unsafe {
+            GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted)
+        } == 0
+            || present == 0
+            || acl.is_null()
+        {
+            return Err(Error("Invalid security descriptor".into()));
+        }
+        Ok(Self {
+            _descriptor: descriptor,
+            acl,
+        })
+    }
+}
+
+/// The DACL that makes an object private: the user, SYSTEM and Administrators with full
+/// control, inherited by every folder and file below it.
+fn private_sddl(identity: &Identity) -> Result<String, Error> {
+    let sid = identity.user_sid_string()?;
+    Ok(format!(
+        "D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    ))
+}
+
 #[cfg(test)]
 pub(crate) fn fixture_acl(path: &Path, sddl: &str) -> Result<(), Error> {
-    let sddl: Vec<_> = sddl.encode_utf16().chain(Some(0)).collect();
+    set_fixture_acl(path, sddl, PROTECTED_DACL_SECURITY_INFORMATION)
+}
+
+/// Replace `path`'s explicit entries with those of `sddl` and keep inheriting from its folder.
+#[cfg(test)]
+pub(crate) fn fixture_explicit_acl(path: &Path, sddl: &str) -> Result<(), Error> {
+    set_fixture_acl(path, sddl, UNPROTECTED_DACL_SECURITY_INFORMATION)
+}
+
+#[cfg(test)]
+fn set_fixture_acl(path: &Path, sddl: &str, protection: u32) -> Result<(), Error> {
+    let acl = SddlAcl::parse(sddl)?;
     let path: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: owned terminated SDDL and writable output; Win32 allocates the descriptor.
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            1,
-            &mut descriptor,
-            ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error().into());
-    }
-    let descriptor = Local(descriptor);
-    let mut present = 0;
-    let mut defaulted = 0;
-    let mut acl = ptr::null_mut();
-    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted) }
-        == 0
-        || present == 0
-    {
-        return Err(Error("Invalid fixture ACL".into()));
-    }
+    // SAFETY: terminated path and an ACL its descriptor keeps alive for the call.
     let status = unsafe {
         SetNamedSecurityInfoW(
             path.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | protection,
             ptr::null_mut(),
             ptr::null_mut(),
-            acl,
+            acl.acl,
             ptr::null_mut(),
         )
     };
@@ -273,29 +394,17 @@ pub(crate) fn fixture_acl(path: &Path, sddl: &str) -> Result<(), Error> {
 
 #[cfg(test)]
 pub(crate) fn protect_fixture(path: &Path) -> Result<(), Error> {
-    let identity = Identity::current()?;
-    let mut raw = ptr::null_mut();
-    // SAFETY: valid retained user SID; Win32 allocates a terminated SID string.
-    if unsafe { ConvertSidToStringSidW(identity.user_sid(), &mut raw) } == 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    let owner_string = Local(raw.cast());
-    let mut length = 0;
-    // SID strings have a bounded native representation, and returned memory is terminated.
-    while length < 256 && unsafe { *raw.add(length) } != 0 {
-        length += 1;
-    }
-    if length == 256 {
-        return Err(Error("Oversized user SID string".into()));
-    }
-    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length) })
-        .map_err(|_| Error("Invalid user SID string".into()))?;
-    drop(owner_string);
-    fixture_acl(
-        path,
-        &format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
-    )
+    fixture_acl(path, &private_sddl(&Identity::current()?)?)
 }
+
+/// The current user's SID in string form, for fixtures that grant it access.
+#[cfg(test)]
+pub(crate) fn user_sid_string() -> Result<String, Error> {
+    Identity::current()?.user_sid_string()
+}
+
+#[path = "trust_repair_windows.rs"]
+pub(crate) mod repair;
 
 #[cfg(test)]
 mod tests {
@@ -347,22 +456,31 @@ mod tests {
         std::fs::write(&file, b"fixture").unwrap();
         let file = file.canonicalize().unwrap();
         for _ in 0..4 {
-            crate::validate_plugin_path(&file).unwrap();
+            check_private(&file).unwrap();
         }
         fixture_acl(&file, "D:P(A;;FA;;;WD)").unwrap();
-        let file_error = crate::validate_plugin_path(&file).unwrap_err();
+        let file_error = check_private(&file).unwrap_err();
         assert!(file_error.to_string().contains("writable or replaceable"));
-        protect_fixture(&file).unwrap();
+        // A shared ACL alone does not refuse the plugin; the shared object is reported.
         crate::validate_plugin_path(&file).unwrap();
+        assert_eq!(inspect(&file).unwrap().as_deref(), Some(file.as_path()));
+        protect_fixture(&file).unwrap();
+        check_private(&file).unwrap();
         fixture_acl(root.path(), "D:P(A;OICI;FA;;;WD)").unwrap();
-        let ancestor_error = crate::validate_plugin_path(&file).unwrap_err();
+        let ancestor_error = check_private(&file).unwrap_err();
         assert!(
             ancestor_error
                 .to_string()
                 .contains("writable or replaceable")
         );
-        protect_fixture(root.path()).unwrap();
         crate::validate_plugin_path(&file).unwrap();
+        assert_eq!(
+            inspect(&file).unwrap(),
+            Some(root.path().canonicalize().unwrap())
+        );
+        protect_fixture(root.path()).unwrap();
+        check_private(&file).unwrap();
+        assert_eq!(inspect(&file).unwrap(), None);
     }
 
     #[test]
@@ -421,12 +539,12 @@ mod tests {
         protect_fixture(root.path()).unwrap();
         let file = root.path().join("library.dll");
         std::fs::write(&file, b"fixture").unwrap();
-        check(&file).unwrap();
+        check_private(&file).unwrap();
         let identity = Identity::current().unwrap();
         println!("TRUST ancestors={}", file.ancestors().count());
         measure("acl_ancestor_walk", || {
             for (index, path) in file.ancestors().enumerate() {
-                check_one(
+                inspect_one(
                     path,
                     &identity,
                     if index == 0 {
@@ -438,24 +556,31 @@ mod tests {
                 .unwrap();
             }
         });
-        measure("complete_check", || check(&file).unwrap());
+        measure("complete_check", || check_private(&file).unwrap());
     }
 
     #[test]
-    fn shared_writable_installation_root_is_rejected() {
+    fn shared_writable_installation_root_is_reported_not_refused() {
         let base =
             std::env::var_os("HOST_TEST_INSTALL_ROOT").expect("secure HOST_TEST_INSTALL_ROOT");
         let root = tempfile::tempdir_in(base).unwrap();
         protect_fixture(root.path()).unwrap();
-        check(root.path())
+        check_private(root.path())
             .expect("test installation and ancestors must be private before applying unsafe ACL");
         fixture_acl(root.path(), "D:P(A;OICI;FA;;;WD)").unwrap();
-        assert!(check(root.path()).is_err());
+        assert!(check_private(root.path()).is_err());
+        check(root.path()).unwrap();
         protect_fixture(root.path()).unwrap();
         let file = root.path().join("library.dll");
         std::fs::write(&file, b"fixture").unwrap();
         fixture_acl(&file, "D:P(A;;FA;;;WD)").unwrap();
-        assert!(check(&file).is_err());
+        assert!(check_private(&file).is_err());
+        check(&file).unwrap();
+        // An ACL that grants nothing to anyone else is private, and a missing DACL is shared.
+        let entries = EntryCheck::new().unwrap();
+        assert_eq!(entries.inspect(&file).unwrap(), Access::Shared);
+        protect_fixture(&file).unwrap();
+        assert_eq!(entries.inspect(&file).unwrap(), Access::Private);
     }
 
     #[test]
@@ -467,9 +592,10 @@ mod tests {
         let child = root.path().join("private");
         std::fs::create_dir(&child).unwrap();
         protect_fixture(&child).unwrap();
-        check(&child).unwrap();
+        check_private(&child).unwrap();
         fixture_acl(root.path(), "D:P(A;OICI;FA;;;WD)").unwrap();
-        assert!(check(&child).is_err());
+        assert!(check_private(&child).is_err());
+        assert_eq!(inspect(&child).unwrap().as_deref(), Some(root.path()));
     }
 }
 

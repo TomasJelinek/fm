@@ -38,6 +38,22 @@ impl Fixture {
         fixture
     }
 
+    /// A launch folder refused for a reason other than shared permissions: an allow entry
+    /// with a condition, which the trust check never interprets.
+    fn refused() -> Self {
+        let fixture = Self::new();
+        let user = crate::trust::user_sid_string().unwrap();
+        crate::trust::fixture_acl(
+            fixture.source.parent().unwrap(),
+            &format!(
+                "D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)\
+                 (XA;OICI;FA;;;WD;(Member_of {{SID(BA)}}))"
+            ),
+        )
+        .unwrap();
+        fixture
+    }
+
     fn record(&self) -> PathBuf {
         self.registrations.join(format!("{DIGEST}.toml"))
     }
@@ -89,12 +105,54 @@ fn resolve_without_digest(executable: &Path, root: Option<&Path>) -> Result<Path
     result
 }
 
+/// A refused installation explains itself without developer instructions.
 fn assert_pointer_update(error: &Error) {
+    assert!(error.0.contains("cannot load its plugins"), "{}", error.0);
     assert!(error.0.contains("launcher pointer"), "{}", error.0);
-    assert!(
-        error.0.contains("deploy-private.ps1 -RegisterRuntime"),
-        "{}",
-        error.0
+    assert!(!error.0.contains("deploy-private"), "{}", error.0);
+    assert!(!error.0.contains("RegisterRuntime"), "{}", error.0);
+}
+
+#[test]
+fn shared_installation_runs_without_any_registration() {
+    let fixture = Fixture::new();
+    let source = fixture.source.canonicalize().unwrap();
+    let missing = fixture._root.path().join("missing-registrations");
+    for root in [None, Some(missing.as_path())] {
+        assert_eq!(
+            resolve_without_digest(&fixture.source, root).unwrap(),
+            source
+        );
+        assert_eq!(
+            resolve_at(&fixture.source, root, RuntimeVerification::Sha256).unwrap(),
+            source
+        );
+    }
+    // A stale or absent pointer no longer stops a shared installation either.
+    let pointer = fixture.write_pointer();
+    std::fs::write(&fixture.source, b"rebuilt").unwrap();
+    assert_eq!(
+        resolve_without_digest(&fixture.source, Some(&fixture.registrations)).unwrap(),
+        source
+    );
+    std::fs::remove_file(pointer).unwrap();
+    assert_eq!(
+        resolve_without_digest(&fixture.source, Some(&fixture.registrations)).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn registered_private_runtime_still_precedes_a_shared_installation() {
+    let fixture = Fixture::new();
+    fixture.write_pointer();
+    assert_eq!(
+        resolve_without_digest(&fixture.source, Some(&fixture.registrations)).unwrap(),
+        fixture.target.canonicalize().unwrap()
+    );
+    assert_eq!(
+        fixture.resolve().unwrap(),
+        fixture.target.canonicalize().unwrap()
     );
 }
 
@@ -193,14 +251,17 @@ fn trusted_portable_installation_resolves_native_launch_path_aliases() {
 
 #[test]
 fn changed_source_does_not_select_an_older_registered_build() {
+    let fixture = Fixture::refused();
+    std::fs::write(&fixture.source, b"different build").unwrap();
+    let error = fixture.resolve().unwrap_err();
+    assert!(error.0.contains("No private plugin runtime"), "{}", error.0);
+    assert!(error.0.contains("cannot load its plugins"), "{}", error.0);
+    // A shared installation runs as it is instead of an older registered build.
     let fixture = Fixture::new();
     std::fs::write(&fixture.source, b"different build").unwrap();
-    assert!(
-        fixture
-            .resolve()
-            .unwrap_err()
-            .0
-            .contains("No private plugin runtime")
+    assert_eq!(
+        fixture.resolve().unwrap(),
+        fixture.source.canonicalize().unwrap()
     );
 }
 
@@ -213,7 +274,7 @@ fn registered_executable_must_match_the_launch_executable_bytes() {
 
 #[test]
 fn absent_registration_allows_only_a_standalone_executable() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::refused();
     std::fs::remove_file(fixture.record()).unwrap();
     assert!(fixture.resolve().is_err());
     std::fs::remove_dir(fixture.source.parent().unwrap().join("viewers")).unwrap();
@@ -500,19 +561,14 @@ fn executable_snapshot_diagnostics_accepts_identical_snapshots_and_expected_byte
 
 #[test]
 fn default_mode_requires_a_launcher_pointer_instead_of_hash_record_fallback() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::refused();
     let error = resolve_at(
         &fixture.source,
         Some(&fixture.registrations),
         RuntimeVerification::Disabled,
     )
     .unwrap_err();
-    assert!(error.0.contains("launcher pointer"), "{}", error.0);
-    assert!(
-        error.0.contains("deploy-private.ps1 -RegisterRuntime"),
-        "{}",
-        error.0
-    );
+    assert_pointer_update(&error);
 }
 
 #[test]
@@ -591,7 +647,7 @@ fn disabled_pointer_selects_protected_runtime_without_matching_executable_bytes(
 
 #[test]
 fn disabled_fallbacks_never_digest_executables() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::refused();
     let missing = fixture._root.path().join("missing-registrations");
     for root in [
         None,
@@ -649,7 +705,7 @@ fn enabled_mode_hashes_both_executables_and_rejects_changed_target() {
 #[test]
 fn disabled_mode_requires_fresh_launch_length_and_last_write_time() {
     for modified_only in [false, true] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::refused();
         fixture.write_pointer();
         let before = std::fs::metadata(&fixture.source).unwrap();
         if modified_only {
@@ -678,7 +734,7 @@ fn disabled_mode_requires_fresh_launch_length_and_last_write_time() {
 
 #[test]
 fn launcher_pointer_is_strict_bounded_and_rejects_invalid_fields() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::refused();
     let pointer = fixture.write_pointer();
     let valid = std::fs::read_to_string(&pointer).unwrap();
     let launch = launch_path::open(&fixture.source).unwrap();
@@ -760,7 +816,7 @@ fn launcher_pointer_hash_must_be_lowercase_hex_before_record_selection() {
 
 #[test]
 fn disabled_pointer_registration_keeps_legacy_record_validation() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::refused();
     fixture.write_pointer();
     let valid = std::fs::read_to_string(fixture.record()).unwrap();
     std::fs::remove_file(fixture.record()).unwrap();

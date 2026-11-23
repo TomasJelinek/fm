@@ -188,8 +188,10 @@ fn discovery_rejects_both_duplicate_ids_and_keeps_independent_packages() {
     assert_eq!(runtime.diagnostics().len(), 2);
 }
 
+/// Other accounts' write access alone does not refuse a package (they could replace the
+/// application as well); the installation reports it instead.
 #[test]
-fn discovery_rejects_shared_writable_sibling_libraries() {
+fn discovery_accepts_shared_writable_sibling_libraries_and_reports_them() {
     for name in [
         "helper.dll",
         "HELPER.DlL",
@@ -203,31 +205,42 @@ fn discovery_rejects_shared_writable_sibling_libraries() {
         std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
         std::fs::write(&helper, b"dependency fixture").unwrap();
         assert_eq!(Runtime::discover(root.path()).unwrap().catalog().len(), 1);
+        assert!(installation_sharing(root.path()).unwrap().is_private());
         make_shared(&helper);
         let runtime = Runtime::discover(root.path()).unwrap();
-        assert!(
-            runtime.catalog().is_empty(),
-            "accepted untrusted dependency {name}"
-        );
-        assert_eq!(runtime.diagnostics().len(), 1);
+        assert_eq!(runtime.catalog().len(), 1, "{:?}", runtime.diagnostics());
+        let sharing = installation_sharing(root.path()).unwrap();
+        assert_eq!(sharing.shared_count, 1, "{name}: {sharing:?}");
+        assert!(sharing.shared[0].ends_with(name), "{sharing:?}");
     }
 }
 
+/// The first load validates the package again: a folder redirected out of the installation
+/// after discovery is refused before any of its code is loaded.
 #[test]
-fn first_load_rechecks_dependency_permissions_after_discovery() {
+fn first_load_rechecks_dependency_redirection_after_discovery() {
     let root = fixture_root();
+    let outside = fixture_root();
     let directory = package(root.path(), "basic", "viewer.basic", "");
-    let helper = directory.join("helper.dll");
-    std::fs::write(&helper, b"dependency fixture").unwrap();
+    let lib = directory.join("lib");
+    std::fs::create_dir(&lib).unwrap();
+    std::fs::write(lib.join("helper.dll"), b"dependency fixture").unwrap();
     let runtime = Runtime::discover(root.path()).unwrap();
     assert_eq!(runtime.catalog().len(), 1);
-    make_shared(&helper);
+    std::fs::remove_file(lib.join("helper.dll")).unwrap();
+    std::fs::remove_dir(&lib).unwrap();
+    #[cfg(windows)]
+    super::tests_windows::junction(&lib, outside.path());
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), &lib).unwrap();
     let error = match crate::loaded::Loaded::open(&runtime.catalog()[0]) {
-        Ok(_) => panic!("loaded untrusted dependency"),
+        Ok(_) => panic!("loaded a redirected dependency folder"),
         Err(error) => error.to_string(),
     };
+    #[cfg(windows)]
+    std::fs::remove_dir(&lib).unwrap();
     assert!(
-        error.contains("writable"),
+        error.contains("redirect"),
         "loader ran before dependency trust validation: {error}"
     );
 }
