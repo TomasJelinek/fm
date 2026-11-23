@@ -36,6 +36,15 @@ const INTERVAL: Duration = Duration::from_millis(100);
 /// from another thread (a headless test platform).
 type Post = Arc<dyn Fn(Box<dyn FnOnce() + Send>) -> bool + Send + Sync>;
 
+/// Monotonic time for video cycles (`Presenter::advance_thumbnail_animation`); tests
+/// substitute Slint's test clock (`set_clock`).
+type Clock = Rc<dyn Fn() -> Duration>;
+
+fn monotonic_clock() -> Clock {
+    let start = Instant::now();
+    Rc::new(move || start.elapsed())
+}
+
 #[derive(Clone)]
 pub(crate) struct RoutingSnapshot {
     pub(crate) generation: u64,
@@ -383,6 +392,14 @@ thread_local! {
     static PULSE: RefCell<Weak<Pulse>> = const { RefCell::new(Weak::new()) };
 }
 
+/// Drive video cycles from `clock` instead of the monotonic clock.
+#[cfg(test)]
+fn set_clock(clock: Clock) {
+    if let Some(bridge) = BRIDGE.with(|bridge| bridge.borrow().upgrade()) {
+        bridge.borrow_mut().clock = clock;
+    }
+}
+
 pub(crate) fn wake_pulse() {
     if let Some(pulse) = PULSE.with(|pulse| pulse.borrow().upgrade()) {
         pulse.wake();
@@ -403,7 +420,7 @@ struct Bridge {
     deliveries: Deliveries,
     tokens: HashMap<String, u64>,
     next_token: u64,
-    tick: u64,
+    clock: Clock,
     last_epoch: u64,
     /// The row ranges of the last pass, and whether the latest pass moved them.
     ranges: Ranges,
@@ -564,11 +581,9 @@ impl Bridge {
         }
         let presented = changed.len();
         busy |= self.take_ready(&mut state, scale, &mut changed) || changed.len() > presented;
-        self.tick = self.tick.wrapping_add(1);
-        if self.tick.is_multiple_of(2) && state.advance_thumbnail_animation() {
-            changed.extend(state.animated_thumbnail_identities());
-        }
-        // Animation advances on every other pass; keep both while a frame animates.
+        // Each animated tile steps on its own clock, however often passes run.
+        changed.extend(state.advance_thumbnail_animation((self.clock)()));
+        // Keep passing while a tile animates.
         busy |= !state.animated_thumbnail_identities().is_empty();
         // Slint can synchronously read presenter-backed models while refreshing.
         // Finish all mutations before it borrows the presenter again.
@@ -761,7 +776,7 @@ fn install_service_with_routing(
         deliveries: Deliveries::default(),
         tokens: HashMap::new(),
         next_token: 1,
-        tick: 0,
+        clock: monotonic_clock(),
         last_epoch: 1,
         ranges: Ranges::default(),
         ranges_moved: false,

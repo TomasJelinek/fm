@@ -88,7 +88,13 @@ fn only_visible_current_command_icons_enter_the_bounded_decoder_request() {
         192,
         "larger panel cache artifacts also serve the same command artwork source"
     );
-    assert!(!p.advance_thumbnail_animation());
+    // Command artwork never animates.
+    p.advance_thumbnail_animation(std::time::Duration::ZERO);
+    assert!(
+        p.advance_thumbnail_animation(crate::THUMBNAIL_CYCLE_STEP * 10)
+            .is_empty()
+    );
+    assert!(p.animated_thumbnail_identities().is_empty());
 
     let changed = Arc::new(p.preferences.values.user_commands.as_ref().clone());
     p.preferences.values.user_commands = changed;

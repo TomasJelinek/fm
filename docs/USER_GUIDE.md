@@ -1259,6 +1259,9 @@ current keys.
   aspect ratio, and is prepared sharp for the display's scale. Larger sizes retain
   the current preview while a sharper image is prepared for that file; smaller
   sizes reuse larger cached images. The setting previews immediately, Cancel restores it and OK saves it.
+  A selected or hovered video plays a short cycle of six moments from 10% to 85% of
+  its length, in order and each for about 0.8 seconds, starting from its still picture;
+  moments that are still being prepared join the cycle in their turn.
   The persistent cache (`%LOCALAPPDATA%\Midnight Explorer\cache\thumbnails\v1` on
   Windows, `$XDG_CACHE_HOME/midnight-explorer/thumbnails/v1` or
   `~/.cache/midnight-explorer/thumbnails/v1` on Linux) holds at most 512 MiB and

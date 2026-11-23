@@ -4,9 +4,9 @@ use crate::{Presenter, ThumbnailContent, presenter::Pane};
 use midnight_core::PanelViewMode;
 use midnight_core::{Entry, EntryKind, PaneId, StorageKind};
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
-use std::collections::HashMap;
 #[cfg(test)]
 use std::path::PathBuf;
+use std::{collections::HashMap, time::Duration};
 #[path = "thumbnail_availability.rs"]
 mod availability;
 #[path = "thumbnail_image_cache.rs"]
@@ -17,6 +17,19 @@ use availability::PanelPreviews;
 
 /// Targets per thumbnail request; the thumbnail host refuses larger views.
 pub(crate) const MAX_THUMBNAIL_TARGETS: usize = midnight_core::MAX_THUMBNAIL_VIEW_TARGETS;
+
+/// How long a selected or hovered video tile shows each frame of its cycle.
+pub const THUMBNAIL_CYCLE_STEP: Duration = Duration::from_millis(800);
+/// Steps a frame stays beyond its own while the next one is still on its way.
+const CYCLE_HOLD_STEPS: u32 = 2;
+const CYCLE_FRAMES: usize = 6;
+
+/// An animated tile's place in its cycle: the frame shown, and since when.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cycle {
+    frame: usize,
+    since: Duration,
+}
 
 /// Split the request budget between the panes' visible candidates. Each pane is
 /// guaranteed half; a pane that needs less leaves the rest to the other, so a
@@ -42,7 +55,7 @@ pub struct ThumbnailTarget {
 pub(crate) struct ThumbnailState {
     visible: Vec<ThumbnailTarget>,
     images: HashMap<String, Vec<Option<Image>>>,
-    coverage: HashMap<String, [u32; 6]>,
+    coverage: HashMap<String, [u32; CYCLE_FRAMES]>,
     archive_network_policy: HashMap<String, bool>,
     /// Last use per identity and the same ticks in order: eviction walks the
     /// oldest entries instead of sorting every retained key per upload.
@@ -50,7 +63,8 @@ pub(crate) struct ThumbnailState {
     order: std::collections::BTreeMap<u64, String>,
     bytes: usize,
     tick: u64,
-    pulse: usize,
+    /// The place of each selected or hovered visible tile in its cycle.
+    cycles: HashMap<String, Cycle>,
     file_icons: file_icons::State,
     /// The preview service's latest notice (`report_thumbnail_error`).
     notice: Option<String>,
@@ -240,7 +254,7 @@ impl Presenter {
         edge: u32,
         rgba: &[u8],
     ) -> bool {
-        if frame >= 6
+        if usize::from(frame) >= CYCLE_FRAMES
             || width == 0
             || height == 0
             || edge == 0
@@ -292,7 +306,7 @@ impl Presenter {
             self.thumbnails
                 .coverage
                 .entry(identity.to_owned())
-                .or_insert([0; 6])[usize::from(frame)] = edge;
+                .or_insert([0; CYCLE_FRAMES])[usize::from(frame)] = edge;
             return false;
         }
         let previous_bytes =
@@ -307,7 +321,7 @@ impl Presenter {
             .thumbnails
             .images
             .entry(identity.to_owned())
-            .or_insert_with(|| vec![None; 6]);
+            .or_insert_with(|| vec![None; CYCLE_FRAMES]);
         frames[usize::from(frame)] = Some(Image::from_rgba8(
             SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(rgba, width, height),
         ));
@@ -315,7 +329,7 @@ impl Presenter {
         self.thumbnails
             .coverage
             .entry(identity.to_owned())
-            .or_insert([0; 6])[usize::from(frame)] = edge;
+            .or_insert([0; CYCLE_FRAMES])[usize::from(frame)] = edge;
         if let Some(policy) = archive_policy {
             self.thumbnails
                 .archive_network_policy
@@ -341,10 +355,65 @@ impl Presenter {
             .first()?
             .clone()
     }
-    pub fn advance_thumbnail_animation(&mut self) -> bool {
-        self.thumbnails.pulse = self.thumbnails.pulse.wrapping_add(1);
-        !self.animated_thumbnail_identities().is_empty()
+    /// Step every selected or hovered tile's cycle at `now`, a monotonic time, and
+    /// return the tiles whose shown frame changed. Each tile starts at its first frame
+    /// and moves to the next frame in order once it has shown one for
+    /// [`THUMBNAIL_CYCLE_STEP`], however often this runs. A frame still on its way, or
+    /// still at a smaller request bucket than the first, holds the current one for up
+    /// to [`CYCLE_HOLD_STEPS`] more steps; then the cycle goes on with the next frame
+    /// that is there, or starts over.
+    pub fn advance_thumbnail_animation(&mut self, now: Duration) -> Vec<String> {
+        let state = &mut self.thumbnails;
+        let active: Vec<&ThumbnailTarget> = state
+            .visible
+            .iter()
+            .filter(|target| target.selected || target.hovered)
+            .collect();
+        let kept: std::collections::HashSet<&str> = active
+            .iter()
+            .map(|target| target.identity.as_str())
+            .collect();
+        state
+            .cycles
+            .retain(|identity, _| kept.contains(identity.as_str()));
+        let mut changed = Vec::new();
+        for target in active {
+            let Some(cycle) = state.cycles.get(&target.identity).copied() else {
+                state.cycles.insert(
+                    target.identity.clone(),
+                    Cycle {
+                        frame: 0,
+                        since: now,
+                    },
+                );
+                continue;
+            };
+            let waited = now.saturating_sub(cycle.since);
+            if waited < THUMBNAIL_CYCLE_STEP {
+                continue;
+            }
+            let ready = |frame: usize| state.cycle_frame_ready(&target.identity, frame);
+            let next = cycle.frame + 1;
+            let frame = if next < CYCLE_FRAMES && ready(next) {
+                next
+            } else if next < CYCLE_FRAMES && waited < THUMBNAIL_CYCLE_STEP * (1 + CYCLE_HOLD_STEPS)
+            {
+                continue;
+            } else {
+                (next..CYCLE_FRAMES)
+                    .find(|frame| ready(*frame))
+                    .unwrap_or(0)
+            };
+            state
+                .cycles
+                .insert(target.identity.clone(), Cycle { frame, since: now });
+            if frame != cycle.frame {
+                changed.push(target.identity.clone());
+            }
+        }
+        changed
     }
+    /// Selected or hovered tiles with more than one frame: their cycles need passes.
     pub fn animated_thumbnail_identities(&self) -> Vec<String> {
         self.thumbnails
             .visible
@@ -377,17 +446,27 @@ impl Presenter {
             .iter()
             .find(|target| target.identity == key);
         let frames = self.thumbnails.images.get(&key)?;
-        if target.is_some_and(|target| target.hovered || target.selected) {
-            let count = frames.iter().flatten().count();
-            if count > 0 {
-                return frames
-                    .iter()
-                    .flatten()
-                    .nth(self.thumbnails.pulse % count)
-                    .cloned();
-            }
+        if target.is_some_and(|target| target.hovered || target.selected)
+            && let Some(cycle) = self.thumbnails.cycles.get(&key)
+            && self.thumbnails.cycle_frame_ready(&key, cycle.frame)
+        {
+            return frames[cycle.frame].clone();
         }
         frames.first()?.clone()
+    }
+}
+
+impl ThumbnailState {
+    /// Whether `frame` of `identity` can be shown in its cycle: present, and decoded for
+    /// at least the request bucket of the first frame, so that a cycle never shows a
+    /// smaller, enlarged frame beside a sharp first one.
+    fn cycle_frame_ready(&self, identity: &str, frame: usize) -> bool {
+        let present = self
+            .images
+            .get(identity)
+            .is_some_and(|frames| frames.get(frame).is_some_and(Option::is_some));
+        let coverage = self.coverage.get(identity).copied().unwrap_or_default();
+        present && (frame == 0 || coverage[frame] >= coverage[0])
     }
 }
 
@@ -578,7 +657,8 @@ mod tests {
             assert!(p.receive_thumbnail(&key, 0, 1, 1, &[0; 4]));
             assert!(p.receive_thumbnail(&key, 1, 2, 1, &[0; 8]));
         }
-        assert!(p.advance_thumbnail_animation());
+        assert!(p.advance_thumbnail_animation(Duration::ZERO).is_empty());
+        assert_eq!(p.advance_thumbnail_animation(THUMBNAIL_CYCLE_STEP).len(), 2);
         for (index, entry) in entries.iter().enumerate() {
             assert_eq!(
                 p.thumbnail_image(PaneId::Left, entry).unwrap().size().width,
@@ -591,5 +671,159 @@ mod tests {
                 .iter()
                 .all(|entry| p.thumbnail_image(PaneId::Left, entry).is_none())
         );
+        assert!(p.thumbnails.cycles.is_empty());
+    }
+
+    /// One selected video tile; frame `n` is told apart by its width, `n + 1`.
+    fn cycling(frames: &[u8]) -> (Presenter, Entry, String) {
+        let mut p = presenter();
+        let entry = Entry::new(
+            midnight_core::EntryId(0),
+            PathBuf::from("clip.mp4"),
+            EntryKind::File,
+        );
+        let key = identity(&p.panes[0], &entry, PaneId::Left);
+        p.thumbnails.visible.push(target(key.clone(), true));
+        for frame in frames {
+            receive_frame(&mut p, &key, *frame);
+        }
+        (p, entry, key)
+    }
+
+    fn receive_frame(p: &mut Presenter, key: &str, frame: u8) {
+        let width = u32::from(frame) + 1;
+        assert!(p.receive_thumbnail(key, frame, width, 1, &vec![0; width as usize * 4]));
+    }
+
+    fn shown(p: &Presenter, entry: &Entry) -> u32 {
+        p.thumbnail_image(PaneId::Left, entry).unwrap().size().width - 1
+    }
+
+    /// Advance in 100 ms passes, as the thumbnail pulse does, from `from` through
+    /// `until`; return each change of the shown frame with its time in milliseconds.
+    fn run(p: &mut Presenter, entry: &Entry, from: u64, until: u64) -> Vec<(u64, u32)> {
+        let mut changes = Vec::new();
+        for now in (from..=until).step_by(100) {
+            let before = shown(p, entry);
+            let changed = p.advance_thumbnail_animation(Duration::from_millis(now));
+            let after = shown(p, entry);
+            assert_eq!(changed.is_empty(), before == after, "{now} ms");
+            if before != after {
+                changes.push((now, after));
+            }
+        }
+        changes
+    }
+
+    #[test]
+    fn a_cycle_starts_at_its_first_frame_and_steps_in_order_once_per_step() {
+        let (mut p, entry, key) = cycling(&[0, 1, 2, 3, 4, 5]);
+        // A tile selected late in a session starts at its first frame all the same.
+        let changes = run(&mut p, &entry, 10_000, 15_600);
+        assert_eq!(
+            changes,
+            [
+                (10_800, 1),
+                (11_600, 2),
+                (12_400, 3),
+                (13_200, 4),
+                (14_000, 5),
+                (14_800, 0),
+                (15_600, 1)
+            ]
+        );
+        // However often passes run, a step never comes early.
+        for now in 15_601..16_400 {
+            assert!(
+                p.advance_thumbnail_animation(Duration::from_millis(now))
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            p.advance_thumbnail_animation(Duration::from_millis(16_400)),
+            [key]
+        );
+        // Leaving the tile shows its first frame; coming back starts over.
+        p.thumbnails.visible[0].selected = false;
+        assert!(
+            p.advance_thumbnail_animation(Duration::from_millis(16_500))
+                .is_empty()
+        );
+        assert_eq!(shown(&p, &entry), 0);
+        p.thumbnails.visible[0].hovered = true;
+        assert_eq!(run(&mut p, &entry, 16_550, 17_400), [(17_350, 1)]);
+    }
+
+    #[test]
+    fn frames_arriving_late_and_out_of_order_take_their_turn() {
+        let (mut p, entry, key) = cycling(&[0, 3]);
+        // Frame 1 is on its way: frame 0 holds two more steps, then frame 3 follows.
+        assert_eq!(run(&mut p, &entry, 0, 2_400), [(2_400, 3)]);
+        receive_frame(&mut p, &key, 1);
+        receive_frame(&mut p, &key, 5);
+        // Frame 4 is missing: frame 3 holds, then 5 follows in order, then a new round,
+        // in which frame 2 is missing.
+        assert_eq!(
+            run(&mut p, &entry, 2_500, 8_800),
+            [(4_800, 5), (5_600, 0), (6_400, 1), (8_800, 3)]
+        );
+        receive_frame(&mut p, &key, 2);
+        receive_frame(&mut p, &key, 4);
+        // Late frames never jump in; the next round plays every frame in order.
+        assert_eq!(shown(&p, &entry), 3);
+        assert_eq!(
+            run(&mut p, &entry, 8_900, 13_600),
+            [
+                (9_600, 4),
+                (10_400, 5),
+                (11_200, 0),
+                (12_000, 1),
+                (12_800, 2),
+                (13_600, 3)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_frame_below_the_first_frames_bucket_waits_for_its_upgrade() {
+        let (mut p, entry, key) = cycling(&[]);
+        // The first frame comes from a 192 px request, the second still from a 96 px one.
+        assert!(p.receive_thumbnail_at_resolution(&key, 0, 1, 1, 192, &[0; 4]));
+        assert!(p.receive_thumbnail_at_resolution(&key, 1, 2, 1, 96, &[0; 8]));
+        assert!(p.receive_thumbnail_at_resolution(&key, 2, 3, 1, 192, &[0; 12]));
+        assert_eq!(run(&mut p, &entry, 0, 2_300), []);
+        assert_eq!(
+            run(&mut p, &entry, 2_400, 2_400),
+            [(2_400, 2)],
+            "passed over after a hold"
+        );
+        // The upgrade brings no more pixels (a small source): it is accepted as coverage.
+        assert!(!p.receive_thumbnail_at_resolution(&key, 1, 2, 1, 192, &[0; 8]));
+        assert_eq!(p.thumbnail_coverage(&key, 1), 192);
+        // The upgraded frame takes its turn in the next round.
+        assert_eq!(run(&mut p, &entry, 2_500, 5_600), [(4_800, 0), (5_600, 1)]);
+    }
+
+    #[test]
+    fn tiles_cycle_on_their_own_clocks() {
+        let (mut p, first, _) = cycling(&[0, 1, 2]);
+        let second = Entry::new(
+            midnight_core::EntryId(1),
+            PathBuf::from("other.mp4"),
+            EntryKind::File,
+        );
+        let key = identity(&p.panes[0], &second, PaneId::Left);
+        p.thumbnails.visible.push(target(key.clone(), false));
+        receive_frame(&mut p, &key, 0);
+        receive_frame(&mut p, &key, 1);
+        p.advance_thumbnail_animation(Duration::ZERO);
+        // The second tile is selected 300 ms after the first.
+        p.thumbnails.visible[1].selected = true;
+        p.advance_thumbnail_animation(Duration::from_millis(300));
+        p.advance_thumbnail_animation(Duration::from_millis(800));
+        assert_eq!((shown(&p, &first), shown(&p, &second)), (1, 0));
+        p.advance_thumbnail_animation(Duration::from_millis(1_100));
+        assert_eq!((shown(&p, &first), shown(&p, &second)), (1, 1));
+        assert_eq!(p.animated_thumbnail_identities().len(), 2);
     }
 }

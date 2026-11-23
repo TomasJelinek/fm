@@ -134,7 +134,7 @@ mod transfer_link_option;
 mod user_command_presentation;
 mod user_command_settings_presentation;
 pub use thumbnail_content::ThumbnailContent;
-pub use thumbnail_presentation::ThumbnailTarget;
+pub use thumbnail_presentation::{THUMBNAIL_CYCLE_STEP, ThumbnailTarget};
 mod drive_information_presentation;
 mod volume_presentation;
 use command_line::{command_directory_text, command_path_text, replace_command_selection};

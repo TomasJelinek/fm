@@ -231,6 +231,8 @@ impl Fixture {
         );
         let pulses = [controller.pulse()];
         window.on_presentation_changed(move || crate::pulse::wake_all(&pulses));
+        let now = clock.clone();
+        set_clock(Rc::new(move || now.get()));
         let fixture = Self {
             window,
             native,
@@ -405,6 +407,171 @@ fn an_animated_thumbnail_keeps_the_pulse_until_it_is_deselected() {
         .select_row_modified(PaneId::Left, row, true, false, &|_| true);
     midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
     fixture.settle();
+}
+
+/// The left `image-0.png` tile's identity and its row in the left rows.
+fn first_tile(fixture: &Fixture) -> (String, usize) {
+    let left = std::env::temp_dir()
+        .join("thumbnail pulse 文档")
+        .join("left");
+    let identity = window_targets(&fixture.window, &fixture.presenter)
+        .0
+        .into_iter()
+        .find(|target| {
+            matches!(&target.content, midnight_ui::ThumbnailContent::Native(path)
+                if path == &left.join("image-0.png"))
+        })
+        .unwrap()
+        .identity;
+    let rows = fixture.window.get_left_rows();
+    let row = (0..rows.row_count())
+        .find(|index| rows.row_data(*index).unwrap().name == "image-0.png")
+        .unwrap();
+    (identity, row)
+}
+
+/// Present cycle frame `frame`, told apart by its width: `frame + 1` pixels.
+fn deliver_frame(fixture: &Fixture, identity: &str, frame: u8) {
+    let width = u32::from(frame) + 1;
+    let pixels = [14, 29, 58, 255].repeat(width as usize);
+    assert!(
+        fixture
+            .presenter
+            .borrow_mut()
+            .receive_thumbnail_at_resolution(identity, frame, width, 1, 96, &pixels)
+    );
+    midnight_ui::refresh_thumbnail_rows(
+        &fixture.window,
+        &fixture.presenter.borrow(),
+        &[identity.to_owned()],
+    );
+    // As a delivery pass does.
+    wake_pulse();
+}
+
+/// The cycle frame the tile in `row` shows.
+fn shown_frame(fixture: &Fixture, row: usize) -> u32 {
+    let rows = fixture.window.get_left_rows();
+    rows.row_data(row).unwrap().icon.size().width - 1
+}
+
+/// Each (frame, passes shown) run of `shown`, one entry per pass.
+fn runs(shown: &[u32]) -> Vec<(u32, usize)> {
+    let mut runs: Vec<(u32, usize)> = Vec::new();
+    for frame in shown {
+        match runs.last_mut() {
+            Some((last, count)) if last == frame => *count += 1,
+            _ => runs.push((*frame, 1)),
+        }
+    }
+    runs
+}
+
+/// The steps of a cycle (`midnight_ui::THUMBNAIL_CYCLE_STEP`) in pulse passes.
+const STEP_PASSES: usize = 8;
+
+/// A selected video cycles through its frames in order, each for one cycle step, however
+/// often presentation changes, deliveries and backend wakes wake the pulse: no pass rate,
+/// restart or extra timer speeds it up.
+#[test]
+fn a_selected_video_steps_through_its_frames_in_order_at_a_steady_pace() {
+    let fixture = Fixture::new(PanelViewMode::Thumbnails, false);
+    fixture.settle();
+    let (identity, row) = first_tile(&fixture);
+    for frame in 0..6 {
+        deliver_frame(&fixture, &identity, frame);
+    }
+    fixture
+        .presenter
+        .borrow_mut()
+        .select_row_modified(PaneId::Left, row, true, false, &|_| true);
+    midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
+    let mut shown = Vec::new();
+    for pass in 0..14 * STEP_PASSES {
+        // Wakes of every kind, on every pass.
+        midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
+        crate::pulse::wake_all(&[fixture.controller.pulse()]);
+        wake_pulse();
+        fixture.event_loop.run();
+        if pass % 3 == 0 {
+            // A redelivered frame (an upgrade check) changes nothing.
+            fixture
+                .presenter
+                .borrow_mut()
+                .receive_thumbnail_at_resolution(&identity, 2, 3, 1, 96, &[0; 12]);
+        }
+        fixture.advance();
+        assert!(fixture.running(), "pass {pass} keeps animating");
+        shown.push(shown_frame(&fixture, row));
+    }
+    let runs = runs(&shown);
+    let frames: Vec<u32> = runs.iter().map(|(frame, _)| *frame).collect();
+    assert_eq!(
+        frames[..13],
+        [0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0],
+        "in order from the first frame: {runs:?}"
+    );
+    assert!(
+        runs[1..runs.len() - 1]
+            .iter()
+            .all(|(_, passes)| *passes == STEP_PASSES),
+        "one steady step per frame: {runs:?}"
+    );
+    fixture
+        .presenter
+        .borrow_mut()
+        .select_row_modified(PaneId::Left, row, true, false, &|_| true);
+    midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
+    fixture.settle();
+    assert_eq!(
+        shown_frame(&fixture, row),
+        0,
+        "a deselected tile shows its first frame"
+    );
+}
+
+/// Frames that arrive late and out of order wait for their turn: the tile never shows a
+/// frame before its predecessor, never steps faster than the cycle step, and plays the
+/// whole cycle in order once every frame is there.
+#[test]
+fn late_and_out_of_order_frames_play_only_in_order() {
+    let fixture = Fixture::new(PanelViewMode::Thumbnails, false);
+    fixture.settle();
+    let (identity, row) = first_tile(&fixture);
+    deliver_frame(&fixture, &identity, 0);
+    fixture
+        .presenter
+        .borrow_mut()
+        .select_row_modified(PaneId::Left, row, true, false, &|_| true);
+    midnight_ui::refresh(&fixture.window, &fixture.presenter.borrow());
+    // Frame 3 arrives after its turn: frame 2 waits for it.
+    let arrivals = [(3, 2), (5, 1), (12, 4), (27, 3), (30, 5)];
+    let mut shown = Vec::new();
+    for pass in 0..16 * STEP_PASSES {
+        for (at, frame) in arrivals {
+            if at == pass {
+                let before = shown_frame(&fixture, row);
+                deliver_frame(&fixture, &identity, frame);
+                assert_eq!(shown_frame(&fixture, row), before, "an arrival never jumps");
+            }
+        }
+        fixture.advance();
+        shown.push(shown_frame(&fixture, row));
+    }
+    let runs = runs(&shown);
+    for pair in runs.windows(2) {
+        let ((from, passes), (to, _)) = (pair[0], pair[1]);
+        assert!(
+            to == from + 1 || to == 0,
+            "{from} -> {to}: frames play in order, each round from the first: {runs:?}"
+        );
+        assert!(passes >= STEP_PASSES, "{from} stepped early: {runs:?}");
+    }
+    let frames: Vec<u32> = runs.iter().map(|(frame, _)| *frame).collect();
+    assert!(
+        frames.windows(6).any(|round| round == [0, 1, 2, 3, 4, 5]),
+        "a whole round once every frame is there: {runs:?}"
+    );
 }
 
 #[test]

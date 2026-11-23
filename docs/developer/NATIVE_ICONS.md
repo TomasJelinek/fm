@@ -63,6 +63,35 @@ their tiles, both panes' full grids on a dense display can exceed the UI's pixel
 budget; an upgrade that does not fit then waits, the smaller image staying, until the
 view changes.
 
+### Video cycles
+
+A selected or hovered video tile cycles through six samples of its video, at 10, 25,
+40, 55, 70 and 85% of its duration (the
+[video worker guide](../../plugins/midnight-thumbnail-video/README.md) describes how a
+helper finds the frame at each position). The backend decodes them in that order, the
+hovered tile's first; the first sample is the tile's still picture. Each tile keeps its
+own place in the cycle (`Presenter::advance_thumbnail_animation`,
+`thumbnail_presentation.rs`):
+
+- It starts at the first sample when the tile becomes selected or hovered, and shows
+  that sample again when the tile is neither.
+- Each sample stays for one step, 0.8 s (`THUMBNAIL_CYCLE_STEP`), measured on a
+  monotonic clock. The thumbnail pulse checks every 100 ms, so a step lasts 0.8 to
+  0.9 s however often the pulse is woken; tiles selected or hovered at different times
+  step independently.
+- The cycle moves only to the next sample in order. While that sample is still on its
+  way, the current one stays for up to two more steps; then the cycle goes on with the
+  next later sample that is there, or starts over from the first. A sample that arrives
+  late is never shown out of turn: it joins in its place in the next round.
+- A sample counts only once its request bucket is at least the first sample's: one
+  still at a smaller bucket (an upgrade in progress) waits like a missing one, so a
+  cycle never mixes a sharp still picture with enlarged smaller frames. The scheduler
+  decodes the later samples at least at the first sample's bucket, also when the first
+  came larger from the cache (`Scheduler::pending`, `scheduler.rs`).
+
+Each step refreshes only the tiles whose sample changed. The pulse keeps running
+while a tile with more than one sample is selected or hovered.
+
 ## Windows
 
 Type, stock, known-folder and drive icons are entries of the Shell's system image

@@ -18,6 +18,7 @@ impl ThumbnailState {
         self.archive_network_policy.clear();
         self.used.clear();
         self.order.clear();
+        self.cycles.clear();
         self.bytes = 0;
     }
 
@@ -110,6 +111,7 @@ impl ThumbnailState {
         }
         self.coverage.remove(identity);
         self.archive_network_policy.remove(identity);
+        self.cycles.remove(identity);
         if let Some(tick) = self.used.remove(identity) {
             self.order.remove(&tick);
         }

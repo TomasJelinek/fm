@@ -88,14 +88,33 @@ impl Scheduler {
         } else {
             1
         };
-        (0..count)
-            .find(|frame| edges[usize::from(*frame)] < item.edge)
-            .map(|frame| Work {
+        // A cycle's later frames match its first: when frame 0 came at a larger bucket (a
+        // larger cached image, an earlier larger view), they are decoded at that bucket too,
+        // so a cycle never mixes a sharp first frame with smaller, enlarged ones.
+        (0..count).find_map(|frame| {
+            let edge = if frame == 0 {
+                item.edge
+            } else {
+                item.edge.max(edges[0])
+            };
+            (edges[usize::from(frame)] < edge).then_some(Work {
                 generation: self.generation,
                 token: item.token,
-                edge: item.edge,
+                edge,
                 frame,
             })
+        })
+    }
+
+    /// Failures are remembered per visible item and its requested edge, whatever bucket
+    /// one of its cycle frames was decoded at.
+    fn failure_key(&self, work: Work) -> (u64, u32) {
+        let edge = self
+            .items
+            .iter()
+            .find(|item| item.token == work.token)
+            .map_or(work.edge, |item| item.edge);
+        (work.token, edge)
     }
 
     pub fn next_work(&mut self) -> Option<Work> {
@@ -189,7 +208,7 @@ impl Scheduler {
         let edge = match outcome {
             Ok(edge) => edge,
             Err(transient) => {
-                let key = (work.token, work.edge);
+                let key = self.failure_key(work);
                 let retries = self.retries.entry(key).or_default();
                 match RETRY_DELAYS.get(*retries).filter(|_| transient) {
                     Some(delay) => {
@@ -281,6 +300,35 @@ mod tests {
             scheduler.next_work_at(now).is_some(),
             "an item that comes back into view is tried again"
         );
+    }
+
+    /// A first frame served from a larger cached bucket takes the rest of its cycle along:
+    /// a cycle never shows a 384 px first frame beside 192 px frames enlarged to its tile.
+    #[test]
+    fn cycle_frames_follow_a_larger_first_frame_and_back_off_per_item() {
+        let mut scheduler = Scheduler::default();
+        let item = Item {
+            edge: 192,
+            ..video(1)
+        };
+        scheduler.set_view(1, vec![item]);
+        let first = scheduler.next_work().unwrap();
+        assert_eq!((first.frame, first.edge), (0, 192));
+        assert!(scheduler.complete_with_coverage(first, Some(384)));
+        let second = scheduler.next_work().unwrap();
+        assert_eq!((second.frame, second.edge), (1, 384));
+        // A passing failure of that larger decode backs the item off as any failure does.
+        let now = Instant::now();
+        assert!(scheduler.finish_at(second, Err(true), now));
+        assert!(scheduler.next_work_at(now).is_none(), "no immediate retry");
+        let retry = scheduler.next_work_at(now + RETRY_DELAYS[0]).unwrap();
+        assert_eq!((retry.frame, retry.edge), (1, 384));
+        // Without a larger first frame the cycle keeps the item's own edge.
+        let mut plain = Scheduler::default();
+        plain.set_view(1, vec![item]);
+        let first = plain.next_work().unwrap();
+        assert!(plain.complete(first, true));
+        assert_eq!(plain.next_work().unwrap().edge, 192);
     }
 
     #[test]

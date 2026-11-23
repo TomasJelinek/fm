@@ -53,8 +53,13 @@ visible videos request up to five additional samples. The host queues all visibl
 selected videos fairly, gives hover priority, cancels offscreen work and persists
 each successfully generated frame in its ordinary bounded disk cache.
 
-Samples sit at 10% to 85% of the container duration, counted from the container
-start time. When no frame at or after a sample target decodes (a header overstating
+Samples sit at 10%, 25%, 40%, 55%, 70% and 85% of the container duration, counted
+from the container start time; the panel shows them in that order, each for 0.8 s
+([video cycles](../../docs/developer/NATIVE_ICONS.md#video-cycles)). A seek lands on
+the key frame at or before the target and decoding continues forward from there, so
+key-frame spacing never moves a sample: the bundled profile takes the frame displayed
+at the target, the Media Foundation helper the first frame at or after it. When no
+frame at or after a sample target decodes (a header overstating
 a partial download, or sparse keyframes exhausting the 4096-packet budget), the
 latest decoded frame is used instead. Packets larger than one 256 KiB brokered read
 (uncompressed and FFV1 frames, large VP8/VP9 keyframes) are read in several reads.

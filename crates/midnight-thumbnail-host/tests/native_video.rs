@@ -51,6 +51,43 @@ fn actual_sandboxed_video_provider_returns_distinct_sampled_frames() {
     assert_ne!(frames[1], frames[2]);
 }
 
+/// The six cycle samples of a 10 s, 6 fps movie are the frames shown at 10, 25, 40, 55,
+/// 70 and 85% of it, in order: no duplicate, skipped or reordered sample.
+#[test]
+#[ignore = "Run with MIDNIGHT_VIDEO_TEST_HELPER pointing to the separately built video provider and adjacent native runtime"]
+fn actual_sandboxed_video_provider_samples_evenly_spaced_frames_in_order() {
+    let helper = PathBuf::from(
+        std::env::var_os("MIDNIGHT_VIDEO_TEST_HELPER").expect("Explicit video helper required"),
+    );
+    let source = Bytes(fixture::sized_video(2, 2, 60, 60));
+    for (sample, shown) in [6, 15, 24, 33, 42, 51].into_iter().enumerate() {
+        let result = decode(
+            &helper,
+            &source,
+            Request {
+                id: 9,
+                source_length: source.length(),
+                width: 32,
+                height: 32,
+                frame: sample as u8,
+            },
+            &AtomicBool::new(false),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        // The fixture stores frame `n` as BGR `fixture::color(n)`.
+        let [blue, green, red] = fixture::color(shown);
+        let pixel = &result.rgba[..4];
+        assert!(
+            pixel
+                .iter()
+                .zip([red, green, blue, 255])
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+            "sample {sample}: {pixel:?} is not frame {shown}"
+        );
+    }
+}
+
 /// The Windows platform helper (Media Foundation) in the real sandbox: AppContainer, job and its
 /// own signed-images-only policy, reading through the broker. The fixtures come from the video
 /// plugin's `write_fixtures_for_the_sandboxed_helper_test`.
