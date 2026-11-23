@@ -180,6 +180,7 @@ mod terminal_elevated;
 mod themes;
 mod thumbnail_grid_rows;
 mod thumbnail_options;
+mod thumbnail_tile_previews;
 mod tool_reflow;
 mod tool_window_failures;
 mod tool_window_polish;

@@ -281,9 +281,18 @@ fn zoom_releases_hidden_pane_pressure_and_delivers_rejected_visible_frame_withou
     let zoomed_rows = ui.targets();
     let hidden_count = ui.panel_targets(&zoomed_rows, PaneId::Left).len();
     let surviving = ui.panel_targets(&zoomed_rows, PaneId::Right);
+    // The zoomed panel's wider tile may draw the preview larger: its logical edge can
+    // change, but not the source, its flags or the 512 px decode at scale 2.
     assert!(
-        surviving == visible,
-        "the visible source must remain unchanged"
+        surviving.len() == visible.len()
+            && surviving.iter().zip(&visible).all(|(new, old)| {
+                new.identity == old.identity
+                    && new.content == old.content
+                    && (new.selected, new.hovered, new.confirmed_ssd)
+                        == (old.selected, old.hovered, old.confirmed_ssd)
+                    && physical_edge(new, 2.0) == physical_edge(old, 2.0)
+            }),
+        "the visible source and its decode edge must remain unchanged"
     );
     retain_source_tokens(&mut tokens, &rows, &zoomed_rows);
     assert_eq!(tokens.get(&identity), Some(&work.token));

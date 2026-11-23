@@ -34,7 +34,8 @@ pub struct ThumbnailTarget {
     pub selected: bool,
     pub hovered: bool,
     pub confirmed_ssd: bool,
-    /// Desired panel edge in logical pixels; command artwork uses its fixed physical edge.
+    /// Desired panel edge in logical pixels: a preview's longest side in its tile, a
+    /// program's icon the thumbnail size; command artwork uses its fixed physical edge.
     pub edge: u32,
 }
 #[derive(Default)]
@@ -53,6 +54,17 @@ pub(crate) struct ThumbnailState {
     file_icons: file_icons::State,
     /// The preview service's latest notice (`report_thumbnail_error`).
     notice: Option<String>,
+    /// Each pane's longest preview side in its tiles, in logical pixels
+    /// (`tile_preview_edges`); 0 until known, which requests the thumbnail size.
+    preview_edges: [u32; 2],
+}
+/// Whether `entry`'s thumbnail is a preview of its content, which a tile fits to its
+/// preview box, rather than a program's own icon (`ThumbnailContent::FileIcon`).
+pub(crate) fn is_preview(entry: &Entry) -> bool {
+    entry.virtual_node.is_some()
+        || !file_icons::carries_own_artwork(
+            entry.native_path().and_then(std::path::Path::extension),
+        )
 }
 pub(crate) fn identity(pane: &Pane, entry: &Entry, side: PaneId) -> String {
     if pane.tree_view().is_some() {
@@ -93,6 +105,11 @@ impl Presenter {
             .image_revision
             .set(self.command_toolbar.image_revision.get().wrapping_add(1));
     }
+    /// Records each pane's longest preview side, read from the window
+    /// ([`crate::tile_preview_edges`]) before [`Self::thumbnail_targets`].
+    pub fn set_tile_preview_edges(&mut self, edges: [u32; 2]) {
+        self.thumbnails.preview_edges = edges;
+    }
     pub fn thumbnail_targets(
         &mut self,
         ranges: [(usize, usize); 2],
@@ -118,6 +135,10 @@ impl Presenter {
                 .thumbnail_archive_location()
                 .map(|location| std::sync::Arc::new(location.address.clone()));
             let (first, end) = ranges[slot];
+            let icon_edge = u32::from(self.preferences.values.thumbnail_size);
+            // A stale smaller edge, while a larger thumbnail size reaches the window,
+            // never asks for less than the icons' square.
+            let preview_edge = icon_edge.max(self.thumbnails.preview_edges[slot]);
             // Viewport ranges are bounded by visible cells; the request budget is
             // applied below, after both panes' actual candidates are known.
             let targets = &mut candidates[slot];
@@ -140,6 +161,11 @@ impl Presenter {
                     continue;
                 };
                 let key = identity(pane, entry, side);
+                let edge = if matches!(content, ThumbnailContent::FileIcon(_)) {
+                    icon_edge
+                } else {
+                    preview_edge
+                };
                 targets.push(ThumbnailTarget {
                     hovered: pane.row_identity(entry) == hovered[slot],
                     identity: key,
@@ -147,7 +173,7 @@ impl Presenter {
                         && pane.visible_storage_kind() == StorageKind::LocalSsd,
                     content,
                     selected: pane.selection_visible(entry),
-                    edge: u32::from(self.preferences.values.thumbnail_size),
+                    edge,
                 });
             }
         }
@@ -468,6 +494,58 @@ mod tests {
             targets[0].identity.contains(":entry:0:"),
             "the top of the grid keeps priority"
         );
+    }
+    #[test]
+    fn previews_follow_their_tiles_edge_and_program_icons_the_thumbnail_size() {
+        let root = std::env::current_dir().unwrap();
+        let mut p = Presenter::new(root.clone(), root.clone());
+        p.preferences.values.thumbnails_network = true;
+        p.preferences.values.panel_view_modes = [PanelViewMode::Thumbnails; 2];
+        let names = ["clip.mp4", "photo.jpg", "tool.exe"];
+        let entries: std::sync::Arc<[Entry]> = names
+            .iter()
+            .zip(0..)
+            .map(|(name, id)| {
+                Entry::new(midnight_core::EntryId(id), root.join(name), EntryKind::File)
+            })
+            .collect();
+        for pane in &mut p.panes {
+            pane.index = std::sync::Arc::new(midnight_core::DirectoryIndex::from_entries(&entries));
+            pane.entries = entries.clone();
+        }
+        let edges = |p: &mut Presenter| -> Vec<(usize, u32)> {
+            let ranges = [0, 1].map(|slot| {
+                let offset = p.panes[slot].parent_offset();
+                (offset, offset + names.len())
+            });
+            p.thumbnail_targets(ranges, ["", ""])
+                .iter()
+                .filter(|target| !target.identity.starts_with("command-icon:"))
+                .map(|target| (usize::from(!target.identity.starts_with("0:")), target.edge))
+                .collect()
+        };
+        // Before the window reports its tiles, every request asks for the thumbnail size.
+        assert!(edges(&mut p).iter().all(|(_, edge)| *edge == 96));
+        // The left tiles draw previews 150 px wide; the right report a stale smaller edge.
+        p.set_tile_preview_edges([150, 40]);
+        let program_icon = cfg!(windows);
+        let expected: Vec<(usize, u32)> = [0, 1]
+            .into_iter()
+            .flat_map(|pane| {
+                names.iter().map(move |name| {
+                    let own_artwork = program_icon && name.ends_with(".exe");
+                    (pane, if pane == 0 && !own_artwork { 150 } else { 96 })
+                })
+            })
+            .collect();
+        assert_eq!(edges(&mut p), expected);
+        for (name, entry) in names.iter().zip(entries.iter()) {
+            assert_eq!(
+                is_preview(entry),
+                !(program_icon && name.ends_with(".exe")),
+                "{name}"
+            );
+        }
     }
     #[test]
     fn stale_offscreen_and_oversized_pixels_never_enter_presentation() {

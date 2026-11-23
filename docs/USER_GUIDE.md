@@ -1241,9 +1241,12 @@ current keys.
   keyboard. A thumbnail that failed for a passing reason is tried again after 2 and
   8 seconds; a file no thumbnailer can read keeps its type icon.
   **Options → Previews → Thumbnail size** offers 48, 64, 72, 96 (default), 128,
-  192 and 256 logical pixels. Larger sizes retain the current preview while a
-  sharper image is prepared for that file; smaller sizes reuse larger cached
-  images. The setting previews immediately, Cancel restores it and OK saves it.
+  192 and 256 logical pixels: the edge of folder and file-type icons in a tile.
+  An image or video preview fills its tile above the name instead, as wide as the
+  tile less a small margin and 6 pixels taller than the thumbnail size, keeping its
+  aspect ratio, and is prepared sharp for the display's scale. Larger sizes retain
+  the current preview while a sharper image is prepared for that file; smaller
+  sizes reuse larger cached images. The setting previews immediately, Cancel restores it and OK saves it.
   The persistent cache (`%LOCALAPPDATA%\Midnight Explorer\cache\thumbnails\v1` on
   Windows, `$XDG_CACHE_HOME/midnight-explorer/thumbnails/v1` or
   `~/.cache/midnight-explorer/thumbnails/v1` on Linux) holds at most 512 MiB and

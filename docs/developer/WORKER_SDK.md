@@ -153,7 +153,8 @@ is bounded to 512 by 512 (1 MiB), with six sample indices (`MAX_READ_BYTES`,
 `MAX_EDGE`, `MAX_FRAME_BYTES`, `MAX_ANIMATION_FRAMES` in `midnight-thumbnail-api`). Host limits also cover
 total traffic, read count, deadline, generation and dimensions. The service asks
 for the DPI-scaled resolution bucket (96, 128, 192, 256, 384 or 512 px) that
-covers the displayed thumbnail edge and runs at most two decoders at once (the
+covers the longest side the panel draws the thumbnail at (a preview fills its tile's
+preview box; see [Thumbnails tiles](NATIVE_ICONS.md#thumbnails-tiles)) and runs at most two decoders at once (the
 scheduler's active jobs, `scheduler.rs`). The shared I/O gate
 admits one unknown, HDD or network source or a bounded batch of confirmed SSD
 reads, releasing permits before decoding, hashing and waiting.

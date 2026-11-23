@@ -454,6 +454,33 @@ fn panel_decode_edges_follow_dpi_while_custom_command_icons_keep_their_physical_
 }
 
 #[test]
+fn previews_are_requested_at_the_longest_side_their_tiles_draw_at_every_scale() {
+    let ui = ThumbnailUi::new([2, 2], 96);
+    ui.draw();
+    let edges = midnight_ui::tile_preview_edges(&ui.window);
+    let rows = ui.targets();
+    for pane in [PaneId::Left, PaneId::Right] {
+        let edge = edges[pane.index()];
+        // The tile is wider than the icons' square: the preview box is too.
+        assert!((97..=204).contains(&edge), "{pane:?}: {edge}");
+        let visible = ui.panel_targets(&rows, pane);
+        assert_eq!(visible.len(), 2);
+        for target in visible {
+            assert_eq!(target.edge, edge);
+            // Sharp at every scale: the decode covers the drawn device pixels.
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let decoded = physical_edge(&target, scale);
+                assert!(
+                    decoded as f32 >= edge as f32 * scale,
+                    "{pane:?} at {scale}: {decoded} for {edge}"
+                );
+                assert!(midnight_thumbnail_host::cache::RESOLUTION_EDGES.contains(&decoded));
+            }
+        }
+    }
+}
+
+#[test]
 fn selection_and_size_keep_source_tokens_but_changed_content_replaces_them() {
     let old = ThumbnailTarget {
         identity: "row".into(),

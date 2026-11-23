@@ -32,6 +32,24 @@ pub fn icon_view(window: &MainWindow) -> IconView {
     }
 }
 
+/// The longest side, in logical pixels, at which each pane's Thumbnails tiles draw a
+/// preview (`ThumbnailTile` in `file-entry.slint`): it follows the tile's width and
+/// the thumbnail size. 0 for a pane without tiles. The thumbnail pulse passes it to
+/// `Presenter::set_tile_preview_edges`; the scale factor applies later, per request.
+pub fn tile_preview_edges(window: &MainWindow) -> [u32; 2] {
+    [
+        window.get_left_preview_edge(),
+        window.get_right_preview_edge(),
+    ]
+    .map(|edge| {
+        if edge.is_finite() && edge > 0.0 {
+            edge.ceil().min(f32::from(u16::MAX)) as u32
+        } else {
+            0
+        }
+    })
+}
+
 /// A box of `logical` pixels in device pixels. A bitmap is drawn one to one
 /// only in a box of whole device pixels; any other box gets the nearest edge.
 fn device_edge(logical: f32, scale: f32) -> u16 {

@@ -39,6 +39,30 @@ request. The UI keeps one bitmap per icon and edge and gives each place the bitm
 of its edge, else the next larger, else the largest: a placeholder shows at once
 and sharpens when the bitmap of its edge arrives.
 
+## Thumbnails tiles
+
+A tile keeps its size: at least the thumbnail size plus 60 px wide (the panel's grid
+width shared by its columns) and the thumbnail size plus 30 px and three lines of the
+font tall, with the name in the lower part. An icon (folder, file type or a program's
+own artwork) is a square of the thumbnail size 12 px below the tile's top. An image
+or video preview (`FileRow.preview`) fills the preview box instead
+(`ThumbnailTile` in `file-entry.slint`): the tile's width less the name's 10 px
+insets, and the thumbnail size plus 6 px of height, from 6 px below the tile's top to
+the icons' baseline 6 px above the name. It keeps its aspect ratio (nothing is
+cropped), is centred, and stands on that baseline, the same at every density and font
+size. Each pane reports the longest side a preview of at most 2:1 is drawn at
+(`FilePane.preview-edge`, `midnight_ui::tile_preview_edges`), at least the thumbnail
+size; previews are requested at that edge times the scale factor, in the resolution
+buckets of the [worker SDK](WORKER_SDK.md), so they are decoded at least as large as
+they are drawn. A wider panorama is drawn slightly enlarged. A program's artwork keeps
+the thumbnail size. The cache key carries the bucket, so a larger request is a miss
+that is decoded and stored beside the smaller one, and a larger stored image serves a
+smaller request; the budgets stay as they are (the UI's 54 MiB and 4,096 images, the
+backend's 4 MiB in memory, 512 MiB and 8,192 files on disk). With previews filling
+their tiles, both panes' full grids on a dense display can exceed the UI's pixel
+budget; an upgrade that does not fit then waits, the smaller image staying, until the
+view changes.
+
 ## Windows
 
 Type, stock, known-folder and drive icons are entries of the Shell's system image

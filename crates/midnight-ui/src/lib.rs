@@ -121,7 +121,7 @@ mod shortcut_input;
 mod size_presentation;
 mod thumbnail_content;
 mod wheel_setting;
-pub use icon_view::icon_view;
+pub use icon_view::{icon_view, tile_preview_edges};
 mod thumbnail_presentation;
 mod thumbnail_refresh;
 pub use thumbnail_refresh::refresh_thumbnail_rows;
@@ -336,6 +336,8 @@ impl Model for Rows {
             .map(|value| (value.date, value.time))
             .unwrap_or_else(|| ("—".into(), "—".into()));
         let filename_style = state.filename_style(self.pane, entry);
+        let thumbnail = state.thumbnail_image(self.pane, entry);
+        let preview = thumbnail.is_some() && thumbnail_presentation::is_preview(entry);
         Some(FileRow {
             // Include intent and committed generations: a pending refresh may keep
             // the old rows visible, and a provider may recycle IDs at its commit.
@@ -385,13 +387,14 @@ impl Model for Rows {
             modified_date: modified_date.into(),
             modified_time: modified_time.into(),
             folder_link: entry.kind == EntryKind::DirectoryLink,
-            icon: state.thumbnail_image(self.pane, entry).unwrap_or_else(|| {
+            icon: thumbnail.unwrap_or_else(|| {
                 state.desktop.entry_image(
                     &IconKey::for_entry(entry),
                     IconPlace::Entry(self.pane),
                     state.can_browse_archive(entry),
                 )
             }),
+            preview,
             directory,
             selected: pane.selection_visible(entry),
             cursor: pane.cursor == Some(entry.id),

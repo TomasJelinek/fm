@@ -346,9 +346,10 @@ fn window_targets(
         (slint::SharedString::default(), (0, 0))
     };
     let ranges = [left_range, right_range];
-    let targets = presenter
-        .borrow_mut()
-        .thumbnail_targets(ranges, [left_hover.as_str(), right_hover.as_str()]);
+    let edges = midnight_ui::tile_preview_edges(window);
+    let mut presenter = presenter.borrow_mut();
+    presenter.set_tile_preview_edges(edges);
+    let targets = presenter.thumbnail_targets(ranges, [left_hover.as_str(), right_hover.as_str()]);
     (targets, ranges)
 }
 

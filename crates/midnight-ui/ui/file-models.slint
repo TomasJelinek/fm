@@ -24,6 +24,9 @@ export struct FileRow {
     // A directory link; accessibility announces it as a folder link.
     folder-link: bool,
     icon: image,
+    // `icon` is a decoded image or video preview: a Thumbnails tile fits it to the
+    // tile's preview box instead of an icon's square.
+    preview: bool,
     directory: bool,
     selected: bool,
     cursor: bool,

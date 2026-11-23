@@ -460,7 +460,8 @@ Plugins, Keyboard) keep at least six control heights and 32 px; in a smaller win
 the page scrolls instead of squeezing their lists. Plugin catalogs scroll
 independently of the single pinned Rescan all plugins action. The full package path replaces the redundant plugin ID
 line. Previews shows the cache location resolved by the backend, above Clear cache;
-new settings use 96 logical pixels for the thumbnail's longest side.
+new settings use a thumbnail size of 96 logical pixels (the edge of tile icons; previews
+fill their tiles' preview box).
 
 All confirmation/form bodies retain a themed icon, title and divider, including
 native hosts. Rename derives initial height after applying its final text

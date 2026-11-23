@@ -451,6 +451,10 @@ export component MainWindow inherits Window {
     changed left-thumbnail-row-end => { root.presentation-changed(); }
     changed right-thumbnail-row-start => { root.presentation-changed(); }
     changed right-thumbnail-row-end => { root.presentation-changed(); }
+    out property <length> left-preview-edge: left.preview-edge;
+    out property <length> right-preview-edge: right.preview-edge;
+    changed left-preview-edge => { root.presentation-changed(); }
+    changed right-preview-edge => { root.presentation-changed(); }
     changed left-hovered-row => {
         root.directory-link-hover-changed(0, root.left-hovered-row);
         root.presentation-changed();

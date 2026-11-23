@@ -8,7 +8,7 @@ import { CompactLocationButton } from "location-controls.slint";
 import { OverflowToolbar } from "overflow-toolbar.slint";
 import { PanelList } from "panel-list.slint";
 import { SelectionRectangle } from "selection-rectangle.slint";
-import { FileEntry } from "file-entry.slint";
+import { FileEntry, ThumbnailTile } from "file-entry.slint";
 import { FileColumnHeading } from "file-column-heading.slint";
 import { DirectoryLinkTooltip, FileRow, TreePress } from "file-models.slint";
 import { TabRow, BookmarkRow, PathPartRow, DetailRow, NavigationChoiceRow, LocationRow, LocationRole } from "navigation-models.slint";
@@ -315,6 +315,9 @@ export component FilePane inherits Rectangle {
     // whole range fits the pane's half of the request budget
     // (MAX_THUMBNAIL_VIEW_TARGETS, 256); a larger grid keeps its visible rows first.
     private property <bool> thumbnail-grid: !root.minimal && root.view-mode == 2;
+    // The longest side a preview in this grid's tiles is drawn at; 0 without tiles.
+    out property <length> preview-edge: root.thumbnail-grid
+        ? ThumbnailTile.request-edge(root.list-grid-width / root.view-columns, root.thumbnail-size) : 0px;
     private property <int> thumbnail-first-band: floor(-list.content-y / root.row-height);
     private property <int> thumbnail-end-band: ceil((-list.content-y + list.visible-height) / root.row-height);
     private property <int> thumbnail-margin: root.thumbnail-grid

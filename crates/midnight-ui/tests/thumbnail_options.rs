@@ -273,6 +273,21 @@ fn artwork_edge(item: ItemRc) -> f32 {
     edge
 }
 
+/// The 2:1 preview fixture fills its tile's preview box (`ThumbnailTile`): the tile's
+/// width less 20 px, or twice the box's height (the size plus 6 px) in a wider tile.
+fn assert_preview_fills_tile(ui: &ui::TestUi, size: f32) {
+    let tile = ui::root_item(&ui.window, "preview-fixture.png", AccessibleRole::ListItem);
+    let expected = (tile.geometry().width() - 20.0)
+        .min(2.0 * (size + 6.0))
+        .round();
+    let drawn = artwork_edge(tile);
+    assert!(
+        (drawn - expected).abs() <= 1.0,
+        "a {size} px thumbnail size draws the preview {drawn} px wide, expected {expected}"
+    );
+    assert!(drawn > size, "the preview is wider than the icons' square");
+}
+
 #[test]
 fn actual_size_control_previews_cancel_restores_and_ok_persists() {
     let mut ui = ui::TestUi::new();
@@ -342,14 +357,7 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
     let original_height = ui.window.get_left_view_row_height();
     let original_columns = ui.window.get_left_view_columns();
     assert_eq!(ui.window.get_thumbnail_size(), 96);
-    assert_eq!(
-        artwork_edge(ui::root_item(
-            &ui.window,
-            "preview-fixture.png",
-            AccessibleRole::ListItem
-        )),
-        96.0
-    );
+    assert_preview_fills_tile(&ui, 96.0);
     sent.borrow_mut().clear();
     for cancel in [true, false] {
         ui.window.set_options_topic_index(6);
@@ -372,14 +380,7 @@ fn actual_size_control_previews_cancel_restores_and_ok_persists() {
             original_height + 160.0
         );
         assert!(ui.window.get_left_view_columns() < original_columns);
-        assert_eq!(
-            artwork_edge(ui::root_item(
-                &ui.window,
-                "preview-fixture.png",
-                AccessibleRole::ListItem
-            )),
-            256.0
-        );
+        assert_preview_fills_tile(&ui, 256.0);
         let rows = ui.window.get_left_rows();
         let row = (0..rows.row_count())
             .filter_map(|index| rows.row_data(index))

@@ -8,6 +8,22 @@ import { TreeDisclosure } from "tree-disclosure.slint";
 import { PanelWarning } from "panel-warning.slint";
 import { FileArtwork } from "file-artwork.slint";
 
+// The box a preview fills in a Thumbnails tile: the tile's width less the name's
+// 10px insets, and the height from 6px below the tile's top to the icons' baseline,
+// 6px above the name. Icons keep a square of the thumbnail size. A preview is
+// requested at the box's longest side a preview of at most 2:1 fills.
+export global ThumbnailTile {
+    pure public function preview-width(tile-width: length) -> length {
+        return max(0px, tile-width - 20px);
+    }
+    pure public function preview-height(size: int) -> length {
+        return size * 1px + 6px;
+    }
+    pure public function request-edge(tile-width: length, size: int) -> length {
+        return max(size * 1px + 6px, min(tile-width - 20px, 2 * (size * 1px + 6px)));
+    }
+}
+
 // Each cell keeps pointer identity across virtualized rebinding and refreshes.
 export component FileEntry inherits Rectangle {
     in property <FileRow> item;
@@ -301,13 +317,21 @@ export component FileEntry inherits Rectangle {
     }
     if root.view-mode == 2 : Rectangle {
         x: root.tree-indent; width: max(0px, root.width - root.tree-indent);
+        // A preview keeps its aspect ratio, as large as its box allows, centred and
+        // standing on the icons' baseline; its badges follow the picture's corners.
+        property <float> preview-scale: !item.preview || item.icon.width <= 0 || item.icon.height <= 0 ? 0
+            : min(ThumbnailTile.preview-width(self.width) / 1px / item.icon.width,
+                ThumbnailTile.preview-height(root.thumbnail-size) / 1px / item.icon.height);
         thumbnail-artwork := FileArtwork {
             native-icon: item.icon; browsable-archive: item.browsable-archive;
             parent-entry: item.parent-entry;
             compressed: item.compressed; dimmed: item.dim-icon; thumbnail: true;
             encrypted: item.encrypted;
-            width: min(root.thumbnail-size * 1px, max(0px, parent.width - 24px)); height: self.width;
-            x: (parent.width - self.width) / 2; y: 12px;
+            width: item.preview ? round(item.icon.width * parent.preview-scale) * 1px
+                : min(root.thumbnail-size * 1px, max(0px, parent.width - 24px));
+            height: item.preview ? round(item.icon.height * parent.preview-scale) * 1px : self.width;
+            x: item.preview ? round((parent.width - self.width) / 2px) * 1px : (parent.width - self.width) / 2;
+            y: item.preview ? root.thumbnail-size * 1px + 12px - self.height : 12px;
         }
         if item.tree-disclosure == 6 : PanelWarning {
             x: thumbnail-artwork.x;
