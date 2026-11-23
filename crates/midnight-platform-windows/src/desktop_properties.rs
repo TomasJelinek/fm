@@ -24,8 +24,8 @@ use windows::{
         },
         UI::Shell::{
             CIDLData_CreateFromIDArray, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX,
-            Common::ITEMIDLIST, IContextMenu, ILFindLastID, ILIsParent, IShellFolder,
-            SEE_MASK_UNICODE, SHBindToParent, SHMultiFileProperties, SHParseDisplayName,
+            Common::ITEMIDLIST, IContextMenu, ILFindLastID, IShellFolder, SEE_MASK_UNICODE,
+            SHBindToObject, SHMultiFileProperties, SHParseDisplayName,
         },
     },
     core::{PCSTR, PCWSTR, w},
@@ -70,10 +70,11 @@ impl PropertyService for WindowsFileSystem {
 }
 
 /// The selected items as the Shell parses them, and their common folder if they
-/// share one.
+/// share one, with each item's name in it (`names`, empty without a folder).
 struct PropertySelection {
     items: Vec<PropertyPath>,
     folder: Option<PropertyPath>,
+    names: Vec<PropertyPath>,
 }
 
 /// A NUL-terminated UTF-16 path.
@@ -90,18 +91,29 @@ fn property_selection(paths: &[PathBuf]) -> Option<PropertySelection> {
         .map(|path| path.is_absolute().then(|| shell_spelling(path))?)
         .collect::<Option<Vec<_>>>()?;
     let parent = |path: &PathBuf| path.parent().map(Path::to_path_buf);
-    let folder = parent(&spelled[0])
+    let (folder, names) = parent(&spelled[0])
         .filter(|folder| {
             spelled
                 .iter()
                 .all(|path| parent(path).as_ref() == Some(folder))
         })
-        .and_then(|folder| terminated(&folder));
+        .and_then(|folder| {
+            let names = spelled
+                .iter()
+                .map(|path| terminated(Path::new(path.file_name()?)))
+                .collect::<Option<Vec<_>>>()?;
+            Some((terminated(&folder)?, names))
+        })
+        .unzip();
     let items = spelled
         .iter()
         .map(|path| terminated(path))
         .collect::<Option<_>>()?;
-    Some(PropertySelection { items, folder })
+    Some(PropertySelection {
+        items,
+        folder,
+        names: names.unwrap_or_default(),
+    })
 }
 
 fn terminated(path: &Path) -> Option<PropertyPath> {
@@ -201,7 +213,7 @@ fn show_several(owner: RawWindow, selection: &PropertySelection) -> bool {
         return false;
     };
     if let Some(folder) = &selection.folder
-        && let Some(menu) = folder_menu(owner, &items)
+        && let Ok(menu) = folder_menu(owner, folder, &selection.names)
     {
         return invoke_properties(&menu, owner, folder);
     }
@@ -213,25 +225,53 @@ fn show_several(owner: RawWindow, selection: &PropertySelection) -> bool {
     unsafe { SHMultiFileProperties(&data, 0) }.is_ok()
 }
 
-/// The folder's context menu for its child items, or None when the Shell places them
-/// in different folders after all.
-fn folder_menu(owner: RawWindow, items: &[PropertyItem]) -> Option<IContextMenu> {
-    let first = items.first()?.0.as_ptr();
-    let mut child = ptr::null_mut();
-    // SAFETY: first is a live absolute PIDL; the child pointer borrows its last ID.
-    let folder: IShellFolder = unsafe { SHBindToParent(first, Some(&mut child)) }.ok()?;
-    let parent = PropertyItem::parent_of(&items[0])?;
-    let mut children = Vec::with_capacity(items.len());
-    for item in items {
-        // SAFETY: both PIDLs are live; the Shell only compares them.
-        if !unsafe { ILIsParent(parent.0.as_ptr(), item.0.as_ptr(), true) }.as_bool() {
-            return None;
-        }
-        // SAFETY: item is a live absolute PIDL; the result borrows its last ID.
-        children.push(unsafe { ILFindLastID(item.0.as_ptr()) }.cast_const());
+/// The context menu of `folder` for the items it holds as `names`, or the step that
+/// failed. The folder parses each name into its own child ID, so every item is its
+/// child by construction. Absolute IDs of separately parsed paths are not compared:
+/// their IDs of the same ancestor folder can differ byte for byte, and whether the
+/// Shell still finds them equal depends on its environment.
+fn folder_menu(
+    owner: RawWindow,
+    folder: &PropertyPath,
+    names: &[PropertyPath],
+) -> Result<IContextMenu, String> {
+    if names.is_empty() {
+        return Err("no items".into());
     }
+    let parsed = PropertyItem::parse(folder).ok_or("the folder is no file system folder")?;
+    // SAFETY: parsed is a live absolute PIDL; binding starts at the desktop.
+    let shell: IShellFolder = unsafe { SHBindToObject(None, parsed.0.as_ptr(), None) }
+        .map_err(|error| format!("binding the folder: {error}"))?;
+    let mut children = Vec::with_capacity(names.len());
+    for name in names {
+        let mut child = ptr::null_mut();
+        // SAFETY: the name is NUL-terminated and live; the folder writes one relative
+        // PIDL, owned by the guard below, to a valid output.
+        unsafe {
+            shell.ParseDisplayName(
+                HWND(owner),
+                None,
+                PCWSTR(name.0.as_ptr()),
+                None,
+                &mut child,
+                ptr::null_mut(),
+            )
+        }
+        .map_err(|error| format!("parsing an item's name: {error}"))?;
+        let child = PropertyItem(NonNull::new(child).ok_or("the folder parsed no item")?);
+        // SAFETY: child is a live PIDL; the result borrows its last ID.
+        if unsafe { ILFindLastID(child.0.as_ptr()) } != child.0.as_ptr() {
+            return Err("an item's name reaches into a subfolder".into());
+        }
+        children.push(child);
+    }
+    let ids: Vec<_> = children
+        .iter()
+        .map(|child| child.0.as_ptr().cast_const())
+        .collect();
     // SAFETY: the folder and every child ID stay live through the call on this STA.
-    unsafe { folder.GetUIObjectOf(HWND(owner), &children, None) }.ok()
+    unsafe { shell.GetUIObjectOf(HWND(owner), &ids, None) }
+        .map_err(|error| format!("the folder's menu: {error}"))
 }
 
 fn invoke_properties(menu: &IContextMenu, owner: RawWindow, folder: &PropertyPath) -> bool {
@@ -261,7 +301,8 @@ fn property_data_object(items: &[PropertyItem]) -> Option<IDataObject> {
     unsafe { CIDLData_CreateFromIDArray(&desktop, Some(&ids)) }.ok()
 }
 
-/// An absolute Shell item ID list owned by this process.
+/// A Shell item ID list owned by this process: absolute, or relative to the folder that
+/// parsed it (`folder_menu`).
 struct PropertyItem(NonNull<ITEMIDLIST>);
 
 impl PropertyItem {
@@ -285,6 +326,7 @@ impl PropertyItem {
     }
 
     /// A copy of `item` without its last ID: its folder.
+    #[cfg(test)]
     fn parent_of(item: &Self) -> Option<Self> {
         use windows::Win32::UI::Shell::{ILClone, ILRemoveLastID};
         // SAFETY: item is live; ILClone returns a new COM allocation owned by the result.

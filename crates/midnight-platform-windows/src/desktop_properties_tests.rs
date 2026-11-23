@@ -1,7 +1,7 @@
 use super::*;
 use std::{fs, time::Duration};
 use windows::Win32::UI::Shell::{
-    IShellItemArray, SHCreateShellItemArrayFromDataObject, SIGDN_FILESYSPATH,
+    ILIsParent, IShellItemArray, SHCreateShellItemArrayFromDataObject, SIGDN_FILESYSPATH,
 };
 
 fn spelled(path: &str) -> Option<String> {
@@ -185,21 +185,21 @@ fn one_folder_menu_holds_its_children_and_mixed_folders_have_none() {
     }
     paths.push(sub.clone());
     let _com = ComGuard::initialize(COINIT_APARTMENTTHREADED as u32).unwrap();
-    let parse = |paths: &[PathBuf]| -> Vec<PropertyItem> {
-        property_selection(paths)
-            .unwrap()
-            .items
-            .iter()
-            .map(|item| PropertyItem::parse(item).unwrap())
-            .collect()
-    };
-    let items = parse(&paths);
-    let menu = folder_menu(ptr::null_mut(), &items).expect("one folder's menu");
+    let selection = property_selection(&paths).unwrap();
+    let folder = selection.folder.as_ref().expect("one folder");
+    let menu = folder_menu(ptr::null_mut(), folder, &selection.names)
+        .unwrap_or_else(|error| panic!("one folder's menu: {error}"));
     let data: IDataObject = menu_data(&menu);
     assert_eq!(names(&data), paths);
     let nested = sub.join("inner.txt");
     fs::write(&nested, b"x").unwrap();
-    assert!(folder_menu(ptr::null_mut(), &parse(&[paths[0].clone(), nested])).is_none());
+    let mixed = property_selection(&[paths[0].clone(), nested]).unwrap();
+    assert!(mixed.folder.is_none() && mixed.names.is_empty());
+    // A name never reaches into a subfolder, and one the folder lacks has no menu.
+    for name in [r"sub\inner.txt", "missing.txt"] {
+        let name = terminated(Path::new(name)).unwrap();
+        assert!(folder_menu(ptr::null_mut(), folder, &[name]).is_err());
+    }
 }
 
 /// The data object a Shell folder's context menu acts on.
