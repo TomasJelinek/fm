@@ -27,16 +27,21 @@ struct Input {
 #[link(name = "user32")]
 unsafe extern "system" {
     fn SendInput(count: u32, input: *const Input, size: i32) -> u32;
-    fn SetCapture(
+    pub(super) fn SetCapture(
         window: windows_sys::Win32::Foundation::HWND,
     ) -> windows_sys::Win32::Foundation::HWND;
-    fn ReleaseCapture() -> i32;
+    pub(super) fn ReleaseCapture() -> i32;
     fn SetThreadDpiAwarenessContext(context: isize) -> isize;
 }
 
-struct NativeContext(isize);
+/// Per-monitor DPI awareness for this thread, so owned windows use physical pixels.
+pub(super) fn per_monitor_aware() {
+    assert_ne!(unsafe { SetThreadDpiAwarenessContext(-4) }, 0);
+}
+
+pub(super) struct NativeContext(isize);
 impl NativeContext {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let previous = unsafe { SetThreadDpiAwarenessContext(-4) };
         assert_ne!(previous, 0);
         let class = WNDCLASSW {
@@ -61,7 +66,7 @@ impl Drop for NativeContext {
     }
 }
 
-fn button(flags: u32) -> bool {
+pub(super) fn button(flags: u32) -> bool {
     let input = Input {
         kind: 0,
         mouse: MouseInput {
@@ -77,13 +82,13 @@ fn button(flags: u32) -> bool {
     unsafe { SendInput(1, &input, std::mem::size_of::<Input>() as i32) == 1 }
 }
 
-struct Desktop {
+pub(super) struct Desktop {
     cursor: POINT,
     foreground: usize,
-    pressed: bool,
+    pub(super) pressed: bool,
 }
 impl Desktop {
-    fn capture() -> Self {
+    pub(super) fn capture() -> Self {
         // Do not start the diagnostic during somebody else's pointer/key gesture.
         for key in [1, 2, 4, 0x10, 0x11, 0x12] {
             assert!(
@@ -116,9 +121,9 @@ impl Drop for Desktop {
     }
 }
 
-struct Window(usize);
+pub(super) struct Window(pub(super) usize);
 impl Window {
-    fn new(x: i32) -> Self {
+    pub(super) fn new(x: i32) -> Self {
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -138,7 +143,7 @@ impl Window {
         assert!(!hwnd.is_null());
         Self(hwnd as usize)
     }
-    fn move_pointer(&self, x: i32) {
+    pub(super) fn move_pointer(&self, x: i32) {
         assert_ne!(unsafe { SetCursorPos(x, 160) }, 0);
         assert_eq!(
             unsafe { WindowFromPoint(POINT { x, y: 160 }) } as usize,
@@ -180,7 +185,7 @@ pub(super) fn observe(keys: u32) {
     });
 }
 
-fn pump() {
+pub(super) fn pump() {
     let mut message: MSG = unsafe { std::mem::zeroed() };
     unsafe {
         while PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
@@ -256,7 +261,7 @@ fn handoff(cancel_during_drag: bool) {
         let physical_start = unsafe { GetAsyncKeyState(1) } < 0;
         eprintln!("worker entered native source: physical_start={physical_start}");
         TRACE.with(|trace| *trace.borrow_mut() = Some(worker_samples));
-        let result = session.start_drag(&files, &worker_cancel);
+        let result = session.start_drag(&files, &worker_cancel, Instant::now());
         TRACE.with(|trace| *trace.borrow_mut() = None);
         result_tx.send((physical_start, result)).unwrap();
     });

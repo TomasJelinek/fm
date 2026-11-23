@@ -1096,7 +1096,7 @@ impl EngineServices {
                         Some(Command::DetachDragDrop { host_generation }) => drag_drop.detach(host_generation),
                         Some(Command::PrepareDrag { id, pane, navigation, files }) => drag_drop.prepare(id, pane, navigation, files).await,
                         Some(Command::PrepareCapturedDrag { id, pane, navigation, source }) => drag_drop.prepare_captured(id, pane, navigation, source).await,
-                        Some(Command::StartDrag(id)) => drag_drop.start(id).await,
+                        Some(Command::StartDrag { id, earliest_drop }) => drag_drop.start(id, earliest_drop).await,
                         Some(Command::CancelDrag(id)) => drag_drop.cancel(id).await,
                         Some(Command::AcceptDrop { token, id, verification }) => drag_drop.accept(token, id, verification, &copies).await,
                         Some(Command::RejectDrop(token)) => drag_drop.reject(token),

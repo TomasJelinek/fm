@@ -144,6 +144,7 @@ impl Session {
         &mut self,
         files: &FileClipboard,
         cancel: &Cancellation,
+        earliest_drop: Instant,
     ) -> Result<DragFinish, FsError> {
         files.validate()?;
         if files.intent != FileClipboardIntent::Copy {
@@ -309,7 +310,14 @@ impl Session {
                 .map_err(failure)?
                 .reply()
                 .map_err(failure)?;
-            released |= !pointer.mask.contains(KeyButMask::BUTTON1);
+            if !released && !pointer.mask.contains(KeyButMask::BUTTON1) {
+                released = true;
+                // A release sooner than the drag's earliest drop time is an accident:
+                // the target gets XdndLeave (`clear_source`), never XdndDrop.
+                if Instant::now() < earliest_drop {
+                    return Ok(DragFinish::ReleasedTooSoon);
+                }
+            }
             let point = (pointer.root_x, pointer.root_y);
             let route = self.route_at_pointer()?;
             if route != self.outgoing.as_ref().unwrap().route {

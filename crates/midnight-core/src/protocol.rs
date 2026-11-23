@@ -259,7 +259,12 @@ pub enum Command {
         navigation: NavigationId,
         source: Arc<dyn crate::CapturedClipboardFiles>,
     },
-    StartDrag(crate::DragId),
+    /// Hand the prepared drag to the operating system. A release before `earliest_drop`
+    /// (the press that started the drag plus the minimum drag duration) cancels it there.
+    StartDrag {
+        id: crate::DragId,
+        earliest_drop: std::time::Instant,
+    },
     CancelDrag(crate::DragId),
     AcceptDrop {
         verification: crate::TransferVerification,

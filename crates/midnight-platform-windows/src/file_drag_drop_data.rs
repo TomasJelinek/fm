@@ -31,6 +31,14 @@ pub(super) struct Feedback {
     logical: Option<u32>,
 }
 impl Feedback {
+    /// Adds what the target stored on the Shell object around our offer, when it did
+    /// not reach our own object.
+    pub(super) fn merge(self, (performed, logical): (Option<u32>, Option<u32>)) -> Self {
+        Self {
+            performed: self.performed.or(performed),
+            logical: self.logical.or(logical),
+        }
+    }
     pub(super) fn finish(self, effect: DROPEFFECT) -> DragFinish {
         // These are receiver reports, never authority to delete a source. Conventional
         // MOVE asks the source to delete its copy; this application deliberately refuses.

@@ -274,7 +274,12 @@ impl FileDragDropSession for FailsWhilePumping {
     fn service_pending(&mut self) -> Result<(), FsError> {
         Err(error(io::ErrorKind::BrokenPipe, "native connection lost"))
     }
-    fn start_drag(&mut self, _: &FileClipboard, _: &Cancellation) -> Result<DragFinish, FsError> {
+    fn start_drag(
+        &mut self,
+        _: &FileClipboard,
+        _: &Cancellation,
+        _: std::time::Instant,
+    ) -> Result<DragFinish, FsError> {
         Ok(DragFinish::Unavailable)
     }
 }
@@ -880,6 +885,7 @@ impl FileDragDropSession for BlockingSession {
         &mut self,
         _: &FileClipboard,
         cancel: &Cancellation,
+        _: std::time::Instant,
     ) -> Result<DragFinish, FsError> {
         assert_eq!(
             *self.0.thread.lock().unwrap(),
@@ -957,7 +963,7 @@ async fn native_drag_keeps_one_actor_thread_and_cancellation_remains_responsive(
     })
     .await
     .unwrap();
-    controller.start(DragId(1)).await;
+    controller.start(DragId(1), std::time::Instant::now()).await;
     tokio::time::timeout(Duration::from_secs(1), async {
         while !observations.started.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(2)).await;

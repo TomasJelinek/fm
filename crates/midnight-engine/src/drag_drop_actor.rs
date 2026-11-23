@@ -262,7 +262,9 @@ pub(super) fn run(
                         ))
                     }
                 })
-                .and_then(|()| session.start_drag(&command.files, &command.cancel))
+                .and_then(|()| {
+                    session.start_drag(&command.files, &command.cancel, command.earliest_drop)
+                })
         } else {
             Ok(DragFinish::Unavailable)
         };

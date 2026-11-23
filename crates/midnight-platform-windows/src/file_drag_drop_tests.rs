@@ -10,7 +10,7 @@ use std::{
     },
 };
 use windows::Win32::{
-    Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, E_FAIL, E_NOTIMPL},
+    Foundation::{E_FAIL, E_NOTIMPL},
     System::{
         Com::{FORMATETC, IAdviseSink, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM},
         Ole::{DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, OleInitialize, OleUninitialize},
@@ -54,17 +54,18 @@ fn ole_file_object_roundtrip_keeps_raw_utf16_and_rejects_move_offer() {
 fn source_cancellation_and_release_are_explicit_and_do_not_request_a_move() {
     let cancel = Cancellation::default();
     let lifetime = Cancellation::default();
-    assert_eq!(continue_drag(false, 1, &cancel, &lifetime), HRESULT(0));
-    assert_eq!(continue_drag(false, 0, &cancel, &lifetime), DRAGDROP_S_DROP);
-    assert_eq!(
-        continue_drag(true, 1, &cancel, &lifetime),
-        DRAGDROP_S_CANCEL
-    );
+    let decide = |escape, keys, too_soon| continue_drag(escape, keys, &cancel, &lifetime, too_soon);
+    assert_eq!(decide(false, 1, false), Decision::Pending);
+    assert_eq!(decide(false, 0, false), Decision::Dropped);
+    assert_eq!(decide(true, 1, false), Decision::Cancelled);
+    // A release before the earliest drop time is an accident: it cancels and says so.
+    // Still holding the button then is no decision at all.
+    assert_eq!(decide(false, 0, true), Decision::TooSoon);
+    assert_eq!(decide(false, 1, true), Decision::Pending);
+    assert_eq!(decide(true, 0, true), Decision::Cancelled);
     cancel.cancel();
-    assert_eq!(
-        continue_drag(false, 1, &cancel, &lifetime),
-        DRAGDROP_S_CANCEL
-    );
+    assert_eq!(decide(false, 1, false), Decision::Cancelled);
+    assert_eq!(decide(false, 0, false), Decision::Cancelled);
 }
 
 #[test]

@@ -108,7 +108,7 @@ async fn without_a_native_session_the_actor_sleeps_until_a_controller_change() {
         matches!(event, DragDropEvent::Prepared { id: DragId(1), .. })
     })
     .await;
-    controller.start(DragId(1)).await;
+    controller.start(DragId(1), std::time::Instant::now()).await;
     next(&mut events, |event| {
         matches!(
             event,
@@ -243,7 +243,12 @@ impl FileDragDropSession for WakingSession {
             shared.update(|observed| observed.woken = true)
         }))
     }
-    fn start_drag(&mut self, _: &FileClipboard, _: &Cancellation) -> Result<DragFinish, FsError> {
+    fn start_drag(
+        &mut self,
+        _: &FileClipboard,
+        _: &Cancellation,
+        _: std::time::Instant,
+    ) -> Result<DragFinish, FsError> {
         self.0.update(|observed| observed.started += 1);
         Ok(DragFinish::Copied)
     }
@@ -359,7 +364,8 @@ fn with_a_waking_session_the_actor_waits_in_it_until_native_input_or_a_controlle
             .prepare(DragId(1), PaneId::Left, NavigationId(5), files),
     );
     h.next(|event| matches!(event, DragDropEvent::Prepared { id: DragId(1), .. }));
-    h.runtime.block_on(h.controller.start(DragId(1)));
+    h.runtime
+        .block_on(h.controller.start(DragId(1), std::time::Instant::now()));
     h.next(|event| {
         matches!(
             event,

@@ -596,46 +596,33 @@ fn a_drop_sooner_than_the_minimum_drag_duration_after_its_press_is_cancelled() {
 }
 
 #[test]
-fn other_applications_get_a_drag_only_once_it_has_lasted_the_minimum_duration() {
+fn a_prepared_drag_goes_to_the_operating_system_as_soon_as_it_leaves_the_window() {
     let fixture = Fixture::new();
-    let quick = MIN_DRAG_DURATION - Duration::from_millis(1);
-    for release_outside in [true, false] {
-        let id = fixture.start_drag();
-        // A software window has no native drag source; pretend this one has.
-        fixture.presenter.borrow_mut().drag_drop.supported = Some(true);
-        let outside = slint::LogicalPosition::new(-20.0, 100.0);
-        fixture.pointer(WindowEvent::PointerMoved { position: outside });
-        fixture.advance(quick);
-        let phase = |fixture: &Fixture| {
-            let p = fixture.presenter.borrow();
-            p.drag_drop.lifecycle.active().map(|gesture| gesture.phase)
-        };
-        assert_eq!(phase(&fixture), Some(Phase::Ready), "still this window's");
-        assert!(!fixture.sent_cancel(id));
-        if release_outside {
-            // The window still holds the pointer and sees the release.
-            fixture.pointer(WindowEvent::PointerReleased {
-                position: outside,
-                button: PointerEventButton::Left,
-            });
-            assert!(fixture.noted(), "released too soon outside the window");
-        } else {
-            // The handoff runs on the next poll. The software window cannot release
-            // a native grab, so the bridge cancels the drag the operating system took.
-            fixture.advance(ACTIVE_POLL + Duration::from_millis(1));
-            assert!(!fixture.noted(), "handed over, not released too soon");
-        }
-        assert_eq!(phase(&fixture), None);
-        assert!(fixture.sent_cancel(id));
-        assert!(
-            !fixture
-                .sent
-                .borrow()
-                .iter()
-                .any(|command| matches!(command, Command::InternalDrop(_)))
-        );
-        fixture.advance(QUICK_NOTE + IDLE_POLL);
-    }
+    let id = fixture.start_drag();
+    // A software window has no native drag source; pretend this one has.
+    fixture.presenter.borrow_mut().drag_drop.supported = Some(true);
+    let outside = slint::LogicalPosition::new(-20.0, 100.0);
+    fixture.pointer(WindowEvent::PointerMoved { position: outside });
+    // The next poll hands it over, long before the minimum drag duration: the drop
+    // source refuses a release before then (`earliest_drop`). The software window
+    // cannot release a native grab, so the bridge cancels the drag it handed over.
+    fixture.advance(ACTIVE_POLL + Duration::from_millis(1));
+    assert!(ACTIVE_POLL + Duration::from_millis(1) < MIN_DRAG_DURATION);
+    let p = fixture.presenter.borrow();
+    assert_eq!(
+        p.drag_drop.lifecycle.active().map(|gesture| gesture.phase),
+        None
+    );
+    drop(p);
+    assert!(fixture.sent_cancel(id));
+    assert!(!fixture.noted(), "handed over, not released too soon");
+    assert!(
+        !fixture
+            .sent
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::InternalDrop(_)))
+    );
 }
 
 #[test]

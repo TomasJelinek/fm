@@ -699,8 +699,9 @@ impl FileDragDropSession for Session {
         &mut self,
         files: &FileClipboard,
         cancel: &Cancellation,
+        earliest_drop: Instant,
     ) -> Result<DragFinish, FsError> {
-        let result = self.run_source(files, cancel);
+        let result = self.run_source(files, cancel, earliest_drop);
         self.clear_source();
         result
     }

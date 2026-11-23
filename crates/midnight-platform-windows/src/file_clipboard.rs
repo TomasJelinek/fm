@@ -68,7 +68,9 @@ pub(crate) fn decode_hdrop(bytes: &[u8]) -> Result<Vec<PathBuf>, FsError> {
     if offset < 20
         || offset > bytes.len() - 4
         || !offset.is_multiple_of(2)
-        || bytes[16..20] != 1u32.to_le_bytes()
+        // fWide is a Win32 BOOL: any nonzero value means Unicode. .NET (WinForms, WPF)
+        // writes TRUE as -1, and refusing it made every drop from those programs fail.
+        || bytes[16..20] == [0; 4]
     {
         return Err(error(
             "The clipboard does not contain a valid Unicode DROPFILES header.",

@@ -83,6 +83,8 @@ struct Bridge {
     gesture_press: Cell<Option<Duration>>,
     /// When a source panel began to note a drag released too soon, until it retires.
     quick_note: Cell<Option<Duration>>,
+    /// The number of the last quick-release note this bridge shows and times.
+    noted: Cell<u64>,
 }
 
 impl Drop for Bridge {
@@ -206,6 +208,23 @@ impl Bridge {
         let details = crate::panel_models::details_rows(&p, pane);
         drop(p);
         crate::panel_models::refresh_details(window, details, pane);
+    }
+
+    /// Show and time a quick-release note this bridge has not seen yet: one the
+    /// presenter recorded for a drag the operating system ran.
+    fn adopt_quick_note(&self, window: &MainWindow) {
+        let Some((pane, number)) = self
+            .presenter
+            .try_borrow()
+            .ok()
+            .and_then(|p| p.quick_drag_note_shown())
+        else {
+            return;
+        };
+        if self.noted.replace(number) != number {
+            self.quick_note.set(Some(now(window)));
+            self.show_details(window, pane);
+        }
     }
 
     /// Retire the quick-drag note once it has been shown for `QUICK_NOTE`.
@@ -390,6 +409,7 @@ impl Bridge {
     /// One poll, then the cadence its outcome needs.
     fn turn(&self, window: &MainWindow) {
         self.poll(window);
+        self.adopt_quick_note(window);
         self.expire_quick_note(window);
         self.cadence();
     }
@@ -532,6 +552,14 @@ impl Bridge {
         self.update(window);
         // Released too soon: the presenter cancelled the drag and its panel says so.
         if let Some(pane) = noted {
+            if let Some((_, number)) = self
+                .presenter
+                .try_borrow()
+                .ok()
+                .and_then(|p| p.quick_drag_note_shown())
+            {
+                self.noted.set(number);
+            }
             self.quick_note.set(Some(now(window)));
             self.show_details(window, pane);
         }
@@ -580,13 +608,11 @@ impl Bridge {
                 || cursor.y < 0.0
                 || cursor.x >= size.width
                 || cursor.y >= size.height;
-            // Other applications get only a drag that has lasted MIN_DRAG_DURATION.
-            // Until then this window keeps the pointer and sees its release, which
-            // cancels the drag as `released` does inside it; once the operating
-            // system runs the drag, no drop can come sooner.
-            (outside && self.held(window) >= MIN_DRAG_DURATION)
-                .then(|| presenter.drag_native_ready())
-                .flatten()
+            // The operating system takes a prepared drag as soon as it leaves the window,
+            // as in Explorer, so the application under the pointer shows its feedback at
+            // once. The drop source refuses a release sooner than MIN_DRAG_DURATION after
+            // the press (`earliest_drop`), as `released` does inside the window.
+            outside.then(|| presenter.drag_native_ready()).flatten()
         };
         if let Some(id) = id {
             let armed = crate::with_owned_commands(&self.presenter, &self.begin_owned, |p, _| {
@@ -605,12 +631,14 @@ impl Bridge {
                         position: self.cursor.get(),
                         button: PointerEventButton::Left,
                     });
+                let earliest_drop =
+                    std::time::Instant::now() + MIN_DRAG_DURATION.saturating_sub(self.held(window));
                 let mut released = false;
                 window
                     .window()
                     .with_winit_window(|window| released = native::release_input(window));
                 self.handoff.set(false);
-                if !released || !(self.send)(Command::StartDrag(id)) {
+                if !released || !(self.send)(Command::StartDrag { id, earliest_drop }) {
                     self.cancel_pending.set(Some(id));
                     self.flush_cancel();
                 }
@@ -653,6 +681,7 @@ pub(crate) fn install(
         press: Cell::new(None),
         gesture_press: Cell::new(None),
         quick_note: Cell::new(None),
+        noted: Cell::new(0),
     });
     BRIDGES.with(|bridges| {
         let mut bridges = bridges.borrow_mut();

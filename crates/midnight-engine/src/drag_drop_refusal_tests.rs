@@ -294,7 +294,12 @@ impl FileDragDropSession for RefusingSession {
         self.pumps.send_modify(|pumps| *pumps += 1);
         Ok(())
     }
-    fn start_drag(&mut self, _: &FileClipboard, _: &Cancellation) -> Result<DragFinish, FsError> {
+    fn start_drag(
+        &mut self,
+        _: &FileClipboard,
+        _: &Cancellation,
+        _: std::time::Instant,
+    ) -> Result<DragFinish, FsError> {
         Ok(DragFinish::Unavailable)
     }
 }

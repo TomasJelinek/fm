@@ -156,6 +156,9 @@ fn native_modal_copy_and_idle_cancellation_without_physical_input() {
         let source: IDropSource = Source {
             cancel: cancel.clone(),
             lifetime: host.lifetime.clone(),
+            earliest_drop: Instant::now(),
+            decision: Default::default(),
+            data: data.clone(),
         }
         .into();
         let source: IDropSource = TestSource {

@@ -6,6 +6,7 @@ use std::{
     io,
     path::Path,
     ptr,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -42,6 +43,8 @@ use windows_sys::Win32::{
 mod data;
 #[path = "file_drag_drop_input.rs"]
 mod input;
+#[path = "file_drag_drop_shell.rs"]
+mod shell;
 #[path = "file_drag_drop_wait.rs"]
 pub(crate) mod wait;
 #[cfg(test)]
@@ -172,6 +175,7 @@ impl FileDragDropSession for Session {
         &mut self,
         files: &FileClipboard,
         cancel: &Cancellation,
+        earliest_drop: Instant,
     ) -> Result<DragFinish, FsError> {
         // A delayed preparation must never turn a completed click into a fresh native drag.
         if cancel.is_cancelled()
@@ -187,10 +191,18 @@ impl FileDragDropSession for Session {
         {
             return Ok(DragFinish::Cancelled);
         }
-        let (data, feedback) = data::make_offer(files)?;
+        let (inner, feedback) = data::make_offer(files)?;
+        // Explorer reads the Shell item list and draws the drag image from the Shell
+        // object; every target still gets our lossless CF_HDROP list.
+        let data = shell::wrap(files, inner);
+        shell::attach_drag_image(&data);
+        let decision = Rc::new(Cell::new(Decision::Pending));
         let source: IDropSource = Source {
             cancel: cancel.clone(),
             lifetime: self.host.lifetime.clone(),
+            earliest_drop,
+            decision: decision.clone(),
+            data: data.clone(),
         }
         .into();
         let timer = Timer::new(cancel.clone(), self.host.lifetime.clone())?;
@@ -204,11 +216,15 @@ impl FileDragDropSession for Session {
         drop(timer);
         self.sink.hover(None);
         if result == DRAGDROP_S_CANCEL {
-            return Ok(DragFinish::Cancelled);
+            return Ok(if decision.get() == Decision::TooSoon {
+                DragFinish::ReleasedTooSoon
+            } else {
+                DragFinish::Cancelled
+            });
         }
         result.ok().map_err(error)?;
         Ok(if result == DRAGDROP_S_DROP {
-            feedback.get().finish(effect)
+            feedback.get().merge(shell::feedback(&data)).finish(effect)
         } else {
             DragFinish::Unconfirmed
         })
@@ -506,35 +522,78 @@ fn copy_requested(effect: DROPEFFECT, keys: u32) -> bool {
     effect.0 & DROPEFFECT_COPY.0 != 0 && keys & (4 | 32) == 0 // MK_SHIFT / MK_ALT request unsupported move/link.
 }
 
+/// What the drop source last told OLE.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Decision {
+    #[default]
+    Pending,
+    Dropped,
+    Cancelled,
+    /// Released before `earliest_drop`: cancelled as an accidental release.
+    TooSoon,
+}
+
 #[implement(IDropSource, Agile = false)]
 struct Source {
     cancel: Cancellation,
     lifetime: Cancellation,
+    earliest_drop: Instant,
+    decision: Rc<Cell<Decision>>,
+    /// The offer, whose drag-image state decides the cursor (`GiveFeedback`).
+    data: IDataObject,
 }
 impl IDropSource_Impl for Source_Impl {
     fn QueryContinueDrag(&self, escape: BOOL, keys: MODIFIERKEYS_FLAGS) -> HRESULT {
         #[cfg(test)]
         handoff_tests::observe(keys.0);
-        continue_drag(escape.as_bool(), keys.0, &self.cancel, &self.lifetime)
+        let decision = continue_drag(
+            escape.as_bool(),
+            keys.0,
+            &self.cancel,
+            &self.lifetime,
+            Instant::now() < self.earliest_drop,
+        );
+        self.decision.set(decision);
+        match decision {
+            Decision::Pending => HRESULT(0),
+            Decision::Dropped => DRAGDROP_S_DROP,
+            Decision::Cancelled | Decision::TooSoon => DRAGDROP_S_CANCEL,
+        }
     }
     fn GiveFeedback(&self, _effect: DROPEFFECT) -> HRESULT {
-        DRAGDROP_S_USEDEFAULTCURSORS
+        // Under the Shell's layered drag image the arrow replaces the drag cursors;
+        // the image itself shows the effect, as Explorer's own drags do.
+        if shell::showing_layered(&self.data) {
+            // SAFETY: a shared system cursor; nothing is retained.
+            unsafe {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    IDC_ARROW, LoadCursorW, SetCursor,
+                };
+                SetCursor(LoadCursorW(ptr::null_mut(), IDC_ARROW));
+            }
+            HRESULT(0)
+        } else {
+            DRAGDROP_S_USEDEFAULTCURSORS
+        }
     }
 }
+/// `too_soon`: the release would come before the drag's earliest drop time.
 fn continue_drag(
     escape: bool,
     keys: u32,
     cancel: &Cancellation,
     lifetime: &Cancellation,
-) -> HRESULT {
+    too_soon: bool,
+) -> Decision {
     if escape || cancel.is_cancelled() || lifetime.is_cancelled() {
-        DRAGDROP_S_CANCEL
-    } else if keys & 1 == 0 {
-        DRAGDROP_S_DROP
-    }
-    // MK_LBUTTON
-    else {
-        HRESULT(0)
+        Decision::Cancelled
+    } else if keys & 1 != 0 {
+        // MK_LBUTTON: still held.
+        Decision::Pending
+    } else if too_soon {
+        Decision::TooSoon
+    } else {
+        Decision::Dropped
     }
 }
 
@@ -547,6 +606,9 @@ mod modal_tests;
 #[cfg(test)]
 #[path = "file_drag_drop_native_tests.rs"]
 mod native_tests;
+#[cfg(test)]
+#[path = "file_drag_drop_outgoing_tests.rs"]
+mod outgoing_tests;
 #[cfg(test)]
 #[path = "file_drag_drop_shell_tests.rs"]
 mod shell_tests;

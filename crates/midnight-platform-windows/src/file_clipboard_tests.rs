@@ -23,6 +23,25 @@ fn hdrop_round_trip_keeps_unpaired_utf16_and_has_a_unicode_header() {
 }
 
 #[test]
+fn hdrop_accepts_any_nonzero_unicode_flag_as_dotnet_programs_write_it() {
+    // The header WinForms' DataObject.SetFileDropList put on a drag into the app (seen
+    // on Windows 11): pFiles 20, fWide 0xFFFFFFFF (BOOL TRUE as -1), then the list.
+    let mut bytes = vec![
+        0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff,
+    ];
+    for unit in r"D:\probe\incoming.txt".encode_utf16().chain([0, 0]) {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    assert_eq!(
+        decode_hdrop(&bytes).unwrap(),
+        vec![PathBuf::from(r"D:\probe\incoming.txt")]
+    );
+    // fWide FALSE is an ANSI list: still refused, never read as UTF-16.
+    bytes[16..20].copy_from_slice(&[0; 4]);
+    assert!(decode_hdrop(&bytes).is_err());
+}
+
+#[test]
 fn hdrop_rejects_missing_terminators_offsets_ansi_and_relative_paths() {
     let payload = FileClipboard {
         paths: vec!["C:\\file.txt".into()],

@@ -579,7 +579,7 @@ fn x11_source_requires_live_button_and_copies_to_external_target_without_clipboa
     };
     assert_eq!(
         f.session
-            .start_drag(&files, &Cancellation::default())
+            .start_drag(&files, &Cancellation::default(), Instant::now())
             .unwrap(),
         DragFinish::Cancelled
     );
@@ -700,7 +700,9 @@ fn x11_source_requires_live_button_and_copies_to_external_target_without_clipboa
         result
     });
     ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-    let outcome = f.session.start_drag(&files, &Cancellation::default());
+    let outcome = f
+        .session
+        .start_drag(&files, &Cancellation::default(), Instant::now());
     assert_eq!(
         peer.join().unwrap(),
         b"file:///tmp/a%20%E6%96%87%23.txt\r\n"
@@ -752,7 +754,9 @@ fn x11_source_and_target_share_proxy_for_incremental_internal_panel_copy() {
             .check()
             .unwrap();
     });
-    let result = f.session.start_drag(&files, &Cancellation::default());
+    let result = f
+        .session
+        .start_drag(&files, &Cancellation::default(), Instant::now());
     release.join().unwrap();
     assert_eq!(result.unwrap(), DragFinish::Copied);
     let requests = f.sink.0.lock().unwrap();
@@ -941,6 +945,7 @@ fn x11_escape_cancels_drag_and_releases_native_grabs() {
             intent: FileClipboardIntent::Copy,
         },
         &Cancellation::default(),
+        Instant::now(),
     );
     cancel.join().unwrap();
     f.connection
@@ -1045,6 +1050,7 @@ fn x11_source_waits_for_ui_connection_pointer_handoff_without_blocking_ui() {
                 intent: FileClipboardIntent::Copy,
             },
             &cancel,
+            Instant::now(),
         );
         release.join().unwrap();
         result

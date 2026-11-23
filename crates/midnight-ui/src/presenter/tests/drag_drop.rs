@@ -129,7 +129,7 @@ fn drag_waits_for_exact_pending_selection_then_rejects_late_preparation_after_re
         !commands
             .borrow()
             .iter()
-            .any(|command| matches!(command, Command::StartDrag(_)))
+            .any(|command| matches!(command, Command::StartDrag { .. }))
     );
 }
 
@@ -334,7 +334,7 @@ fn a_drop_sooner_than_the_minimum_drag_duration_cancels_and_one_at_it_proceeds()
             assert!(
                 !sent
                     .iter()
-                    .any(|command| matches!(command, Command::StartDrag(_)))
+                    .any(|command| matches!(command, Command::StartDrag { .. }))
             );
             assert!(
                 sent.iter()
@@ -521,6 +521,51 @@ fn unavailable_native_gesture_keeps_the_next_gesture_eligible_for_native_draggin
         p.release_file_drag(None, InternalDropIntent::Copy, &send);
         previous = Some(id);
     }
+}
+
+#[test]
+fn a_release_too_soon_that_the_operating_system_reports_notes_the_source_panel() {
+    let (mut p, _) = loaded();
+    let send = |_| true;
+    p.drag_drop.supported = Some(true);
+    for outcome in [DragFinish::ReleasedTooSoon, DragFinish::Cancelled] {
+        assert!(p.begin_file_drag(PaneId::Left, 1, &identity(&p, 1), &send));
+        let id = DragId(p.drag_drop.lifecycle.active().unwrap().id);
+        p.apply_with_sender(
+            Event::DragDrop(DragDropEvent::Prepared { id, item_count: 1 }),
+            &send,
+        );
+        assert!(p.arm_native_drag(id));
+        let before = p.quick_drag_note_shown();
+        p.apply_with_sender(
+            Event::DragDrop(DragDropEvent::Finished { id, outcome }),
+            &send,
+        );
+        assert!(p.drag_drop.lifecycle.active().is_none());
+        if outcome == DragFinish::ReleasedTooSoon {
+            let (pane, number) = p.quick_drag_note_shown().unwrap();
+            assert_eq!(pane, PaneId::Left);
+            assert_ne!(Some(number), before.map(|(_, number)| number));
+            assert!(p.quick_drag_note(PaneId::Left).is_some());
+            assert!(p.quick_drag_note(PaneId::Right).is_none());
+            p.clear_quick_drag_note();
+        } else {
+            assert_eq!(
+                p.quick_drag_note_shown(),
+                None,
+                "an ordinary cancel says nothing"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_archive_row_says_why_it_does_not_drag() {
+    let (mut p, _) = loaded();
+    p.panes[0].network_request = true;
+    assert!(!p.begin_file_drag(PaneId::Left, 1, &identity(&p, 1), &|_| true));
+    assert_eq!(p.desktop.status, crate::presenter::drag_drop::NOT_DRAGGABLE);
+    assert!(p.drag_drop.lifecycle.active().is_none());
 }
 
 #[test]

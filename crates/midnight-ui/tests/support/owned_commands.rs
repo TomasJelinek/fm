@@ -233,7 +233,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::SetCopyPaused { .. }
             | Command::SetOperationPaused { .. }
             | Command::DetachDragDrop { .. }
-            | Command::StartDrag(_)
+            | Command::StartDrag { .. }
             | Command::CancelDrag(_)
             | Command::AcceptDrop { .. }
             | Command::RejectDrop(_)

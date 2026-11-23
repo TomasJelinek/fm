@@ -176,7 +176,12 @@ impl FileDragDropSession for DragSession {
         assert_eq!(self.created, thread::current().id());
         Ok(())
     }
-    fn start_drag(&mut self, _: &FileClipboard, _: &Cancellation) -> Result<DragFinish, FsError> {
+    fn start_drag(
+        &mut self,
+        _: &FileClipboard,
+        _: &Cancellation,
+        _: std::time::Instant,
+    ) -> Result<DragFinish, FsError> {
         self.trace.drag_starts.fetch_add(1, Ordering::SeqCst);
         assert_eq!(self.created, thread::current().id());
         Err(FsError::from_io(

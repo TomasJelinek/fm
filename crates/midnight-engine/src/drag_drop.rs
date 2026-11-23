@@ -434,6 +434,7 @@ impl Retired {
 
 struct Start {
     id: DragId,
+    earliest_drop: std::time::Instant,
     host: u64,
     files: Arc<FileClipboard>,
     captured: Option<Arc<dyn CapturedClipboardFiles>>,
@@ -798,7 +799,7 @@ impl Controller {
         }
     }
 
-    pub(crate) async fn start(&self, id: DragId) {
+    pub(crate) async fn start(&self, id: DragId, earliest_drop: std::time::Instant) {
         let command = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.clear_preview();
@@ -824,6 +825,7 @@ impl Controller {
                     source.running = true;
                     Some(Start {
                         id,
+                        earliest_drop,
                         host,
                         files,
                         captured: source.captured.clone(),

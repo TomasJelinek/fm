@@ -223,6 +223,9 @@ pub enum DragFinish {
     /// Neither source retention nor a completed Move can be asserted.
     Unconfirmed,
     Cancelled,
+    /// The button was released before the drag's earliest drop time: cancelled, as an
+    /// accidental release, without offering the drop to the target.
+    ReleasedTooSoon,
     Unavailable,
 }
 
@@ -341,10 +344,13 @@ pub trait FileDragDropSession {
     /// transport offers Copy only. Link is unsupported. The receiver owns external work;
     /// completion feedback never authorizes this source to delete files. Returned outcomes
     /// report receiver feedback, not independent verification of its filesystem operations.
+    /// A release before `earliest_drop` must not drop: it ends the drag with
+    /// [`DragFinish::ReleasedTooSoon`].
     fn start_drag(
         &mut self,
         files: &FileClipboard,
         cancel: &Cancellation,
+        earliest_drop: std::time::Instant,
     ) -> Result<DragFinish, FsError>;
 }
 

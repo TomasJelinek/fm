@@ -372,11 +372,10 @@ fn internal_drop_highlights_the_exact_folder_and_captures_its_identity() {
             ..
         }
     ));
-    assert!(
-        !commands
-            .iter()
-            .any(|command| matches!(command, Command::StartDrag(_) | Command::OpenEntry { .. }))
-    );
+    assert!(!commands.iter().any(|command| matches!(
+        command,
+        Command::StartDrag { .. } | Command::OpenEntry { .. }
+    )));
 }
 
 #[test]
@@ -488,12 +487,10 @@ fn release_escape_and_navigation_cannot_be_revived_by_late_preparation() {
         h.prepared(id);
         h.release();
         assert!(!h.ui.window.get_drag_active());
-        assert!(
-            !h.commands
-                .borrow()
-                .iter()
-                .any(|command| matches!(command, Command::StartDrag(_) | Command::InternalDrop(_)))
-        );
+        assert!(!h.commands.borrow().iter().any(|command| matches!(
+            command,
+            Command::StartDrag { .. } | Command::InternalDrop(_)
+        )));
         assert!(h.commands.borrow().iter().any(|command| matches!(command,
             Command::CancelDrag(actual) if *actual == id)));
     }

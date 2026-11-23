@@ -14,6 +14,9 @@ pub(crate) mod preview;
 /// files to the other panel, onto a folder row or out to another application takes
 /// longer. Timing from the press means that holding the button before moving counts.
 pub(crate) const MIN_DRAG_DURATION: Duration = Duration::from_millis(400);
+/// Why a row of an archive or Network panel does not start a drag.
+pub(crate) const NOT_DRAGGABLE: &str =
+    "Items in an archive or the Network view cannot be dragged; copy archive items with F5.";
 
 #[derive(Default)]
 pub(crate) struct DragDropState {
@@ -93,9 +96,14 @@ impl Presenter {
             return self.begin_tree_drag(pane, row, identity, send);
         }
         let p = &self.panes[pane.index()];
+        if !p.native_capabilities() {
+            // Archive and Network items have no file of their own for another application
+            // or panel to take; the Copy command extracts them.
+            self.desktop.status = NOT_DRAGGABLE.into();
+            return false;
+        }
         // The dragged row, not the focused one: the shown rows must be settled.
-        if !p.native_capabilities()
-            || !p.rows_settled()
+        if !p.rows_settled()
             || p.selection_pending_bulk
             || p.selection_deferred.any()
             || p.selection_rebase_pending
@@ -327,9 +335,19 @@ impl Presenter {
             });
         self.release_file_drag(None, intent, send);
         let pane = source?;
+        self.note_quick_release(pane);
+        Some(pane)
+    }
+
+    fn note_quick_release(&mut self, pane: PaneId) {
         self.drag_drop.quick_notes = self.drag_drop.quick_notes.wrapping_add(1);
         self.drag_drop.quick_note = Some((pane, self.drag_drop.quick_notes));
-        Some(pane)
+    }
+
+    /// The current note of a drag released too soon, with its number: a new number is a
+    /// note to show and time, also one the drop source of another application reported.
+    pub(crate) fn quick_drag_note_shown(&self) -> Option<(PaneId, u64)> {
+        self.drag_drop.quick_note
     }
 
     /// Retires the note of a drag released too soon; returns the panel that showed it.
@@ -780,6 +798,20 @@ impl Presenter {
                 if outcome != DragFinish::Unavailable {
                     self.finish_tree_drag(id);
                     self.retire_drag_origin(id);
+                }
+                // The operating system ran the drag; its source refused the early release.
+                if outcome == DragFinish::ReleasedTooSoon
+                    && let Some(gesture) = self
+                        .drag_drop
+                        .lifecycle
+                        .active()
+                        .filter(|gesture| gesture.id == id.0)
+                {
+                    self.note_quick_release(if gesture.source.pane == 0 {
+                        PaneId::Left
+                    } else {
+                        PaneId::Right
+                    });
                 }
                 if outcome == DragFinish::SourceRetained {
                     self.desktop.status =
