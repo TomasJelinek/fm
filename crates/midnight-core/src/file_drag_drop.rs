@@ -95,7 +95,14 @@ pub enum NativeDragWindow {
     X11 {
         window: u32,
     },
-    /// Native Wayland lacks the same-connection input serial required for external DND.
+    /// winit's `wl_display` and the window's `wl_surface` (raw pointers), lent to the
+    /// backend actor while the window lives; `scale_milli` maps surface coordinates to
+    /// window pixels (thousandths).
+    Wayland {
+        display: usize,
+        surface: usize,
+        scale_milli: u32,
+    },
     Unsupported,
 }
 

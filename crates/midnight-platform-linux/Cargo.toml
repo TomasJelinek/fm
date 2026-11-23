@@ -20,6 +20,10 @@ chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 notify = { version = "=8.2.1", default-features = false }
 arboard = { version = "=3.7.0", default-features = false, features = ["wayland-data-control"] }
 x11rb = "=0.13.2"
+# Wayland drag and drop on winit's own connection (guest `Backend`); the same versions
+# winit uses. `dlopen` keeps libwayland-client a runtime, not link-time, dependency.
+wayland-client = "=0.31.15"
+wayland-backend = { version = "=0.3.17", features = ["client_system", "dlopen"] }
 wl-clipboard-rs = "=0.9.5"
 zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 futures-lite = { version = "=2.6.1", default-features = false, features = ["std"] }

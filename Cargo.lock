@@ -3085,6 +3085,8 @@ dependencies = [
  "rustix 1.1.6",
  "tempfile",
  "tokio",
+ "wayland-backend",
+ "wayland-client",
  "wl-clipboard-rs",
  "x11rb",
  "zbus",

@@ -1,4 +1,4 @@
-//! X11/XWayland drag/drop; native Wayland requires a future same-connection seat bridge.
+//! X11/XWayland drag/drop; native Wayland uses the window's own connection (`wayland`).
 use midnight_core::{
     Cancellation, DragFinish, DragHost, FileClipboard, FileClipboardIntent, FileDragDropService,
     FileDragDropSession, FileDragDropWaker, FileDropRequest, FileDropSink, FileDropTarget, FsError,
@@ -30,6 +30,10 @@ use x11rb::{
 mod selection;
 #[path = "file_drag_drop_source.rs"]
 mod source;
+// Lends winit's `wl_display` and the window's `wl_surface` (two FFI handles).
+#[allow(unsafe_code)]
+#[path = "file_drag_drop_wayland.rs"]
+mod wayland;
 use selection::{PendingRead, SendTransfer};
 use source::Outgoing;
 
@@ -65,13 +69,18 @@ impl FileDragDropService for NativeFileDragDrop {
         targets: SharedDropTargets,
         sink: Arc<dyn FileDropSink>,
     ) -> Result<Box<dyn FileDragDropSession>, FsError> {
+        if let NativeDragWindow::Wayland { .. } = host.native {
+            return Ok(Box::new(wayland::WaylandSession::open(
+                host, targets, sink,
+            )?));
+        }
         let NativeDragWindow::X11 { window } = host.native else {
             return Err(FsError::from_io(
                 "Linux file drag/drop",
                 Path::new(""),
                 io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "External file dragging requires an X11/XWayland window; native Wayland is unavailable.",
+                    "External file dragging requires an X11, XWayland or Wayland window.",
                 ),
             ));
         };
