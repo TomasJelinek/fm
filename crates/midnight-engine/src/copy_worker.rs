@@ -191,6 +191,16 @@ impl Awaited {
     pub(super) fn flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.0.clone()
     }
+    /// A second guard on the same flag; whichever is dropped first ends the batch. The
+    /// copy actor keeps one for each job it runs: its abort drops the jobs' tasks only
+    /// later, when the runtime gets to them, while a batch could go on stepping.
+    pub(super) fn twin(&self) -> Self {
+        Self(self.0.clone())
+    }
+    /// Whether anything besides this guard still holds the flag (a running job).
+    pub(super) fn is_shared(&self) -> bool {
+        Arc::strong_count(&self.0) > 1
+    }
 }
 impl Drop for Awaited {
     fn drop(&mut self) {

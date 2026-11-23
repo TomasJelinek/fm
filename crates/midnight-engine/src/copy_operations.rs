@@ -610,12 +610,20 @@ async fn run(
     let service = Arc::new(service);
     let requests = consumer.admission();
     let mut jobs = JoinSet::new();
+    // This actor's guard on each job's batches of steps (`worker::Awaited`). Dropping the
+    // JoinSet with an aborted actor only requests the jobs' aborts; these guards end every
+    // running batch after its step in flight before the actor's abort completes.
+    let mut batches: Vec<worker::Awaited> = Vec::new();
     loop {
         tokio::select! {
             request = requests.next(&cancel), if jobs.len() < MAX_JOBS => {
                 let Some(request) = request else { break; };
+                batches.retain(worker::Awaited::is_shared);
+                let awaited = worker::Awaited::new();
                 jobs.spawn(run_accepted(request, service.clone(), registry.clone(),
-                    mutation_gate.clone(), io_budget.clone(), namespace.clone()));
+                    mutation_gate.clone(), io_budget.clone(), namespace.clone(),
+                    awaited.twin()));
+                batches.push(awaited);
             },
             _ = jobs.join_next(), if !jobs.is_empty() => {},
         }
@@ -627,6 +635,7 @@ async fn run(
     drop(outbox);
 }
 
+/// `awaited` guards the job's batches of steps; the actor holds its twin.
 async fn run_accepted(
     mut request: Request,
     service: Arc<WorkerOwned<CopyServices>>,
@@ -634,6 +643,7 @@ async fn run_accepted(
     mutation_gate: Arc<Semaphore>,
     io_budget: Arc<IoBudget>,
     namespace: crate::copy_namespace::Registry,
+    awaited: worker::Awaited,
 ) {
     let id = request.command.id;
     let registered = request.ordered_id;
@@ -733,6 +743,7 @@ async fn run_accepted(
                     &io_budget,
                     &mutation_gate,
                     &namespace,
+                    awaited,
                 )
                 .await
             }
@@ -771,6 +782,7 @@ async fn run_input(
     io_budget: &Arc<IoBudget>,
     mutation_gate: &Arc<Semaphore>,
     namespace: &crate::copy_namespace::Registry,
+    awaited: worker::Awaited,
 ) -> CopyProgress {
     let status = request.status.clone();
     let cancel = request.cancel.clone();
@@ -783,6 +795,7 @@ async fn run_input(
         mutation_gate,
         namespace,
         &throughput,
+        awaited,
     );
     with_progress_cadence(pending, &status, &cancel, &throughput, outbox).await
 }
@@ -860,6 +873,10 @@ fn sample_throughput(status: &Status, throughput: &Mutex<Tracker>) -> Option<Cop
     .then(|| progress.clone())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The job's shared lease sources and its batch guard; a bundle would only rename them."
+)]
 async fn execute_input(
     mut request: Owned<Input>,
     service: &CopyServices,
@@ -868,6 +885,7 @@ async fn execute_input(
     mutation_gate: &Arc<Semaphore>,
     namespace: &crate::copy_namespace::Registry,
     throughput: &Arc<Mutex<Tracker>>,
+    awaited: worker::Awaited,
 ) -> CopyProgress {
     let status = request.status.clone();
     let cancel = request.cancel.clone();
@@ -1018,7 +1036,6 @@ async fn execute_input(
         .resources_mut()
         .namespace()
         .map(crate::copy_namespace::Claim::watch);
-    let awaited = worker::Awaited::new();
     loop {
         if !ready_for_io(&io, &cancel, &status, outbox, throughput).await {
             break;
