@@ -289,6 +289,9 @@ fn range_anchor_tracks_paths_after_reorder_and_does_not_select_recycled_ids() {
         vec![entry(8, "other/recycled"), entry(9, "other/next")],
     );
     assert!(visible(&p).is_empty());
+    // The old anchor's path is gone and its id is recycled: the range starts at the
+    // cursor, which the new folder put on its first row.
+    assert_eq!(p.panes[0].cursor, Some(EntryId(8)));
     p.select_row_modified(
         PaneId::Left,
         p.panes[0].parent_offset() + 1,
@@ -296,7 +299,7 @@ fn range_anchor_tracks_paths_after_reorder_and_does_not_select_recycled_ids() {
         true,
         &|_| true,
     );
-    assert_eq!(visible(&p), [1]);
+    assert_eq!(visible(&p), [0, 1]);
 }
 
 #[test]

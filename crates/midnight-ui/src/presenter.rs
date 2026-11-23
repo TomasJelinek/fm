@@ -226,6 +226,8 @@ pub(crate) struct Pane {
     rectangle_preview: Option<selection_rectangle::Preview>,
     selection_anchor: Option<PathBuf>,
     selection_anchor_id: Option<EntryId>,
+    /// The cursor when the anchor (also a tree's) was set: see [`Pane::anchor_current`].
+    selection_anchor_cursor: Option<EntryId>,
     selection_context: NavigationId,
     selection_committed_context: NavigationId,
     selection_revision: SelectionRevision,
@@ -2036,6 +2038,7 @@ impl Pane {
             rectangle_preview: None,
             selection_anchor: None,
             selection_anchor_id: None,
+            selection_anchor_cursor: None,
             selection_context: NavigationId(0),
             selection_committed_context: NavigationId(0),
             selection_revision: SelectionRevision(0),
@@ -2155,6 +2158,21 @@ impl Pane {
         } else {
             &self.entries
         }
+    }
+    /// Whether the selection anchor still starts the next Shift range: only while the
+    /// cursor stays where the anchor left it. A cursor moved without Shift (keys in
+    /// every view, search, a jump) or a bulk selection change makes the range start at
+    /// the cursor's row instead. One comparison, whatever the folder's size.
+    pub(crate) fn anchor_current(&self) -> bool {
+        self.cursor.is_some() && self.selection_anchor_cursor == self.cursor
+    }
+    /// The anchor was set or kept with the cursor where it is now.
+    pub(crate) fn keep_anchor(&mut self) {
+        self.selection_anchor_cursor = self.cursor;
+    }
+    /// Forget the anchor: the next Shift range starts at the cursor.
+    pub(crate) fn forget_anchor(&mut self) {
+        self.selection_anchor_cursor = None;
     }
     pub(crate) fn cursor_index(&self) -> Option<usize> {
         if self.network_hides_rows() {

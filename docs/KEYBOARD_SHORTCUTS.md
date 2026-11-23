@@ -173,6 +173,7 @@ or remove that assignment in Options → Keyboard to free the number.
 | Alt+5 | Switch the active pane to Thumbnails view |
 | Space | Toggle selection, advance one row and calculate the focused directory's size on the backend |
 | Insert | Toggle selection and move to the next row |
+| Shift+click / Ctrl+Shift+click in files | Select / add the range from the anchor to the clicked row, in every view. The anchor is the row last clicked or Ctrl+clicked; after the cursor moved without Shift (cursor keys, Space, Insert, search, Alt+↑ / Alt+↓) or Ctrl+D, Ctrl+A or an invert, the range starts at the cursor's row |
 | Ctrl+A | Select displayed top-level files only; deselect folders and nested rows |
 | Ctrl+Shift+A | Select displayed top-level files and folders; exclude `..` and nested rows |
 | Ctrl+D | Clear all selection, including folders and expanded descendants, in the focused pane |

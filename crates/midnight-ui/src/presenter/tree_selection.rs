@@ -113,13 +113,23 @@ impl Presenter {
         let id = row.id;
         let entry = row.entry.id;
         let selectable = row.selectable && !row.context_only;
+        // The anchor while the cursor stayed where it left it; else the cursor's row;
+        // else the clicked row.
+        let shown = |id: &TreeRowId| {
+            p.tree_view()
+                .is_some_and(|view| view.index.row_positions.contains_key(id))
+        };
+        let cursor_row = p
+            .cursor
+            .and_then(|_| p.cursor_index())
+            .and_then(|index| index.checked_sub(p.parent_offset()))
+            .and_then(|index| p.tree_row(index))
+            .map(|row| row.id);
         let anchor = p
             .tree
             .anchor
-            .filter(|id| {
-                p.tree_view()
-                    .is_some_and(|view| view.index.row_positions.contains_key(id))
-            })
+            .filter(|id| p.anchor_current() && shown(id))
+            .or(cursor_row.filter(|id| shown(id)))
             .unwrap_or(id);
         p.cursor = Some(entry);
         p.parent_cursor = false;
@@ -143,9 +153,9 @@ impl Presenter {
         {
             return false;
         }
-        if !shift {
-            self.panes[pane.index()].tree.anchor = Some(id);
-        }
+        let p = &mut self.panes[pane.index()];
+        p.tree.anchor = Some(if shift { anchor } else { id });
+        p.keep_anchor();
         true
     }
 }

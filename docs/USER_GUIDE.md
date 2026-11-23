@@ -873,7 +873,11 @@ current keys.
   See the [archive](ARCHIVE_FORMATS.md) and
   [Network](developer/NETWORK_FILESYSTEM.md) details.
 - Left click: focus the row and its pane; Ctrl+click toggles selection, Shift+click
-  selects an inclusive range, Ctrl+Shift+click adds that range. Accepted gestures
+  selects an inclusive range, Ctrl+Shift+click adds that range. The range starts at
+  the row last clicked or Ctrl+clicked, the same in Detailed, Brief and Thumbnails;
+  once the cursor moved without Shift (the cursor keys, Space, Insert, a filename
+  search or a jump to a selected row) or Deselect all, Select all or Invert changed
+  the selection, it starts at the cursor's row instead. Accepted gestures
   appear immediately while backend confirmations arrive. Panel status shows
   selected file/folder counts.
 - Enter / unmodified left double click: enter a directory or open a file in its

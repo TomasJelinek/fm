@@ -956,13 +956,21 @@ impl Presenter {
         else {
             return;
         };
+        // The anchor while the cursor stayed where it left it; else the cursor's row;
+        // else the clicked row.
+        let shown = |id: EntryId| p.display_index().by_id.get(&id).copied();
         let first = p
             .selection_anchor_id
-            .and_then(|id| p.display_index().by_id.get(&id))
-            .copied()
+            .filter(|_| p.anchor_current())
+            .and_then(shown)
+            .or_else(|| p.cursor.and_then(shown))
             .unwrap_or(row - 1);
+        let first_id = p.display_entry(first).map(|e| e.id);
         self.focus_display_row(pane, row);
         if shift {
+            let p = &mut self.panes[pane.index()];
+            p.selection_anchor_id = first_id.or(p.selection_anchor_id);
+            p.keep_anchor();
             self.archive_bulk_selection(
                 pane,
                 ArchiveSelectionAction::Range {
@@ -973,17 +981,17 @@ impl Presenter {
                 send,
             );
         } else {
+            let p = &mut self.panes[pane.index()];
+            p.selection_anchor_id = Some(entry);
+            p.keep_anchor();
             if control
-                && self.panes[pane.index()]
-                    .archive
+                && p.archive
                     .as_ref()
                     .is_some_and(|a| Arc::strong_count(&a.selected) > 1)
             {
                 self.archive_bulk_selection(pane, ArchiveSelectionAction::Toggle(entry), send);
                 return;
             }
-            let p = &mut self.panes[pane.index()];
-            p.selection_anchor_id = Some(entry);
             if control
                 && let Some(a) = &mut p.archive
                 && !a.selection_pending

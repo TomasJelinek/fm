@@ -39,6 +39,7 @@ mod selected_folder_sizes;
 mod selected_navigation;
 mod selected_size_status;
 mod selection;
+mod selection_anchor;
 mod selection_rectangle;
 mod shortcuts;
 mod size_continuity;

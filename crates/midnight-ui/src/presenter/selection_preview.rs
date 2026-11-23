@@ -175,15 +175,26 @@ impl Presenter {
         if p.search_view_waiting() {
             return;
         }
+        // The anchor while the cursor stayed where it left it; else the cursor's row;
+        // else the clicked row.
+        let shown = |path: &PathBuf| p.selection_position(path).is_some();
         let anchor = p
             .selection_anchor
             .as_ref()
-            .filter(|path| p.selection_position(path).is_some())
+            .filter(|path| p.anchor_current() && shown(path))
+            .or_else(|| {
+                p.cursor
+                    .and_then(|cursor| p.entry_by_id(cursor))
+                    .map(|entry| &entry.path)
+                    .filter(|path| shown(path))
+            })
             .cloned()
             .unwrap_or_else(|| path.clone());
         let anchor_id = if p.showing_stream() {
-            p.selection_anchor_id
-                .filter(|id| p.entry_by_id(*id).is_some_and(|entry| entry.path == anchor))
+            [p.selection_anchor_id, p.cursor]
+                .into_iter()
+                .flatten()
+                .find(|id| p.entry_by_id(*id).is_some_and(|entry| entry.path == anchor))
         } else {
             p.display_index().by_path.get(&anchor).copied()
         }
@@ -217,5 +228,6 @@ impl Presenter {
             p.selection_anchor = Some(anchor);
             p.selection_anchor_id = Some(anchor_id);
         }
+        p.keep_anchor();
     }
 }

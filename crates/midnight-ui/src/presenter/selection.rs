@@ -8,6 +8,9 @@ impl Presenter {
         operation: SelectionOperation,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        // Select all, Deselect all, Invert and the masks replace the selection the
+        // anchor belonged to: the next Shift range starts at the cursor.
+        self.panes[pane.index()].forget_anchor();
         if self.panes[pane.index()].tree_view().is_some() {
             return self.send_tree_selection(pane, TreeSelectionAction::Bulk(operation), send);
         }
