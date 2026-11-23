@@ -22,9 +22,11 @@ pub(super) fn wheel_setting(open: &OpenWindow) -> midnight_ui_input::WheelSettin
     open.image_native.borrow().wheel
 }
 
-/// Whether wheel notches and scroll keys move at once: the system asks for less motion.
+/// Whether wheel notches and scroll keys move at once: the system asks for less motion,
+/// or Options › Appearance › Scrolling glide is Off (`midnight_ui_input::glide_scale`,
+/// which the application sets on the UI thread and which applies at once).
 pub(super) fn reduce_motion(open: &OpenWindow) -> bool {
-    open.image_native.borrow().reduce_motion
+    open.image_native.borrow().reduce_motion || midnight_ui_input::glide_scale() <= 0.0
 }
 
 /// Logical pixels of one wheel notch over the content (`notch_pixels_for`): the shared

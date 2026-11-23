@@ -37,6 +37,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.desktop_font_size = from.desktop_font_size;
     to.touch_font_size = from.touch_font_size;
     to.glyph_fitting = from.glyph_fitting;
+    to.scroll_glide = from.scroll_glide;
     to.file_list.destination = from.file_list.destination;
     to.file_list.append = from.file_list.append;
     to.quick_search_filter = from.quick_search_filter;
@@ -86,6 +87,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         desktop_font_size: _,
         touch_font_size: _,
         glyph_fitting: _,
+        scroll_glide: _,
         quick_search_filter: _,
         size_display: _,
         disk_io_concurrency: _,

@@ -160,7 +160,7 @@ fn schema_35_fields_are_versioned_strict_and_future_versions_stay_refused() {
     assert!(decode_preferences(duplicate.as_bytes()).is_err());
 
     let mut future = valid;
-    future["version"] = 37.into();
+    future["version"] = 38.into();
     let error = decoded(&future).unwrap_err();
     assert_eq!(error.to_string(), "unsupported preferences version");
 }

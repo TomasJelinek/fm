@@ -287,6 +287,8 @@ pub struct NativeScroll {
     reduce_motion: bool,
     /// Momentum is synthesised (`synthesize_momentum`) unless motion is reduced.
     momentum: bool,
+    /// `lists_at_once`: without gliding, notches over Slint lists move them at once.
+    lists_at_once: bool,
 }
 
 impl NativeScroll {
@@ -317,6 +319,7 @@ impl NativeScroll {
             wheel_setting: crate::WheelSetting::default(),
             reduce_motion: false,
             momentum,
+            lists_at_once: false,
         }
     }
 
@@ -344,6 +347,43 @@ impl NativeScroll {
     pub fn glide_content(mut self, region: GlideRegion) -> Self {
         self.glide_region = Some(region);
         self
+    }
+
+    /// Without gliding (the glide scale 0, `crate::glide_scale`, or the system's less
+    /// motion given to `set_reduce_motion`), deliver wheel notches that would reach
+    /// Slint's own wheel easing (ordinary `ScrollView` and `ListView` content) as one
+    /// wheel that Slint applies at once, at Winit's distance. For windows whose content
+    /// this observer does not route to a host first; the viewer's content observers take
+    /// their own notches.
+    pub fn lists_at_once(mut self) -> Self {
+        self.lists_at_once = true;
+        self
+    }
+
+    /// Notches move at once and no momentum is synthesised: the system asks for less
+    /// motion (`set_reduce_motion`) or the glide setting is off (`crate::glide_scale`).
+    fn unglided(&self) -> bool {
+        self.reduce_motion || crate::glide_scale() <= 0.0
+    }
+
+    /// The `lists_at_once` delivery of an unglided notch; false where it does not apply.
+    fn deliver_at_once(&self, window: &slint::Window, point: LogicalPoint, x: f32, y: f32) -> bool {
+        // Winit's backend turns a line into these logical pixels for Slint.
+        const SLINT_LINE_PIXELS: f32 = 60.0;
+        if !self.lists_at_once || !self.unglided() {
+            return false;
+        }
+        if !x.is_finite() || !y.is_finite() || (x == 0.0 && y == 0.0) {
+            return false;
+        }
+        // A `PointerScrolled` reaches Slint without a phase, which a Flickable applies
+        // directly instead of easing; a control that acts per wheel still gets one.
+        window.dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(point.x, point.y),
+            delta_x: x * SLINT_LINE_PIXELS,
+            delta_y: y * SLINT_LINE_PIXELS,
+        });
+        true
     }
 
     /// Override the platform default for synthesised touchpad momentum (on except
@@ -430,6 +470,7 @@ impl NativeScroll {
         self.source = self
             .kinetic
             .observe(event, cursor, window.scale_factor(), now(window));
+        self.stop_unglided_momentum();
         if !self.kinetic.kinetic.flinging() || !was_flinging {
             self.kinetic_view = None;
         }
@@ -480,10 +521,25 @@ impl NativeScroll {
         Some(())
     }
 
+    /// With the glide setting off (`crate::glide_scale` 0) a flick stops where the
+    /// fingers lift. Finger motion is still tracked and delivered here, so Slint adds no
+    /// fling of its own either.
+    fn stop_unglided_momentum(&mut self) {
+        if crate::glide_scale() <= 0.0 && self.kinetic.kinetic.flinging() {
+            self.kinetic.cancel();
+            self.kinetic_view = None;
+        }
+    }
+
     fn kinetic_frame(&mut self, window: &slint::Window, now: Duration) {
         let Some((mut x, mut y)) = self.kinetic.kinetic.tick(now) else {
             return;
         };
+        // An unphased (X11) stream's momentum starts on a frame.
+        if crate::glide_scale() <= 0.0 {
+            self.stop_unglided_momentum();
+            return;
+        }
         let Some(origin) = self.kinetic.origin else {
             self.kinetic.cancel();
             return;
@@ -635,7 +691,7 @@ impl NativeScroll {
                 });
                 let Some(target) = target else {
                     self.cancel_wheel();
-                    return false;
+                    return self.deliver_at_once(window, point, *x, *y);
                 };
                 if !target.accepts(*x, *y) {
                     self.cancel_wheel();
@@ -647,7 +703,7 @@ impl NativeScroll {
                 self.target = Some(target);
                 self.position = Some(point);
                 let notch = crate::notch_pixels_for(self.wheel_setting, 0.0);
-                let pushed = if self.reduce_motion {
+                let pushed = if self.unglided() {
                     self.motion.push_direct(x * notch, y * notch, now)
                 } else {
                     self.motion.push(x * notch, y * notch, now)
@@ -728,7 +784,7 @@ pub fn install<C: ComponentHandle + 'static>(
     blocked: impl Fn(&slint::Window) -> bool + 'static,
 ) {
     let weak = component.as_weak();
-    let mut scroll = NativeScroll::new(component);
+    let mut scroll = NativeScroll::new(component).lists_at_once();
     component.window().on_winit_window_event(move |_, event| {
         let Some(window) = weak.upgrade() else {
             return EventResult::Propagate;

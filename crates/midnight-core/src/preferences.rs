@@ -255,6 +255,70 @@ impl GlyphFitting {
     }
 }
 
+/// How long scrolling glides: wheel notches ease to their target over the base
+/// glide times this scale, and synthesised touchpad momentum decays with its time
+/// constant times this scale. `Off` moves every scroll at once and adds no momentum,
+/// as the system's request for less motion does. Applies at once everywhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollGlide {
+    Off,
+    VeryShort,
+    Short,
+    #[default]
+    Default,
+    Long,
+    VeryLong,
+}
+
+impl ScrollGlide {
+    /// Slider order, from no glide to the longest.
+    pub const ALL: [Self; 6] = [
+        Self::Off,
+        Self::VeryShort,
+        Self::Short,
+        Self::Default,
+        Self::Long,
+        Self::VeryLong,
+    ];
+
+    pub fn index(self) -> i32 {
+        Self::ALL
+            .iter()
+            .position(|choice| *choice == self)
+            .unwrap_or(3) as i32
+    }
+
+    /// Out-of-range slider positions clamp to the nearest end.
+    pub fn from_index(index: i32) -> Self {
+        let last = Self::ALL.len() as i32 - 1;
+        Self::ALL[index.clamp(0, last) as usize]
+    }
+
+    /// The stored value: the glide's length in percent of the default glide. Each
+    /// step doubles it, so the range feels even.
+    pub fn percent(self) -> u16 {
+        match self {
+            Self::Off => 0,
+            Self::VeryShort => 25,
+            Self::Short => 50,
+            Self::Default => 100,
+            Self::Long => 200,
+            Self::VeryLong => 400,
+        }
+    }
+
+    pub fn from_percent(percent: u16) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|choice| choice.percent() == percent)
+    }
+
+    /// Multiplier on the base glide duration and momentum time constant; 0 is off.
+    pub fn scale(self) -> f32 {
+        f32::from(self.percent()) / 100.0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SizeDisplay {
     #[default]
@@ -330,6 +394,9 @@ pub struct UserPreferences {
     pub desktop_font_size: u16,
     pub touch_font_size: u16,
     pub glyph_fitting: GlyphFitting,
+    /// Scrolling glide and momentum length everywhere; the system's request for
+    /// less motion still turns it off.
+    pub scroll_glide: ScrollGlide,
     /// Show only matching names during panel type-to-search instead of jumping.
     pub quick_search_filter: bool,
     /// List hidden entries (dot-names on Unix, the hidden attribute on Windows)
@@ -407,6 +474,7 @@ impl Default for UserPreferences {
             desktop_font_size: 12,
             touch_font_size: 15,
             glyph_fitting: GlyphFitting::default(),
+            scroll_glide: ScrollGlide::default(),
             quick_search_filter: false,
             show_hidden_files: true,
             mask_selection: crate::MaskSelectionPreferences::default(),
@@ -615,4 +683,38 @@ pub trait SettingsService: Send + Sync + 'static {
         preferences: UserPreferences,
         comparators: crate::ComparatorValidationProof<'_>,
     ) -> Result<(), FsError>;
+}
+
+#[cfg(test)]
+mod scroll_glide_tests {
+    use super::{ScrollGlide, UserPreferences};
+
+    #[test]
+    fn the_default_glide_is_todays_and_each_step_doubles_it() {
+        assert_eq!(
+            UserPreferences::default().scroll_glide,
+            ScrollGlide::Default
+        );
+        assert_eq!(ScrollGlide::default().scale(), 1.0);
+        assert_eq!(ScrollGlide::Off.scale(), 0.0);
+        let scales: Vec<f32> = ScrollGlide::ALL[1..]
+            .iter()
+            .map(|glide| glide.scale())
+            .collect();
+        assert_eq!(scales, [0.25, 0.5, 1.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn slider_positions_and_stored_percentages_round_trip() {
+        for (index, glide) in ScrollGlide::ALL.into_iter().enumerate() {
+            assert_eq!(glide.index(), index as i32);
+            assert_eq!(ScrollGlide::from_index(index as i32), glide);
+            assert_eq!(ScrollGlide::from_percent(glide.percent()), Some(glide));
+        }
+        assert_eq!(ScrollGlide::from_index(-1), ScrollGlide::Off);
+        assert_eq!(ScrollGlide::from_index(99), ScrollGlide::VeryLong);
+        for percent in [1, 99, 101, 150, 401, u16::MAX] {
+            assert_eq!(ScrollGlide::from_percent(percent), None, "{percent}");
+        }
+    }
 }

@@ -64,6 +64,7 @@ pub(super) struct EditedFields {
     pub(super) desktop_font_size: bool,
     pub(super) touch_font_size: bool,
     pub(super) glyph_fitting: bool,
+    pub(super) scroll_glide: bool,
     pub(super) quick_search_filter: bool,
     pub(super) show_hidden_files: bool,
     pub(super) mask_selection: bool,
@@ -333,6 +334,9 @@ impl Presenter {
                 }
                 if edited.glyph_fitting {
                     loaded.glyph_fitting = local.glyph_fitting;
+                }
+                if edited.scroll_glide {
+                    loaded.scroll_glide = local.scroll_glide;
                 }
                 if edited.quick_search_filter {
                     loaded.quick_search_filter = local.quick_search_filter;
@@ -623,6 +627,17 @@ impl Presenter {
         self.update_preferences(preferences, send);
     }
 
+    /// Options › Appearance › Scrolling glide. Like the theme it previews at once in
+    /// every panel, list and viewer; OK saves it and Cancel restores the previous one.
+    pub(crate) fn change_scroll_glide(&mut self, index: i32, send: &dyn Fn(Command) -> bool) {
+        self.preferences.edited.scroll_glide = true;
+        let preferences = UserPreferences {
+            scroll_glide: midnight_core::ScrollGlide::from_index(index),
+            ..self.preferences.values.clone()
+        };
+        self.update_preferences(preferences, send);
+    }
+
     pub(crate) fn change_search_filter(&mut self, enabled: bool, send: &dyn Fn(Command) -> bool) {
         self.preferences.edited.quick_search_filter = true;
         let preferences = UserPreferences {
@@ -836,6 +851,7 @@ impl Presenter {
         edited.desktop_font_size |= preferences.desktop_font_size != previous.desktop_font_size;
         edited.touch_font_size |= preferences.touch_font_size != previous.touch_font_size;
         edited.glyph_fitting |= preferences.glyph_fitting != previous.glyph_fitting;
+        edited.scroll_glide |= preferences.scroll_glide != previous.scroll_glide;
         let filter_changed = preferences.quick_search_filter != previous.quick_search_filter
             || preferences.panel_filters != previous.panel_filters;
         edited.quick_search_filter |=

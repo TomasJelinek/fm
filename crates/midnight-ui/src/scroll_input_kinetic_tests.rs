@@ -546,3 +546,60 @@ fn resting_touchpad_fingers_hold_the_alignment_until_they_lift() {
     assert!(on_row(&h, h.offset(0)), "{}", h.offset(0));
     assert!((h.offset(0) - held).abs() <= 11.01);
 }
+
+/// Options › Appearance › Scrolling glide, through the presenter and the window refresh:
+/// Off moves a notch's rows at once, a flick stops where the fingers lift, and the
+/// system's less motion forces it off; Default glides again.
+#[test]
+fn scrolling_glide_off_moves_at_once_without_momentum_and_default_glides_again() {
+    let h = layout_harness();
+    let choose = |index| {
+        h.presenter
+            .borrow_mut()
+            .change_scroll_glide(index, &|_| true);
+        crate::refresh(&h.window, &h.presenter.borrow());
+    };
+    choose(0);
+    assert_eq!(midnight_ui_input::glide_scale(), 0.0);
+    assert_eq!(h.window.get_glide_scale(), 0.0);
+    assert_eq!(h.window.get_scroll_glide_index(), 0);
+    let at = pointer_at_left_list(&h);
+    assert!(h.wheel(-1.0));
+    assert!(
+        (frame(&h, 16) + notch(22.0)).abs() < 1e-3,
+        "{}",
+        h.offset(0)
+    );
+    h.settle(400);
+    let before = h.offset(0);
+    flick(&h, at, -20.0);
+    let released = h.offset(0);
+    assert!((released - before + 120.0).abs() < 0.01, "{released}");
+    assert!(!kinetic(&h), "no momentum with the glide off");
+    // Shorter than the 100 ms rest before the rows align.
+    for _ in 0..4 {
+        h.advance(1);
+        assert_eq!(h.offset(0), released, "no fling of Slint's own either");
+    }
+
+    choose(3);
+    assert_eq!(midnight_ui_input::glide_scale(), 1.0);
+    assert_eq!(h.window.get_glide_scale(), 1.0);
+    h.settle(400);
+    let start = h.offset(0);
+    assert!(h.wheel(-1.0));
+    let first = frame(&h, 16) - start;
+    assert!(
+        first < 0.0 && first > -notch(22.0) + 1.0,
+        "a glide: {first}"
+    );
+
+    // The system's request for less motion forces the glide off; its end restores it.
+    choose(5);
+    crate::scroll_glide::system_reduces_motion(&h.window, true);
+    assert_eq!(midnight_ui_input::glide_scale(), 0.0);
+    assert_eq!(h.window.get_glide_scale(), 0.0);
+    crate::scroll_glide::system_reduces_motion(&h.window, false);
+    assert_eq!(midnight_ui_input::glide_scale(), 4.0);
+    assert_eq!(h.window.get_glide_scale(), 4.0);
+}

@@ -117,13 +117,68 @@ scroll key then move their whole distance on the next frame in the Text, Source,
 and hex views, over PDF and image tiles and over an HTML page, and the shared
 `NativeScroll` synthesises no touchpad momentum (`set_reduce_motion`); a touchpad's own
 system momentum stays the system's. On other systems the setting is not read (a known
-limit).
+limit). The Options setting **Scrolling glide** Off has the same effect on every
+system ([Scrolling glide setting](#scrolling-glide-setting)).
 
 Tests: `midnight-ui-input` `wheel_lines::tests` (the default, proportions, bounds, one
 screen per notch); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
 (a notch glides `image_motion::notch_pixels` in the text and HTML viewers; with less
 motion it moves whole on the next frame and a touchpad flick has no momentum) and
 `image_key_tests` (a notch and a key move a tiled image at once with less motion).
+
+### Scrolling glide setting
+
+Options › Appearance › **Scrolling glide** sets how long scrolling glides everywhere: a
+slider with six stops, Off, Very short, Short, Default, Long and Very long, at 0, 25, 50,
+100, 200 and 400 % of the default glide (`midnight_core::ScrollGlide`, stored as
+`scroll_glide`, see [settings files](../SETTINGS_FILES.md)). Each stop doubles the
+previous one, so the range feels even; Default keeps the glide unchanged. Arrows, Home
+and End move one stop or to an end, Page Up and Page Down two stops; the value is named
+beside the slider.
+
+- `midnight-ui`'s `scroll_glide` module publishes the presented value as a scale with
+  `midnight_ui_input::set_glide_scale` on the UI thread, where the panels, dialogs,
+  viewer and comparison windows all run. Options previews it at once, OK saves it and
+  Cancel restores the previous one. While the system asks for less motion (read by the
+  panels with their first native event and on each focus gain) the published scale is
+  0, so either one turns gliding off.
+- The wheel glide (`WheelMotion`) and the synthesised touchpad momentum
+  (`KineticScroll`) read `midnight_ui_input::glide_scale` when a glide or a fling starts:
+  the glide's duration and the momentum's decay time constant are the base values times
+  the scale. The panels' row alignment glides for 200 ms times the scale (the window's
+  `glide-scale`).
+- At 0 (Off) nothing glides, and the setting applies to open windows at once because the
+  hosts read it per notch: the panels move a notch at once and align at once;
+  `NativeScroll` moves scrollbar, command-strip and comparison notches at once and stops
+  synthesised momentum where the fingers lift, still delivering the finger motion itself
+  so that Slint adds no fling of its own; the viewers take it as less motion
+  (`image_motion::reduce_motion`), so the Text, Source, Markdown and hex views, image and
+  PDF tiles and HTML pages move a notch or a scroll key whole on the next frame and a
+  touchpad flick has no momentum. Chromium already runs with smooth scrolling disabled
+  (see [HTML pages](#html-pages)), so the host's glide is the page's only one. In the main
+  window and in dialogs (`NativeScroll::lists_at_once`; not in viewer windows, whose
+  content observers take their own notches) a notch over an ordinary `ScrollView` or
+  `ListView`, such as Find results, Jobs and the Options lists, reaches Slint as one
+  unphased wheel at Winit's 60 px per line, which Slint applies at once instead of easing.
+- Known limits: between Very short and Very long, ordinary `ScrollView` and `ListView`
+  content keeps Slint's own short wheel easing; only Off changes it. A Windows precision
+  touchpad's coasting is the system's at every stop. Touch-screen and pointer drags of a
+  Slint `Flickable` keep Slint's own fling. Keyboard scrolling in an HTML page is
+  Chromium's and moves at once at every stop.
+
+Tests: `midnight-core` `scroll_glide_tests` (stops, percentages, scales);
+`midnight-platform-common` `settings::scroll_glide_tests` (schema 37, an old file reads
+as Default, export and import, strict values); `midnight-ui`
+`scroll_glide::tests` (less motion or Off gives 0),
+`presenter::preferences::options::tests` (preview, Cancel, OK, Reset),
+`scroll_input::pane_tests::kinetic_tests::scrolling_glide_off_*` (through the presenter
+and the window refresh: a notch at once, a flick without momentum or a Slint fling,
+Default gliding again, less motion forcing 0), `tests/panel_scroll.rs` (the alignment at
+once at 0 and longer at 2×) and `tests/list_scroll.rs` (a Find results notch at once at
+0, left to Slint otherwise); `midnight-viewer-ui` `web_wheel_tests::with_the_glide_off_*`
+(a notch whole on the next frame in an open text viewer and HTML page, a flick without
+momentum); the acceptance scenario `panels_scrolling` (Off through the window's
+callback: a notch and a half notch with its alignment at once; Default glides again).
 
 The acceptance suite runs on Slint's software platform, where winit never runs, so it
 reaches this path through `midnight_viewer_ui::acceptance_seams` (feature
@@ -420,7 +475,9 @@ and change together ([record](../verification/2026-11-19-slint-build-speed.md)).
 `midnight-ui-input::NativeScroll` handles the paths that these scroll bars and
 Slint Fluent 1.18.1 update immediately: wheel input on scrollbar overlays and the
 application's vertical-to-horizontal command-directory strip. Ordinary `ScrollView`
-and `ListView` content keeps the SDK's wheel and touch physics. The observer
+and `ListView` content keeps the SDK's wheel and touch physics, except that with the
+scrolling glide Off a notch over it moves at once
+([Scrolling glide setting](#scrolling-glide-setting)). The observer
 replaces unphased `LineDelta` notches with fractional events on native redraw and,
 on Linux, delivers touchpad finger motion itself (see Touchpad momentum); other
 precise pixel input and scrollbar dragging retain their own handling. Closed combo boxes do not receive synthetic selection events.

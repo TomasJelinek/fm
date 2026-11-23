@@ -21,7 +21,7 @@ dialog only shows the result.
 
 A settings file is a complete snapshot of everything Midnight Explorer saves:
 
-- every Options page: appearance, fonts and spacing, General choices, copy
+- every Options page: appearance, fonts and spacing, the scrolling glide, General choices, copy
   verification, disk I/O concurrency, editors, comparators, keyboard remaps,
   custom commands and their toolbar, filename colors, previews and thumbnails,
   viewer and thumbnailer plugin choices and associations, archive associations
@@ -173,16 +173,20 @@ saves to the current location; it never changes the old file.
   when indentation would pass the limit) and end with a newline. The whole file is
   at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 36. When saving or exporting, it writes the lowest version that can
-  hold the settings, at most 36. The latest schemas added:
+  versions 1 to 37. When saving or exporting, it writes the lowest version that can
+  hold the settings, at most 37. The latest schemas added:
   - 33: `file_comparators`, the external comparison rules;
   - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
   - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
     pattern and its Include folders choice);
   - 36: `viewer.document_layout` (`"continuous"`, the PDF layout chosen last),
-    written only when it is not the default Paged.
+    written only when it is not the default Paged;
+  - 37: `scroll_glide`, the Options › Appearance › **Scrolling glide** stop as a
+    percentage of the default glide: `0` (Off), `25`, `50`, `200` or `400`. It is
+    written only when it is not the default (`100`); a file without it, including
+    every file of an earlier schema, reads as the default. Other numbers are refused.
 
-  A version is written only for a setting that needs it, so a schema 34, 35 or 36
+  A version is written only for a setting that needs it, so a schema 34, 35, 36 or 37
   file without any of that version's new fields is refused, and so is a field in a
   schema older than the one that added it.
 - The other top-level fields belong to that schema version. A field that the

@@ -400,6 +400,8 @@ export component MainWindow inherits Window {
     in property <bool> scroll-interaction-active;
     // The system asks for less motion (Windows: animation effects off).
     in property <bool> reduce-motion;
+    // Options › Appearance › Scrolling glide as a scale (1 default, 0 off).
+    in property <float> glide-scale: 1;
     in-out property <int> theme-index <=> Theme.scheme;
     in-out property <int> left-view-mode;
     in-out property <int> right-view-mode;
@@ -567,6 +569,7 @@ export component MainWindow inherits Window {
     in-out property <bool> copy-checksum-verification: true;
     in-out property <int> disk-io-concurrency-index;
     in-out property <int> glyph-fitting-index;
+    in property <int> scroll-glide-index: 3;
     in-out property <int> options-topic-index;
     in property <[UserCommandRow]> user-commands;
     in property <string> command-preview-token;
@@ -680,6 +683,7 @@ export component MainWindow inherits Window {
     callback copy-verification-changed(bool);
     callback disk-io-concurrency-changed(bool, int);
     callback glyph-fitting-changed(int);
+    callback scroll-glide-changed(int);
     callback insert-path(int);
     callback insert-name();
     callback insert-full-path();
@@ -986,7 +990,7 @@ export component MainWindow inherits Window {
                 retry-directory-elevated => { root.retry-directory-elevated(0); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(0, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
-                scroll-interaction-active: root.scroll-interaction-active; reduce-motion: root.reduce-motion;
+                scroll-interaction-active: root.scroll-interaction-active; reduce-motion: root.reduce-motion; glide-scale: root.glide-scale;
                 drop-highlight: root.drag-hover-pane == 0; drag-label: root.drag-label;
                 drop-row: root.drag-hover-pane == 0 ? root.drag-hover-row : -1;
                 drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }
@@ -1076,7 +1080,7 @@ export component MainWindow inherits Window {
                 retry-directory-elevated => { root.retry-directory-elevated(1); }
                 row-context-menu(r, x, y, c, s) => { root.row-context-menu(1, r, x, y, c, s); }
                 touch-contact: root.touch-contact;
-                scroll-interaction-active: root.scroll-interaction-active; reduce-motion: root.reduce-motion;
+                scroll-interaction-active: root.scroll-interaction-active; reduce-motion: root.reduce-motion; glide-scale: root.glide-scale;
                 drop-highlight: root.drag-hover-pane == 1; drag-label: root.drag-label;
                 drop-row: root.drag-hover-pane == 1 ? root.drag-hover-row : -1;
                 drag-modifiers(c, s, link) => { root.drag-modifiers(c, s, link); }
@@ -1518,6 +1522,7 @@ export component MainWindow inherits Window {
                 copy-checksum-verification <=> root.copy-checksum-verification;
                 disk-io-concurrency-index: root.disk-io-concurrency-index;
                 glyph-fitting-index: root.glyph-fitting-index;
+                scroll-glide-index: root.scroll-glide-index;
                 command-history-empty: root.command-history.length == 0;
                 thumbnails-enabled <=> root.thumbnails-enabled;
                 thumbnails-network <=> root.thumbnails-network;
@@ -1534,6 +1539,7 @@ export component MainWindow inherits Window {
                 remember-command-history-changed(value) => { root.remember-command-history-changed(value); }
                 copy-verification-changed(value) => { root.copy-verification-changed(value); }
                 glyph-fitting-changed(index) => { root.glyph-fitting-changed(index); }
+                scroll-glide-changed(index) => { root.scroll-glide-changed(index); }
                 disk-io-concurrency-changed(automatic, maximum) => { root.disk-io-concurrency-changed(automatic, maximum); }
                 command-history-clear => { root.command-history-clear(); }
                 confirm => { root.options-accepted(); }

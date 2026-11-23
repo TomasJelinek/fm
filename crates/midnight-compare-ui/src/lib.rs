@@ -412,8 +412,9 @@ fn on_content(window: &ComparatorWindow, point: slint::LogicalPosition) -> bool 
 /// continues there (only), stopping when the text position stops moving.
 fn native_scroll(window: &ComparatorWindow) -> midnight_ui_input::NativeScroll {
     let weak = window.as_weak();
-    let mut scroll =
-        midnight_ui_input::NativeScroll::new(window).glide_content(Box::new(move |point| {
+    let mut scroll = midnight_ui_input::NativeScroll::new(window)
+        .lists_at_once()
+        .glide_content(Box::new(move |point| {
             weak.upgrade()
                 .is_some_and(|window| on_content(&window, point))
         }));

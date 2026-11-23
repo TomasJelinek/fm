@@ -633,3 +633,40 @@ fn active_scrollbar_motion_does_not_retain_closed_component() {
 fn settled_scrollbar_motion_does_not_retain_closed_component() {
     scrollbar_observer_does_not_retain_closed_window(true);
 }
+
+/// Scrolling glide Off (glide scale 0): the dialogs' and main window's observer delivers
+/// a notch over a list as one unglided wheel, so the list moves its whole distance (Winit's
+/// 60 px per line) at once. With the glide on, the notch stays Slint's own eased wheel.
+#[test]
+fn with_the_glide_off_a_list_notch_moves_at_once() {
+    let mut h = Frames::new(FindWindow::new, 860, 620);
+    h.window.set_rows(ModelRc::new(VecModel::from(
+        (0..100)
+            .map(|index| FindRow {
+                token: format!("result-{index}").into(),
+                name: format!("Result {index:02}").into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>(),
+    )));
+    h.settle();
+    let row = h.item(AccessibleRole::ListItem, "Result 03 ·  ·  ·  · ");
+    let viewport = scroll_parent(&row);
+    let point = frames::inside(&viewport);
+    h.install_list_scroll();
+    assert!(
+        !h.driver_wheel(point, 0.0, -1.0),
+        "with the glide on, Slint eases the notch itself"
+    );
+
+    native_scroll::set_glide_scale(0.0);
+    let initial = offset(&viewport);
+    let consumed = h.driver_wheel(point, 0.0, -1.0);
+    h.draw();
+    let moved = offset(&viewport);
+    native_scroll::set_glide_scale(1.0);
+    assert!(consumed, "the observer delivers the unglided notch");
+    near(moved, initial - 60.0, "the whole notch on the same frame");
+    h.advance(400);
+    near(offset(&viewport), moved, "nothing follows");
+}

@@ -6,10 +6,11 @@
 //! navigation key brings a cursor scrolled out of view back, also when it does not move
 //! (finding P-7). A native notch moves the rows nearest the notch distance for the
 //! system's lines per notch, or one screen (the seam's settings override stands in for
-//! the system), gliding there; with less motion a notch, a half notch and the alignment
-//! after it move at once. Offsets are sampled in real time: the exact 100 ms rest and
-//! 200 ms glide, and a new wheel stopping a glide, need the scenario's own clock (harness
-//! H1) and are SKIP, with the measured times noted and their lower bounds checked.
+//! the system), gliding there; with less motion, or with Options › Appearance › Scrolling
+//! glide Off, a notch, a half notch and the alignment after it move at once. Offsets are
+//! sampled in real time: the exact 100 ms rest and 200 ms glide, and a new wheel stopping a
+//! glide, need the scenario's own clock (harness H1) and are SKIP, with the measured times
+//! noted and their lower bounds checked.
 //!
 //! Registered here, not in the registry's list: this module owns its entries, so they
 //! change without touching `scenarios/mod.rs`.
@@ -38,7 +39,7 @@ pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "panels_scrolling",
         area: "panels",
-        summary: "Panel scrolling: a row cut at the list's top drawn in every frame of a wheel gesture, Detailed and Brief resting on a whole row, Thumbnails keeping its offset and a click on its cut top row, a click focusing a Brief list scrolled past its cursor, Home/Up/End/Down revealing an unmoved cursor (P-7); native notches through the seam: the rows nearest the notch for 1, 3 and 6 lines and one screen, gliding, from a cut Thumbnails offset to a band boundary, and with less motion at once; the exact rest and glide times (H1) SKIP.",
+        summary: "Panel scrolling: a row cut at the list's top drawn in every frame of a wheel gesture, Detailed and Brief resting on a whole row, Thumbnails keeping its offset and a click on its cut top row, a click focusing a Brief list scrolled past its cursor, Home/Up/End/Down revealing an unmoved cursor (P-7); native notches through the seam: the rows nearest the notch for 1, 3 and 6 lines and one screen, gliding, from a cut Thumbnails offset to a band boundary, and with less motion or Scrolling glide Off at once; the exact rest and glide times (H1) SKIP.",
         run: scrolling,
         timeout: Duration::from_secs(5 * 60),
     }]
@@ -511,6 +512,19 @@ fn reduced_motion(
     }
     let less = system(WheelSetting::default(), true);
     native_focus(app, true, failures)?;
+    moves_at_once(app, context, "Detailed with less motion", failures)?;
+    drop(less);
+    native_focus(app, false, failures)?;
+    glide_off(app, context, failures)
+}
+
+/// A notch and a half notch with its alignment move at once, without a glide.
+fn moves_at_once(
+    app: &mut App,
+    context: &mut Context,
+    label: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
     let base = to_top(app)?;
     let expected = landing(WheelSetting::default(), &base);
     let started = Instant::now();
@@ -518,30 +532,30 @@ fn reduced_motion(
     let changes = trace(app, started);
     let rested = panel::wait_rested(app, LEFT)?;
     context.note(format!(
-        "Detailed with less motion: one notch from {:.1} (ms:px): {}",
+        "{label}: one notch from {:.1} (ms:px): {}",
         base.content_y,
         show(&changes)
     ));
     let frames = between(&changes, base.content_y, expected);
     if (rested.content_y - expected).abs() > 0.5 || frames != 0 {
         failures.push(format!(
-            "Detailed with less motion: one notch down from {:.1} rests at {:.1} after {frames} \
+            "{label}: one notch down from {:.1} rests at {:.1} after {frames} \
              frames between; expected {expected:.1} at once ({})",
             base.content_y,
             rested.content_y,
             show(&changes)
         ));
     }
-    if let Some(half) = half_notch(app, "Detailed with less motion", failures)? {
+    if let Some(half) = half_notch(app, label, failures)? {
         context.note(format!(
-            "Detailed with less motion, half a notch: aligned {} ms after the share arrived \
+            "{label}, half a notch: aligned {} ms after the share arrived \
              (ms:px): {}",
             half.delay,
             show(&half.changes)
         ));
         if half.share_frames != 0 || half.align_frames != 0 {
             failures.push(format!(
-                "Detailed with less motion: half a notch moved over {} sampled frames and its \
+                "{label}: half a notch moved over {} sampled frames and its \
                  alignment over {}; both move at once ({})",
                 half.share_frames,
                 half.align_frames,
@@ -549,8 +563,49 @@ fn reduced_motion(
             ));
         }
     }
-    drop(less);
-    native_focus(app, false, failures)
+    Ok(())
+}
+
+/// Options › Appearance › Scrolling glide Off, chosen through the window's callback that
+/// the Options slider invokes (the slider's own keys and the staging are covered by
+/// `midnight-ui`'s tests): without the system's less motion, a notch and a half notch's
+/// alignment move at once in the open panels; back at Default the notch glides again.
+fn glide_off(
+    app: &mut App,
+    context: &mut Context,
+    failures: &mut Vec<String>,
+) -> Result<(), String> {
+    app.window.invoke_scroll_glide_changed(0);
+    if app.window.get_glide_scale() != 0.0 || app.window.get_scroll_glide_index() != 0 {
+        failures.push(format!(
+            "Scrolling glide Off: the window shows glide scale {} at stop {}",
+            app.window.get_glide_scale(),
+            app.window.get_scroll_glide_index()
+        ));
+    }
+    moves_at_once(app, context, "Detailed with scrolling glide Off", failures)?;
+    app.window.invoke_scroll_glide_changed(3);
+    let base = to_top(app)?;
+    let expected = landing(WheelSetting::default(), &base);
+    let started = Instant::now();
+    panel::notch_at(app, base.center(), -1.0)?;
+    let changes = trace(app, started);
+    panel::wait_rested(app, LEFT)?;
+    let frames = between(&changes, base.content_y, expected);
+    context.note(format!(
+        "Detailed with scrolling glide Default again: one notch from {:.1} over {frames} \
+         sampled frames (ms:px): {}",
+        base.content_y,
+        show(&changes)
+    ));
+    if frames < 3 {
+        failures.push(format!(
+            "Scrolling glide Default: one notch moved over {frames} sampled frames; it glides \
+             ({})",
+            show(&changes)
+        ));
+    }
+    Ok(())
 }
 
 pub fn scrolling(context: &mut Context) -> Result<(), String> {

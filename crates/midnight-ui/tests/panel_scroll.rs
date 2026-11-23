@@ -33,6 +33,7 @@ slint::slint! {
         in property <bool> interaction-active;
         in property <bool> settle-rows: true;
         in property <bool> reduce-motion;
+        in property <float> glide-scale: 1;
         background: #102030;
         callback row-clicked(int);
         in property <length> list-height: 205px;
@@ -52,6 +53,7 @@ slint::slint! {
             interaction-active: root.interaction-active;
             settle-rows: root.settle-rows;
             reduce-motion: root.reduce-motion;
+            glide-scale: root.glide-scale;
             x: 0px; y: 0px;
             for row[index] in root.rows : Rectangle {
                 height: root.row-height;
@@ -559,6 +561,38 @@ fn the_bottom_bound_the_grid_and_reduced_motion_keep_their_positions() {
     );
     assert_eq!(h.offset(), -48.0);
     h.window.set_reduce_motion(false);
+
+    // Scrolling glide Off (glide scale 0) aligns at once too.
+    h.window.set_glide_scale(0.0);
+    h.reset();
+    h.native_wheel(-37.0, TouchPhase::Moved);
+    let trace = h.trace(800);
+    let moved: Vec<&f32> = trace
+        .iter()
+        .skip_while(|&&y| y > -37.01)
+        .take_while(|&&y| y > -47.99)
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "no alignment frames with glide off: {moved:?}"
+    );
+    assert_eq!(h.offset(), -48.0);
+
+    // A longer glide aligns over that many times the 200 ms: still moving at 300 ms.
+    h.window.set_glide_scale(2.0);
+    h.reset();
+    h.native_wheel(-37.0, TouchPhase::Moved);
+    let trace = h.trace(800);
+    let gliding = trace.iter().filter(|&&y| y < -37.01 && y > -47.99).count();
+    let base = {
+        h.window.set_glide_scale(1.0);
+        h.reset();
+        h.native_wheel(-37.0, TouchPhase::Moved);
+        let trace = h.trace(800);
+        trace.iter().filter(|&&y| y < -37.01 && y > -47.99).count()
+    };
+    assert!(gliding > base + base / 2, "{gliding} frames vs {base}");
+    assert_eq!(h.offset(), -48.0);
 
     // Short and empty models remain in bounds.
     for row_count in [0, 2] {

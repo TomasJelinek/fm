@@ -16,6 +16,7 @@ fn rich() -> UserPreferences {
         desktop_font_size: 14,
         touch_font_size: 18,
         glyph_fitting: GlyphFitting::Subpixel,
+        scroll_glide: ScrollGlide::Short,
         quick_search_filter: true,
         size_display: SizeDisplay::Bytes,
         disk_io_concurrency: DiskIoConcurrency::Manual(8),

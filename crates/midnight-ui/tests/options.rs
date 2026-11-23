@@ -909,3 +909,66 @@ mod tab_walk {
         );
     }
 }
+
+/// Appearance › Scrolling glide: a slider with six named stops. The arrows, Home and End
+/// move one stop or to an end, Page Up and Page Down two stops; each choice is reported
+/// once, and the name beside the slider follows the host's staged value.
+#[test]
+fn scrolling_glide_slider_moves_by_keys_and_names_its_stop() {
+    let mut ui = TestUi::new();
+    ui.window.set_preferences_ready(true);
+    let chosen = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured = chosen.clone();
+    let weak = ui.window.as_weak();
+    ui.window.on_scroll_glide_changed(move |index| {
+        captured.borrow_mut().push(index);
+        weak.upgrade().unwrap().set_scroll_glide_index(index);
+    });
+    ui.window.invoke_show_options();
+    ui.draw();
+    ui.options_topic(1);
+    assert_eq!(ui.window.get_scroll_glide_index(), 3);
+    let slider = ui::popup_item(&ui.window, "Scrolling glide", AccessibleRole::Slider);
+    assert_eq!(
+        slider
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap_or_default()
+            .as_str(),
+        "Default"
+    );
+    click_popup(&ui.window, "Scrolling glide", AccessibleRole::Slider);
+    chosen.borrow_mut().clear();
+    ui.window.set_scroll_glide_index(3);
+    ui.draw();
+    for (step, (pressed, expected)) in [
+        (Key::End, 5),
+        (Key::Home, 0),
+        (Key::PageUp, 2),
+        (Key::PageUp, 4),
+        (Key::RightArrow, 5),
+        (Key::RightArrow, 5),
+        (Key::PageDown, 3),
+        (Key::LeftArrow, 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        key(&ui.window, pressed);
+        ui.draw();
+        assert_eq!(
+            ui.window.get_scroll_glide_index(),
+            expected,
+            "after key {step}"
+        );
+    }
+    // The last stop takes no second choice.
+    assert_eq!(*chosen.borrow(), [5, 0, 2, 4, 5, 3, 2]);
+    let slider = ui::popup_item(&ui.window, "Scrolling glide", AccessibleRole::Slider);
+    assert_eq!(
+        slider
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .unwrap_or_default()
+            .as_str(),
+        "Short"
+    );
+}

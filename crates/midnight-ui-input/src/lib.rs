@@ -1,6 +1,7 @@
 //! Shared keyboard, placement and wheel presentation policy. No presenter or backend state.
 #![forbid(unsafe_code)]
 
+mod glide;
 mod kinetic;
 mod kinetic_native;
 mod logical;
@@ -13,6 +14,7 @@ mod tooltip;
 mod wheel_lines;
 mod wheel_motion;
 
+pub use glide::{glide_scale, set_glide_scale};
 pub use kinetic_native::{LINE_PIXELS, WheelSource};
 pub use logical::{chord, escape_pressed};
 pub use native::{ShortcutState, native_escape_pressed};

@@ -63,6 +63,11 @@ impl<C: ComponentHandle + 'static> Frames<C> {
         self.driver = Some(super::native_scroll::NativeScroll::new(&self.window));
     }
 
+    /// The dialogs' and main window's observer, which moves lists at once without gliding.
+    pub fn install_list_scroll(&mut self) {
+        self.driver = Some(super::native_scroll::NativeScroll::new(&self.window).lists_at_once());
+    }
+
     pub fn take_native_scroll(&mut self) -> super::native_scroll::NativeScroll {
         self.driver.take().unwrap()
     }

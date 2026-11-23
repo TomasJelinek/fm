@@ -517,6 +517,33 @@ fn touchpad_lines_and_acting_wheels_reach_the_page_at_once() {
 fn with_reduced_motion_a_notch_moves_whole_on_the_next_frame() {
     let (_runtime, manager, mut fixture) = Fixture::new(1.0);
     manager.set_motion_preference(Rc::new(|| true));
+    notch_moves_whole_on_the_next_frame(&mut fixture);
+    manager.close_all();
+}
+
+/// Options › Appearance › Scrolling glide Off (`midnight_ui_input::glide_scale` 0) does
+/// the same, at once in an open window and without the system's setting.
+#[test]
+fn with_the_glide_off_a_notch_moves_whole_on_the_next_frame() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    fixture.text();
+    // Gliding while the setting is on; Off applies to the already open window.
+    fixture.native(notch(-1.0));
+    let mut frames = vec![sum(&fixture.take())];
+    for _ in 0..30 {
+        frames.push(sum(&fixture.frame(false)));
+    }
+    assert!(
+        frames.iter().filter(|delta| delta[1] != 0.0).count() > 2,
+        "{frames:?}"
+    );
+    midnight_ui_input::set_glide_scale(0.0);
+    notch_moves_whole_on_the_next_frame(&mut fixture);
+    midnight_ui_input::set_glide_scale(1.0);
+    manager.close_all();
+}
+
+fn notch_moves_whole_on_the_next_frame(fixture: &mut Fixture) {
     for web in [false, true] {
         if web {
             fixture.web();
@@ -546,7 +573,6 @@ fn with_reduced_motion_a_notch_moves_whole_on_the_next_frame() {
             moving[0].1[1]
         );
     }
-    manager.close_all();
 }
 
 /// With the system's animation effects off, a touchpad flick over the page stops with the
@@ -555,6 +581,21 @@ fn with_reduced_motion_a_notch_moves_whole_on_the_next_frame() {
 fn with_reduced_motion_a_touchpad_flick_has_no_momentum() {
     let (_runtime, manager, mut fixture) = Fixture::new(1.0);
     manager.set_motion_preference(Rc::new(|| true));
+    touchpad_flick_has_no_momentum(&mut fixture);
+    manager.close_all();
+}
+
+/// Scrolling glide Off: a touchpad flick over the page stops with the finger too.
+#[test]
+fn with_the_glide_off_a_touchpad_flick_has_no_momentum() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    midnight_ui_input::set_glide_scale(0.0);
+    touchpad_flick_has_no_momentum(&mut fixture);
+    midnight_ui_input::set_glide_scale(1.0);
+    manager.close_all();
+}
+
+fn touchpad_flick_has_no_momentum(fixture: &mut Fixture) {
     fixture.web();
     for _ in 0..6 {
         advance_time(Duration::from_millis(10));
@@ -577,5 +618,4 @@ fn with_reduced_motion_a_touchpad_flick_has_no_momentum() {
         sent.is_empty(),
         "momentum after the finger lifted: {sent:?}"
     );
-    manager.close_all();
 }

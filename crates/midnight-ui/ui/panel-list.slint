@@ -16,6 +16,8 @@ component ListView inherits ScrollView {
     // The system asks for less motion (Windows: animation effects off): the
     // alignment then moves at once.
     in property <bool> reduce-motion;
+    // Options › Appearance › Scrolling glide: the alignment's length scale; 0 moves at once.
+    in property <float> glide-scale: 1;
     callback user-scrolled();
 
     // Every band the viewport intersects is drawn, also one cut by an edge, so
@@ -111,7 +113,7 @@ component ListView inherits ScrollView {
                 return;
             }
             let target = root.nearest-row();
-            if abs(target - root.content-y) < 0.01px || root.reduce-motion {
+            if abs(target - root.content-y) < 0.01px || root.reduce-motion || root.glide-scale <= 0 {
                 root.unsettled = false;
                 root.content-y = target;
                 return;
@@ -131,7 +133,8 @@ component ListView inherits ScrollView {
         triggered => {
             // Input in this event-loop turn already ended the alignment.
             if !root.settling || root.interaction-active { return; }
-            let progress = min(1, (animation-tick() - root.settle-start) / 200ms);
+            let progress = root.glide-scale <= 0 ? 1
+                : min(1, (animation-tick() - root.settle-start) / (200ms * root.glide-scale));
             if progress >= 1 {
                 root.settling = false;
                 root.unsettled = false;

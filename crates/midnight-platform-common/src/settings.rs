@@ -45,16 +45,25 @@ mod panel_visibility_tests;
 #[cfg(test)]
 mod previews_tests;
 #[cfg(test)]
+mod scroll_glide_tests;
+#[cfg(test)]
 mod shortcuts_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 36;
+const CURRENT_PREFERENCES_VERSION: u32 = 37;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    /// Schema 37: the scrolling glide in percent of the default glide.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    scroll_glide: Option<u16>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -497,6 +506,19 @@ fn decode_preferences_impl(
     {
         return Err(invalid("missing schema 36 preferences"));
     }
+    // Version 37 is written only for a scrolling glide choice; schema 36 fields stay
+    // optional in it.
+    if stored.version == 37 && stored.scroll_glide.is_none() {
+        return Err(invalid("missing schema 37 preferences"));
+    }
+    let scroll_glide = match (stored.version, stored.scroll_glide) {
+        (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::ScrollGlide::default(),
+        (37..=CURRENT_PREFERENCES_VERSION, Some(percent)) => {
+            midnight_core::ScrollGlide::from_percent(percent)
+                .ok_or_else(|| invalid("unknown scrolling glide"))?
+        }
+        _ => return Err(invalid("unexpected scrolling glide")),
+    };
     let glyph_fitting = match (stored.version, stored.glyph_fitting.as_deref()) {
         (1..=CURRENT_PREFERENCES_VERSION, None) => midnight_core::GlyphFitting::default(),
         (34..=CURRENT_PREFERENCES_VERSION, Some(name)) => {
@@ -931,6 +953,7 @@ fn decode_preferences_impl(
         )?,
         thumbnail_size,
         glyph_fitting,
+        scroll_glide,
         shortcuts,
         panel_filters,
         panel_filter_history: match (stored.version, stored.panel_filter_history) {
@@ -1027,12 +1050,14 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     let panel_choices = hidden_choices || mask_choices;
     let layout_choices =
         preferences.viewer.document_layout != midnight_core::DocumentLayout::default();
-    // Schemas 35 and 36 keep every field that versions 33 and 34 require.
+    let glide_choices = preferences.scroll_glide != midnight_core::ScrollGlide::default();
+    // Schemas 35 to 37 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
         || panel_choices
-        || layout_choices;
+        || layout_choices
+        || glide_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1108,6 +1133,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         &foreign_settings,
     )?;
     let stored = StoredPreferences {
+        scroll_glide: glide_choices.then_some(preferences.scroll_glide.percent()),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),
@@ -1167,7 +1193,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if layout_choices {
+        version: if glide_choices {
+            37
+        } else if layout_choices {
             36
         } else if panel_choices {
             35

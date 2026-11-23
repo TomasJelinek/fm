@@ -33,6 +33,7 @@ export component FilePane inherits Rectangle {
     // for less motion: the list settles on a row only after such input ends.
     in property <bool> scroll-interaction-active;
     in property <bool> reduce-motion;
+    in property <float> glide-scale: 1;
     in property <bool> drop-highlight;
     in property <int> drop-row: -1;
     in property <string> drag-label;
@@ -754,6 +755,7 @@ export component FilePane inherits Rectangle {
                 interaction-active: root.scroll-interaction-active;
                 settle-rows: !root.thumbnail-grid;
                 reduce-motion: root.reduce-motion;
+                glide-scale: root.glide-scale;
                 user-scrolled => {
                     if root.directory-link-tooltip.row != "" && root.directory-link-tooltip.pane == root.pane-id {
                         root.retire-directory-link-hover();

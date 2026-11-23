@@ -1,6 +1,7 @@
 import { VScrollView } from "scroll-view.slint";
 import { HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { CompactPicker, Tip } from "controls.slint";
+import { ThemedSlider } from "content-controls.slint";
 import { Theme } from "theme.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { KeyboardEditor, KeyboardEditorView } from "keyboard-editor.slint";
@@ -53,6 +54,66 @@ component OptionPicker inherits Rectangle {
     }
 }
 
+// Scrolling glide: six stops from Off to Very long, each twice the previous glide,
+// with the current one named beside the slider. The stock Slider gives arrows, Home
+// and End one stop or an end; Page Up and Page Down move two stops.
+component GlidePicker inherits Rectangle {
+    in property <int> current-index;
+    in property <bool> narrow;
+    callback selected(int);
+    private property <[string]> names: ["Off", "Very short", "Short", "Default", "Long", "Very long"];
+    // The slider assigns its own value on input, which detaches a one-way binding:
+    // follow the host's staged value (Reset to defaults, Cancel, an import).
+    changed current-index => { slider.value = root.current-index; }
+    function choose(value: float) {
+        let index = clamp(round(value), 0, root.names.length - 1);
+        if index != root.current-index { root.selected(index); }
+        slider.value = root.current-index;
+    }
+    height: root.narrow ? caption.preferred-height + 6px + Theme.control-height : Theme.control-height + 6px;
+    min-width: 0px;
+    GridLayout {
+        spacing: root.narrow ? 6px : 12px;
+        caption := Text {
+            row: 0; col: 0;
+            text: "Scrolling glide"; color: Theme.text; font-size: Theme.font-size;
+            min-width: 0px;
+            preferred-width: root.narrow ? 0px : max(138px, Theme.font-size * 8);
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
+            spacing: 8px; horizontal-stretch: 1; height: Theme.control-height;
+            Rectangle {
+                min-width: 80px; horizontal-stretch: 1;
+                FocusScope {
+                    focus-on-click: false; focus-on-tab-navigation: false;
+                    key-pressed(event) => {
+                        if event.text == Key.PageUp { root.choose(root.current-index + 2); return accept; }
+                        if event.text == Key.PageDown { root.choose(root.current-index - 2); return accept; }
+                        reject
+                    }
+                    slider := ThemedSlider {
+                        width: parent.width; height: parent.height;
+                        minimum: 0; maximum: root.names.length - 1; step: 1;
+                        value: root.current-index;
+                        accessible-label: "Scrolling glide";
+                        accessible-value: root.names[root.current-index];
+                        changed(value) => { root.choose(value); }
+                    }
+                }
+                Tip { text: "How long scrolling glides to its target, and how long a touchpad flick keeps moving: in the panels, lists and every viewer. Off moves every scroll at once. The system's request for less motion (Windows: Animation effects off) also turns it off. Applies at once; OK saves, Cancel restores the previous glide."; }
+            }
+            Text {
+                text: root.names[root.current-index];
+                min-width: max(72px, Theme.font-size * 6);
+                color: Theme.text; font-size: Theme.font-size;
+                vertical-alignment: center; overflow: elide;
+            }
+        }
+    }
+}
+
 export component OptionsBody inherits Rectangle {
     in property <ActionIcons> action-icons;
     in-out property <int> topic-index;
@@ -78,6 +139,7 @@ export component OptionsBody inherits Rectangle {
     in-out property <bool> copy-checksum-verification: true;
     in property <int> disk-io-concurrency-index;
     in property <int> glyph-fitting-index;
+    in property <int> scroll-glide-index: 3;
     in property <bool> command-history-empty;
     in-out property <bool> thumbnails-enabled;
     in-out property <bool> thumbnails-network;
@@ -92,6 +154,7 @@ export component OptionsBody inherits Rectangle {
     callback copy-verification-changed(bool);
     callback disk-io-concurrency-changed(bool, int);
     callback glyph-fitting-changed(int);
+    callback scroll-glide-changed(int);
     callback command-history-clear();
     callback thumbnail-options-changed(bool, bool, bool, int);
     callback thumbnail-size-changed(int);
@@ -509,6 +572,11 @@ export component OptionsBody inherits Rectangle {
                     current-index: root.glyph-fitting-index;
                     hint: "How glyphs meet the pixel grid. Sharp puts stems on whole pixel columns; Smooth keeps fractional positions with more anti-aliasing. Takes effect after restarting Midnight Explorer. OK saves; Cancel discards changes.";
                     selected(index) => { root.glyph-fitting-changed(index); }
+                }
+                GlidePicker {
+                    narrow: root.narrow;
+                    current-index: root.scroll-glide-index;
+                    selected(index) => { root.scroll-glide-changed(index); }
                 }
             }
             }

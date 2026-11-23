@@ -933,8 +933,15 @@ current keys.
   chooses how glyphs meet the pixel grid: Sharp (fitted, the default), Balanced
   (snapped) or Smooth (subpixel). It applies after a restart; the
   `MIDNIGHT_GLYPH_FITTING` environment variable (`fitted`, `snapped` or `subpixel`)
-  overrides it for one run. The [palette provenance](THEME_PROVENANCE.md)
-  describes the theme catalog. Preview
+  overrides it for one run. **Scrolling glide** (Appearance) sets how long scrolling
+  glides to its target after a wheel notch or a scroll key, and how long a touchpad
+  flick keeps moving after your fingers lift, in the panels, lists, dialogs and every
+  viewer: Off, Very short, Short, Default, Long or Very long, chosen with the mouse or
+  with the arrow keys, Home, End, Page Up and Page Down. Off moves every scroll at once.
+  The change applies immediately, also in open viewer windows. When Windows' Animation
+  effects are off, scrolling never glides, whatever this setting says; a Windows
+  precision touchpad's own coasting is controlled by Windows. The
+  [palette provenance](THEME_PROVENANCE.md) describes the theme catalog. Preview
   is immediate and reversible. **OK** validates all pages, saves asynchronously
   and closes after success. **Cancel**, Escape and X discard all edits and restore
   previewed theme, spacing and fonts. Validation or save errors keep Options open.

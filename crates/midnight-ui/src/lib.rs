@@ -96,6 +96,7 @@ mod presentation_eq;
 use presentation_eq::SamePresentation;
 mod icon_view;
 mod motion_preference;
+mod scroll_glide;
 /// Whether the system asks for less motion (Windows: animation effects off), as the panels
 /// read it; the viewer windows take it through `ViewerWindows::set_motion_preference`.
 pub fn system_reduces_motion() -> bool {
@@ -1367,6 +1368,10 @@ pub fn install_with_owned(
     });
     callback!(on_glyph_fitting_changed, |w, p, s, index| {
         p.change_glyph_fitting(index, s);
+        let _ = w;
+    });
+    callback!(on_scroll_glide_changed, |w, p, s, index| {
+        p.change_scroll_glide(index, s);
         let _ = w;
     });
     callback!(on_sizes_format_changed, |w, p, s, bytes| {

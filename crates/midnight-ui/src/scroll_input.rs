@@ -189,7 +189,9 @@ impl InputState {
                 }
                 let x = x * notch_pixels_for(self.wheel_setting, self.page[0]);
                 let y = self.wheel_distance(*y);
-                if self.reduce_motion {
+                // Less motion from the system, or Scrolling glide Off (read per notch, so
+                // the Options setting applies at once).
+                if self.reduce_motion || midnight_ui_input::glide_scale() <= 0.0 {
                     return self.wheel.push_direct(x, y, now);
                 }
                 return self.wheel.push(x, y, now);
@@ -412,7 +414,7 @@ pub(crate) fn install(window: &MainWindow) {
     let weak = window.as_weak();
     let state = Rc::new(RefCell::new(InputState::default()));
     let timer = wheel_timer(window, &state);
-    let auxiliary_scroll = Rc::new(RefCell::new(NativeScroll::new(window)));
+    let auxiliary_scroll = Rc::new(RefCell::new(NativeScroll::new(window).lists_at_once()));
     let release_auxiliary_scroll = auxiliary_scroll.clone();
     let release_state = state.clone();
     let release_window = window.as_weak();
@@ -446,10 +448,12 @@ pub(crate) fn install(window: &MainWindow) {
                 state.reduce_motion = reduce_motion;
                 state.wheel_setting = wheel_setting;
             }
-            auxiliary_scroll
-                .borrow_mut()
-                .set_wheel_setting(wheel_setting);
+            let mut auxiliary = auxiliary_scroll.borrow_mut();
+            auxiliary.set_wheel_setting(wheel_setting);
+            auxiliary.set_reduce_motion(reduce_motion);
+            drop(auxiliary);
             window.set_reduce_motion(reduce_motion);
+            crate::scroll_glide::system_reduces_motion(&window, reduce_motion);
         }
         if crate::dialog_host::dialog_input_blocked(window.window()) {
             timer.stop();

@@ -4,6 +4,12 @@ The UI owns pointer feedback. The viewer engine owns file reads, decoding,
 search, text layout and raster preparation. Dragging a scrollbar must never wait
 for these operations or enqueue an unbounded history of obsolete positions.
 
+Wheel notches, scroll keys and touchpad momentum in every viewer mode (Text, Source,
+Markdown, hex, image, PDF, HTML) and in the comparison window glide for the length that
+Options › Appearance › **Scrolling glide** sets, and move at once when it is Off or the
+system asks for less motion; see
+[Scrolling glide setting](SCROLLING.md#scrolling-glide-setting).
+
 ## Scrollbar input and text acknowledgements
 
 The shared `PositionBar` retains the pointer's original grab offset, track length
