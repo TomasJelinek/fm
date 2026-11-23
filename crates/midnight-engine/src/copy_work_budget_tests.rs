@@ -124,3 +124,25 @@ fn changed_unknown_unsupported_and_overflowing_work_stays_unknown() {
     budget.observe(&file(Some(1)), policy);
     assert!(budget.remaining(&p, Some(0)).is_none());
 }
+#[test]
+fn kept_links_add_no_readback_and_leave_the_estimate_its_byte_budget() {
+    let policy = TransferVerification::FullSha256;
+    let mut budget = Budget::discovery();
+    budget.observe(&file(Some(100)), policy);
+    for kind in [
+        EntryKind::Symlink,
+        EntryKind::DirectoryLink,
+        EntryKind::Other,
+    ] {
+        budget.observe(&MutationItem { kind, ..file(None) }, policy);
+    }
+    let mut p = progress();
+    p.discovery.bytes = Some(100);
+    assert_eq!(
+        budget.remaining(&p, Some(0)),
+        Some(TransferRemainingWork {
+            write_bytes: 100,
+            verification_bytes: 100,
+        })
+    );
+}

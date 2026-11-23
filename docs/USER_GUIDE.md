@@ -112,8 +112,12 @@ The speed chart also shows overall completion; its scale follows the recent spee
 a brief peak is cut off at the top. A file that takes longer than two seconds shows
 its own percentage beside its name. Discovery precedes known totals (`Files: 12 of
 2,345 · Bytes: 1.5 MiB of 7.0 MiB` for Copy and Move, `Items deleted: 400 of 1,000`
-for Delete), and Pause/Resume waits for safe backend checkpoints. The time estimate
-averages the measured byte and item rates; once the totals are known, Calculating...
+for Delete); totals that could only be estimated, because part of the source could
+not be read or a skipped file leaves part of the work undone, are marked `~`
+(`Bytes: 1.2 GiB of ~3.4 GiB`, `~2 min`) and keep the bar, which holds short of 100%
+if the work turns out larger. Pause/Resume waits for safe backend checkpoints. The
+time estimate averages the measured byte and item rates; once the totals are known,
+Calculating...
 stands in for it until a first rate is measured, and a paused job keeps it, as in
 `About 3 min (paused)`.
 X, Escape and Cancel operation first ask whether to cancel that exact job, with

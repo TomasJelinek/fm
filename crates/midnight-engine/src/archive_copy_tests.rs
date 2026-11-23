@@ -1495,5 +1495,7 @@ async fn archive_selection_of_100001_copied() {
     );
     assert_eq!(closes[0].roots, destination_pins(MEMBERS as usize));
 }
+#[path = "archive_copy_approximate_tests.rs"]
+mod approximate;
 #[path = "archive_copy_progress_tests.rs"]
 mod progress;

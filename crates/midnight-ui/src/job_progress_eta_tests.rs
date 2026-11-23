@@ -96,11 +96,12 @@ fn unavailable_work_errors_and_nonfinite_rates_never_fabricate_eta_and_a_pause_h
     p.paused = true;
     assert_eq!(copy(&p, &NumberLocale::default()).eta, "About 1 s (paused)");
     p.paused = false;
+    // A skipped or failed item leaves an approximate estimate, marked so.
     p.skipped = 1;
-    assert!(copy(&p, &NumberLocale::default()).eta.is_empty());
+    assert_eq!(copy(&p, &NumberLocale::default()).eta, "~1 s");
     p.skipped = 0;
     p.failed = 1;
-    assert!(copy(&p, &NumberLocale::default()).eta.is_empty());
+    assert_eq!(copy(&p, &NumberLocale::default()).eta, "~1 s");
     p.failed = 0;
     for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         Arc::make_mut(&mut p.throughput).smoothed_verification_per_second = rate;
@@ -323,4 +324,51 @@ fn delete_counts_items_without_bytes_and_estimates_from_its_item_rate() {
         deletion(&trash, &locale).totals,
         "Selected items moved to the Trash: 1 of 3"
     );
+}
+
+/// Totals that are only approximate (part of the tree could not be counted, or a
+/// skipped item left part of the work undone) keep the bar and the estimate, marked
+/// "~", and the bar never passes them.
+#[test]
+fn approximate_totals_keep_a_determinate_bar_and_an_estimate_marked_approximate() {
+    let locale = grouped();
+    let mut p = transfer(TransferIntent::Copy, TransferVerification::FullSha256);
+    p.discovery.files = 4;
+    p.discovery.approximate = true;
+    p.files_completed = 1;
+    p.completed_bytes = 250_000;
+    p.remaining_work = Some(TransferRemainingWork {
+        write_bytes: 750_000,
+        verification_bytes: 750_000,
+    });
+    p.throughput = Arc::new(OperationThroughput {
+        smoothed_transfer_per_second: 50_000.0,
+        smoothed_verification_per_second: 50_000.0,
+        ..Default::default()
+    });
+    let approximate = copy(&p, &locale);
+    assert!(approximate.determinate);
+    assert_eq!(approximate.fraction, 0.25);
+    assert_eq!(
+        approximate.totals,
+        "Files: 1 of ~4 · Bytes: 244.1 KiB of ~976.6 KiB"
+    );
+    assert_eq!(approximate.eta, "~15 s");
+    // More done than counted: the bar holds below the whole, never past it.
+    p.completed_bytes = 1_200_000;
+    let beyond = copy(&p, &locale);
+    assert!(beyond.determinate);
+    assert!(
+        beyond.fraction < 1.0 && beyond.fraction >= 0.99,
+        "{}",
+        beyond.fraction
+    );
+    // A skipped item: still a bar and an estimate, approximate.
+    p.discovery.approximate = false;
+    p.completed_bytes = 250_000;
+    p.skipped = 1;
+    let skipped = copy(&p, &locale);
+    assert!(skipped.determinate);
+    assert!(skipped.totals.contains("of ~"), "{}", skipped.totals);
+    assert_eq!(skipped.eta, "~15 s");
 }

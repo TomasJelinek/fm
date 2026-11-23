@@ -124,7 +124,7 @@ fn same_volume_directory_move_keeps_root_scope_and_zero_content_io() {
 }
 
 #[test]
-fn changed_source_invalidates_discovered_totals_in_both_directions() {
+fn changed_source_leaves_approximate_totals_in_both_directions() {
     for grew in [false, true] {
         let temp = fixture();
         let source = temp.path().join("source");
@@ -157,10 +157,14 @@ fn changed_source_invalidates_discovered_totals_in_both_directions() {
         }
         let done = done.expect("bounded completion");
         assert_eq!(done.state, CopyOperationState::Completed);
-        assert_eq!(done.discovery.state, DiscoveryState::Unavailable);
+        // The counts stay as an approximation, never below what was done.
+        assert_eq!(done.discovery.state, DiscoveryState::Complete);
+        assert!(done.discovery.approximate, "{done:?}");
         assert!(!done.discovery.message.is_empty());
         assert_eq!(done.files_completed, if grew { 2 } else { 0 });
         assert_eq!(done.completed_bytes, if grew { 13 } else { 0 });
+        assert!(done.discovery.files >= done.files_completed);
+        assert!(done.discovery.bytes >= Some(done.completed_bytes));
     }
 }
 

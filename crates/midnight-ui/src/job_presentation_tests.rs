@@ -433,6 +433,7 @@ fn discovered_totals_keep_recursive_counts_and_exact_bytes_in_copy_details() {
         files: 23,
         directories: 4,
         bytes: Some(123_456),
+        approximate: false,
         message: String::new(),
     };
     let row = copy(&p, &value);
@@ -547,6 +548,7 @@ fn delete_details_mark_selected_root_scope_and_unknown_bytes_explicitly() {
             files: 1,
             directories: 2,
             bytes: None,
+            approximate: false,
             message: String::new(),
         },
     };

@@ -128,6 +128,35 @@ fn keeping_links_recreates_a_junction_without_privilege() {
     assert_eq!(done.note_count, 0, "{:?}", done.notes);
 }
 
+/// A kept junction writes no content: the copy still knows its byte total, so its bar and
+/// estimate follow bytes. Following the junction counts the bytes of what it leads to.
+#[test]
+fn a_kept_or_followed_junction_leaves_the_byte_total_known() {
+    for (links, bytes) in [
+        (CopyLinkPolicy::Preserve, 5),
+        (CopyLinkPolicy::FollowLinks, 5 + 11),
+    ] {
+        let temp = fixture();
+        let (_, tree) = fixture_tree(temp.path());
+        let destination = temp.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let mut copy = job(std::slice::from_ref(&tree), &destination, false, links);
+        copy.prepare_discovery();
+        run(&mut copy);
+        let done = copy.finish();
+        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        assert_eq!(done.discovery.state, DiscoveryState::Complete, "{links:?}");
+        assert!(!done.discovery.approximate, "{links:?}: {done:?}");
+        assert_eq!(done.discovery.bytes, Some(bytes), "{links:?}: {done:?}");
+        assert_eq!(done.completed_bytes, bytes, "{links:?}");
+        assert_eq!(
+            done.remaining_work,
+            Some(TransferRemainingWork::default()),
+            "{links:?}"
+        );
+    }
+}
+
 #[test]
 fn copying_the_files_follows_a_junction_into_a_copy_of_its_folder() {
     let temp = fixture();
@@ -283,9 +312,22 @@ fn dangling_and_cyclic_junctions_are_kept_as_links_with_their_reasons() {
         false,
         CopyLinkPolicy::FollowLinks,
     );
+    // Discovery treats them as the copy does: two links kept as links, counted once
+    // each without bytes, and no endless walk around the loop.
+    copy.prepare_discovery();
     run(&mut copy);
     let done = copy.finish();
     assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+    assert_eq!(done.discovery.state, DiscoveryState::Complete, "{done:?}");
+    assert!(!done.discovery.approximate, "{done:?}");
+    assert_eq!(
+        (
+            done.discovery.files,
+            done.discovery.directories,
+            done.discovery.bytes
+        ),
+        (2, 1, Some(0))
+    );
     assert!(is_link(&destination.join("tree/dangling")));
     assert!(is_link(&destination.join("tree/loop")));
     assert_eq!(done.note_count, 2, "{:?}", done.notes);

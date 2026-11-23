@@ -420,16 +420,31 @@ stopped by Cancel or an error never started
 
 Backend `OperationDiscovery` snapshots distinguish NotStarted, Scanning, Complete
 and Unavailable. Discovery counts metadata only, including selected roots and
-regular-file logical lengths. A partial or unsupported count is never a percentage
-denominator. The discovery phase shows the growing item count, and for Copy and Move
-the known bytes.
+regular-file logical lengths. A link that the job keeps as a link (Links: keep links,
+or a link that cannot be followed) counts as an item without content bytes, as its copy
+writes none and reads none back; a followed link is discovered as what it points to,
+with that file's length. An entry of another kind (a device or pipe) is never copied
+and adds no bytes either. A link or junction in the tree therefore leaves the byte
+total, the byte-based bar and the estimate known. A partial or unsupported count is
+never a percentage denominator. The discovery phase shows the growing item count,
+and for Copy and Move the known bytes.
 
 Copy and cross-volume Move may use a separate bounded metadata prepass; execution
 continues to use the original captured identities and authoritative revalidation.
-A traversal failure or changed counts invalidates the total rather than silently
-moving the completion target. Discovery is not filesystem authorization and does
+A part that cannot be counted (a folder that cannot be read, an item that vanished, a
+file without a length, a count stopped by a pause) leaves the counts so far as an
+approximation (`OperationDiscovery::approximate`) and counting goes on with the other
+selected items; work that turns out larger than counted raises the totals to what is
+done (`OperationDiscovery::cover`), so a share of them never passes 100% or goes back.
+Only a cancelled count or an overflow leaves the totals unavailable. Discovery is not
+filesystem authorization and does
 not certify a frozen directory tree. Paths used to execute are raw provider paths,
 not the UI strings or the discovery result.
+
+A Copy out of an archive counts its members the same way, from the archive's index
+(lengths recorded in the archive, never decoded), and shows each member by its path
+inside the archive file
+([archive members as a source](TRANSFERS.md#archive-members-as-a-source)).
 
 Same-volume native Move keeps its fast rename. It reports selected roots and does
 not recursively enumerate or read file contents merely to display a percentage.
@@ -441,11 +456,6 @@ recursive file. Links are not followed by destructive traversal.
 One acknowledged 250 ms heartbeat (at most 4 Hz) coalesces ordinary discovery,
 throughput, verification-pass and wait-state updates. A full outbox leaves the
 latest change unacknowledged for retry on the next tick, including a blocked wait
-A Copy out of an archive counts its members the same way, from the archive's index
-(lengths recorded in the archive, never decoded), and shows each member by its path
-inside the archive file
-([archive members as a source](TRANSFERS.md#archive-members-as-a-source)).
-
 clear; discovery changes do not depend on throughput. Initial, decision and
 terminal boundary delivery remain explicit, as do the boundary snapshots of each
 preparation attempt, the first namespace-grant wait and pause/resume
@@ -489,20 +499,22 @@ reading 100% does not establish digest success, publication or source removal.
 Whole-job completion remains independent and below 100 until backend success: the
 headline's `N% complete` divides the bytes of the files already copied plus those
 written of the current file by the discovered byte total (items when the job has no
-byte total). Unknown totals remain indeterminate, and after a skipped or failed item
-the headline counts `N items completed` instead. Cumulative `verified_bytes` includes
-destination readback retries; `validation_bytes` contains additional Move proofs.
+byte total). Approximate totals keep the bar determinate: it holds below 100% when the
+work passes them, until the job ends. Only totals that are unavailable leave it
+indeterminate, the headline then counting `N items completed`. Cumulative
+`verified_bytes` includes destination readback retries; `validation_bytes` contains additional Move proofs.
 Neither, nor their combined throughput, is a whole-job logical verification
 percentage. Do not use advisory remaining-work estimates as an unconditional
 denominator.
 
 Below the headline a Copy or Move shows its totals as they change, once discovery
 has them: `Files: 12 of 2,345 · Bytes: 1.5 MiB of 7.0 MiB` (a Move counts a file
-once its source is removed), `Bytes: 0 B (total size unknown)` when a link, special
-file or unknown size in the tree leaves the byte total unknown, `Files: 10 · Bytes:
-1.5 MiB` once the totals became unavailable, or `Selected items: 2 of 3` when only
-the selected items were counted. While discovery runs there is no totals line; the
-headline reads `Discovering: 2,345 items (7.0 MiB)` and counts on. A Delete counts
+once its source is removed), `Files: 12 of ~2,400 · Bytes: 1.5 MiB of ~7.2 MiB` when
+the totals are approximate (part of the tree could not be counted, the work grew
+beyond the count, or a skipped or failed item leaves part of it undone),
+`Files: 10 · Bytes: 1.5 MiB` only when nothing could be counted (a cancelled count), or
+`Selected items: 2 of 3` when only the selected items were counted. While discovery
+runs there is no totals line; the headline reads `Discovering: 2,345 items (7.0 MiB)` and counts on. A Delete counts
 items only: `Discovering: 1,000 items`, then `Items deleted: 400 of 1,000`
 (`Selected items moved to the Trash: 1 of 3` when only the selected items were
 counted).
@@ -539,8 +551,8 @@ as in `About 3 min (paused)`, and resumes from the same averages. Without an
 estimate, a Copy/Move says Time remaining: Paused while
 paused, Discovering items... while its discovery scans, Calculating... while its
 totals are known and it runs without a wait, pause request or decision, and
-Unavailable otherwise (queued or waiting, pausing, deciding or cancelling, unknown
-totals, or after a skipped or failed item); its current activity (for example
+Unavailable otherwise (queued or waiting, pausing, deciding or cancelling, or totals
+that are unavailable); an estimate from approximate totals reads `~2 min`; its current activity (for example
 Copying..., Saving... or Verifying current file...) labels the speed chart until the
 chart has samples. A Delete shows its activity in that line instead (Queued —
 waiting to start, Awaiting confirmation, Preparing, Discovering items..., Deleting

@@ -243,9 +243,7 @@ impl StreamedRoots {
             }
             let Some(source) = source else {
                 if matches!(self.facts[index], Fact::Unreadable) {
-                    discovery.unavailable(
-                        "Metadata discovery unavailable: a selected item cannot be read.",
-                    );
+                    discovery.approximate("A selected item cannot be read and was not counted.");
                 }
                 continue;
             };
@@ -288,15 +286,15 @@ impl StreamedRoots {
                 Err(failure)
                     if failure.kind == io::ErrorKind::Interrupted && cancel.pause_requested() =>
                 {
-                    discovery.unavailable("Transfer discovery interrupted by pause.");
+                    discovery.approximate("Transfer discovery interrupted by pause.");
                 }
-                Err(failure) => discovery.unavailable(&format!(
-                    "Metadata discovery unavailable: {}",
+                Err(failure) => discovery.approximate(&format!(
+                    "Part of the source could not be counted: {}",
                     failure.message
                 )),
-                Ok(()) if unprojected_link => discovery.unavailable(
-                    "Recursive totals are unavailable for an unprojected source link.",
-                ),
+                Ok(()) if unprojected_link => {
+                    discovery.approximate("A link that the copy follows was not counted.");
+                }
                 Ok(()) => {}
             }
         }

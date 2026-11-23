@@ -322,9 +322,10 @@ file (gz, xz, bz2, zst) its decoded length, so counting decodes no member and re
 member data. A selected file counts without any request to the worker; a selected
 folder is listed once for the count, folder by folder, as Copy then lists it again,
 and only the folders still to be counted are kept meanwhile. Stop and Pause end the
-count between listings and within a long listing. A member the copy then skips (for
-example one whose password was not entered) or a count that differs from what was
-copied makes the total unavailable, as for a native source that changed.
+count between listings and within a long listing. A folder that cannot be listed for
+the count, a member the copy then skips (for example one whose password was not
+entered) or a count that differs from what was copied leaves the totals approximate
+("~"), as for a native source that changed, never unknown.
 
 A lasting change, found when a reader that the plugin opens on the archive's path reports
 another identity, length or modification time, fails as `InvalidData`

@@ -58,11 +58,12 @@ impl Job {
         let traversal = self.cancel.child_interrupted_by_pause();
         for source in &self.roots {
             if traversal.is_cancelled() {
-                discovery.unavailable(if self.cancel.is_cancelled() {
-                    "Transfer discovery cancelled."
+                if self.cancel.is_cancelled() {
+                    discovery.unavailable("Transfer discovery cancelled.");
                 } else {
-                    "Transfer discovery interrupted by pause."
-                });
+                    // What was counted before the pause stays, as an approximation.
+                    discovery.approximate("Transfer discovery interrupted by pause.");
+                }
                 break;
             }
             let mut unprojected_link = false;
@@ -94,20 +95,23 @@ impl Job {
             if let Err(failure) = result {
                 if failure.kind == std::io::ErrorKind::Interrupted && self.cancel.pause_requested()
                 {
-                    discovery.unavailable("Transfer discovery interrupted by pause.");
-                } else {
-                    discovery.unavailable(&format!(
-                        "Metadata discovery unavailable: {}",
-                        failure.message
-                    ));
+                    discovery.approximate("Transfer discovery interrupted by pause.");
+                    break;
                 }
-                break;
+                if self.cancel.is_cancelled() {
+                    discovery.unavailable("Transfer discovery cancelled.");
+                    break;
+                }
+                // A part that cannot be counted (a folder that cannot be read, an item
+                // that vanished) leaves the counts so far as an approximation; the other
+                // selected items are still counted.
+                discovery.approximate(&format!(
+                    "Part of the source could not be counted: {}",
+                    failure.message
+                ));
             }
             if unprojected_link {
-                discovery.unavailable(
-                    "Recursive totals are unavailable for an unprojected source link.",
-                );
-                break;
+                discovery.approximate("A link that the copy follows was not counted.");
             }
         }
         discovery.finish();
@@ -123,18 +127,15 @@ impl Job {
         {
             return;
         }
-        if self.progress.files_completed > discovery.files
-            || self.progress.completed_directories > discovery.directories
-            || discovery.bytes.is_some_and(|bytes| {
-                self.progress
-                    .completed_bytes
-                    .checked_add(self.progress.current_file_copied)
-                    .is_none_or(|done| done > bytes)
-            })
-        {
-            discovery
-                .unavailable("The source changed after discovery; total progress is unavailable.");
-        }
+        // Work beyond the count (a source that grew, a part that could not be counted)
+        // raises the totals as an approximation, so that progress never passes them.
+        discovery.cover(
+            self.progress.files_completed,
+            self.progress.completed_directories,
+            self.progress
+                .completed_bytes
+                .checked_add(self.progress.current_file_copied),
+        );
     }
     pub(super) fn finish_discovery(&mut self) {
         let discovery = &mut self.progress.discovery;
@@ -149,7 +150,7 @@ impl Job {
                     .bytes
                     .is_some_and(|bytes| bytes != self.progress.completed_bytes))
         {
-            discovery.unavailable(
+            discovery.approximate(
                 "Completed work differs from the metadata discovery snapshot; the source changed.",
             );
         }

@@ -85,7 +85,11 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     } else {
         Some(p.completed_roots)
     };
-    let known = p.discovery.state == DiscoveryState::Complete && p.skipped == 0 && p.failed == 0;
+    // Counted totals keep the bar and the estimate. They are approximate ("~") when part
+    // of the work could not be counted or grew beyond the count, and when skipped or
+    // failed items leave part of it undone: an approximate bar is better than none.
+    let known = p.discovery.state == DiscoveryState::Complete;
+    let approximate = known && (p.discovery.approximate || p.skipped != 0 || p.failed != 0);
     let bytes = recursive.then_some(p.discovery.bytes).flatten();
     let live_bytes = if p.state.is_terminal() {
         Some(p.completed_bytes)
@@ -97,6 +101,14 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     } else {
         completed.zip(total)
     };
+    // An approximation is never passed: the bar holds below 100% until the job ends.
+    let work = work.map(|(done, total)| {
+        if approximate {
+            (done.min(total), total)
+        } else {
+            (done, total)
+        }
+    });
     let mut meter = meter(
         &p.discovery,
         completed,
@@ -107,6 +119,9 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
         locale,
     );
     meter.totals = copy_totals(p, live_bytes.unwrap_or(p.completed_bytes), locale);
+    if approximate && !meter.remaining.is_empty() {
+        meter.remaining = meter.remaining.replacen(": ", ": ~", 1).into();
+    }
     if let Some(label) = status {
         meter.discovering = false;
         meter.label = label.into();
@@ -131,6 +146,9 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
     if known && p.state == CopyOperationState::Running && (p.paused || p.wait_reason.is_none()) {
         let seconds = copy_estimate(p, bytes, total.zip(completed));
         meter.eta = eta(seconds, p.paused, locale);
+        if approximate && !meter.eta.is_empty() {
+            meter.eta = meter.eta.replacen("About ", "~", 1).into();
+        }
     }
     meter
 }
@@ -141,7 +159,7 @@ pub(super) fn copy(p: &CopyProgress, locale: &NumberLocale) -> Meter {
 /// that remain are.
 fn copy_estimate(p: &CopyProgress, bytes: Option<u64>, items: Option<(u64, u64)>) -> Option<u64> {
     let rates = &p.throughput;
-    let remaining_items = items.and_then(|(total, done)| total.checked_sub(done));
+    let remaining_items = items.map(|(total, done)| total.saturating_sub(done));
     let by_items = remaining_items
         .and_then(|items| seconds_at(items as f64, rates.smoothed_entries_per_second));
     // The backend budgets writes and the selected readback, including a Move's
@@ -175,6 +193,12 @@ fn copy_totals(p: &CopyProgress, copied: u64, locale: &NumberLocale) -> SharedSt
     let n = |value: u64| locale.format_u64(value);
     let size = |bytes: u64| crate::format_size(bytes, locale);
     let complete = p.discovery.state == DiscoveryState::Complete;
+    // An approximate total says so: "Bytes: 1.2 GiB of ~3.4 GiB".
+    let about = if complete && (p.discovery.approximate || p.skipped != 0 || p.failed != 0) {
+        "~"
+    } else {
+        ""
+    };
     if p.discovery.scope == DiscoveryScope::SelectedRoots {
         return match p
             .discovery
@@ -194,13 +218,18 @@ fn copy_totals(p: &CopyProgress, copied: u64, locale: &NumberLocale) -> SharedSt
         return SharedString::default();
     }
     let done = copy_files_completed(p);
-    let files = if complete && done <= p.discovery.files {
-        format!("Files: {} of {}", n(done), n(p.discovery.files))
+    let files = if complete && (done <= p.discovery.files || !about.is_empty()) {
+        let total = p.discovery.files.max(done);
+        format!("Files: {} of {about}{}", n(done), n(total))
     } else {
         format!("Files: {}", n(done))
     };
     let bytes = match p.discovery.bytes.filter(|_| complete) {
-        Some(total) if copied <= total => format!("Bytes: {} of {}", size(copied), size(total)),
+        Some(total) if copied <= total || !about.is_empty() => format!(
+            "Bytes: {} of {about}{}",
+            size(copied),
+            size(total.max(copied))
+        ),
         None if complete => format!("Bytes: {} (total size unknown)", size(copied)),
         _ => format!("Bytes: {}", size(copied)),
     };
@@ -541,10 +570,11 @@ mod tests {
         p.discovery.state = DiscoveryState::Unavailable;
         assert!(!copy(&p, &NumberLocale::default()).determinate);
         assert!(copy(&p, &NumberLocale::default()).eta.is_empty());
+        // A failed item leaves the totals approximate: the bar and the estimate stay.
         p.discovery.state = DiscoveryState::Complete;
         p.failed = 1;
-        assert!(!copy(&p, &NumberLocale::default()).determinate);
-        assert!(copy(&p, &NumberLocale::default()).eta.is_empty());
+        assert!(copy(&p, &NumberLocale::default()).determinate);
+        assert!(copy(&p, &NumberLocale::default()).eta.starts_with('~'));
     }
 }
 

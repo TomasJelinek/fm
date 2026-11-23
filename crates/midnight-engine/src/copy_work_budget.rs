@@ -28,8 +28,12 @@ impl Budget {
             EntryKind::File => {
                 self.readback = add_file(self.readback, item.metadata.size, policy);
             }
-            EntryKind::Directory => {}
-            _ => self.readback = None,
+            // A kept link is staged and checked by its representation, never read back
+            // as content bytes; an entry of another kind is never copied.
+            EntryKind::Directory
+            | EntryKind::Symlink
+            | EntryKind::DirectoryLink
+            | EntryKind::Other => {}
         }
     }
     /// The read-back total of a discovery that completed while the job already published
@@ -51,25 +55,34 @@ impl Budget {
         if progress.discovery.state != DiscoveryState::Complete
             || progress.discovery.scope != DiscoveryScope::Recursive
             || progress.native_entries_moved != 0
-            || progress.skipped != 0
-            || progress.failed != 0
         {
             return None;
         }
-        let write_bytes = progress
-            .discovery
-            .bytes?
-            .checked_sub(progress.completed_bytes)?
-            .checked_sub(progress.current_file_copied)?;
+        // An approximate count, or one that skipped or failed items leave partly undone,
+        // still estimates what remains: never below nothing.
+        let approximate =
+            progress.discovery.approximate || progress.skipped != 0 || progress.failed != 0;
+        let less = |total: u64, done: u64| {
+            if approximate {
+                Some(total.saturating_sub(done))
+            } else {
+                total.checked_sub(done)
+            }
+        };
+        let write_bytes = less(
+            less(progress.discovery.bytes?, progress.completed_bytes)?,
+            progress.current_file_copied,
+        )?;
         let readback = self.readback?;
-        let initial = readback
-            .checked_sub(self.published?)?
-            .checked_sub(progress.current_file_verified)?;
+        let initial = less(
+            less(readback, self.published?)?,
+            progress.current_file_verified,
+        )?;
         let proof = if progress.intent == TransferIntent::Move {
-            readback
-                .checked_sub(self.removed?)?
-                .checked_mul(4)?
-                .checked_sub(active_proof_credit?)?
+            less(
+                less(readback, self.removed?)?.checked_mul(4)?,
+                active_proof_credit?,
+            )?
         } else {
             0
         };
