@@ -109,7 +109,9 @@ emptied, so they do not stop it; the folder that contains the selection and anyt
 owned by another user are never changed. Copy, Move and Delete share one
 progress-window component, with a separate modeless window for each operation.
 The speed chart also shows overall completion; its scale follows the recent speed, so
-a brief peak is cut off at the top. Right under the chart, a Copy or Move always
+a brief peak is cut off at the top. The small "i" button above the chart's top right
+corner explains the chart: point at it, or Tab to it, click it or press Enter, for
+what each line measures; the chart itself shows no tooltip. Right under the chart, a Copy or Move always
 shows the file it is working on, by its path (the middle is left out when it is too
 long), and that file's own bar and percentage, in the same place for every file: a
 small file simply passes through to 100%, a large one fills its bar as it goes.

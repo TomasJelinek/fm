@@ -491,3 +491,233 @@ fn delete_shows_its_item_totals_and_a_held_estimate_while_paused() {
         AccessibleRole::Text,
     );
 }
+
+/// The text of a shown popup: a hover tooltip (`tooltip`) or another popup.
+fn popup_text(window: &midnight_ui::JobProgressWindow, tooltip: bool) -> Option<String> {
+    use i_slint_core::{
+        items::{ComplexText, SimpleText},
+        window::{WindowInner, WindowKind},
+    };
+    fn text(item: ItemRc) -> Option<String> {
+        if let Some(text) = item.downcast::<SimpleText>() {
+            return Some(text.as_pin_ref().text().to_string());
+        }
+        if let Some(text) = item.downcast::<ComplexText>() {
+            return Some(text.as_pin_ref().text().to_string());
+        }
+        let mut child = item.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            if let Some(found) = text(item) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    popups
+        .iter()
+        .filter(|popup| matches!(popup.window_kind, WindowKind::ToolTip) == tooltip)
+        .find_map(|popup| text(ItemRc::new_root(popup.component.clone())))
+}
+
+/// Where the opened (non-tooltip) popup lies in the window: left, top, right, bottom.
+fn opened_bounds(window: &midnight_ui::JobProgressWindow) -> (f32, f32, f32, f32) {
+    use i_slint_core::{
+        items::WindowItem,
+        window::{PopupWindowLocation, WindowInner, WindowKind},
+    };
+    let inner = WindowInner::from_pub(window.window());
+    let popups = inner.active_popups();
+    let popup = popups
+        .iter()
+        .find(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+        .expect("the opened explanation");
+    let PopupWindowLocation::ChildWindow(origin) = popup.location else {
+        panic!("embedded popup");
+    };
+    let item = ItemRc::new_root(popup.component.clone());
+    let frame = item.downcast::<WindowItem>().expect("popup Window item");
+    let (width, height) = (
+        frame.as_pin_ref().width().get(),
+        frame.as_pin_ref().height().get(),
+    );
+    (origin.x, origin.y, origin.x + width, origin.y + height)
+}
+
+/// Rest the pointer at `position` for longer than the tooltip delay.
+fn rest_pointer(test: &mut ui::TestUi, position: slint::LogicalPosition) {
+    use slint::platform::WindowEvent;
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerExited);
+    test.draw();
+    test.window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    test.draw();
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    test.draw();
+}
+
+fn centre(item: &ItemRc) -> slint::LogicalPosition {
+    let (x, y, width, height) = native_rect(item);
+    slint::LogicalPosition::new(x + width / 2.0, y + height / 2.0)
+}
+
+fn charted_copy() -> OperationRow {
+    let mut copy = job("copy-job:52", "Copy");
+    copy.state = "Copying".into();
+    copy.active = true;
+    copy.pausable = true;
+    copy.determinate = true;
+    copy.progress = 0.4;
+    copy.progress_label = "40% complete".into();
+    copy.current_path = "/source/large.bin".into();
+    copy.transfer_name = "large.bin".into();
+    copy.transfer_speed_chart = SpeedChartData {
+        area: "M 0 100 L 0 60 L 500 40 L 1000 50 L 1000 100 Z".into(),
+        primary: "M 0 60 L 500 40 L 1000 50".into(),
+        speed: "40 MiB/s".into(),
+        has_samples: true,
+        ..Default::default()
+    };
+    copy
+}
+
+/// Screenshots of the chart hovered and of its explanation, before and after the
+/// change (`MIDNIGHT_UI_RENDER_DIR`); no assertions, so that it runs on either layout.
+#[test]
+fn chart_explanation_snapshots() {
+    let mut test = ui::TestUi::new();
+    test.window.set_job(charted_copy());
+    test.resize(640, 420);
+    let chart = ui::popup_item(
+        &test.window,
+        "Overall progress",
+        AccessibleRole::ProgressIndicator,
+    );
+    rest_pointer(&mut test, centre(&chart));
+    test.snapshot("chart-hovered");
+    if let Some(button) = ui::find_popup_item(&test.window, "Chart details", AccessibleRole::Button)
+    {
+        rest_pointer(&mut test, centre(&button));
+        test.snapshot("info-hovered");
+    }
+}
+
+/// Only the "i" button above the chart's top right corner explains the chart: the
+/// chart shows no tooltip; hovering the button shows the explanation as a tooltip,
+/// and focusing or clicking it opens the same text without moving anything.
+#[test]
+fn only_the_info_button_above_the_chart_shows_its_explanation() {
+    let mut test = ui::TestUi::new();
+    let explanation = "Write: bytes written per second.";
+    // Fonts 8, 12 and 32, Desktop (0) and Touch (1) density, light and dark themes.
+    for (scheme, density, font) in [(0, 0, 8), (0, 0, 12), (1, 0, 32), (1, 1, 12), (0, 1, 32)] {
+        for (width, height) in [(1000, 700), (640, 420), (320, 260)] {
+            test.window
+                .invoke_apply_preferences(scheme, density, "".into(), font, font);
+            test.window.set_job(charted_copy());
+            test.resize(width, height);
+            let size = format!("theme {scheme}, density {density}, font {font}, {width}x{height}");
+            let chart = ui::popup_item(
+                &test.window,
+                "Overall progress",
+                AccessibleRole::ProgressIndicator,
+            );
+            let button = ui::popup_item(&test.window, "Chart details", AccessibleRole::Button);
+            let (chart_x, chart_y, chart_width, _) = native_rect(&chart);
+            let (button_x, button_y, button_width, button_height) = native_rect(&button);
+            assert!(
+                button_y + button_height <= chart_y,
+                "above the chart: {size}"
+            );
+            assert!(
+                (button_x + button_width - (chart_x + chart_width)).abs() <= 2.0,
+                "at the chart's right edge: {size}"
+            );
+            assert!(
+                button_x + button_width <= width as f32,
+                "inside the window: {size}"
+            );
+            // The legend beside it keeps clear of it.
+            if let Some(legend) =
+                ui::find_popup_item(&test.window, "Write: 40 MiB/s", AccessibleRole::Text)
+            {
+                let (legend_x, _, legend_width, _) = native_rect(&legend);
+                assert!(
+                    legend_x + legend_width <= button_x,
+                    "beside the legend: {size}"
+                );
+            }
+            let before = native_rect(&chart);
+            rest_pointer(&mut test, centre(&chart));
+            assert_eq!(
+                popup_text(&test.window, true),
+                None,
+                "the chart has no tooltip: {size}"
+            );
+            rest_pointer(&mut test, centre(&button));
+            let tip = popup_text(&test.window, true).expect("the button's tooltip");
+            assert!(tip.starts_with(explanation), "{tip}");
+            // Clicked (or focused): the same text, opened; nothing moves.
+            ui::click_popup(&test.window, "Chart details", AccessibleRole::Button);
+            test.draw();
+            let opened = popup_text(&test.window, false).expect("the opened explanation");
+            assert_eq!(opened, tip);
+            // Below the button, right-aligned with the chart, inside the window.
+            let (left, top, right, bottom) = opened_bounds(&test.window);
+            // Where it fits below the button it opens there; a window too short for it
+            // keeps it inside.
+            if button_y + button_height + 4.0 + (bottom - top) <= height as f32 {
+                assert!(top >= button_y + button_height, "below the button: {size}");
+            } else {
+                // Taller than the window only at the largest font in the smallest window.
+                assert!(top >= -0.5, "inside: {size}");
+                if bottom - top <= height as f32 {
+                    assert!(bottom <= height as f32 + 0.5, "inside: {size}");
+                }
+            }
+            assert!(
+                (right - (button_x + button_width)).abs() <= 2.0,
+                "right-aligned with the chart: {size}"
+            );
+            assert!(
+                left >= -0.5 && right <= width as f32 + 0.5,
+                "inside the window: {size}"
+            );
+            assert!(bottom > top);
+            assert_eq!(native_rect(&chart), before, "no layout shift: {size}");
+            test.snapshot(&format!("info-open-{scheme}-{density}-{font}"));
+            // The next click, here on the button again, closes it.
+            ui::click_popup(&test.window, "Chart details", AccessibleRole::Button);
+            test.draw();
+            assert_eq!(
+                popup_text(&test.window, false),
+                None,
+                "the next click closes it"
+            );
+        }
+    }
+    // Keyboard: Enter on the focused button opens it too.
+    test.window
+        .invoke_apply_preferences(0, 0, "".into(), 12, 12);
+    test.draw();
+    let button = ui::popup_item(&test.window, "Chart details", AccessibleRole::Button);
+    rest_pointer(&mut test, slint::LogicalPosition::new(1.0, 1.0));
+    // Focused by a click that opened it, closed by the next one: Enter opens it again.
+    ui::click_popup(&test.window, "Chart details", AccessibleRole::Button);
+    test.draw();
+    ui::click_popup(&test.window, "Chart details", AccessibleRole::Button);
+    test.draw();
+    assert_eq!(popup_text(&test.window, false), None);
+    ui::key(&test.window, slint::platform::Key::Return);
+    test.draw();
+    assert!(
+        popup_text(&test.window, false).is_some_and(|text| text.starts_with(explanation)),
+        "Enter opens the explanation"
+    );
+    drop(button);
+}

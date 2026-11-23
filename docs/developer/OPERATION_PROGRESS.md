@@ -517,8 +517,8 @@ the totals are approximate (part of the tree could not be counted, the work grew
 beyond the count, or a skipped or failed item leaves part of it undone),
 `Files: 10 · Bytes: 1.5 MiB` only when nothing could be counted (a cancelled count), or
 `Selected items: 2 of 3` when only the selected items were counted. While discovery
-runs there is no totals line; the headline reads `Discovering: 2,345 items (7.0 MiB)` and counts on. A Delete counts
-items only: `Discovering: 1,000 items`, then `Items deleted: 400 of 1,000`
+runs there is no totals line; the headline reads `Discovering: 2,345 items (7.0 MiB)`
+and counts on. A Delete counts items only: `Discovering: 1,000 items`, then `Items deleted: 400 of 1,000`
 (`Selected items moved to the Trash: 1 of 3` when only the selected items were
 counted).
 
@@ -531,6 +531,14 @@ weight that halves every second after it, plus 10% headroom. A spike lifts the
 scale for a few seconds, after which the chart draws it clipped at the top edge.
 Pauses, waits and stalls are recorded as idle intervals and neither lower the scale
 nor age a peak, so it holds still through them.
+
+The chart itself shows no tooltip. Its explanation (what Write, Verify, Deleted or
+Renamed measure, the time axis and the scale) belongs to a small "i" button at the
+right end of the legend above the chart (`ChartInfoButton`, accessible name "Chart
+details", the text also its accessible description): hovering it shows the shared
+tooltip; Tab to it, a click, Enter or Space opens the same text in a popup below it,
+right-aligned with the chart and at most as wide as the chart, until the next click
+anywhere or focus leaving the button closes it. Opening it moves nothing.
 
 Logical committed bytes are separate from actual I/O counters. Retries and
 verification reads cannot inflate completion. Cross-volume Move keeps files in

@@ -1,0 +1,92 @@
+import { Theme } from "theme.slint";
+import { TipBody } from "controls.slint";
+
+// A small "i" button that alone explains a chart: hovering it shows the shared
+// tooltip, and Tab to it, a click, Enter or Space opens the same text below it,
+// right-aligned with the chart, until the next click anywhere or focus leaving it.
+// The chart itself shows nothing on hover.
+export component ChartInfoButton inherits Rectangle {
+    in property <string> text;
+    // The width of the opened explanation: at most the chart's width, so that it
+    // stays right-aligned within the chart and inside the window.
+    in property <length> popup-width: 360px;
+    width: Theme.icon-size; height: Theme.icon-size;
+    accessible-role: button;
+    accessible-label: "Chart details";
+    accessible-description: root.text;
+    accessible-action-default => { root.open(); }
+    forward-focus: focus;
+    function open() {
+        if root.text != "" { details.show(); }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return {
+                root.open();
+                return accept;
+            }
+            reject
+        }
+        // Tab opens it, as hovering shows it; leaving it closes it, but not for the
+        // popup that opening it shows.
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation { root.open(); }
+        }
+        focus-lost(reason) => {
+            if reason != FocusReason.popup-activation { details.close(); }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            focus.focus();
+            root.open();
+        }
+    }
+    Rectangle {
+        border-radius: self.width / 2;
+        border-width: 1px;
+        border-color: touch.has-hover || focus.has-focus ? Theme.active-frame : Theme.secondary-text;
+        Text {
+            text: "i";
+            color: touch.has-hover || focus.has-focus ? Theme.active-frame : Theme.secondary-text;
+            font-size: max(8px, root.height * 0.7);
+            font-weight: 700;
+            horizontal-alignment: center; vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+    // The focus ring of the app's other small buttons.
+    if focus.has-focus : Rectangle {
+        x: -2px; y: -2px; width: root.width + 4px; height: root.height + 4px;
+        border-radius: self.width / 2; border-width: 1px; border-color: Theme.active-frame;
+    }
+    // Hover: the shared tooltip.
+    if root.text != "" : Tooltip { TipBody { text: root.text; } }
+    // Opened: the same text in the tooltip's frame, below the button and right-aligned
+    // with the chart. It is a popup, so opening it moves nothing; any click closes it.
+    details := PopupWindow {
+        x: root.width - root.popup-width;
+        y: root.height + 4px;
+        width: root.popup-width;
+        // Its own height: without one the popup would be as tall as the window and be
+        // moved up to fit, over the button.
+        height: frame.height;
+        close-policy: close-on-click;
+        frame := Rectangle {
+            x: 0px; y: 0px;
+            width: root.popup-width;
+            height: body.preferred-height + 16px;
+            background: Theme.surface;
+            border-color: Theme.active-frame;
+            border-width: 1phx;
+            border-radius: 4px;
+            body := Text {
+                x: 10px; y: 8px; width: max(1px, parent.width - 20px);
+                text: root.text; color: Theme.text; font-size: Theme.small-font;
+                wrap: word-wrap;
+                accessible-label: root.text;
+            }
+        }
+    }
+}
