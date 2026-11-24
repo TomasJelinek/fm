@@ -470,6 +470,17 @@ a timer only requests frames. A delayed frame must not consume an arbitrary
 amount of animation time and skip all intermediate positions. Pending wheel
 displacement is bounded, and direction changes remain responsive.
 
+On Linux Wayland, `midnight_ui_input::NativePresentation` supplies the frame
+notification missing from Slint 1.18.1's FemtoVG-WGPU adapter. The application's
+native event observer installs one rendering notifier per window. It calls
+Winit's `pre_present_notify` after successful WGPU rendering, immediately before
+presentation, so the compositor paces subsequent redraws. It must not request
+that callback before rendering: a skipped surface acquisition would leave it
+waiting for a commit that never happens. The notifier keeps only a weak window
+reference; X11 and other platforms need no workaround.
+The [Wayland source-wheel verification](../verification/2026-11-24-source-wheel-wayland.md)
+records the reproduced GPU stalls, repeated native trials and observer-input command.
+
 File lists remain virtualized. Scrolling must not regenerate or format every
 entry in a directory. Rendering caches, if enabled, belong to the visible
 virtualized cells and must invalidate on selection, metadata, icon and theme
@@ -627,7 +638,9 @@ appended and removed, at heights below a base that moves at most every 32 screen
 renderer uploads a row's texture again whenever that row changes, and every row's when
 the model is replaced, so the model is kept: replacing it for each new strip list would
 upload all shown strips again several times a second. A camera at rest stands on a whole raster pixel, where strips
-are exact; old replies cannot pull a newer gesture backward.
+are exact, except that a reached document edge keeps its exact coordinate after a
+fractional rebase. Rounding that edge inward would make another outward notch
+bounce back into the document. Old replies cannot pull a newer gesture backward.
 
 Absolute camera requests coalesce without crossing selection or context changes.
 The frontend prefetches ahead, pauses at actual retained coverage, and preserves

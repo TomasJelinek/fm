@@ -496,6 +496,7 @@ impl NativeProof {
 }
 
 pub struct Observer {
+    pub presentation: midnight_ui_input::NativePresentation,
     pub callback: Callback,
     pub drawing: Option<(winit::window::WindowId, Instant)>,
     pub injected_wheel: bool,
@@ -544,9 +545,13 @@ impl CustomApplicationHandler for Observer {
         _: &winit::event_loop::ActiveEventLoop,
         window_id: winit::window::WindowId,
         native: Option<&winit::window::Window>,
-        _: Option<&slint::Window>,
+        window: Option<&slint::Window>,
         event: &winit::event::WindowEvent,
     ) -> EventResult {
+        // The dedicated D3D proof owns its rendering notifier.
+        if self.native_proof.is_none() {
+            self.presentation.observe(window_id, native, window, event);
+        }
         let trace = self.timeline.clone();
         let _span = trace.enabled().then(|| {
             // Stable metadata codes: other=0, wheel=1, redraw=2, cursor=3,

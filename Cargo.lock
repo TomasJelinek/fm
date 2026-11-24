@@ -2945,6 +2945,7 @@ dependencies = [
  "midnight-thumbnail-api",
  "midnight-thumbnail-host",
  "midnight-ui",
+ "midnight-ui-input",
  "midnight-update",
  "midnight-viewer-engine",
  "midnight-viewer-ui",

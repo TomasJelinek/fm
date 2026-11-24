@@ -1,4 +1,4 @@
-//! Shared keyboard, placement and wheel presentation policy. No presenter or backend state.
+//! Shared keyboard, placement, wheel and native presentation policy. No presenter or backend state.
 #![forbid(unsafe_code)]
 
 mod glide;
@@ -6,6 +6,12 @@ mod kinetic;
 mod kinetic_native;
 mod logical;
 mod native;
+#[cfg(target_os = "linux")]
+#[path = "native_presentation_linux.rs"]
+mod native_presentation;
+#[cfg(not(target_os = "linux"))]
+#[path = "native_presentation_other.rs"]
+mod native_presentation;
 mod native_scroll;
 mod placement;
 mod post_window_event;
@@ -20,6 +26,7 @@ pub use glide::{glide_duration, glide_scale, set_glide_scale};
 pub use kinetic_native::{LINE_PIXELS, WheelSource};
 pub use logical::{chord, escape_pressed};
 pub use native::{ShortcutState, native_escape_pressed};
+pub use native_presentation::NativePresentation;
 pub use native_scroll::{
     CommandStrip, GlideRegion, KineticSink, KineticSurface, NativeScroll,
     install as install_native_scroll, notify_scrollbar_wheel, popup_open,

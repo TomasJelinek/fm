@@ -1,5 +1,5 @@
-//! Native input for the acceptance suite only (feature `acceptance-seams`, which only
-//! `crates/midnight-acceptance` enables; the application never compiles this module).
+//! Native input for the acceptance suite and opt-in performance probes
+//! (feature `acceptance-seams`; the application never compiles this module).
 //!
 //! The suite drives viewers on Slint's software platform, where winit never runs, so the
 //! window's native observer (the closure winit's events reach through
@@ -186,6 +186,10 @@ fn moving(open: &OpenWindow) -> bool {
 /// while such a glide waited, and the rest of that glide never got a frame: one notch up
 /// after a scrollbar drag moved 15 to 42 px of 100 (acceptance VIEW-NOTCH-UP).
 fn frames(open: &Rc<OpenWindow>) {
+    // Native probes must measure compositor-paced frames, not this headless pump.
+    if open.window.window().has_winit_window() {
+        return;
+    }
     open.seam.last_input.set(image_motion::now(open));
     if open.seam.frames.running() {
         return;

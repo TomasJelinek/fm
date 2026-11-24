@@ -75,11 +75,16 @@ impl MainWindowEvents {
 pub(crate) struct Observer {
     probe: Option<Probe>,
     main: Rc<MainWindowEvents>,
+    presentation: midnight_ui_input::NativePresentation,
 }
 
 impl Observer {
     pub(crate) fn new(probe: Option<Probe>, main: Rc<MainWindowEvents>) -> Self {
-        Self { probe, main }
+        Self {
+            probe,
+            main,
+            presentation: Default::default(),
+        }
     }
 }
 
@@ -94,11 +99,12 @@ impl CustomApplicationHandler for Observer {
     fn window_event(
         &mut self,
         _: &ActiveEventLoop,
-        _: WindowId,
-        _: Option<&Window>,
+        id: WindowId,
+        native: Option<&Window>,
         window: Option<&slint::Window>,
         event: &WindowEvent,
     ) -> EventResult {
+        self.presentation.observe(id, native, window, event);
         if matches!(
             event,
             WindowEvent::Resized(_)

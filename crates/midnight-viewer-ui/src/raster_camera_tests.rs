@@ -21,6 +21,48 @@ fn info() -> ViewerRasterInfo {
 }
 
 #[test]
+fn prepared_scroll_reaches_fractional_document_edges_without_bouncing_inward() {
+    for (edge, start, delta) in [(0.0001, 20.0, -60.0), (999.9999, 980.0, 60.0)] {
+        for direct in [false, true] {
+            let mut frame = info();
+            frame.origin = [0.0, start];
+            frame.coverage_min = [0.0, 0.0001];
+            frame.coverage_max = [0.0, 999.9999];
+            frame.limit_min = [Some(0.0), Some(0.0001)];
+            frame.limit_max = [Some(0.0), Some(999.9999)];
+            frame.bands = Some(midnight_core::ViewerRasterBands {
+                left: 0.0,
+                width: 800,
+                gutter_width: 0,
+                list: std::sync::Arc::from([]),
+            });
+            let mut camera = Camera::default();
+            assert!(camera.receive(&frame, [1.0; 2]));
+            assert!(camera.push(0.0, delta, Duration::ZERO, direct));
+            let mut previous = camera.origin[1];
+            for tick in 1..=30 {
+                camera.tick(Duration::from_millis(tick * 8));
+                let movement = camera.origin[1] - previous;
+                assert!(
+                    movement * f64::from(delta) >= 0.0,
+                    "edge bounced: {previous} -> {}",
+                    camera.origin[1]
+                );
+                previous = camera.origin[1];
+            }
+            assert_eq!(camera.origin[1], edge, "direct={direct}");
+            assert!(!camera.active());
+            assert!(camera.push(0.0, delta, Duration::from_secs(1), direct));
+            camera.tick(Duration::from_secs(2));
+            assert_eq!(
+                camera.origin[1], edge,
+                "repeated outward input moved the edge"
+            );
+        }
+    }
+}
+
+#[test]
 fn retained_pixels_move_fractionally_without_waiting_for_a_worker_reply() {
     let mut camera = Camera::default();
     assert!(camera.receive(&info(), [2.25; 2]));

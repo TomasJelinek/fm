@@ -1,6 +1,7 @@
 //! Native wheel gestures; camera movement is sampled after every completed redraw.
-use midnight_viewer_ui::ViewerWindow;
+use midnight_viewer_ui::{ViewerWindow, ViewerWindows};
 use slint::ComponentHandle;
+use std::rc::Weak;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "windows")]
 #[path = "wheel_windows.rs"]
@@ -17,11 +18,13 @@ fn send(_: &ViewerWindow, _: i16, _: &super::timeline::Trace) -> Result<(), Stri
 #[derive(Clone, Copy, Default)]
 pub(super) struct Options {
     pub sustained: bool,
+    pub observer: bool,
     pub tail: bool,
     pub require_wrapped_handoff: bool,
 }
 #[derive(Default)]
 pub(super) struct Probe {
+    manager: Weak<ViewerWindows>,
     prepared: Option<Instant>,
     stable: Option<(String, [f32; 2], Instant)>,
     actual_context: Option<String>,
@@ -93,16 +96,49 @@ impl Frame {
     }
 }
 impl Probe {
-    pub fn new(timeline: super::timeline::Trace, options: Options) -> Self {
+    pub fn new(
+        timeline: super::timeline::Trace,
+        options: Options,
+        manager: Weak<ViewerWindows>,
+    ) -> Self {
         Self {
             timeline,
             options,
+            manager,
             spatial_proof: std::env::var_os("MIDNIGHT_VIEWER_PROBE_SPATIAL_PROOF").is_some(),
             requested_mode: std::env::var("MIDNIGHT_VIEWER_PROBE_MODE_INDEX")
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .filter(|index| *index >= 0),
             ..Default::default()
+        }
+    }
+    fn send_observer(&self, window: &ViewerWindow, delta: i16) -> Result<(), String> {
+        #[cfg(feature = "acceptance-seams")]
+        {
+            use midnight_viewer_ui::acceptance_seams::{NativeWheel, wheel};
+            let manager = self.manager.upgrade().ok_or("viewer manager closed")?;
+            let at = slint::LogicalPosition::new(
+                window.get_content_left() + 30.0,
+                window.get_content_top() + 30.0,
+            );
+            self.timeline.record("observer_wheel", f64::from(delta));
+            wheel(
+                &manager,
+                window,
+                at,
+                NativeWheel::Lines {
+                    x: 0.0,
+                    y: f32::from(delta) / 120.0,
+                },
+            )
+            .ok_or("viewer native observer unavailable")?;
+            Ok(())
+        }
+        #[cfg(not(feature = "acceptance-seams"))]
+        {
+            let _ = (window, delta, &self.manager);
+            Err("observer input requires acceptance-seams".into())
         }
     }
     pub fn rendered(&mut self, window: &ViewerWindow, redraw: Duration) {
@@ -421,7 +457,11 @@ impl Probe {
             },
         });
         self.timeline.record("initial_stripe_captured", 0.0);
-        send(window, direction, &self.timeline)?;
+        if self.options.observer {
+            self.send_observer(window, direction)?;
+        } else {
+            send(window, direction, &self.timeline)?;
+        }
         Ok(None)
     }
 }

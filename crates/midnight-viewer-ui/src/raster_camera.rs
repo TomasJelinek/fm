@@ -382,6 +382,12 @@ fn whole(info: &ViewerRasterInfo, origin: [f64; 2]) -> [f64; 2] {
         let low = info.coverage_min[axis].max(info.limit_min[axis].unwrap_or(f64::NEG_INFINITY));
         let high = info.coverage_max[axis].min(info.limit_max[axis].unwrap_or(f64::INFINITY));
         let value = origin[axis];
+        // A rebase can put the document edge between world pixels. Keep a
+        // reached edge exact: rounding inward would undo the final scroll and
+        // make repeated outward input bounce without ever reaching the end.
+        if info.limit_min[axis] == Some(value) || info.limit_max[axis] == Some(value) {
+            return value;
+        }
         [value.round(), value.floor(), value.ceil()]
             .into_iter()
             .find(|candidate| (low..=high).contains(candidate))

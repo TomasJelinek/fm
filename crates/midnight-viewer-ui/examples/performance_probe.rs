@@ -189,14 +189,18 @@ fn presentation(window: &ViewerWindow) -> &'static str {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let directory = PathBuf::from(args.next().ok_or(
-        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof] [--image-proof] [--opening-proof] [--native-parent] [--inactive-native-source]",
+        "usage: performance_probe fixture-directory report-file [--load] [--count] [--scrollbar|--wheel|--observer-wheel] [--d3d|--software] [--wheel-trace] [--extended-wheel|--real-wheel|--wrapped-tabs|--file=path] [--sustained] [--tail] [--gpu-proof] [--image-proof] [--opening-proof] [--native-parent] [--inactive-native-source]",
     )?);
     let report = PathBuf::from(args.next().ok_or("report-file missing")?);
     let flags: Vec<_> = args.collect();
     let load = flags.iter().any(|flag| flag == "--load");
     let instrumented = flags.iter().any(|flag| flag == "--count");
     let scrollbar = flags.iter().any(|flag| flag == "--scrollbar");
-    let wheel = flags.iter().any(|flag| flag == "--wheel");
+    let observer_wheel = flags.iter().any(|flag| flag == "--observer-wheel");
+    if observer_wheel && !cfg!(feature = "acceptance-seams") {
+        return Err("--observer-wheel requires --features acceptance-seams".into());
+    }
+    let wheel = observer_wheel || flags.iter().any(|flag| flag == "--wheel");
     let wheel_trace = flags.iter().any(|flag| flag == "--wheel-trace");
     let extended = flags.iter().any(|flag| flag == "--extended-wheel");
     let real_only = flags.iter().any(|flag| flag == "--real-wheel");
@@ -227,6 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && flag != "--count"
             && flag != "--scrollbar"
             && flag != "--wheel"
+            && flag != "--observer-wheel"
             && flag != "--wheel-trace"
             && flag != "--extended-wheel"
             && flag != "--real-wheel"
@@ -288,6 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wheel_options = wheel::Options {
         sustained,
         tail,
+        observer: observer_wheel,
         require_wrapped_handoff: wrapped_tabs,
     };
     if wheel && scrollbar {
@@ -333,6 +339,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     selector
         .with_winit_custom_application_handler(render_observer::Observer {
             callback: after_render.clone(),
+            presentation: Default::default(),
             drawing: None,
             injected_wheel: wheel,
             native_events: native_events.clone(),
@@ -556,7 +563,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     scrollbar::Probe::with_native_proof,
                 )
             }),
-            wheel: wheel.then(|| wheel::Probe::new(timeline.clone(), wheel_options)),
+            wheel: wheel.then(|| {
+                wheel::Probe::new(timeline.clone(), wheel_options, Rc::downgrade(&manager))
+            }),
             stage: 0,
             round: 0,
             opened: start,
@@ -569,7 +578,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pending: None,
             latencies: vec![],
             rows: vec![format!(
-                "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} native_parent={native_parent} timing={timing} exact_file={} pointer_dispatch=slint-events extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} image_proof={image_proof} snapshot_run_excluded_from_timing_comparison={snapshot_run}",
+                "synthetic_cpu_load_jobs={} instrumented_source_reads={instrumented} requested_femtovg_d3d={d3d} actual_renderer={actual_renderer} native_parent={native_parent} timing={timing} exact_file={} pointer_dispatch=slint-events observer_wheel={observer_wheel} extended={extended} real_only={real_only} wrapped_tabs={wrapped_tabs} sustained={sustained} tail={tail} gpu_proof={gpu_proof} image_proof={image_proof} snapshot_run_excluded_from_timing_comparison={snapshot_run}",
                 if load { 2 } else { 0 },
                 exact_file,
                 snapshot_run = gpu_proof
@@ -1028,7 +1037,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )
                     });
                     state.wheel =
-                        wheel.then(|| wheel::Probe::new(timer_timeline.clone(), wheel_options));
+                        wheel.then(|| wheel::Probe::new(timer_timeline.clone(), wheel_options, Rc::downgrade(&manager)));
                     if state.stage == stage_count {
                         if inactive_native_source && state.error.is_none() {
                             state.inactive_completion_ready = Some(Instant::now());
