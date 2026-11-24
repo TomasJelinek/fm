@@ -120,9 +120,17 @@ passed, 30 ignored, slowest 9.5 s (above), then 6.3 s
 any-size manifest tests (5.3 s, 4.9 s); `midnight-engine` integration executable 506
 passed, 13 ignored, wall 5.3 s.
 
+## Validation
+
+After all fixes, Windows: `cargo test -p midnight-core -p midnight-engine
+-p midnight-work-budget --locked --offline` passed (core 170 and 165 with 4 ignored,
+engine library 1,995 with 30 ignored, engine integration 413 with 12 ignored, work budget
+50); `cargo clippy` of the three crates with `--all-targets -- -D warnings` and, for the
+libraries and tests, with `--target x86_64-unknown-linux-gnu` was clean; `cargo fmt
+--check` was clean.
+
 ## Not done
 
-Clippy and `cargo fmt --check` ran for the three crates (results in the hand-back); the
-workspace-wide clippy with the acceptance feature, the Linux build and acceptance were
-not run in this pass. No acceptance scenario was needed: the fixes are covered by unit
-tests.
+The workspace-wide clippy with the acceptance feature, Linux test runs and acceptance
+were not run: no other crate changed and no acceptance scenario covers these paths
+beyond the unit tests above.
