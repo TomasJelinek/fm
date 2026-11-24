@@ -1,6 +1,6 @@
-//! The bridge polls quickly only while drag work is pending. Refreshes, invalidations
-//! and native release, wheel and touch input republish on the next loop turn, without
-//! waiting for the slow safety net.
+//! The bridge polls quickly only while drag work is pending and arms no timer otherwise.
+//! Refreshes, invalidations, native release, wheel and touch input and every other change
+//! of the drop regions republish on the next loop turn.
 use super::*;
 use crate::{BeginOwned, DeferredDrop, OwnedCommandScope};
 use midnight_core::{DirectoryIndex, Entry, EntryId, EntryKind, Event};
@@ -179,6 +179,11 @@ impl Fixture {
         bridge(&self.window).unwrap().timer.interval()
     }
 
+    /// Whether the bridge's timer is armed at all.
+    fn running(&self) -> bool {
+        bridge(&self.window).unwrap().timer.running()
+    }
+
     fn targets(&self) -> (u64, Vec<PaneId>) {
         let p = self.presenter.borrow();
         let snapshot = p.drag_drop.targets.lock().unwrap();
@@ -318,14 +323,13 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn an_idle_bridge_polls_slowly_and_a_row_drag_polls_quickly_until_it_ends() {
+fn an_idle_bridge_arms_no_timer_and_a_row_drag_polls_quickly_until_it_ends() {
     let fixture = Fixture::new();
-    assert_eq!(fixture.interval(), IDLE_POLL);
-    // Ten idle seconds cost forty safety-net turns instead of 625 polls.
+    assert!(!fixture.running());
     for _ in 0..40 {
-        fixture.advance(IDLE_POLL);
+        fixture.advance(Duration::from_millis(250));
     }
-    assert_eq!(fixture.interval(), IDLE_POLL);
+    assert!(!fixture.running());
 
     let (row, identity) = {
         let p = fixture.presenter.borrow();
@@ -357,11 +361,7 @@ fn an_idle_bridge_polls_slowly_and_a_row_drag_polls_quickly_until_it_ends() {
             .iter()
             .any(|command| matches!(command, Command::CancelDrag(_)))
     );
-    assert_eq!(
-        fixture.interval(),
-        IDLE_POLL,
-        "an ended gesture polls slowly"
-    );
+    assert!(!fixture.running(), "an ended gesture stops polling");
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn native_release_wheel_and_touch_republish_without_invalidating() {
         }),
     ];
     for event in events {
-        // The slow net is far away; a stale region must change on the next turn.
+        // No time passes; a stale region must change on the next turn.
         let (revision, _) = fixture.targets();
         fixture.window.set_scroll_interaction_active(true);
         observe_native(&fixture.window, &event);
@@ -441,6 +441,8 @@ fn native_release_wheel_and_touch_republish_without_invalidating() {
         );
         fixture.window.set_scroll_interaction_active(false);
         observe_native(&fixture.window, &event);
+        // The event's turn, then the one the window's change handler queued.
+        slint::platform::update_timers_and_animations();
         slint::platform::update_timers_and_animations();
         assert_eq!(fixture.targets().1, [PaneId::Left, PaneId::Right]);
     }
@@ -457,7 +459,7 @@ fn external_hover_is_presented_on_the_next_turn_and_polls_quickly_while_it_lasts
     fixture.hover(None);
     slint::platform::update_timers_and_animations();
     assert_eq!(fixture.window.get_drag_hover_pane(), -1);
-    assert_eq!(fixture.interval(), IDLE_POLL);
+    assert!(!fixture.running());
 }
 
 #[test]
@@ -480,7 +482,7 @@ fn a_refused_drag_command_keeps_the_quick_retry_until_it_is_sent() {
         command,
         Command::AttachDragDrop { host, .. } if host.native == NativeDragWindow::Windows { hwnd: 2 }
     )));
-    assert_eq!(fixture.interval(), IDLE_POLL);
+    assert!(!fixture.running());
 }
 
 #[test]
@@ -578,9 +580,12 @@ fn a_drop_sooner_than_the_minimum_drag_duration_after_its_press_is_cancelled() {
                     .iter()
                     .all(|field| field.label != "Drag")
             );
-            fixture.advance(QUICK_NOTE);
-            fixture.advance(IDLE_POLL);
+            // Its own single-shot timer retires the note on time; then nothing is armed.
+            fixture.advance(QUICK_NOTE - Duration::from_millis(1));
+            assert!(fixture.noted(), "the note stays for its time");
+            fixture.advance(Duration::from_millis(1));
             assert!(!fixture.noted(), "the note retires");
+            assert!(!fixture.running());
         } else {
             assert!(matches!(
                 drops.as_slice(),
@@ -640,4 +645,97 @@ fn search_results_over_a_panel_withdraw_its_drop_rectangle() {
     let [left, right] = rectangles(&fixture.window);
     assert!(left.is_none());
     assert!(right.is_some());
+}
+
+/// An idle bridge arms no timer, so it never wakes the event loop by itself. Every input
+/// of the published regions wakes it on the next loop turn instead, with no time passing:
+/// a blocking dialog, an embedded modal opening and closing, the operation and copy
+/// forms, a scroll interaction, search results over a panel and a zoomed panel.
+#[test]
+fn an_idle_bridge_sleeps_and_every_region_change_wakes_it() {
+    let fixture = Fixture::new();
+    let idle = || !bridge(&fixture.window).unwrap().timer.running();
+    assert!(idle(), "an idle bridge arms no timer");
+    let both = vec![PaneId::Left, PaneId::Right];
+    assert_eq!(fixture.targets().1, both);
+    let turn = || {
+        // Change handlers run, then the zero-delay turn they queued.
+        slint::platform::update_timers_and_animations();
+        slint::platform::update_timers_and_animations();
+        fixture.targets().1
+    };
+    let window = &fixture.window;
+    let feeds = window.global::<crate::FeedPresentation>();
+    let fed = |open| {
+        feeds.set_left(crate::FeedView {
+            open,
+            ..Default::default()
+        })
+    };
+    // What changes, how, how it is undone, and the targets meanwhile.
+    type Change<'a> = (&'a str, &'a dyn Fn(), &'a dyn Fn(), Vec<PaneId>);
+    let changes: [Change; 7] = [
+        (
+            "dialog input blocked",
+            &|| window.set_dialog_input_blocked(true),
+            &|| window.set_dialog_input_blocked(false),
+            vec![],
+        ),
+        (
+            "About open",
+            &|| window.set_about_open(true),
+            &|| window.set_about_open(false),
+            vec![],
+        ),
+        (
+            "operation form",
+            &|| window.set_operation_token("7".into()),
+            &|| window.set_operation_token("".into()),
+            vec![],
+        ),
+        (
+            "copy form",
+            &|| window.set_copy_draft_token("7".into()),
+            &|| window.set_copy_draft_token("".into()),
+            vec![],
+        ),
+        (
+            "scroll interaction",
+            &|| window.set_scroll_interaction_active(true),
+            &|| window.set_scroll_interaction_active(false),
+            vec![],
+        ),
+        (
+            "search results over the left panel",
+            &|| fed(true),
+            &|| fed(false),
+            vec![PaneId::Right],
+        ),
+        (
+            "right panel zoomed",
+            &|| {
+                window.set_active_pane(1);
+                window.set_panel_zoomed(true);
+            },
+            &|| {
+                window.set_panel_zoomed(false);
+                window.set_active_pane(0);
+            },
+            vec![PaneId::Right],
+        ),
+    ];
+    for (what, change, restore, during) in changes {
+        change();
+        assert_eq!(turn(), during, "{what}");
+        restore();
+        assert_eq!(turn(), both, "{what} ended");
+        assert!(idle(), "{what}: idle again");
+    }
+    // Ten idle seconds: no turn, the published regions stay.
+    let (revision, _) = fixture.targets();
+    for _ in 0..40 {
+        fixture.advance(Duration::from_millis(250));
+    }
+    assert_eq!(fixture.targets(), (revision, both));
+    assert!(idle());
 }

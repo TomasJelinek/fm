@@ -506,6 +506,13 @@ export component MainWindow inherits Window {
     changed right-list-top => { root.drag-invalidate-targets(); }
     changed right-list-width => { root.drag-invalidate-targets(); }
     changed right-list-height => { root.drag-invalidate-targets(); }
+    // The drag bridge's other region inputs (`rectangles`): a change wakes it.
+    private property <bool> drag-regions-open: !dialog-input-blocked && !embedded-modal-open
+        && copy-draft-token == "" && operation-token == "" && !(scroll-interaction-active && !drag-active);
+    private property <int> drag-regions-shape: (panel-zoomed ? 1 + active-pane : 0)
+        + (FeedPresentation.left.open ? 4 : 0) + (FeedPresentation.right.open ? 8 : 0);
+    changed drag-regions-open => { root.drag-invalidate-targets(); }
+    changed drag-regions-shape => { root.drag-invalidate-targets(); }
     out property <length> left-path-left: left.path-left;
     out property <length> left-path-top: left.path-top;
     out property <length> left-path-width: left.path-width;
