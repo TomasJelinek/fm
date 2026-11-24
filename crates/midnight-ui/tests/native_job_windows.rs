@@ -804,6 +804,46 @@ fn native_rename_overwrite_uses_shared_decision_and_exact_mutation_dispatch() {
     h.children(1);
 }
 
+/// The Jobs window follows its rows when they change in place, as a progress report
+/// changes them (`operation_presentation::refresh`), not only when the model is
+/// replaced: a job that finished enables the Clear actions.
+#[test]
+fn native_jobs_follow_rows_changed_in_place() {
+    use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
+    let h = Harness::new();
+    h.main.invoke_show_operations();
+    h.start(1);
+    // Jobs, then the job's own progress window.
+    let jobs = h.children(2).remove(0);
+    let model = h.main.get_operations();
+    let rows = model
+        .as_any()
+        .downcast_ref::<slint::VecModel<midnight_ui::OperationRow>>()
+        .expect("the Jobs rows are a VecModel");
+    let enabled = |label: &str| {
+        modeless::draw(&jobs, 700, 500, "jobs-in-place");
+        modeless::accessible_item(&jobs, AccessibleRole::Button, label)
+            .unwrap_or_else(|| panic!("no {label} button"))
+            .accessible_string_property(AccessibleStringProperty::Enabled)
+            .is_some_and(|enabled| enabled == "true")
+    };
+    assert!(!enabled("Clear all finished"), "the only job runs");
+    let mut row = rows.row_data(0).unwrap();
+    assert!(row.active);
+    row.active = false;
+    row.state = "Completed in place".into();
+    rows.set_row_data(0, row);
+    assert!(h.main.get_operations() == model, "the same model");
+    assert!(enabled("Clear all finished"), "the finished row enables it");
+    assert!(enabled("Clear finished without errors"));
+    modeless::click(&jobs, "Clear all finished");
+    assert_eq!(
+        h.main.get_operations().row_count(),
+        1,
+        "the job really runs"
+    );
+}
+
 #[test]
 fn native_jobs_clear_actions_preserve_active_work_and_repair_selected_details() {
     let h = Harness::new();
