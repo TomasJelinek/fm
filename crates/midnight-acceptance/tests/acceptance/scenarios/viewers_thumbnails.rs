@@ -277,7 +277,28 @@ fn run(context: &mut Context) -> Result<(), String> {
             ))
         },
     );
-    // A still view keeps every frame identical.
+    // A still view keeps every frame identical once it has nothing left to load: the
+    // rows cut at the list's edges are requested and drawn too (`visible_tiles`) and may
+    // arrive after the whole ones.
+    let loading = |app: &App| -> Vec<String> {
+        let (start, end) = (
+            app.window.get_left_thumbnail_row_start().max(0) as usize,
+            app.window.get_left_thumbnail_row_end().max(0) as usize,
+        );
+        app.rows(PaneId::Left)
+            .into_iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                (start..end).contains(index) && tile_index(&row.name).is_some() && !row.preview
+            })
+            .map(|(_, row)| row.name.to_string())
+            .collect()
+    };
+    let started = Instant::now();
+    while !loading(&app).is_empty() && started.elapsed() < LOAD_LIMIT {
+        app.idle(Duration::from_millis(40));
+    }
+    let left = loading(&app);
     let still: Vec<u64> = (0..10)
         .map(|_| {
             app.idle(Duration::from_millis(60));
@@ -289,7 +310,15 @@ fn run(context: &mut Context) -> Result<(), String> {
         if still.windows(2).all(|pair| pair[0] == pair[1]) {
             Ok(())
         } else {
-            Err("the thumbnail grid changed between frames while nothing moved".into())
+            Err(format!(
+                "the thumbnail grid changed between frames while nothing moved (frames {:?};                  requested tiles still without a preview: {left:?})",
+                still
+                    .windows(2)
+                    .enumerate()
+                    .filter(|(_, pair)| pair[0] != pair[1])
+                    .map(|(index, _)| index + 1)
+                    .collect::<Vec<_>>()
+            ))
         },
     );
 

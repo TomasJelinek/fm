@@ -1653,6 +1653,9 @@ const BELOW: [u8; 3] = [0x20, 0x20, 0x20];
 /// The HTML page's web link, and the addresses the Engine refuses to open here, before
 /// the reason (the mail link's without its `attach` field).
 const HTML_WEB: &str = "https://example.com/page";
+/// The time between two clicks on HTML links: longer than the HTML viewer's 500 ms
+/// between activations it takes (`ACTIVATION_INTERVAL`).
+const LINK_GAP: Duration = Duration::from_millis(700);
 const HTML_REFUSED: [&str; 2] = [
     "Could not open https://example.com/page: ",
     "Could not open mailto:help@example.com?subject=Hi: ",
@@ -1754,9 +1757,20 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
         viewing.wait(app, "the pointer over the HTML web link", STEP, |window| {
             window.get_link_status() == hover.as_str()
         })?;
+        // The HTML viewer drops a link activation that follows another within 500 ms
+        // (`ACTIVATION_INTERVAL`, midnight-viewer-html `links.rs`): one click or double
+        // click acts once. Separate clicks on links come at least that far apart.
+        let mut clicked: Option<Instant> = None;
+        let mut click = |app: &mut App, position: LogicalPosition| {
+            if let Some(last) = clicked {
+                app.pump(LINK_GAP.saturating_sub(last.elapsed()));
+            }
+            clicked = Some(Instant::now());
+            probe::native_click(app, &viewing, position)
+        };
         for (position, refused) in [(web, HTML_REFUSED[0]), (mail, HTML_REFUSED[1])] {
             let before = app.launches.all().len();
-            probe::native_click(app, &viewing, position)?;
+            click(app, position)?;
             viewing.wait(app, refused, STEP, |window| {
                 window.get_status().contains(refused)
             })?;
@@ -1768,7 +1782,7 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
         }
         // The small browser: a local page opens in the same window, styled by a stylesheet
         // one folder above and by its script, which runs offline; Back returns.
-        probe::native_click(app, &viewing, next)?;
+        click(app, next)?;
         viewing.wait(app, "next.html from its link", OPEN_LIMIT, |window| {
             window.get_link_back_available() && window.get_status().starts_with("Next · ")
         })?;
@@ -1797,7 +1811,7 @@ fn html_links_run(app: &mut App, context: &mut Context) -> Result<(), String> {
             band_centre(&viewing.canvas(), BANDS[2]).is_some()
         })?;
         let before = app.launches.all().len();
-        probe::native_click(app, &viewing, jump)?;
+        click(app, jump)?;
         until(app, &viewing, "the fragment's block in view", |_, _| {
             below_share(&viewing.canvas()) > 0.3
         })?;
