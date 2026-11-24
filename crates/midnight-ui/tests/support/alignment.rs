@@ -626,8 +626,9 @@ fn touching(elements: &[&Element], root: Option<Rect>, findings: &mut Vec<Findin
     }
 }
 
-/// U-K38: an elided label whose free room to its right (to its row's next element, or
-/// its container's edge less 16 px of padding) would hold the text whole.
+/// U-K38: an elided label whose free room to its right (to 2 px before its row's next
+/// element, the gap U-K37 requires, or to its container's edge less 16 px of padding)
+/// would hold the text whole.
 fn elided(elements: &[&Element], findings: &mut Vec<Finding>) {
     for element in elements {
         let Some(caption) = &element.caption else {
@@ -640,13 +641,15 @@ fn elided(elements: &[&Element], findings: &mut Vec<Finding>) {
         let Some(container) = element.container else {
             continue;
         };
+        // Up to the next element less the 2 px U-K37 keeps between controls, or to the
+        // container's edge less its padding.
         let next = elements
             .iter()
             .filter(|other| {
                 other.rect.0 >= element.right() - 0.5
                     && overlap(vertical(element), vertical(other)) > 0.0
             })
-            .map(|other| other.rect.0)
+            .map(|other| other.rect.0 - 2.0)
             .fold(container.0 + container.2 - 16.0, f32::min);
         let room = next - element.right();
         let missing = caption.needed.0 - element.rect.2;
@@ -1056,6 +1059,13 @@ mod tests {
         let button = element("Button \"Go\"", Role::Button, (150.0, 6.0, 60.0, 24.0));
         let crowded = check(&[label(120.0), button], None);
         assert!(!kinds(&crowded).contains(&ELIDED_WITH_ROOM), "{crowded:#?}");
+        // Short by 6 px with the next control 6 px away: the label could only reach it
+        // by touching it (U-K37), so that is no room; 8 px away it fits with 2 px left.
+        let at = |x: f32| element("Button \"+\"", Role::Button, (x, 6.0, 32.0, 24.0));
+        let spaced = check(&[label(174.0), at(196.0)], None);
+        assert!(!kinds(&spaced).contains(&ELIDED_WITH_ROOM), "{spaced:#?}");
+        let roomy = check(&[label(174.0), at(198.0)], None);
+        assert_eq!(kinds(&roomy), [ELIDED_WITH_ROOM], "{roomy:#?}");
     }
 
     #[test]

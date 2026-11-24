@@ -105,7 +105,7 @@ flagged and its corrected twin must pass every check.
 | U-K35 | companion button not square | An icon or symbol button right beside a field or picker is not square (within 1 px). | Case 22: 24×32 → 24×24. |
 | U-K36 | uneven gaps between rows | In a column of controls (one left edge, one viewport) with at least three free gaps, a gap at least three times the median and 12 px more; the gap above a dialog's last row (its footer) is exempt. | Case 24: gaps 6, 46, 6 px → 6, 6, 6 px. |
 | U-K37 | controls touching | Controls side by side, or fields and pickers stacked, less than 2 px apart; a control (narrower than 90 % of its dialog) within 2 px of its dialog's or tool window's edge. Segments of one control (tabs, checkable page buttons, a list's rows) are exempt. | Case 25: buttons 1 px apart → 8 px. |
-| U-K38 | text elided although there is room | A label shortened with "…" whose free room to its right (to its row's next element, or its container's edge less 16 px) would show it whole. | Case 26: "Current folder: projects" in 80 px with 300 px free → 300 px. |
+| U-K38 | text elided although there is room | A label shortened with "…" whose free room to its right (to 2 px before its row's next element, the gap U-K37 requires, or to its container's edge less 16 px) would show it whole. | Case 26: "Current folder: projects" in 80 px with 300 px free → 300 px. |
 | U-K39 | uneven gaps between option rows | Check boxes, radio buttons and switches stacked in a column (one left edge, one viewport, nothing between two neighbours): a gap more than 1 px from the column's most common gap. On the Options pages that gap is `OptionRows.row-gap`. | Case 28: a last gap 8 px wider than the others → even gaps. |
 
 ## Surfaces and states

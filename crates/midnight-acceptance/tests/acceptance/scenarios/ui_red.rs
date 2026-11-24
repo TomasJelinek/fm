@@ -357,6 +357,30 @@ slint::slint! {
             }
         }
 
+        // Options in a scrolled page whose last row is taller: its description wraps and
+        // runs past the page's bottom edge, its check box centred beside it (Options ›
+        // Archives on Linux). The twin keeps U-K39's exemption for a row that a wrapped
+        // text makes taller; the broken window has no description and an 8 px wider gap.
+        if root.case == 29: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 112px;
+            Flickable {
+                x: 0px; y: 0px; width: 400px; height: 112px;
+                content-width: 400px; content-height: 200px;
+                for i in 4: Rectangle {
+                    x: 0px; width: 120px; height: 20px;
+                    y: i < 3 ? i * 26px : root.broken ? 86px : 88px;
+                    accessible-role: checkbox; accessible-label: "Type " + (i + 1);
+                    Rectangle { x: 2px; y: 3px; width: 14px; height: 14px; border-width: 1px; border-color: #404040; }
+                    Text { x: 24px; y: 0px; height: 20px; vertical-alignment: center;
+                        text: "Type " + (i + 1); color: #000000; accessible-role: none; }
+                }
+                if !root.broken: Text {
+                    x: 130px; y: 78px; width: 220px; height: 40px; vertical-alignment: center;
+                    wrap: word-wrap; text: "Android development\npackage"; color: #000000;
+                }
+            }
+        }
+
         // Overflow without a scroll bar that does scroll with the wheel (the twin
         // passes the check because it scrolls; the broken one swallows the wheel).
         if root.case == 20: Rectangle {
@@ -382,7 +406,7 @@ struct Case {
     twin_frameless: bool,
 }
 
-const CASES: [Case; 27] = [
+const CASES: [Case; 28] = [
     Case {
         id: 1,
         kind: gate::FRAMED_CLOSE,
@@ -515,6 +539,11 @@ const CASES: [Case; 27] = [
     },
     Case {
         id: 28,
+        kind: align::OPTION_ROWS,
+        twin_frameless: false,
+    },
+    Case {
+        id: 29,
         kind: align::OPTION_ROWS,
         twin_frameless: false,
     },

@@ -151,7 +151,8 @@ fn multi_line_field(nodes: &[Node], index: usize) -> bool {
 }
 
 /// The gate's nodes as the alignment checks see them: every shown control outside
-/// another control, and every shown text with letters or digits outside a control.
+/// another control, and every shown text with letters or digits outside a control,
+/// marked whole or cut by its viewport.
 pub fn elements(nodes: &[Node], frame: Option<&Frame>) -> Vec<alignment::Element> {
     let mut elements = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
@@ -216,8 +217,10 @@ pub fn elements(nodes: &[Node], frame: Option<&Frame>) -> Vec<alignment::Element
         } else if let Some(text) = &node.text
             && !text.input
             && alphanumeric(&text.text)
-            && whole
         {
+            // A text its viewport cuts is not judged (`check` judges whole elements only),
+            // but it still makes its row taller: a wrapped description running past a
+            // page's edge exempts its check box's gap (U-K39), as a whole one does.
             elements.push(alignment::Element {
                 name: gate::describe(node),
                 role: alignment::Role::Label,
