@@ -363,6 +363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(graphics))
         .with_winit_custom_application_handler(render_observer::Observer {
             callback: callback.clone(),
+            presentation: Default::default(),
             drawing: None,
             injected_wheel: false,
             native_events: Rc::new(RefCell::new(Vec::new())),

@@ -586,6 +586,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     selector
         .with_winit_custom_application_handler(render_observer::Observer {
             callback: observer.clone(),
+            presentation: Default::default(),
             drawing: None,
             injected_wheel: true,
             native_events: Rc::new(RefCell::new(Vec::new())),
