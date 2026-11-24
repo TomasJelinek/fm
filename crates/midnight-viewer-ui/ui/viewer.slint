@@ -354,7 +354,9 @@ export component ViewerWindow inherits Window {
                     // from links, and Reload of the shown file. A narrow window keeps the
                     // policy boxes and zoom instead; Alt+Left/Right, the mouse buttons and
                     // F5/Ctrl+R still go back, forward and reload.
-                    if root.width >= 3 * 36px + root.effective-ui-size * 20 + 240px: HorizontalLayout {
+                    // Planned from the window's logical size (`available-width`), not from its
+                    // own width, which depends on this row (a binding loop on `layoutinfo-h`).
+                    if root.available-width >= 3 * 36px + root.effective-ui-size * 20 + 240px: HorizontalLayout {
                     spacing: 4px; horizontal-stretch: 0;
                     TippedActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; min-width: 36px; max-width: 36px;
                         text: "Back"; glyph-only: true; fallback-icon: FallbackIcons.back;
