@@ -65,6 +65,24 @@ fn a_rate_limit_answer_reports_when_to_retry() {
         client(&transport).releases(&AtomicBool::new(false)),
         Err(FetchError::RateLimited { .. })
     ));
+    // A server's wait is taken as it says, even one past the end of time.
+    let transport = FakeTransport::new();
+    transport.answer(
+        API,
+        Answer {
+            head: Head {
+                status: 429,
+                retry_after: Some(u64::MAX),
+                ..Head::default()
+            },
+            body: Vec::new(),
+            cut_after: None,
+        },
+    );
+    match client(&transport).releases(&AtomicBool::new(false)) {
+        Err(FetchError::RateLimited { retry_at }) => assert_eq!(retry_at, u64::MAX),
+        other => panic!("expected a rate limit, got {other:?}"),
+    }
     // A 403 that is not the rate limit is an ordinary failure.
     let transport = FakeTransport::new();
     transport.answer(API, Answer::status(403));

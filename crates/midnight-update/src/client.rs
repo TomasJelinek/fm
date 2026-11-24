@@ -324,7 +324,7 @@ fn check_status(head: &Head) -> Result<(), FetchError> {
         let now = unix_now();
         let retry_at = head
             .retry_after
-            .map(|seconds| now + seconds)
+            .map(|seconds| now.saturating_add(seconds))
             .or(head.rate_reset.filter(|reset| *reset > now))
             .unwrap_or(now + DEFAULT_RATE_WAIT_SECONDS);
         return Err(FetchError::RateLimited { retry_at });
@@ -403,7 +403,7 @@ impl Sink for FileSink<'_> {
         };
         if head
             .content_length
-            .is_some_and(|length| start + length > self.expected)
+            .is_some_and(|length| start.saturating_add(length) > self.expected)
         {
             return Err(io::Error::other(LIMIT_REACHED));
         }
