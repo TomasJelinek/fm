@@ -13,7 +13,7 @@ use windows::{
         },
         UI::Shell::{
             CLSID_DragDropHelper, Common::ITEMIDLIST, DSH_ALLOWDROPDESCRIPTIONTEXT, GPFIDL_DEFAULT,
-            IDataObjectAsyncCapability, IDragSourceHelper2, ILFindLastID, ILFree, ILIsParent,
+            IDataObjectAsyncCapability, IDragSourceHelper2, ILFindLastID, ILFree,
             SHCreateDataObject, SHGetPathFromIDListEx, SHParseDisplayName,
         },
     },
@@ -90,13 +90,14 @@ fn item_ids(files: &FileClipboard) -> Option<ItemIds> {
         return None;
     }
     let mut ids = ItemIds(Vec::with_capacity(files.paths.len() + 1));
-    let parent = parse(&mut ids, folder)?;
+    // Every path lies directly in `folder` (checked above) and each converts back to
+    // exactly its own path, so each item's last ID is that folder's child. Item IDs from
+    // separate parses are not compared with ILIsParent: the same folder can come back
+    // with different bytes, and whether the Shell still calls it the parent depends on
+    // the machine (it did not on hosted Windows runners).
+    parse(&mut ids, folder)?;
     for path in &files.paths {
-        let pidl = parse(&mut ids, path)?;
-        // SAFETY: both item IDs are live and owned by `ids`.
-        if !unsafe { ILIsParent(parent, pidl, true) }.as_bool() {
-            return None;
-        }
+        parse(&mut ids, path)?;
     }
     Some(ids)
 }
