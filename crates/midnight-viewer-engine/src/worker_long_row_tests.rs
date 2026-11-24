@@ -4,6 +4,8 @@
 //! one layout of at most 120 KiB (`viewport::PAGE_BYTES`): the 76 rows of 1200 bytes its
 //! line budget asks for, 51 of 2400 and 15 of 8000, while a 720-pixel window shows 44 rows
 //! (76 with its guards). Every gesture must still move its whole distance, wrapped or not.
+//! A check whose fault needs only a window taller than some pages runs in a lower window,
+//! which still exceeds them and costs fewer page reads per gesture.
 use super::frontier::{Engine, NOTCH, Window, rest, rows, settle, try_gesture};
 use super::*;
 use std::fmt::Write as _;
@@ -15,6 +17,17 @@ const SIZE: ViewerGeometry = ViewerGeometry {
     width: 1312,
     height: 720,
     scale: 1.0,
+};
+/// A window of 30 rows: more than the 27 rows of 2400 bytes a 64 KiB page held, fewer
+/// than the 51 a page holds now.
+const ROWS_30: ViewerGeometry = ViewerGeometry {
+    height: 500,
+    ..SIZE
+};
+/// A window of 22 rows: more than the 15 rows of 8000 bytes a page holds.
+const ROWS_22: ViewerGeometry = ViewerGeometry {
+    height: 360,
+    ..SIZE
 };
 
 /// Blocks of rows, `(count, width)` each, repeated until `total` bytes, numbered as
@@ -41,9 +54,16 @@ fn mixed(blocks: &[(usize, usize)], total: usize) -> String {
 /// them, a quarter into `source`, in `mode`, wrapped or not: a position that is not
 /// acknowledged or, with a `landing` tolerance, shows the thumb farther than that from
 /// where it was released; a gesture whose travel differs from its distance by more than a
-/// pixel, or that never comes to rest. The gestures move down 3,732 pixels, then up 2,796.
-fn problems(source: String, mode: u16, wrap: bool, landing: Option<f64>) -> Vec<String> {
-    let mut engine = Engine::open(source, mode, SIZE, 1);
+/// pixel, or that never comes to rest. In a 720-pixel window the gestures move down 3,732
+/// pixels, then up 2,796.
+fn problems(
+    source: String,
+    size: ViewerGeometry,
+    mode: u16,
+    wrap: bool,
+    landing: Option<f64>,
+) -> Vec<String> {
+    let mut engine = Engine::open(source, mode, size, 1);
     if wrap {
         engine = engine.wrapped();
     }
@@ -67,7 +87,7 @@ fn problems(source: String, mode: u16, wrap: bool, landing: Option<f64>) -> Vec<
             ));
         }
     }
-    let screen = f64::from(SIZE.height);
+    let screen = f64::from(size.height);
     for (name, inputs, burst, repeat) in [
         ("PageDown", vec![(screen, true)], false, 3),
         ("5 notches", vec![(NOTCH, false); 5], false, 2),
@@ -101,8 +121,15 @@ fn problems(source: String, mode: u16, wrap: bool, landing: Option<f64>) -> Vec<
 }
 
 /// Every gesture over `source` moves its whole distance in `mode`, wrapped or not.
-fn keeps_travel(name: &str, source: &str, mode: u16, wrap: bool, landing: Option<f64>) {
-    let report = problems(source.to_owned(), mode, wrap, landing);
+fn keeps_travel(
+    name: &str,
+    source: &str,
+    size: ViewerGeometry,
+    mode: u16,
+    wrap: bool,
+    landing: Option<f64>,
+) {
+    let report = problems(source.to_owned(), size, mode, wrap, landing);
     assert!(
         report.is_empty(),
         "{name}, mode {mode} wrap {wrap}: {report:#?}"
@@ -113,26 +140,29 @@ fn keeps_travel(name: &str, source: &str, mode: u16, wrap: bool, landing: Option
 /// views run in parallel; a module-name filter still selects all four.
 macro_rules! travel_in_every_view {
     ($name:literal, $source:expr, $landing:expr) => {
+        travel_in_every_view!($name, $source, SIZE, $landing);
+    };
+    ($name:literal, $source:expr, $size:expr, $landing:expr) => {
         use super::*;
 
         #[test]
         fn text() {
-            keeps_travel($name, &$source, viewer::MODE_TEXT, false, $landing);
+            keeps_travel($name, &$source, $size, viewer::MODE_TEXT, false, $landing);
         }
 
         #[test]
         fn text_wrapped() {
-            keeps_travel($name, &$source, viewer::MODE_TEXT, true, $landing);
+            keeps_travel($name, &$source, $size, viewer::MODE_TEXT, true, $landing);
         }
 
         #[test]
         fn source() {
-            keeps_travel($name, &$source, viewer::MODE_SOURCE, false, $landing);
+            keeps_travel($name, &$source, $size, viewer::MODE_SOURCE, false, $landing);
         }
 
         #[test]
         fn source_wrapped() {
-            keeps_travel($name, &$source, viewer::MODE_SOURCE, true, $landing);
+            keeps_travel($name, &$source, $size, viewer::MODE_SOURCE, true, $landing);
         }
     };
 }
@@ -147,8 +177,14 @@ mod rows_of_1200_bytes_keep_every_gesture_s_travel {
 /// 27 rows filled a page of 64 KiB, fewer than the window shows: the page left the
 /// retained camera, whose relative scrolling clamped each step to the next page's top.
 /// PageDown moved 27 rows (443 px) in Source and 3 in Text, and an arrow key one row.
+/// A window of 30 rows still shows more than such a page.
 mod rows_of_2400_bytes_keep_every_gesture_s_travel {
-    travel_in_every_view!("2400-byte rows", rows(1_500_000 / 2400, 2400), Some(0.002));
+    travel_in_every_view!(
+        "2400-byte rows",
+        rows(1_500_000 / 2400, 2400),
+        ROWS_30,
+        Some(0.002)
+    );
 }
 
 /// A page of 120 KiB holds 51 rows of 2400 bytes, more than the window's 44. With pages of
@@ -215,9 +251,15 @@ fn blank_below_rows(engine: &Engine) -> f64 {
 
 /// Eight rows filled a page of 64 KiB, and PageDown moved at most those eight (131 px), in
 /// Text one row or none; a page of 120 KiB holds fifteen. A Source position lands on a
-/// whole row (`source_minimum_origin`): two rows are 0.4 % of this file.
+/// whole row (`source_minimum_origin`): two rows are 0.4 % of this file. A window of 22
+/// rows still shows more rows than either page holds.
 mod rows_of_8000_bytes_keep_every_gesture_s_travel {
-    travel_in_every_view!("8000-byte rows", rows(4_000_000 / 8000, 8000), Some(0.004));
+    travel_in_every_view!(
+        "8000-byte rows",
+        rows(4_000_000 / 8000, 8000),
+        ROWS_22,
+        Some(0.004)
+    );
 }
 
 /// Short rows whose pages end by their line budget meet rows that no page holds a window
