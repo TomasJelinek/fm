@@ -106,6 +106,12 @@ debug = 0
 # disk on every build. Measurements: docs/verification/2026-11-18-slint-compile-time.md.
 incremental = false
 
+# The acceptance harness compares, hashes and crops whole rendered frames many times a
+# second (scrolling, the UI polish gate); unoptimized, those loops held its polls back.
+# Measurements: docs/verification/2026-11-24-acceptance-time.md.
+[profile.dev.package.midnight-acceptance]
+opt-level = 2
+
 # Copy readback, checksums, plugin trust and the thumbnail cache hash every byte.
 # Unoptimized digest loops dominated hashing-heavy debug runs and tests.
 [profile.dev.package.sha2]
