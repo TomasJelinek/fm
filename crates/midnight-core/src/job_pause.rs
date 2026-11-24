@@ -41,6 +41,11 @@ impl Cancellation {
     /// This never waits for native I/O and never revokes cancellation.
     pub fn set_pause_requested(&self, requested: bool) {
         for pause in self.pauses.iter() {
+            if requested && !pause.requested.load(Ordering::Acquire) {
+                // A checkpoint that read the previous request can still acknowledge it
+                // after the resume cleared it; a new pause starts unacknowledged.
+                pause.acknowledged.store(false, Ordering::Release);
+            }
             pause.requested.store(requested, Ordering::Release);
             if !requested {
                 pause.acknowledged.store(false, Ordering::Release);
@@ -68,6 +73,10 @@ impl Cancellation {
         let mut ready = !cancelled;
         for pause in self.pauses.iter() {
             let requested = !cancelled && pause.requested.load(Ordering::Acquire);
+            #[cfg(test)]
+            if let Some(hook) = tests::BEFORE_ACKNOWLEDGEMENT.with(std::cell::Cell::take) {
+                hook();
+            }
             pause.acknowledged.store(requested, Ordering::Release);
             ready &= !requested;
         }
@@ -92,6 +101,31 @@ impl Cancellation {
 mod tests {
     use super::*;
     use std::{sync::mpsc, time::Instant};
+
+    thread_local! {
+        /// Runs once between a checkpoint's read of the request and its acknowledgement.
+        pub(super) static BEFORE_ACKNOWLEDGEMENT: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    #[test]
+    fn a_pause_after_a_resume_that_raced_a_checkpoint_waits_for_the_next_checkpoint() {
+        let job = Cancellation::default().pausable_child();
+        job.set_pause_requested(true);
+        let user = job.clone();
+        // The worker reads the first pause, the user resumes before it acknowledges.
+        BEFORE_ACKNOWLEDGEMENT.set(Some(Box::new(move || user.set_pause_requested(false))));
+        assert!(!job.pause_checkpoint());
+        assert!(!job.is_paused());
+        // A second pause is not acknowledged until a checkpoint reaches it.
+        job.set_pause_requested(true);
+        assert!(!job.is_paused());
+        assert!(!job.pause_checkpoint());
+        assert!(job.is_paused());
+        // Repeating the request of an acknowledged pause keeps it acknowledged.
+        job.set_pause_requested(true);
+        assert!(job.is_paused());
+    }
     fn await_paused(control: &Cancellation) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while !control.is_paused() {
