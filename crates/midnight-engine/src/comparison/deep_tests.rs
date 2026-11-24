@@ -817,6 +817,39 @@ fn marks_tell_matching_differing_and_one_sided_entries_at_every_depth() {
 }
 
 #[test]
+fn an_unreadable_child_leaves_its_counterpart_unverified_not_one_sided() {
+    let fake = twins();
+    fake.dir("/left/partial")
+        .dir("/right/partial")
+        .file("/left/partial/hidden", b"h", 1)
+        .file("/right/partial/hidden", b"h", 1)
+        .dir("/left/partial/sub")
+        .dir("/right/partial/sub")
+        .file("/left/partial/sub/x", b"x", 1)
+        .file("/right/partial/sub/x", b"x", 1)
+        .file("/left/partial/same", b"s", 1)
+        .file("/right/partial/same", b"s", 1);
+    fake.unreadable("/left/partial/hidden");
+    fake.unreadable("/left/partial/sub");
+    let cancel = Cancellation::default();
+    let (result, _) = deep(&fake, request(&fake, options(false, true)), &cancel);
+    let result = result.unwrap();
+    assert_eq!(result.errors, 2);
+    let marks = result.marks.as_ref().unwrap();
+    let mark = |side: usize, path: &str| marks.mark(side, Path::new(path));
+    assert_eq!(mark(1, "/right/partial"), Some(CompareMark::Unverified));
+    // Present on both sides: the left one could not be described, so the right one
+    // is not proven different, and certainly not present on its side only.
+    assert_eq!(
+        mark(1, "/right/partial/hidden"),
+        Some(CompareMark::Unverified)
+    );
+    assert_eq!(mark(1, "/right/partial/sub"), Some(CompareMark::Unverified));
+    assert_eq!(mark(1, "/right/partial/sub/x"), None);
+    assert_eq!(mark(1, "/right/partial/same"), None);
+}
+
+#[test]
 fn files_and_folders_of_one_name_are_one_sided_and_ignore_masks_apply_inside() {
     let fake = twins();
     fake.file("/left/name", b"file", 1)

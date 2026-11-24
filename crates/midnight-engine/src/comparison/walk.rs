@@ -11,7 +11,7 @@ use super::{
 };
 use midnight_core::*;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     mem::size_of,
     path::{Path, PathBuf},
@@ -357,6 +357,14 @@ impl<'a> Walk<'a> {
             // Everything listed is still compared; the folder itself stays unproven.
             self.unverified(pair.node);
         }
+        // A child one side could not describe is still present there: its
+        // counterpart is not proven different, and not present on one side only.
+        let unreadable: HashSet<Name> = left
+            .failed
+            .iter()
+            .chain(&right.failed)
+            .map(|name| self.criteria.name(name))
+            .collect();
         let lists = [left.children, right.children];
         let mut groups = HashMap::<(bool, Name), [Vec<usize>; 2]>::new();
         for (side, children) in lists.iter().enumerate() {
@@ -377,8 +385,21 @@ impl<'a> Walk<'a> {
                     .push(index);
             }
         }
-        for group in groups.into_values() {
+        for ((_, name), group) in groups {
             self.stopped(&pair.paths[0])?;
+            if unreadable.contains(&name) {
+                for (side, indices) in group.iter().enumerate() {
+                    for index in indices {
+                        self.mark(
+                            pair.node,
+                            child_name(&lists[side][*index]),
+                            Some(side),
+                            CompareMark::Unverified,
+                        );
+                    }
+                }
+                continue;
+            }
             self.compare_group(pair, &lists, group, stack, pool)?;
         }
         Ok(())
@@ -502,10 +523,6 @@ impl<'a> Walk<'a> {
             (Child::Link(_), Child::Link(_)) | (Child::Special(_), Child::Special(_)) => {
                 self.counts.skipped += 1;
             }
-            (Child::Failed(_), _) | (_, Child::Failed(_)) => {
-                // Reported when listed; the pair cannot be proven equal.
-                self.mark(node, name, None, CompareMark::Unverified);
-            }
             // A link opposite a file, or another kind mismatch.
             _ => {
                 self.differs(node);
@@ -521,6 +538,13 @@ impl<'a> Walk<'a> {
         let mut errors = Vec::new();
         let result = self.lister.list(path, self.cancel, &mut |child| {
             if let Child::Failed(error) = child {
+                // Only its name is kept, to leave its counterpart unverified.
+                let name = error.path.file_name().unwrap_or_default();
+                let cost = size_of::<OsString>() + name.len();
+                if !name.is_empty() && listing.bytes + cost <= MAX_LISTING_BYTES {
+                    listing.bytes += cost;
+                    listing.failed.push(name.to_owned());
+                }
                 errors.push(error);
                 listing.incomplete = true;
                 return true;
@@ -679,7 +703,10 @@ impl<'a> Walk<'a> {
 
 #[derive(Default)]
 struct Listing {
+    /// Every child but those that could not be described (`Child::Failed`).
     children: Vec<Child>,
+    /// The names of the children that could not be described.
+    failed: Vec<OsString>,
     /// A child could not be described, or the listing budget ended it early.
     incomplete: bool,
     limited: bool,
