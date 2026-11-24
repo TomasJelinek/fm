@@ -88,6 +88,17 @@ pub(super) fn worker_may_load(path: &Path) -> io::Result<bool> {
     }
 }
 
+/// Linux workers run as this user: no file permission is theirs alone to grant.
+pub(super) fn grant_load(_: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Linux workers read files as the user",
+    ))
+}
+
+/// A library the user cannot read needs no further explanation.
+pub(super) const DENIED_GUIDANCE: &str = "";
+
 pub(super) fn spawn(executable: &Path, _: ResourcePolicy) -> io::Result<Worker> {
     #[cfg(feature = "startup-diagnostics")]
     let mut startup = crate::startup_diagnostics::Trace::new("restricted_linux");

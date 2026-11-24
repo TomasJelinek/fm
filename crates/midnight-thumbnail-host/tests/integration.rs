@@ -11,6 +11,7 @@
 
 mod cache;
 mod deployment;
+mod extracted_installation;
 mod native_image;
 mod native_video;
 mod resolution_cache;

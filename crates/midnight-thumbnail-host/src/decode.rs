@@ -191,6 +191,11 @@ fn decode_limited(
     api::rgba_length(request.width, request.height)?;
     source.validate()?;
     let version = source.version();
+    // The helpers' sandbox may load the libraries beside them; a release ZIP does not carry
+    // that grant. A failure here is diagnosed when the helper cannot load a library.
+    let _ = midnight_plugin_host::prepare_restricted_worker(helper, || {
+        midnight_worker_platform::worker_libraries(helper)
+    });
     let worker = midnight_worker_platform::spawn(
         helper,
         midnight_worker_platform::Limits {
@@ -503,7 +508,10 @@ mod tests {
                 error.to_string(),
                 format!(
                     "the thumbnail helper helper.exe could not load its libraries (access \
-                     denied): {}",
+                     denied): {}. The file does not let the helpers' sandbox read it, and \
+                     Midnight Explorer adds that permission only in a folder that only you \
+                     can change: secure the installation folder or extract Midnight Explorer \
+                     into your profile",
                     library.display()
                 )
             );

@@ -240,12 +240,15 @@ fn missing_library_child() {
     assert_eq!(
         unloadable.unwrap().to_string(),
         format!(
-            "could not load its libraries (access denied): {}",
+            "could not load its libraries (access denied): {}. The file does not let the \
+             helpers' sandbox read it, and Midnight Explorer adds that permission only in a \
+             folder that only you can change: secure the installation folder or extract \
+             Midnight Explorer into your profile",
             library.display()
         )
     );
-    // Granted as the build and deployment scripts grant FFmpeg, the loader opens it and
-    // refuses its content instead, and the host finds nothing to blame on access.
+    // Granted as the hosts and the build and deployment scripts grant FFmpeg, the loader
+    // opens it and refuses its content instead, and the host finds nothing to blame on access.
     grant_workers(&library);
     let opened = exit_of(&executable);
     assert!(
@@ -269,67 +272,13 @@ fn exit_of(executable: &Path) -> ExitStatus {
     worker.process.wait_status().unwrap()
 }
 
-/// Grant the workers' AppContainer read and execute on `path` alone, as
-/// `scripts/deploy-private.ps1` grants the FFmpeg libraries.
+/// Grant the workers' AppContainer read and execute on `path` alone, as the hosts grant the
+/// libraries of a private installation before they start a worker.
 fn grant_workers(path: &Path) {
-    use windows_sys::Win32::{
-        Security::{ACL, Authorization::*, DACL_SECURITY_INFORMATION, NO_INHERITANCE},
-        Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ},
-    };
-    let sid = worker_profile_sid().unwrap();
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
-    let mut acl: *mut ACL = null_mut();
-    let mut descriptor = null_mut();
-    // SAFETY: a terminated path; Windows allocates the descriptor that owns `acl`.
-    let status = unsafe {
-        GetNamedSecurityInfoW(
-            wide.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            &mut acl,
-            null_mut(),
-            &mut descriptor,
-        )
-    };
-    assert_eq!(status, 0);
-    let access = EXPLICIT_ACCESS_W {
-        grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
-        grfAccessMode: GRANT_ACCESS,
-        grfInheritance: NO_INHERITANCE,
-        Trustee: TRUSTEE_W {
-            pMultipleTrustee: null_mut(),
-            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-            TrusteeForm: TRUSTEE_IS_SID,
-            TrusteeType: TRUSTEE_IS_UNKNOWN,
-            ptstrName: sid.0.cast(),
-        },
-    };
-    let mut updated = null_mut();
-    // SAFETY: one explicit entry and the file's current ACL; Windows allocates the result.
     assert_eq!(
-        unsafe { SetEntriesInAclW(1, &access, acl, &mut updated) },
-        0
+        crate::grant_worker_load(path, |_| true).unwrap(),
+        crate::LoadGrant::Added
     );
-    // SAFETY: a terminated path and the ACL built above.
-    let status = unsafe {
-        SetNamedSecurityInfoW(
-            wide.as_ptr(),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            null_mut(),
-            null_mut(),
-            updated,
-            null_mut(),
-        )
-    };
-    // SAFETY: both were allocated by Windows for this caller.
-    unsafe {
-        LocalFree(updated.cast());
-        LocalFree(descriptor);
-    }
-    assert_eq!(status, 0);
 }
 
 #[test]

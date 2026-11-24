@@ -3,10 +3,12 @@
 
 pub use midnight_worker_sdk::{CpuBudget, Limits, ResourcePolicy};
 use std::{
+    collections::HashSet,
     fmt,
     fs::File,
     io,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 #[cfg(windows)]
@@ -87,7 +89,8 @@ impl fmt::Display for UnloadableLibrary {
         } else {
             write!(
                 formatter,
-                "could not load its libraries (access denied): {path}"
+                "could not load its libraries (access denied): {path}{}",
+                platform::DENIED_GUIDANCE
             )
         }
     }
@@ -112,6 +115,112 @@ pub fn unloadable_library(libraries: &[PathBuf]) -> Option<UnloadableLibrary> {
             }
         })
     })
+}
+
+/// What [`grant_worker_load`] found or did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadGrant {
+    /// The workers could already load the file; nothing was changed.
+    Present,
+    /// The file's own permissions now also let the workers' AppContainer read and execute
+    /// it (Windows).
+    Added,
+    /// The workers cannot load the file, and `may_change` refused changing it.
+    Refused,
+}
+
+/// Let the restricted workers load `path` as their loader opens a library (read and
+/// execute). When they already may (the check [`unloadable_library`] makes), nothing
+/// changes. Otherwise, only when `may_change(path)` allows it, Windows adds one explicit
+/// entry without inheritance flags to the file's DACL, merged with the entries it has, that
+/// allows read and execute (0x1200A9) to the workers' AppContainer
+/// (`MidnightExplorer.RestrictedWorker.v1`) and to no one else; folders are never changed.
+/// It fails when the user may not change the file's permissions, or when the workers still
+/// may not load it afterwards (an entry that denies them). Linux workers read files as the
+/// user, so there is nothing to grant. Call on a backend worker.
+pub fn grant_worker_load(
+    path: &Path,
+    may_change: impl FnOnce(&Path) -> bool,
+) -> io::Result<LoadGrant> {
+    if platform::worker_may_load(path)? {
+        return Ok(LoadGrant::Present);
+    }
+    if !may_change(path) {
+        return Ok(LoadGrant::Refused);
+    }
+    platform::grant_load(path)?;
+    if !platform::worker_may_load(path)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} still denies the workers after the grant",
+                path.display()
+            ),
+        ));
+    }
+    Ok(LoadGrant::Added)
+}
+
+/// The workers and files that [`prepare_worker`] found loadable in this run.
+#[derive(Default)]
+struct Prepared {
+    workers: HashSet<PathBuf>,
+    files: HashSet<PathBuf>,
+}
+
+static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
+
+/// Before starting the restricted worker `executable`: [`grant_worker_load`] for each of
+/// `files`, the installed files its package lets the workers load. Outcomes are kept for the
+/// run: a worker whose files are all loadable, and each loadable file, are not checked again,
+/// so later launches only look them up. A refused or failed file is checked again at the
+/// next launch, so that securing the installation takes effect without a restart. Launches
+/// are serialized while files are checked or changed; `files` is called only then. Returns
+/// the first failure; the worker may still start (a later diagnosis names a library it
+/// cannot load). Call on a backend worker.
+pub fn prepare_worker(
+    executable: &Path,
+    files: impl FnOnce() -> Vec<PathBuf>,
+    may_change: impl Fn(&Path) -> bool,
+) -> io::Result<()> {
+    let mut prepared = PREPARED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prepared = prepared.get_or_insert_with(Prepared::default);
+    if prepared.workers.contains(executable) {
+        return Ok(());
+    }
+    let mut result = Ok(());
+    for file in files() {
+        if prepared.files.contains(&file) {
+            continue;
+        }
+        match grant_worker_load(&file, &may_change) {
+            Ok(LoadGrant::Present | LoadGrant::Added) => {
+                prepared.files.insert(file);
+            }
+            Ok(LoadGrant::Refused) => {
+                if result.is_ok() {
+                    result = Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "{} was left unchanged: its installation is not private",
+                            file.display()
+                        ),
+                    ));
+                }
+            }
+            Err(error) => {
+                if result.is_ok() {
+                    result = Err(error);
+                }
+            }
+        }
+    }
+    if result.is_ok() {
+        prepared.workers.insert(executable.to_owned());
+    }
+    result
 }
 
 /// The libraries in the folder of a worker `executable`, where its loader looks first:
@@ -237,7 +346,10 @@ mod tests {
             };
             assert_eq!(
                 library.to_string(),
-                format!("could not load its libraries (access denied): {shown}")
+                format!(
+                    "could not load its libraries (access denied): {shown}{}",
+                    super::platform::DENIED_GUIDANCE
+                )
             );
             library.missing = true;
             assert_eq!(

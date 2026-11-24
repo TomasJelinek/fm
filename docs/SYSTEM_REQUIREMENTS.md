@@ -238,7 +238,14 @@ Standard installations include the image and video thumbnailers in the
 executable-adjacent `thumbnailers/` folder, with their runtime libraries and notices.
 The pinned FFmpeg 9.0.2 libraries are bundled there, so running Midnight Explorer
 needs no system FFmpeg and no libclang; compilers, GPG and libclang are build
-prerequisites only. The bundled FFmpeg profile decodes VP8/VP9, Theora, FFV1 and raw
+prerequisites only. On Windows the video helpers' sandbox must be allowed to read these
+libraries and the playback helpers; the application grants that on those files in an
+installation that only you (and administrators) can change, such as an extracted folder
+in your profile. In a folder that other accounts can change, secure it or move it to
+your profile first ([shared installations](USER_GUIDE.md#shared-installations)); in a
+folder that only administrators can change and that does not already allow it, an
+administrator grants it with `icacls` as
+[SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files) describes. The bundled FFmpeg profile decodes VP8/VP9, Theora, FFV1 and raw
 video (with Opus audio).
 
 On Windows, every other video plays and gets thumbnails through Windows' own decoders

@@ -1959,6 +1959,17 @@ for that folder:
 - **Dismiss** hides the notice for this installation folder for good (it is
   remembered in `dismissed-notices.json` beside the preferences).
 
+On Windows, video thumbnails and playback need one more permission that a ZIP cannot
+carry: the sandbox in which the video helpers run must be allowed to read their FFmpeg
+libraries and the playback helpers. Midnight Explorer adds that permission itself, to
+those files only, when no other account can change the installation; in a shared folder
+it changes nothing, and the thumbnail notice or the viewer then says "could not load its
+libraries (access denied)" and how to fix it. **Secure this folder** or **Move to my
+profile…** fixes it; the next preview or video works without a restart (from the copy,
+after the restart). Release 0.5.1 did not add the permission, so its ZIP installations
+showed that message for every video
+([SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files)).
+
 Moving the folder yourself with Windows Explorer on the same drive keeps its old
 permissions; copy it or use the buttons instead. **Retry with authorization** still
 needs an installation that only administrators can change, such as a folder under

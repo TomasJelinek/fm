@@ -65,7 +65,8 @@ loader reports a library it was denied the same way as a missing one, so after
 not load, evaluated on Windows with Authz for this user's token restricted to the
 workers' AppContainer (`AuthzSetAppContainerInformation`), as Windows checks the
 worker; `worker_libraries` lists the libraries beside a helper. The video viewer then
-reports "The video helper could not load its libraries (access denied): <path>" (or
+reports "The video helper could not load its libraries (access denied): <path>" with,
+on Windows, a sentence on the sandbox's missing read permission and its fix (or
 "…: <path> is missing"), otherwise "The video helper stopped: <reason>" for a helper
 that ended, and "This video could not be read: …" for a failed read of the video
 file. The thumbnail service reports the first helper that cannot load its libraries
@@ -119,6 +120,30 @@ reported as not found). `scripts/tests/test_restricted_worker_identity.py` check
 both scripts' function under PowerShell 7 and Windows PowerShell 5.1 against the
 SID Windows assigns an unpackaged caller, and the build and deployment tests check
 the granted ACEs.
+
+A release ZIP carries no NTFS permissions: extracted, these files inherit only their
+folder's, and a folder in the user's profile grants AppContainers nothing. The hosts
+therefore add the grant themselves before they start a helper.
+`midnight_worker_platform::grant_worker_load(path, may_change)` checks the file as
+`unloadable_library` does and, only when the workers may not load it and `may_change`
+allows it, merges one explicit, non-inherited entry into the file's DACL that allows
+read and execute (0x1200A9, as `icacls … (RX)` and `ReadAndExecute`) to the workers'
+SID (`SetEntriesInAclW`, then `SetNamedSecurityInfoW` with the DACL's protection
+unchanged); it returns `Present`, `Added` or `Refused`, and an error when the user may
+not change the file's permissions or the workers are still denied afterwards.
+`prepare_worker(executable, files, may_change)` does this before a launch and keeps the
+outcomes for the run: a worker whose files are all loadable, and each loadable file,
+are not checked again, while a refused or failed file is checked again at the next
+launch. `midnight_plugin_host::prepare_restricted_worker(executable, files)` supplies
+the plugin trust rule: a file is changed only when it and every folder above it are
+private (`validate_private_path`). The thumbnail host calls it with the libraries beside
+the helper (`worker_libraries`) before every spawn, and the playback host with the
+helper's declared FFmpeg libraries and the helper itself before it pins them. A failure
+does not stop the launch; the helper's loader failure is diagnosed as before, and on
+Windows `UnloadableLibrary`'s "access denied" text adds that the helpers' sandbox may not
+read the file and that securing the folder or extracting into the profile fixes it. On
+Linux the workers read files as the user and nothing is granted. See
+[SECURITY.md](../../SECURITY.md#the-workers-grant-on-installed-files).
 
 Linux x86-64 and AArch64 startup closes descriptors above stderr, sets
 address-space/file-size/core/descriptor limits and the selected additional CPU

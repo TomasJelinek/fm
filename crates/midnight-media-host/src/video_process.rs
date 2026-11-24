@@ -128,6 +128,14 @@ impl VideoProcess {
         control.check()?;
         let helper = installation.worker(which)?;
         let libraries = installation.libraries(which);
+        // The helper's sandbox may load its libraries and the helper itself, as the build and
+        // deployment scripts grant; a release ZIP does not carry that. Before the files are
+        // pinned. A failure here is diagnosed when the helper cannot load a library.
+        let _ = midnight_plugin_host::prepare_restricted_worker(&helper, || {
+            let mut files = libraries.clone();
+            files.push(helper.clone());
+            files
+        });
         let pins = installation.capture()?;
         if let Err(error) = control.check() {
             pins.release()?;
@@ -715,7 +723,10 @@ mod tests {
         // it here), so it is the one reported there; on Linux the missing one is.
         let expected = if cfg!(windows) {
             format!(
-                "The video helper could not load its libraries (access denied): {}",
+                "The video helper could not load its libraries (access denied): {}. The file \
+                 does not let the helpers' sandbox read it, and Midnight Explorer adds that \
+                 permission only in a folder that only you can change: secure the installation \
+                 folder or extract Midnight Explorer into your profile",
                 present.display()
             )
         } else {

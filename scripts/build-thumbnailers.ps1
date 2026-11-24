@@ -150,7 +150,9 @@ try {
     # The restricted workers' loader opens the shared FFmpeg libraries (and the playback
     # executables are granted alike): read and execute for the workers' AppContainer only.
     # The sandbox receives no directory, user content, write or network authority.
-    # The thumbnail executables get no grant.
+    # The thumbnail executables get no grant. A copy or a release ZIP does not keep it; the
+    # application adds the same entries in a private installation (SECURITY.md), and this
+    # one serves builds run from a folder that other accounts can change.
     $sid=Get-RestrictedWorkerSid
     $ffmpegLibraries=@('avcodec-63.dll','avformat-63.dll','avutil-61.dll','swscale-10.dll','swresample-7.dll')
     foreach ($name in $ffmpegLibraries) {

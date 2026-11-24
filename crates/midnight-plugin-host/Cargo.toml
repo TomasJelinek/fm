@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 midnight-plugin-api = { path = "../../api/midnight-plugin-api" }
+# The restricted workers' AppContainer grant on installed files (worker_grants.rs).
+midnight-worker-platform = { path = "../midnight-worker-platform" }
 serde = { version = "1", features = ["derive"] }
 sha2 = "=0.10.9"
 toml = "0.9"

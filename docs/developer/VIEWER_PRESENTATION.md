@@ -322,8 +322,10 @@ paths.
 
 Failures are shown at the front of the status line with the backend's sentence,
 never a raw I/O text: "The video helper could not load its libraries (access denied):
-<path>" when the sandboxed helper cannot open an FFmpeg library (one not granted to the
-workers' AppContainer, see the [worker SDK](WORKER_SDK.md)) or "…: <path> is missing",
+<path>. The file does not let the helpers' sandbox read it, …" when the sandboxed helper
+cannot open an FFmpeg library (one not granted to the workers' AppContainer, which the
+host grants in a private installation, see the [worker SDK](WORKER_SDK.md)) or
+"…: <path> is missing",
 "The video helper stopped: <reason>" for a helper that ended, "This video could not be
 read: <reason>" for a failed read of the file, "Reading or decoding the video took too
 long" at the deadline, and "Media format or codec is unsupported" for content that no

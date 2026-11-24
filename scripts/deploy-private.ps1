@@ -796,6 +796,7 @@ try {
     if ($videoPresent) {
         # Grant the fixed worker identity read/execute on these code files only. No inherited ACE,
         # directory permission, private content access, write permission or network capability.
+        # The application adds the same entries when they are missing (SECURITY.md).
         $workerSid=Get-RestrictedWorkerSid
         foreach ($name in $videoLibraries) {
             $path=Join-Path $Destination "thumbnailers/$name"

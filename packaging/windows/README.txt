@@ -12,7 +12,10 @@ and says so once: "Secure this folder" limits the folder to you, the system and
 administrators (no administrator rights needed), and "Move to my profile..." copies
 the complete installation into your profile, verifies it and offers to restart
 from the copy. Moving the extracted folder yourself within the same drive keeps
-its old permissions; extract or copy it instead. Plugins are still refused when a
+its old permissions; extract or copy it instead. Video previews and playback run in
+a sandbox that must be allowed to read the bundled FFmpeg libraries; a ZIP cannot
+carry that permission, so the application adds it to those files itself in a folder
+that only you can change (in a shared folder, secure it or move it first). Plugins are still refused when a
 file in the folder belongs to another account or a link leads out of the folder.
 Retry with authorization (UAC) for a folder you cannot open runs the included
 midnight-elevated-listing.exe as Administrator. It is used only when an administrator

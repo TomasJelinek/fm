@@ -268,7 +268,18 @@ published release must have its corresponding source available: push the release
 
 Before publishing, unpack both archives, compare the executable hashes with the tested
 artifacts, run the unpacked executables' filesystem and UI smoke checks, inspect the
-ELF requirements and the archive paths and permissions, and verify `SHA256SUMS`. Do not
+ELF requirements and the archive paths and permissions, and verify `SHA256SUMS`. A
+Windows ZIP carries no NTFS permissions, so the build scripts' read-and-execute grant
+for the workers' AppContainer on the FFmpeg libraries and playback helpers is not in
+it; the application adds it at run time in a private installation
+([SECURITY.md](../SECURITY.md#the-workers-grant-on-installed-files)). Check that with
+the unpacked ZIP's `thumbnailers` folder, which must not name the workers' SID:
+`MIDNIGHT_THUMBNAILERS_TEST_PACKAGE=<unpacked>\thumbnailers` and a private
+`HOST_TEST_INSTALL_ROOT` (as `scripts/validate.ps1` makes it), then
+`cargo test -p midnight-thumbnail-host --test integration extracted_installation -- --ignored`
+and `cargo test -p midnight-media-host --test extracted_installation -- --ignored`: both
+copy the folder as an extraction does and start the video thumbnail helper and both
+playback helpers. Do not
 include private preferences, caches, toolchains, PDBs or generated intermediate
 objects.
 

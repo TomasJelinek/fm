@@ -1533,14 +1533,55 @@ classifications.
   link execution are disabled. A malformed page cannot select executable code.
 - Video thumbnails and playback use separately installed restricted helpers in the
   workers' capability-free AppContainer; the host brokers read-only source bytes.
-  Installation grants that AppContainer read and execute on the five shared FFmpeg
-  libraries and the two playback executables only, never a folder or user content; the
-  build and deployment scripts compute its SID from the name instead of asking Windows
+  Windows checks that AppContainer's access to every library the helpers' loader opens,
+  so it is granted read and execute on the five shared FFmpeg libraries and the two
+  playback executables only, never a folder or user content. The build and deployment
+  scripts add these grants; they compute its SID from the name instead of asking Windows
   inside PowerShell, which in a packaged PowerShell names a different AppContainer (see
-  the [worker SDK](docs/developer/WORKER_SDK.md)). Every worker and browser broker
+  the [worker SDK](docs/developer/WORKER_SDK.md)). A release ZIP carries no NTFS
+  permissions, so extracted files inherit only their folder's, which grant AppContainers
+  nothing in a user's profile (0.5.1 ZIP installations had no video thumbnails or
+  playback for this reason). The application therefore adds the same grant itself, see
+  [the workers' grant on installed files](#the-workers-grant-on-installed-files). Every worker and browser broker
   starts with critical-error, crash and open-file dialogs off, so a helper that cannot
   load a library ends with the loader's status instead of waiting on a modal system
   dialog, and the host names the library and why.
+- <a id="the-workers-grant-on-installed-files"></a>**The workers' grant on installed
+  files (Windows).** Before the host starts a thumbnail helper, it makes sure the
+  workers' AppContainer (`MidnightExplorer.RestrictedWorker.v1`,
+  `S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998`) may
+  load the libraries beside the helper; before it starts a playback helper, the helper's
+  declared FFmpeg libraries and the helper itself (`prepare_restricted_worker` in
+  `midnight-plugin-host`, `grant_worker_load` in `midnight-worker-platform`). A file
+  changes only when the Authz access check that diagnoses a denied library finds the
+  AppContainer denied, and only when the file and every folder above it are private by
+  the plugin trust rules: owned by the user, SYSTEM, Administrators or TrustedInstaller,
+  and changeable, renamable or replaceable by no other account. Then one explicit,
+  non-inherited entry is merged into the file's existing DACL that allows read and
+  execute (0x1200A9) to that SID; every other entry, inheritance and protection stay.
+  Folders, other files and other accounts are never changed, and no administrator rights
+  are used. A shared installation (a folder below a drive root that other accounts can
+  change) is left as it is and reported as before; after "Secure this folder" the next
+  helper launch adds the grant, and "Move to my profile..." gives the copy the grant at
+  its first launch (both keep a grant the files already have). When the entry cannot be
+  added, for example to an administrator's installation that does not grant
+  AppContainers, the helper fails as before, and its message "could not load its
+  libraries (access denied): <path>" adds that the helpers' sandbox may not read the file
+  and how to fix it. An administrator can add the same entry to each of the seven files
+  (`avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, `swscale-10.dll`,
+  `swresample-7.dll`, `midnight-video-playback.exe`, `midnight-video-playback-system.exe`)
+  with `icacls "<installation>\thumbnailers\<file>" /grant
+  "*S-1-15-2-210492624-3469538162-618285203-1868907-2672626540-1166629363-1118814998:(RX)"`. Outcomes are kept per helper and per file for the run, so later
+  launches only look them up; a refused or failed file is checked again at the next
+  launch. Review: the grant adds no authority beyond what the packaged build intends.
+  The files are the installation's own trust-checked code that the helpers are meant to
+  load; read and execute let the sandbox map them, not change, delete or list anything; no
+  capability, folder, user content or network access is added. A file that another
+  account could change is never granted, as that account could replace the application
+  itself, so the sandbox never gains a library an attacker controls. The thumbnail host
+  grants every library beside its helpers (the files it names when one cannot be
+  loaded): in a private installation only the user or an administrator can place one
+  there, and the helpers' loader looks there first in any case.
 - On Windows, video that the bundled FFmpeg profile has no decoder for is decoded by
   Windows' Media Foundation in two separate platform helpers (thumbnail and playback)
   that run in the same AppContainer and job and link no FFmpeg. Media Foundation sees

@@ -91,6 +91,8 @@ pub use installation_sharing::{
     CopiedInstallation, CopyInstallationError, InstallationSharing, SecuredInstallation,
     copy_installation, installation_sharing, profile_installation_folder, secure_installation,
 };
+mod worker_grants;
+pub use worker_grants::prepare_restricted_worker;
 mod events;
 pub use events::{EventKind, HostEvent};
 mod session;

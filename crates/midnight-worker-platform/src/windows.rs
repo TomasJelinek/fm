@@ -207,6 +207,16 @@ pub(super) fn worker_may_load(path: &Path) -> io::Result<bool> {
     Ok(error == 0 && granted & wanted == wanted)
 }
 
+#[path = "windows_load_grant.rs"]
+mod load_grant;
+pub(super) use load_grant::grant_load;
+
+/// After "access denied" for a library: why the workers' loader may not open it, and how
+/// to fix that.
+pub(super) const DENIED_GUIDANCE: &str = ". The file does not let the helpers' sandbox read \
+     it, and Midnight Explorer adds that permission only in a folder that only you can \
+     change: secure the installation folder or extract Midnight Explorer into your profile";
+
 /// [`ExitStatus::reason`] on Windows: the statuses a worker ends with when its loader cannot
 /// start it, when it crashes or when it runs out of a resource, in words with the status's
 /// name and code; any other exit code as hexadecimal.

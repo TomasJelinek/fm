@@ -25,8 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PWSH = shutil.which("pwsh")
 LAUNCHER = shutil.which("py")
 # The video worker's FFmpeg libraries and playback helpers (bundled and Media Foundation),
-# which the restricted workers' AppContainer must be granted, as scripts/deploy-private.ps1
-# grants them.
+# which the application grants the restricted workers' AppContainer.
 VIDEO_FILES = ["avcodec-63.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll",
                "swresample-7.dll", "midnight-video-playback.exe", "midnight-video-playback-system.exe"]
 # The SID of the top-level AppContainer `MidnightExplorer.RestrictedWorker.v1`
@@ -167,17 +166,13 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 (thumbnailers / name).write_text("stub\n", encoding="utf-8")
         return plugins
 
-    def assert_worker_grants(self, file_acls):
-        """The video files grant the workers' AppContainer read and execute, an ACE of
-        their own (not inherited); no other file names it."""
+    def assert_no_worker_grants(self, file_acls):
+        """No staged file names the workers' AppContainer: like files extracted from a
+        release ZIP, the video helpers' libraries get its grant from the application."""
+        self.assertTrue(file_acls)
         for name, acl in file_acls.items():
             with self.subTest(file=name):
-                grants = [line for line in acl.splitlines() if WORKER_SID in line]
-                if name in VIDEO_FILES:
-                    self.assertEqual(len(grants), 1, acl)
-                    self.assertTrue(grants[0].rstrip().endswith(f"{WORKER_SID}:(RX)"), acl)
-                else:
-                    self.assertEqual(grants, [], acl)
+                self.assertNotIn(WORKER_SID, acl)
 
     def private_profile(self):
         profile = self.root / "profile"
@@ -330,11 +325,12 @@ class AcceptanceRunnerTests(unittest.TestCase):
                     self.assertIn(f"{variable} {value} is not an absolute folder", result.stderr)
                     self.assertIn("Usage: pwsh -File scripts\\acceptance.ps1", result.stderr)
 
-    def test_the_worker_sid_is_never_asked_of_windows_in_this_process(self):
-        # In a packaged PowerShell that API returns a child AppContainer of the package.
+    def test_the_runner_grants_the_workers_nothing(self):
+        # The application grants the video helpers' files in a private installation; a
+        # grant here would hide a release ZIP's missing one from viewers_video.
         text = (ROOT / "scripts/acceptance.ps1").read_text(encoding="utf-8")
-        self.assertNotIn("DeriveAppContainerSidFromAppContainerName(", text)
-        self.assertIn("function Get-RestrictedWorkerSid", text)
+        for grant in ("Get-RestrictedWorkerSid", "AddAccessRule", "Set-Acl -LiteralPath $path"):
+            self.assertNotIn(grant, text)
 
     def test_invalid_arguments_stop_with_usage(self):
         for arguments in (("--bogus",), ("debug", "release"), ("--scale", "huge"), ("--scale",),
@@ -393,8 +389,8 @@ class AcceptanceRunnerTests(unittest.TestCase):
         # Each manifest names a provider; libraries and notices are not packages.
         self.assertIn("Plugin packages (thumbnailers): midnight-thumbnail-image, midnight-thumbnail-video",
                       result.stdout.splitlines())
-        # A copy loses explicit entries: the runner grants the workers' AppContainer again.
-        self.assert_worker_grants(seen["file_acls"])
+        # A copy loses explicit entries, and the runner adds none.
+        self.assert_no_worker_grants(seen["file_acls"])
         # The installation names the process that ran it: "<process id> <start ticks> <time>".
         self.assertRegex(seen["marker"] or "", r"^\d+ \d+ \S+$")
 
@@ -543,7 +539,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 self.assertEqual(seen["stress"], "1")
                 self.assertEqual(seen["installed"], {"viewers": ["basic"], "filesystems": ["native.windows"],
                                                      "thumbnailers": THUMBNAILERS})
-                self.assert_worker_grants(seen["file_acls"])
+                self.assert_no_worker_grants(seen["file_acls"])
                 self.assertEqual(Path(seen["root"]).parent, profile)
                 self.assertFalse(Path(seen["root"]).exists(), "the private installation was not removed")
 

@@ -55,20 +55,6 @@ $gatedVariables = @('MIDNIGHT_ACCEPTANCE_FAT_DIR', 'MIDNIGHT_ACCEPTANCE_REMOVABL
 
 function Write-Line([string]$Text = '') { [Console]::Out.WriteLine($Text) }
 
-# The SID of the restricted workers' AppContainer, MidnightExplorer.RestrictedWorker.v1, as
-# the unpackaged application gets it, computed as scripts\deploy-private.ps1 and
-# build-thumbnailers.ps1 compute it: S-1-15-2 and the first 28 bytes of the SHA-256 of the
-# lowercase name in UTF-16LE as seven little-endian numbers. Never
-# DeriveAppContainerSidFromAppContainerName: inside a packaged PowerShell (the Microsoft
-# Store pwsh) it returns a child AppContainer of that package, which no worker runs as.
-function Get-RestrictedWorkerSid {
-    $name = 'MidnightExplorer.RestrictedWorker.v1'.ToLowerInvariant()
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { $hash = $sha.ComputeHash([Text.Encoding]::Unicode.GetBytes($name)) } finally { $sha.Dispose() }
-    $parts = foreach ($index in 0..6) { [BitConverter]::ToUInt32($hash, 4 * $index) }
-    [Security.Principal.SecurityIdentifier]::new('S-1-15-2-' + ($parts -join '-'))
-}
-
 function Stop-Usage([string]$Message) {
     if ($Message) { [Console]::Error.WriteLine("acceptance.ps1: $Message") }
     [Console]::Error.WriteLine($usage)
@@ -560,24 +546,10 @@ try {
             $text = if ($installed[$kind].Count -gt 0) { $installed[$kind] -join ', ' } else { 'none' }
             Write-Line "Plugin packages ($kind): $text"
         }
-        # The video worker's FFmpeg libraries and playback helpers load in the restricted
-        # workers' AppContainer only when their ACL grants it, which a copy does not keep:
-        # grant exactly what deploy-private.ps1 grants, read and execute for that SID on these
-        # files only (no inheritance, no folder, no write). Stages hard-link these files.
-        $thumbnailers = Join-Path $packages 'thumbnailers'
-        if (Test-Path -LiteralPath (Join-Path $thumbnailers 'midnight-thumbnail-video.json') -PathType Leaf) {
-            $workerSid = Get-RestrictedWorkerSid
-            foreach ($name in @('avcodec-63.dll', 'avformat-63.dll', 'avutil-61.dll', 'swscale-10.dll',
-                    'swresample-7.dll', 'midnight-video-playback.exe', 'midnight-video-playback-system.exe')) {
-                $path = Join-Path $thumbnailers $name
-                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-                $acl = Get-Acl -LiteralPath $path
-                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($workerSid,
-                    [Security.AccessControl.FileSystemRights]::ReadAndExecute,
-                    [Security.AccessControl.AccessControlType]::Allow))
-                Set-Acl -LiteralPath $path -AclObject $acl
-            }
-        }
+        # The copies carry no explicit permissions, as files extracted from a release ZIP:
+        # the application itself grants the restricted workers' AppContainer read and execute
+        # on the video helpers' FFmpeg libraries and playback helpers in this private
+        # installation, so viewers_video covers that grant (stages hard-link these files).
         $env:MIDNIGHT_ACCEPTANCE_PLUGINS = $packages
         $env:MIDNIGHT_ACCEPTANCE_STAGE_ROOT = $installation
         if ($runDirectory) { $env:MIDNIGHT_ACCEPTANCE_RUN_DIR = $runDirectory }

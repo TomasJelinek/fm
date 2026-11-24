@@ -3121,6 +3121,7 @@ version = "0.5.1"
 dependencies = [
  "libc",
  "midnight-plugin-api",
+ "midnight-worker-platform",
  "serde",
  "sha2",
  "tempfile",

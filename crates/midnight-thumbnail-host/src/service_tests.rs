@@ -685,12 +685,21 @@ fn a_helper_that_cannot_load_its_libraries_is_reported_once() {
     let mut backend = Backend::start(output, cache, render);
     backend.view(1, vec![target(1), target(2)]);
     backend.wait_processed(2);
+    // On Windows the notice also says why the helpers' sandbox is denied the library and
+    // how to fix that.
+    let guidance = if cfg!(windows) {
+        ". The file does not let the helpers' sandbox read it, and Midnight Explorer adds \
+         that permission only in a folder that only you can change: secure the installation \
+         folder or extract Midnight Explorer into your profile"
+    } else {
+        ""
+    };
     assert_eq!(
-        backend.shared.lock().notice.take().as_deref(),
-        Some(
+        backend.shared.lock().notice.take(),
+        Some(format!(
             "Some previews are unavailable: the thumbnail helper midnight-thumbnail-video.exe \
-             could not load its libraries (access denied): avcodec-63.dll"
-        )
+             could not load its libraries (access denied): avcodec-63.dll{guidance}"
+        ))
     );
     // Later previews of the same kind fail the same way without repeating the notice.
     backend.view(2, vec![target(3)]);

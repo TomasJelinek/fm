@@ -328,4 +328,56 @@ mod windows {
             "source unchanged"
         );
     }
+
+    /// The workers' read and execute entry, as the hosts and the build scripts add it.
+    fn worker_entry() -> String {
+        format!("(A;;0x1200a9;;;{WORKER})")
+    }
+
+    #[test]
+    fn the_workers_grant_is_added_only_where_the_installation_is_private() {
+        let base = base();
+        let parent = base.path().join("drive-root");
+        drive_root_like(&parent);
+        let shared = parent.join("me");
+        install(&shared);
+        let shared = shared.canonicalize().unwrap();
+        // A helper and its library extracted from a ZIP: both inherit only their folder's
+        // permissions, which grant AppContainers nothing.
+        let worker = shared.join("viewers/basic/worker.exe");
+        let library = shared.join("viewers/basic/fixture.dll");
+        let files = || vec![library.clone()];
+        let before = dacl_sddl(&library).unwrap();
+        assert!(!before.contains(WORKER), "{before}");
+        // Other accounts can change this installation: nothing is changed.
+        let error = crate::prepare_restricted_worker(&worker, files).unwrap_err();
+        assert!(error.to_string().contains("not private"), "{error}");
+        assert_eq!(dacl_sddl(&library).unwrap(), before);
+        // A private copy in the profile gets the grant at its first launch; the shared source
+        // keeps its permissions.
+        let profile = base.path().join("profile");
+        fs::create_dir(&profile).unwrap();
+        let copied = copy_installation(&shared, &profile.join("Midnight Explorer"), false).unwrap();
+        assert!(copied.sharing.is_private(), "{:?}", copied.sharing);
+        let copy = copied.folder.join("viewers/basic/fixture.dll");
+        assert!(!dacl_sddl(&copy).unwrap().contains(WORKER));
+        crate::prepare_restricted_worker(&copied.folder.join("viewers/basic/worker.exe"), || {
+            vec![copy.clone()]
+        })
+        .unwrap();
+        let granted = dacl_sddl(&copy).unwrap();
+        assert_eq!(granted.matches(&worker_entry()).count(), 1, "{granted}");
+        assert_eq!(dacl_sddl(&library).unwrap(), before);
+        // Securing the shared installation lets its next launch add the grant (a refusal is
+        // not kept for the run), and the grant keeps it private.
+        let secured = secure_installation(&shared).unwrap();
+        assert!(secured.sharing.is_private(), "{secured:?}");
+        crate::prepare_restricted_worker(&worker, files).unwrap();
+        let granted = dacl_sddl(&library).unwrap();
+        assert_eq!(granted.matches(&worker_entry()).count(), 1, "{granted}");
+        assert!(installation_sharing(&shared).unwrap().is_private());
+        // Securing again keeps the grant.
+        secure_installation(&shared).unwrap();
+        assert!(dacl_sddl(&library).unwrap().contains(&worker_entry()));
+    }
 }
