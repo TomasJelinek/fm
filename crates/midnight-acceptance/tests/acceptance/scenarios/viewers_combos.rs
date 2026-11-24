@@ -1,8 +1,8 @@
 //! Viewers in combination with the rest of the application:
 //!
 //! - F3 on a result in the Find window, and F3 in its results fed to a panel, where
-//!   Space and Backspace follow the results' order; Compare files is refused there with
-//!   the reason, and Backspace leaves the list.
+//!   Space and Backspace follow the results' order; Compare files takes the focused
+//!   result as File A, and Backspace leaves the list.
 //! - F3 on a file shown in an expanded inline tree branch: Space follows the visible
 //!   file order through the branch and on to the folder's own files.
 //! - Four viewer windows at once, each keeping its own file; a fifth is refused with the
@@ -122,7 +122,7 @@ fn wait_text(app: &mut App, viewing: &Viewing, text: &str) -> Result<(), String>
 }
 
 /// F3 in the Find window on a result, then the results fed to the panel: F3 there,
-/// Space and Backspace through the results, Compare files refused, Backspace out.
+/// Space and Backspace through the results, Compare files from the list, Backspace out.
 fn find_results(app: &mut App, context: &mut Context, _: &Failures) -> Result<(), String> {
     let window = find::open_on(app, PaneId::Left)?;
     let (text, rows) = find::search(
@@ -198,21 +198,83 @@ fn find_results(app: &mut App, context: &mut Context, _: &Failures) -> Result<()
     })();
     close(app, viewing)?;
     walked?;
-    // Compare files is refused in the list, with the reason.
+    // Compare files takes the fed list's focused result (here one in a subfolder, which
+    // the folder under the list does not show) as File A, and asks for File B: the other
+    // panel has no file of that name.
+    let folder = app
+        .location(PaneId::Left)
+        .ok_or("the panel under the fed list has no folder")?;
+    let nested = folder.join("sub").join("c.txt");
+    input::key(app.slint(), Key::Home);
+    app.settle();
+    for _ in 0..order.len() {
+        if find::feed_cursor(app, PaneId::Left).as_deref() == Some("c.txt") {
+            break;
+        }
+        input::key(app.slint(), Key::DownArrow);
+        app.settle();
+    }
+    if find::feed_cursor(app, PaneId::Left).as_deref() != Some("c.txt") {
+        return Err(format!(
+            "the fed list {order:?} has no c.txt to put the cursor on"
+        ));
+    }
+    let before = support::plugins(app)?.compared.borrow().len();
     input::chord(app.slint(), &[Key::Control, Key::Shift], "c");
     app.settle();
-    let notice = app.notice();
-    match &notice {
-        Some((_, body)) if body.contains("not available in a list of search results") => {
-            input::key(app.slint(), Key::Escape);
-            app.settle();
+    let comparator = support::plugins(app)?
+        .compared
+        .borrow()
+        .get(before)
+        .and_then(|compared| compared.window.upgrade())
+        .ok_or_else(|| {
+            format!(
+                "Ctrl+Shift+C in a fed list opened no comparator; notice {:?}",
+                app.notice()
+            )
+        })?;
+    comparator
+        .window()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    let wanted = nested.to_string_lossy().into_owned();
+    let deadline = std::time::Instant::now() + STEP;
+    let form = loop {
+        app.settle();
+        support::paint_tool_windows(app);
+        if comparator.get_choosing_files() {
+            break Ok(());
         }
-        other => {
-            return Err(format!(
-                "Ctrl+Shift+C in a fed list: notice {other:?} (expected the refusal)"
+        if std::time::Instant::now() >= deadline {
+            break Err(format!(
+                "Ctrl+Shift+C in a fed list: no File A / File B form; status {:?}",
+                comparator.get_status()
             ));
         }
+        app.idle(Duration::from_millis(10));
     }
+    .and_then(|()| {
+        let (file_a, file_b) = (comparator.get_file_a(), comparator.get_file_b());
+        if file_a.as_str() == wanted && file_b.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Ctrl+Shift+C in a fed list: File A {file_a:?} and File B {file_b:?}, expected File A {wanted:?}"
+            ))
+        }
+    });
+    input::click_button(comparator.window(), "Cancel")?;
+    let deadline = std::time::Instant::now() + STEP;
+    while support::software_window(app, comparator.window()).is_some() {
+        if std::time::Instant::now() >= deadline {
+            return Err("Cancel did not close the File A / File B form".into());
+        }
+        app.idle(Duration::from_millis(10));
+    }
+    drop(comparator);
+    app.slint()
+        .dispatch_event(WindowEvent::WindowActiveChanged(true));
+    app.settle();
+    form?;
     panel::wait_input(app);
     input::key(app.slint(), Key::Backspace);
     app.until("Backspace to leave the fed list", |app| {

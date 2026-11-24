@@ -1,12 +1,14 @@
 //! Find's budgets reached through the window, each an explicit Incomplete result whose
 //! details name the limit: folder depth (128 retained folder levels: the files of the
 //! first 127 nested folders are found), content read per file (a file over 1 GiB is
-//! not read, the others are), an identical-files group larger than the 10,000-result
-//! limit (omitted whole while a later group is listed), and the 100,000 duplicate
-//! candidates. The result-count limit of an ordinary search is `tools_find_results`';
-//! the visited-entries limit is reached through archives in `find_archives`. The total
-//! content budget (16 GiB actually read) and retained memory (64 MiB) are not reached
-//! here: the window cannot lower them, and reaching them would take minutes of reads.
+//! not read, the others are) and the 100,000 duplicate candidates. Beside them, an
+//! identical-files group larger than the former 10,000-result limit is listed whole: at
+//! default limits no group can exceed the 100,000-result limit, as the candidate
+//! ceiling is reached first. The result-count limit of an ordinary search is
+//! `tools_find_results`'; the visited-entries limit is reached through archives in
+//! `find_archives`. The total content budget (16 GiB actually read) and retained memory
+//! (64 MiB) are not reached here: the window cannot lower them, and reaching them would
+//! take minutes of reads.
 use crate::{
     Context,
     app::{App, Config},
@@ -75,7 +77,7 @@ pub fn budgets(context: &mut Context) -> Result<(), String> {
     );
     find::reset(&mut app);
     findings.check(
-        "a group over the result limit",
+        "a group over the former result limit",
         big_group(&mut app, context, &root, &mut notes),
     );
     find::reset(&mut app);
@@ -182,8 +184,11 @@ fn per_file(app: &mut App, root: &Path, notes: &mut Vec<String>) -> Result<(), S
     Ok(())
 }
 
-/// 10,001 identical empty files form a group larger than the 10,000-result limit: it is
-/// omitted whole, and the later pair of identical files is still listed.
+/// 10,001 identical empty files: a group larger than the former 10,000-result limit is
+/// now listed whole beside the later pair. At default limits no group can exceed the
+/// 100,000-result limit, as the 100,000 duplicate candidates end the collection first;
+/// the engine's `an_omitted_oversized_group_does_not_stop_later_groups_that_fit` lowers
+/// the result limit to omit a group whole.
 fn big_group(
     app: &mut App,
     context: &mut Context,
@@ -192,9 +197,12 @@ fn big_group(
 ) -> Result<(), String> {
     let base = root.join("group");
     fs::create_dir_all(&base).map_err(|error| io(&base, error))?;
+    let mut empty = BTreeSet::new();
     for index in 0..10_001 {
-        let path = base.join(format!("empty-{index:05}"));
+        let name = format!("empty-{index:05}");
+        let path = base.join(&name);
         fs::write(&path, b"").map_err(|error| io(&path, error))?;
+        empty.insert(name);
     }
     for name in ["pair-a.dat", "pair-b.dat"] {
         let path = base.join(name);
@@ -215,35 +223,55 @@ fn big_group(
     app.screenshot_window(
         context,
         &window,
-        "group-over-limit",
-        "A 10,001-file group omitted, the pair listed",
+        "group-over-former-limit",
+        "A 10,001-file group listed whole beside the pair",
     );
     find::close(app, &window);
-    expect_limit("a 10,001-file group", &text, &details, "result count", &[])?;
+    if !text.starts_with("Completed") || mentions(&details, "Reached limits") {
+        return Err(format!(
+            "a 10,001-file group ended {text:?} with details {details:?}"
+        ));
+    }
     let counts = (
         find::detail_count(&details, "Identical files:", " verified groups"),
         find::detail_count(&details, "Identical files:", " candidates"),
     );
-    if counts != (Some(1), Some(10_003)) {
+    if counts != (Some(2), Some(10_003)) {
         return Err(format!(
             "a 10,001-file group: {counts:?} groups and candidates in {details:?}"
         ));
     }
-    let listed: Vec<(Option<String>, String)> = rows
+    // Each group's rows together, under one label: the empty files, then the pair.
+    let mut groups: Vec<(String, BTreeSet<String>)> = Vec::new();
+    for row in &rows {
+        let Some(label) = &row.group else {
+            return Err(format!("{} is listed outside a group", row.name));
+        };
+        match groups.last_mut() {
+            Some((last, members)) if last == label => {
+                members.insert(row.name.clone());
+            }
+            _ => groups.push((label.clone(), BTreeSet::from([row.name.clone()]))),
+        }
+    }
+    let pair = BTreeSet::from(["pair-a.dat".to_owned(), "pair-b.dat".to_owned()]);
+    let shapes: Vec<(&str, usize)> = groups
         .iter()
-        .map(|row| (row.group.clone(), row.name.clone()))
+        .map(|(label, members)| (label.as_str(), members.len()))
         .collect();
-    let group = Some("Group 1 · 2 files".to_owned());
-    if listed
-        != [
-            (group.clone(), "pair-a.dat".to_owned()),
-            (group, "pair-b.dat".to_owned()),
-        ]
-    {
-        return Err(format!("a 10,001-file group: listed {listed:?} ({text})"));
+    let listed = groups.len() == 2
+        && groups.iter().any(|(_, members)| *members == empty)
+        && groups
+            .iter()
+            .any(|(label, members)| *members == pair && label.ends_with("· 2 files"));
+    if !listed || rows.len() != 10_003 {
+        return Err(format!(
+            "a 10,001-file group: {} rows in the groups {shapes:?} ({text})",
+            rows.len()
+        ));
     }
     notes.push(format!(
-        "A group over the result limit: {text} in {:.1} s",
+        "A group over the former 10,000-result limit: {text} in {:.1} s, groups {shapes:?}",
         took.as_secs_f64()
     ));
     Ok(())

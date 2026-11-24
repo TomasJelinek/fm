@@ -482,10 +482,11 @@ fn member_actions(app: &mut App, context: &mut Context, tree: &Tree) -> Result<(
     find::wait_error(app, &window, "F3 on a member", |text| {
         text.contains("An archive member opens from its archive")
     })?;
-    // Only members found: nothing to feed.
+    // Only members found: nothing to feed. The backend's feed preparation refuses, and
+    // its details name the operation as every backend refusal does.
     tools::click_last(w, "Feed to panel")?;
     find::wait_error(app, &window, "Feed to panel with only members", |text| {
-        text == "Only archive members were found; open them with Go to file."
+        text == "Only archive members were found; open them with Go to file.\n\nOperation: feed search results"
     })?;
     if find::feed_view(app, PaneId::Left).open {
         return Err("only members were fed to the panel".into());

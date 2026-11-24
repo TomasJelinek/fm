@@ -1014,11 +1014,11 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
     }
     tools::close_tool(&mut app, &window, "the Find window");
 
-    // The result limit: 10,050 empty files give 10,000 results and an incomplete run.
+    // The result limit: 100,050 empty files give 100,000 results and an incomplete run.
     let limit = context.work.join("limit");
     fs::create_dir_all(&limit).map_err(|error| error.to_string())?;
-    for index in 0..10_050 {
-        let path = limit.join(format!("f-{index:05}.txt"));
+    for index in 0..100_050 {
+        let path = limit.join(format!("f-{index:06}.txt"));
         fs::write(&path, b"").map_err(|error| format!("{}: {error}", path.display()))?;
     }
     // Cancelling: a copy of many/ plus a large sparse text file keeps a content
@@ -1034,15 +1034,15 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
     fill(&mut app, &window, BASE)?;
     let text = run(&mut app, &window)?;
     if !text.starts_with("Incomplete · click for details")
-        || tools::count_before(&text, " found") != Some(10_000)
-        || result_count(&window) != 10_000
+        || tools::count_before(&text, " found") != Some(100_000)
+        || result_count(&window) != 100_000
     {
         return Err(format!(
-            "10,050 files gave {text:?} with {} rows",
+            "100,050 files gave {text:?} with {} rows",
             result_count(&window)
         ));
     }
-    app.screenshot_window(context, &window, "limit", "The 10,000 result limit");
+    app.screenshot_window(context, &window, "limit", "The 100,000 result limit");
     let line = tools::control(w, AccessibleRole::Button, &text)?;
     input::click_at(w, inspect::center(&line));
     app.settle();
@@ -1100,7 +1100,7 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
     app.shutdown()?;
     let fed = feed_to_panel(context)?;
     context.note(format!(
-        "many/: {} results listed and sorted; 10,050 files: 10,000 results, Incomplete; Stop: {running:?} → {stopped:?}; {fed}",
+        "many/: {} results listed and sorted; 100,050 files: 100,000 results, Incomplete; Stop: {running:?} → {stopped:?}; {fed}",
         disk.len()
     ));
     Ok(())

@@ -6,9 +6,13 @@
 //! Ctrl+Backspace and Ctrl+G leave the list (the folder underneath unchanged), Tab keeps
 //! it; F3, Alt+F3 and F4 act on the focused file and explain a folder; F5 copies, F6
 //! moves (the list keeps the old row), F8 only asks, Shift+F8 deletes a marked folder
-//! with the result inside it; Alt+Enter summarizes the marks; every action the list
-//! refuses (keys, keypad, toolbar, function bar and main menu) explains itself and
-//! leaves the folder underneath untouched; a Find from the right panel feeds that one.
+//! with the result inside it; Alt+Enter summarizes the marks; the actions that need one
+//! folder (create folder or file, paste, Compare directories) are refused by key,
+//! toolbar, function bar and main menu, explained, with the folder underneath untouched;
+//! the other actions act on the list's rows: F2, Attributes and name case, Checksums,
+//! Make File List, Ctrl+Enter, folder sizes, the sort keys, Select and Deselect by mask,
+//! the panel filter, Show hidden files, Compare files and a custom command; a Find from
+//! the right panel feeds that one.
 //! The Find window's selection arrives as the list's marks (Ctrl+C and Ctrl+X put them on
 //! the clipboard, F5's dialog reads "Copy 3 files (11 B) to:"), and the list's cursor starts on
 //! the Find's cursor result, on its first row when the Find window had none.
@@ -29,8 +33,9 @@ use i_slint_core::items::AccessibleRole;
 use midnight_core::{
     EditorPreferences, PaneId, UserCommand, UserCommandId, UserCommandInvocation, UserCommandLaunch,
 };
+use midnight_ui::{FileListPresentation, PanelChoices};
 use slint::{
-    LogicalPosition,
+    ComponentHandle, LogicalPosition,
     platform::{Key, WindowAdapter},
 };
 use std::{
@@ -190,6 +195,16 @@ fn key(app: &mut App, modifiers: &[Key], text: impl Into<slint::SharedString>) {
     app.settle();
 }
 
+/// The status's first line: the focused result's name and facts.
+fn focused_line(status: &str) -> &str {
+    status.lines().next().unwrap_or_default()
+}
+
+/// The status's last line: the selection's counts and the list's keys.
+fn counts_line(status: &str) -> &str {
+    status.lines().last().unwrap_or_default()
+}
+
 /// Mark exactly `wanted` with Home, Insert and Down.
 fn set_marks(app: &mut App, wanted: &[&str]) -> Result<(), String> {
     key(app, &[], Key::Home);
@@ -286,6 +301,8 @@ pub fn feed_panel(context: &mut Context) -> Result<(), String> {
     findings.check("putting the panel back", between(&mut app, &setup.root));
     findings.check("refusals", refusals(&mut app, context, &setup));
     findings.check("putting the panel back", between(&mut app, &setup.root));
+    findings.check("actions on the results", actions(&mut app, context, &setup));
+    findings.check("putting the panel back", between(&mut app, &setup.root));
     findings.check(
         "view, edit and properties",
         view_edit(&mut app, &setup, &launched),
@@ -300,7 +317,7 @@ pub fn feed_panel(context: &mut Context) -> Result<(), String> {
     findings.check("the right panel", right_panel(&mut app, &setup));
     findings.check("putting the panel back", between(&mut app, &setup.root));
     app.shutdown()?;
-    context.note("Feed to panel: order, title and status; keys, marks, bulk keys, keypad *, Ctrl/Shift+click, Alt+Up/Down; Enter, double click; Backspace, Back to folder, Alt+Left, Ctrl+Backspace, Ctrl+G, Tab; F3, Alt+F3, F4, Alt+Enter; F5, F6, F8 asked, Shift+F8; refusals by key, keypad, toolbar, function bar and menu; the right panel");
+    context.note("Feed to panel: order, title and status; keys, marks, bulk keys, keypad *, Ctrl/Shift+click, Alt+Up/Down; Enter, double click; Backspace, Back to folder, Alt+Left, Ctrl+Backspace, Ctrl+G, Tab; F3, Alt+F3, F4, Alt+Enter; F5, F6, F8 asked, Shift+F8; the folder-only actions refused by key, toolbar, function bar and menu; F2, Ctrl+F2, Ctrl+F7, Ctrl+F8, Ctrl+M, Ctrl+Enter, Ctrl+Shift+S, Ctrl+F3, Ctrl+F6, masks by Ctrl+=, Ctrl+−, Num + and Num −, Ctrl+F12, Ctrl+H, Ctrl+Shift+C, toolbar and F10 entries and a custom command on the results; the right panel");
     findings.into_result()
 }
 
@@ -318,8 +335,12 @@ fn list(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), Strin
     }
     let view = feed_view(app, LEFT);
     let title = format!("Search results (6) · {}", setup.root.display());
+    // The focused result's facts on the first line, the counts on the second.
     let status = "0 of 6 selected · Enter: go to file · Backspace: back to folder";
-    if view.title.as_str() != title || view.status.as_str() != status {
+    if view.title.as_str() != title
+        || !focused_line(&view.status).starts_with("sub · <DIR> · ")
+        || counts_line(&view.status) != status
+    {
         return Err(format!(
             "the list is titled {:?} with status {:?}",
             view.title, view.status
@@ -407,15 +428,18 @@ fn marks(app: &mut App) -> Result<(), String> {
     ensure_fed(app)?;
     let mut problems: Vec<String> = Vec::new();
     let files = ["g.txt", "f.txt", "d.txt", "b.txt", "a.txt"];
-    // Insert marks and moves; Space marks in place; the status counts and sums.
+    // Insert marks and moves; Space (which also measures a folder) marks and moves; the
+    // status counts and sums under the focused file's line.
     key(app, &[], Key::Home);
     key(app, &[], Key::Insert);
     key(app, &[], " ");
     let status = feed_view(app, LEFT).status.to_string();
+    let counts = counts_line(&status);
     if feed_marked(app, LEFT) != find::set(&["sub", "g.txt"])
-        || feed_cursor(app, LEFT).as_deref() != Some("g.txt")
-        || !status.starts_with("2 of 6 selected · ")
-        || status.starts_with("2 of 6 selected · Enter")
+        || feed_cursor(app, LEFT).as_deref() != Some("f.txt")
+        || !focused_line(&status).starts_with("f.txt · ")
+        || !counts.starts_with("2 of 6 selected · ")
+        || counts.starts_with("2 of 6 selected · Enter")
     {
         return Err(format!(
             "Insert then Space: marks {:?}, cursor {:?}, status {status:?}",
@@ -588,76 +612,30 @@ fn expect_refusal(app: &mut App, problems: &mut Vec<String>, how: &str, label: &
     }
 }
 
-/// Every refused action names itself in a notice and changes nothing.
+/// What the list still refuses (FIND.md): the actions that need one folder to act in.
+/// Each names itself in a notice and changes nothing.
 fn refusals(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), String> {
     ensure_fed(app)?;
     let before = files::tree_facts(&setup.root)?;
-    let sorting = "Sorting (sort the results in the Find window before feeding them)";
-    let attributes = "Attributes, times and case";
     let mut problems = Vec::new();
     let mut disabled = Vec::new();
-    let chords: [(&[Key], slint::SharedString, &str, &str); 18] = [
-        (&[], Key::F2.into(), "F2", "Rename"),
+    let chords: [(&[Key], slint::SharedString, &str, &str); 4] = [
         (&[], Key::F7.into(), "F7", "Create folder"),
         (&[Key::Shift], Key::F4.into(), "Shift+F4", "New file"),
         (&[Key::Control], "v".into(), "Ctrl+V", "Paste"),
-        (&[Key::Control], Key::F3.into(), "Ctrl+F3", sorting),
-        (&[Key::Control], Key::F6.into(), "Ctrl+F6", sorting),
-        (
-            &[Key::Control, Key::Shift],
-            "s".into(),
-            "Ctrl+Shift+S",
-            "Folder sizes",
-        ),
-        (&[Key::Control], Key::F2.into(), "Ctrl+F2", attributes),
-        (&[Key::Control], Key::F7.into(), "Ctrl+F7", attributes),
-        (
-            &[Key::Control, Key::Shift],
-            "c".into(),
-            "Ctrl+Shift+C",
-            "Compare files",
-        ),
-        (&[Key::Control], Key::F8.into(), "Ctrl+F8", "Checksums"),
-        (&[Key::Control], "m".into(), "Ctrl+M", "Make file list"),
         (
             &[Key::Control],
             Key::F10.into(),
             "Ctrl+F10",
             "Compare directories",
         ),
-        (
-            &[Key::Control],
-            Key::F12.into(),
-            "Ctrl+F12",
-            "The panel filter",
-        ),
-        (&[Key::Control], "h".into(), "Ctrl+H", "Show hidden files"),
-        (&[Key::Control], "=".into(), "Ctrl+=", "Select by mask"),
-        (&[Key::Control], "-".into(), "Ctrl+−", "Deselect by mask"),
-        (
-            &[Key::Control],
-            Key::Return.into(),
-            "Ctrl+Enter",
-            "Inserting the focused name",
-        ),
     ];
     for (modifiers, text, how, label) in chords {
         key(app, modifiers, text);
         expect_refusal(app, &mut problems, how, label);
     }
-    for (name, label) in [
-        ("NumpadAdd", "Select by mask"),
-        ("NumpadSubtract", "Deselect by mask"),
-    ] {
-        find::keypad(app, name);
-        expect_refusal(app, &mut problems, name, label);
-    }
     // The toolbar, the function bar and the main menu refuse the same way.
-    for (prefix, label) in [
-        ("New empty file", "New file"),
-        ("Attributes, times and case", attributes),
-        ("F7", "Create folder"),
-    ] {
+    for (prefix, label) in [("New empty file", "New file"), ("F7", "Create folder")] {
         let buttons = find::main_buttons(app, prefix);
         match buttons.first() {
             // A disabled button refuses too: it cannot act on the folder under the list.
@@ -672,33 +650,9 @@ fn refusals(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), S
             None => problems.push(format!("no button {prefix:?}")),
         }
     }
-    // A custom command from the toolbar: refused, and it does not run.
-    match find::main_buttons(app, COMMAND).first() {
-        Some((_, button)) => {
-            input::click_at(app.slint(), crate::inspect::center(button));
-            app.settle();
-            expect_refusal(
-                app,
-                &mut problems,
-                "the custom command's button",
-                "A custom command",
-            );
-            app.idle(Duration::from_millis(300));
-            if setup.edited.join("custom-command-ran").exists() {
-                problems.push("the refused custom command ran".into());
-            }
-        }
-        None => problems.push(format!("no toolbar button {COMMAND:?}")),
-    }
-    for (category, item, label) in [
-        ("Files", "Create folder…", "Create folder"),
-        ("Panels and navigation", "Sort by name", sorting),
-        ("Tools", "Checksums…", "Checksums"),
-    ] {
-        match find::menu(app, category, item) {
-            Ok(()) => expect_refusal(app, &mut problems, &format!("F10 {item}"), label),
-            Err(error) => problems.push(format!("F10 {item}: {error}")),
-        }
+    match find::menu(app, "Files", "Create folder…") {
+        Ok(()) => expect_refusal(app, &mut problems, "F10 Create folder…", "Create folder"),
+        Err(error) => problems.push(format!("F10 Create folder…: {error}")),
     }
     app.screenshot(context, "refused", "The list explains an action it refuses");
     if !disabled.is_empty() {
@@ -708,6 +662,397 @@ fn refusals(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), S
     }
     if files::tree_facts(&setup.root)? != before {
         problems.push("a refused action changed the folder under the list".into());
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("\n"))
+    }
+}
+
+/// Put the list's cursor on `name` with Home and Down.
+fn focus_row(app: &mut App, name: &str) -> Result<(), String> {
+    key(app, &[], Key::Home);
+    for _ in 0..ORDER.len() {
+        if feed_cursor(app, LEFT).as_deref() == Some(name) {
+            return Ok(());
+        }
+        key(app, &[], Key::DownArrow);
+    }
+    Err(format!(
+        "no row {name} in the list {:?}",
+        feed_names(app, LEFT)
+    ))
+}
+
+/// After `how`, wait for `effect` (the action's own result, which shows that it acted
+/// on the list's rows, not on the folder under the list): no refusal, the list stays.
+fn expect_action(
+    app: &mut App,
+    problems: &mut Vec<String>,
+    how: &str,
+    effect: impl Fn(&App) -> Result<(), String>,
+) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let result = loop {
+        app.settle();
+        let result = effect(app);
+        if result.is_ok() || Instant::now() >= deadline {
+            break result;
+        }
+        app.idle(Duration::from_millis(20));
+    };
+    if let Some((title, body)) = tools::shown_notice(app)
+        && title == REFUSED
+    {
+        problems.push(format!("{how} was refused: {body:?}"));
+    }
+    if let Err(error) = result {
+        problems.push(format!("{how}: {error}"));
+    }
+    if !feed_view(app, LEFT).open {
+        problems.push(format!("{how} closed the list"));
+    }
+}
+
+/// Close what an action opened (dialogs, tool windows, notices, Make File List, the panel
+/// filter, the mask dialog) and give the list the keyboard back.
+fn close_action(app: &mut App) {
+    for _ in 0..4 {
+        find::dismiss_notice(app);
+        files::dismiss_all(app);
+        let list = app.window.global::<FileListPresentation>().get_active();
+        let filter = app.window.get_panel_filter_view().open;
+        let mask = !app
+            .window
+            .global::<PanelChoices>()
+            .get_mask_token()
+            .is_empty();
+        if !list && !filter && !mask {
+            break;
+        }
+        input::key(app.slint(), Key::Escape);
+        app.idle(Duration::from_millis(150));
+    }
+    panel::wait_input(app);
+    if feed_view(app, LEFT).open && app.window.get_feed_focused_pane() != LEFT.index() as i32 {
+        let _ = panel::focus_list(app, LEFT);
+    }
+}
+
+/// The actions FIND.md lists for a fed list act on its rows: the focused result
+/// (`src/sub/g.txt`, which the folder under the list does not show) or its marks. Each
+/// is reached by its key, some also by the toolbar and the main menu, and is cancelled.
+fn actions(app: &mut App, context: &mut Context, setup: &Setup) -> Result<(), String> {
+    ensure_fed(app)?;
+    let before = files::tree_facts(&setup.root)?;
+    let nested = setup.root.join("src").join("sub").join("g.txt");
+    let mut problems = Vec::new();
+
+    // F2 renames the focused result.
+    focus_row(app, "g.txt")?;
+    key(app, &[], Key::F2);
+    expect_action(app, &mut problems, "F2", |app| {
+        let (kind, name) = (
+            app.window.get_operation_kind(),
+            app.window.get_operation_name(),
+        );
+        if !app.window.get_operation_token().is_empty() && kind == 0 && name == "g.txt" {
+            Ok(())
+        } else {
+            Err(format!("the operation dialog is kind {kind} for {name:?}"))
+        }
+    });
+    close_action(app);
+
+    // Attributes, times and case (Ctrl+F2, the toolbar button) and the name case
+    // (Ctrl+F7) capture the focused result.
+    let metadata = |start_case: bool| {
+        move |app: &App| {
+            let summary = app.window.get_metadata_summary().to_string();
+            let open = !app.window.get_metadata_token().is_empty();
+            if open
+                && app.window.get_metadata_start_case() == start_case
+                && summary.contains("g.txt")
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the Attributes dialog: open {open}, name case {}, summary {summary:?}",
+                    app.window.get_metadata_start_case()
+                ))
+            }
+        }
+    };
+    for (text, how, start_case) in [(Key::F2, "Ctrl+F2", false), (Key::F7, "Ctrl+F7", true)] {
+        focus_row(app, "g.txt")?;
+        key(app, &[Key::Control], text);
+        expect_action(app, &mut problems, how, metadata(start_case));
+        close_action(app);
+    }
+    focus_row(app, "g.txt")?;
+    match find::main_buttons(app, "Attributes, times and case").first() {
+        Some((_, button)) => {
+            input::click_at(app.slint(), crate::inspect::center(button));
+            app.settle();
+            expect_action(
+                app,
+                &mut problems,
+                "the button \"Attributes, times and case\"",
+                metadata(false),
+            );
+            close_action(app);
+        }
+        None => problems.push("no button \"Attributes, times and case\"".into()),
+    }
+
+    // Checksums (Ctrl+F8, F10 Checksums…) of the focused result: Calculate lists it, and
+    // only it.
+    let checksums = |app: &App| {
+        tools::tool_titled(app, "Checksums · Midnight Explorer")
+            .map(|_| ())
+            .ok_or_else(|| format!("tool windows {:?}", tools::tool_titles(app)))
+    };
+    let calculated = |app: &mut App, problems: &mut Vec<String>, how: &str| {
+        let Some(window) = tools::tool_titled(app, "Checksums · Midnight Explorer") else {
+            return;
+        };
+        // A tool window the harness has not sized shows no buttons yet.
+        crate::app::layout_tool(&window, 900, 640);
+        app.settle();
+        if let Err(error) = tools::click_last(window.window(), "Calculate") {
+            problems.push(format!("{how}: {error}"));
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            app.settle();
+            let rows = crate::inspect::labels(window.window(), AccessibleRole::ListItem);
+            let done = rows
+                .iter()
+                .filter(|row| row.contains(" · Calculated"))
+                .count();
+            if done > 0 {
+                if rows.len() != 1 || !rows[0].starts_with("g.txt · ") {
+                    problems.push(format!("{how}: Calculate listed {rows:?}"));
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                problems.push(format!("{how}: Calculate listed {rows:?}"));
+                break;
+            }
+            app.idle(Duration::from_millis(20));
+        }
+    };
+    focus_row(app, "g.txt")?;
+    key(app, &[Key::Control], Key::F8);
+    expect_action(app, &mut problems, "Ctrl+F8", checksums);
+    calculated(app, &mut problems, "Ctrl+F8");
+    close_action(app);
+    focus_row(app, "g.txt")?;
+    match find::menu(app, "Tools", "Checksums…") {
+        Ok(()) => {
+            expect_action(app, &mut problems, "F10 Checksums…", checksums);
+            calculated(app, &mut problems, "F10 Checksums…");
+        }
+        Err(error) => problems.push(format!("F10 Checksums…: {error}")),
+    }
+    close_action(app);
+
+    // Make File List (Ctrl+M) of the focused result: its preview names it.
+    focus_row(app, "g.txt")?;
+    key(app, &[Key::Control], "m");
+    expect_action(app, &mut problems, "Ctrl+M", |app| {
+        let list = app.window.global::<FileListPresentation>();
+        let preview = list.get_preview_text().to_string();
+        if list.get_active() && preview.contains("g.txt") {
+            Ok(())
+        } else {
+            Err(format!(
+                "Make File List: open {}, preview {preview:?}",
+                list.get_active()
+            ))
+        }
+    });
+    close_action(app);
+
+    // Ctrl+Enter inserts the focused result's full path into the command line.
+    focus_row(app, "g.txt")?;
+    key(app, &[Key::Control], Key::Return);
+    let wanted = nested.display().to_string();
+    expect_action(app, &mut problems, "Ctrl+Enter", |app| {
+        let text = app.window.get_command_text().to_string();
+        if text.contains(&wanted) {
+            Ok(())
+        } else {
+            Err(format!("the command line holds {text:?}"))
+        }
+    });
+    app.window.set_command_text("".into());
+    close_action(app);
+
+    // Folder sizes (Ctrl+Shift+S) measure the focused folder result.
+    focus_row(app, "sub")?;
+    key(app, &[Key::Control, Key::Shift], "s");
+    expect_action(app, &mut problems, "Ctrl+Shift+S", |app| {
+        let size = feed_rows(app, LEFT)
+            .iter()
+            .find(|row| row.name == "sub")
+            .map(|row| row.size.to_string())
+            .unwrap_or_default();
+        if size.chars().any(|c| c.is_ascii_digit()) {
+            Ok(())
+        } else {
+            Err(format!("the folder result sub shows the size {size:?}"))
+        }
+    });
+    close_action(app);
+
+    // Sorting: Ctrl+F6 by size, again descending; F10 Sort by name ascending; Ctrl+F3
+    // again descending, as the list came.
+    let by_size = ["g.txt", "f.txt", "d.txt", "b.txt", "a.txt"];
+    key(app, &[Key::Control], Key::F6);
+    key(app, &[Key::Control], Key::F6);
+    expect_action(app, &mut problems, "Ctrl+F6 twice", |app| {
+        let names = feed_names(app, LEFT);
+        let files: Vec<&str> = names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| *name != "sub")
+            .collect();
+        if files == by_size {
+            Ok(())
+        } else {
+            Err(format!("the list shows {names:?}"))
+        }
+    });
+    match find::menu(app, "Panels and navigation", "Sort by name") {
+        Ok(()) => expect_action(app, &mut problems, "F10 Sort by name", |app| {
+            if feed_names(app, LEFT) == ASCENDING {
+                Ok(())
+            } else {
+                Err(format!("the list shows {:?}", feed_names(app, LEFT)))
+            }
+        }),
+        Err(error) => problems.push(format!("F10 Sort by name: {error}")),
+    }
+    close_action(app);
+    key(app, &[Key::Control], Key::F3);
+    expect_action(app, &mut problems, "Ctrl+F3", |app| {
+        if feed_names(app, LEFT) == ORDER {
+            Ok(())
+        } else {
+            Err(format!("the list shows {:?}", feed_names(app, LEFT)))
+        }
+    });
+
+    // Select by mask (Ctrl+=) and Deselect by mask (Ctrl+−) mark the list's rows; the
+    // keypad's + and − open the same dialogs.
+    key(app, &[Key::Control], "d");
+    key(app, &[Key::Control], "=");
+    match super::files_selection::apply_mask(app, "d.txt", false) {
+        Ok(()) => expect_action(app, &mut problems, "Ctrl+= with d.txt", |app| {
+            let marked = feed_marked(app, LEFT);
+            if marked == find::set(&["d.txt"]) {
+                Ok(())
+            } else {
+                Err(format!("the list marks {marked:?}"))
+            }
+        }),
+        Err(error) => problems.push(format!("Ctrl+=: {error}")),
+    }
+    key(app, &[Key::Control], "-");
+    match super::files_selection::apply_mask(app, "*", false) {
+        Ok(()) => expect_action(app, &mut problems, "Ctrl+− with *", |app| {
+            let marked = feed_marked(app, LEFT);
+            if marked.is_empty() {
+                Ok(())
+            } else {
+                Err(format!("the list still marks {marked:?}"))
+            }
+        }),
+        Err(error) => problems.push(format!("Ctrl+−: {error}")),
+    }
+    for (name, select) in [("NumpadAdd", true), ("NumpadSubtract", false)] {
+        find::keypad(app, name);
+        expect_action(app, &mut problems, name, |app| {
+            let choices = app.window.global::<PanelChoices>();
+            let open = !choices.get_mask_token().is_empty();
+            if open && choices.get_mask_select() == select {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the mask dialog: open {open}, select {}",
+                    choices.get_mask_select()
+                ))
+            }
+        });
+        close_action(app);
+    }
+
+    // The panel filter (Ctrl+F12) opens for the list.
+    key(app, &[Key::Control], Key::F12);
+    expect_action(app, &mut problems, "Ctrl+F12", |app| {
+        if app.window.get_panel_filter_view().open {
+            Ok(())
+        } else {
+            Err("the panel filter did not open".into())
+        }
+    });
+    close_action(app);
+
+    // Show hidden files (Ctrl+H) changes the list's own view, which the panel choices
+    // show while the list is active (the panels' saved choice would not show there);
+    // pressed twice, the list is as it was.
+    let hidden = app.window.global::<PanelChoices>().get_show_hidden_files();
+    for (press, wanted) in [("Ctrl+H", !hidden), ("Ctrl+H again", hidden)] {
+        key(app, &[Key::Control], "h");
+        expect_action(app, &mut problems, press, |app| {
+            let now = app.window.global::<PanelChoices>().get_show_hidden_files();
+            if now != wanted {
+                Err(format!("the list's Show hidden files is {now}"))
+            } else if feed_names(app, LEFT) != ORDER {
+                Err(format!("the list shows {:?}", feed_names(app, LEFT)))
+            } else {
+                Ok(())
+            }
+        });
+    }
+
+    // Compare files (Ctrl+Shift+C) is not refused; the comparator itself exists only in
+    // staged processes, where viewers_combinations opens it from a fed list.
+    key(app, &[Key::Control, Key::Shift], "c");
+    app.idle(Duration::from_millis(300));
+    expect_action(app, &mut problems, "Ctrl+Shift+C", |_| Ok(()));
+    close_action(app);
+
+    // A custom command from the toolbar runs with the list's paths.
+    let marker = setup.edited.join("custom-command-ran");
+    focus_row(app, "g.txt")?;
+    match find::main_buttons(app, COMMAND).first() {
+        Some((_, button)) => {
+            input::click_at(app.slint(), crate::inspect::center(button));
+            app.settle();
+            expect_action(app, &mut problems, "the custom command's button", |_| {
+                if marker.exists() {
+                    Ok(())
+                } else {
+                    Err("the custom command did not run".into())
+                }
+            });
+            close_action(app);
+            let _ = fs::remove_file(&marker);
+        }
+        None => problems.push(format!("no toolbar button {COMMAND:?}")),
+    }
+    app.screenshot(
+        context,
+        "actions",
+        "The list after its actions, each cancelled",
+    );
+    if files::tree_facts(&setup.root)? != before {
+        problems.push("a cancelled action changed the searched folders".into());
     }
     if problems.is_empty() {
         Ok(())
@@ -1080,7 +1425,8 @@ fn selection_carried(app: &mut App, context: &mut Context, setup: &Setup) -> Res
     if feed_names(app, LEFT) != ASCENDING
         || marked != find::set(&["b.txt", "d.txt", "f.txt"])
         || cursor.as_deref() != Some("f.txt")
-        || !view.status.starts_with("3 of 6 selected · ")
+        || !focused_line(&view.status).starts_with("f.txt · ")
+        || !counts_line(&view.status).starts_with("3 of 6 selected · 11 B · ")
     {
         return Err(format!(
             "fed with three results selected: rows {:?}, marks {marked:?}, cursor {cursor:?}, status {:?}",

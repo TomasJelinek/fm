@@ -383,7 +383,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "tools_find_results",
                 area: "find",
-                summary: "Large result sets (many/, the 10,000 limit), sorting, every column resized, Go to file, Stop on a running content search.",
+                summary: "Large result sets (many/, the 100,000 limit), sorting, every column resized, Go to file, Stop on a running content search.",
                 run: tools_find::find_results,
                 timeout: minutes(15),
             },
@@ -411,14 +411,14 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "find_feed_panel",
                 area: "find",
-                summary: "Feed to panel: order, title, status, keys, marks and bulk keys, clicks, Enter and double click, every way to leave, F3/Alt+F3/F4, Alt+Enter, F5/F6/F8/Shift+F8, refusals by key, keypad, toolbar, function bar and menu; the right panel.",
+                summary: "Feed to panel: order, title, status, keys, marks and bulk keys, clicks, Enter and double click, every way to leave, F3/Alt+F3/F4, Alt+Enter, F5/F6/F8/Shift+F8, refusals of the folder-only actions by key, toolbar, function bar and menu, every other action on the results (F2, attributes, checksums, file list, sizes, sorting, masks, filter, hidden, custom command); the right panel.",
                 run: find_feed::feed_panel,
                 timeout: minutes(10),
             },
             Scenario {
                 name: "find_budgets",
                 area: "find",
-                summary: "Budgets reached and named: 128 folder levels, a file over 1 GiB not read, an identical group over the result limit omitted whole, 100,000 duplicate candidates.",
+                summary: "Budgets reached and named: 128 folder levels, a file over 1 GiB not read, 100,000 duplicate candidates; a 10,001-file identical group (over the former limit) listed whole.",
                 run: find_budgets::budgets,
                 timeout: minutes(15),
             },
@@ -565,7 +565,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "viewers_combinations",
                 area: "viewers",
-                summary: "F3 from Find results and a fed list (Space through the results, Compare refused), F3 in an inline tree branch (Space in visible order), four viewer windows (a fifth refused), a previewed theme recolouring an open viewer, a viewer at twice the scale.",
+                summary: "F3 from Find results and a fed list (Space through the results, Compare files with the focused result), F3 in an inline tree branch (Space in visible order), four viewer windows (a fifth refused), a previewed theme recolouring an open viewer, a viewer at twice the scale.",
                 run: viewers_combos::combinations,
                 timeout: viewers_combos::TIMEOUT,
             },
