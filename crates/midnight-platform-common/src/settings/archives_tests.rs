@@ -3,6 +3,7 @@ use super::*;
 fn preferences() -> UserPreferences {
     let root = std::env::current_dir().unwrap();
     let address = midnight_core::ArchiveAddress {
+        nested: Vec::new(),
         format: None,
         provider: "midnight.fs.archive".into(),
         container: root.join("日本語.zip"),

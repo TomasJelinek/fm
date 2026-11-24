@@ -101,6 +101,7 @@ fn request(
         location: midnight_core::ArchiveLocation {
             mount: Some(mount),
             address: midnight_core::ArchiveAddress {
+                nested: Vec::new(),
                 format: None,
                 provider: "fixture".into(),
                 container: destination.join("source.zip"),

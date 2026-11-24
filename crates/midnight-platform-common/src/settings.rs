@@ -62,7 +62,7 @@ mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 41;
+const CURRENT_PREFERENCES_VERSION: u32 = 42;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -397,14 +397,50 @@ struct StoredArchiveAddress {
     container: NativePath,
     source_version: Vec<u8>,
     components: Vec<Vec<u8>>,
+    /// Address version 3 (schema 42): archives inside the archive, the outermost first.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    nested: Option<Vec<StoredNestedArchive>>,
 }
+
+/// An archive opened from a member of the enclosing archive's folder: the member's raw
+/// name, its decoder and the folders inside it. Display text is never stored.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredNestedArchive {
+    member: Vec<u8>,
+    format: String,
+    components: Vec<Vec<u8>>,
+}
+
 impl StoredArchiveAddress {
+    /// Whether this address names archives inside the archive (schema 42).
+    fn nested(&self) -> bool {
+        self.nested.is_some()
+    }
     fn into_address(self) -> io::Result<midnight_core::ArchiveAddress> {
-        let format = match (self.version, self.format) {
-            (1, None) => None,
-            (2, Some(id)) => Some(
-                midnight_core::ArchiveFormat::from_id(&id)
-                    .ok_or_else(|| invalid("unknown archive address decoder"))?,
+        let decoder = |id: &str| {
+            midnight_core::ArchiveFormat::from_id(id)
+                .ok_or_else(|| invalid("unknown archive address decoder"))
+        };
+        let (format, nested) = match (self.version, self.format, self.nested) {
+            (1, None, None) => (None, Vec::new()),
+            (2, Some(id), None) => (Some(decoder(&id)?), Vec::new()),
+            (3, Some(id), Some(nested)) if !nested.is_empty() => (
+                Some(decoder(&id)?),
+                nested
+                    .into_iter()
+                    .map(|level| {
+                        Ok(midnight_core::NestedArchiveAddress {
+                            member: level.member,
+                            format: decoder(&level.format)?,
+                            components: level.components,
+                        })
+                    })
+                    .collect::<io::Result<_>>()?,
             ),
             _ => return Err(invalid("unsupported archive address version or decoder")),
         };
@@ -414,18 +450,36 @@ impl StoredArchiveAddress {
             container: self.container.into_path()?,
             source_version: self.source_version,
             components: self.components,
+            nested,
         };
         address.validate().map_err(invalid)?;
         Ok(address)
     }
     fn from_address(address: midnight_core::ArchiveAddress) -> Self {
+        // A legacy address without a decoder never names archives inside it.
+        let nested = (!address.nested.is_empty() && address.format.is_some()).then(|| {
+            address
+                .nested
+                .into_iter()
+                .map(|level| StoredNestedArchive {
+                    member: level.member,
+                    format: level.format.id().to_owned(),
+                    components: level.components,
+                })
+                .collect()
+        });
         Self {
-            version: if address.format.is_some() { 2 } else { 1 },
+            version: match (&nested, address.format) {
+                (Some(_), _) => 3,
+                (None, Some(_)) => 2,
+                (None, None) => 1,
+            },
             provider: address.provider,
             format: address.format.map(|format| format.id().to_owned()),
             container: NativePath::from_path(address.container),
             source_version: address.source_version,
             components: address.components,
+            nested,
         }
     }
 }
@@ -609,6 +663,29 @@ fn decode_preferences_impl(
         return Err(invalid(
             "explicit archive decoders require preferences version 20",
         ));
+    }
+    // Schema 42 is written only for a saved location inside archives inside an archive.
+    let nested_addresses = stored
+        .tabs
+        .iter()
+        .flatten()
+        .flat_map(|tabs| tabs.archives.values())
+        .chain(
+            stored
+                .bookmarks
+                .iter()
+                .flatten()
+                .filter_map(|bookmark| bookmark.archive.as_ref()),
+        )
+        .any(StoredArchiveAddress::nested);
+    match (stored.version, nested_addresses) {
+        (42, false) => return Err(invalid("missing schema 42 preferences")),
+        (1..=41, true) => {
+            return Err(invalid(
+                "archives inside archives in saved locations require preferences version 42",
+            ));
+        }
+        _ => {}
     }
     if stored.version < 11
         && stored
@@ -1109,7 +1186,23 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
     // Schema 40: update choices (off-by-default values only).
     let update_choices = preferences.updates != midnight_core::UpdatePreferences::default();
     let find_choices = preferences.find != midnight_core::FindPreferences::default();
-    // Schemas 35 to 41 keep every field that versions 33 and 34 require.
+    // Schema 42: a saved tab or Hot Path inside archives inside an archive.
+    let nested_archive_choices = preferences
+        .tabs
+        .iter()
+        .flat_map(|tabs| tabs.archives.values())
+        .chain(
+            preferences
+                .bookmarks
+                .iter()
+                .filter_map(|bookmark| bookmark.archive.as_ref()),
+        )
+        .any(|address| !address.nested.is_empty() && address.format.is_some())
+        || foreign_bookmarks
+            .iter()
+            .filter_map(|bookmark| bookmark.archive.as_ref())
+            .any(StoredArchiveAddress::nested);
+    // Schemas 35 to 42 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
@@ -1119,7 +1212,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || speed_choices
         || output_choices
         || update_choices
-        || find_choices;
+        || find_choices
+        || nested_archive_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1258,7 +1352,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if find_choices {
+        version: if nested_archive_choices {
+            42
+        } else if find_choices {
             41
         } else if update_choices {
             40

@@ -85,6 +85,7 @@ fn enter_share(p: &mut Presenter, mount: Arc<LockedMount>, entries: Vec<Entry>) 
     let location = ArchiveLocation {
         mount: Some(mount),
         address: ArchiveAddress {
+            nested: Vec::new(),
             format: Some(ArchiveFormat::Zip),
             provider: "midnight.archive".into(),
             container: test_root().join("share.zip"),

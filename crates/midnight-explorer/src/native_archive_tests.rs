@@ -169,6 +169,7 @@ async fn missing_native_plugin_rejects_new_and_restored_archive_open() {
             format: ArchiveFormat::Gzip,
         },
         ArchiveAction::List(ArchiveLocation::unavailable(ArchiveAddress {
+            nested: Vec::new(),
             provider: "midnight.fs.archive".into(),
             format: Some(ArchiveFormat::Gzip),
             container: path,

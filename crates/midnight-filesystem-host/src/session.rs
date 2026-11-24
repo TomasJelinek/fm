@@ -507,6 +507,7 @@ impl Mount {
 
     pub fn address(&self) -> midnight_core::ArchiveAddress {
         midnight_core::ArchiveAddress {
+            nested: Vec::new(),
             provider: self.provider.clone(),
             format: Some(match self.format {
                 Format::Zip => midnight_core::ArchiveFormat::Zip,

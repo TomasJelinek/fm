@@ -332,6 +332,7 @@ fn member_of(depth: u64, mount: Option<u64>) -> ArchiveParent {
         let location = midnight_core::ArchiveLocation {
             mount: Some(Arc::new(Named(level, parent.take()))),
             address: midnight_core::ArchiveAddress {
+                nested: Vec::new(),
                 provider: "midnight.fs.archive".into(),
                 format: Some(midnight_core::ArchiveFormat::Zip),
                 container: std::env::temp_dir().join("outer.zip"),
@@ -348,6 +349,7 @@ fn member_of(depth: u64, mount: Option<u64>) -> ArchiveParent {
             },
             location,
             name: "inner.zip".into(),
+            raw_name: b"inner.zip".to_vec(),
         });
     }
     parent.unwrap()

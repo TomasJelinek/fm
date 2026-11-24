@@ -94,6 +94,7 @@ impl Fixture {
         let action = ArchiveAction::List(ArchiveLocation {
             mount: Some(mount),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 format: Some(ArchiveFormat::Zip),
                 provider: "test.retirement".into(),
                 container: path,

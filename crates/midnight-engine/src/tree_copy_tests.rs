@@ -655,6 +655,7 @@ impl crate::providers::MountedFilesystem for LinkCaptureMount {
                 location: ArchiveLocation {
                     mount: Some(Arc::new(LinkCaptureArchive)),
                     address: ArchiveAddress {
+                        nested: Vec::new(),
                         format: None,
                         provider: "link-capture-fixture".into(),
                         container: self.selected.with_file_name("container.zip"),

@@ -516,21 +516,8 @@ fn restore(
         )],
         address,
     };
-    for component in &location.address.components {
-        let mut matches = mount
-            .list(location.directory, cancel)?
-            .into_iter()
-            .filter(|node| {
-                node.kind == EntryKind::Directory && node.raw_name.as_ref() == component.as_slice()
-            });
-        let node = matches
-            .next()
-            .ok_or_else(|| error("Saved archive folder is unavailable"))?;
-        if matches.next().is_some() {
-            return Err(error("Saved archive folder locator is ambiguous"));
-        }
-        location.directory = node.id.entry;
-        location.trail.push((node.id.entry, node.display_name));
-    }
+    // An archive whose names need its password stops at its root, where the pane asks.
+    let components = std::mem::take(&mut location.address.components);
+    navigation::descend(&*mount, &mut location, &components, cancel)?;
     Ok(location)
 }

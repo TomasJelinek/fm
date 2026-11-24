@@ -270,6 +270,7 @@ async fn archive_listings_leave_dot_named_members_out() {
             directory: 1,
             trail: vec![(1, "fixture.zip".into())],
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "test.archive".into(),
                 format: Some(ArchiveFormat::Zip),
                 container,

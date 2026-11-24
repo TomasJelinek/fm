@@ -175,8 +175,8 @@ saves to the current location; it never changes the old file.
   when indentation would pass the limit) and end with a newline. The whole file is
   at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 40. When saving or exporting, it writes the lowest version that can
-  hold the settings, at most 40. The latest schemas added:
+  versions 1 to 42. When saving or exporting, it writes the lowest version that can
+  hold the settings, at most 42. The latest schemas added:
   - 33: `file_comparators`, the external comparison rules;
   - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
   - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
@@ -200,10 +200,23 @@ saves to the current location; it never changes the old file.
     `{"check_at_startup": <bool>, "previews": <bool>}` (Check for updates at startup,
     Include preview releases). It is written only when one of them is off; a file
     without it, including every file of an earlier schema, reads as both on, so
-    settings saved before this version get the startup check.
+    settings saved before this version get the startup check;
+  - 41: `find`, Find's accepted file-mask history (`mask_history`, newest first) and the
+    Find window's placement (`window_geometry`), written only when there is one of them;
+  - 42: `nested` in the archive address of a hot path or saved tab inside archives
+    inside an archive (archive address `version` 3, which also needs `format`): one
+    object per archive opened from a member, the outermost first, as
+    `{"member": <raw name bytes>, "format": <decoder>, "components": [<raw folder
+    name bytes>, …]}`. The address's own `components` then name the folder of the
+    archive opened from `container` that holds the first member. Members and folders
+    are stored as raw provider names, never as display text, so a member and a folder
+    of the same name stay distinct. At most three levels (four archives with the one
+    opened from the file); a deeper chain, an unknown decoder or an invalid name makes
+    the file invalid. Hot paths and tabs in one archive keep address version 1 or 2
+    and their older schema.
 
   A version is written only for a setting that needs it, so a schema 34, 35, 36, 37, 38,
-  39 or 40 file without any of that version's new fields is refused, and so is a field in a
+  39, 40, 41 or 42 file without any of that version's new fields is refused, and so is a field in a
   schema older than the one that added it. The update check's own state (the last check,
   GitHub's retry time and a skipped version) is not a setting: it is kept in
   `update-state.json` in the private update folder

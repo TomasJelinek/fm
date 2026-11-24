@@ -208,6 +208,7 @@ fn archive_binding_survives_root_retirement_but_rejects_replacement_mount_with_s
             mount: Some(source.clone()),
             directory: 1,
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "fixture".into(),
                 format: None,
                 container: "fixture.zip".into(),

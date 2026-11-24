@@ -141,7 +141,6 @@ pub(crate) struct HistoryChoice {
     pub(crate) identity: String,
     pub(crate) path: PathBuf,
     pub(crate) display: Option<String>,
-    archive: bool,
     network: bool,
     index: usize,
 }
@@ -329,13 +328,6 @@ impl Presenter {
                 network.history.len(),
                 Some(network.history_index),
             )
-        } else if let Some(archive) = &p.archive {
-            (
-                2,
-                archive.history.as_ptr() as usize,
-                archive.history.len(),
-                Some(archive.history_index),
-            )
         } else {
             (
                 0,
@@ -365,29 +357,16 @@ impl Presenter {
                 identity: format!("network-history:{}:{index}", p.generation),
                 path: network.origin.clone(),
                 display: Some(network.history.get(index)?.display.clone()),
-                archive: false,
                 network: true,
                 index,
             })
-        } else if let Some(archive) = &p.archive {
-            Some(HistoryChoice {
-                identity: format!(
-                    "archive-history:{}:{}:{index}",
-                    p.generation,
-                    archive.location.mount_id().unwrap_or(0)
-                ),
-                path: archive.origin.clone(),
-                display: Some(archive.history.get(index)?.display_text()),
-                archive: true,
-                network: false,
-                index,
-            })
         } else {
+            // Native folders and folders inside archives share one history.
+            let entry = p.history.get(index)?;
             Some(HistoryChoice {
                 identity: format!("history:{}:{}:{index}", p.generation, u8::from(forward)),
-                path: p.history.get(index)?.clone(),
-                display: None,
-                archive: false,
+                path: entry.native().map(Path::to_owned).unwrap_or_default(),
+                display: entry.native().is_none().then(|| entry.display_text()),
                 network: false,
                 index,
             })
@@ -436,17 +415,7 @@ impl Presenter {
                 send,
             );
         }
-        if choice.archive {
-            let Some(a) = &self.panes[pane.index()].archive else {
-                return false;
-            };
-            return self.archive_history(
-                pane,
-                choice.index as isize - a.history_index as isize,
-                send,
-            );
-        }
-        self.navigate(pane, choice.path, Some(choice.index), send)
+        self.history_go(pane, choice.index, send)
     }
 
     pub(crate) fn select_tab_number(

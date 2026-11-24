@@ -38,19 +38,23 @@ pub(super) fn run(
             )
         }
         ArchiveAction::List(mut location) => {
-            let mount = if let Some(raw) = location.mount.take() {
-                mounts.adopt(raw)?
+            if let Some(raw) = location.mount.take() {
+                (location, mounts.adopt(raw)?)
             } else {
                 let slot = request.take_native_slot();
                 let reserved = mounts.reserve()?;
-                location = restore(request, slot, location.address)?;
+                let saved = location.address;
+                let mut outermost = saved.clone();
+                outermost.nested.clear();
+                location =
+                    restore(request, slot, outermost).map_err(|e| level_error(&saved, 0, e))?;
                 let raw = location
                     .mount
                     .take()
                     .ok_or_else(|| error("Archive is unavailable"))?;
-                mounts.adopt_reserved(raw, reserved)
-            };
-            (location, mount)
+                let mount = mounts.adopt_reserved(raw, reserved);
+                restore_nested(request, mounts, outbox, location, mount, &saved)?
+            }
         }
         ArchiveAction::OpenMember { parent, format } => {
             open_member(request, mounts, outbox, parent, format)?
@@ -118,6 +122,143 @@ pub(super) fn run(
     Ok(listing)
 }
 
+/// The archives inside the archive that a saved address names (`ArchiveAddress::nested`),
+/// opened from `location`, its outermost folder, each down to its saved folder. A member
+/// or folder that needs a password ends the walk where it stands: that folder is listed,
+/// and the pane asks for the password there and continues (`archive_resume` in the UI).
+fn restore_nested(
+    request: &Request,
+    mounts: &Mounts,
+    outbox: &Outbox,
+    mut location: ArchiveLocation,
+    mut mount: Arc<ownership::GuardedMount>,
+    saved: &ArchiveAddress,
+) -> Result<(ArchiveLocation, Arc<ownership::GuardedMount>), FsError> {
+    if location.trail.len() != saved.components.len() + 1 {
+        // The outermost archive's names are locked: the walk stopped at its root.
+        return Ok((location, mount));
+    }
+    for (index, level) in saved.nested.iter().enumerate() {
+        let failed = |error| level_error(saved, index + 1, error);
+        let enclosing: Arc<dyn ArchiveMount> = mount.clone();
+        let node = find_member(
+            &*enclosing,
+            location.directory,
+            &level.member,
+            &request.cancel,
+        )
+        .map_err(failed)?;
+        location.mount = Some(enclosing);
+        let parent = ArchiveParent {
+            location: location.clone(),
+            member: node.id,
+            name: node.display_name,
+            raw_name: level.member.clone(),
+        };
+        let (mut next, next_mount) =
+            match open_member(request, mounts, outbox, parent, level.format) {
+                Ok(opened) => opened,
+                // An encrypted member: the folder that holds it is shown, and opening the
+                // member there asks for its archive's password.
+                Err(error) if is_archive_password_required(&error) => return Ok((location, mount)),
+                Err(error) => return Err(failed(error)),
+            };
+        let complete =
+            descend(&*next_mount, &mut next, &level.components, &request.cancel).map_err(failed)?;
+        location = next;
+        mount = next_mount;
+        if !complete {
+            break;
+        }
+    }
+    Ok((location, mount))
+}
+
+/// The member of `directory` whose raw name is `name`, which opens as an archive.
+fn find_member(
+    mount: &dyn ArchiveMount,
+    directory: u64,
+    name: &[u8],
+    cancel: &Cancellation,
+) -> Result<ArchiveNode, FsError> {
+    let mut matches = mount
+        .list(directory, cancel)?
+        .into_iter()
+        .filter(|node| node.kind != EntryKind::Directory && node.raw_name.as_ref() == name);
+    let node = matches.next().ok_or_else(|| {
+        FsError::from_io(
+            "open archive",
+            Path::new(""),
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "The archive is no longer in the folder that held it",
+            ),
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(error("Saved archive member locator is ambiguous"));
+    }
+    Ok(node)
+}
+
+/// Walk `components` down from the shown folder of `location`, a folder of `mount`.
+/// Returns false when the archive's names need its password: the walk stops there.
+pub(super) fn descend(
+    mount: &dyn ArchiveMount,
+    location: &mut ArchiveLocation,
+    components: &[Vec<u8>],
+    cancel: &Cancellation,
+) -> Result<bool, FsError> {
+    for component in components {
+        let nodes = match mount.list(location.directory, cancel) {
+            Err(error) if is_archive_password_required(&error) && mount.listing_locked() => {
+                return Ok(false);
+            }
+            result => result?,
+        };
+        let mut matches = nodes.into_iter().filter(|node| {
+            node.kind == EntryKind::Directory && node.raw_name.as_ref() == component.as_slice()
+        });
+        let node = matches
+            .next()
+            .ok_or_else(|| error("Saved archive folder is unavailable"))?;
+        if matches.next().is_some() {
+            return Err(error("Saved archive folder locator is ambiguous"));
+        }
+        location.directory = node.id.entry;
+        location.trail.push((node.id.entry, node.display_name));
+        location.address.components.push(component.clone());
+    }
+    Ok(true)
+}
+
+/// A saved location inside archives inside an archive names the level that does not open
+/// again, counted from the archive opened from the native file. `level` 0 is that archive.
+pub(super) fn level_error(saved: &ArchiveAddress, level: usize, mut failure: FsError) -> FsError {
+    if saved.nested.is_empty() || failure.kind == std::io::ErrorKind::Interrupted {
+        return failure;
+    }
+    let name = match level
+        .checked_sub(1)
+        .and_then(|index| saved.nested.get(index))
+    {
+        Some(nested) => String::from_utf8_lossy(&nested.member).into_owned(),
+        None => saved
+            .container
+            .file_name()
+            .unwrap_or(saved.container.as_os_str())
+            .to_string_lossy()
+            .into_owned(),
+    };
+    failure.message = format!(
+        "Archive {} of {} on the saved path ({name}) cannot be opened: {}",
+        level + 1,
+        saved.nested.len() + 1,
+        failure.message
+    );
+    failure
+}
+
 /// An archive inside an archive: the enclosing session stages the member completely and
 /// verified (memory under the staging budget, else a private spool file), cancelled with
 /// this navigation, and a session of its own reads that staged copy as its source. The
@@ -134,6 +275,7 @@ fn open_member(
         location: mut folder,
         member,
         name,
+        raw_name,
     } = parent;
     let mut path = folder.display_text();
     if !path.ends_with(std::path::MAIN_SEPARATOR) {
@@ -209,6 +351,7 @@ fn open_member(
             location: folder,
             member,
             name: name.clone(),
+            raw_name,
         },
         content,
         &request.cancel,
@@ -272,3 +415,6 @@ pub(super) async fn publish(
 #[cfg(test)]
 #[path = "nested_tests.rs"]
 mod nested_tests;
+#[cfg(test)]
+#[path = "restore_nested_tests.rs"]
+mod restore_nested_tests;

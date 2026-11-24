@@ -96,6 +96,7 @@ async fn failed_archive_open_restores_native_snapshot_capabilities() {
 async fn unavailable_saved_archive_keeps_native_capabilities_disabled() {
     let state = failed_navigation(ArchiveAction::List(ArchiveLocation::unavailable(
         ArchiveAddress {
+            nested: Vec::new(),
             format: None,
             provider: "missing.provider".into(),
             container: std::env::temp_dir().join("missing.zip"),
@@ -134,6 +135,7 @@ fn shared_listing(mount: Arc<crate::archive_shared::testing::SharedMount>) -> Ar
     ArchiveAction::List(ArchiveLocation {
         mount: Some(mount),
         address: ArchiveAddress {
+            nested: Vec::new(),
             format: Some(ArchiveFormat::Zip),
             provider: "test.shared".into(),
             container: std::env::temp_dir().join("shared.zip"),

@@ -26,6 +26,7 @@ mod listing_classifier;
 mod metadata_case;
 mod metadata_case_unix;
 mod metadata_case_windows;
+mod nested_archive_locations;
 mod network_bookmarks;
 mod network_tab_preferences;
 mod panel_filter;

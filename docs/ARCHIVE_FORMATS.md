@@ -132,7 +132,9 @@ the other saved choices load as stored.
 
 Saved archive tabs and Hot Paths record the exact decoder (archive address version
 2), so removing a custom suffix does not break them. Addresses saved before
-(version 1) infer the decoder from the built-in suffix.
+(version 1) infer the decoder from the built-in suffix. A location inside archives
+inside an archive also records each inner archive's member and decoder (version 3,
+settings schema 42; see [archives inside archives](#archives-inside-archives)).
 
 ## ZIP containers
 
@@ -227,8 +229,10 @@ dated [copy-out record](verification/2026-11-22-archive-copy-out.md) has the
 measured rates and Cancel times.
 
 Archive Hot Paths persist typed container/provider/member locations and the exact
-decoder, and display `archive.zip@path` with native separators. The display string
-is never parsed to reconstruct an operation target. Duplicate detection compares
+decoder, and display the whole path as the path bar does, for example
+`D:\data\a.zip\docs\b.7z\inner`. The display string is never parsed to reconstruct an
+operation target: a member and a folder of the same name stay distinct locations.
+Duplicate detection compares
 the archive location independently of its captured source revision. Re-adding a
 location refreshes that revision while retaining its shortcut slot. If the archive
 has changed since capture, navigation reports that change; reopen the archive and
@@ -426,9 +430,18 @@ reason. The panel then stays in the enclosing folder. When the worker of an inne
 archive stops, for example by its idle watchdog, the panel does not reopen it: it
 returns to the enclosing folder with the inner archive under the cursor, and says why.
 
-An archive inside an archive is opened for the session only. Saved tabs and Hot Paths
-keep the folder of the outermost archive that leads to it, and restoring them reopens
-that folder. Persistent preview caching of its members applies only while every
+Saved tabs, Hot Paths and Back and forward history keep a folder inside archives inside
+an archive by its whole path: the archive opened from the native file with its
+revision, then for each archive inside it the member's raw name and decoder and the
+folders inside it (archive address version 3). Opening such a location, also after a
+restart, opens every level again in one navigation, at most 4 levels as above; the
+panel's history keeps the archives it has left the same way, so Back to one of them
+opens it again. When a level no longer opens, the error names it, for example
+`Archive 3 of 4 on the saved path (c.tar.gz) cannot be opened: …`, and the panel stays
+where it was. When an archive on the way needs its password (its names are encrypted,
+or the member that holds the next archive is), the panel shows the folder that holds
+it, asks for the password and then goes on to the saved folder. Persistent preview
+caching of its members applies only while every
 enclosing provider grants stable member IDs. Inline folder branches do not expand
 archives: Enter opens an archive inside an archive from the panel's own folder, while
 archive members shown in expanded branches below it do not open.

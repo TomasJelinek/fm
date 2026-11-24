@@ -44,6 +44,7 @@ fn location(mount: RetiringArchive) -> ArchiveLocation {
     ArchiveLocation {
         mount: Some(Arc::new(mount)),
         address: ArchiveAddress {
+            nested: Vec::new(),
             format: Some(ArchiveFormat::Zip),
             provider: "test.archive".into(),
             container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/retirement.zip"),

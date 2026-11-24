@@ -329,7 +329,8 @@ How to read it:
 - **Windows and Linux:** installed archive workers browse ZIP, 7z, GZIP, XZ, Bzip2,
   Zstandard and TAR, also compressed. F3 views members, F5 copies them out through the
   verified queue (with each member's path inside the archive, file and byte totals, a
-  determinate bar and an estimate), archives inside archives open up to four levels deep, and
+  determinate bar and an estimate), archives inside archives open up to four levels deep and
+  are kept with their whole path by history, Hot Paths and saved tabs, and
   password-protected ZIP and 7z archives ask for their password. Archives are
   read-only, and RAR is not supported.
 - **Open:** ARCH-01 to ARCH-09 (content limits, nested archives, writes, Copy permits
@@ -418,8 +419,9 @@ How to read it:
   Custom Commands, Hot Paths, keyboard shortcuts and plugins; export and import of the
   settings file; F1 keyboard help and the F10 menu; windows down to 320×200.
 - **Open:** at 320×200 with touch density and a 32 px font the colour picker scrolls
-  (OPTIONS-02); Hot Paths inside archives are not checked with the installed plugins
-  (HOTPATH-02).
+  (OPTIONS-02); with the installed plugins, Hot Paths inside archives are checked only four
+  archives deep in `viewers_archives` (added with the star, opened by number); the manager,
+  menus, a restart and a changed archive are not (HOTPATH-02).
 - **Documents:** [keyboard shortcuts](KEYBOARD_SHORTCUTS.md),
   [settings files](SETTINGS_FILES.md),
   [filename colours](developer/FILENAME_COLOR_OPTIONS.md),

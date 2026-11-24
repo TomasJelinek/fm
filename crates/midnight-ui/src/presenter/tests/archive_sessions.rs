@@ -8,6 +8,7 @@ const SHOWN: u64 = 42;
 
 fn saved(name: &str) -> ArchiveAddress {
     ArchiveAddress {
+        nested: Vec::new(),
         format: Some(ArchiveFormat::SevenZip),
         provider: "midnight.archive".into(),
         container: test_root().join(name),
@@ -64,23 +65,16 @@ fn a_refused_archive_does_not_keep_the_tabs_old_archive_open() {
         "the new archive takes the old one's place"
     );
     refuse(&mut p, navigation, "other.7z");
-    let archive = p.panes[0].archive.as_ref().unwrap();
     assert!(p.panes[0].error.contains("Two archives are already open"));
     assert!(
-        !archive.holds_session(SHOWN),
+        !p.panes[0].holds_archive_session(SHOWN),
         "the tab's history kept its previous archive open behind the refused one"
     );
     // The tab still knows its previous archive by its address: it opens it again.
+    let history = &p.panes[0].history;
+    assert!(super::history::archives(history).all(|location| location.mount.is_none()));
     assert!(
-        archive
-            .history
-            .iter()
-            .all(|location| location.mount.is_none())
-    );
-    assert!(
-        archive
-            .history
-            .iter()
+        super::history::archives(history)
             .any(|location| location.address.container == test_root().join("sample.zip"))
     );
 }
@@ -166,5 +160,5 @@ fn listing_inside_the_same_session_replaces_nothing() {
     let (_, replaces, action) = sent(&commands);
     assert!(matches!(action, ArchiveAction::List(location) if location.mount_id() == Some(SHOWN)));
     assert_eq!(replaces, None);
-    assert!(p.panes[0].archive.as_ref().unwrap().holds_session(SHOWN));
+    assert!(p.panes[0].holds_archive_session(SHOWN));
 }

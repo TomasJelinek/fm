@@ -83,6 +83,7 @@ impl MountedFilesystem for Mount {
             location: ArchiveLocation {
                 mount: Some(Arc::new(Archive)),
                 address: ArchiveAddress {
+                    nested: Vec::new(),
                     provider: "fixture".into(),
                     format: None,
                     container: self.root.join("archive"),

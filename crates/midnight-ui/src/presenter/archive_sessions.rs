@@ -45,9 +45,7 @@ impl Presenter {
             return Some(closed);
         }
         self.panes[pane.index()]
-            .archive
-            .as_ref()
-            .and_then(archives::ArchivePane::native_session)
+            .archive_native_session()
             .or(released)
             .filter(|session| !self.archive_session_shared(pane, *session))
     }
@@ -62,10 +60,7 @@ impl Presenter {
     }
 
     fn archive_session_shared(&self, pane: PaneId, session: u64) -> bool {
-        self.panes[pane.other().index()]
-            .archive
-            .as_ref()
-            .is_some_and(|archive| archive.holds_session(session))
+        self.panes[pane.other().index()].holds_archive_session(session)
             || self.parked_tabs_hold(session)
             || self
                 .archive_sessions

@@ -91,6 +91,7 @@ fn refreshing_a_panel_of_100001_selected_archive_members() {
                 location: ArchiveLocation {
                     mount: Some(Arc::new(Session)),
                     address: ArchiveAddress {
+                        nested: Vec::new(),
                         format: None,
                         provider: "midnight.archive".into(),
                         container: root.join("flat.tar"),

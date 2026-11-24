@@ -73,6 +73,7 @@ fn archive_fixture_names(
     let location = ArchiveLocation {
         mount: Some(mount.clone()),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.archive".into(),
             format: None,
             container: directory.path().join("container.zip"),

@@ -164,6 +164,7 @@ fn open_inside(
         },
         member: member.id,
         name: name.into(),
+        raw_name: member.raw_name.to_vec(),
     };
     let (package, format) = catalog.choose_format(format, None).unwrap();
     Mount::open_nested(package, format, parent, content, &cancel)

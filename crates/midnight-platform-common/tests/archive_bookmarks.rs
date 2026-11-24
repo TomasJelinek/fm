@@ -10,6 +10,7 @@ fn bookmark(format: Option<ArchiveFormat>) -> Bookmark {
         name: "folder".into(),
         path: parent.clone(),
         archive: Some(ArchiveAddress {
+            nested: Vec::new(),
             provider: "midnight.fs.archive".into(),
             container: parent.join("日本語@data.zip"),
             format,
@@ -39,10 +40,11 @@ fn archive_hot_paths_round_trip_without_parsing_the_displayed_address() {
                 .components[1],
             [0xff, b'x']
         );
+        let separator = std::path::MAIN_SEPARATOR;
         assert!(
             preferences.bookmarks[0]
                 .display_text()
-                .contains("日本語@data.zip@nested@folder")
+                .contains(&format!("日本語@data.zip{separator}nested@folder"))
         );
     }
 }

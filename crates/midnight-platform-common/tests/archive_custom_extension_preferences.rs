@@ -72,6 +72,7 @@ fn malformed_duplicate_conflicting_and_legacy_custom_maps_fail_atomically() {
 fn typed_decoder_persists_without_custom_rule_in_saved_tab_and_bookmark() {
     let root = std::env::current_dir().unwrap();
     let address = ArchiveAddress {
+        nested: Vec::new(),
         provider: "midnight.fs.archive".into(),
         format: Some(ArchiveFormat::TarXz),
         container: root.join("文档.custom"),

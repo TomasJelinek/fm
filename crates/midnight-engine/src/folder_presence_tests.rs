@@ -416,6 +416,7 @@ fn archive_fixture(
     let location = ArchiveLocation {
         mount: Some(mount.clone()),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.archive".into(),
             format: None,
             container: Path::new(env!("CARGO_MANIFEST_DIR")).join("owned.zip"),

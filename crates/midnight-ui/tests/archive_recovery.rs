@@ -99,6 +99,7 @@ fn backspace_leaves_an_archive_folder_whose_session_was_stopped() {
     };
     // The panel shows bundle.zip/bundle through session 42.
     let address = ArchiveAddress {
+        nested: Vec::new(),
         format: None,
         provider: "midnight.archive".into(),
         container: root.join("bundle.zip"),

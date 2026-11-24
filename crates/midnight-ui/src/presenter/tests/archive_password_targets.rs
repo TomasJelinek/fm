@@ -49,6 +49,7 @@ fn found_member() -> (FindEntry, Arc<FindArchiveMember>) {
     let container = test_root().join("share.zip");
     let archive = Arc::new(FindArchiveMember {
         folder: ArchiveAddress {
+            nested: Vec::new(),
             format: Some(ArchiveFormat::Zip),
             provider: "midnight.archive".into(),
             container: container.clone(),

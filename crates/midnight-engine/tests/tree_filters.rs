@@ -216,6 +216,7 @@ impl Harness {
                     directory: 1,
                     trail: vec![(1, "fixture.zip".into())],
                     address: ArchiveAddress {
+                        nested: Vec::new(),
                         provider: "test.archive".into(),
                         format: Some(ArchiveFormat::Zip),
                         container: path.join("fixture.zip"),

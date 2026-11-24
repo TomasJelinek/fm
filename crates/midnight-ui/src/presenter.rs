@@ -49,6 +49,7 @@ mod find_windows_tests;
 mod folder_error_notice;
 mod folder_presence;
 mod fonts;
+mod history;
 pub(crate) mod installation_notice;
 mod job_controls;
 mod job_history;
@@ -110,6 +111,7 @@ mod viewer_plugins;
 mod volumes;
 mod watch_status;
 pub(crate) use file_actions::MenuAnchor;
+pub(crate) use history::HistoryEntry;
 pub(crate) use panel_navigation::path_labels;
 use std::{
     collections::{HashMap, HashSet},
@@ -241,8 +243,13 @@ pub(crate) struct Pane {
     selection_dirty: bool,
     selection_rebase_pending: bool,
     pub(crate) selection_deferred: SelectionDefaults,
-    pub(crate) history: Vec<PathBuf>,
+    /// Back and Forward: native folders and folders inside archives (`history`).
+    pub(crate) history: Vec<HistoryEntry>,
     pub(crate) history_index: Option<usize>,
+    /// The history entry that the archive listing in flight returns to.
+    archive_history_request: Option<usize>,
+    /// A saved archive location still being opened level by level (`resume_archive`).
+    archive_resume: Option<history::ArchiveResume>,
     pub(crate) error: String,
     elevation_retry: Option<(NavigationId, PathBuf)>,
     /// The navigation that the last authorized retry started.
@@ -496,6 +503,7 @@ impl Presenter {
             if self.panes[pane.index()].archive.is_some() {
                 self.leave_unavailable_tree(pane, send);
                 self.recover_archive(pane, send);
+                self.resume_archive(pane, send);
             }
             let p = &self.panes[pane.index()];
             // A hint survives a loading re-sort (it reuses the committed rows) and
@@ -587,6 +595,7 @@ impl Presenter {
             )));
             self.retired.push(Box::new(mem::take(&mut p.selected)));
             self.retired.push(Box::new(mem::take(&mut p.history)));
+            self.retired.push(Box::new(p.archive_resume.take()));
             self.retired.push(Box::new(mem::take(&mut p.volume_paths)));
             self.retired.push(Box::new(p.pending.take()));
             self.retired.push(Box::new(p.file_target.take()));
@@ -747,6 +756,10 @@ impl Presenter {
         p.archive_request = false;
         p.network_request = false;
         self.retired.push(Box::new(p.network_pending.take()));
+        if mode != Reload::Background {
+            p.archive_history_request = None;
+            self.retired.push(Box::new(p.archive_resume.take()));
+        }
         self.navigation_accepted_impl(pane, navigation, path, history, mode, send);
         self.tab_navigation_accepted(pane, send);
         true
@@ -1435,13 +1448,12 @@ impl Presenter {
             Event::ListingFinished { entries, index, .. } => {
                 self.retired.push(Box::new(p.network.take()));
                 let left = p.archive.take();
-                if let Some(session) = left
-                    .as_ref()
-                    .and_then(archives::ArchivePane::native_session)
-                {
+                if let Some(session) = left.as_ref().and_then(|a| a.native_session(&p.history)) {
                     self.archive_sessions.released(pane, session);
                 }
                 self.retired.push(Box::new(left));
+                // History keeps the archive's folders by their saved addresses.
+                history::release_sessions(&mut p.history, &mut self.retired);
                 let mut request = p.pending.take().expect("validated pending generation");
                 debug_assert_eq!(request.navigation, navigation);
                 let same_location = p.path == request.path;
@@ -1531,19 +1543,11 @@ impl Presenter {
                 {
                     p.volume_paths.insert(location.path.clone(), p.path.clone());
                 }
-                if let Some(history) = request.history {
-                    p.history_index = Some(history);
-                } else if p.history_index.and_then(|i| p.history.get(i)) != Some(&p.path) {
-                    let retained = p.history_index.map_or(0, |i| i + 1);
-                    if retained < p.history.len() {
-                        self.retired.push(Box::new(p.history.split_off(retained)));
-                    }
-                    p.history.push(p.path.clone());
-                    if p.history.len() > MAX_HISTORY {
-                        self.retired.push(Box::new(p.history.remove(0)));
-                    }
-                    p.history_index = Some(p.history.len() - 1);
-                }
+                p.record_history(
+                    HistoryEntry::Native(p.path.clone()),
+                    request.history,
+                    &mut self.retired,
+                );
                 if request.keep_rows {
                     retain_listed_folder_sizes(&mut p.folder_sizes, &index, &mut self.retired);
                     // A folder the attempted scan never covered (created after it)
@@ -1656,38 +1660,6 @@ impl Presenter {
             return false;
         };
         self.navigate(pane, path, None, send)
-    }
-    pub(crate) fn history(
-        &mut self,
-        pane: PaneId,
-        delta: isize,
-        send: &dyn Fn(Command) -> bool,
-    ) -> bool {
-        if self.panes[pane.index()].network.is_some() {
-            return self.network_history(pane, delta, send);
-        }
-        if delta == -1
-            && let Some(previous) = &self.panes[pane.index()].network_return
-            && previous.root == self.panes[pane.index()].display_path()
-        {
-            return self.network_navigate(
-                pane,
-                NetworkAction::Browse(previous.context.address.clone()),
-                send,
-            );
-        }
-        if self.panes[pane.index()].archive.is_some() {
-            return self.archive_history(pane, delta, send);
-        }
-        let p = &self.panes[pane.index()];
-        let Some(index) = p
-            .history_index
-            .and_then(|i| i.checked_add_signed(delta))
-            .filter(|i| *i < p.history.len())
-        else {
-            return false;
-        };
-        self.navigate(pane, p.history[index].clone(), Some(index), send)
     }
     /// Whether either pane has an accepted navigation that has not completed.
     #[cfg(test)]
@@ -2093,6 +2065,8 @@ impl Pane {
             selection_deferred: SelectionDefaults::NONE,
             history: vec![],
             history_index: None,
+            archive_history_request: None,
+            archive_resume: None,
             error: String::new(),
             elevation_retry: None,
             authorized_retry: None,

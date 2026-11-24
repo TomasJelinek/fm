@@ -46,6 +46,7 @@ pub(super) fn archive_pane() -> Presenter {
     let location = ArchiveLocation {
         mount: Some(Arc::new(FixtureMount)),
         address: ArchiveAddress {
+            nested: Vec::new(),
             format: None,
             provider: "midnight.archive".into(),
             container: test_root().join("sample.zip"),
@@ -1116,7 +1117,7 @@ fn a_stopped_archive_session_is_reopened_and_backspace_still_leaves_the_archive(
     let archive = p.panes[0].archive.as_ref().unwrap();
     assert!(
         std::iter::once(&archive.location)
-            .chain(&archive.history)
+            .chain(history::archives(&p.panes[0].history))
             .all(|location| location.mount.is_none()),
         "the stopped session is never used again"
     );

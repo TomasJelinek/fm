@@ -40,6 +40,7 @@ fn discovery_hot_path_identity_ignores_caption_and_native_return_path() {
 fn network_hot_path_rejects_ambiguous_or_invalid_typed_locations() {
     let mut bookmark = saved();
     bookmark.archive = Some(ArchiveAddress {
+        nested: Vec::new(),
         provider: "midnight.fs.archive".into(),
         format: None,
         container: bookmark.path.join("archive.zip"),

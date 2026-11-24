@@ -629,6 +629,7 @@ fn archive_dialog_leaves_out_required_modified_time_and_keeps_ordinary_copy() {
             location: ArchiveLocation {
                 mount: Some(Arc::new(NoIoArchive)),
                 address: ArchiveAddress {
+                    nested: Vec::new(),
                     format: None,
                     provider: "fake.archive".into(),
                     container: root.join("source.zip"),

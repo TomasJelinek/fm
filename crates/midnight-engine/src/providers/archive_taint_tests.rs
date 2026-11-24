@@ -208,6 +208,7 @@ fn tree_capture_gives_up_its_tainted_guard_reference_so_the_last_owner_stops_the
             let location = ArchiveLocation {
                 mount: Some(tab.clone()),
                 address: ArchiveAddress {
+                    nested: Vec::new(),
                     provider: "taint-fixture".into(),
                     format: None,
                     container: std::env::temp_dir().join("tainted.zip"),
@@ -272,6 +273,7 @@ fn a_leased_archive_dropped_last_inside_a_quarantined_copy_hands_its_target_cont
     let location = ArchiveLocation {
         mount: Some(tab.clone()),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "taint-fixture".into(),
             format: None,
             container: std::env::temp_dir().join("tainted.zip"),

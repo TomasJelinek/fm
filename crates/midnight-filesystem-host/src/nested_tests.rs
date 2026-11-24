@@ -71,6 +71,7 @@ fn parent(mount: &Arc<Enclosing>) -> ArchiveParent {
         location: ArchiveLocation {
             mount: Some(mount.clone()),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "midnight.fs.archive".into(),
                 format: Some(midnight_core::ArchiveFormat::Zip),
                 container: std::env::temp_dir().join("outer.zip"),
@@ -82,6 +83,7 @@ fn parent(mount: &Arc<Enclosing>) -> ArchiveParent {
         },
         member: VirtualEntryId { mount: 3, entry: 7 },
         name: "inner.zip".into(),
+        raw_name: b"inner.zip".to_vec(),
     }
 }
 

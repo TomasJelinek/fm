@@ -138,6 +138,7 @@ fn root_listing(
         location: ArchiveLocation {
             mount: Some(mount),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "test.archive".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/test.zip"),

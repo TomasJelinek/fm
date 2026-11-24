@@ -110,6 +110,7 @@ impl Fixture {
     /// its tab let go of.
     async fn start(&mut self, pane: PaneId, navigation: u64, name: &str, replaces: Option<u64>) {
         let action = ArchiveAction::List(ArchiveLocation::unavailable(ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.native".into(),
             format: Some(ArchiveFormat::SevenZip),
             container: std::env::temp_dir().join(name),

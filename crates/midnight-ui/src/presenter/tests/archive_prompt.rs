@@ -28,6 +28,7 @@ const RIGHT: u64 = 77;
 
 fn address(name: &str) -> ArchiveAddress {
     ArchiveAddress {
+        nested: Vec::new(),
         format: Some(ArchiveFormat::SevenZip),
         provider: "midnight.archive".into(),
         container: test_root().join(name),
@@ -258,7 +259,7 @@ fn cancel_closes_nothing_and_opens_nothing() {
     assert!(!p.choose_notice(generation, 0, &send), "the offer is gone");
     p.flush_selection(&send);
     assert!(commands.borrow().is_empty());
-    assert!(p.panes[1].archive.as_ref().unwrap().holds_session(RIGHT));
+    assert!(p.panes[1].holds_archive_session(RIGHT));
 }
 
 #[test]
@@ -346,7 +347,7 @@ fn an_offer_does_not_move_a_panel_that_went_into_another_archive_meanwhile() {
     assert!(!p.choose_notice(generation, 0, &send), "the offer is stale");
     p.flush_selection(&send);
     assert!(commands.borrow().is_empty());
-    assert!(p.panes[1].archive.as_ref().unwrap().holds_session(88));
+    assert!(p.panes[1].holds_archive_session(88));
 }
 
 #[test]

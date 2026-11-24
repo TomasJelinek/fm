@@ -33,6 +33,10 @@ pub struct ArchiveParent {
     pub member: VirtualEntryId,
     /// The member's display name, which names the inner archive's root.
     pub name: String,
+    /// The member's raw provider name, which a saved address keeps to find it again
+    /// (`ArchiveLocation::saved_address`). Empty when unknown: such an archive inside an
+    /// archive is not saved, only the folder that holds it.
+    pub raw_name: Vec<u8>,
 }
 
 /// The verified content of one archive member, retained by the backend independently of
@@ -53,7 +57,25 @@ pub struct ArchiveAddress {
     pub container: std::path::PathBuf,
     pub source_version: Vec<u8>,
     pub components: Vec<Vec<u8>>,
+    /// A saved address of a folder inside archives inside this archive: each archive
+    /// opened from a member, the outermost first. `components` then name the folder of
+    /// the archive opened from `container` that holds the first member. Empty in the
+    /// address of a mounted location, whose enclosing archives are its mount's parents
+    /// (`ArchiveLocation::saved_address` builds the saved form).
+    pub nested: Vec<NestedArchiveAddress>,
 }
+
+/// One archive opened from a member of the enclosing archive's folder, as saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NestedArchiveAddress {
+    /// The raw provider name of the member in the enclosing folder.
+    pub member: Vec<u8>,
+    /// The decoder that opens the member.
+    pub format: crate::ArchiveFormat,
+    /// The folders inside this archive, as raw provider names.
+    pub components: Vec<Vec<u8>>,
+}
+
 impl ArchiveAddress {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.provider.is_empty()
@@ -73,9 +95,19 @@ impl ArchiveAddress {
         if self.source_version.is_empty() || self.source_version.len() > 256 {
             return Err("Invalid archive source revision.");
         }
-        if self.components.len() > 256
-            || self.components.iter().map(Vec::len).sum::<usize>() > 64 * 1024
-            || self.components.iter().any(|part| {
+        if self.nested.len() >= MAX_ARCHIVE_DEPTH {
+            return Err("Saved archives inside archives are deeper than can be opened.");
+        }
+        let parts = || {
+            self.components.iter().chain(
+                self.nested
+                    .iter()
+                    .flat_map(|level| std::iter::once(&level.member).chain(&level.components)),
+            )
+        };
+        if parts().count() > 256
+            || parts().map(Vec::len).sum::<usize>() > 64 * 1024
+            || parts().any(|part| {
                 part.is_empty()
                     || part == b"."
                     || part == b".."
@@ -562,9 +594,8 @@ impl ArchiveLocation {
     }
 
     /// The folder of the archive opened from a native file that leads to this location:
-    /// the location itself unless it lies in an archive inside an archive. An archive
-    /// inside an archive is opened for the session only, so saved tabs and Hot Paths
-    /// keep this location instead.
+    /// the location itself unless it lies in an archive inside an archive. Saved tabs,
+    /// Hot Paths and history keep the whole path instead (`saved_address`).
     pub fn outermost(&self) -> ArchiveLocation {
         self.enclosing()
             .pop()
@@ -581,12 +612,12 @@ impl ArchiveLocation {
                 .to_string_lossy()
                 .into_owned(),
         )];
-        trail.extend(
-            address
-                .components
-                .iter()
-                .map(|name| (0, String::from_utf8_lossy(name).into_owned())),
-        );
+        // A saved address inside archives inside the archive names every level: its
+        // folders, the members opened as archives and their folders.
+        trail.extend(address.steps().into_iter().map(|step| {
+            let (crate::ArchiveStep::Folder(name) | crate::ArchiveStep::Archive(name, _)) = step;
+            (0, String::from_utf8_lossy(name).into_owned())
+        }));
         Self {
             mount: None,
             address,
@@ -856,6 +887,7 @@ mod nested_tests {
         ArchiveLocation {
             mount: Some(Arc::new(mount)),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "midnight.fs.archive".into(),
                 format: Some(crate::ArchiveFormat::Zip),
                 container: std::env::temp_dir().join("outer.zip"),
@@ -883,6 +915,7 @@ mod nested_tests {
             },
             location,
             name: name.into(),
+            raw_name: name.as_bytes().to_vec(),
         };
         let mut trail = trail.to_vec();
         trail.insert(0, name);

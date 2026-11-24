@@ -92,6 +92,7 @@ fn archive_checkbox_defaults_on_hides_resident_pixels_and_supports_cancel_ok_and
             location: ArchiveLocation {
                 mount: Some(Arc::new(PreviewArchive)),
                 address: ArchiveAddress {
+                    nested: Vec::new(),
                     format: None,
                     provider: "midnight.archive".into(),
                     container: root.join("preview-fixture.zip"),

@@ -73,6 +73,7 @@ fn input(mount: Arc<MemoryMount>, destination: &Path) -> ArchiveCopyRequest {
         location: ArchiveLocation {
             mount: Some(mount),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 format: None,
                 provider: "fixture".into(),
                 container: destination.join("source.zip"),

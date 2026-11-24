@@ -353,8 +353,9 @@ their own group in the drive dropdown after drives and special locations. Both m
 show numbered Hot Paths as 1–9/0; saved paths have no direct drive-toolbar buttons.
 Adding an existing path keeps its saved identity; new paths take the first free
 number, and paths beyond ten remain in the menus. A Hot Path can be a folder, a
-folder inside an archive, shown as `archive.zip@path` with native separators and
-opened through the installed archive provider, or a Network location. A Hot Path
+folder inside an archive or inside archives inside an archive, shown by its whole path
+(`D:\data\a.zip\docs\b.7z\inner`) and opened through the installed archive provider,
+or a Network location. A Hot Path
 saved on the other operating system stays inactive: it keeps its number, opening it
 only explains why, and Manage Hot Paths can remove it.
 Manage shows full folder paths without custom names. Selecting a row keeps the

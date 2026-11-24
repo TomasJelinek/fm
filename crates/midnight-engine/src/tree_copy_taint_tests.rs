@@ -33,6 +33,7 @@ fn tree_over(tab: &Arc<dyn ArchiveMount>) -> Session {
     let location = ArchiveLocation {
         mount: Some(tab.clone()),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "taint-fixture".into(),
             format: None,
             container: std::env::temp_dir().join("tainted.zip"),

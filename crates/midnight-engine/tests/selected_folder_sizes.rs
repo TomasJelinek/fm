@@ -443,6 +443,7 @@ async fn reject_native_scan_in_archive(single: bool) {
             sort: SortSpec::default(),
             replaces: None,
             action: ArchiveAction::List(ArchiveLocation::unavailable(ArchiveAddress {
+                nested: Vec::new(),
                 format: None,
                 provider: "nonexistent-test-provider".into(),
                 container: std::env::current_dir().unwrap().join("absent-fixture.zip"),

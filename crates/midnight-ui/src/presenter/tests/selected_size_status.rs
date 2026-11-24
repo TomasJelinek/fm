@@ -169,6 +169,7 @@ fn archive_status_uses_cached_provider_totals_and_never_requests_native_folder_s
     let origin = p.panes[0].path.clone();
     p.panes[0].archive = Some(crate::presenter::archives::ArchivePane::unavailable(
         ArchiveAddress {
+            nested: Vec::new(),
             format: None,
             provider: "test-provider".into(),
             container: origin.join("資料.zip"),

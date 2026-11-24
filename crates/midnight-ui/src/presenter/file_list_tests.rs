@@ -650,6 +650,7 @@ fn failed_archive_selection_never_captures_the_previous_selection() {
     let root = std::env::temp_dir();
     let mut archive = archives::ArchivePane::unavailable(
         ArchiveAddress {
+            nested: Vec::new(),
             provider: "archive".into(),
             format: Some(ArchiveFormat::Zip),
             container: root.join("data.zip"),

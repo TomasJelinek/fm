@@ -926,6 +926,7 @@ impl Harness {
             preferences.tabs[pane.index()].archives.insert(
                 0,
                 ArchiveAddress {
+                    nested: Vec::new(),
                     provider: "test.archive".into(),
                     format: Some(ArchiveFormat::Zip),
                     container: path.join("fixture.zip"),

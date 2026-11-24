@@ -87,6 +87,7 @@ pub(crate) fn archive_listing(mount: Arc<Owner>, path: &Path) -> ArchiveListing 
         location: ArchiveLocation {
             mount: Some(mount),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "test.mailbox".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: path.join("fixture.zip"),

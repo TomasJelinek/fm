@@ -542,7 +542,7 @@ fn native_history_keeps_the_same_bound_as_archive_and_network_history() {
     assert_eq!(pane.history_index, Some(MAX_HISTORY - 1));
     assert_eq!(pane.history[0], PathBuf::from("folder-5"));
     assert_eq!(
-        pane.history.last(),
-        Some(&PathBuf::from(format!("folder-{}", MAX_HISTORY + 4)))
+        pane.history.last().and_then(HistoryEntry::native),
+        Some(PathBuf::from(format!("folder-{}", MAX_HISTORY + 4)).as_path())
     );
 }

@@ -6,6 +6,7 @@ fn archive_hot_path_add_uses_the_typed_member_location() {
     let mut presenter = Presenter::new(root.clone(), root.clone());
     presenter.panes[0].archive = Some(crate::presenter::archives::ArchivePane::unavailable(
         ArchiveAddress {
+            nested: Vec::new(),
             format: None,
             provider: "midnight.fs.archive".into(),
             container: root.join("資料@source.zip"),
@@ -24,7 +25,13 @@ fn archive_hot_path_add_uses_the_typed_member_location() {
         ["日本語".as_bytes().to_vec(), b"src".to_vec()]
     );
     assert_eq!(saved.path, test_root());
-    assert!(saved.display_text().contains("資料@source.zip@日本語"));
+    // Shown as the path bar shows it; a literal `@` in a native name stays a name.
+    let separator = std::path::MAIN_SEPARATOR;
+    assert!(
+        saved
+            .display_text()
+            .ends_with(&format!("資料@source.zip{separator}日本語{separator}src"))
+    );
 
     // A changed archive revision updates the same saved location and shortcut.
     presenter.panes[0]

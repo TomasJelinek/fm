@@ -486,6 +486,19 @@ with stable member IDs. Nesting stops at `MAX_ARCHIVE_DEPTH` (4) archive levels,
 at most three nested mounts run beside the two mounts that panels, tabs and viewers
 open from native files (and Find's own two). Protocol-1 workers cannot stage members,
 so archives inside them do not open.
+A mounted location's `ArchiveAddress` names its own archive only; its enclosing
+archives come from `ArchiveMount::parent`, whose `ArchiveParent::raw_name` keeps the
+member's raw provider name. `ArchiveLocation::saved_address` combines them into the
+saved form that tabs, Hot Paths and panel history keep: the outermost address, whose
+`components` name the folder that holds the first member, and `ArchiveAddress::nested`,
+one `NestedArchiveAddress` (member raw name, decoder, folders) per archive inside it.
+`ArchiveAddress::steps` lists folders and archives in order, and `same_location`
+compares saved locations without their revision or display text. Listing a saved
+address without a session (`ArchiveAction::List` with no mount) opens the outermost
+archive, walks its folders and opens each member again (`archives/navigation.rs`,
+`restore_nested`); a level that fails is named in the error, and one whose member or
+names need a password ends the walk at the folder that holds it, where the panel asks
+for the password and goes on (`presenter/history.rs`, `resume_archive`).
 User-facing behavior is in [archives inside archives](../ARCHIVE_FORMATS.md#archives-inside-archives).
 
 ## Independent builds and verification

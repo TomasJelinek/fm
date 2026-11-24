@@ -55,6 +55,7 @@ fn target(mount: Arc<Mount>, network_allowed: bool) -> ThumbnailTarget {
                 access: Default::default(),
             },
             address: Arc::new(ArchiveAddress {
+                nested: Vec::new(),
                 provider: "test.archive".into(),
                 format: Some(midnight_core::ArchiveFormat::Zip),
                 // Admission must query the mount's locator, never this presentation snapshot.

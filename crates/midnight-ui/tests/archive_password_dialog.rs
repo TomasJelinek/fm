@@ -243,6 +243,7 @@ impl Share {
                     location: ArchiveLocation {
                         mount: Some(Arc::new(Locked)),
                         address: ArchiveAddress {
+                            nested: Vec::new(),
                             format: Some(ArchiveFormat::Zip),
                             provider: "midnight.archive".into(),
                             container: root.join("share.zip"),

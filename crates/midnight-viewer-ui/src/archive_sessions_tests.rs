@@ -53,6 +53,7 @@ fn a_member_viewer_holds_its_archive_and_every_enclosing_one() {
         location: ArchiveLocation {
             mount: Some(outer),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "midnight.archive".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: std::env::temp_dir().join("outer.zip"),
@@ -64,6 +65,7 @@ fn a_member_viewer_holds_its_archive_and_every_enclosing_one() {
         },
         member: VirtualEntryId { mount: 4, entry: 9 },
         name: "inner.zip".into(),
+        raw_name: b"inner.zip".to_vec(),
     };
     let inner: Arc<dyn ArchiveMount> = Arc::new(Archive(11, Some(parent)));
     assert_eq!(sessions_of(&launch(Some(inner))), [11, 4]);

@@ -70,6 +70,7 @@ pub(super) fn node(id: u64, parent: u64, kind: EntryKind, size: Option<u64>) -> 
 }
 pub(super) fn address() -> ArchiveAddress {
     ArchiveAddress {
+        nested: Vec::new(),
         provider: "test.archive".into(),
         format: None,
         container: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

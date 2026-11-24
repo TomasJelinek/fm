@@ -212,6 +212,7 @@ mod tests {
         let mut p = Presenter::new(root.clone(), root.clone());
         p.panes[0].archive = Some(archives::ArchivePane::unavailable(
             ArchiveAddress {
+                nested: Vec::new(),
                 provider: "fixture".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: root.join("文档.zip"),

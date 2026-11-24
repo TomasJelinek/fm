@@ -40,6 +40,7 @@ fn member_of(depth: u64) -> ArchiveParent {
         let location = ArchiveLocation {
             mount: Some(Arc::new(Enclosing(100 + level, parent.take()))),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "midnight.fs.archive".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: std::env::temp_dir().join("outer.zip"),
@@ -56,6 +57,7 @@ fn member_of(depth: u64) -> ArchiveParent {
             },
             location,
             name: "inner.zip".into(),
+            raw_name: b"inner.zip".to_vec(),
         });
     }
     parent.unwrap()

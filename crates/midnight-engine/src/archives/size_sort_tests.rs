@@ -87,6 +87,7 @@ fn location(source: Arc<Source>) -> ArchiveLocation {
     ArchiveLocation {
         mount: Some(source),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.sizes".into(),
             format: Some(ArchiveFormat::Zip),
             container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/owned.zip"),

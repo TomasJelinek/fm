@@ -166,6 +166,7 @@ fn fixture(id: u64, directory: u64) -> (ArchiveLocation, Arc<State>) {
                 state: state.clone(),
             })),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 format: None,
                 provider: "fake.archive".into(),
                 container,

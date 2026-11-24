@@ -37,6 +37,7 @@ fn searched() -> (Presenter, FindSessionId, PathBuf) {
     assert!(p.start_find(id, FindForm::default(), &|_| true));
     let member = Arc::new(FindArchiveMember {
         folder: ArchiveAddress {
+            nested: Vec::new(),
             provider: "zip".into(),
             format: Some(ArchiveFormat::Zip),
             container: root.join("bundle.zip"),

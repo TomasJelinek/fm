@@ -183,7 +183,7 @@ impl Presenter {
             let mut location = a.location.clone();
             location.directory = 1;
             location.trail.truncate(1);
-            location.address.components.clear();
+            location.address.truncate_steps(0);
             return self.archive_navigate(pane, ArchiveAction::List(location), send);
         }
         let p = &mut self.panes[pane.index()];

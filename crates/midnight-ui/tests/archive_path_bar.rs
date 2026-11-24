@@ -215,6 +215,7 @@ impl Panel {
         ArchiveLocation {
             mount: Some(Arc::new(Mount)),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "midnight.archive".into(),
                 format: None,
                 container: self.folder.join("bundle.zip"),

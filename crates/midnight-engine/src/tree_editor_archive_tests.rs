@@ -15,6 +15,7 @@ fn tree_editor_capture_rejects_readable_regular_archive_file() {
     let location = ArchiveLocation {
         mount: Some(mount),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.archive".into(),
             format: None,
             container: directory.path().join("container.zip"),

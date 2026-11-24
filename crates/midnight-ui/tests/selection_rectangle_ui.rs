@@ -406,6 +406,7 @@ fn archive_thumbnail_rectangle_keeps_disjoint_opaque_ids_and_preview_until_ack()
                 mount: Some(Arc::new(ArchiveFixture)),
                 directory: 1,
                 address: ArchiveAddress {
+                    nested: Vec::new(),
                     format: None,
                     provider: "test-archive".into(),
                     container: std::env::temp_dir().join("文档.zip"),

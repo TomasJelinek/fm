@@ -469,6 +469,7 @@ async fn actual_archive_completion_seeds_tree_and_navigation_retains_registratio
         mount: Some(Arc::new(Archive)),
         directory: 1,
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.archive".into(),
             format: Some(ArchiveFormat::Zip),
             container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/archive.zip"),
@@ -998,6 +999,7 @@ async fn archive_root_in_pane_at(
         mount: Some(mount),
         directory: 1,
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "test.archive".into(),
             format: Some(ArchiveFormat::Zip),
             container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/archive.zip"),

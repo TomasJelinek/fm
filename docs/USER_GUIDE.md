@@ -873,8 +873,12 @@ current keys.
 - Ctrl+U: swap the complete panels while keeping their operations and active content.
   Drag the divider for unequal widths; double-click it to center the panels.
 - Ctrl+Shift+1–9: select a numbered tab. Tabs sit below the drive toolbar.
-- Hot Paths save folders, folders inside archives and Network locations, each
-  location once and at most 64, shown by their location without separate names. A
+- Hot Paths save folders, folders inside archives (also inside archives inside
+  archives, up to the four archive levels that open) and Network locations, each
+  location once and at most 64, shown by their whole path without separate names, for
+  example `D:\data\a.zip\docs\b.7z\inner`. Opening one opens every archive on the way
+  again; when one of them no longer opens, the error names which archive of the path
+  it is. A
   new one takes the first free number of **1–9, 0**, which the menus show; pressing
   that digit in a focused panel opens it. Editors and filename search keep normal
   digit input. Ctrl+number and Shift+number are aliases; Ctrl+Alt+number and
@@ -906,7 +910,13 @@ current keys.
   filesystem, of the archive inside an archive, or of Network in a Network location.
   Ctrl+PageDown enters the focused folder and never opens a file.
 - Alt+Left / Alt+Right: back / forward history; adjacent dropdowns choose a
-  particular history entry. Click a highlighted path prefix to visit its ancestor.
+  particular history entry. History has native folders and folders inside archives
+  alike: entering an archive, an archive inside it or one of their folders, and
+  leaving an archive, count like entering and leaving a folder, in each tab. Back to an
+  archive that the panel has left, or closed, opens it again at the same folder,
+  asking for a password again where one is needed; an archive that is gone or no
+  longer opens leaves the panel where it was and says why. Click a highlighted path
+  prefix to visit its ancestor.
   Right-click the prefix to copy it to the clipboard without navigating.
 - Arrow keys, Page Up/Down, Home/End: move the cursor.
 - Space / Insert: toggle selection and advance, clamped at the last row. Space
@@ -1744,8 +1754,8 @@ levels deep: the path bar shows the whole path (for example
 the inner archive under the cursor, and F3, F5 and history work at every level. The
 member is staged and verified through
 its enclosing archive (in memory when small, otherwise in a private spool file), with
-progress in the status bar and cancellation by navigating away; such archives are
-opened for the session only, so tabs and Hot Paths keep the outermost archive's folder.
+progress in the status bar and cancellation by navigating away. Saved tabs, Hot Paths
+and history keep the whole path, and opening one opens every level again.
 Details and limits are in [archives inside archives](ARCHIVE_FORMATS.md#archives-inside-archives).
 At most two archives opened from native files are open at a time; tabs and viewers
 that show the same archive share it. A tab that moves on to another archive hands its

@@ -43,7 +43,7 @@ paths never authorize a provider call.
 
 Archive navigation, saved archive tabs, selection, F3 member content, thumbnails of
 archive members (for providers with stable member IDs), verified copy-out and
-archives inside archives (session only) exist. Archive writes and generic remote
+archives inside archives, saved by their whole path in tabs, Hot Paths and history, exist. Archive writes and generic remote
 content do not.
 
 - New mounts and saved-tab restoration capture the container through the explicit

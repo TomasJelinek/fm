@@ -307,13 +307,13 @@ impl Presenter {
                         }
                         self.retired.push(Box::new(p.network_return.take()));
                         let left = p.archive.take();
-                        if let Some(session) = left
-                            .as_ref()
-                            .and_then(super::archives::ArchivePane::native_session)
+                        if let Some(session) =
+                            left.as_ref().and_then(|a| a.native_session(&p.history))
                         {
                             self.archive_sessions.released(pane, session);
                         }
                         self.retired.push(Box::new(left));
+                        super::history::release_sessions(&mut p.history, &mut self.retired);
                         self.retired.push(Box::new(p.pending.take()));
                         self.retired
                             .push(Box::new(mem::replace(&mut p.entries, listing.entries)));

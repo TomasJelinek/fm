@@ -18,7 +18,7 @@ struct TabLocation {
     network_return: Option<network_neighborhood::NetworkReturn>,
     archive: Option<archives::ArchivePane>,
     path: PathBuf,
-    history: Vec<PathBuf>,
+    history: Vec<HistoryEntry>,
     history_index: Option<usize>,
     navigation_history: Option<usize>,
     sort: SortSpec,
@@ -85,6 +85,13 @@ impl TabLocation {
         }
     }
 
+    /// Whether this parked tab holds archive session `session`.
+    fn holds_archive_session(&self, session: u64) -> bool {
+        self.archive
+            .as_ref()
+            .is_some_and(|archive| archive.holds_session(&self.history, session))
+    }
+
     fn park(pane: &mut Pane) -> Self {
         let path = pane.display_path().to_owned();
         let cursor_path = pane
@@ -97,7 +104,7 @@ impl TabLocation {
             .as_ref()
             .and_then(|request| request.history)
             .or(pane.history_index)
-            .filter(|index| pane.history.get(*index) == Some(&path));
+            .filter(|index| pane.history.get(*index).is_some_and(|entry| *entry == path));
         Self {
             archive: pane.archive.take(),
             network: pane.network.take(),
@@ -321,7 +328,14 @@ impl Presenter {
             .network
             .as_ref()
             .map(|network| NetworkAction::Browse(network.address.clone()));
-        self.panes[pane.index()].archive_request = self.panes[pane.index()].archive.is_some();
+        let p = &mut self.panes[pane.index()];
+        p.archive_request = p.archive.is_some();
+        // A restored tab inside archives that need a password opens the rest here.
+        p.archive_resume = p
+            .archive
+            .as_ref()
+            .filter(|archive| archive.location.mount.is_none())
+            .map(|archive| history::ArchiveResume::new(archive.location.address.clone()));
         if let Some(request) = &mut self.panes[pane.index()].pending {
             request.wanted_cursor = location.cursor_path;
         }
@@ -353,10 +367,22 @@ impl Presenter {
                 .set_error("Archive navigation queue is busy", &mut self.retired);
             return false;
         }
+        // The tab keeps its history, without the sessions it let go of: the archive
+        // location is recorded once it is listed.
+        let p = &mut self.panes[pane.index()];
+        location.history = mem::take(&mut p.history);
+        location.history_index = p.history_index;
+        history::release_sessions(&mut location.history, &mut self.retired);
         let outgoing = self.replace_pane_location(pane, &mut location, send);
         self.retired.push(Box::new(outgoing));
         self.navigation_accepted(pane, navigation, location.path, None, send);
-        self.panes[pane.index()].archive_request = true;
+        let p = &mut self.panes[pane.index()];
+        p.archive_request = true;
+        // A saved location inside archives that need a password opens the rest here.
+        p.archive_resume = p
+            .archive
+            .as_ref()
+            .map(|archive| history::ArchiveResume::new(archive.location.address.clone()));
         self.tab_session_changed(pane, send);
         drag_drop::invalidate(&self.drag_drop.targets);
         true
@@ -445,14 +471,14 @@ impl Presenter {
         for pane in [PaneId::Left, PaneId::Right] {
             let tabs = &self.tabs.panes[pane.index()];
             for (index, tab) in tabs.tabs.iter().enumerate() {
-                let archive = if index == tabs.active {
-                    self.panes[pane.index()].archive.as_ref()
+                let holds = if index == tabs.active {
+                    self.panes[pane.index()].holds_archive_session(session)
                 } else {
                     tab.parked
                         .as_ref()
-                        .and_then(|location| location.archive.as_ref())
+                        .is_some_and(|location| location.holds_archive_session(session))
                 };
-                if archive.is_some_and(|archive| archive.holds_session(session)) {
+                if holds {
                     found.push((pane, index + 1, tab.id));
                 }
             }
@@ -475,6 +501,7 @@ impl Presenter {
             return;
         };
         self.retired.push(Box::new(location.archive.take()));
+        history::release_sessions(&mut location.history, &mut self.retired);
         location.path = folder.to_owned();
         location.cursor_path = Some(container.to_owned());
         location.parent_cursor = false;
@@ -487,8 +514,7 @@ impl Presenter {
             tabs.tabs.iter().any(|tab| {
                 tab.parked
                     .as_ref()
-                    .and_then(|location| location.archive.as_ref())
-                    .is_some_and(|archive| archive.holds_session(session))
+                    .is_some_and(|location| location.holds_archive_session(session))
             })
         })
     }

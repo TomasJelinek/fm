@@ -224,6 +224,7 @@ impl ArchiveSearch for FakeArchives {
         Some(Ok(OpenedArchive {
             mount: Arc::new(mount),
             root: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "fake".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: archive.path.clone(),

@@ -5,6 +5,7 @@ fn captured_archive_hot_path_keeps_raw_address_after_navigation_and_stays_unique
     let mut p = Presenter::new(root.clone(), root.clone());
     p.preferences.loaded = true;
     let address = ArchiveAddress {
+        nested: Vec::new(),
         provider: "archive".into(),
         format: Some(ArchiveFormat::Zip),
         container: root.join("captured.zip"),

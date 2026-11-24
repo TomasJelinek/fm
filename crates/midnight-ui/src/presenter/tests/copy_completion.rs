@@ -495,6 +495,7 @@ fn large_archive_selection(count: u64) -> (Presenter, OperationId, Arc<HashSet<E
             location: ArchiveLocation {
                 mount: Some(mount),
                 address: ArchiveAddress {
+                    nested: Vec::new(),
                     format: None,
                     provider: "midnight.archive".into(),
                     container: test_root().join("flat.tar"),

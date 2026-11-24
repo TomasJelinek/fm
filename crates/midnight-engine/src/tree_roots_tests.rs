@@ -235,6 +235,7 @@ fn archive_handoff_retains_source_mount_and_exact_virtual_index_after_navigation
     let location = ArchiveLocation {
         mount: Some(archive),
         address: ArchiveAddress {
+            nested: Vec::new(),
             format: Some(ArchiveFormat::Zip),
             provider: "test.archive".into(),
             container: Path::new(env!("CARGO_MANIFEST_DIR")).join("../../_build/source.zip"),

@@ -9,6 +9,7 @@ fn bookmark(format: Option<ArchiveFormat>) -> Bookmark {
         path: root.clone(),
         slot: None,
         archive: Some(ArchiveAddress {
+            nested: Vec::new(),
             provider: "midnight.fs.archive".into(),
             format,
             container: root.join("container.zip"),

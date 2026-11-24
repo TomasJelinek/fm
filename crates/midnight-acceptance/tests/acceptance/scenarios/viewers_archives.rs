@@ -11,7 +11,9 @@
 //! members, F3 shows a member, Space shows the next member, F5 copies one out byte for
 //! byte), raw `.gz`, `.xz`, `.bz2` and `.zst` streams (one member with the payload),
 //! three formats nested in each other (7-Zip ⊃ tar.gz ⊃ ZIP, entered and left level by
-//! level), the four-level limit (Enter on a fifth level explains it), damaged
+//! level), the four-level limit (Enter on a fifth level explains it), a Hot Path four
+//! archives deep (saved with the whole path, opened again by its number) and Back and
+//! Forward into and out of those archives after leaving them, damaged
 //! archives (truncated ZIP and 7-Zip, garbage after a 7-Zip signature, a tar.gz with a
 //! corrupted stream: a clear error; a ZIP member with a wrong CRC: the listing works,
 //! F3 and F5 of that member fail clearly), Compare files on two archive members (the
@@ -24,7 +26,9 @@
 use crate::{
     Context,
     app::{self, App, Config},
-    encode, files_support as files, input, inspect, panel, tools_support as tools, viewers_stage,
+    encode, files_support as files, input, inspect, panel,
+    scenarios::panels_support as ps,
+    tools_support as tools, viewers_stage,
     viewers_support::{self as support, Failures, clip, generated, millis},
 };
 use midnight_core::{CopyOperationState, PaneId};
@@ -864,6 +868,11 @@ fn generated_archives(context: &mut Context, failures: &Failures) -> Result<(), 
     recover(&mut app, &home)?;
     failures.check("four-level limit", depth_limit(&mut app, context, &home));
     recover(&mut app, &home)?;
+    failures.check(
+        "history and a Hot Path four archives deep",
+        deep_history_and_hot_path(&mut app, context, &home),
+    );
+    recover(&mut app, &home)?;
     for (archive, shot) in [
         ("truncated.zip", "truncated-zip"),
         ("garbage.7z", "garbage-7z"),
@@ -1420,6 +1429,103 @@ fn depth_limit(app: &mut App, context: &mut Context, home: &Path) -> Result<(), 
         ));
     }
     recover(app, home)
+}
+
+/// The number of the Hot Path whose shown path ends with `chain`.
+fn hot_path_slot(app: &App, chain: &str) -> Option<i32> {
+    use slint::Model;
+    app.window
+        .get_bookmarks()
+        .iter()
+        .find(|row| row.path.as_str().ends_with(chain))
+        .map(|row| row.slot)
+}
+
+/// Alt+Left or Alt+Right in the left panel.
+fn history_key(app: &mut App, key: Key) -> Result<(), String> {
+    panel::focus_list(app, PaneId::Left)?;
+    input::chord(app.slint(), &[Key::Alt], key);
+    app.settle();
+    Ok(())
+}
+
+/// l1.zip ⊃ l2.zip ⊃ l3.zip ⊃ l4.zip, the deepest path that opens: the toolbar's star
+/// saves it as a Hot Path shown with the whole path. Backspace leaves the archives; Back
+/// opens l1.zip again and then l2.zip inside it from its saved path, Forward returns to
+/// the native folder with the cursor on l1.zip, and the Hot Path's number opens all four
+/// archives again.
+fn deep_history_and_hot_path(
+    app: &mut App,
+    context: &mut Context,
+    home: &Path,
+) -> Result<(), String> {
+    open_row(app, "l1.zip")?;
+    for depth in 2..=4 {
+        let name = format!("l{depth}.zip");
+        wait_listing(app, &format!("level {}", depth - 1), &[name.as_str()])?;
+        open_row(app, &name)?;
+    }
+    wait_listing(app, "level 4", &["l5.zip"])?;
+    let separator = std::path::MAIN_SEPARATOR;
+    let chain = format!("l1.zip{separator}l2.zip{separator}l3.zip{separator}l4.zip");
+    ps::click_starting(app, "Add current path to Hot Paths")?;
+    if !ps::wait(app, Duration::from_secs(5), |app| {
+        hot_path_slot(app, &chain).is_some()
+    }) {
+        return Err(format!(
+            "the star saved no Hot Path shown as …{chain}; notice {:?}",
+            app.notice()
+        ));
+    }
+    let slot = hot_path_slot(app, &chain).unwrap_or_default();
+    back_to(app, home, 4, "l1.zip")?;
+    // Back opens the archives the panel left: l1.zip, then l2.zip inside it.
+    history_key(app, Key::LeftArrow)?;
+    wait_listing(app, "Back into l1.zip", &["l2.zip"])?;
+    let started = Instant::now();
+    history_key(app, Key::LeftArrow)?;
+    let elapsed = wait_listing(app, "Back into l1.zip/l2.zip", &["l3.zip"])?;
+    let path = app.window.get_left_path().to_string();
+    if !path.ends_with(&format!("l1.zip{separator}l2.zip")) {
+        return Err(format!("Back into l2.zip: the path bar shows {path:?}"));
+    }
+    context.note(format!(
+        "Back into l1.zip/l2.zip after leaving both: opened again in {} ({path:?})",
+        millis(elapsed.min(started.elapsed()))
+    ));
+    // Forward: l1.zip, then the native folder with the cursor on l1.zip.
+    history_key(app, Key::RightArrow)?;
+    wait_listing(app, "Forward to l1.zip", &["l2.zip"])?;
+    history_key(app, Key::RightArrow)?;
+    let wanted = home.to_path_buf();
+    if !ps::wait(app, LIST_LIMIT, |app| {
+        app.location(PaneId::Left).as_ref() == Some(&wanted) && !app.loading(PaneId::Left)
+    }) {
+        return Err(format!(
+            "Forward out of l1.zip went to {:?}",
+            app.location(PaneId::Left)
+        ));
+    }
+    cursor_on(app, "l1.zip", "Forward out of l1.zip")?;
+    // The Hot Path's number opens all four archives again.
+    panel::focus_list(app, PaneId::Left)?;
+    let digit = format!("Digit{}", slot.rem_euclid(10));
+    ps::physical(app, &digit, false, false, false);
+    let elapsed = wait_listing(app, "the Hot Path four archives deep", &["l5.zip"])?;
+    let path = app.window.get_left_path().to_string();
+    app.screenshot(
+        context,
+        "hot-path-four-deep",
+        &format!("Hot Path {slot}, four archives deep: {path}"),
+    );
+    if !path.ends_with(&chain) {
+        return Err(format!("Hot Path {slot} opened {path:?}, not …{chain}"));
+    }
+    context.note(format!(
+        "Hot Path {slot} four archives deep: opened in {} ({path:?})",
+        millis(elapsed)
+    ));
+    back_to(app, home, 4, "l1.zip")
 }
 
 /// A member with a wrong CRC: the archive lists, F3 and F5 of the member fail clearly.

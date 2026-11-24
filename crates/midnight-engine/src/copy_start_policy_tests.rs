@@ -84,6 +84,7 @@ fn archive(policy: TransferStartPolicy) -> ArchiveCopyRequest {
         location: ArchiveLocation {
             mount: None,
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "policy-fixture".into(),
                 format: None,
                 container: native.clipboard.paths[0].clone(),

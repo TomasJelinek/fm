@@ -722,6 +722,7 @@ fn archive_required_metadata_refuses_forged_option_without_native_access() {
             verification: midnight_core::TransferVerification::default(),
             id: OperationId(0),
             location: ArchiveLocation::unavailable(ArchiveAddress {
+                nested: Vec::new(),
                 format: None,
                 provider: "fake.archive".into(),
                 container: root.join("source.zip"),

@@ -76,17 +76,9 @@ impl Bookmark {
         }
         match (self.archive.as_ref(), archive) {
             (None, None) => self.path == path,
-            (Some(left), Some(right)) => {
-                left.provider == right.provider
-                    && left.container == right.container
-                    && left
-                        .format
-                        .or_else(|| crate::archive_format(&left.container))
-                        == right
-                            .format
-                            .or_else(|| crate::archive_format(&right.container))
-                    && left.components == right.components
-            }
+            // Archives inside the archive count: a folder of an archive inside an archive
+            // is not the folder of the enclosing archive that holds it.
+            (Some(left), Some(right)) => left.same_location(right),
             _ => false,
         }
     }
@@ -95,7 +87,9 @@ impl Bookmark {
         self.matches_location(&other.path, other.archive.as_ref(), other.network.as_ref())
     }
 
-    /// Presentation only. Literal `@` in a native name is never parsed back.
+    /// Presentation only, never parsed back: an archive location reads as the path bar
+    /// shows it, the archive file followed by its folders and the archives inside it,
+    /// for example `D:\data\a.zip\docs\b.7z\inner`.
     pub fn display_text(&self) -> String {
         if let Some(network) = &self.network {
             return network.display.clone();
@@ -103,14 +97,6 @@ impl Bookmark {
         let Some(archive) = &self.archive else {
             return self.path.to_string_lossy().into_owned();
         };
-        let mut text = archive.container.to_string_lossy().into_owned();
-        text.push('@');
-        for (index, component) in archive.components.iter().enumerate() {
-            if index > 0 {
-                text.push(std::path::MAIN_SEPARATOR);
-            }
-            text.push_str(&String::from_utf8_lossy(component));
-        }
-        text
+        crate::ArchiveLocation::unavailable(archive.clone()).display_text()
     }
 }

@@ -127,6 +127,7 @@ impl Opener {
             Self::Test(open) => {
                 let mount = open(slot, path)?;
                 let address = ArchiveAddress {
+                    nested: Vec::new(),
                     provider: "test.native".into(),
                     format: Some(format),
                     container: path.to_owned(),

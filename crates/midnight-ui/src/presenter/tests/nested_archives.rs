@@ -4,6 +4,11 @@
 //! returns to the folder that contains it.
 use super::*;
 
+#[path = "archive_history.rs"]
+mod archive_history;
+#[path = "archive_history_report.rs"]
+mod archive_history_report;
+
 /// An archive opened from a member of `parent`'s archive. The UI only passes it along.
 #[derive(Debug)]
 struct Inner(u64, ArchiveParent);
@@ -107,6 +112,7 @@ fn inner_root(parent: &ArchiveParent, mount: u64) -> ArchiveLocation {
     ArchiveLocation {
         mount: Some(Arc::new(Inner(mount, parent.clone()))),
         address: ArchiveAddress {
+            nested: Vec::new(),
             provider: "midnight.archive".into(),
             format: Some(ArchiveFormat::Zip),
             container: parent.location.address.container.clone(),
@@ -193,14 +199,17 @@ fn enter_opens_an_archive_member_inside_the_archive_and_backspace_returns_to_it(
     assert!(outer.label.ends_with("sample.zip"));
     assert_eq!(inner.label, format!("{separator}inner.zip"));
     assert!(inner.keep_whole && !outer.keep_whole);
-    // Saved tabs and Hot Paths keep the enclosing archive's folder.
+    // Saved tabs and Hot Paths keep the whole path: the enclosing archive's revision and
+    // folder, and the member that opens the archive inside it.
     let saved = p.panes[0].archive.as_ref().unwrap().saved_address();
     assert_eq!(saved.source_version, [1, 2, 3]);
     assert!(saved.components.is_empty());
+    assert_eq!(saved.nested.len(), 1);
+    assert_eq!(saved.nested[0].member, b"inner.zip");
     let bookmark = p
         .capture_bookmark_location(PaneId::Left, "inside".into())
         .unwrap();
-    assert_eq!(bookmark.archive.unwrap().source_version, [1, 2, 3]);
+    assert_eq!(bookmark.archive.unwrap(), saved);
     // Backspace at the inner root lists the enclosing folder, cursor on the archive.
     assert!(p.up(PaneId::Left, &send));
     let enclosing = last_listing(&sent);
@@ -209,11 +218,11 @@ fn enter_opens_an_archive_member_inside_the_archive_and_backspace_returns_to_it(
     assert_eq!(p.panes[0].cursor, Some(EntryId(5)));
     assert!(p.panes[0].display_location_text().ends_with("sample.zip"));
     // History goes back into the inner archive and out of it again.
-    assert!(p.archive_history(PaneId::Left, -1, &send));
+    assert!(p.history(PaneId::Left, -1, &send));
     let back = last_listing(&sent);
     assert_eq!(back.mount_id(), Some(43));
     listed(&mut p, Ok(listing(back, root_entries(43))), &sent);
-    assert!(p.archive_history(PaneId::Left, 1, &send));
+    assert!(p.history(PaneId::Left, 1, &send));
     assert_eq!(last_listing(&sent).mount_id(), Some(42));
 }
 
@@ -359,12 +368,8 @@ fn a_failed_inner_session_returns_to_its_enclosing_folder() {
     let (title, body) = p.desktop.notice.clone().expect("a notice");
     assert_eq!(title, "Archive unavailable");
     assert!(body.contains("returns to the folder that contains the archive"));
-    let archive = p.panes[0].archive.as_ref().unwrap();
     assert!(
-        archive
-            .history
-            .iter()
-            .all(|location| location.mount_id() == Some(42)),
+        history::archives(&p.panes[0].history).all(|location| location.mount_id() == Some(42)),
         "the enclosing archive's session is kept, the stopped one is not entered again"
     );
     p.recover_archive(PaneId::Left, &send);
@@ -437,15 +442,12 @@ fn inner_archives_are_reentered_through_their_session_and_left_ones_make_room() 
         (parent.name.as_str(), format),
         ("other.tar.gz", ArchiveFormat::TarGzip)
     );
-    let archive = p.panes[0].archive.as_ref().unwrap();
+    let pane = &p.panes[0];
     assert!(
-        archive
-            .history
-            .iter()
-            .all(|location| location.mount_id() == Some(42)),
+        history::archives(&pane.history).all(|location| location.mount_id() == Some(42)),
         "the left session is no longer remembered"
     );
-    assert!(archive.history_index < archive.history.len());
+    assert!(pane.history_index.unwrap() < pane.history.len());
     assert!(
         !p.take_retired().is_empty(),
         "its folders leave the UI thread through retirement"

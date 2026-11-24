@@ -476,6 +476,7 @@ async fn a_published_listing_lets_go_of_the_panes_last_archive() {
         location: ArchiveLocation {
             mount: Some(Arc::new(Shown(report))),
             address: ArchiveAddress {
+                nested: Vec::new(),
                 provider: "test.archive".into(),
                 format: Some(ArchiveFormat::Zip),
                 container: std::env::temp_dir().join("shown.zip"),
