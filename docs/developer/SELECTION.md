@@ -36,7 +36,13 @@ Archives preserve opaque provider entry IDs even when display names collide or r
 member names are not UTF-8. Their selection responses return the captured immutable
 view, independent selection revision and explicit result/error; stale responses
 cannot replace the current view's marks. At most two archive computations or
-blocked publications retain worker permits.
+blocked publications retain worker permits. Alt+Up and Alt+Down in an archive folder
+binary-search the sorted display positions of its selected members, which the first
+jump after the selection or the listing changed builds once
+(`selected_navigation::SelectedPositions`); the cache holds both weakly, and any change
+of either is a new allocation, so a stale cache is never used. Before 24 November each
+jump looked up every selected member
+([record](../verification/2026-11-24-ui-perf-fixes.md#archive-selected-jumps)).
 
 The gesture capture keeps a weak index owner, preventing address reuse while
 allowing old large listings to be reclaimed by backend retirement. Its cancellation
