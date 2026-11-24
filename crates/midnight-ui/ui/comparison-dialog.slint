@@ -261,7 +261,9 @@ export component CompareDirectoriesDialog inherits Rectangle {
                                 hint: "Alt+D. Of a pair of same-named files, the one modified later is selected, comparing whole seconds.";
                             }
                             HorizontalLayout {
-                                padding-left: 40px; spacing: 6px; alignment: start;
+                                // Under the Date and time caption: Criterion's 8 px, the check
+                                // box's 24 px column and its 6 px before the caption.
+                                padding-left: 38px; spacing: 6px; alignment: start;
                                 Text { text: "Ignore differences up to"; color: times.checked ? Theme.text : Theme.muted-text;
                                     font-size: Theme.font-size; vertical-alignment: center; wrap: no-wrap; }
                                 // Room for "86400" and the caret: a small number field, not a full-width edit.
@@ -281,7 +283,9 @@ export component CompareDirectoriesDialog inherits Rectangle {
                                     font-size: Theme.font-size; vertical-alignment: center; }
                             }
                             HorizontalLayout {
-                                padding-left: 32px;
+                                // The same indent as the tolerance above: both depend on
+                                // Date and time.
+                                padding-left: 38px;
                                 shifts := WrappingCheckBox {
                                     text: "Ignore differences of exactly one or two hours (daylight saving)";
                                     enabled: !root.model.busy && times.checked;

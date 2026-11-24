@@ -1,0 +1,18 @@
+import { Theme } from "theme.slint";
+
+// The rhythm of the Options pages (docs/developer/DIALOG_ERGONOMICS.md, "Options page
+// rhythm"): options follow each other `row-gap` apart, each row keeping its whole control
+// height as its hit target and the room of its focus ring, and a page's groups are set
+// apart by `OptionsRule`, `group-gap` above and below its line. Dependent options keep
+// their own indent; only the vertical rhythm comes from here.
+export global OptionRows {
+    out property <length> row-gap: Theme.touch ? 4px : 2px;
+    out property <length> group-gap: Theme.touch ? 12px : 10px;
+}
+
+// The line between two groups of a page, `group-gap` from the rows on either side of it
+// (the page's `row-gap` included).
+export component OptionsRule inherits Rectangle {
+    height: 2 * (OptionRows.group-gap - OptionRows.row-gap) + 1px;
+    Rectangle { y: (parent.height - 1px) / 2; height: 1px; background: Theme.frame; }
+}

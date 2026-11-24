@@ -106,7 +106,59 @@ pub const EXEMPTIONS: &[Exemption] = &[
         detail: "Button \"Decrease ",
         reason: POPUP_ARROWS,
     },
+    Exemption {
+        surface: "",
+        kind: super::ui_align::ROW_ALIGNMENT,
+        detail: " history\" at",
+        reason: SPLIT_BUTTONS,
+    },
+    Exemption {
+        surface: "",
+        kind: super::ui_align::ROW_ALIGNMENT,
+        detail: "Button \"Add current path to Hot Paths\" at",
+        reason: SPLIT_BUTTONS,
+    },
+    Exemption {
+        surface: "",
+        kind: super::ui_align::ROW_ALIGNMENT,
+        detail: "Button \"Scroll toolbar ",
+        reason: SPLIT_BUTTONS,
+    },
+    Exemption {
+        surface: "",
+        kind: super::ui_align::ROW_ALIGNMENT,
+        detail: "Button \"Edit folder path\" at",
+        reason: "the path's edit button lies 1 px inside the path bar's frame, which is as tall \
+            as the controls beside it (the panel's filter and pickers)",
+    },
+    Exemption {
+        surface: "times",
+        kind: super::ui_align::EDGE_ALIGNMENT,
+        detail: ": Now\" at",
+        reason: "open (to the Attributes owner): in the narrowest Times layout a row's Now \
+            button ends 6 px past the UTC offset field on the line under it; the fields' grid \
+            keeps its own spacing there",
+    },
+    Exemption {
+        surface: "find",
+        kind: super::ui_align::EDGE_ALIGNMENT,
+        detail: "Button \"Sort by ",
+        reason: "the result list's column headings sit inside the list's frame, a few pixels in \
+            from the content edge that the buttons above it share",
+    },
+    Exemption {
+        surface: "checksums",
+        kind: "label elided to nothing",
+        detail: "\"SHA-",
+        reason: "with a large font the results table scrolls sideways and its headings with it: \
+            the last heading shows its start at the table's edge until the table is scrolled",
+    },
 ];
+
+/// Why a split button's halves differ from a plain tool button by 2 px.
+const SPLIT_BUTTONS: &str = "a split button (Back, Forward, Hot Paths) draws one frame as tall as \
+    the toolbar's buttons around its two halves, each 1 px inside it; the halves are what the \
+    accessibility tree reports";
 
 /// Why the arrows of the Times calendar and time picker show no tooltip.
 const POPUP_ARROWS: &str = "the calendar's and the time picker's arrows have no tooltip by \
@@ -380,6 +432,16 @@ pub struct TextNode {
     pub selection: Option<(Color, Color)>,
     /// The single-line width and the height at the element's own width.
     pub preferred: (f32, f32),
+}
+
+impl TextNode {
+    /// Whether its glyphs start at its element's left edge.
+    pub fn left_aligned(&self) -> bool {
+        matches!(
+            self.halign,
+            TextHorizontalAlignment::Left | TextHorizontalAlignment::Start
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -1697,6 +1759,11 @@ pub fn inspect_window(
             found.retain(|issue| issue.kind != BLANK);
         }
         issues.extend(found);
+        issues.extend(super::ui_align::issues(
+            &nodes,
+            analysis.dialog,
+            Some(frame),
+        ));
         issues.extend(contrast_issues(frame, &nodes, selected));
     }
     issues

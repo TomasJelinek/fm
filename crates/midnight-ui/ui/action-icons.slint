@@ -59,6 +59,8 @@ export global FallbackIcons {
     out property <image> parent: @image-url("icons/parent.svg");
     out property <image> refresh: @image-url("icons/refresh.svg");
     out property <image> open-path: @image-url("icons/open-path.svg");
+    // A field's Browse button shows a folder with an ellipsis (FieldButton).
+    out property <image> browse: @image-url("icons/browse.svg");
     out property <image> bookmarks: Theme.light ? @image-url("icons/star.svg") : @image-url("icons/star-dark.svg");
     out property <image> terminal: @image-url("icons/terminal.svg");
     out property <image> options: Theme.light ? @image-url("icons/settings.svg") : @image-url("icons/settings-dark.svg");
@@ -90,6 +92,10 @@ export global FallbackIcons {
     out property <image> sort-ascending: @image-url("icons/sort-ascending.svg");
     out property <image> sort-descending: @image-url("icons/sort-descending.svg");
     out property <image> pause: @image-url("icons/pause.svg");
+    // The panel's compact view picker shows the shown view's glyph.
+    out property <image> view-detailed: @image-url("icons/view-detailed.svg");
+    out property <image> view-brief: @image-url("icons/view-brief.svg");
+    out property <image> view-thumbnails: @image-url("icons/view-thumbnails.svg");
     // Every labelled button carries an icon, so a call site that names none gets the
     // one its label implies. Symbol captions (+, −, ‹, ›, 1:1) are their own icon;
     // viewer and comparator view toggles have no common glyph and stay without one,

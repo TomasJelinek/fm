@@ -27,7 +27,8 @@ export component FormNote inherits Rectangle {
         }
     }
     message := Text {
-        x: glyph.x + glyph.width + 8px; y: root.inset;
+        // 6 px after the glyph, as a check box's caption follows its box: the two line up.
+        x: glyph.x + glyph.width + 6px; y: root.inset;
         width: max(1px, root.width - self.x - 8px);
         height: self.preferred-height;
         text: root.text; wrap: word-wrap;

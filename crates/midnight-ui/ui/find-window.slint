@@ -22,11 +22,13 @@ export struct FindDraft {
     content-regex: bool, archives: bool,
 }
 
-// Match the query controls while preserving touch and intrinsic content sizing.
+// Match the query controls while preserving touch and intrinsic content sizing: as tall
+// as the query's fields and pickers (`row-height`), or as its caption needs.
 component FindActionButton inherits HintedActionButton {
+    in property <length> row-height;
     minimum-control-height: 0px;
     vertical-padding: Theme.touch ? 5px : 4px;
-    height: self.min-height;
+    height: max(self.min-height, root.row-height);
 }
 
 export component FindWindow inherits ToolWindow {
@@ -44,6 +46,15 @@ export component FindWindow inherits ToolWindow {
     // User actions own the draft; host initialization never marks it as edited.
     out property <bool> filename-mask-edited;
     in property <string> found-count: "" + root.rows.length;
+    // The query's one control height, for its stock fields and pickers, its buttons and
+    // the folders picker: the density's control height, the stock field's minimum (32 px
+    // in the Fluent style) or what a line of text and the field's padding need.
+    private property <length> query-height: max(Theme.control-height, 32px,
+        caption-probe.preferred-height + 12px);
+    // One line of a button's caption, for the query height.
+    caption-probe := Text { visible: false; accessible-role: none; text: "Ag"; font-size: Theme.font-size; }
+    // One line of the status in its small font.
+    status-probe := Text { visible: false; accessible-role: none; text: "Ag"; font-size: Theme.small-font; }
     // Whether each shown result is selected; the host keeps the selection.
     in property <[bool]> marks;
     in property <int> selected-count;
@@ -242,7 +253,7 @@ export component FindWindow inherits ToolWindow {
                                 entries: root.mask-history;
                                 enabled: !root.running; accessible-name: "File name masks";
                                 min-width: root.compact-query ? Theme.font-size * 4 : 0px;
-                                min-height: Theme.control-height; horizontal-stretch: 1;
+                                horizontal-stretch: 1; height: root.query-height;
                                 hint: mode.current-index == 2 ? "Typed metadata predicate, never a script. Example: kind = file and size >= 1MiB. Unknown metadata does not match comparisons."
                                     : mode.current-index == 1 ? "Bounded regular expression over the native filename."
                                     : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names. Down opens recent masks.";
@@ -255,6 +266,7 @@ export component FindWindow inherits ToolWindow {
                             }
                             FindActionButton {
                                 text: "▾"; accessible-label: "Filename mask history";
+                                row-height: root.query-height; width: root.query-height;
                                 hint: "Choose a previously used filename mask (Down in the filename field).";
                                 enabled: !root.running && root.mask-history.length > 0;
                                 clicked => { masks.open-list(); }
@@ -266,10 +278,12 @@ export component FindWindow inherits ToolWindow {
                             mode := HintedComboBox {
                                 model: ["Masks", "Regex", "Expression"]; enabled: !root.running;
                                 accessible-label: "Find match mode"; min-width: 0px;
+                                height: root.query-height;
                                 preferred-width: max(120px, Theme.font-size * 9);
                                 horizontal-stretch: 1;
                             }
                             FindActionButton {
+                                row-height: root.query-height;
                                 text: "Help"; fallback-icon: FallbackIcons.help;
                                 hint: "Syntax help with examples for the chosen mode (F1). Click an example to use it.";
                                 clicked => { root.show-help = !root.show-help; }
@@ -284,7 +298,8 @@ export component FindWindow inherits ToolWindow {
                             row: root.narrow ? root.name-row + 2 : 2; col: 0; colspan: root.narrow ? 2 : 1;
                             alignment: start;
                             Text {
-                                min-height: root.narrow ? folders-label-measure.preferred-height : Theme.control-height;
+                                // On the folders picker's centre: as tall as the query's controls.
+                                min-height: root.narrow ? folders-label-measure.preferred-height : root.query-height;
                                 text: root.folders-label;
                                 color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
                                 vertical-alignment: center; min-width: 0px; wrap: word-wrap;
@@ -297,6 +312,7 @@ export component FindWindow inherits ToolWindow {
                                 roots: root.roots; current-index: root.current-root;
                                 enabled: !root.running;
                                 accessible-name: "Search folders";
+                                height: root.query-height;
                                 hint: "Folders this Find can search. Ticked folders are searched; click a name to choose it for Remove.";
                                 selected(index) => { root.selected-root = index; }
                                 toggled(index, searched) => { root.toggle-root(index, searched); }
@@ -307,7 +323,7 @@ export component FindWindow inherits ToolWindow {
                                 HintedLineEdit {
                                     row: 0; col: 0; colspan: root.narrow ? 3 : 1;
                                     enabled: !root.running; horizontal-stretch: 1; min-width: 0px;
-                                    min-height: Theme.control-height;
+                                    height: root.query-height;
                                     accessible-label: "Folder to add";
                                     placeholder-text: "Absolute folder path";
                                     hint: "Type an absolute folder path and press Enter, or choose one with Browse.";
@@ -317,6 +333,7 @@ export component FindWindow inherits ToolWindow {
                                 }
                                 Rectangle { row: root.narrow ? 1 : 0; col: 0; horizontal-stretch: 1; }
                                 FindActionButton {
+                                row-height: root.query-height;
                                     row: root.narrow ? 1 : 0; col: 1; horizontal-stretch: 0;
                                     text: "Browse…"; fallback-icon: FallbackIcons.open-path;
                                     enabled: !root.running;
@@ -324,6 +341,7 @@ export component FindWindow inherits ToolWindow {
                                     clicked => { root.browse-root(); }
                                 }
                                 FindActionButton {
+                                row-height: root.query-height;
                                     row: root.narrow ? 1 : 0; col: 2; horizontal-stretch: 0;
                                     text: "OK"; enabled: !root.running && root.new-root-text != "";
                                     hint: "Add the typed folder to Search folders.";
@@ -338,6 +356,7 @@ export component FindWindow inherits ToolWindow {
                             GridLayout {
                                 spacing: 6px;
                                 FindActionButton {
+                                row-height: root.query-height;
                                     row: 0; col: 0;
                                     text: "Add"; fallback-icon: FallbackIcons.tab-add;
                                     enabled: !root.running;
@@ -345,6 +364,7 @@ export component FindWindow inherits ToolWindow {
                                     clicked => { if root.adding { root.adding = false; } else { root.start-adding(); } }
                                 }
                                 FindActionButton {
+                                row-height: root.query-height;
                                     row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1;
                                     text: "Remove"; fallback-icon: FallbackIcons.close;
                                     enabled: !root.running && root.roots.length > 0;
@@ -401,6 +421,7 @@ export component FindWindow inherits ToolWindow {
                     GridLayout {
                         spacing: 8px;
                         FindActionButton {
+                                row-height: root.query-height;
                             row: 0; col: 0;
                             text: root.show-advanced ? "Fewer options" : "More options";
                             fallback-icon: FallbackIcons.options;
@@ -416,6 +437,7 @@ export component FindWindow inherits ToolWindow {
                         }
                         // A results action, kept out of the full footer: right above the list.
                         FindActionButton {
+                                row-height: root.query-height;
                             row: 0; col: 2;
                             text: "Feed to panel"; fallback-icon: FallbackIcons.make-file-list;
                             enabled: !root.running && !root.feeding && root.rows.length > 0;
@@ -517,7 +539,9 @@ export component FindWindow inherits ToolWindow {
                 font-size: Theme.small-font; height: max(18px, Theme.small-font + 4px);
             }
             if root.progress != "" && root.inline-status: FindStatusLine {
-                height: max(18px, Theme.small-font + 4px);
+                // As tall as its line of text at the font (a large font's line is taller
+                // than the font size and 4 px).
+                height: max(18px, Theme.small-font + 4px, status-probe.preferred-height);
                 text: root.progress; count: root.found-count; error: root.attention; font-size: Theme.small-font;
                 details => { root.show-details = true; }
             }

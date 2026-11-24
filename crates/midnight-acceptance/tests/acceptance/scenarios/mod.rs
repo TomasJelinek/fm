@@ -90,6 +90,7 @@ pub mod tools_sizes;
 pub mod tools_user_menu;
 pub mod transfers;
 pub mod tree;
+pub mod ui_align;
 pub mod ui_dialogs;
 pub mod ui_gate;
 pub mod ui_interact;
@@ -494,7 +495,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "ui_review",
                 area: "ui",
-                summary: "Polish gate, default matrix: main window states, menus, popups, every dialog and tool window across themes, densities, sizes (minimum included) and scale 1 and 2; any flag fails.",
+                summary: "Polish gate, default matrix: main window states, menus, popups, every dialog and tool window across themes, densities, sizes (minimum included), large fonts and scale 1 and 2; any flag fails.",
                 run: crate::review::run,
                 timeout: minutes(40),
             },

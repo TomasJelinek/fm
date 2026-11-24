@@ -437,7 +437,9 @@ export component CompactPicker inherits Rectangle {
                             cross-axis-alignment: center;
                             Text {
                                 text: index == root.current-index ? "✓" : "";
-                                color: Theme.accent; width: 16px; vertical-alignment: center;
+                                // As wide as the mark at the menu's font: a large font does not cut it.
+                                color: Theme.accent; font-size: root.font-size; width: max(16px, root.font-size);
+                                vertical-alignment: center;
                             }
                             if root.show-row-icons && (root.choices.length > 0 || index < root.icons.length) : LocationImage {
                                 native-icon: root.row-icon(index);

@@ -235,10 +235,28 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
             window.invoke_apply_preferences(theme.index(), density, "".into(), desktop, touch);
             window.set_show_details(false);
             draw(&native);
+            // The query's controls share the stock field's height (at least the
+            // density's control height): the polish gate's row alignment (U-K32).
+            let field_height =
+                modeless::accessible_item(&native, AccessibleRole::TextInput, "File name masks")
+                    .unwrap()
+                    .geometry()
+                    .height();
+            assert!(
+                field_height + 0.5 >= normal_height,
+                "{case}: field {field_height}"
+            );
+            // The footer keeps the density's control height; the query's rows the field's.
+            let footer_height = normal_height;
+            let normal_height = field_height;
             let folders =
                 modeless::accessible_item(&native, AccessibleRole::Combobox, "Search folders")
                     .unwrap();
-            assert!((folders.geometry().height() - normal_height).abs() <= 0.5);
+            assert!(
+                (folders.geometry().height() - normal_height).abs() <= 0.5,
+                "{case}: folders {} beside a {normal_height}px field",
+                folders.geometry().height()
+            );
             let check = |label| {
                 assert_action(
                     &native,
@@ -249,11 +267,10 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
                     &case,
                 );
             };
+            for label in ["Help", "Add", "Remove", "More options"] {
+                check(label);
+            }
             for label in [
-                "Help",
-                "Add",
-                "Remove",
-                "More options",
                 "Find",
                 "Go to file",
                 "View",
@@ -262,7 +279,14 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
                 "Copy details",
                 "Close",
             ] {
-                check(label);
+                assert_action(
+                    &native,
+                    label,
+                    footer_height,
+                    icon_size,
+                    exact_height,
+                    &case,
+                );
             }
             modeless::accessible_item(&native, AccessibleRole::Button, "More options")
                 .unwrap()
@@ -275,12 +299,22 @@ fn find_actions_match_normal_controls_and_preserve_scaled_content() {
             window.set_running(true);
             draw(&native);
             check("Remove");
-            check("Stop");
+            let footer = |label| {
+                assert_action(
+                    &native,
+                    label,
+                    footer_height,
+                    icon_size,
+                    exact_height,
+                    &case,
+                );
+            };
+            footer("Stop");
             window.set_running(false);
             window.set_show_details(true);
             draw(&native);
             for label in ["Copy", "Back", "Close"] {
-                check(label);
+                footer(label);
             }
         }
     }

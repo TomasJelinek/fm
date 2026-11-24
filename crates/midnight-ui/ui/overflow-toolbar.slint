@@ -9,6 +9,8 @@ export component OverflowToolbar inherits Rectangle {
     in property <string> right-hint: "Scroll toolbar right";
     in property <length> spacing: 2px;
     callback activated();
+    // The width its items need side by side, whatever room the strip has.
+    out property <length> content-width: items.preferred-width;
     min-width: 0px;
     height: Theme.control-height;
     horizontal-stretch: 1;

@@ -152,7 +152,8 @@ export component MainMenuBody inherits Rectangle {
                         height: self.included ? self.heading-height + item.needed-height + 4px : 0px;
                         min-width: 0px;
                         if self.heading : Text {
-                            x: 4px; y: 0px; width: max(0px, parent.width - 8px);
+                            // Where the entries' glyphs start (MenuActionButton's 8 px).
+                            x: 8px; y: 0px; width: max(0px, parent.width - 16px);
                             text: root.categories[parent.entry.category]; color: Theme.strong-text;
                             font-size: Theme.font-size; font-weight: 600;
                             height: parent.heading-height; vertical-alignment: center;

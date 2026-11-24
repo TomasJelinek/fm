@@ -2,6 +2,7 @@ import { HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
 import { Theme } from "theme.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { OptionRows } from "options-rows.slint";
 
 // Controls bind two-way or re-sync explicitly: native input detaches one-way
 // bindings, and Options Reset changes these values while the page stays open.
@@ -14,7 +15,7 @@ export component ThumbnailOptions inherits VerticalLayout {
     callback size-changed(int);
     callback changed(bool, bool, bool, int);
     callback clear-cache();
-    spacing: 16px; alignment: start;
+    spacing: OptionRows.row-gap; alignment: start;
     WrappingCheckBox {
         text: "Show image and video previews";
         checked <=> root.thumbnails-enabled; min-height: Theme.control-height;

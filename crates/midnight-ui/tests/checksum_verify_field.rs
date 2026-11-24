@@ -4,6 +4,8 @@
 //! label, tooltip, height and behaviour.
 #[path = "support/window_input.rs"]
 mod input;
+#[path = "support/window_polish.rs"]
+mod polish;
 use crate::support::modeless;
 
 use i_slint_core::{
@@ -233,4 +235,43 @@ fn the_verify_path_field_keeps_its_label_tooltip_height_and_behaviour() {
         "a running verification disables the field"
     );
     window.hide().unwrap();
+}
+
+/// The owner's report of 24 November: on the Verify page the "…" browse button stood
+/// taller than the path field beside it (32 px beside 24 px with the desktop density),
+/// reached below it, and drew its dots near its bottom edge. The alignment checks of
+/// the polish gate (U-K32 row alignment, U-K33 caption centring, U-K35 companion
+/// button) flag it; the page passes every layout and alignment check of the gate in
+/// both densities, with the default and a large font, in a dark and a light theme.
+#[test]
+fn the_verify_page_lines_up_its_field_and_browse_button() {
+    let (window, native, _) = verify_page();
+    let mut findings = Vec::new();
+    for (scheme, density, font) in [(1, 0, 12), (2, 1, 15), (1, 0, 24), (2, 1, 24), (0, 0, 32)] {
+        window.invoke_apply_preferences(scheme, density, "".into(), font, font);
+        let pixels = modeless::render(&native, 860, 620, "checksum-verify-alignment");
+        let field = modeless::accessible_item(&native, AccessibleRole::TextInput, FIELD)
+            .expect("the checksum file field");
+        let browse =
+            modeless::accessible_item(&native, AccessibleRole::Button, "Browse checksum file")
+                .expect("Browse");
+        let (field, browse) = (modeless::edges(&field), modeless::edges(&browse));
+        let case = format!("theme {scheme}, density {density}, font {font}");
+        if (field.1 - browse.1).abs() > 1.0 || (field.3 - browse.3).abs() > 1.0 {
+            findings.push(format!("{case}: field {field:?}, Browse {browse:?}"));
+        }
+        if ((browse.2 - browse.0) - (browse.3 - browse.1)).abs() > 1.0 {
+            findings.push(format!("{case}: Browse is not square: {browse:?}"));
+        }
+        findings.extend(
+            polish::layout_findings(native.window())
+                .into_iter()
+                .chain(polish::alignment_findings(native.window(), &pixels))
+                .map(|finding| format!("{case}: {finding}")),
+        );
+    }
+    window.hide().unwrap();
+    findings.sort();
+    findings.dedup();
+    assert!(findings.is_empty(), "{findings:#?}");
 }

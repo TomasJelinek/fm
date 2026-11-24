@@ -76,7 +76,7 @@ export component ColorPickerControls inherits VerticalLayout {
     }
     HorizontalLayout {
         spacing: 8px;
-        Text { text: "Saturation"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; }
+        Text { text: "Saturation"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; vertical-alignment: center; }
         saturation-slider := Slider {
             accessible-label: "Color saturation"; minimum: 0; maximum: 100; step: 1; value: root.saturation * 100;
             changed(value) => { root.saturation = value / 100; }
@@ -84,7 +84,7 @@ export component ColorPickerControls inherits VerticalLayout {
     }
     HorizontalLayout {
         spacing: 8px;
-        Text { text: "Brightness"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; }
+        Text { text: "Brightness"; width: max(82px, Theme.small-font * 5.5); color: Theme.text; font-size: Theme.small-font; vertical-alignment: center; }
         brightness-slider := Slider {
             accessible-label: "Color brightness"; minimum: 0; maximum: 100; step: 1; value: root.brightness * 100;
             changed(value) => { root.brightness = value / 100; }

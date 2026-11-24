@@ -4,9 +4,12 @@
 //! text or a control cut by a container that does not scroll (U-K03), one-line text
 //! clipped without an ellipsis (U-K04), wrapped text cut off (U-K05), a caption that
 //! does not fit the visible part of its button (U-K20), and how a focus change shows
-//! (U-K24, U-K25). The rules follow `crates/midnight-acceptance/tests/acceptance/
-//! scenarios/ui_gate.rs` and `ui_interact.rs`.
+//! (U-K24, U-K25), and the alignment of neighbouring controls (U-K32–U-K38,
+//! `alignment.rs`, shared with the gate). The rules follow `crates/midnight-acceptance/
+//! tests/acceptance/scenarios/ui_gate.rs` and `ui_interact.rs`.
 #![allow(dead_code)]
+#[path = "alignment.rs"]
+pub mod alignment;
 use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ItemTreeRc, ParentItemTraversalMode},
@@ -327,8 +330,52 @@ pub fn layout_findings(window: &slint::Window) -> Vec<String> {
     item_findings(&ItemRc::new_root(WindowInner::from_pub(window).component()))
 }
 
-/// Every finding of the layout checks below `root`, such as an embedded dialog's popup.
+/// Every finding of the layout checks below `root`, such as an embedded dialog's popup:
+/// the per-element checks and the alignment of neighbouring controls.
 pub fn item_findings(root: &ItemRc) -> Vec<String> {
+    let mut findings = element_findings(root);
+    findings.extend(
+        alignment::check(&alignment_elements(root), Some(bounds(root)))
+            .into_iter()
+            .map(|finding| finding.to_string()),
+    );
+    findings
+}
+
+/// The alignment findings of the window (U-K32–U-K38) with the glyphs of symbol
+/// captions measured in `pixels`, a frame of the whole window as rendered.
+pub fn alignment_findings(window: &slint::Window, pixels: &[slint::Rgb8Pixel]) -> Vec<String> {
+    let root = ItemRc::new_root(WindowInner::from_pub(window).component());
+    let size = window.size();
+    let (width, height) = (size.width as usize, size.height as usize);
+    let mut elements = alignment_elements(&root);
+    if pixels.len() == width * height {
+        let pixel = |x: usize, y: usize| {
+            let at = pixels[y * width + x];
+            [at.r, at.g, at.b]
+        };
+        let scale = window.scale_factor();
+        for element in &mut elements {
+            if let Some(caption) = &mut element.caption
+                && caption.symbol
+            {
+                let (x, y, w, h) = element.rect;
+                caption.glyphs = alignment::drawn_box(
+                    &pixel,
+                    (width, height),
+                    scale,
+                    (x + 2.0, y + 2.0, w - 4.0, h - 4.0),
+                );
+            }
+        }
+    }
+    alignment::check(&elements, Some(bounds(&root)))
+        .into_iter()
+        .map(|finding| finding.to_string())
+        .collect()
+}
+
+fn element_findings(root: &ItemRc) -> Vec<String> {
     let mut found = Found::default();
     audit(
         root,
@@ -413,4 +460,291 @@ pub fn focus_contrast(
         .filter(|&index| before[index] != after[index])
         .map(|index| contrast(before[index], after[index]))
         .reduce(f64::max)
+}
+
+/// The state of the walk that collects [`alignment::Element`]s.
+#[derive(Clone, Copy)]
+struct Placement {
+    hidden: bool,
+    clip: Option<Rect>,
+    /// The nearest scroll viewport (an index of `viewports`), 0 for none.
+    scope: usize,
+    in_control: bool,
+    /// Below a list, list item, table or tree.
+    in_list: bool,
+    /// Below a fully transparent layer: an input overlay (a check box's native control
+    /// over its drawn box) still takes its place, a text there shows nothing.
+    faded: bool,
+}
+
+fn alignment_role(role: AccessibleRole) -> Option<alignment::Role> {
+    use alignment::Role;
+    Some(match role {
+        AccessibleRole::Button => Role::Button,
+        AccessibleRole::TextInput => Role::Field,
+        AccessibleRole::Combobox => Role::Picker,
+        AccessibleRole::Checkbox | AccessibleRole::RadioButton | AccessibleRole::Switch => {
+            Role::Toggle
+        }
+        AccessibleRole::Tab => Role::Tab,
+        AccessibleRole::Spinbox => Role::Spin,
+        AccessibleRole::Slider => Role::Slider,
+        _ => return None,
+    })
+}
+
+/// The shown texts below `item` (itself included), each with its element rectangle.
+fn shown_texts(item: &ItemRc, walk: Walk, found: &mut Vec<(TextNode, Rect, f32)>) {
+    let rect = bounds(item);
+    let hidden = walk.hidden
+        || item.downcast::<Clip>().is_some_and(|clip| {
+            let clip = clip.as_pin_ref();
+            clip.is_visibility_clip() && clip.clip()
+        })
+        || item
+            .downcast::<Opacity>()
+            .is_some_and(|layer| layer.as_pin_ref().opacity() < 0.01);
+    let here = Walk { hidden, ..walk };
+    if shown(rect, &here).is_some()
+        && let Some(text) = text_node(item)
+        && !text.text.trim().is_empty()
+    {
+        found.push((text, rect, font_size(item)));
+    }
+    let mut next = item.first_child();
+    while let Some(current) = next {
+        next = current.next_sibling();
+        shown_texts(&current, here, found);
+    }
+}
+
+fn font_size(item: &ItemRc) -> f32 {
+    let size = if let Some(text) = item.downcast::<SimpleText>() {
+        text.as_pin_ref().font_size().get()
+    } else if let Some(text) = item.downcast::<ComplexText>() {
+        text.as_pin_ref().font_size().get()
+    } else {
+        0.0
+    };
+    if size > 0.0 {
+        return size;
+    }
+    item.window_adapter()
+        .and_then(|adapter| {
+            WindowInner::from_pub(adapter.window())
+                .window_item()
+                .map(|window| window.as_pin_ref().default_font_size().get())
+        })
+        .filter(|size| *size > 0.0)
+        .unwrap_or(12.0)
+}
+
+fn has_alphanumeric(text: &str) -> bool {
+    text.chars().any(char::is_alphanumeric)
+}
+
+/// A control's caption: its first shown text with letters or digits, else its first
+/// shown symbol.
+fn control_caption(item: &ItemRc, walk: Walk) -> (Option<alignment::Caption>, bool, usize) {
+    let mut texts = Vec::new();
+    shown_texts(item, walk, &mut texts);
+    let texts: Vec<_> = texts
+        .into_iter()
+        .filter(|(text, _, _)| !text.wrap)
+        .collect();
+    let icon_only = !texts
+        .iter()
+        .any(|(text, _, _)| has_alphanumeric(&text.text));
+    let count = texts
+        .iter()
+        .filter(|(text, _, _)| has_alphanumeric(&text.text))
+        .count();
+    let chosen = texts
+        .iter()
+        .find(|(text, _, _)| has_alphanumeric(&text.text))
+        .or_else(|| texts.first());
+    let caption = chosen.map(|(text, rect, size)| alignment::Caption {
+        line: ink(*rect, text),
+        needed: text.preferred,
+        font_size: *size,
+        symbol: !has_alphanumeric(&text.text),
+        elide: text.elide,
+        left_aligned: matches!(
+            text.halign,
+            TextHorizontalAlignment::Left | TextHorizontalAlignment::Start
+        ),
+        glyphs: None,
+    });
+    (caption, icon_only, count)
+}
+
+fn single_line_field(item: &ItemRc) -> bool {
+    if let Some(input) = item.downcast::<i_slint_core::items::TextInput>() {
+        return input.as_pin_ref().single_line();
+    }
+    let mut next = item.first_child();
+    while let Some(current) = next {
+        next = current.next_sibling();
+        if current.accessible_role() == AccessibleRole::None && !single_line_field(&current) {
+            return false;
+        }
+    }
+    true
+}
+
+fn describe_element(role: AccessibleRole, name: &str, (x, y, w, h): Rect) -> String {
+    format!("{role:?} {name:?} at {x:.0},{y:.0} {w:.0}x{h:.0}")
+}
+
+fn collect_elements(
+    item: &ItemRc,
+    walk: Placement,
+    viewports: &mut Vec<Rect>,
+    found: &mut Vec<alignment::Element>,
+) {
+    let rect = bounds(item);
+    let hidden = walk.hidden
+        || item.downcast::<Clip>().is_some_and(|clip| {
+            let clip = clip.as_pin_ref();
+            clip.is_visibility_clip() && clip.clip()
+        });
+    let faded = walk.faded
+        || item
+            .downcast::<Opacity>()
+            .is_some_and(|layer| layer.as_pin_ref().opacity() < 0.01);
+    let visible = if hidden || rect.2 <= 0.0 || rect.3 <= 0.0 {
+        None
+    } else {
+        walk.clip.map_or(Some(rect), |clip| intersect(rect, clip))
+    };
+    let whole = visible.is_some_and(|shown| {
+        (shown.0 - rect.0).abs() < 0.5
+            && (shown.1 - rect.1).abs() < 0.5
+            && (shown.2 - rect.2).abs() < 0.5
+            && (shown.3 - rect.3).abs() < 0.5
+    });
+    let role = item.accessible_role();
+    let container = item
+        .parent_item(ParentItemTraversalMode::StopAtPopups)
+        .map(|parent| bounds(&parent));
+    let text_walk = Walk {
+        hidden,
+        clip: walk.clip,
+        fixed: None,
+        in_control: true,
+    };
+    if !walk.in_control
+        && visible.is_some()
+        && let Some(kind) = alignment_role(role)
+    {
+        let (caption, icon_only, texts) = control_caption(item, text_walk);
+        let viewport = viewports.get(walk.scope.wrapping_sub(1)).copied();
+        let checkable = item
+            .accessible_string_property(AccessibleStringProperty::Checkable)
+            .is_some_and(|value| value == "true");
+        let row_of_list = viewport.is_some_and(|viewport| rect.2 >= 0.9 * viewport.2);
+        let multiline = match kind {
+            alignment::Role::Field => !single_line_field(item),
+            _ => caption
+                .as_ref()
+                .is_some_and(|caption| rect.3 > 2.5 * caption.needed.1.max(1.0)),
+        };
+        found.push(alignment::Element {
+            name: describe_element(role, &label(item), rect),
+            role: kind,
+            rect,
+            whole,
+            multiline,
+            segment: kind == alignment::Role::Tab || checkable || row_of_list,
+            scope: walk.scope,
+            caption,
+            icon_only,
+            container,
+            list_row: row_of_list || walk.in_list,
+            texts,
+        });
+    } else if !walk.in_control
+        && whole
+        && !faded
+        && let Some(text) = text_node(item)
+        && has_alphanumeric(&text.text)
+    {
+        let line = ink(rect, &text);
+        let multiline = text.wrap && rect.3 > 1.5 * text.preferred.1.max(1.0);
+        found.push(alignment::Element {
+            name: describe_element(AccessibleRole::Text, &text.text, rect),
+            role: alignment::Role::Label,
+            rect,
+            whole,
+            multiline,
+            segment: false,
+            scope: walk.scope,
+            caption: Some(alignment::Caption {
+                line,
+                needed: text.preferred,
+                font_size: font_size(item),
+                symbol: false,
+                elide: text.elide,
+                left_aligned: matches!(
+                    text.halign,
+                    TextHorizontalAlignment::Left | TextHorizontalAlignment::Start
+                ),
+                glyphs: None,
+            }),
+            icon_only: false,
+            container,
+            list_row: walk.in_list,
+            texts: 1,
+        });
+    }
+    let clips = item.borrow().as_ref().clips_children();
+    let scope = if item.downcast::<Flickable>().is_some() {
+        viewports.push(rect);
+        viewports.len()
+    } else {
+        walk.scope
+    };
+    let child = Placement {
+        hidden,
+        faded,
+        clip: if clips {
+            Some(walk.clip.map_or(rect, |clip| cut(clip, rect)))
+        } else {
+            walk.clip
+        },
+        scope,
+        in_control: walk.in_control || interactive(role),
+        in_list: walk.in_list
+            || matches!(
+                role,
+                AccessibleRole::List
+                    | AccessibleRole::ListItem
+                    | AccessibleRole::Table
+                    | AccessibleRole::Tree
+            ),
+    };
+    let mut next = item.first_child();
+    while let Some(current) = next {
+        next = current.next_sibling();
+        collect_elements(&current, child, viewports, found);
+    }
+}
+
+/// The controls and labels below `root` as the alignment checks see them.
+pub fn alignment_elements(root: &ItemRc) -> Vec<alignment::Element> {
+    let mut found = Vec::new();
+    collect_elements(
+        root,
+        Placement {
+            hidden: false,
+            clip: None,
+            scope: 0,
+            in_control: false,
+            in_list: false,
+            faded: false,
+        },
+        &mut Vec::new(),
+        &mut found,
+    );
+    found
 }

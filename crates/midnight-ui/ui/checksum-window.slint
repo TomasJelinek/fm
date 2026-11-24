@@ -1,6 +1,6 @@
 import { ProgressIndicator } from "std-widgets.slint";
 import { VScrollView } from "scroll-view.slint";
-import { HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
+import { FieldButton, HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { ThemedLineEdit } from "content-controls.slint";
 import { Tip } from "controls.slint";
 import { ErrorNotice, ErrorGlyph } from "error-notice.slint";
@@ -178,8 +178,10 @@ export component ChecksumWindow inherits ToolWindow {
     VerticalLayout {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
         padding: root.compact ? 4px : 12px; spacing: root.compact ? 4px : 8px;
+        // As tall as the page tabs, or the page picker of a narrow window: the algorithm
+        // menu beside them takes the same height.
         HorizontalLayout {
-            spacing: 8px; height: Theme.control-height + 4px;
+            spacing: 8px; vertical-stretch: 0;
             if root.width >= max(420px, Theme.font-size * 24): DialogTabs {
                 labels: ["Calculate", "Verify"]; current-index <=> root.page;
                 horizontal-stretch: 1;
@@ -281,8 +283,9 @@ export component ChecksumWindow inherits ToolWindow {
                             accepted => { root.submit-verify(); }
                             Tip { text: "SFV, MD5, SHA-1, SHA-256 or SHA-512 manifest. Names are resolved relative to this file."; }
                         }
-                        HintedActionButton { text: "…"; accessible-label: "Browse checksum file";
-                            hint: "Choose a checksum file to verify."; width: Theme.control-height;
+                        FieldButton { text: "Browse…"; fallback-icon: FallbackIcons.browse;
+                            accessible-label: "Browse checksum file";
+                            hint: "Choose a checksum file to verify.";
                             enabled: !root.running && !root.saving && !root.picker-busy;
                             clicked => { root.browse-manifest(true, root.output-algorithm); } }
                     }

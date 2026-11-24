@@ -42,7 +42,7 @@ belongs to a check marked pending, the scenario reports `PENDING`.
 
 | Matrix | Combinations |
 | --- | --- |
-| Default (`ui_review`) | Every surface: Blue Desktop 1340×820, Dark Touch 960×600, Light Desktop 1600×1000, HighContrastDark Touch 1340×820, Blue Desktop and Dark Touch at the minimum size (320×200), all at scale 1. Colour scope at scale 2: Light Desktop 1340×820 and HighContrastLight Touch 960×600. |
+| Default (`ui_review`) | Every surface: Blue Desktop 1340×820, Dark Touch 960×600, Light Desktop 1600×1000, HighContrastDark Touch 1340×820, Blue Desktop and Dark Touch at the minimum size (320×200), and with large fonts Dark Desktop 1340×820 at 20 px (`-F20`) and Light Touch 1340×820 at 24 px (`-F24`), all at scale 1. Colour scope at scale 2: Light Desktop 1340×820 and HighContrastLight Touch 960×600. |
 | Themes (`ui_themes`) | The other 21 themes, Desktop 1340×820 ×1, colour scope. |
 | Jobs (`ui_polish_jobs`) | Blue Desktop and Dark Touch; every window at its preferred and its minimum size. |
 | Viewers (`ui_polish_viewers`) | Dark Desktop and Light Touch. |
@@ -99,6 +99,14 @@ flagged and its corrected twin must pass every check.
 | U-K29 | unexpected window or notice | After Escape, Cancel, Close, the header's close or Decide later, a window, notice or popup that was not open before the dialog; after a job ends or its window closes, a notice or another window. | Interactive case 6: Cancel opens a notice → only closes. |
 | U-K30 | no hover feedback | Hovering a button, tab, check box, radio button, combo box or switch changes no pixel of it, judged against two frames taken 180 ms apart just before it is hovered: pixels that change between those two (a caret, progress) do not count. | Interactive case 7: a button without hover state → with one. |
 | U-K31 | tooltip does not show | Hovering an icon-only button that has a tooltip area shows no tooltip text within the area's delay plus 600 ms (the texts of custom tooltip content and the styled text of a `Tooltip { text: … }` count). | Interactive case 11: an icon-only button whose tooltip area shows no text → one whose tooltip names its action. |
+| U-K32 | controls of one row not aligned | (`ui_align`, `alignment.rs`) Controls side by side (the nearest one starting at most 24 px to the right that shares half the smaller height, neither inside the other): framed controls (fields, buttons, pickers, number boxes) differ in height by more than 1 px, or any two (a label by its line box) differ in vertical centre by more than 1 px. Multi-line controls, tabs, segments of one control and labels of different font sizes (aligned by baseline) are exempt. | Case 22: a 24 px field beside a 32 px "…" button → both 24 px. |
+| U-K33 | caption not centred | A button's, picker's or tab's caption line box is more than 1.5 px off its control's vertical centre, or needs more height than the control has; a caption without letters or digits ("…", "×") is judged by its rendered glyphs: more than 2 px, or an eighth of its font, off centre. | Case 27: a caption 5 px low → centred; case 22: "…" dots near the button's bottom → a centred glyph. |
+| U-K34 | edges almost aligned | A control or left-aligned label and the next one under it in its column (overlapping horizontally, at most 48 px lower): left edges, or right edges of controls, 1–6 px apart. | Case 23: two fields 3 px apart → one edge. |
+| U-K35 | companion button not square | An icon or symbol button right beside a field or picker is not square (within 1 px). | Case 22: 24×32 → 24×24. |
+| U-K36 | uneven gaps between rows | In a column of controls (one left edge, one viewport) with at least three free gaps, a gap at least three times the median and 12 px more; the gap above a dialog's last row (its footer) is exempt. | Case 24: gaps 6, 46, 6 px → 6, 6, 6 px. |
+| U-K37 | controls touching | Controls side by side, or fields and pickers stacked, less than 2 px apart; a control (narrower than 90 % of its dialog) within 2 px of its dialog's or tool window's edge. Segments of one control (tabs, checkable page buttons, a list's rows) are exempt. | Case 25: buttons 1 px apart → 8 px. |
+| U-K38 | text elided although there is room | A label shortened with "…" whose free room to its right (to its row's next element, or its container's edge less 16 px) would show it whole. | Case 26: "Current folder: projects" in 80 px with 300 px free → 300 px. |
+| U-K39 | uneven gaps between option rows | Check boxes, radio buttons and switches stacked in a column (one left edge, one viewport, nothing between two neighbours): a gap more than 1 px from the column's most common gap. On the Options pages that gap is `OptionRows.row-gap`. | Case 28: a last gap 8 px wider than the others → even gaps. |
 
 ## Surfaces and states
 
@@ -164,9 +172,11 @@ tooltips). Combinations are those of the scenario's matrix.
 | U-S54 | Custom Commands: the toolbar (every main-window capture now has two seeded commands) and, in a compact window, its "Custom commands" popup | `ui_review`, `ui_themes` | PASS for the toolbar (Windows, Linux); the popup SKIP: no size of the default matrix shows its button (see "Not covered yet") | – |
 | U-S55 | Options, every page interactively (General's surface also clicks the page list and the footer; the other pages skip them, as the same controls) | `ui_polish_dialogs` | – | PASS on every page on Windows (`20261122-174336`, d96dec97: U-D24, U-D25 and U-D26 fixed; the Tab walk's hang guard counts the controls scrolled out of sight, U-K21); PASS on every page on Linux (`20261122-201240`) |
 | U-S56 | Archive password dialog: F3 on the encrypted member of a ZipCrypto archive (the gate never types its password) | `ui_polish_viewers` | PASS (Windows, Linux) | FAIL U-D28 (a notice after every dismissal; Windows, Linux) |
+| U-S57 | Checksums › Verify with a checksum file typed in (`checksums-verify`) | `ui_review` | PASS on Windows (`20261124-111500`); FAIL on the base (`20261124-084612`): the owner's "…" button, U-K32, U-K33 and U-K35 | – |
 
 Not covered yet: the Find window's other pages (advanced options, folders, syntax help,
-details, results, Feed to panel), the Checksums window's Verify page and results, the
+details, results, Feed to panel), the Checksums window's verification results (its Verify
+page with a checksum file typed in is `checksums-verify` since 24 November), the
 thumbnail view, inline trees, tabs, the toolbar's other menus (Back/Forward history,
 Hot Paths, drives), the Links reason and warning lines (they need a FAT, removable or
 network destination), interactive checks of the calendar and time picker (each day
@@ -186,6 +196,24 @@ An exempt finding is recorded as a note ("exempt (reason): …"), not as a flag.
 | --- | --- | --- | --- |
 | Attributes › Times › the calendar (`times-calendar`) | U-K08 | "Previous month" and "Next month" show no text and have no tooltip | These popups close themselves, and Slint 1.18.1 panics when a shown tooltip is destroyed inside a popup (U-D19); the arrows' accessible names say what they do. |
 | Attributes › Times › the time picker (`times-clock`) | U-K08 | "Increase …" and "Decrease …" (each column's arrows) show no text and have no tooltip | The same as the calendar's arrows. |
+| Main window toolbar (any surface) | U-K32 | The Back and Forward history arrows, the Hot Paths star, and Back and Forward beside the toolbar's scroll arrows are 22 px high beside 24 px buttons | A split button draws one frame, as tall as the toolbar's buttons, around its two halves, each 1 px inside it; the halves are what the accessibility tree reports. |
+| Find (`find`) | U-K34 | The result list's "Sort by …" column headings end a few pixels from the buttons above them | The headings sit inside the result list's frame, a few pixels in from the content edge that the buttons share. |
+| Main window, a panel too small for its toolbar (any surface) | U-K32 | "Edit folder path" is 2 px lower than the panel filter beside it | The path's edit button lies 1 px inside the path bar's frame, which is as tall as the controls beside it (the filter, the pickers and the search field). |
+| Attributes › Times (`times`) | U-K34 | In the narrowest layout a row's Now button ends 6 px past the UTC offset field on the line under it | Open, reported to the coordinator: the fields' grid keeps its own spacing there; not a deliberate design. |
+| Checksums (`checksums`) | U-K19 | A "SHA-…" column heading shows only its start | With a large font the results table scrolls sideways and its headings with it: the last heading shows its start at the table's edge until the table is scrolled. |
+
+Rules of the alignment checks that keep deliberate layouts out of them (in
+`crates/midnight-ui/tests/support/alignment.rs`, with a unit test each): controls joined
+with no gap and the same top and height (split buttons, path segments, status fields,
+calendar cells, a viewer's joined toolbar controls) are one control; rows of lists and
+menus (below a list, list item, table or tree, or as wide as their scroll viewport) are
+laid out by their list; a tall strip beside a control (a splitter) is not on its row;
+two labels side by side with different line counts align their first lines; an element
+that follows another on its row, and a row of buttons followed by more buttons (a footer
+placed from its end), have no column edge of their own; elements of separate bars (no
+container holding the other's) are not one column; a symbol caption joined to text
+segments sits on the text's baseline; the companion-button check applies inside dialogs
+and tool windows only, to a field or to a picker at least twice as wide as high.
 
 ## Pending checks
 
@@ -229,6 +257,30 @@ All reported to the coordinator with their shots (run folders below `_build/acce
 | U-D28 | The archive password dialog: after Escape, Cancel or the header's Cancel dialog, a notice opens ("Archive member: secret.txt is password-protected; it was not opened, since no password was entered"), although a dismissal opens no further window or notice; since dbddf711 the product reports background failures in status rows instead of notices. | U-K29 | Linux `20261122-123625`, Windows `20261122-124508` `ui_polish_viewers/Dark-Desktop-password.png`, `Light-Touch-password.png` |
 | U-D29 | Options' page list: Up and Down moved from the page shown, not from the focused row: with Plugins shown and the focus moved to Keyboard with Shift+Tab, Up showed Keyboard instead of Custom Commands (the key handler of `options-navigation.slint` stepped from the shown page's position). Decided on 22 November: the arrows act on the focused row. Fixed in d96dec97 (the arrows, Home and End move from the focused entry): the check, O-D17 in [options-tools.md](options-tools.md), passes on Windows `20261122-174336` and Linux `20261122-201240`, and its red variant, which expects Keyboard, fails at that check in Windows `20261122-193317`. | O-D17 (`options_general`) | Windows `20261122-092401` and `20261122-124508` recorded the old behaviour in a note of `options_general` (not judged then) |
 
+Found by the alignment checks on 24 November (run `20261124-084612`, the base) and fixed
+in the same change (run `20261124-111500`):
+
+| ID | Defect | Check |
+| --- | --- | --- |
+| U-D30 | Checksums › Verify: the "…" browse button 32 px high beside the 24 px path field (42 beside 34 at 24 px), reaching below it, its dots drawn 4–12 px below its middle (the owner's report). | U-K32, U-K33, U-K35 |
+| U-D31 | Find: the query's stock field and picker 32 px high beside 24 px Help, Add and Remove buttons and folders picker; at 20 px Add 35 px beside a 30 px picker; the status line 23 px for a 26 px line. | U-K32, U-K33 |
+| U-D32 | Options: captions beside pickers and sliders (Theme, Spacing, Font family, fonts, Text rendering, scrolling, Disk I/O) drawn at the top of their row, 4 px above the control's centre; the same in Change name case and the colour picker. | U-K32 |
+| U-D33 | Options › Colors: the colour swatches 24 px beside 32 px hex fields and Reset; the compact header's topic picker 24 px beside a 26 px close button. | U-K32 |
+| U-D34 | Function bar: neighbouring keys in different caption sizes, some with icons and some without ("F9 User menu" in 11 px beside 24 px captions). | human-eye review |
+| U-D35 | Panel and Sort menus: the selected row's check mark cut at 20 px (16 px cell). | U-K20 |
+| U-D36 | About › Licenses: the filter's long placeholder clipped at 24 px. | U-K04 |
+| U-D37 | Attributes: rows, tabs and "Unchanged" under the form's vertical scroll bar at large fonts. | human-eye review |
+| U-D38 | Compare directories: the tolerance row and the daylight-saving option 2 and 6 px off the Date and time caption they depend on. | U-K34 |
+| U-D39 | Jobs: a failed job's text 4–10 px right of the others' (the error glyph wider than the job icon). | U-K34 |
+| U-D40 | Checksums at its minimum size: the page picker 32 px beside a 28 px algorithm menu. | U-K32 |
+| U-D41 | A panel too small for its toolbar: the filter and pickers 24 px beside the 28 px path. | U-K32 |
+| U-D42 | Custom Commands: Enabled at the top of the type picker's row; the main menu's category headings 4 px off the picker and the entries. | U-K32, U-K34 |
+| U-D43 | Copy, Move: a form note's text 2 px from the check box captions above and below it. | U-K34 |
+| U-D44 | Panel toolbar (the owner's request): View and Sort compact below 700 px whatever the drive buttons needed, 104 px wide whatever the font. | `panel_toolbar_fit` |
+
+Open: Attributes › Times in its narrowest layout (a row's Now button 6 px past the UTC
+offset field under it, exempt as open), and the viewers' "Aa" button and mode picker,
+joined without a gap or a shared frame (viewer toolbar, owned by the viewer).
 U-D23–U-D29 were found on 22 November and assigned. U-D23–U-D27 and U-D29 are fixed on main (55b08bb2, d96dec97) and pass on Windows (`20261122-174336`) and Linux (`20261122-201240`). U-D28 is still open: the gate keeps failing on it (no exemption) until its fix lands and a rerun confirms it.
 
 U-D01–U-D12 were sent in the first batch and U-D13–U-D21 in the second (21 November).
@@ -481,3 +533,14 @@ Every failure below is a product defect of the table above; none is a gate defec
 | `20261122-192050` (Windows) | d96dec97 | `ui_polish_checks`, `options_visual` | PASS: every static and interactive red case flagged with the changed Tab walk (U-K21's case 1 included), corrected twins clean | 335, 41 s |
 | `20261122-201240` (Linux) | d96dec97 | `ui_review` | PASS: no flag in 369 screenshots; U-D23 and U-D27 (the Times caption included) are gone | 412 s |
 | `20261122-201240` (Linux) | d96dec97 | `ui_polish_dialogs`, `options_visual` | PASS: U-D23–U-D26 are gone | 1480, 28 s |
+
+Runs of 24 November with the alignment checks (U-K32–U-K39, the Checksums Verify page
+and the large-font combinations): Windows 11, the debug acceptance binary through
+`scripts\acceptance.ps1 --test-binary`, `--only ui_,options_visual`, plugin packages of a
+release build of the same base. "Base" is main at 24868742 with only the gate changed;
+"fixed" adds the window fixes.
+
+| Run | Build | Scenario | Result |
+| --- | --- | --- | --- |
+| `20261124-084612` | base + gate | `ui_review`, `ui_themes`, `ui_polish_dialogs`, `ui_polish_jobs`, `ui_polish_viewers`, `options_visual` | FAIL: 4,558 flags (1,623, 2,814, 85, 6, 4, 26), among them the owner's Checksums Verify row (U-K32, U-K33, U-K35) in every combination; most were rules not yet written (joined split buttons and path segments, list rows, splitters, separate bars), the rest product defects fixed since |
+| `20261124-111500` | fixed | the same and `ui_polish_checks` | `ui_themes`, `ui_polish_dialogs`, `ui_polish_jobs`, `ui_polish_checks`, `options_visual` PASS; `ui_review` FAIL: 6 flags (a minimal panel's filter 2 px lower than its path, fixed since); `ui_polish_viewers` FAIL: one step failed staging the image viewer ("Source changed since capture" of its package manifest), not a check |

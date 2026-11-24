@@ -62,16 +62,22 @@ component JobRow inherits Rectangle {
     accessible-action-default => { root.select(); }
     HorizontalLayout {
         padding-left: 10px; padding-right: 10px; spacing: 10px; cross-axis-alignment: center;
-        if root.job.failed : ErrorGlyph { }
-        if !root.job.failed : NativeActionImage {
-            native-icon: root.job.icon;
-            fallback-icon: root.job.kind == 1 ? FallbackIcons.delete
-                : root.job.kind == 2 ? FallbackIcons.rename
-                : root.job.kind == 3 ? FallbackIcons.new-folder
-                : root.job.kind == 4 ? FallbackIcons.new-file
-                : root.job.kind == 6 ? FallbackIcons.run
-                : root.job.kind == 5 ? FallbackIcons.properties : FallbackIcons.copy;
-            width: Theme.icon-size; height: Theme.icon-size;
+        // One slot for the error glyph and the job's icon, so that every row's text
+        // starts at the same edge, failed or not.
+        Rectangle {
+            width: 24px; height: 24px;
+            if root.job.failed : ErrorGlyph { }
+            if !root.job.failed : NativeActionImage {
+                native-icon: root.job.icon;
+                fallback-icon: root.job.kind == 1 ? FallbackIcons.delete
+                    : root.job.kind == 2 ? FallbackIcons.rename
+                    : root.job.kind == 3 ? FallbackIcons.new-folder
+                    : root.job.kind == 4 ? FallbackIcons.new-file
+                    : root.job.kind == 6 ? FallbackIcons.run
+                    : root.job.kind == 5 ? FallbackIcons.properties : FallbackIcons.copy;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                width: Theme.icon-size; height: Theme.icon-size;
+            }
         }
         VerticalLayout {
             spacing: 3px; alignment: center;

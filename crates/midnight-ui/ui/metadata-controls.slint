@@ -31,7 +31,9 @@ component MetadataChoice inherits GridLayout {
     Text { row: 0; col: 0; colspan: root.narrow ? 2 : 1;
         text: root.label; color: Theme.text; font-size: Theme.font-size;
         min-width: 0px; preferred-width: root.narrow ? 0px : max(160px, Theme.font-size * 7);
-        horizontal-stretch: root.narrow ? 1 : 0; }
+        horizontal-stretch: root.narrow ? 1 : 0;
+        // On the picker's centre beside it, as every label beside its control.
+        vertical-alignment: center; }
     HintedComboBox {
         row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; colspan: root.narrow ? 2 : 1;
         accessible-label: root.label;
@@ -181,11 +183,12 @@ export component MetadataDialog inherits Rectangle {
             if !root.reviewing : editor-scroll := ScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
                 horizontal-scrollbar-policy: as-needed;
-                // The form's width: the view's, or what a large font needs, scrolled sideways.
+                // The form's width: the view's beside its vertical bar (nothing lies under
+                // the bar), or what a large font needs, scrolled sideways.
                 // The time rows read it to stack their fields. Reading the content width
                 // instead is a binding loop: the compiler's check follows its default, the
                 // rows' minimum width.
-                property <length> form-width: max(self.visible-width, Theme.font-size * 18);
+                property <length> form-width: max(self.visible-width - self.bar-column, Theme.font-size * 18);
                 content-width: self.form-width;
                 content-height: max(self.visible-height, fields.preferred-height);
                 fields := VerticalLayout {

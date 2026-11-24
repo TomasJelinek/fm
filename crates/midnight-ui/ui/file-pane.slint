@@ -546,7 +546,7 @@ export component FilePane inherits Rectangle {
                     }
                     dismissed => { root.focus-list(); }
                 }
-                OverflowToolbar {
+                location-strip := OverflowToolbar {
                     left-hint: root.pane-id == 0 ? "Scroll left panel drives left" : "Scroll right panel drives left";
                     right-hint: root.pane-id == 0 ? "Scroll left panel drives right" : "Scroll right panel drives right";
                     activated => { root.activate(); root.focus-list(); }
@@ -573,7 +573,12 @@ export component FilePane inherits Rectangle {
                 if !root.minimal: PanelViewControls {
                     pane-id: root.pane-id; filter-label: root.filter-label;
                     filter => { root.filter(); }
-                    compact: root.width < 700px;
+                    // Compact only when the drive and folder buttons need the room the
+                    // whole pickers would take: from the buttons' measured width and the
+                    // pickers' width measured from their captions (never from their own
+                    // current size, so the row cannot flip between the two).
+                    compact: location-strip.content-width > root.width - 2px - volume-picker.width
+                        - 4 * (Theme.touch ? 6px : 4px) - self.full-width;
                     context: root.controls-context;
                     press-context: root.controls-press-context;
                     press-cancelled: root.controls-press-cancelled;
@@ -658,7 +663,10 @@ export component FilePane inherits Rectangle {
                 if root.minimal: PanelViewControls {
                     pane-id: root.pane-id; filter-label: root.filter-label;
                     filter => { root.filter(); }
-                    compact: true;
+                    compact: true; minimal: true;
+                    // As tall as the path beside it (its frame and its search field): the row
+                    // less its 2 px paddings.
+                    height: min(32px, Theme.path-height) - 4px;
                     context: root.controls-context;
                     press-context: root.controls-press-context;
                     press-cancelled: root.controls-press-cancelled;

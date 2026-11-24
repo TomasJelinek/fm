@@ -59,6 +59,9 @@ pub struct Combination {
     pub size: Size,
     pub scale: f32,
     pub scope: Scope,
+    /// The density's font size in pixels; 0 keeps the default (12 px on the desktop,
+    /// 15 px with touch).
+    pub font: u16,
 }
 
 impl Combination {
@@ -69,12 +72,23 @@ impl Combination {
             size,
             scale,
             scope: Scope::Full,
+            font: 0,
         }
     }
 
+    /// The same combination with a large font.
+    const fn font(self, font: u16) -> Self {
+        Self { font, ..self }
+    }
+
     pub fn prefix(&self) -> String {
+        let font = if self.font == 0 {
+            String::new()
+        } else {
+            format!("-F{}", self.font)
+        };
         format!(
-            "{:?}-{:?}-{:?}-x{}",
+            "{:?}-{:?}-{:?}-x{}{font}",
             self.theme, self.density, self.size, self.scale as u32
         )
     }
@@ -91,8 +105,9 @@ impl Combination {
 }
 
 /// The default matrix: both densities at every size class (the windows' minimum sizes
-/// included) in five themes with every surface, and scale 2 in both densities in the
-/// colour scope.
+/// included) in five themes with every surface, large fonts (20 px on the desktop in
+/// Dark, 24 px with touch in Light) with every surface, and scale 2 in both densities in
+/// the colour scope.
 pub fn default_matrix() -> Vec<Combination> {
     use PreferenceTheme::*;
     use UiDensity::*;
@@ -107,6 +122,8 @@ pub fn default_matrix() -> Vec<Combination> {
         Combination::new(HighContrastDark, Touch, Size::Normal, 1.0),
         Combination::new(Blue, Desktop, Size::Min, 1.0),
         Combination::new(Dark, Touch, Size::Min, 1.0),
+        Combination::new(Dark, Desktop, Size::Normal, 1.0).font(20),
+        Combination::new(Light, Touch, Size::Normal, 1.0).font(24),
         colors(Combination::new(Light, Desktop, Size::Normal, 2.0)),
         colors(Combination::new(HighContrastLight, Touch, Size::Small, 2.0)),
     ]
@@ -658,9 +675,14 @@ fn main_states(app: &mut App, context: &mut Context, sweep: &Sweep) {
 
 /// Two Custom Commands for the toolbar and its compact popup; never run (this sweep
 /// installs no launcher).
-fn seeded_commands(folder: &Path) -> Arc<super::options_support::SettingsStore> {
+/// The combination's font size is seeded with them (0 keeps the defaults).
+fn seeded_commands(folder: &Path, font: u16) -> Arc<super::options_support::SettingsStore> {
     let program = folder.join("never-run");
     super::options_support::SettingsStore::seeded(move |preferences| {
+        if font != 0 {
+            preferences.desktop_font_size = font;
+            preferences.touch_font_size = font;
+        }
         preferences.user_commands = Arc::new(
             [("build", "Build project"), ("deploy", "Deploy preview")]
                 .into_iter()
@@ -1131,6 +1153,19 @@ fn dialogs(app: &mut App, context: &mut Context, sweep: &Sweep, locked: &str) {
                         inspect::roots(shown.window()).len() <= popups
                     });
                 }
+                // Checksums' Verify page with a checksum file typed in.
+                if name == "checksums"
+                    && let Host::Tool(window) = &host
+                {
+                    verify_page(app, sweep, window, &context.work.join("review"))?;
+                    sweep.capture(
+                        app,
+                        context,
+                        &host,
+                        "checksums-verify",
+                        "Checksums (Ctrl+F8) › Verify",
+                    );
+                }
                 close(app, &host, caption);
                 Ok(())
             }),
@@ -1150,6 +1185,36 @@ fn dialogs(app: &mut App, context: &mut Context, sweep: &Sweep, locked: &str) {
             Ok(())
         }),
     );
+}
+
+/// Show the Checksums window's Verify page (its tab, or its page picker in a narrow
+/// window) with a checksum file in its path field.
+fn verify_page(
+    app: &mut App,
+    sweep: &Sweep,
+    tool: &MinimalSoftwareWindow,
+    folder: &Path,
+) -> Result<(), String> {
+    // A narrow window offers the pages in a picker: the page is chosen at the window's
+    // preferred size, where its tabs show, and the window sized for the combination again.
+    let window = tool.window();
+    if inspect::find(window, AccessibleRole::Combobox, "Checksum page").is_some() {
+        let (_, preferred) = gate::window_sizes(window);
+        gate::size_tool(tool, preferred, sweep.combination.scale);
+        app.settle();
+    }
+    super::tools_support::click_last(window, "Verify")?;
+    app.settle();
+    sweep.size_tool(tool);
+    app.settle();
+    let manifest = folder.join("checksums.sha256");
+    input::fill(
+        window,
+        "Checksum file to verify",
+        &manifest.display().to_string(),
+    )?;
+    app.settle();
+    Ok(())
 }
 
 /// Sweep `combinations`: start the application once per combination (the first loaded
@@ -1172,7 +1237,7 @@ pub fn sweep(context: &mut Context, combinations: &[Combination]) -> Result<usiz
         config.density = combination.density;
         config.width = width;
         config.height = height;
-        config.settings = Some(seeded_commands(&left));
+        config.settings = Some(seeded_commands(&left, combination.font));
         let mut app = App::start(config);
         let started = began.elapsed();
         gate::scale_main(&mut app, (width, height), combination.scale);

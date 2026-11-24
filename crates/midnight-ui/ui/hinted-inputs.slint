@@ -182,3 +182,14 @@ export component HintedActionButton inherits ActionButton {
     // A button that shows its glyph alone names its action on the tooltip's first line.
     Tip { text: !root.glyph-only ? root.hint : root.hint == "" ? root.text : root.text + "\n" + root.hint; }
 }
+
+// The square button that belongs to a field (Browse beside a path): its glyph alone,
+// centred, as tall as a field of the control height beside it, so that the two share one
+// row's height and centre (docs/developer/DIALOG_ERGONOMICS.md, "Alignment of
+// neighbouring controls"). The caption chooses the glyph and heads the tooltip; the
+// accessible label names what it does for the field.
+export component FieldButton inherits HintedActionButton {
+    glyph-only: true; compact: true;
+    minimum-control-height: 0px;
+    width: Theme.control-height; height: Theme.control-height;
+}

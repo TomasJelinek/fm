@@ -19,6 +19,9 @@ export component PanelViewControls inherits Rectangle {
     in property <bool> compact;
     in property <int> pane-id;
     in property <string> filter-label;
+    // Beside the path of a panel too small for its toolbar: both pickers show their glyph
+    // alone (the sort picker its direction), as narrow as a picker can be.
+    in property <bool> minimal;
     callback activate();
     callback filter();
     callback view-selected(int);
@@ -26,13 +29,28 @@ export component PanelViewControls inherits Rectangle {
     // Show hidden files is one choice for both panels, offered in each View menu.
     callback hidden-files-toggled();
     callback dismissed();
-    private property <length> picker-width: root.compact ? 36px : 104px;
-    width: 2 * root.picker-width + Theme.tool-width + 8px;
+    // Each picker's width from its longest caption, so that the panel decides from
+    // content, never from the pickers' own current size, whether they fit whole
+    // (`full-width`) or give the drive and folder buttons their room (`compact`). Compact,
+    // the view picker shows the view's glyph and the sort picker the key's initial and
+    // its direction ("N ↑"); their names, tooltips, menus and keys stay the same.
+    view-caption := Text { visible: false; text: "Thumbnails"; font-size: Theme.font-size; accessible-role: none; }
+    sort-caption := Text { visible: false; text: "Extension ↓"; font-size: Theme.font-size; accessible-role: none; }
+    short-caption := Text { visible: false; text: "M ↓"; font-size: Theme.font-size; accessible-role: none; }
+    // A picker's caption is framed by 6 px of padding, 4 px of spacing and its 9 px arrow
+    // on each side of it (CompactPicker); its glyph alone is 18 px wide.
+    private property <length> view-full: max(104px, ceil((view-caption.preferred-width + 29px) / 1px) * 1px);
+    private property <length> sort-full: max(104px, ceil((sort-caption.preferred-width + 29px) / 1px) * 1px);
+    private property <length> view-compact: root.minimal ? 36px : 44px;
+    private property <length> sort-compact: root.minimal ? 36px
+        : max(44px, ceil((short-caption.preferred-width + 29px) / 1px) * 1px);
+    out property <length> full-width: root.view-full + root.sort-full + Theme.tool-width + 8px;
+    width: root.compact ? root.view-compact + root.sort-compact + Theme.tool-width + 8px : root.full-width;
     height: Theme.control-height;
     HorizontalLayout {
         spacing: 4px;
         NavigationButton {
-            width: Theme.tool-width; height: Theme.control-height;
+            width: Theme.tool-width; height: root.height;
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
             icon: FallbackIcons.filter;
             rest-border: root.filter-label != "" ? Theme.active-frame : transparent;
@@ -43,10 +61,13 @@ export component PanelViewControls inherits Rectangle {
             clicked => { root.activate(); root.filter(); }
         }
         CompactPicker {
-            width: root.picker-width; minimum-control-width: 0px;
+            width: root.compact ? root.view-compact : root.view-full; minimum-control-width: 0px;
+            control-height: root.height;
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
             popup-width: 190px; popup-align-right: true; fit-popup-to-content: true;
-            icon-only: root.compact; icon: FallbackIcons.view; native-icon: root.action-icons.view;
+            icon-only: root.compact;
+            icon: root.view-mode == 1 ? FallbackIcons.view-brief
+                : root.view-mode == 2 ? FallbackIcons.view-thumbnails : FallbackIcons.view-detailed;
             model: ["Detailed", "Brief", "Thumbnails",
                 PanelChoices.show-hidden-files ? "Hide hidden files" : "Show hidden files"];
             current-index: root.view-mode;
@@ -64,17 +85,20 @@ export component PanelViewControls inherits Rectangle {
             dismissed => { root.dismissed(); }
         }
         CompactPicker {
-            width: root.picker-width; minimum-control-width: 0px;
+            width: root.compact ? root.sort-compact : root.sort-full; minimum-control-width: 0px;
+            control-height: root.height;
             context: root.context; press-context: root.press-context; press-cancelled: root.press-cancelled;
-            popup-width: 190px; popup-align-right: true; fit-popup-to-content: true; icon-only: root.compact;
-            native-icon: root.descending ? root.action-icons.sort-descending : root.action-icons.sort-ascending;
+            popup-width: 190px; popup-align-right: true; fit-popup-to-content: true;
+            icon-only: root.minimal;
             icon: root.descending ? FallbackIcons.sort-descending : FallbackIcons.sort-ascending;
             model: ["Name", "Size", "Modified", "Extension", "Reverse order"];
             shortcuts: [ShortcutHints.keys("sort.name"), ShortcutHints.keys("sort.size"),
                 ShortcutHints.keys("sort.modified"), ShortcutHints.keys("sort.extension"),
                 ShortcutHints.keys(root.sort-column == 1 ? "sort.size" : root.sort-column == 2 ? "sort.modified" : root.sort-column == 3 ? "sort.extension" : "sort.name")];
             separator-before-index: 4;
-            current-index: root.sort-column; label: self.model[root.sort-column] + (root.descending ? " ↓" : " ↑");
+            current-index: root.sort-column;
+            label: (root.compact ? ["N", "S", "M", "E"][root.sort-column] : self.model[root.sort-column])
+                + (root.descending ? " ↓" : " ↑");
             accessible-name: root.sort-label;
             hint: "Sort by " + self.model[root.sort-column] + (root.descending ? " · descending" : " · ascending");
             opening => { root.activate(); }

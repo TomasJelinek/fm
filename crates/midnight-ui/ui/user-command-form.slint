@@ -40,10 +40,14 @@ export component UserCommandForm inherits VerticalLayout {
             row: root.narrow ? 1 : 0; col: root.narrow ? 0 : 1; min-width: 0px; horizontal-stretch: 1;
             accessible-label: "Custom Command type"; hint: "Run a program with separate arguments, write a terminal script, or add a non-executable separator.";
             selected(value) => { root.edited(); } }
-        if UserCommandSettingsView.draft.kind != 2 : WrappingCheckBox {
+        // On the type picker's centre beside it.
+        if UserCommandSettingsView.draft.kind != 2 : VerticalLayout {
             row: root.narrow ? 2 : 0; col: root.narrow ? 0 : 2;
-            text: "Enabled"; checked <=> UserCommandSettingsView.draft.enabled;
-            hint: "Disabled commands stay in the menu settings but cannot run."; toggled => { root.edited(); }
+            alignment: center;
+            WrappingCheckBox {
+                text: "Enabled"; checked <=> UserCommandSettingsView.draft.enabled;
+                hint: "Disabled commands stay in the menu settings but cannot run."; toggled => { root.edited(); }
+            }
         }
         if UserCommandSettingsView.draft.kind == 0 : Text { row: root.narrow ? 3 : 1; col: 0; text: "Output"; color: Theme.text; font-size: Theme.font-size; vertical-alignment: center; }
         if UserCommandSettingsView.draft.kind == 0 : HintedComboBox { model: ["Hidden", "Output window", "Console window"]; current-index <=> UserCommandSettingsView.draft.output;

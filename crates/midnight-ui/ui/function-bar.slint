@@ -84,6 +84,28 @@ export component FunctionBar inherits Rectangle {
         max(0, floor((root.width - root.cell-width) / (root.key-width + 4px))));
     private property <length> keys-width: max(0px, root.whole-keys * (root.key-width + 4px) - 4px);
     private property <length> jobs-width: root.width - (root.whole-keys > 0 ? root.keys-width + 4px : 0px);
+    // One caption size and one choice of icons for the whole bar: the widest shown
+    // caption decides whether every key shows its icon, and the size every caption
+    // shrinks to (so no key is set smaller than its neighbours, nor shows an icon they
+    // lack).
+    Rectangle {
+        visible: false;
+        caption-widths := VerticalLayout {
+            for index in 12 : Text {
+                private property <FunctionSlot> slot: ShortcutHints.function-key(index, root.modifiers, root.searching);
+                text: root.slot-visibility[index] && self.slot.action != "" ? "F" + (index + 1) + " " + self.slot.label : "";
+                font-size: Theme.font-size; accessible-role: none;
+            }
+        }
+    }
+    private property <length> widest-caption: caption-widths.preferred-width;
+    private property <bool> icons-fit: root.widest-caption <= root.key-width - Theme.icon-size - 12px;
+    // Never below three quarters of the font (nor the readable minimum): a caption that
+    // would need less shows its key alone.
+    private property <length> caption-font: root.icons-fit ? Theme.font-size : max(
+        floor(Theme.font-size * 0.75 / 1px) * 1px, floor(clamp(
+        Theme.font-size * max(0px, root.key-width - 9px) / max(1px, root.widest-caption),
+        min(Theme.font-size, Theme.touch ? 15px : 11px), Theme.font-size) / 1px) * 1px);
     height: root.compact ? min(32px, Theme.bottom-height) : Theme.bottom-height;
     min-width: 0px;
     keys := ScrollStrip {
@@ -128,6 +150,7 @@ export component FunctionBar inherits Rectangle {
                 // The action caption yields its icon first; a cell too narrow for the whole
                 // caption shows the key alone.
                 compact-text: "F" + (index + 1);
+                font-limit: root.caption-font; icon-allowed: root.icons-fit;
                 enabled: root.enabled-action(self.action-id);
                 hint: self.slot.hint;
                 activated(action, pane) => { root.action(action, pane); }
@@ -139,6 +162,7 @@ export component FunctionBar inherits Rectangle {
         x: root.width - root.jobs-width;
         press-cancelled: root.press-cancelled;
         native-icon: root.icons.menu; fallback-icon: FallbackIcons.menu; text: "Jobs";
+        font-limit: root.caption-font; icon-allowed: root.icons-fit;
         hint: "Operation queue, progress and cancellation.";
         clicked => { root.jobs(); }
     }

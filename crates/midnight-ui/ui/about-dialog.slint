@@ -125,6 +125,10 @@ component LicenseList inherits Rectangle {
         x: 0px; y: 0px; width: parent.width; height: parent.height;
         content-width: self.visible-width;
         content-height: max(self.visible-height, tab-content.min-height);
+        long-placeholder := Text {
+            visible: false; accessible-role: none;
+            text: "Filter by library, license or component"; font-size: Theme.font-size;
+        }
         tab-content := VerticalLayout {
             x: 0px; y: 0px; width: tab-scroll.visible-width;
             height: max(tab-scroll.visible-height, self.min-height);
@@ -136,8 +140,10 @@ component LicenseList inherits Rectangle {
                     text <=> AboutView.query;
                     accessible-label: "Filter libraries";
                     // Whole in a narrow tab too, with any font: the field does not shorten
-                    // its placeholder.
-                    placeholder-text: root.width < 400px ? "Filter" : "Filter by library, license or component";
+                    // its placeholder, so the long one shows only where it fits beside
+                    // View license (measured at the font, with the field's padding and clear).
+                    placeholder-text: tab-scroll.visible-width - view-license.preferred-width - 8px - 40px
+                        >= long-placeholder.preferred-width ? long-placeholder.text : "Filter";
                     hint: "Show only libraries whose name, license or component contains this text. Down moves to the list; Enter shows the license and authors of the selected library, or of the first one.";
                     edited(text) => { AboutView.filter(text); licenses.viewport-y = 0px; }
                     accepted => {
@@ -149,7 +155,7 @@ component LicenseList inherits Rectangle {
                         reject
                     }
                 }
-                HintedActionButton {
+                view-license := HintedActionButton {
                     text: "View license"; fallback-icon: FallbackIcons.view; enabled: root.selected;
                     hint: "Show the license text and authors of the selected library (Enter or a double-click on its row).";
                     clicked => { root.open-current(); }

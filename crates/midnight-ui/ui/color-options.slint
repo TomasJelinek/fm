@@ -6,6 +6,7 @@ import { ErrorNotice } from "error-notice.slint";
 import { Tip } from "controls.slint";
 import { ListHeader } from "list-header.slint";
 import { WrappingCheckBox } from "wrapping-check-box.slint";
+import { OptionRows } from "options-rows.slint";
 
 export struct FilenameColorDraft {
     enabled: bool,
@@ -131,7 +132,8 @@ component ColorField inherits VerticalLayout {
         spacing: 6px;
         Rectangle {
             row: 0; col: 0;
-            width: Theme.control-height + 8px; height: Theme.control-height;
+            // As tall as the hex field and Reset beside it: the row's height.
+            width: Theme.control-height + 8px; min-height: Theme.control-height;
             background: root.resolved; border-width: 1px;
             border-color: swatch-focus.has-focus ? Theme.active-frame : Theme.frame;
             border-radius: 3px;
@@ -241,7 +243,7 @@ export component ColorOptions inherits VerticalLayout {
     if ColorOptionsView.selected >= 0 : VerticalLayout {
         spacing: 8px; alignment: start;
         GridLayout {
-            spacing: 10px;
+            spacing-horizontal: 10px; spacing-vertical: OptionRows.row-gap;
             WrappingCheckBox {
                 row: 0; col: 0;
                 text: "Enable rule"; checked <=> ColorOptionsView.draft.enabled; enabled: !ColorOptionsView.busy;

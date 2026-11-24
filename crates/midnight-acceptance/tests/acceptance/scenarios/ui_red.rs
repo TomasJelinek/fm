@@ -4,7 +4,10 @@
 use crate::{
     Context, Scenario,
     app::{App, Config},
-    scenarios::ui_gate::{self as gate, Frame, Issue, Target},
+    scenarios::{
+        ui_align as align,
+        ui_gate::{self as gate, Frame, Issue, Target},
+    },
 };
 use slint::{ComponentHandle, platform::software_renderer::MinimalSoftwareWindow};
 use std::{rc::Rc, time::Duration};
@@ -43,7 +46,7 @@ slint::slint! {
             Flickable {
                 x: 0px; y: 0px; width: 200px; height: 100px;
                 content-width: 200px; content-height: 300px;
-                for i in 10: Text { x: 4px; y: i * 28px; text: "Outcome note " + (i + 1); color: #000000; }
+                for i in 10: Text { x: 0px; y: i * 28px; text: "Outcome note " + (i + 1); color: #000000; }
             }
             if root.broken: TouchArea {
                 x: 0px; y: 0px; width: 220px; height: 100px;
@@ -55,14 +58,18 @@ slint::slint! {
         // Notes cut off by a clipping container that does not scroll.
         if root.case == 3: Rectangle {
             x: 12px; y: 40px; width: 220px; height: root.broken ? 40px : 120px; clip: true;
-            for i in 4: Text { x: 4px; y: i * 26px; text: "Note " + (i + 1); color: #000000; }
+            for i in 4: Text { x: 0px; y: i * 26px; text: "Note " + (i + 1); color: #000000; }
         }
 
-        // A caption clipped by its own element without an ellipsis.
-        if root.case == 4: Text {
-            x: 12px; y: 40px; width: 90px; height: 20px; color: #000000;
-            text: "A caption that does not fit here";
-            overflow: root.broken ? TextOverflow.clip : TextOverflow.elide;
+        // A caption clipped by its own element without an ellipsis (in a box with no
+        // room beside it: the twin's "…" is needed).
+        if root.case == 4: Rectangle {
+            x: 12px; y: 40px; width: 106px; height: 20px;
+            Text {
+                x: 0px; y: 0px; width: 90px; height: 20px; color: #000000;
+                text: "A caption that does not fit here";
+                overflow: root.broken ? TextOverflow.clip : TextOverflow.elide;
+            }
         }
 
         // An elided caption whose full text nothing provides (the twin has a tooltip).
@@ -165,7 +172,7 @@ slint::slint! {
         if root.case == 13: Rectangle {
             x: 12px; y: 40px; width: 260px; height: 32px; background: #ffffff;
             TextInput {
-                x: 4px; y: 4px; width: 250px; height: 24px;
+                x: 0px; y: 4px; width: 250px; height: 24px;
                 text: "Selected words in a viewer"; color: #000000; read-only: true;
                 selection-foreground-color: root.broken ? #b8b8b8 : #ffffff;
                 selection-background-color: root.broken ? #c8c8c8 : #1a5fb4;
@@ -241,12 +248,112 @@ slint::slint! {
         if root.case == 21: Rectangle {
             x: 12px; y: 40px; width: 260px; height: 32px; background: #ffffff;
             TextInput {
-                x: 4px; y: 4px; width: 250px; height: 24px;
+                x: 0px; y: 4px; width: 250px; height: 24px;
                 text: "Selected words in a field"; color: #000000; read-only: true;
                 selection-foreground-color: #ffffff;
                 selection-background-color: root.broken ? #1a5fb4 : #001a40;
                 accessible-label: "Field text";
                 init => { self.select-all(); }
+            }
+        }
+
+        // A field and its "…" button as the owner saw them in Checksums › Verify: the
+        // button taller than the field and its dots drawn low; the twin is square, as
+        // tall as the field, its glyph centred.
+        if root.case == 22: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 40px;
+            Rectangle {
+                x: 0px; y: 0px; width: 300px; height: 24px; background: #ffffff;
+                border-width: 1px; border-color: #606060;
+                accessible-role: text-input; accessible-label: "Checksum file";
+                Text {
+                    x: 6px; y: 0px; width: 288px; height: 24px; vertical-alignment: center;
+                    text: "/data/checksums/list.sha256"; color: #000000; accessible-role: none;
+                }
+            }
+            Rectangle {
+                x: 308px; y: 0px; width: 24px; height: root.broken ? 32px : 24px;
+                background: #d0d0d0;
+                accessible-role: button; accessible-label: "Browse checksum file";
+                if root.broken: Text {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    text: "…"; font-size: 20px; color: #000000; accessible-role: none;
+                }
+                if !root.broken: Rectangle { x: 7px; y: 7px; width: 10px; height: 10px; background: #202020; }
+                TouchArea {}
+                Tooltip { text: @markdown("Browse"); }
+            }
+        }
+
+        // Two fields of one column whose left and right edges miss each other by 3 px.
+        if root.case == 23: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 80px;
+            for i in 2: Rectangle {
+                x: root.broken && i == 1 ? 3px : 0px; y: i * 32px; width: 300px; height: 24px;
+                background: #ffffff; border-width: 1px; border-color: #606060;
+                accessible-role: text-input; accessible-label: "Field " + (i + 1);
+            }
+        }
+
+        // A column of options with one gap seven times the others (the last option, a
+        // dialog's footer row, may sit lower).
+        if root.case == 24: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 300px;
+            for i in 5: Rectangle {
+                x: 0px; y: i * 26px + (root.broken && i >= 2 ? 40px : 0px); width: 200px; height: 20px;
+                accessible-role: checkbox; accessible-label: "Option " + (i + 1);
+                Rectangle { x: 2px; y: 3px; width: 14px; height: 14px; border-width: 1px; border-color: #404040; }
+                Text { x: 24px; y: 0px; height: 20px; vertical-alignment: center;
+                    text: "Option " + (i + 1); color: #000000; accessible-role: none; }
+            }
+        }
+
+        // Two buttons 1 px apart (the twin keeps 8 px).
+        if root.case == 25: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 40px;
+            for i in 2: Rectangle {
+                x: i * (root.broken ? 81px : 88px); y: 0px; width: 80px; height: 28px;
+                background: #d0d0d0;
+                accessible-role: button; accessible-label: i == 0 ? "Apply" : "Reset";
+                Text {
+                    x: 0px; y: 0px; width: parent.width; height: parent.height;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    text: i == 0 ? "Apply" : "Reset"; color: #000000; accessible-role: none;
+                }
+            }
+        }
+
+        // A label shortened to 80 px with 300 px free beside it.
+        if root.case == 26: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 24px;
+            Text {
+                x: 0px; y: 0px; width: root.broken ? 80px : 300px; height: 20px;
+                text: "Current folder: projects"; overflow: elide; color: #000000;
+            }
+        }
+
+        // A button whose caption's line sits 5 px below its middle.
+        if root.case == 27: Rectangle {
+            x: 12px; y: 40px; width: 90px; height: 30px; background: #d0d0d0;
+            accessible-role: button; accessible-label: "Apply";
+            Text {
+                x: 0px; y: root.broken ? 10px : 5px; width: parent.width; height: 20px;
+                horizontal-alignment: center; vertical-alignment: center;
+                text: "Apply"; color: #000000; accessible-role: none;
+            }
+            TouchArea {}
+        }
+
+        // Options whose last gap is 8 px wider than the others (U-K39).
+        if root.case == 28: Rectangle {
+            x: 12px; y: 40px; width: 400px; height: 200px;
+            for i in 4: Rectangle {
+                x: 0px; y: i * 26px + (root.broken && i == 3 ? 8px : 0px); width: 200px; height: 20px;
+                accessible-role: checkbox; accessible-label: "Choice " + (i + 1);
+                Rectangle { x: 2px; y: 3px; width: 14px; height: 14px; border-width: 1px; border-color: #404040; }
+                Text { x: 24px; y: 0px; height: 20px; vertical-alignment: center;
+                    text: "Choice " + (i + 1); color: #000000; accessible-role: none; }
             }
         }
 
@@ -257,7 +364,7 @@ slint::slint! {
             Flickable {
                 x: 0px; y: 0px; width: 200px; height: 100px;
                 content-width: 200px; content-height: 300px;
-                for i in 10: Text { x: 4px; y: i * 28px; text: "Row " + (i + 1); color: #000000; }
+                for i in 10: Text { x: 0px; y: i * 28px; text: "Row " + (i + 1); color: #000000; }
             }
             if root.broken: TouchArea {
                 x: 0px; y: 0px; width: 220px; height: 100px;
@@ -275,7 +382,7 @@ struct Case {
     twin_frameless: bool,
 }
 
-const CASES: [Case; 20] = [
+const CASES: [Case; 27] = [
     Case {
         id: 1,
         kind: gate::FRAMED_CLOSE,
@@ -376,10 +483,49 @@ const CASES: [Case; 20] = [
         kind: gate::OVERFLOW,
         twin_frameless: false,
     },
+    Case {
+        id: 22,
+        kind: align::ROW_ALIGNMENT,
+        twin_frameless: false,
+    },
+    Case {
+        id: 23,
+        kind: align::EDGE_ALIGNMENT,
+        twin_frameless: false,
+    },
+    Case {
+        id: 24,
+        kind: align::ROW_GAPS,
+        twin_frameless: false,
+    },
+    Case {
+        id: 25,
+        kind: align::TOUCHING,
+        twin_frameless: false,
+    },
+    Case {
+        id: 26,
+        kind: align::ELIDED_WITH_ROOM,
+        twin_frameless: false,
+    },
+    Case {
+        id: 27,
+        kind: align::CAPTION_CENTRE,
+        twin_frameless: false,
+    },
+    Case {
+        id: 28,
+        kind: align::OPTION_ROWS,
+        twin_frameless: false,
+    },
 ];
 
 /// Case 11 must also trigger these.
 const ROW_KINDS: [&str; 2] = [gate::BUTTON_SPACING, gate::DISMISS_ORDER];
+
+/// Case 22, the owner's "…" button, must also trigger these: not square, and its dots
+/// drawn below its middle.
+const COMPANION_KINDS: [&str; 2] = [align::COMPANION_SIZE, align::CAPTION_CENTRE];
 
 /// The fixture's software window: the newest visible tool window once it is shown.
 fn fixture_window(app: &App) -> Result<Rc<MinimalSoftwareWindow>, String> {
@@ -426,6 +572,9 @@ pub fn checks(context: &mut Context) -> Result<(), String> {
         let mut wanted = vec![case.kind];
         if case.id == 11 {
             wanted.extend(ROW_KINDS);
+        }
+        if case.id == 22 {
+            wanted.extend(COMPANION_KINDS);
         }
         for kind in wanted {
             if !broken.iter().any(|issue| issue.kind == kind) {

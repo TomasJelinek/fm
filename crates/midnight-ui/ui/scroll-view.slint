@@ -151,6 +151,9 @@ export component ScrollView {
     in property <bool> mouse-drag-pan-enabled <=> flickable.mouse-drag-pan-enabled;
     in-out property <bool> has-focus;
     callback scrolled <=> flickable.flicked;
+    // The vertical bar's column, for a site that keeps its content clear of the bar (as
+    // VScrollView does): none where the bar never shows.
+    out property <length> bar-column: vertical-bar.policy == ScrollBarPolicy.always-off ? 0px : vertical-bar.width;
     min-height: 50px;
     min-width: 50px;
     horizontal-stretch: 1;
