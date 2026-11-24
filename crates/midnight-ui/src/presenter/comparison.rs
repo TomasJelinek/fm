@@ -1,6 +1,6 @@
 //! Atomic publication of two immutable, revision-checked selection snapshots, the
 //! running comparison's progress (in the Compare directories dialog) and its result
-//! (a line below the panel that was active, and per-row marks with subfolders).
+//! (a line below the panel that was active, and per-row marks).
 use super::*;
 #[cfg(test)]
 #[path = "comparison_badge_tests.rs"]
@@ -29,7 +29,7 @@ pub(crate) struct Reported {
     shown: [(u64, SelectionRevision); 2],
 }
 
-/// Per-row outcomes of the last comparison with subfolders, while both panels still
+/// Per-row outcomes of the last comparison, while both panels still
 /// show the listings it compared (`generation` of each), with the options that
 /// tell what "matches" meant and the panel whose line describes them.
 pub(crate) struct ShownMarks {
@@ -172,7 +172,7 @@ impl Presenter {
         )
     }
 
-    /// How the last comparison with subfolders found `entry` in `pane`: 1 matches,
+    /// How the last comparison found `entry` in `pane`: 1 matches,
     /// 2 differs, 3 exists in this panel only, 4 not verified; 0 when there is
     /// nothing to show (another listing, or not compared).
     #[cfg(test)]

@@ -26,7 +26,7 @@ fn rich() -> UserPreferences {
         size_display: SizeDisplay::Bytes,
         disk_io_concurrency: DiskIoConcurrency::Manual(8),
         copy_checksum_verification: false,
-        copy_preserve_metadata: true,
+        copy_preserve_metadata: false,
         command_history: vec![CommandHistoryEntry {
             command: "echo žluťoučký 🧪".into(),
             shell: ShellFlavor::PowerShell,

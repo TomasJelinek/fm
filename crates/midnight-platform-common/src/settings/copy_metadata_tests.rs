@@ -12,32 +12,32 @@ fn decoded(value: &Value) -> std::io::Result<UserPreferences> {
 }
 
 #[test]
-fn preserving_is_off_by_default_and_needs_no_new_schema() {
+fn preserving_is_on_by_default_and_needs_no_new_schema() {
     let preferences = UserPreferences::default();
-    assert!(!preferences.copy_preserve_metadata);
+    assert!(preferences.copy_preserve_metadata);
     let value = stored(&preferences);
     assert_eq!(value["version"], 10);
     assert!(value.get("copy_preserve_metadata").is_none());
 }
 
 #[test]
-fn the_choice_on_writes_schema_43_and_round_trips() {
+fn the_choice_off_writes_schema_43_and_round_trips() {
     let preferences = UserPreferences {
-        copy_preserve_metadata: true,
+        copy_preserve_metadata: false,
         ..Default::default()
     };
     let value = stored(&preferences);
     assert_eq!(value["version"], 43);
-    assert_eq!(value["copy_preserve_metadata"], json!(true));
+    assert_eq!(value["copy_preserve_metadata"], json!(false));
     // Fields that schemas 30 to 34 require are present.
     assert_eq!(value["disk_io_concurrency"], json!({"mode": "automatic"}));
     assert_eq!(decoded(&value).unwrap(), preferences);
 }
 
 #[test]
-fn earlier_schemas_migrate_to_off() {
+fn earlier_schemas_migrate_to_on() {
     // A schema 40 file (an update choice) has no saved choice: the former per-dialog
-    // "Preserve exact modified time" was never saved, so nothing else carries over.
+    // "Preserve exact modified time" was never saved, so the new default applies.
     let schema_40 = stored(&UserPreferences {
         updates: UpdatePreferences {
             check_at_startup: false,
@@ -46,15 +46,15 @@ fn earlier_schemas_migrate_to_off() {
         ..Default::default()
     });
     assert_eq!(schema_40["version"], 40);
-    assert!(!decoded(&schema_40).unwrap().copy_preserve_metadata);
+    assert!(decoded(&schema_40).unwrap().copy_preserve_metadata);
     let minimum = stored(&UserPreferences::default());
-    assert!(!decoded(&minimum).unwrap().copy_preserve_metadata);
+    assert!(decoded(&minimum).unwrap().copy_preserve_metadata);
 }
 
 #[test]
 fn malformed_choices_are_refused() {
     let value = stored(&UserPreferences {
-        copy_preserve_metadata: true,
+        copy_preserve_metadata: false,
         ..Default::default()
     });
     // Version 43 without its field.
@@ -87,7 +87,7 @@ fn malformed_choices_are_refused() {
 #[test]
 fn schema_43_keeps_find_and_needs_neither_it_nor_nested_archives() {
     let both = UserPreferences {
-        copy_preserve_metadata: true,
+        copy_preserve_metadata: false,
         find: FindPreferences {
             mask_history: vec!["*.rs".into()],
             ..Default::default()
@@ -102,6 +102,16 @@ fn schema_43_keeps_find_and_needs_neither_it_nor_nested_archives() {
     let mut without_find = value;
     without_find.as_object_mut().unwrap().remove("find");
     let read = decoded(&without_find).unwrap();
-    assert!(read.copy_preserve_metadata);
+    assert!(!read.copy_preserve_metadata);
     assert_eq!(read.find, FindPreferences::default());
+}
+
+#[test]
+fn existing_schema_43_enabled_choice_still_reads() {
+    let mut value = stored(&UserPreferences {
+        copy_preserve_metadata: false,
+        ..Default::default()
+    });
+    value["copy_preserve_metadata"] = json!(true);
+    assert!(decoded(&value).unwrap().copy_preserve_metadata);
 }

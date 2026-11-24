@@ -708,7 +708,7 @@ pub struct TransferSpec<'a> {
     pub key: Key,
     /// Replace the suggested destination (the other panel's folder).
     pub destination: Option<&'a Path>,
-    /// Check "Preserve times and attributes".
+    /// Set "Preserve times and attributes" (false explicitly clears the default).
     pub preserve: bool,
     /// Make this Links choice ([`Self::link_input`] says how) once the destination's link
     /// facts arrived. The dialog must offer it: a choice it does not show fails.
@@ -951,11 +951,9 @@ fn confirm_dialog(
         )?;
         app.settle();
     }
-    if spec.preserve {
-        set_check(app, PRESERVE_OPTION, true, |app| {
-            operation_form(app).get_option_checked()
-        })?;
-    }
+    set_check(app, PRESERVE_OPTION, spec.preserve, |app| {
+        operation_form(app).get_option_checked()
+    })?;
     if let Some(wait) = spec.wait {
         set_check(app, WAIT_OPTION, wait, |app| {
             inspect::find(app.slint(), AccessibleRole::Checkbox, WAIT_OPTION)

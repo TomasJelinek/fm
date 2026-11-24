@@ -288,10 +288,10 @@ fn checksum_option_is_visible_defaults_on_and_only_ok_persists_quick_mode() {
     }
 }
 
-/// Options › General › Preserve times and attributes: off by default, saved only by OK,
+/// Options › General › Preserve times and attributes: on by default, saved only by OK,
 /// and the Copy/Move dialog's starting choice.
 #[test]
-fn preserve_option_defaults_off_and_only_ok_persists_it() {
+fn preserve_option_defaults_on_and_only_ok_persists_it() {
     let mut h = Harness::new();
     let label = "Preserve times and attributes in Copy and Move";
     for save in [false, true] {
@@ -303,10 +303,10 @@ fn preserve_option_defaults_off_and_only_ok_persists_it() {
                 .global::<midnight_ui::PanelChoices>()
                 .get_copy_preserve_metadata()
         };
-        assert!(!preserving(&h));
+        assert!(preserving(&h));
         ui::click_popup(&h.ui.window, label, AccessibleRole::Checkbox);
         h.ui.draw();
-        assert!(preserving(&h));
+        assert!(!preserving(&h));
         assert!(h.saves().is_empty());
         ui::click_popup(
             &h.ui.window,
@@ -317,14 +317,14 @@ fn preserve_option_defaults_off_and_only_ok_persists_it() {
         if save {
             let writes = h.saves();
             assert_eq!(writes.len(), 1);
-            assert!(writes[0].1.copy_preserve_metadata);
+            assert!(!writes[0].1.copy_preserve_metadata);
             h.event(Event::PreferencesSaved {
                 revision: writes[0].0,
                 result: Ok(midnight_core::FileComparatorSnapshot::default()),
             });
             assert!(!ui::has_popup(&h.ui.window));
         } else {
-            assert!(!preserving(&h));
+            assert!(preserving(&h));
             assert!(h.saves().is_empty());
         }
     }

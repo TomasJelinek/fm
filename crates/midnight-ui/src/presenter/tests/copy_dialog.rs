@@ -838,17 +838,17 @@ fn preserving_times_and_attributes_reaches_folders_and_archive_members() {
     );
 }
 
-/// Options › General keeps the dialog's starting choice; it is off by default, and an
+/// Options › General keeps the dialog's starting choice; it is on by default, and an
 /// unsaved change in Options does not reach a dialog until OK.
 #[test]
 fn the_preserve_default_comes_from_options() {
     let (mut p, _root) = loaded();
-    assert!(!p.copy_preserve_metadata());
-    p.change_copy_preserve_metadata(true, &|_| true);
-    assert!(p.preferences.values.copy_preserve_metadata);
     assert!(p.copy_preserve_metadata());
     p.change_copy_preserve_metadata(false, &|_| true);
+    assert!(!p.preferences.values.copy_preserve_metadata);
     assert!(!p.copy_preserve_metadata());
+    p.change_copy_preserve_metadata(true, &|_| true);
+    assert!(p.copy_preserve_metadata());
 }
 
 #[test]

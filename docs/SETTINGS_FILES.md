@@ -215,10 +215,11 @@ saves to the current location; it never changes the old file.
     the file invalid. Hot paths and tabs in one archive keep address version 1 or 2
     and their older schema;
   - 43: `copy_preserve_metadata`, Options › General › File operations › **Preserve
-    times and attributes in Copy and Move** (`true`), how the Copy/Move dialog's option
-    starts. It is written only when it is on; a file without it, including every file of
-    an earlier schema, reads as off. The former per-dialog "Preserve exact modified time"
-    choice was never saved, so nothing else migrates
+    times and attributes in Copy and Move** (a boolean), how the Copy/Move dialog's option
+    starts. It is written only when it is off; a file without it, including every file of
+    an earlier schema, reads as on. Existing explicit `true` and `false` choices are kept.
+    The former per-dialog "Preserve exact modified time" choice was never saved, so
+    nothing else migrates
     ([transfer options](developer/TRANSFER_OPTIONS.md)).
 
   A version is written only for a setting that needs it, so a schema 34, 35, 36, 37, 38,

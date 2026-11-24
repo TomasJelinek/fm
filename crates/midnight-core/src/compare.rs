@@ -205,7 +205,7 @@ impl CompareMark {
     }
 }
 
-/// The outcome of each compared entry of an Include subfolders comparison, for both
+/// The outcome of each compared entry, including top-level-only comparisons, for both
 /// panels. Entries are keyed by their path relative to the compared folder, with
 /// names folded when names match without regard to case. Matching files inside a
 /// compared folder are not stored: a file that is not stored but whose nearest
@@ -447,7 +447,14 @@ impl CompareMarks {
                 Some(CompareMark::OnlyHere) => {
                     return Some((CompareMark::OnlyHere, CompareDetail::default()));
                 }
-                Some(CompareMark::Same | CompareMark::Differs) if self.complete => {
+                Some(CompareMark::Same) if self.complete => {
+                    return Some((CompareMark::Same, CompareDetail::default()));
+                }
+                // An attribute or name difference can stop a folder before its
+                // children are examined. Only a walked folder has inside counts.
+                Some(CompareMark::Differs)
+                    if self.complete && self.detail(ancestor).inside.is_some() =>
+                {
                     return Some((CompareMark::Same, CompareDetail::default()));
                 }
                 Some(_) => return None,
@@ -471,7 +478,7 @@ pub struct CompareResult {
     pub selections: [Arc<SelectionSnapshot>; 2],
     /// Worker-built occurrence selections; these never authorize native operations.
     pub tree_replacements: [Option<Arc<crate::TreeSelectionReplacement>>; 2],
-    /// Include subfolders: each compared entry's outcome, for the panels' rows.
+    /// Each compared entry's outcome, for the panels' rows.
     pub marks: Option<Arc<CompareMarks>>,
     /// Pairs/items whose requested metadata is unavailable; these are selected.
     pub unknown: usize,

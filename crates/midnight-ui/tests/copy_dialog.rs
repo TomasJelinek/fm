@@ -657,7 +657,7 @@ fn archive_dialog_offers_preserving_times_and_keeps_ordinary_copy() {
             .is_none_or(|item| !item.is_visible())
     );
     // Archive members keep their recorded modified time: the dialog offers the option,
-    // unchecked by default.
+    // checked by default.
     let preserve = accessible_item(
         &child,
         AccessibleRole::Checkbox,
@@ -669,8 +669,9 @@ fn archive_dialog_offers_preserving_times_and_keeps_ordinary_copy() {
         preserve
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
-        "false"
+        "true"
     );
+    input::click(&child, &preserve);
     let wait = accessible_item(
         &child,
         AccessibleRole::Checkbox,
@@ -897,8 +898,8 @@ fn destination_editor(
                 i_slint_core::accessibility::AccessibleStringProperty::Checked
             )
             .unwrap(),
-        "false",
-        "every new draft must start unchecked",
+        "true",
+        "every new draft must start checked",
     );
     let links =
         accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL).filter(not_hidden);
@@ -932,7 +933,7 @@ fn destination_editor(
             accessible_item(&child, AccessibleRole::TextInput, "Destination folder").unwrap();
         input::click(&child, &editor);
     }
-    if preserve {
+    if !preserve {
         input::click(&child, &option);
         // Restore path focus without activating the form or changing the option.
         let editor = accessible_item(
@@ -948,7 +949,7 @@ fn destination_editor(
                     i_slint_core::accessibility::AccessibleStringProperty::Checked
                 )
                 .unwrap(),
-            "true",
+            "false",
         );
     }
     let destination = base.join("another target");
@@ -1382,7 +1383,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         option
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
-        "true"
+        "false"
     );
     let cancel = compact_item(&test, AccessibleRole::Button, "Cancel");
     compact_assert_visible(&test, &cancel, false, "pointer Cancel");
@@ -1429,7 +1430,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         option
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
-        "false"
+        "true"
     );
     compact_reveal(&mut test, &editor, false, "Destination folder");
     input::click(&test.native, &editor);
@@ -1479,7 +1480,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         option
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
-        "true"
+        "false"
     );
     // On to the wait option and back.
     input::key(&test.native, Key::Tab);
@@ -1503,7 +1504,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
         option
             .accessible_string_property(AccessibleStringProperty::Checked)
             .unwrap(),
-        "true"
+        "false"
     );
     compact_assert_focus(&test, &option);
     // Back to the destination, past the link choice.
@@ -1551,10 +1552,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     let CopyOptionsInput::Native(request) = &options.input else {
         panic!("metadata confirmation changed its native source");
     };
-    assert_eq!(
-        request.metadata,
-        TransferMetadataPolicy::PreserveTimesAndAttributes
-    );
+    assert_eq!(request.metadata, TransferMetadataPolicy::ContentOnly);
     assert_eq!(
         request.intent,
         if moving {

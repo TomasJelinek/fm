@@ -99,7 +99,7 @@ struct StoredPreferences {
     )]
     find: Option<find::StoredFindPreferences>,
     /// Schema 43: Options › General › File operations › Preserve times and attributes,
-    /// written only when it is on (the default is off).
+    /// written only when it is off (the default is on).
     #[serde(
         default,
         deserialize_with = "present",
@@ -999,8 +999,8 @@ fn decode_preferences_impl(
             // Version 43 is written only for this choice.
             (43, None) => return Err(invalid("missing schema 43 preferences")),
             // Earlier files had no saved choice: the dialog's former "Preserve exact
-            // modified time" was never saved, so they read as off, the default.
-            (1..=CURRENT_PREFERENCES_VERSION, None) => false,
+            // modified time" was never saved, so they read as on, the default.
+            (1..=CURRENT_PREFERENCES_VERSION, None) => true,
             (43..=CURRENT_PREFERENCES_VERSION, Some(enabled)) => enabled,
             _ => return Err(invalid("unexpected copy metadata preference")),
         },
@@ -1221,8 +1221,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
             .iter()
             .filter_map(|bookmark| bookmark.archive.as_ref())
             .any(StoredArchiveAddress::nested);
-    // Schema 43: preserve times and attributes (written only when on).
-    let preserve_choices = preferences.copy_preserve_metadata;
+    // Schema 43: preserve times and attributes (written only when off).
+    let preserve_choices = !preferences.copy_preserve_metadata;
     // Schemas 35 to 43 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
@@ -1315,7 +1315,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         wheel_speed: speed_choices.then_some(preferences.wheel_speed.percent()),
         updates: update_choices.then(|| updates::StoredUpdates::from(preferences.updates)),
         find: find_choices.then(|| preferences.find.into()),
-        copy_preserve_metadata: preserve_choices.then_some(true),
+        copy_preserve_metadata: preserve_choices.then_some(false),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),

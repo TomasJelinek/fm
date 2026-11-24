@@ -164,6 +164,25 @@ fn numbers_that_do_not_fit_leave_the_mark_and_its_flags() {
 }
 
 #[test]
+fn unexamined_folder_children_are_not_inferred_as_matching() {
+    let mut marks = marks();
+    marks.record(
+        OsStr::new("dir"),
+        None,
+        CompareMark::Differs,
+        &CompareDetail {
+            flags: CompareFlags::CASE,
+            ..CompareDetail::default()
+        },
+    );
+    assert_eq!(
+        marks.mark(0, Path::new("/l/dir")),
+        Some(CompareMark::Differs)
+    );
+    assert_eq!(marks.outcome(0, Path::new("/l/dir/child")), None);
+}
+
+#[test]
 fn inferred_outcomes_have_no_detail() {
     let mut marks = marks();
     marks.record(

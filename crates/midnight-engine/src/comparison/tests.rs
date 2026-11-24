@@ -50,6 +50,78 @@ fn request(left: Vec<Entry>, mut right: Vec<Entry>) -> Arc<CompareRequest> {
 }
 
 #[test]
+fn nonrecursive_attributes_keep_badges_and_both_permission_values() {
+    let file = |id, name, mode| {
+        let mut file = entry(id, name, Some(1), 1);
+        file.metadata.unix_mode = Some(mode);
+        file
+    };
+    let mut folder = entry(4, "ignored-folder", None, 0);
+    folder.kind = EntryKind::Directory;
+    let mut capture = request(
+        vec![
+            file(1, "different", 0o100755),
+            file(2, "equal", 0o100644),
+            file(3, "only-left", 0o100644),
+            folder,
+        ],
+        vec![file(1, "different", 0o100644), file(2, "equal", 0o100644)],
+    );
+    Arc::make_mut(&mut capture).options = CompareOptions {
+        by_size: false,
+        by_modified: false,
+        by_attributes: true,
+        ..CompareOptions::default()
+    };
+    let result = compute(capture, &|| false).unwrap();
+    assert_eq!(result.selections.each_ref().map(|s| s.len()), [2, 1]);
+    let marks = result
+        .marks
+        .expect("top-level comparisons need explanations");
+    for (side, path) in [(0, "/left/different"), (1, "/right/different")] {
+        let (mark, detail) = marks.outcome(side, Path::new(path)).unwrap();
+        assert_eq!(mark, CompareMark::Differs);
+        assert_eq!(detail.attributes, Some([0o755, 0o644]));
+        assert!(detail.flags.contains(CompareFlags::MODE));
+    }
+    assert_eq!(
+        marks.mark(0, Path::new("/left/equal")),
+        Some(CompareMark::Same)
+    );
+    assert_eq!(
+        marks.mark(0, Path::new("/left/only-left")),
+        Some(CompareMark::OnlyHere)
+    );
+    assert_eq!(marks.mark(0, Path::new("/left/ignored-folder")), None);
+}
+
+#[test]
+fn nonrecursive_ambiguous_folders_do_not_mark_unexamined_children() {
+    let folder = |id, name| {
+        let mut folder = entry(id, name, None, 0);
+        folder.kind = EntryKind::Directory;
+        folder
+    };
+    let mut capture = request(
+        vec![folder(1, "Foo"), folder(2, "foo")],
+        vec![folder(1, "Foo")],
+    );
+    Arc::make_mut(&mut capture).options = CompareOptions {
+        unmatched_directories: true,
+        case_sensitive: false,
+        ..CompareOptions::default()
+    };
+    let result = compute(capture, &|| false).unwrap();
+    assert_eq!(result.ambiguous, 1);
+    let marks = result.marks.unwrap();
+    assert_eq!(
+        marks.mark(0, Path::new("/left/Foo")),
+        Some(CompareMark::Differs)
+    );
+    assert_eq!(marks.outcome(0, Path::new("/left/Foo/child")), None);
+}
+
+#[test]
 fn size_time_and_missing_names_select_the_correct_sides() {
     let request = request(
         vec![

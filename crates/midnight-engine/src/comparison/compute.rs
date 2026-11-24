@@ -144,15 +144,13 @@ pub(super) fn compare(
             ));
         }
     }
-    let mut marks = options.recursive.then(|| {
-        CompareMarks::new(
-            [
-                request.sides[0].source.path.to_path_buf(),
-                request.sides[1].source.path.to_path_buf(),
-            ],
-            options.case_sensitive,
-        )
-    });
+    let mut marks = Some(CompareMarks::new(
+        [
+            request.sides[0].source.path.to_path_buf(),
+            request.sides[1].source.path.to_path_buf(),
+        ],
+        options.case_sensitive,
+    ));
     let mut selection = Selection {
         request: &request,
         entries: &entries,

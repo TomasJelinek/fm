@@ -245,7 +245,7 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
         failures.push(format!("the Copy dialog's policy line is {policy:?}"));
     }
     let preserve = checkbox(&app, PRESERVE);
-    if preserve != Some((false, true)) {
+    if preserve != Some((true, true)) {
         failures.push(format!(
             "{PRESERVE:?} for one file is {preserve:?} (checked, enabled)"
         ));
@@ -318,7 +318,7 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
     panel::select_row(&mut app, LEFT, "dir")?;
     open_dialog(&mut app, Key::F5);
     let preserve = checkbox(&app, PRESERVE);
-    if preserve != Some((false, true)) {
+    if preserve != Some((true, true)) {
         failures.push(format!(
             "{PRESERVE:?} for a folder is {preserve:?} (checked, enabled)"
         ));

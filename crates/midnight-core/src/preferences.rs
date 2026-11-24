@@ -475,7 +475,7 @@ pub struct UserPreferences {
     /// Full SHA-256 for new Copy/Move jobs; false checks length and three64 KiB samples.
     pub copy_checksum_verification: bool,
     /// Whether the Copy/Move dialog starts with "Preserve times and attributes" checked
-    /// (`TransferMetadataPolicy::PreserveTimesAndAttributes`). Off by default.
+    /// (`TransferMetadataPolicy::PreserveTimesAndAttributes`). On by default.
     pub copy_preserve_metadata: bool,
     /// Newest first; exact command text is unique even across different shells.
     pub command_history: Vec<CommandHistoryEntry>,
@@ -572,7 +572,7 @@ impl Default for UserPreferences {
             disk_io_concurrency: DiskIoConcurrency::default(),
             remember_command_history: true,
             copy_checksum_verification: true,
-            copy_preserve_metadata: false,
+            copy_preserve_metadata: true,
             command_history: Vec::new(),
             bookmarks: Vec::new(),
             tabs: Default::default(),

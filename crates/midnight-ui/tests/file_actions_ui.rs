@@ -322,7 +322,10 @@ fn clipboard_move(follow_directory_links: bool) {
         panic!("clipboard Move requires its native request");
     };
     assert_eq!(request.intent, TransferIntent::Move);
-    assert_eq!(request.metadata, TransferMetadataPolicy::ContentOnly);
+    assert_eq!(
+        request.metadata,
+        TransferMetadataPolicy::PreserveTimesAndAttributes
+    );
     let MetadataTransferInput::Clipboard(request) = &request.input else {
         panic!("clipboard Move must preserve its captured clipboard");
     };

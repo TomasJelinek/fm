@@ -2,19 +2,19 @@
 
 The F5 Copy and F6 Move dialogs capture their source selection and destination
 before confirmation. Navigation, sorting or a clipboard change cannot replace that
-captured input. The default is content-only copying with independent destination
-verification.
+captured input. The default preserves times and attributes with independent
+destination verification.
 
 ## Preserve times and attributes
 
 “Preserve times and attributes” is a per-dialog check box, offered for every Copy and
 Move (native items, archive members, inline-tree and clipboard captures) of any size.
 It starts as Options › General › File operations › **Preserve times and attributes in
-Copy and Move** says, off by default; changing it in one dialog changes only that job.
+Copy and Move** says, on by default; changing it in one dialog changes only that job.
 It is saved as `copy_preserve_metadata` (settings schema 43,
 [settings files](../SETTINGS_FILES.md)). It replaces the former “Preserve exact modified
 time” check box, which was limited to 64 regular files and never saved, so a settings
-file of an earlier schema starts with the new option off.
+file of an earlier schema starts with the new option on.
 
 A checked option maps to `TransferMetadataPolicy::PreserveTimesAndAttributes`
 (`Command::EnqueueTransferWithMetadata`, `CopyOptionsRequest`, `CapturedTransferRequest`
@@ -25,10 +25,8 @@ bound and no preflight, so a selection of up to 1,000,000 items streams as witho
 with which limits is in [preserved times and attributes](TRANSFERS.md#preserved-times-and-attributes).
 Paste and drag and drop, which have no dialog, copy content only.
 
-The default is off, as in Open Salamander, whose comparable options (Preserve directory
-times; Preserve Archive, Compressed and Encrypted attributes) are off by default: the
-option also copies access and creation times, folder times and Read-only, which change
-what later programs and Copy jobs can do with the copies, so users opt in.
+The option starts checked unless Options saves a different starting choice. Clearing
+it in one dialog copies that job without preserving times and attributes.
 
 ## Required modified time
 
