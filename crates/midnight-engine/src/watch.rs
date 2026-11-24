@@ -12,7 +12,7 @@ use midnight_core::{
 };
 use midnight_work_budget::resident::Spawner;
 use std::{
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -1535,11 +1535,7 @@ fn probe(
             if cancel.is_cancelled() {
                 return false;
             }
-            let valid_child = entry.path.strip_prefix(path).ok().is_some_and(|relative| {
-                let mut parts = relative.components();
-                matches!(parts.next(), Some(Component::Normal(_))) && parts.next().is_none()
-            });
-            if !valid_child {
+            if !crate::folder_sizes::is_immediate_child(path, &entry.path) {
                 failed = true;
                 return false;
             }

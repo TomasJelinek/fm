@@ -380,12 +380,12 @@ fn path_cost(path: &Path) -> usize {
     path.as_os_str().len().saturating_add(size_of::<PathBuf>())
 }
 
-/// Whether `child` names one entry directly inside `directory`. Every entry of a scan is
-/// checked, so the form a listing produces (`directory.join(name)`) is accepted from its
+/// Whether `child` names one entry directly inside `directory`. Every entry of a scan (and
+/// of a watched folder's probe) is checked, so the form a listing produces (`directory.join(name)`) is accepted from its
 /// bytes, about 8 times faster than parsing both paths; any other form is compared by
 /// components. A verbatim root without a final separator, which Windows reports for a
 /// share root (`\\?\UNC\server\share`), has no root component while its children do.
-fn is_immediate_child(directory: &Path, child: &Path) -> bool {
+pub(crate) fn is_immediate_child(directory: &Path, child: &Path) -> bool {
     if is_joined_name(directory, child) {
         return true;
     }

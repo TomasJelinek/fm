@@ -1,10 +1,7 @@
 //! Constant-space, order-independent immediate-directory observation.
 use midnight_core::{Cancellation, CompressionStatus, Entry, EntryKind, FileSystem};
 use sha2::{Digest, Sha256};
-use std::{
-    path::{Component, Path},
-    time::UNIX_EPOCH,
-};
+use std::{path::Path, time::UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Signature {
@@ -129,11 +126,8 @@ pub(crate) fn probe_shown(
             if cancel.is_cancelled() {
                 return false;
             }
-            let valid = entry.path.strip_prefix(path).ok().is_some_and(|relative| {
-                let mut parts = relative.components();
-                matches!(parts.next(), Some(Component::Normal(name)) if name == entry.name)
-                    && parts.next().is_none()
-            });
+            let valid = crate::folder_sizes::is_immediate_child(path, &entry.path)
+                && entry.path.file_name() == Some(entry.name.as_os_str());
             if !valid || entry.virtual_node.is_some() || entry.network_node.is_some() {
                 failed = true;
                 return false;
