@@ -30,7 +30,7 @@ table says so and why.
 | Unreadable folders | An error box per folder (OK continues, Cancel stops). | No question: the folder pair counts as different, the error is counted and up to eight are listed in the result details. An entry inside that one side could not read is not taken as missing there: its counterpart is marked **?** (could not be compared completely), not **+**. |
 | Progress | A dialog: "Comparing *left* with *right*" naming the folder pair being compared; with contents, a file bar and a total bar; Cancel. | The Compare directories dialog turns into its progress view: "Comparing *left* with *right*" (paths shortened in the middle, like the path bar) naming the folder pair being listed or the file pair being read, a bar (displayed folder pairs done; bytes read once only contents remain), the counts of folders and files compared and differences found, the file pairs and bytes read; **Cancel** (Escape, Alt+C). No line is added at the bottom of the window. |
 | Result | Only when nothing differs: "The files in two directories are identical" (with content) or "appear to be identical"; the daylight saving note. Otherwise the selections are the result. | The dialog closes and one line appears below the panel that was active (as long as both panels show the selections it made): the counts selected here and in the other panel, or identical / appear identical, folders that differ, different contents, one- or two-hour shifts, not readable. Its tooltip has the details. When something could not be read, or a limit was reached, the dialog stays open with the details instead. |
-| Inline subfolders (extension) | — | With subfolders, the rows of both panels show a small badge at the end of the name: **=** matches (a folder: everything inside matches), **≠** differs (a folder: something inside differs), **+** exists in this panel only, **?** could not be compared completely. The badge is visible on a collapsed folder; its expanded subfolders and files show theirs too, also when expanded after the comparison. The row's accessible description says the same in words. The glyph carries the meaning, the colour only emphasises it. Badges clear when either panel opens another folder or is re-read, and when a new comparison starts. |
+| Inline subfolders (extension) | — | With subfolders, the rows of both panels show a small badge at the end of the name: **=** matches (a folder: everything inside matches), **≠** differs (a folder: something inside differs), **+** exists in this panel only, **?** could not be compared completely. The badge is visible on a collapsed folder; its expanded subfolders and files show theirs too, also when expanded after the comparison. Pointing at a badge (only the badge) shows the shared tooltip with what the comparison found for that row, and the row's and the badge's accessible descriptions say the same: *Larger here: 64,293 vs 63,880 bytes*, *Newer here: 23.11.2026 18:49:05 vs 21.11.2026 18:49:05 (2 d)*, *Daylight saving shift of 1 h (ignored)*, *Attributes differ: here R, there —* (POSIX permissions in octal), *Content differs (first difference at byte 4,096)*, *Differs inside: 3 files and 1 folder differ, 2 only here*, *Folder attributes differ*, *Only in this panel*, *Not verified:* and why (unreadable, changed while read, a limit, metadata unavailable), *Matches: same size and time (within 2 s)* by the compared criteria. The glyph carries the meaning, the colour only emphasises it. The result line has a square × at its right end (*Close comparison result and clear marks*, reachable by Tab): it closes the line and removes every badge from both panels. Escape in a panel without a filename search, Ctrl+Shift+F11 and *Clear comparison marks* in the main menu's Tools do the same. Once a selection change hides the counts, the line becomes *Comparison marks: = matches, ≠ differs, + only here, ? not verified · × clears them* with the same ×, as long as badges are shown. The selection the comparison made stays, as in Salamander. Badges also clear when either panel opens another folder or is re-read, and when a new comparison starts. |
 
 ### Dialog
 
@@ -70,6 +70,37 @@ request at a time on a blocking worker anchored to the engine's service lifetime
   buffers.
 - Progress samples (`Event::ComparisonProgress`, at most five per second, dropped
   when the UI queue is full) carry the pair being compared and the counts.
+
+### Why a badge shows what it shows
+
+Each stored mark keeps why (`CompareDetail`, `midnight-core/src/compare_detail.rs`):
+flags (time counted, daylight saving shift, POSIX permissions, metadata unavailable,
+unreadable, changed while read, a limit, kinds that differ, names that differ only in
+case) beside the two marks, and only the numbers that apply, packed into 8-byte words
+of one arena: both sizes (2 words), both times in whole seconds (2), both compared
+attribute values (1), the first differing byte (1) and, for a folder pair, its
+immediate children that did not match (3: differing files and folders, entries only
+on either side, not verified). The flags and the arena index fill the marks' padding:
+a map entry with its key stays as large as before (40 bytes on Windows, 32 elsewhere),
+charged as before at the key's length plus 48 bytes; numbers add 8 bytes each, from the same 64 MiB budget. A file that differs by
+size and time costs 32 bytes more, a differing folder 24; matching files inside
+compared folders are still not stored. When the budget leaves no room for numbers,
+the mark and its flags are still stored. The walk counts a folder pair's children as
+it compares them (a counter set per folder-pair node, charged to the node budget: a
+node takes 48 bytes instead of 24). The
+UI words the detail only for the rows Slint asks for (`presenter/comparison/describe.rs`):
+nothing is formatted or kept per row. Time texts are the panels' own localized texts
+of both rows when the other panel lists the counterpart and its time is the compared
+one; otherwise the line names the difference only ("Newer here by 2 d"). Displayed
+pairs whose daylight saving shift was ignored keep it as a detail of their match;
+inside folders such matches are not stored, so the budget still grows with folders,
+not files. A child the listing could not describe keeps only its name: its folder is
+not verified, and both it and its counterpart are marked **?** (*Not verified:
+unreadable*), counted once in the folder's *not verified*.
+A displayed pair that the metadata already separates and whose contents are then read
+(a newer file with Compare contents) keeps **≠** and its reason when the bytes match,
+as it stays selected; in 0.5.1 and earlier its badge said **=** (inside folders such a pair was
+already **≠**).
 
 Cancel (the button, Escape, Alt+C, a newer request, a panel change or shutdown)
 cancels the request's token: listing stops at its next entry, each read at its next
@@ -111,5 +142,13 @@ controller's progress, a panel change answered, cancellation within 100 ms),
 backpressure), and `native_bench_tests.rs`, a timing run explicitly over a native
 tree of 5,000 folders and 40,000 files per side. Presenter:
 `crates/midnight-ui/src/presenter/comparison_tests.rs` (the dialog's progress and
-cancellation, the result line below the active panel, marks). End to end: the
+cancellation, the result line below the active panel, marks),
+`comparison_badge_tests.rs` (the badge's words for every verdict, Clear comparison
+keeping the selection, the line that names the marks once the counts no longer
+apply) and `crates/midnight-ui/src/compare_badges_tests.rs` (the window: the badge's
+tooltip and accessible description, only over the badge; closing the result line by
+its square, centred, right-aligned ×, Escape after a filename search, Ctrl+Shift+F11 and the menu; layout at fonts
+8, 12 and 32, Desktop and Touch). Engine details: `rules_tests.rs`
+(`a_verdict_records_what_differs_with_both_sides_values`) and `detail_tests.rs`;
+the packing and its memory: `crates/midnight-core/src/compare_tests.rs`. End to end: the
 `tools_compare_dirs` acceptance scenario ([ACCEPTANCE.md](ACCEPTANCE.md)).

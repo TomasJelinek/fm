@@ -1,7 +1,9 @@
 //! How Compare directories judges one same-named pair (Open Salamander's rules,
 //! docs/developer/COMPARE_DIRECTORIES.md): names, size, time with tolerance and
 //! daylight saving shifts, attributes, and when contents must be read.
-use midnight_core::{CompareOptions, EntryMetadata, FilterMode, PanelFilter};
+use midnight_core::{
+    CompareDetail, CompareFlags, CompareOptions, EntryMetadata, FilterMode, PanelFilter,
+};
 use midnight_platform_common::filter::CompiledFilter;
 use std::{
     ffi::OsStr,
@@ -80,41 +82,67 @@ impl Criteria {
         let options = &self.options;
         let [a, b] = entries;
         let mut verdict = Verdict::default();
+        let detail = &mut verdict.detail;
         if options.by_size {
             match (a.size, b.size) {
-                (Some(a), Some(b)) if a > b => verdict.select[0] = true,
-                (Some(a), Some(b)) if b > a => verdict.select[1] = true,
+                (Some(left), Some(right)) if left != right => {
+                    verdict.select[usize::from(right > left)] = true;
+                    detail.sizes = Some([left, right]);
+                }
                 (Some(_), Some(_)) => (),
                 _ => verdict.unknown = true,
             }
         }
         if options.by_modified {
             match (a.modified, b.modified) {
-                (Some(a), Some(b)) => match self.times(a, b) {
-                    Time::Equal => (),
-                    Time::Newer(side) => verdict.select[side] = true,
-                    Time::Shift(side) => {
-                        verdict.dst_shift = true;
-                        if !options.ignore_dst_shifts {
+                (Some(left), Some(right)) => {
+                    let times = Some([seconds(left) as i64, seconds(right) as i64]);
+                    match self.times(left, right) {
+                        Time::Equal => (),
+                        Time::Newer(side) => {
                             verdict.select[side] = true;
+                            detail.flags |= CompareFlags::TIME;
+                            detail.times = times;
+                        }
+                        Time::Shift(side) => {
+                            verdict.dst_shift = true;
+                            detail.flags |= CompareFlags::DST_SHIFT;
+                            detail.times = times;
+                            if !options.ignore_dst_shifts {
+                                verdict.select[side] = true;
+                                detail.flags |= CompareFlags::TIME;
+                            }
                         }
                     }
-                },
+                }
                 _ => verdict.unknown = true,
             }
         }
-        if options.by_attributes && attributes_differ(a, b) {
+        if options.by_attributes
+            && let Some((attributes, flags)) = attribute_difference(a, b)
+        {
             verdict.select = [true; 2];
+            detail.attributes = Some(attributes);
+            detail.flags |= flags;
+        }
+        if verdict.unknown {
+            detail.flags |= CompareFlags::METADATA;
         }
         if options.by_content {
             match (a.size, b.size) {
                 // Different lengths cannot hold the same bytes, whatever the criteria.
-                (Some(a), Some(b)) if a != b => verdict.select = [true; 2],
+                (Some(left), Some(right)) if left != right => {
+                    verdict.select = [true; 2];
+                    detail.sizes = Some([left, right]);
+                }
                 // Read unless both files are selected already; empty files are equal.
                 (Some(size), Some(_)) => {
                     verdict.read_contents = size > 0 && verdict.select != [true; 2];
                 }
-                _ => verdict.unknown = true,
+                _ => {
+                    verdict.unknown = true;
+                    verdict.detail.flags |= CompareFlags::METADATA;
+                }
             }
         }
         verdict
@@ -136,11 +164,17 @@ impl Criteria {
         }
     }
 
-    /// With Compare attributes of subfolders: a same-named folder pair differs.
-    pub(super) fn folders_differ(&self, entries: [&EntryMetadata; 2]) -> bool {
-        self.options.recursive
-            && self.options.subfolder_attributes
-            && attributes_differ(entries[0], entries[1])
+    /// With Compare attributes of subfolders: how a same-named folder pair differs,
+    /// or None when it does not.
+    pub(super) fn folders_differ(&self, entries: [&EntryMetadata; 2]) -> Option<CompareDetail> {
+        if !self.options.recursive || !self.options.subfolder_attributes {
+            return None;
+        }
+        attribute_difference(entries[0], entries[1]).map(|(attributes, flags)| CompareDetail {
+            flags,
+            attributes: Some(attributes),
+            ..CompareDetail::default()
+        })
     }
 }
 
@@ -162,6 +196,8 @@ pub(super) struct Verdict {
     pub(super) read_contents: bool,
     /// The times are one or two hours apart.
     pub(super) dst_shift: bool,
+    /// Why, for the marks: what differs, with both sides' values.
+    pub(super) detail: CompareDetail,
 }
 
 impl Verdict {
@@ -171,18 +207,21 @@ impl Verdict {
     }
 }
 
-/// Compared attributes differ. Unknown attributes on either side compare equal, as
-/// Salamander compares attributes only where both panels show them.
-fn attributes_differ(a: &EntryMetadata, b: &EntryMetadata) -> bool {
-    match (a.native_attributes, b.native_attributes) {
-        (Some(a), Some(b)) => return (a ^ b) & COMPARED_ATTRIBUTES != 0,
-        (Some(_), None) | (None, Some(_)) => return false,
-        (None, None) => (),
-    }
-    match (a.unix_mode, b.unix_mode) {
-        (Some(a), Some(b)) => (a ^ b) & COMPARED_MODE != 0,
-        _ => false,
-    }
+/// The compared attributes of both sides when they differ, with `MODE` for POSIX
+/// permission bits. Unknown attributes on either side compare equal, as Salamander
+/// compares attributes only where both panels show them.
+fn attribute_difference(a: &EntryMetadata, b: &EntryMetadata) -> Option<([u32; 2], CompareFlags)> {
+    let (mask, flags, values) = match (a.native_attributes, b.native_attributes) {
+        (Some(a), Some(b)) => (COMPARED_ATTRIBUTES, CompareFlags::empty(), [a, b]),
+        (Some(_), None) | (None, Some(_)) => return None,
+        (None, None) => (
+            COMPARED_MODE,
+            CompareFlags::MODE,
+            [a.unix_mode?, b.unix_mode?],
+        ),
+    };
+    let values = values.map(|value| value & mask);
+    (values[0] != values[1]).then_some((values, flags))
 }
 
 /// Whole seconds, rounded down also for dates before the Unix epoch.

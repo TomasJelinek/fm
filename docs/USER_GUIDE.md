@@ -1148,7 +1148,14 @@ current keys.
   folders with everything inside them and selects a folder that differs anywhere
   inside in both panels; every compared row then shows a badge at the end of its
   name: **=** matches, **≠** differs, **+** exists in this panel only, **?** could not
-  be compared; expand a folder to see which subfolders and files differ. Folders in
+  be compared; expand a folder to see which subfolders and files differ. Point at a
+  badge to see what differs for that row ("Newer here: … vs … (2 d)", "Larger here:
+  … vs … bytes", "Differs inside: 3 files and 1 folder differ, 2 only here", "Not
+  verified: …"). The badges stay until you clear them: the × at the right end of
+  the result line closes it and removes the badges from both panels; Escape in the
+  panel (after any filename search), Ctrl+Shift+F11 or **Clear comparison marks** in
+  the menu do the same. The selection stays as it is; opening another folder, re-reading a panel or a new
+  comparison clears them too. Folders in
   one panel only can be selected without comparing subfolders, and files or folders
   can be ignored by masks. While contents or subfolders are compared, the dialog shows
   "Comparing … with …", the counts and a progress bar; Cancel, Escape or Alt+C stops

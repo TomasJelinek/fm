@@ -1,8 +1,9 @@
 //! Dispatch semantic file actions without holding state across focus changes.
 use crate::{
-    MainWindow,
+    CompareBadges, MainWindow,
     file_keys::{FileKey, WindowAction},
 };
+use slint::ComponentHandle;
 
 pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
     // A panel that shows search results (Feed to panel) takes its actions first.
@@ -44,6 +45,10 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, action: FileKey) -> i32 {
         }
         FileKey::Edit => window.invoke_edit_file(pane),
         FileKey::Compare => window.invoke_open_comparison(),
+        // Escape stays unhandled when no comparison is shown.
+        FileKey::ClearComparison => {
+            return i32::from(window.global::<CompareBadges>().invoke_clear());
+        }
         FileKey::Filter => window.invoke_open_panel_filter(pane),
         FileKey::Zoom => window.invoke_toggle_panel_zoom(pane),
         FileKey::Mutation(action) => window.invoke_mutation(pane, action),

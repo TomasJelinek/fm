@@ -74,8 +74,8 @@ pub(super) enum Status {
 pub(super) struct Outcomes {
     /// One per `Top`, in order.
     pub(super) tops: Vec<Status>,
-    /// Displayed file pairs read byte by byte: their candidate index and outcome.
-    pub(super) rows: Vec<([usize; 2], Option<OsString>, Status)>,
+    /// Displayed file pairs read byte by byte: their rows, key, outcome and why.
+    pub(super) rows: Vec<Row>,
     pub(super) counts: Counts,
 }
 
@@ -111,10 +111,18 @@ enum State {
     Unverified,
 }
 
+/// A displayed file pair read byte by byte: its rows, key, outcome and why.
+pub(super) type Row = ([usize; 2], Option<OsString>, Status, CompareDetail);
+
 /// One folder pair inside (or at) a displayed folder pair.
 struct Node {
     parent: u32,
     state: State,
+    /// Why it could not be compared completely (`unverified`).
+    flags: CompareFlags,
+    /// Its immediate children that did not match; differing and unverified folders
+    /// are added when the walk ends.
+    inside: CompareInside,
     /// Its key in the marks; None once the node budget is spent.
     key: Option<Box<OsStr>>,
 }
@@ -151,7 +159,7 @@ pub(super) struct Walk<'a> {
     last_report: Instant,
     /// Content candidates sent and not yet answered.
     outstanding: u64,
-    rows: Vec<([usize; 2], Option<OsString>, Status)>,
+    rows: Vec<Row>,
 }
 
 impl<'a> Walk<'a> {
@@ -243,7 +251,7 @@ impl<'a> Walk<'a> {
             self.progress.current = Some(Arc::new(pair.paths.clone()));
             if pair.depth > MAX_DEPTH {
                 self.counts.limited = true;
-                self.unverified(pair.node);
+                self.unverified(pair.node, CompareFlags::LIMIT);
                 continue;
             }
             self.folder_pair(&pair, &mut stack, pool)?;
@@ -285,6 +293,8 @@ impl<'a> Walk<'a> {
         self.nodes.push(Node {
             parent,
             state: State::Same,
+            flags: CompareFlags::empty(),
+            inside: CompareInside::default(),
             key,
         });
         (self.nodes.len() - 1) as u32
@@ -303,10 +313,11 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// `node` could not be compared completely; the folders above it differ.
-    fn unverified(&mut self, node: u32) {
+    /// `node` could not be compared completely (`why`); the folders above it differ.
+    fn unverified(&mut self, node: u32, why: CompareFlags) {
         let parent = self.nodes[node as usize].parent;
         self.nodes[node as usize].state = State::Unverified;
+        self.nodes[node as usize].flags |= why;
         if parent != NONE {
             self.differs(parent);
         } else {
@@ -314,7 +325,14 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn mark(&mut self, node: u32, name: &OsStr, side: Option<usize>, mark: CompareMark) {
+    fn mark(
+        &mut self,
+        node: u32,
+        name: &OsStr,
+        side: Option<usize>,
+        mark: CompareMark,
+        detail: &CompareDetail,
+    ) {
         let Some(marks) = self.marks.as_deref_mut() else {
             return;
         };
@@ -322,15 +340,12 @@ impl<'a> Walk<'a> {
             return;
         };
         let key = marks.child_key(parent, name);
-        match side {
-            Some(side) => {
-                marks.set(&key, side, mark);
-            }
-            None => {
-                marks.set(&key, 0, mark);
-                marks.set(&key, 1, mark);
-            }
-        }
+        marks.record(&key, side, mark, detail);
+    }
+
+    /// The counts of `node`'s children that did not match.
+    fn inside(&mut self, node: u32) -> &mut CompareInside {
+        &mut self.nodes[node as usize].inside
     }
 
     fn child_key(&self, node: u32, name: &OsStr) -> Option<OsString> {
@@ -350,12 +365,17 @@ impl<'a> Walk<'a> {
         self.counts.folders += 1;
         let listed = [self.list(&pair.paths[0])?, self.list(&pair.paths[1])?];
         let [Some(left), Some(right)] = listed else {
-            self.unverified(pair.node);
+            self.unverified(pair.node, CompareFlags::UNREADABLE);
             return Ok(());
         };
         if left.incomplete || right.incomplete {
             // Everything listed is still compared; the folder itself stays unproven.
-            self.unverified(pair.node);
+            let why = if left.limited || right.limited {
+                CompareFlags::LIMIT
+            } else {
+                CompareFlags::UNREADABLE
+            };
+            self.unverified(pair.node, why);
         }
         // A child one side could not describe is still present there: its
         // counterpart is not proven different, and not present on one side only.
@@ -388,6 +408,12 @@ impl<'a> Walk<'a> {
         for ((_, name), group) in groups {
             self.stopped(&pair.paths[0])?;
             if unreadable.contains(&name) {
+                let inside = self.inside(pair.node);
+                inside.unverified = inside.unverified.saturating_add(1);
+                let detail = CompareDetail {
+                    flags: CompareFlags::UNREADABLE,
+                    ..CompareDetail::default()
+                };
                 for (side, indices) in group.iter().enumerate() {
                     for index in indices {
                         self.mark(
@@ -395,6 +421,7 @@ impl<'a> Walk<'a> {
                             child_name(&lists[side][*index]),
                             Some(side),
                             CompareMark::Unverified,
+                            &detail,
                         );
                     }
                 }
@@ -414,9 +441,23 @@ impl<'a> Walk<'a> {
         pool: &Pool,
     ) -> Result<(), FsError> {
         let node = pair.node;
+        let flagged = |flags| CompareDetail {
+            flags,
+            ..CompareDetail::default()
+        };
         if group.iter().any(|indices| indices.len() > 1) {
             self.counts.ambiguous += 1;
             self.differs(node);
+            let folder = group
+                .iter()
+                .enumerate()
+                .any(|(side, indices)| indices.iter().any(|index| is_folder(&lists[side][*index])));
+            let inside = self.inside(node);
+            if folder {
+                inside.folders = inside.folders.saturating_add(1);
+            } else {
+                inside.files = inside.files.saturating_add(1);
+            }
             for (side, indices) in group.iter().enumerate() {
                 for index in indices {
                     self.mark(
@@ -424,6 +465,7 @@ impl<'a> Walk<'a> {
                         child_name(&lists[side][*index]),
                         Some(side),
                         CompareMark::Differs,
+                        &flagged(CompareFlags::CASE),
                     );
                 }
             }
@@ -435,12 +477,15 @@ impl<'a> Walk<'a> {
                 // Present on one side only, folders and links included.
                 self.differs(node);
                 for (side, indices) in group.iter().enumerate() {
+                    let only = &mut self.inside(node).only[side];
+                    *only = only.saturating_add(u32::try_from(indices.len()).unwrap_or(u32::MAX));
                     for index in indices {
                         self.mark(
                             node,
                             child_name(&lists[side][*index]),
                             Some(side),
                             CompareMark::OnlyHere,
+                            &CompareDetail::default(),
                         );
                     }
                 }
@@ -461,9 +506,11 @@ impl<'a> Walk<'a> {
                     name: right_name,
                 },
             ) => {
-                if self.criteria.folders_differ([a, b]) {
+                if let Some(detail) = self.criteria.folders_differ([a, b]) {
                     self.differs(node);
-                    self.mark(node, name, None, CompareMark::Differs);
+                    let inside = self.inside(node);
+                    inside.folders = inside.folders.saturating_add(1);
+                    self.mark(node, name, None, CompareMark::Differs, &detail);
                     return Ok(());
                 }
                 let key = self.child_key(node, name);
@@ -476,7 +523,7 @@ impl<'a> Walk<'a> {
                 let cost = next.cost();
                 if self.pending_bytes + cost > MAX_PENDING_BYTES {
                     self.counts.limited = true;
-                    self.unverified(child);
+                    self.unverified(child, CompareFlags::LIMIT);
                 } else {
                     self.pending_bytes += cost;
                     stack.push(next);
@@ -503,10 +550,14 @@ impl<'a> Walk<'a> {
                 if verdict.unknown {
                     self.counts.unknown += 1;
                     self.differs(node);
-                    self.mark(node, name, None, CompareMark::Unverified);
+                    let inside = self.inside(node);
+                    inside.unverified = inside.unverified.saturating_add(1);
+                    self.mark(node, name, None, CompareMark::Unverified, &verdict.detail);
                 } else if verdict.differs() {
                     self.differs(node);
-                    self.mark(node, name, None, CompareMark::Differs);
+                    let inside = self.inside(node);
+                    inside.files = inside.files.saturating_add(1);
+                    self.mark(node, name, None, CompareMark::Differs, &verdict.detail);
                 } else if verdict.read_contents {
                     let candidate = Candidate {
                         origin: Origin::Node(node),
@@ -526,7 +577,10 @@ impl<'a> Walk<'a> {
             // A link opposite a file, or another kind mismatch.
             _ => {
                 self.differs(node);
-                self.mark(node, name, None, CompareMark::Differs);
+                let inside = self.inside(node);
+                inside.files = inside.files.saturating_add(1);
+                let kind = flagged(CompareFlags::KIND);
+                self.mark(node, name, None, CompareMark::Differs, &kind);
             }
         }
         Ok(())
@@ -622,28 +676,39 @@ impl<'a> Walk<'a> {
             result,
         } = outcome;
         self.progress.content_files += 1;
+        let mut detail = CompareDetail::default();
         let status = match result {
-            Ok(true) => {
+            Ok(None) => {
                 self.counts.content_files += 1;
                 Status::Same
             }
-            Ok(false) => {
+            Ok(Some(offset)) => {
                 self.counts.content_files += 1;
                 self.counts.content_differences += 1;
+                detail.first_difference = Some(offset);
                 Status::Differs
             }
-            Err(error) => {
+            Err(failure) => {
                 // Only this comparison's cancellation ends it; any other failure
                 // leaves the pair selected as not verified.
                 self.stopped(&path)?;
-                self.counts.error(error);
+                self.counts.error(failure.error);
                 self.counts.unknown += 1;
+                detail.flags = failure.why;
                 Status::Unverified
             }
         };
         match origin {
-            Origin::Row(rows) => self.rows.push((rows, key, status)),
+            Origin::Row(rows) => self.rows.push((rows, key, status, detail)),
             Origin::Node(node) => {
+                let inside = self.inside(node);
+                match status {
+                    Status::Same => (),
+                    Status::Differs => inside.files = inside.files.saturating_add(1),
+                    Status::Unverified => {
+                        inside.unverified = inside.unverified.saturating_add(1);
+                    }
+                }
                 if status != Status::Same {
                     self.differs(node);
                 }
@@ -654,8 +719,7 @@ impl<'a> Walk<'a> {
                         Status::Unverified => CompareMark::Unverified,
                     };
                     if status != Status::Same {
-                        marks.set(&key, 0, mark);
-                        marks.set(&key, 1, mark);
+                        marks.record(&key, None, mark, &detail);
                     }
                 }
             }
@@ -675,6 +739,20 @@ impl<'a> Walk<'a> {
                 State::Unverified => Status::Unverified,
             })
             .collect();
+        // Each folder pair counts its subfolder pairs that differ or are not
+        // verified; a child always comes after its parent.
+        for index in 0..self.nodes.len() {
+            let (parent, state) = (self.nodes[index].parent, self.nodes[index].state);
+            if parent == NONE {
+                continue;
+            }
+            let inside = &mut self.nodes[parent as usize].inside;
+            match state {
+                State::Same => (),
+                State::Differs => inside.folders = inside.folders.saturating_add(1),
+                State::Unverified => inside.unverified = inside.unverified.saturating_add(1),
+            }
+        }
         if let Some(marks) = self.marks.as_deref_mut() {
             for (node, status) in self.nodes.iter().zip(&statuses) {
                 let Some(key) = node.key.as_deref() else {
@@ -685,8 +763,12 @@ impl<'a> Walk<'a> {
                     Status::Differs => CompareMark::Differs,
                     Status::Unverified => CompareMark::Unverified,
                 };
-                marks.set(key, 0, mark);
-                marks.set(key, 1, mark);
+                let detail = CompareDetail {
+                    flags: node.flags,
+                    inside: (!node.inside.is_empty()).then_some(node.inside),
+                    ..CompareDetail::default()
+                };
+                marks.record(key, None, mark, &detail);
             }
             if self.nodes.iter().any(|node| node.key.is_none()) {
                 // Folders without a stored key cannot answer for their children.
@@ -711,6 +793,16 @@ struct Listing {
     incomplete: bool,
     limited: bool,
     bytes: usize,
+}
+
+fn is_folder(child: &Child) -> bool {
+    matches!(
+        child,
+        Child::Entry {
+            directory: true,
+            ..
+        }
+    )
 }
 
 fn child_name(child: &Child) -> &OsStr {

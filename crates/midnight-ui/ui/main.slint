@@ -63,8 +63,7 @@ export { FilenameColorPresentation }
 
 import { OperationRow, JobIssue, JobsView } from "jobs-dialog.slint";
 import { SpeedChartData } from "operation-speed-chart.slint";
-export { SpeedChartData }
-export { JobsView, JobIssue }
+export { SpeedChartData, JobsView, JobIssue }
 import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
 export { MetadataDraft }
 import { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView, MetadataEditFormat } from "metadata-time-field.slint";
@@ -73,16 +72,12 @@ import { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "un
 export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView }
 import { ComparisonView, ComparisonChoices, CompareDirectoriesDialog } from "comparison-dialog.slint";
 import { PanelFilterHistoryItem, PanelFilterView } from "panel-filter-dialog.slint";
-export { ComparisonView, PanelFilterView, PanelFilterHistoryItem }
-export { OperationRow }
+export { ComparisonView, PanelFilterView, PanelFilterHistoryItem, OperationRow }
 import { SearchTextEdit } from "panel-search.slint";
-export { Theme }
-export { TabRow, BookmarkRow, PathPartRow, DetailRow }
-export { ActionIcons, NavigationChoiceRow, LocationRole }
-export { SearchTextEdit }
-export { TooltipPlacement }
+export { TabRow, BookmarkRow, PathPartRow, DetailRow, Theme }
+export { ActionIcons, NavigationChoiceRow, LocationRole, LocationRow }
+export { SearchTextEdit, TooltipPlacement }
 
-export { LocationRow }
 import { FilePane } from "file-pane.slint";
 import { PanelHold } from "panel-hold.slint";
 import { FindFeedPanel, FeedRow, FeedView, FeedPresentation } from "find-feed.slint";
@@ -92,12 +87,12 @@ import { SharedToolbar } from "shared-toolbar.slint";
 import { NavigationFocus } from "navigation-controls.slint";
 import { OmissionText, PathText } from "path-text.slint";
 import { PathPasteView } from "path-editor.slint";
-export { PathPasteView }
 import { SelectionRectangle } from "selection-rectangle.slint";
-export { SelectionRectangle }
+export { PathPasteView, SelectionRectangle }
 import { FunctionButton } from "function-button.slint";
 import { FunctionBar } from "function-bar.slint";
 export { FunctionSlot } from "function-models.slint";
+export { CompareBadges } from "compare-badge.slint";
 
 export component MainWindow inherits Window {
     in property <bool> dialog-input-blocked;

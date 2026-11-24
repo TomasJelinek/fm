@@ -33,6 +33,9 @@ export struct FileRow {
     // Compare directories with subfolders: 1 matches, 2 differs, 3 this panel only,
     // 4 not verified; 0 nothing to show (`CompareBadge`).
     compare-mark: int,
+    // What the comparison found for this row, worded when the row is shown: the
+    // badge's tooltip and accessible description.
+    compare-detail: string,
     color-rule: bool,
     custom-foreground: bool,
     foreground: color,

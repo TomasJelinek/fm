@@ -127,6 +127,14 @@ fn build() -> Vec<ShortcutDefinition> {
         FilesAny,
         &["Ctrl+F10"],
     );
+    // Escape clears only in a panel without a filename search (`scope_for`), and
+    // only while marks or a result are shown; otherwise it does what it did before.
+    add(
+        "panel.compare-clear",
+        "Clear directory comparison marks",
+        FilesAny,
+        &["Escape", "Ctrl+Shift+F11"],
+    );
     add("panel.zoom", "Zoom active panel", FilesAny, &["Ctrl+F11"]);
     add("files.view", "View focused file", FilesAny, &["F3"]);
     add(

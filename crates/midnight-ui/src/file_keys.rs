@@ -60,6 +60,8 @@ pub(crate) enum FileKey {
     UserCommand(midnight_core::UserCommandId),
     Edit,
     Compare,
+    /// Clear comparison: unhandled (as an unbound key) when nothing is shown.
+    ClearComparison,
     Filter,
     Zoom,
     /// Shift+letter: the drive with that letter, otherwise the typed letter.
@@ -176,6 +178,7 @@ pub(crate) fn semantic(action: &str, active: bool) -> Option<FileKey> {
         "panel.folder-sizes" => FileKey::FolderSizes,
         "panel.drive-info" => FileKey::DriveInfo,
         "panel.compare" => FileKey::Compare,
+        "panel.compare-clear" => FileKey::ClearComparison,
         "panel.filter" => FileKey::Filter,
         "panel.zoom" => FileKey::Zoom,
         "files.attributes" => FileKey::Metadata(false),

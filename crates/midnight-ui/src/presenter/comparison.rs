@@ -3,6 +3,10 @@
 //! (a line below the panel that was active, and per-row marks with subfolders).
 use super::*;
 #[cfg(test)]
+#[path = "comparison_badge_tests.rs"]
+mod badge_tests;
+mod describe;
+#[cfg(test)]
 #[path = "comparison_tests.rs"]
 mod tests;
 mod tree;
@@ -26,10 +30,15 @@ pub(crate) struct Reported {
 }
 
 /// Per-row outcomes of the last comparison with subfolders, while both panels still
-/// show the listings it compared (`generation` of each).
+/// show the listings it compared (`generation` of each), with the options that
+/// tell what "matches" meant and the panel whose line describes them.
 pub(crate) struct ShownMarks {
     marks: Arc<CompareMarks>,
     generations: [u64; 2],
+    options: CompareOptions,
+    pane: PaneId,
+    /// The details of the line that names the marks once the result line is gone.
+    details: String,
 }
 
 #[derive(Default)]
@@ -105,39 +114,70 @@ impl Presenter {
     }
 
     /// The last comparison's result line below `pane`, with its details, while both
-    /// panes still show the selections it made.
+    /// panes still show the selections it made. Once a selection changes, the line
+    /// says that the panels still show the comparison's marks, as long as they do.
     pub(crate) fn comparison_note(&self, pane: PaneId) -> Option<(&str, &str)> {
-        let reported = self.comparison.reported.as_ref()?;
-        (reported.pane == pane
+        if let Some(reported) = self.comparison.reported.as_ref()
+            && reported.pane == pane
             && self
                 .panes
                 .iter()
                 .zip(&reported.shown)
                 .all(|(pane, (generation, revision))| {
                     pane.generation == *generation && tree::selection_revision(pane) == *revision
-                }))
-        .then_some((reported.line.as_str(), reported.details.as_str()))
+                })
+        {
+            return Some((reported.line.as_str(), reported.details.as_str()));
+        }
+        self.comparison
+            .marks
+            .as_ref()
+            .filter(|shown| shown.pane == pane)
+            .map(|shown| {
+                (
+                    "Comparison marks: = matches, ≠ differs, + only here, ? not verified · × clears them",
+                    shown.details.as_str(),
+                )
+            })
+    }
+
+    /// Whether Clear comparison has something to clear: a result line or marks.
+    pub(crate) fn comparison_shown(&self) -> bool {
+        self.comparison.marks.is_some()
+            || [PaneId::Left, PaneId::Right]
+                .into_iter()
+                .any(|pane| self.comparison_note(pane).is_some())
+    }
+
+    /// Clear comparison: the marks leave both panels and the result line its panel.
+    /// The selection the comparison made stays, as in Salamander. False when there
+    /// was nothing to clear.
+    pub(crate) fn clear_comparison(&mut self) -> bool {
+        let shown = self.comparison_shown();
+        self.retired.push(Box::new(self.comparison.reported.take()));
+        self.retired.push(Box::new(self.comparison.marks.take()));
+        shown
+    }
+
+    /// How to clear the comparison, for the result line's details.
+    fn clear_hint(&self) -> String {
+        let keys = self.shortcut_hint("panel.compare-clear");
+        let keys = if keys.is_empty() {
+            String::new()
+        } else {
+            format!(", {keys}")
+        };
+        format!(
+            "The × at the right end of this line{keys} closes it and clears the marks in both panels; the selection stays. Listing a panel again or a new comparison also clears them."
+        )
     }
 
     /// How the last comparison with subfolders found `entry` in `pane`: 1 matches,
     /// 2 differs, 3 exists in this panel only, 4 not verified; 0 when there is
     /// nothing to show (another listing, or not compared).
+    #[cfg(test)]
     pub(crate) fn comparison_mark(&self, pane: PaneId, entry: &Entry) -> i32 {
-        let Some(shown) = &self.comparison.marks else {
-            return 0;
-        };
-        if self.panes[pane.index()].generation != shown.generations[pane.index()]
-            || entry.virtual_node.is_some()
-        {
-            return 0;
-        }
-        match shown.marks.mark(pane.index(), &entry.path) {
-            Some(CompareMark::Same) => 1,
-            Some(CompareMark::Differs) => 2,
-            Some(CompareMark::OnlyHere) => 3,
-            Some(CompareMark::Unverified) => 4,
-            None => 0,
-        }
+        self.comparison_badge(pane, entry, &entry.metadata).0
     }
 
     /// Marks that no longer describe both panels' listings are dropped.
@@ -438,7 +478,20 @@ impl Presenter {
                 // The panels show the differences selected; a line below the panel that
                 // was active says how many. Problems keep the dialog open with them.
                 let origin = self.comparison.origin.unwrap_or(self.active);
-                let line = status_line(&result, origin, &self.number_locale);
+                let mut line = status_line(&result, origin, &self.number_locale);
+                let mut details = summary.clone();
+                let clear = self.clear_hint();
+                if result.marks.is_some() {
+                    // Marks stay until cleared: the line says how.
+                    let key = self.shortcut_key("panel.compare-clear");
+                    if key.is_empty() {
+                        line.push_str(" · × clears the marks");
+                    } else {
+                        line.push_str(&format!(" · {key} or × clears the marks"));
+                    }
+                    details.push_str("\n\n");
+                    details.push_str(&clear);
+                }
                 let shown = [0, 1].map(|slot| {
                     let pane = &self.panes[slot];
                     (pane.generation, tree::selection_revision(pane))
@@ -446,7 +499,7 @@ impl Presenter {
                 self.retired
                     .push(Box::new(self.comparison.reported.replace(Reported {
                         line,
-                        details: summary.clone(),
+                        details,
                         pane: origin,
                         shown,
                     })));
@@ -456,6 +509,9 @@ impl Presenter {
                         .push(Box::new(self.comparison.marks.replace(ShownMarks {
                             marks: marks.clone(),
                             generations,
+                            options: result.request.options.clone(),
+                            pane: origin,
+                            details: format!("Point at a mark to see what differs.\n\n{clear}"),
                         })));
                 }
                 if long && (result.errors > 0 || result.limited) {

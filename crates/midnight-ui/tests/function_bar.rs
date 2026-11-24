@@ -86,7 +86,7 @@ const DEFAULT_ACTIONS: [[&str; 12]; 8] = [
         "",
         "",
         "panel.folder-sizes",
-        "",
+        "panel.compare-clear",
         "",
     ],
     [""; 12],

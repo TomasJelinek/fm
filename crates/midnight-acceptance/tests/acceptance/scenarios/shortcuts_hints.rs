@@ -33,7 +33,7 @@ const NEW_KEY: &str = "Ctrl+Alt+K";
 const SIZE_KEY: &str = "Ctrl+Alt+Z";
 
 /// The main menu's items and their actions (main-menu.slint), in display order.
-const MENU: [(&str, &str); 65] = [
+const MENU: [(&str, &str); 66] = [
     ("Open", "panel.open"),
     ("View", "files.view"),
     ("View as plain text", "files.view-basic"),
@@ -91,6 +91,7 @@ const MENU: [(&str, &str); 65] = [
     ("Make File List…", "files.make-list"),
     ("Compare files…", "files.compare"),
     ("Compare directories…", "panel.compare"),
+    ("Clear comparison marks", "panel.compare-clear"),
     ("Calculate / cancel folder sizes", "panel.folder-sizes"),
     ("Drive information", "panel.drive-info"),
     ("Command line", "command.focus"),

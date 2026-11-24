@@ -196,3 +196,71 @@ fn ignore_masks_apply_to_files_or_folders_and_names_fold_case() {
         exact.name(OsStr::new("README.txt"))
     );
 }
+
+#[test]
+fn a_verdict_records_what_differs_with_both_sides_values() {
+    let rules = criteria(|options| options.by_attributes = true);
+    let verdict = rules.files([&file(20, 10), &file(10, 10)]);
+    assert_eq!(verdict.detail.sizes, Some([20, 10]));
+    assert_eq!(verdict.detail.times, None);
+    let verdict = rules.files([&file(1, 10), &file(1, 13)]);
+    assert_eq!(verdict.detail.times, Some([10, 13]));
+    assert_eq!(verdict.detail.flags, CompareFlags::TIME);
+    // Within the tolerance nothing is recorded.
+    assert!(rules.files([&file(1, 10), &file(1, 12)]).detail.is_empty());
+    // A shift is recorded counted, or ignored without TIME.
+    let shift = rules.files([&file(1, 7_200 + 50), &file(1, 50)]);
+    assert_eq!(
+        shift.detail.flags,
+        CompareFlags::TIME | CompareFlags::DST_SHIFT
+    );
+    assert_eq!(shift.detail.times, Some([7_250, 50]));
+    let ignoring = criteria(|options| options.ignore_dst_shifts = true);
+    let shift = ignoring.files([&file(1, 3_600), &file(1, 0)]);
+    assert!(!shift.differs());
+    assert_eq!(shift.detail.flags, CompareFlags::DST_SHIFT);
+    // Attributes keep only the compared bits; POSIX permissions say MODE.
+    let with = |attributes: u32| EntryMetadata {
+        native_attributes: Some(attributes),
+        ..file(1, 1)
+    };
+    let verdict = rules.files([&with(0x21 | 0x10), &with(0x20 | 0x80)]);
+    assert_eq!(verdict.detail.attributes, Some([0x21, 0x20]));
+    assert_eq!(verdict.detail.flags, CompareFlags::empty());
+    let mode = |mode: u32| EntryMetadata {
+        unix_mode: Some(mode),
+        ..file(1, 1)
+    };
+    let verdict = rules.files([&mode(0o100644), &mode(0o104755)]);
+    assert_eq!(verdict.detail.attributes, Some([0o644, 0o4755]));
+    assert_eq!(verdict.detail.flags, CompareFlags::MODE);
+    // Compare contents alone: different lengths are recorded as sizes.
+    let contents = criteria(|options| {
+        options.by_content = true;
+        options.by_size = false;
+        options.by_modified = false;
+    });
+    assert_eq!(
+        contents.files([&file(5, 1), &file(6, 1)]).detail.sizes,
+        Some([5, 6])
+    );
+    // Unknown metadata.
+    let unknown = EntryMetadata {
+        size: None,
+        ..file(1, 1)
+    };
+    assert_eq!(
+        rules.files([&unknown, &file(1, 1)]).detail.flags,
+        CompareFlags::METADATA
+    );
+    // Folder attributes, only with Include subfolders and Compare attributes of
+    // subfolders.
+    let folders = criteria(|options| {
+        options.recursive = true;
+        options.subfolder_attributes = true;
+    });
+    let detail = folders.folders_differ([&with(0x11), &with(0x10)]).unwrap();
+    assert_eq!(detail.attributes, Some([0x1, 0x0]));
+    assert!(folders.folders_differ([&with(0x10), &with(0x10)]).is_none());
+    assert!(rules.folders_differ([&with(0x11), &with(0x10)]).is_none());
+}

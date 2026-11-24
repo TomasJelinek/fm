@@ -177,20 +177,25 @@ pub(super) fn compare(
         let set = |marks: &mut Option<CompareMarks>,
                    key: Option<OsString>,
                    side: Option<usize>,
-                   mark: CompareMark| {
+                   mark: CompareMark,
+                   detail: &CompareDetail| {
             if let (Some(marks), Some(key)) = (marks.as_mut(), key) {
-                for slot in side.map_or(0..2, |side| side..side + 1) {
-                    marks.set(&key, slot, mark);
-                }
+                marks.record(&key, side, mark, detail);
             }
         };
+        let flagged = |flags| CompareDetail {
+            flags,
+            ..CompareDetail::default()
+        };
+        let none = CompareDetail::default();
         if group.rows.iter().any(|rows| rows.len() > 1) {
             ambiguous += 1;
             for (side, rows) in group.rows.iter().enumerate() {
                 for row in rows {
                     selection.row(side, *row);
                     let key = top_key(&marks, &selection.entry(side, *row).name);
-                    set(&mut marks, key, Some(side), CompareMark::Differs);
+                    let case = flagged(CompareFlags::CASE);
+                    set(&mut marks, key, Some(side), CompareMark::Differs, &case);
                 }
             }
             continue;
@@ -201,7 +206,7 @@ pub(super) fn compare(
                 for row in rows {
                     selection.row(side, *row);
                     let key = top_key(&marks, &selection.entry(side, *row).name);
-                    set(&mut marks, key, Some(side), CompareMark::OnlyHere);
+                    set(&mut marks, key, Some(side), CompareMark::OnlyHere, &none);
                 }
             }
             continue;
@@ -212,10 +217,10 @@ pub(super) fn compare(
         if directory {
             match (a.kind, b.kind) {
                 (EntryKind::Directory, EntryKind::Directory) => {
-                    if criteria.folders_differ([&a.metadata, &b.metadata]) {
+                    if let Some(detail) = criteria.folders_differ([&a.metadata, &b.metadata]) {
                         selection.row(0, left);
                         selection.row(1, right);
-                        set(&mut marks, pair_key, None, CompareMark::Differs);
+                        set(&mut marks, pair_key, None, CompareMark::Differs, &detail);
                     } else if options.recursive {
                         tops.push(Top {
                             paths: [a.path.clone(), b.path.clone()],
@@ -230,7 +235,8 @@ pub(super) fn compare(
                 _ if options.recursive => {
                     selection.row(0, left);
                     selection.row(1, right);
-                    set(&mut marks, pair_key, None, CompareMark::Differs);
+                    let kind = flagged(CompareFlags::KIND);
+                    set(&mut marks, pair_key, None, CompareMark::Differs, &kind);
                 }
                 _ => skipped += 1,
             }
@@ -245,7 +251,8 @@ pub(super) fn compare(
             _ => {
                 selection.row(0, left);
                 selection.row(1, right);
-                set(&mut marks, pair_key, None, CompareMark::Differs);
+                let kind = flagged(CompareFlags::KIND);
+                set(&mut marks, pair_key, None, CompareMark::Differs, &kind);
                 continue;
             }
         }
@@ -257,7 +264,8 @@ pub(super) fn compare(
             unknown += 1;
             selection.row(0, left);
             selection.row(1, right);
-            set(&mut marks, pair_key, None, CompareMark::Unverified);
+            let detail = &verdict.detail;
+            set(&mut marks, pair_key, None, CompareMark::Unverified, detail);
             continue;
         }
         for (side, row) in [left, right].into_iter().enumerate() {
@@ -265,6 +273,14 @@ pub(super) fn compare(
                 selection.row(side, row);
             }
         }
+        // A displayed pair is always stored: what differs now, or why it matches
+        // (a daylight saving shift ignored). Its contents can only make it worse.
+        let mark = if verdict.differs() {
+            CompareMark::Differs
+        } else {
+            CompareMark::Same
+        };
+        set(&mut marks, pair_key.clone(), None, mark, &verdict.detail);
         if verdict.read_contents {
             files.push(Candidate {
                 origin: Origin::Row([left, right]),
@@ -275,10 +291,6 @@ pub(super) fn compare(
                     modified: None,
                 }),
             });
-        } else if verdict.differs() {
-            set(&mut marks, pair_key, None, CompareMark::Differs);
-        } else {
-            set(&mut marks, pair_key, None, CompareMark::Same);
         }
     }
     checkpoint(&request, cancelled)?;
@@ -312,7 +324,7 @@ pub(super) fn compare(
                 selection.row(1, rows[1]);
             }
         }
-        for (rows, key, status) in &outcomes.rows {
+        for (rows, key, status, detail) in &outcomes.rows {
             let mark = match status {
                 Status::Same => CompareMark::Same,
                 Status::Differs => CompareMark::Differs,
@@ -323,8 +335,7 @@ pub(super) fn compare(
                 selection.row(1, rows[1]);
             }
             if let (Some(marks), Some(key)) = (marks.as_mut(), key) {
-                marks.set(key, 0, mark);
-                marks.set(key, 1, mark);
+                marks.record(key, None, mark, detail);
             }
         }
         counts = Some(outcomes.counts);

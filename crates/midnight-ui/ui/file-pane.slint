@@ -19,6 +19,7 @@ import { PanelDetails } from "panel-details.slint";
 import { DragFeedback } from "drag-feedback.slint";
 import { PanelViewControls } from "panel-view-controls.slint";
 import { PanelSearch, SearchTextEdit } from "panel-search.slint";
+import { CompareBadges } from "compare-badge.slint";
 
 export component FilePane inherits Rectangle {
     in property <int> pane-id;
@@ -873,6 +874,11 @@ export component FilePane inherits Rectangle {
         // flat or tree view, or what the held pane waits for (the main window's
         // `hold-status`, shown instead while it lasts).
         if root.watch-status != "" : Rectangle {
+            // A directory comparison's line ends with a square × that closes it and
+            // clears the comparison's marks in both panels.
+            property <bool> comparison: root.watch-status == CompareBadges.note(root.pane-id);
+            property <length> close-edge: min(self.height - 1px, max(12px, self.height - 5px));
+            property <length> clear-width: self.comparison ? self.close-edge + 4px : 0px;
             height: root.minimal ? Theme.small-font + 4px : Theme.status-height;
             background: Theme.secondary-surface;
             accessible-role: text;
@@ -880,13 +886,27 @@ export component FilePane inherits Rectangle {
             accessible-description: root.watch-details;
             Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: Theme.frame; }
             Text {
-                x: 8px; width: max(0px, parent.width - 16px); height: parent.height;
+                x: 8px; width: max(0px, parent.width - 16px - parent.clear-width);
+                height: parent.height;
                 text: root.watch-status; font-size: Theme.small-font; color: Theme.secondary-text;
                 vertical-alignment: center; overflow: elide;
                 accessible-role: none;
             }
             Tip {
                 text: root.watch-status + (root.watch-details == "" ? "" : "\n\n" + root.watch-details);
+            }
+            // Square, centred below the 1px rule, flush with the text's right edge.
+            if root.watch-status == CompareBadges.note(root.pane-id) : NavigationButton {
+                width: parent.close-edge; height: self.width;
+                x: parent.width - 8px - self.width; y: 1px + (parent.height - 1px - self.height) / 2;
+                icon: FallbackIcons.close; icon-size: max(8px, min(16px, self.width - 6px));
+                accessible-label: "Close comparison result and clear marks";
+                rest-border: Theme.frame;
+                context: root.controls-context;
+                press-context: root.controls-press-context;
+                press-cancelled: root.controls-press-cancelled;
+                hint: CompareBadges.clear-hint;
+                clicked => { root.activate(); CompareBadges.clear(); root.focus-list(); }
             }
         }
         details-bar := PanelDetails { visible: !root.minimal; height: root.minimal ? 0px : Theme.status-height; model: root.details; free-space: root.free-space; copy-field(identity) => { root.activate(); root.detail-copy(identity); } }

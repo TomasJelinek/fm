@@ -66,6 +66,7 @@ fn label_icon<'a>(id: &str, label: &'a str) -> (&'a str, i32) {
         "sort.size" => ("Size", 13),
         "panel.refresh" => ("Refresh", 14),
         "panel.compare" => ("Compare", 2),
+        "panel.compare-clear" => ("Clear marks", 2),
         "panel.zoom" => ("Zoom", 2),
         "panel.filter" => ("Filter", 2),
         "panel.folder-sizes" => ("Dir sizes", 12),

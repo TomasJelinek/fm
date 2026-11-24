@@ -197,6 +197,11 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, key: &FileKey) -> Option<
         FileKey::MakeFileList => MAKE_FILE_LIST,
         FileKey::UserCommand(_) => return None,
         FileKey::Compare => return refuse("Compare directories"),
+        // Consumed as before when nothing is shown (Escape over the results).
+        FileKey::ClearComparison => {
+            window.global::<crate::CompareBadges>().invoke_clear();
+            return Some(1);
+        }
         FileKey::Filter => return None,
         FileKey::Native | FileKey::Consumed | FileKey::ClearSearch | FileKey::ErasePrevious => {
             return Some(1);

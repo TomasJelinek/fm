@@ -87,6 +87,15 @@ impl Harness {
         preferences: UserPreferences,
         location: std::path::PathBuf,
     ) -> Self {
+        Self::with_locations(preferences, location.clone(), location)
+    }
+
+    /// The left panel starts in `left`, the right one in `right`.
+    pub(crate) fn with_locations(
+        preferences: UserPreferences,
+        left: std::path::PathBuf,
+        right: std::path::PathBuf,
+    ) -> Self {
         let native = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
         let children = Rc::new(RefCell::new(Vec::new()));
         let clock = Clock {
@@ -101,7 +110,7 @@ impl Harness {
         }))
         .unwrap();
         let window = MainWindow::new().unwrap();
-        let presenter = Rc::new(RefCell::new(Presenter::new(location.clone(), location)));
+        let presenter = Rc::new(RefCell::new(Presenter::new(left, right)));
         let sent = Rc::new(RefCell::new(Vec::new()));
         let captured = sent.clone();
         let refuse = Rc::new(Cell::new(false));

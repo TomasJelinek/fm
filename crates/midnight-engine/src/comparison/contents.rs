@@ -55,8 +55,32 @@ pub(super) struct Outcome {
     pub(super) origin: Origin,
     pub(super) key: Option<OsString>,
     pub(super) path: PathBuf,
-    /// Equal bytes, different bytes, or why the pair could not be read.
-    pub(super) result: Result<bool, FsError>,
+    /// Equal bytes (None), the offset of the first differing byte, or why the pair
+    /// could not be read.
+    pub(super) result: Result<Option<u64>, Failure>,
+}
+
+/// Why a pair could not be read: the error, and for the marks whether a file
+/// changed meanwhile (`CHANGED`) or could not be read (`UNREADABLE`).
+pub(super) struct Failure {
+    pub(super) error: FsError,
+    pub(super) why: CompareFlags,
+}
+
+impl Failure {
+    fn unreadable(error: FsError) -> Self {
+        Self {
+            error,
+            why: CompareFlags::UNREADABLE,
+        }
+    }
+
+    fn changed(error: FsError) -> Self {
+        Self {
+            error,
+            why: CompareFlags::CHANGED,
+        }
+    }
 }
 
 /// What the readers report for progress.
@@ -127,7 +151,10 @@ impl Pool {
         drop(sender);
         // No reader is left: answer for it, as not verified.
         let path = candidate.paths[0].clone();
-        let result = Err(compare_error(&path, "No content reader is available."));
+        let result = Err(Failure::unreadable(compare_error(
+            &path,
+            "No content reader is available.",
+        )));
         self.orphans
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -241,17 +268,21 @@ fn read_pairs(
     }
 }
 
+/// None when both files hold the same bytes, otherwise the offset of the first
+/// byte that differs.
 fn same_content(
     find: &dyn FindService,
     candidate: &Candidate,
     cancel: &Cancellation,
     state: &State,
     buffers: &mut [Vec<u8>; 2],
-) -> Result<bool, FsError> {
-    let open = |side: usize| -> Result<Box<dyn FindSource>, FsError> {
+) -> Result<Option<u64>, Failure> {
+    let open = |side: usize| -> Result<Box<dyn FindSource>, Failure> {
         let path = &candidate.paths[side];
         let expected = candidate.expected[side];
-        let source = find.open_find_source(path, cancel)?;
+        let source = find
+            .open_find_source(path, cancel)
+            .map_err(Failure::unreadable)?;
         let entry = source.entry();
         let same = entry.kind == EntryKind::File
             && entry.metadata.size == Some(expected.size)
@@ -261,49 +292,55 @@ fn same_content(
         if same {
             Ok(source)
         } else {
-            Err(compare_error(
+            Err(Failure::changed(compare_error(
                 path,
                 "The file changed after it was listed; compare again.",
-            ))
+            )))
         }
     };
     let mut sources = [open(0)?, open(1)?];
     let size = candidate.expected[0].size;
     let mut total = 0u64;
-    let equal = loop {
+    let difference = loop {
         if state.stop.load(Ordering::SeqCst) {
-            return Err(interrupted(&candidate.paths[0]));
+            return Err(Failure::unreadable(interrupted(&candidate.paths[0])));
         }
         let [left, right] = buffers;
         let [first, second] = &mut sources;
-        let a = fill(first.as_mut(), left, cancel)?;
-        let b = fill(second.as_mut(), right, cancel)?;
+        let a = fill(first.as_mut(), left, cancel).map_err(Failure::unreadable)?;
+        let b = fill(second.as_mut(), right, cancel).map_err(Failure::unreadable)?;
         state.bytes.fetch_add((a + b) as u64, Ordering::Relaxed);
         if a != b || left[..a] != right[..b] {
-            break false;
+            let common = a.min(b);
+            let offset = left[..common]
+                .iter()
+                .zip(&right[..common])
+                .position(|(x, y)| x != y)
+                .unwrap_or(common);
+            break Some(total + offset as u64);
         }
         if a == 0 {
-            break true;
+            break None;
         }
         total += a as u64;
         if total > size {
-            return Err(compare_error(
+            return Err(Failure::changed(compare_error(
                 &candidate.paths[0],
                 "The file grew while it was read; compare again.",
-            ));
+            )));
         }
     };
-    if equal && total != size {
-        return Err(compare_error(
+    if difference.is_none() && total != size {
+        return Err(Failure::changed(compare_error(
             &candidate.paths[0],
             "The file shrank while it was read; compare again.",
-        ));
+        )));
     }
     // A file written during the read cannot prove either answer.
     for source in &sources {
-        source.revalidate(cancel)?;
+        source.revalidate(cancel).map_err(Failure::changed)?;
     }
-    Ok(equal)
+    Ok(difference)
 }
 
 /// Fills `buffer` unless the file ends first; short provider reads are normal.

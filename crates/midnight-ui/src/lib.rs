@@ -35,6 +35,8 @@ pub use dialog_native::configure_dialog_window_attributes;
 pub use window_position::restore_window_position;
 #[cfg(test)]
 mod compact_focus_tests;
+#[cfg(test)]
+mod compare_badges_tests;
 mod decision_windows;
 mod drag_bridge;
 mod drag_lifecycle;
@@ -346,6 +348,8 @@ impl Model for Rows {
         let (modified_date, modified_time) = time_presentation::modified(metadata)
             .map(|value| (value.date, value.time))
             .unwrap_or_else(|| ("—".into(), "—".into()));
+        // The comparison's verdict, worded only for the rows Slint asks for.
+        let (compare_mark, compare_detail) = state.comparison_badge(self.pane, entry, metadata);
         let filename_style = state.filename_style(self.pane, entry);
         let thumbnail = state.thumbnail_image(self.pane, entry);
         let preview = thumbnail.is_some() && thumbnail_presentation::is_preview(entry);
@@ -409,7 +413,8 @@ impl Model for Rows {
             directory,
             selected: pane.selection_visible(entry),
             cursor: pane.cursor == Some(entry.id),
-            compare_mark: state.comparison_mark(self.pane, entry),
+            compare_mark,
+            compare_detail: compare_detail.into(),
             color_rule: filename_style.is_some(),
             custom_foreground: filename_style.is_some_and(|style| style.foreground.is_some()),
             foreground: color_options::color(

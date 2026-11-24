@@ -17,9 +17,17 @@ use crate::{
     options_support::SettingsStore,
     panel, tools_support as tools,
 };
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::{
+    accessibility::AccessibleStringProperty,
+    item_tree::ItemRc,
+    items::AccessibleRole,
+    window::{WindowInner, WindowKind},
+};
 use midnight_core::{PaneId, PreferenceTheme};
-use slint::platform::{Key, WindowAdapter};
+use slint::{
+    LogicalPosition,
+    platform::{Key, WindowAdapter},
+};
 use std::{
     collections::BTreeSet,
     fs,
@@ -296,6 +304,172 @@ fn expect_marks(app: &App, case: &str, pane: PaneId, wanted: &[(&str, i32)]) -> 
                 "{case}: {name} has mark {found:?}, expected {mark}; rows {shown:?}"
             ));
         }
+    }
+    Ok(())
+}
+
+/// The text of every tooltip shown in the main window.
+fn tooltips(app: &App) -> Vec<String> {
+    let main = app.main.clone();
+    let inner = WindowInner::from_pub(main.window());
+    let mut texts = Vec::new();
+    for popup in inner.active_popups().iter() {
+        if matches!(popup.window_kind, WindowKind::ToolTip) {
+            inspect::walk(&ItemRc::new_root(popup.component.clone()), &mut |item| {
+                if let Some(label) = inspect::label(item).filter(|label| !label.is_empty()) {
+                    texts.push(label);
+                }
+            });
+        }
+    }
+    texts
+}
+
+/// The owner's two questions after a subfolder comparison: pointing at a badge says
+/// what differs for that row, and Clear comparison (the × at the end of the result
+/// line, Escape in the panel, Ctrl+Shift+F11) removes both panels' badges and the
+/// line and keeps the selection.
+fn badges_explain_and_clear(app: &mut App, context: &mut Context) -> Result<(), String> {
+    let words = |app: &App, pane: PaneId, name: &str| {
+        app.rows(pane)
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| row.compare_detail.to_string())
+            .unwrap_or_default()
+    };
+    for (pane, name, wanted) in [
+        (
+            PaneId::Left,
+            "dir-both",
+            "Differs inside: 1 file and 1 folder differ",
+        ),
+        (
+            PaneId::Left,
+            "bigger-left.dat",
+            "Larger here: 20 vs 10 bytes",
+        ),
+        (
+            PaneId::Right,
+            "bigger-left.dat",
+            "Smaller here: 10 vs 20 bytes",
+        ),
+        (
+            PaneId::Left,
+            "same.txt",
+            "Matches: same size and time (within 2 s)",
+        ),
+        (
+            PaneId::Left,
+            "dir-left-only",
+            "Only in this panel, with everything inside",
+        ),
+        (PaneId::Left, "README.TXT", "Only in this panel"),
+    ] {
+        let shown = words(app, pane, name);
+        if shown != wanted {
+            return Err(format!(
+                "{name}'s badge says {shown:?}, expected {wanted:?}"
+            ));
+        }
+    }
+    // Both panels' own time texts, newer side first.
+    let newer = words(app, PaneId::Right, "newer-right.txt");
+    if !newer.starts_with("Newer here: ") || !newer.ends_with(" (1 min 40 s)") {
+        return Err(format!("newer-right.txt's badge says {newer:?}"));
+    }
+    let main = app.main.clone();
+    let wanted = "Larger here: 20 vs 10 bytes";
+    let mut badge = None;
+    for root in inspect::roots(main.window()) {
+        inspect::walk(&root, &mut |item| {
+            if badge.is_none()
+                && item.accessible_role() == AccessibleRole::Text
+                && inspect::label(item).as_deref() == Some("Compared: differs")
+                && item
+                    .accessible_string_property(AccessibleStringProperty::Description)
+                    .is_some_and(|text| text.as_str() == wanted)
+            {
+                badge = Some(item.clone());
+            }
+        });
+    }
+    let badge = badge.ok_or("no badge is described as Larger here: 20 vs 10 bytes")?;
+    input::move_to(main.window(), inspect::center(&badge));
+    app.wait_ui(Duration::from_millis(900));
+    if !tooltips(app).iter().any(|text| text == wanted) {
+        return Err(format!(
+            "pointing at the badge shows {:?}, not {wanted:?}",
+            tooltips(app)
+        ));
+    }
+    app.screenshot(
+        context,
+        "asymmetric-badge-tooltip",
+        "Pointing at the ≠ badge of bigger-left.dat: Larger here: 20 vs 10 bytes",
+    );
+    input::move_to(main.window(), LogicalPosition::new(2.0, 2.0));
+    app.wait_ui(Duration::from_millis(300));
+
+    let line = result_line(app);
+    if !line.contains("clears the marks") {
+        return Err(format!(
+            "the result line does not say how to clear: {line:?}"
+        ));
+    }
+    app.screenshot(
+        context,
+        "asymmetric-clear-button",
+        "The result line ends with × (Clear comparison); Escape or Ctrl+Shift+F11 does the same",
+    );
+    let marks = |app: &App| -> usize {
+        [PaneId::Left, PaneId::Right]
+            .into_iter()
+            .flat_map(|pane| app.rows(pane))
+            .filter(|row| row.compare_mark != 0)
+            .count()
+    };
+    let before = [selected(app, PaneId::Left), selected(app, PaneId::Right)];
+    let button = tools::control(
+        main.window(),
+        AccessibleRole::Button,
+        "Close comparison result and clear marks",
+    )?;
+    input::click_at(main.window(), inspect::center(&button));
+    app.until("the cleared badges", |app| marks(app) == 0);
+    if !result_line(app).is_empty() {
+        return Err(format!("the line stayed: {:?}", result_line(app)));
+    }
+    let after = [selected(app, PaneId::Left), selected(app, PaneId::Right)];
+    if after != before {
+        return Err(format!(
+            "Clear comparison changed the selection from {before:?} to {after:?}"
+        ));
+    }
+    app.screenshot(
+        context,
+        "asymmetric-cleared",
+        "After Clear comparison: no badges, the selection stays",
+    );
+    for (how, keys) in [
+        ("Escape", &[][..]),
+        ("Ctrl+Shift+F11", &[Key::Control, Key::Shift][..]),
+    ] {
+        let subfolders = Options {
+            subfolders: true,
+            ..DEFAULTS
+        };
+        compare(app, subfolders)?;
+        if marks(app) == 0 {
+            return Err(format!("{how}: the comparison shows no badges"));
+        }
+        panel::focus_list(app, PaneId::Left)?;
+        let key = if keys.is_empty() {
+            Key::Escape
+        } else {
+            Key::F11
+        };
+        input::chord(app.slint(), keys, key);
+        app.until(&format!("{how} clearing the badges"), |app| marks(app) == 0);
     }
     Ok(())
 }
@@ -616,6 +790,7 @@ fn compare_all(context: &mut Context, root: &Path) -> Result<(), String> {
     );
     files_support::toggle_tree(&mut app, "dir-both")?;
     files_support::wait_tree_depth(&mut app, "deeper", None);
+    badges_explain_and_clear(&mut app, context)?;
     // Both: dir-both/shared.txt has equal bytes and stays a match inside.
     let both = compare(
         &mut app,

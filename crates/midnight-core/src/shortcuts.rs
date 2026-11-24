@@ -266,6 +266,7 @@ impl ShortcutDefinition {
         let plain = !chord.control && !chord.alt && !chord.meta;
         if (self.scope == ShortcutScope::FilesAny && chord.search_clipboard_key())
             || (self.id == "panel.parent" && plain && !chord.shift && chord.key == "Backspace")
+            || (self.id == "panel.compare-clear" && plain && !chord.shift && chord.key == "Escape")
             || (self.id.starts_with("bookmark.open.") && plain && chord.key.starts_with("Digit"))
         {
             ShortcutScope::FilesIdle
@@ -513,6 +514,7 @@ impl ShortcutMap {
                         | "compare.previous-difference"
                         | "compare.first-difference"
                         | "compare.last-difference"
+                        | "panel.compare-clear"
                 ) || (definition.id == "viewer.next-file"
                     && chord.alt
                     && !chord.control

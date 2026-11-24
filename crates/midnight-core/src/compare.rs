@@ -12,6 +12,10 @@ use std::{
     sync::Arc,
 };
 
+#[path = "compare_detail.rs"]
+mod detail;
+pub use detail::*;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CompareId(pub u64);
 
@@ -206,27 +210,46 @@ impl CompareMark {
 /// names folded when names match without regard to case. Matching files inside a
 /// compared folder are not stored: a file that is not stored but whose nearest
 /// stored ancestor folder was compared is `Same`, and everything inside a folder on
-/// one side only is `OnlyHere`. Bounded by `MAX_BYTES`; when that is reached, only
-/// what was stored is shown (`complete` is false).
+/// one side only is `OnlyHere`. A stored entry keeps why it got its mark
+/// (`CompareDetail`): flags beside the marks, and the few numbers it has in a shared
+/// word arena. Bounded by `MAX_BYTES`; when that is reached, only what was stored
+/// is shown (`complete` is false), and an entry whose numbers no longer fit keeps
+/// its mark and flags only.
 #[derive(Clone, Debug)]
 pub struct CompareMarks {
     roots: [PathBuf; 2],
     case_sensitive: bool,
-    entries: HashMap<OsString, [u8; 2]>,
-    /// The stored keys' approximate memory.
+    entries: HashMap<OsString, Stored>,
+    /// The stored entries' numbers (`CompareDetail::pack`).
+    words: Vec<u64>,
+    /// The stored keys' and numbers' approximate memory.
     bytes: usize,
     complete: bool,
+}
+
+/// One stored entry: each side's mark, the detail's flags and which numbers it has,
+/// and where those numbers start in `CompareMarks::words`. Eight bytes: a map entry
+/// with its key is as large as one with the two marks alone was (the key's padding).
+#[derive(Clone, Copy, Debug)]
+struct Stored {
+    marks: [u8; 2],
+    bits: u16,
+    first: u32,
 }
 
 impl CompareMarks {
     /// The stored outcome's memory budget.
     pub const MAX_BYTES: usize = 64 * 1024 * 1024;
+    /// What one stored entry costs besides its key's bytes and its numbers: the
+    /// map's entry (key, marks and detail flags), its control byte and spare room.
+    pub const ENTRY_BYTES: usize = 48;
 
     pub fn new(roots: [PathBuf; 2], case_sensitive: bool) -> Self {
         Self {
             roots,
             case_sensitive,
             entries: HashMap::new(),
+            words: Vec::new(),
             bytes: 0,
             complete: true,
         }
@@ -249,6 +272,11 @@ impl CompareMarks {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The memory charged to the budget so far.
+    pub fn bytes(&self) -> usize {
+        self.bytes
     }
 
     pub fn roots(&self) -> &[PathBuf; 2] {
@@ -280,39 +308,119 @@ impl CompareMarks {
         (!key.is_empty()).then_some(key)
     }
 
-    /// Stores `mark` for `side` of `key`. A worse outcome is never replaced by a
-    /// better one (Differs, OnlyHere and Unverified stay). False once the budget is
-    /// spent: nothing more is stored and the marks are incomplete.
+    /// Stores `mark` for `side` of `key`, without a detail (`record`).
     pub fn set(&mut self, key: &OsStr, side: usize, mark: CompareMark) -> bool {
-        if let Some(existing) = self.entries.get_mut(key) {
-            let slot = &mut existing[side];
-            if CompareMark::decode(*slot).is_none_or(|old| old == CompareMark::Same) {
-                *slot = CompareMark::encode(Some(mark));
+        self.record(key, Some(side), mark, &CompareDetail::default())
+    }
+
+    /// Stores `mark` for `side` of `key` (both sides when None) and merges `detail`
+    /// into what the entry already tells. A worse outcome is never replaced by a
+    /// better one (Differs, OnlyHere and Unverified stay). False once the budget is
+    /// spent: nothing more is stored and the marks are incomplete. Numbers that no
+    /// longer fit are left out; the mark and flags are still stored.
+    pub fn record(
+        &mut self,
+        key: &OsStr,
+        side: Option<usize>,
+        mark: CompareMark,
+        detail: &CompareDetail,
+    ) -> bool {
+        let sides = side.map_or(0..2, |side| side..side + 1);
+        if let Some(mut stored) = self.entries.get(key).copied() {
+            for slot in sides {
+                let slot = &mut stored.marks[slot];
+                if CompareMark::decode(*slot).is_none_or(|old| old == CompareMark::Same) {
+                    *slot = CompareMark::encode(Some(mark));
+                }
+            }
+            if !detail.is_empty() {
+                let merged = self.detail_of(&stored).merged(detail);
+                self.store_detail(&mut stored, &merged);
+            }
+            if let Some(entry) = self.entries.get_mut(key) {
+                *entry = stored;
             }
             return true;
         }
-        let cost = key.len() + 48;
+        let cost = key.len() + Self::ENTRY_BYTES;
         if self.bytes + cost > Self::MAX_BYTES {
             self.complete = false;
             return false;
         }
         self.bytes += cost;
-        let mut value = [0; 2];
-        value[side] = CompareMark::encode(Some(mark));
-        self.entries.insert(key.to_owned(), value);
+        let mut stored = Stored {
+            marks: [0; 2],
+            bits: 0,
+            first: 0,
+        };
+        for slot in sides {
+            stored.marks[slot] = CompareMark::encode(Some(mark));
+        }
+        if !detail.is_empty() {
+            self.store_detail(&mut stored, detail);
+        }
+        self.entries.insert(key.to_owned(), stored);
         true
+    }
+
+    /// Packs `detail` for `stored`: in place when it needs as many words as before,
+    /// otherwise at the end of the arena (the replaced words stay charged).
+    fn store_detail(&mut self, stored: &mut Stored, detail: &CompareDetail) {
+        let mut words = Vec::new();
+        let bits = detail.pack(&mut words);
+        let old = CompareDetail::words(stored.bits);
+        if words.len() == old {
+            let first = stored.first as usize;
+            self.words[first..first + old].copy_from_slice(&words);
+            stored.bits = bits;
+            return;
+        }
+        let cost = words.len() * size_of::<u64>();
+        match u32::try_from(self.words.len()) {
+            Ok(first) if self.bytes + cost <= Self::MAX_BYTES => {
+                self.bytes += cost;
+                self.words.extend(words);
+                stored.bits = bits;
+                stored.first = first;
+            }
+            // The flags still fit; the numbers stored before, if any, stay.
+            _ => stored.bits = CompareDetail::with_numbers_of(bits, stored.bits),
+        }
+    }
+
+    fn detail_of(&self, stored: &Stored) -> CompareDetail {
+        let first = stored.first as usize;
+        let count = CompareDetail::words(stored.bits);
+        CompareDetail::unpack(
+            stored.bits,
+            self.words.get(first..first + count).unwrap_or_default(),
+        )
     }
 
     /// The outcome stored for `side` of `key`, without inference.
     pub fn stored(&self, key: &OsStr, side: usize) -> Option<CompareMark> {
         self.entries
             .get(key)
-            .and_then(|marks| CompareMark::decode(marks[side]))
+            .and_then(|stored| CompareMark::decode(stored.marks[side]))
+    }
+
+    /// Why the entry `key` got its stored marks; empty when it has no detail.
+    pub fn detail(&self, key: &OsStr) -> CompareDetail {
+        self.entries
+            .get(key)
+            .map(|stored| self.detail_of(stored))
+            .unwrap_or_default()
     }
 
     /// The outcome of the displayed entry `path` in panel `side`, or None when it
     /// was not compared (or the marks are incomplete and it was not stored).
     pub fn mark(&self, side: usize, path: &Path) -> Option<CompareMark> {
+        self.outcome(side, path).map(|(mark, _)| mark)
+    }
+
+    /// `mark` with why: the stored detail of `path`, or an empty one when its mark
+    /// is inferred from a folder above it.
+    pub fn outcome(&self, side: usize, path: &Path) -> Option<(CompareMark, CompareDetail)> {
         let relative = path.strip_prefix(&self.roots[side]).ok()?;
         // The keys of the entry and of each of its ancestors, the entry's last.
         let mut prefixes = Vec::new();
@@ -328,15 +436,19 @@ impl CompareMarks {
             prefixes.push(key.clone());
         }
         let own = prefixes.pop()?;
-        if let Some(mark) = self.stored(&own, side) {
-            return Some(mark);
+        if let Some(stored) = self.entries.get(own.as_os_str())
+            && let Some(mark) = CompareMark::decode(stored.marks[side])
+        {
+            return Some((mark, self.detail_of(stored)));
         }
         // The nearest stored ancestor tells about entries that were not stored.
         for ancestor in prefixes.iter().rev() {
             match self.stored(ancestor, side) {
-                Some(CompareMark::OnlyHere) => return Some(CompareMark::OnlyHere),
+                Some(CompareMark::OnlyHere) => {
+                    return Some((CompareMark::OnlyHere, CompareDetail::default()));
+                }
                 Some(CompareMark::Same | CompareMark::Differs) if self.complete => {
-                    return Some(CompareMark::Same);
+                    return Some((CompareMark::Same, CompareDetail::default()));
                 }
                 Some(_) => return None,
                 None => continue,
@@ -402,3 +514,7 @@ impl CompareResult {
             && !self.limited
     }
 }
+
+#[cfg(test)]
+#[path = "compare_tests.rs"]
+mod tests;

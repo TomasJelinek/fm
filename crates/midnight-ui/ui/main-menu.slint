@@ -7,6 +7,7 @@ import { DialogHeader } from "dialog-frame.slint";
 import { ShortcutHints } from "shortcut-hints.slint";
 import { ActionAvailability } from "action-availability.slint";
 import { PanelChoices } from "select-mask-dialog.slint";
+import { CompareBadges } from "compare-badge.slint";
 
 struct MainMenuEntry {
     action: string,
@@ -35,6 +36,7 @@ export component MainMenuBody inherits Rectangle {
     init => { root.reset(); }
     pure function enabled-action(action: string) -> bool {
         return (action != "command.open-terminal-elevated" || root.terminal-ready)
+            && (action != "panel.compare-clear" || CompareBadges.shown)
             && ActionAvailability.enabled(action, root.native-filesystem, root.can-target-cursor,
             root.can-target-selection, root.network-available, root.can-measure-folders);
     }
@@ -94,6 +96,7 @@ export component MainMenuBody inherits Rectangle {
         { action: "files.make-list", label: "Make File List…", category: 4, fallback-icon: FallbackIcons.make-file-list },
         { action: "files.compare", label: "Compare files…", category: 4, fallback-icon: FallbackIcons.compare-files },
         { action: "panel.compare", label: "Compare directories…", category: 4, fallback-icon: FallbackIcons.compare-directories },
+        { action: "panel.compare-clear", label: "Clear comparison marks", category: 4, fallback-icon: FallbackIcons.close },
         { action: "panel.folder-sizes", label: "Calculate / cancel folder sizes", category: 4, native-icon: root.icons.folder-sizes, fallback-icon: FallbackIcons.folder-sizes },
         { action: "panel.drive-info", label: "Drive information", category: 4, fallback-icon: FallbackIcons.drive },
         { action: "command.focus", label: "Command line", category: 4, native-icon: root.icons.terminal, fallback-icon: FallbackIcons.terminal },

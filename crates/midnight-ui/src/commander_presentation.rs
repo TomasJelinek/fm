@@ -39,6 +39,26 @@ pub(super) fn bind(
             Err(error) => p.comparison.error = error.into(),
         }
     });
+    // Clear comparison (the button at the end of the result line, the menu and its
+    // keys): both panels' marks and the line go; the selection stays.
+    {
+        let state = state.clone();
+        let weak = window.as_weak();
+        window.global::<CompareBadges>().on_clear(move || {
+            let Some(window) = weak.upgrade() else {
+                return false;
+            };
+            let Ok(mut presenter) = state.try_borrow_mut() else {
+                return false;
+            };
+            let cleared = presenter.clear_comparison();
+            drop(presenter);
+            if cleared {
+                crate::refresh(&window, &state.borrow());
+            }
+            cleared
+        });
+    }
     callback!(on_open_panel_filter, |p, _s, id| {
         if let Some(pane) = match id {
             0 => Some(PaneId::Left),
@@ -155,6 +175,27 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         progress_detail: progress_detail.into(),
         fraction,
     });
+    let badges = window.global::<CompareBadges>();
+    let note = |pane| {
+        presenter
+            .comparison_note(pane)
+            .map_or_else(SharedString::new, |(line, _)| shown_text(line))
+    };
+    badges.set_left_note(note(PaneId::Left));
+    badges.set_right_note(note(PaneId::Right));
+    badges.set_shown(presenter.comparison_shown());
+    let keys = presenter.shortcut_hint("panel.compare-clear");
+    badges.set_clear_hint(
+        format!(
+            "Close comparison result and clear marks{}\nThe =, ≠, + and ? marks leave both panels; the selection stays.",
+            if keys.is_empty() {
+                String::new()
+            } else {
+                format!(" ({keys})")
+            }
+        )
+        .into(),
+    );
     let state = &presenter.filter_dialog;
     let (history, history_labels) = filter_history(window, presenter);
     window.set_panel_filter_view(PanelFilterView {

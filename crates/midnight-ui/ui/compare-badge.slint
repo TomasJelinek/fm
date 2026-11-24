@@ -1,10 +1,25 @@
 import { Theme } from "theme.slint";
+import { Tip } from "controls.slint";
 
 // How a directory comparison with subfolders found one row (`FileRow.compare-mark`):
 // 1 matches, 2 differs (a folder: something inside differs), 3 exists on this side
 // only, 4 not verified; 0 shows nothing. The glyph carries the meaning; colour only
 // emphasises it, so every theme and colour vision reads it the same.
-export global CompareMarks {
+export global CompareBadges {
+    // The comparison line shown below each panel (equal to that panel's status line
+    // while it shows it): a Clear comparison button ends it.
+    in property <string> left-note;
+    in property <string> right-note;
+    // Marks or a result line are shown: Clear comparison has something to clear.
+    in property <bool> shown;
+    // The Clear comparison button's tooltip, with its current keys.
+    in property <string> clear-hint;
+    // Clear comparison: the marks leave both panels, the line its panel; the
+    // selection stays. False when nothing was shown.
+    callback clear() -> bool;
+    pure public function note(pane: int) -> string {
+        return pane == 0 ? root.left-note : root.right-note;
+    }
     pure public function glyph(mark: int) -> string {
         return mark == 1 ? "=" : mark == 2 ? "≠" : mark == 3 ? "+" : mark == 4 ? "?" : "";
     }
@@ -19,6 +34,10 @@ export global CompareMarks {
 export component CompareBadge inherits Rectangle {
     in property <int> mark;
     in property <bool> directory;
+    // What the comparison found for this row (`FileRow.compare-detail`).
+    in property <string> detail;
+    // Hovering shows `detail`; off while the row is hidden or touched.
+    in property <bool> tips: true;
     private property <length> edge: max(14px, min(22px, Theme.small-font + 4px));
     width: self.edge + 4px; height: self.edge;
     border-radius: 3px;
@@ -26,11 +45,17 @@ export component CompareBadge inherits Rectangle {
     background: root.mark == 2 ? Theme.error-background
         : root.mark == 3 ? Theme.active-header : Theme.secondary-surface;
     border-color: root.mark == 2 ? Theme.error-text : root.mark == 1 ? Theme.frame : Theme.active-frame;
-    // The row's accessible description says it in words (FileEntry).
+    // The glyph in words, and the tooltip's text (the row's description says it too).
+    accessible-role: text;
+    accessible-label: CompareBadges.words(root.mark, root.directory);
+    accessible-description: root.detail;
     Text {
-        text: CompareMarks.glyph(root.mark);
+        text: CompareBadges.glyph(root.mark);
         color: root.mark == 2 ? Theme.error-text : root.mark == 1 ? Theme.muted-text : Theme.strong-text;
         font-size: Theme.small-font; font-weight: root.mark == 1 ? 400 : 700;
         horizontal-alignment: center; vertical-alignment: center;
+        accessible-role: none;
     }
+    // Over the badge only: the name and the row keep their own tooltips.
+    Tip { text: root.tips ? root.detail : ""; }
 }

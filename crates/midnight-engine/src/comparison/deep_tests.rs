@@ -1271,3 +1271,6 @@ fn cancelling_a_large_walk_ends_it_within_a_hundred_milliseconds() {
         "cancellation took {took:?}"
     );
 }
+
+#[path = "detail_tests.rs"]
+mod details;
