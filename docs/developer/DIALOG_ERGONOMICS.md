@@ -540,6 +540,61 @@ Insert variable (action menus, which Slint's `ComboBox` cannot be) and Output ar
 `CompactPicker`s, as tall as its fields. Pages that use Slint's `ComboBox` throughout
 (Options pages, Find, Panel filter) keep it.
 
+## Alignment of neighbouring controls
+
+Every window, dialog and popup lines up its controls with each other, not only with the
+window. The UI polish gate checks these rules on every surface it renders (U-K32–U-K38
+in [acceptance/ui-polish.md](acceptance/ui-polish.md)), and the `midnight-ui` layout
+tests that use the gate's layout findings (`tests/support/window_polish.rs`) check them
+too.
+
+- **One row, one height.** Controls side by side (a field and its button, a label and
+  its control, pickers, the buttons of one row) share their vertical centre within 1 px,
+  and framed controls (fields, buttons, pickers, number boxes) their height within 1 px.
+  A multi-line control (a list, a multi-line field) is exempt.
+- **A field and its button.** The small button that belongs to a field (Browse beside a
+  path) is `FieldButton`: square, as tall as the field, showing a centred glyph (for
+  Browse a folder with an ellipsis) rather than a font's "…", whose dots sit on the
+  baseline, near the button's bottom edge. Its
+  caption chooses the glyph and heads its tooltip; its accessible label names its
+  action.
+- **Captions in the middle.** A button's, picker's or tab's caption is centred
+  vertically (its line box within 1.5 px, the glyphs of a caption without letters within
+  2 px or an eighth of the font) and is never cut at its top or bottom.
+- **One content edge.** Controls and labels stacked in a column share their left edge,
+  and right edge where both stretch; edges 1–6 px apart are a defect, a larger indent is
+  deliberate.
+- **Even rhythm.** Within a column the gaps between rows are even; a gap three times the
+  usual one (and 12 px more) is a defect, except above a dialog's footer row, which a
+  window taller than its content pushes down.
+- **Room to breathe.** Controls side by side, and fields stacked, keep at least 2 px
+  apart; no control comes within 2 px of its dialog's edge. Segments of one control
+  (tabs, page buttons, a list's rows) touch by design.
+- **No needless "…".** A label is not shortened while the free room beside it would
+  show it whole.
+- **One size per bar.** The function bar's keys show their captions in one size and
+  all with their icons or none: the widest shown caption decides both, the size never
+  below three quarters of the font, and a caption that would need less shows its key
+  alone ("F9"). Find's query rows share one height (the stock field's), which its Help,
+  Add, Remove and Browse buttons and the folders picker take; a form note's text starts
+  where a check box's caption does.
+- **One rhythm for options.** Check boxes, radio buttons and switches stacked one after
+  the other keep one gap (U-K39). On the Options pages that gap is `OptionRows.row-gap`
+  (`options-rows.slint`: 2 px, 4 px with touch density); every check box row keeps the
+  whole control height as its hit target and the room of its focus ring, a page's groups
+  are set apart by `OptionsRule` (`OptionRows.group-gap` above and below its line), and
+  dependent options keep their indent. `tests/options_rhythm.rs` checks every page in
+  both densities and prints each page's height.
+- **Panel toolbar.** The View and Sort pickers stay whole ("Detailed", "Name ↑", each as
+  wide as its longest caption) while the drive and folder buttons fit beside them. When
+  the buttons need that room, the pickers turn compact: the view's own glyph, and the
+  sort key's initial with its direction ("N ↑"), with the same accessible names,
+  tooltips, menus and keys. The choice compares the buttons' measured width with the
+  room beside the whole pickers, measured from their captions, never with the pickers'
+  current size, so the row cannot flip between the two; the buttons are never narrowed,
+  and scroll behind the strip's arrows only when even the compact pickers leave them too
+  little room (`tests/panel_toolbar_fit.rs`).
+
 ## Make File List layout
 
 The dialog has one content column. The header's close button, the line template, the
