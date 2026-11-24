@@ -183,12 +183,22 @@ fn parent_shares_inheritance(parent: &Path, identity: &Identity) -> Result<bool,
     }))
 }
 
-/// Only the owner may secure a folder without administrator rights.
+/// Only the owner may secure a folder without administrator rights. The owner is the
+/// user, or a group the user's token holds enabled: a folder an elevated administrator
+/// created is owned by Administrators, which that same elevated user may change.
 pub(crate) fn require_owner(folder: &Path) -> Result<(), Error> {
     let identity = Identity::current()?;
     let dacl = read(folder)?;
     // SAFETY: owner SID from the live descriptor and the retained token user SID.
-    if dacl.owner.is_null() || unsafe { EqualSid(dacl.owner, identity.user_sid()) } == 0 {
+    let user = !dacl.owner.is_null() && unsafe { EqualSid(dacl.owner, identity.user_sid()) } != 0;
+    let mut member = 0;
+    // SAFETY: the owner SID is live; a null token checks the calling thread's token, and
+    // only an enabled group counts (a deny-only Administrators group of a standard token
+    // does not).
+    let group = !dacl.owner.is_null()
+        && unsafe { CheckTokenMembership(ptr::null_mut(), dacl.owner, &mut member) } != 0
+        && member != 0;
+    if !user && !group {
         return Err(Error(format!(
             "{} belongs to another account, so only an administrator can change who may \
              modify it",
