@@ -8,14 +8,15 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 24 November 2026, after the [0.5.1 preview](releases/0.5.1.md), which was
-published on 24 November from `c8c20f49` (tag `v0.5.1`, with a signed `SHA256SUMS`):
-Compare Directories rewritten, the HTML viewer as a small browser, signed update
-checks, shared-folder installations, the executable renamed to `midnight-explorer`,
-and the fixes listed in the release notes. Since the tag, main has faster acceptance
-and Rust tests ([acceptance time record](verification/2026-11-24-acceptance-time.md))
-and a fix for PDF page steps pressed before the previous page was shown. The
-documents describe this source.
+Main of 24 November 2026, prepared as the [0.5.2 preview](releases/0.5.2.md) after the
+[0.5.1 preview](releases/0.5.1.md) (published from `c8c20f49`, tag `v0.5.1`, with a
+signed `SHA256SUMS`): the video helpers' library permission granted at run time,
+free space that follows the volume, Copy and Move preserving times and attributes, the
+redesigned progress window, archives in the folder history and Hot Paths through
+nested archives, Compare Directories' explained and clearable marks, Find persistence,
+the alignment polish of every window, the code review fixes of 24 November and faster
+acceptance and Rust tests ([acceptance time record](verification/2026-11-24-acceptance-time.md)).
+The documents describe this source.
 
 - **Acceptance.** The last completed runs of the whole suite are the 0.5.0 release runs
   at `a70918e2` on 23 November: Windows 112 and Linux 113 of 116 passed, none failed
@@ -43,7 +44,7 @@ until they land.
 - **Acceptance:** reruns that the area records mark as pending, and the scenarios they
   list as not yet written.
 - **Release validation:** whole-suite acceptance runs on Windows and Linux with the
-  published 0.5.1 packages are not recorded yet ([release build](RELEASE_BUILD.md)).
+  0.5.2 release packages are not recorded yet ([release build](RELEASE_BUILD.md)).
 
 ## Where evidence lives
 
