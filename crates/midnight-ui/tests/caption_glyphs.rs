@@ -79,8 +79,10 @@ fn every_shown_character_has_a_glyph_in_the_application_font() {
         }
     }
     for folder in RUST_FOLDERS {
-        for file in files(&crates.join(folder), "rs") {
-            if test_only(&file) {
+        let rust = files(&crates.join(folder), "rs");
+        let included = included_by_tests(&rust);
+        for file in rust {
+            if test_only(&file) || included.contains(&file) {
                 continue;
             }
             let source = std::fs::read_to_string(&file).unwrap();
@@ -207,6 +209,27 @@ fn test_only(file: &Path) -> bool {
         let part = part.as_os_str().to_string_lossy();
         part.contains("test") || part.contains("fixture") || part.contains("repro")
     })
+}
+
+/// Files that test-only files include as modules (`#[path = "…"] mod …;`), such as an
+/// opt-in measurement whose name says nothing of tests: they are test code too.
+fn included_by_tests(files: &[PathBuf]) -> std::collections::HashSet<PathBuf> {
+    let mut included = std::collections::HashSet::new();
+    for file in files.iter().filter(|file| test_only(file)) {
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let folder = file.parent().unwrap_or(Path::new(""));
+        for line in source.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("#[path = \"") else {
+                continue;
+            };
+            if let Some((relative, _)) = rest.split_once('"') {
+                included.insert(folder.join(relative));
+            }
+        }
+    }
+    included
 }
 
 /// A character cursor over a source text that counts lines.
