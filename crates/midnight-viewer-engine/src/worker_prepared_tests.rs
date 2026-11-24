@@ -26,27 +26,57 @@ const FRAME: Duration = Duration::from_nanos(16_666_667);
 /// `midnight_ui_input::WheelMotion`: the longest frame time a glide advances by.
 const MAX_GLIDE_FRAME: Duration = Duration::from_millis(50);
 
-/// The wheel glide as `midnight_ui_input::WheelMotion` runs it (`wheel_motion.rs`,
-/// `glide.rs`): a cubic-bezier(0.42, 1, 0.58, 1) ease-out over Chromium's 200 ms up to
-/// 120 px, falling to 100 ms from 480 px; a notch glides the rest from where the glide is,
-/// never slower than it moves, and over no more than twice the interval since the previous
-/// notch (at least 50 ms). Notches arrive at the start of a frame, as the frame's input.
+/// The wheel glides the co-simulation can run.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) enum GlideModel {
+    /// `midnight_ui_input::WheelMotion` (`wheel_motion.rs`, `glide.rs`): a
+    /// cubic-bezier(0.42, 1, 0.58, 1) ease-out over Chromium's 200 ms up to 120 px, falling
+    /// to 100 ms from 480 px; a notch glides the rest from where the glide is, never slower
+    /// than it moves, and over no more than twice the interval since the previous notch (at
+    /// least 50 ms).
+    #[default]
+    Wheel,
+    /// Scrolling glide Off: each notch moves whole on its frame.
+    Off,
+    /// The glide before Chromium's: 200 ms of quadratic ease-out per notch, restarted for
+    /// the remaining distance, each frame counted up to 16 ms.
+    Quadratic,
+    /// Chromium's ease-in-out, cubic-bezier(0.42, 0, 0.58, 1), a notch during a glide
+    /// keeping its speed within 2.5 times the remaining distance at that speed: the wheel
+    /// glide until 24 November 2026.
+    Chromium,
+}
+
+impl GlideModel {
+    pub(super) const ALL: [Self; 4] = [Self::Wheel, Self::Off, Self::Quadratic, Self::Chromium];
+
+    /// `PREPARED_GLIDE=off|quadratic|chromium` measures with another glide.
+    fn from_env() -> Self {
+        match std::env::var("PREPARED_GLIDE").as_deref() {
+            Ok("off") => Self::Off,
+            Ok("quadratic") => Self::Quadratic,
+            Ok("chromium") => Self::Chromium,
+            _ => Self::Wheel,
+        }
+    }
+}
+
+/// A wheel glide of the co-simulation. Notches arrive at the start of a frame, as the
+/// frame's input.
 #[derive(Default)]
 struct Glide {
+    model: GlideModel,
     /// Seconds since the gesture began, at the end of the last presented frame.
     now: f64,
     /// When the previous notch arrived.
     input: Option<f64>,
     elapsed: f64,
     duration: f64,
+    /// The Chromium curve's first control point's y (0 from rest).
+    rise: f64,
     distance: f64,
     delivered: f64,
     active: bool,
-}
-
-/// `PREPARED_GLIDE=quadratic` measures with the glide before Chromium's, for comparisons.
-fn quadratic_glide() -> bool {
-    std::env::var("PREPARED_GLIDE").is_ok_and(|value| value == "quadratic")
 }
 
 fn bezier(t: f64, a: f64, b: f64) -> f64 {
@@ -73,64 +103,108 @@ fn parameter(x: f64) -> f64 {
     (low + high) / 2.0
 }
 
-/// The glide's progress at time fraction `fraction`: `1 - (1 - t)^3` at curve parameter t.
-fn eased(fraction: f64) -> f64 {
-    if fraction >= 1.0 {
-        return 1.0;
-    }
-    let rest = 1.0 - parameter(fraction);
-    1.0 - rest * rest * rest
+/// Chromium's inverse-delta duration for `distance` pixels, seconds.
+fn chromium_duration(distance: f64) -> f64 {
+    (12.0 - (distance.abs() - 120.0) / 60.0).clamp(6.0, 12.0) / 60.0
 }
 
 impl Glide {
-    fn push(&mut self, pixels: f64) {
-        if quadratic_glide() {
-            // The glide before Chromium's: 200 ms of quadratic ease-out per notch.
-            let mut remaining = self.distance - self.delivered;
-            if remaining.signum() != pixels.signum() {
-                remaining = 0.0;
-            }
-            self.distance = (remaining + pixels).clamp(-2400.0, 2400.0);
-            self.delivered = 0.0;
-            self.elapsed = 0.0;
-            self.duration = 0.2;
-            self.active = true;
-            return;
+    fn new(model: GlideModel) -> Self {
+        Self {
+            model,
+            ..Self::default()
         }
+    }
+
+    /// The glide's progress at time fraction `fraction`.
+    fn eased(&self, fraction: f64) -> f64 {
+        if fraction >= 1.0 {
+            return 1.0;
+        }
+        match self.model {
+            GlideModel::Quadratic => 1.0 - (1.0 - fraction) * (1.0 - fraction),
+            GlideModel::Chromium => bezier(parameter(fraction), self.rise, 1.0),
+            GlideModel::Wheel | GlideModel::Off => {
+                let rest = 1.0 - parameter(fraction);
+                1.0 - rest * rest * rest
+            }
+        }
+    }
+
+    /// The current speed, pixels a second.
+    fn speed(&self, fraction: f64) -> f64 {
+        if !self.active || fraction >= 1.0 || self.duration <= 0.0 {
+            return 0.0;
+        }
+        let t = parameter(fraction);
+        let slope = match self.model {
+            GlideModel::Chromium => bezier_slope(t, self.rise, 1.0),
+            _ => 3.0 * (1.0 - t) * (1.0 - t),
+        };
+        self.distance * slope / bezier_slope(t, 0.42, 0.58) / self.duration
+    }
+
+    fn push(&mut self, pixels: f64) {
         let fraction = if self.active && self.duration > 0.0 {
             (self.elapsed / self.duration).min(1.0)
         } else {
             1.0
         };
-        let speed = if fraction < 1.0 {
-            let t = parameter(fraction);
-            self.distance * 3.0 * (1.0 - t) * (1.0 - t)
-                / bezier_slope(t, 0.42, 0.58)
-                / self.duration
-        } else {
-            0.0
-        };
-        let position = if self.active {
-            self.distance * eased(fraction)
-        } else {
-            self.delivered
-        };
-        let mut remaining = self.distance - position;
-        let mut owed = position - self.delivered;
-        if (remaining + owed).signum() != pixels.signum() {
-            remaining = 0.0;
-            owed = 0.0;
-        }
-        self.distance = remaining + pixels;
-        self.delivered = -owed;
-        self.elapsed = 0.0;
-        let frames = (12.0 - (self.distance.abs() - 120.0) / 60.0).clamp(6.0, 12.0);
-        self.duration = frames / 60.0;
-        if let Some(previous) = self.input.replace(self.now) {
-            self.duration = self.duration.min((2.0 * (self.now - previous)).max(0.05));
-        }
-        if speed != 0.0 && speed.signum() == self.distance.signum() {
-            self.duration = self.duration.min(self.distance / 0.42 / speed);
+        match self.model {
+            GlideModel::Off => {
+                let mut remaining = self.distance - self.delivered;
+                if remaining.signum() != pixels.signum() {
+                    remaining = 0.0;
+                }
+                self.distance = remaining + pixels;
+                self.delivered = 0.0;
+                self.elapsed = 0.0;
+                self.duration = 0.0;
+            }
+            GlideModel::Quadratic | GlideModel::Chromium => {
+                let speed = self.speed(fraction);
+                let mut remaining = self.distance - self.delivered;
+                if remaining.signum() != pixels.signum() {
+                    remaining = 0.0;
+                }
+                self.distance = (remaining + pixels).clamp(-2400.0, 2400.0);
+                self.delivered = 0.0;
+                self.elapsed = 0.0;
+                if self.model == GlideModel::Quadratic {
+                    self.duration = 0.2;
+                } else {
+                    self.duration = chromium_duration(self.distance);
+                    self.rise = 0.0;
+                    if speed != 0.0 && speed.signum() == self.distance.signum() {
+                        self.duration = self.duration.min(2.5 * self.distance / speed);
+                        self.rise = (0.42 * speed * self.duration / self.distance).clamp(0.0, 1.0);
+                    }
+                }
+            }
+            GlideModel::Wheel => {
+                let speed = self.speed(fraction);
+                let position = if self.active {
+                    self.distance * self.eased(fraction)
+                } else {
+                    self.delivered
+                };
+                let mut remaining = self.distance - position;
+                let mut owed = position - self.delivered;
+                if (remaining + owed).signum() != pixels.signum() {
+                    remaining = 0.0;
+                    owed = 0.0;
+                }
+                self.distance = remaining + pixels;
+                self.delivered = -owed;
+                self.elapsed = 0.0;
+                self.duration = chromium_duration(self.distance);
+                if let Some(previous) = self.input.replace(self.now) {
+                    self.duration = self.duration.min((2.0 * (self.now - previous)).max(0.05));
+                }
+                if speed != 0.0 && speed.signum() == self.distance.signum() {
+                    self.duration = self.duration.min(self.distance / 0.42 / speed);
+                }
+            }
         }
         self.active = true;
     }
@@ -141,19 +215,18 @@ impl Glide {
         if !self.active {
             return 0.0;
         }
-        let cap = if quadratic_glide() {
+        let cap = if self.model == GlideModel::Quadratic {
             Duration::from_millis(16)
         } else {
             MAX_GLIDE_FRAME
         };
         self.elapsed += FRAME.min(cap).as_secs_f64();
-        let fraction = (self.elapsed / self.duration).min(1.0);
-        let eased = if quadratic_glide() {
-            1.0 - (1.0 - fraction) * (1.0 - fraction)
+        let fraction = if self.duration > 0.0 {
+            (self.elapsed / self.duration).min(1.0)
         } else {
-            eased(fraction)
+            1.0
         };
-        let position = self.distance * eased;
+        let position = self.distance * self.eased(fraction);
         let delta = position - self.delivered;
         self.delivered = position;
         if fraction >= 1.0 {
@@ -416,6 +489,16 @@ fn timed_frame(engine: &mut Engine, window: &mut Window, line: &mut Timeline, re
 
 /// Run `script` from rest and report it; the content then comes to rest again.
 pub(super) fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> Report {
+    run_with(engine, window, script, GlideModel::from_env())
+}
+
+/// [`run`] with the wheel glide `model`.
+pub(super) fn run_with(
+    engine: &mut Engine,
+    window: &mut Window,
+    script: &Script,
+    model: GlideModel,
+) -> Report {
     assert!(
         settle(engine, window),
         "the view did not come to rest before {:?}: window active {}, worker dirty {}, \
@@ -435,7 +518,7 @@ pub(super) fn run(engine: &mut Engine, window: &mut Window, script: &Script) -> 
         painted_before: engine.worker.raster.last_strip_id(),
         ..Timeline::default()
     };
-    let mut glide = Glide::default();
+    let mut glide = Glide::new(model);
     let start = window.shown();
     let reads = engine.reads;
     let mut ideal = start;
@@ -639,70 +722,82 @@ fn wheel(
     pixels: f64,
     notch: f64,
 ) -> (Report, prepare_counters::Counts) {
+    wheel_with(engine, window, pixels, notch, GlideModel::from_env())
+}
+
+/// [`wheel`] with the wheel glide `model`.
+fn wheel_with(
+    engine: &mut Engine,
+    window: &mut Window,
+    pixels: f64,
+    notch: f64,
+    model: GlideModel,
+) -> (Report, prepare_counters::Counts) {
     let count = (pixels.abs() / notch).round() as usize;
     let script = Script {
         name: "wheel",
         frames: every(count, 3, Input::Wheel(notch.copysign(pixels))),
     };
-    let report = run(engine, window, &script);
+    let report = run_with(engine, window, &script, model);
     let counts = report.counts;
     (report, counts)
 }
 
 /// Turning back and forth inside the prepared window shows prepared strips only: no page is
 /// read or laid out and no strip is painted again. Before the window was prepared, the
-/// retained raster was painted again whenever the camera neared its 256-pixel guards.
+/// retained raster was painted again whenever the camera neared its 256-pixel guards. With
+/// every wheel glide (the current one, Off and the two before it) and at every scale.
 #[test]
 fn scrolling_inside_the_prepared_window_prepares_nothing_again() {
-    for scale in [1.0, 2.0] {
-        let size = geometry(
-            (1000.0 * scale) as u32,
-            (720.0 * scale) as u32,
-            scale as f32,
-        );
-        let (mut engine, mut window) = prepared_text(size);
-        let screen = f64::from(size.height);
-        let notch = 100.0 * scale;
-        // The first turn down and back paints the strips the window newly reaches (with
-        // the wheel glide, also on the way back down).
-        let (first, _) = wheel(&mut engine, &mut window, 0.75 * screen, notch);
-        assert!(
-            (first.moved - first.travel).abs() < 1.0,
-            "{scale}x: moved {} of {}",
-            first.moved,
-            first.travel
-        );
-        wheel(&mut engine, &mut window, -0.75 * screen, notch);
-        wheel(&mut engine, &mut window, 0.75 * screen, notch);
-        for turn in 0..3 {
-            let reads = engine.reads;
-            let (up, up_counts) = wheel(&mut engine, &mut window, -0.75 * screen, notch);
-            let (down, down_counts) = wheel(&mut engine, &mut window, 0.75 * screen, notch);
+    let mut failures = Vec::new();
+    for model in GlideModel::ALL {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let size = geometry(
+                (1000.0 * scale) as u32,
+                (720.0 * scale) as u32,
+                scale as f32,
+            );
+            let (mut engine, mut window) = prepared_text(size);
+            let screen = f64::from(size.height);
+            let notch = 100.0 * scale;
+            // The first turn down paints the strips its window newly reaches.
+            let (first, _) = wheel_with(&mut engine, &mut window, 0.75 * screen, notch, model);
             assert!(
-                (up.moved - up.travel).abs() < 1.0 && (down.moved - down.travel).abs() < 1.0,
-                "{scale}x, turn {turn}: moved {} and {}",
-                up.moved,
-                down.moved
+                (first.moved - first.travel).abs() < 1.0,
+                "{model:?} at {scale}x: moved {} of {}",
+                first.moved,
+                first.travel
             );
-            // Known regression (backlog VIEW-11): at 200 % the wheel glide, fast in the
-            // middle of a turn and slow at its end, makes every turn back down paint one
-            // strip again; Off and the older glides painted none
-            // (docs/verification/2026-11-24-scroll-glide-speed.md).
-            let mut down_counts = down_counts;
-            if scale == 2.0 && down_counts.rasters == 1 && down_counts.layouts == 0 {
-                down_counts = prepare_counters::Counts::default();
+            for turn in 0..3 {
+                let reads = engine.reads;
+                let (up, up_counts) =
+                    wheel_with(&mut engine, &mut window, -0.75 * screen, notch, model);
+                let (down, down_counts) =
+                    wheel_with(&mut engine, &mut window, 0.75 * screen, notch, model);
+                assert!(
+                    (up.moved - up.travel).abs() < 1.0 && (down.moved - down.travel).abs() < 1.0,
+                    "{model:?} at {scale}x, turn {turn}: moved {} and {}",
+                    up.moved,
+                    down.moved
+                );
+                let prepared = (up_counts, down_counts, engine.reads - reads);
+                if prepared
+                    != (
+                        prepare_counters::Counts::default(),
+                        prepare_counters::Counts::default(),
+                        0,
+                    )
+                {
+                    failures.push(format!("{model:?} at {scale}x, turn {turn}: {prepared:?}"));
+                }
             }
-            assert_eq!(
-                (up_counts, down_counts, engine.reads - reads),
-                (
-                    prepare_counters::Counts::default(),
-                    prepare_counters::Counts::default(),
-                    0
-                ),
-                "{scale}x, turn {turn}: scrolling inside the prepared window prepared content again"
-            );
         }
     }
+    assert!(
+        failures.is_empty(),
+        "scrolling inside the prepared window prepared content again:\n{}",
+        failures.join("\n")
+    );
 }
 
 /// The window moves over prepared strips on every frame although the worker answers only

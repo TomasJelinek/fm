@@ -692,9 +692,13 @@ A strip is 256 rows of the surface's world in effective raster pixels, starting 
 multiple of 256 (`worker_bands.rs`), as wide as the window's body, or with horizontal
 guards of 256 logical pixels on each side while unwrapped lines are wider than the
 window. The worker keeps strips one screen against the direction of travel and two
-screens along it, three while one camera request moves more than a sixteenth of a
-screen (about four screens a second at 60 Hz). It drops strips only a further screen
-beyond that window, so turning back finds them. A frame publishes the contiguous run
+screens along it, three once a camera request moves more than a sixteenth of a screen
+(about four screens a second at 60 Hz); the travel stays fast until it turns, so a glide's
+slow last steps do not shrink the window before its third screen is painted. It drops
+strips only beyond fast travel's window plus a screen in both directions (four screens),
+whatever the travel is now, so turning back finds them
+(`worker_prepared_tests::scrolling_inside_the_prepared_window_prepares_nothing_again`, with
+every wheel glide at 100 to 200 %; [record](../verification/2026-11-24-scroll-glide-speed.md)). A frame publishes the contiguous run
 of strips around the camera; that run is the camera's coverage, within the page's
 known limits.
 

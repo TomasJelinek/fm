@@ -165,34 +165,61 @@ were updated to the new curve with the reason in each:
 - `midnight-viewer-engine` `worker_prepared_tests`: the co-simulated glide follows the new
   model.
 
-## A prepared-window regression the faster glide exposed
+## A prepared-window regression the faster glide exposed, and its fix
 
 With the co-simulated glide updated, `scrolling_inside_the_prepared_window_prepares_nothing_again`
-failed: turning back down painted strips again (256,000 pixels each at 100 %, 512,000 at
-200 %). The co-simulation times the worker's real turns, so the counts depend on the
-machine's load. Probed over six turns each after a first turn down and back, inside the
-suite (a temporary `PREPARED_GLIDE=off` mode moved each notch at once):
+failed: turning back down painted strips the window had already asked for. The test now
+runs every glide model of the co-simulation (the current glide, Off, the quadratic glide
+before Chromium's and Chromium's ease-in-out) at 100, 125, 150 and 200 % and reports every
+turn that prepared anything. Strips painted during the turns back down, three turns each,
+without the fix (three runs of the test alone, the same each time):
 
-| Glide in the co-simulation | 100 %, strips painted again per turn | 200 % |
-| --- | ---: | ---: |
-| The new glide | 0 | 1 every turn back down |
-| Off (each notch at once) | 0 | 0 |
-| The quadratic glide before Chromium's | 0 | 0 |
-| Chromium's ease-in-out (main; the test passed there) | 0 | 0 |
+| Glide | 100 % | 125 % | 150 % | 200 % |
+| --- | --- | --- | --- | --- |
+| Current wheel glide | 0 (1 in one run inside the suite) | 1 on turn 0 | 2, 1, 1 | 3, 1, 1 |
+| Off, quadratic, Chromium's | 0 | 0 | 0 | 0 |
 
-Without that first turn back, the first turn back down painted one strip at 100 % and, run
-alone, two at 200 %. The worker prepares three screens ahead instead of two while the
-travel is fast (`worker_bands::FAST_STEP`: a request more than a sixteenth of a screen
-beyond the last) and takes the speed from the newest request alone. Off ends a turn on a
-fast step, while the new glide is fast in the middle of a turn and ends on slow steps;
-that is the likely trigger, not confirmed. Keeping the travel fast until it turns was tried
-and made it worse at 100 % (two strips on the first turn back down), so the engine is
-unchanged. The test now turns down and back once before it counts and tolerates one strip
-per turn back down at 200 % (it passed eight runs alone and in the suite); the regression
-is backlog VIEW-11 for the viewer engine's owner. The cost is one strip's rasterization on
-the worker thread per turn; no frame waits for it
-(`a_fast_wheel_spin_never_waits_for_the_next_page` and
-`page_down_never_waits_for_the_next_page` pass).
+The worker's log (temporary instrumentation of `Bands::travel`, `prepare_strips_turn` and
+`evict_strips`, Wheel at 200 %) showed two causes, both in `worker_bands.rs`:
+
+1. **The window shrank before it was painted.** The worker took the travel's speed from each
+   camera request alone (`FAST_STEP`: more than a sixteenth of a screen). The new glide's
+   requests near the threshold flipped between fast and slow within one gesture: at 223 px
+   the travel was fast and the window wanted three screens ahead (strips up to 23); the
+   turn painted strips 18 to 20 within its 4 ms (`TURN`); at 308 px the travel was slow, the
+   window wanted two screens (strips up to 18), and strips 21 to 23 were never painted at
+   rest. The next fast turn down painted them during the gesture.
+2. **A slow step dropped what fast travel had prepared.** At rest the worker keeps strips
+   within the window's longer side plus a screen in both directions, and that side came
+   from the current speed. The turn up ended slow, so the kept side was three screens:
+   strip 23, which the fast window had painted, was dropped at 74 px, and every fast turn
+   down painted it again.
+
+The fix (`Bands::travel`, `evict_strips`): travel stays fast until it turns, and the kept
+side is fast travel's whatever the travel is now. Each alone does not suffice: the kept
+side alone left turn 0 (cause 1: 1, 2 and 3 strips at 125, 150 and 200 %); sticky fast
+travel alone was worse (2, 2, 3 and 4 strips on every turn at 100 to 200 %, because the
+first slow step of a turn shrank the kept side). With both, every model at every scale
+prepares nothing during the turns: three runs alone, the whole suite twice, and 18 copies
+run six at a time on a loaded machine all passed. The test is back in its strict form (no
+warm-up turn, no tolerance) and extended to the four glides and two more scales; it takes
+0.86 s alone.
+
+Cost elsewhere, from `measure_prepared_text_scrolling` (48 gestures: wheel, touchpad, Page
+Down and scrollbar over four kinds of text at 100 and 200 %; the worker's real time, so the
+numbers vary between runs):
+
+| Engine | Runs | Frames that waited for pixels | Strips painted | Megapixels | Worker time | Peak strip memory |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Before | 2 | 120, 114 | 1,742, 1,775 | 966, 989 | 10.6 s, 10.6 s | 61.5 MiB |
+| After | 3 | 61, 62, 91 | 1,716, 1,699, 1,689 | 944, 933, 926 | 10.9 s, 10.8 s, 12.2 s | 61.5 MiB |
+
+Fewer strips are painted and fewer frames wait; the strip memory stays within its
+budget (the kept side is a limit on what stays, not on what is painted, and a full budget
+still evicts to the window). A travel that was once fast keeps preparing three screens
+ahead until it turns, also when it goes on slowly: some single gestures paint a few more
+strips ahead (twelve notches back up over the 100 MB text at 100 %: 13 instead of 7),
+others fewer.
 
 ## Test runs (Windows, 24 November 2026)
 

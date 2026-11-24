@@ -107,12 +107,19 @@ impl Bands {
     }
 
     /// The camera was asked to `target` (world y): the direction and speed of travel.
+    /// Travel stays fast until it turns. A glide's requests are fast in its middle and
+    /// slow at its ends; were the speed taken from each request alone, the window would
+    /// shrink back on the next slow request before its third screen was painted (a turn
+    /// prepares strips in slices of `TURN`), and the next fast travel would paint that
+    /// screen during the gesture instead of at rest.
     pub fn travel(&mut self, target: f64, screen: f64) {
         if let Some(last) = self.last_target {
             let step = target - last;
             if step.abs() > 0.5 {
-                self.direction = if step > 0.0 { 1 } else { -1 };
-                self.fast = step.abs() > screen * FAST_STEP;
+                let direction = if step > 0.0 { 1 } else { -1 };
+                let fast = step.abs() > screen * FAST_STEP;
+                self.fast = fast || (self.fast && direction == self.direction);
+                self.direction = direction;
             }
         }
         self.last_target = Some(target);
@@ -545,9 +552,11 @@ impl Worker {
         Ok(true)
     }
 
-    /// Drop strips outside the window around world `y`. With `keep` the window counts its
-    /// longer side in both directions plus a screen, so that turning back and forth keeps
-    /// what was prepared; without it (a full budget), only the window itself stays.
+    /// Drop strips outside the window around world `y`. With `keep` the window counts the
+    /// longest side any travel prepares (fast travel's) in both directions plus a screen,
+    /// whatever the travel is now, so that turning back and forth keeps what was prepared:
+    /// a slow first step of a turn must not drop the screen a fast turn prepared. Without it
+    /// (a full budget), only the window itself stays.
     fn evict_strips(&mut self, y: f64, keep: bool) {
         let (Some(page), Some(shaped)) = (&self.page, &self.shaped) else {
             return;
@@ -555,7 +564,7 @@ impl Worker {
         let bounds = self.strip_bounds(page, shaped);
         let screens = self.raster.bands.screens();
         let screens = if keep {
-            let side = screens.0.max(screens.1) + 1.0;
+            let side = AHEAD_FAST.max(BEHIND) + 1.0;
             (side, side)
         } else {
             screens
@@ -726,5 +735,12 @@ mod prefetch_tests {
         assert_eq!(bands.page_screens(), 6.0);
         assert_eq!(bands.refill_thresholds(), (3.0, 0.25));
         assert_eq!(bands.growth_thresholds(), (5.0, 0.25));
+        // A glide's slow last steps keep the travel fast; a turn measures it again.
+        bands.travel(-40.0, 720.0);
+        assert_eq!(bands.screens(), (3.0, 1.0));
+        bands.travel(-30.0, 720.0);
+        assert_eq!(bands.screens(), (1.0, 2.0));
+        bands.travel(30.0, 720.0);
+        assert_eq!(bands.screens(), (1.0, 3.0));
     }
 }
