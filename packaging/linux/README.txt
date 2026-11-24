@@ -45,9 +45,11 @@ refresh Network Neighborhood. A known server can be entered as smb://server/.
 Example:
   ./midnight-explorer --left "$HOME" --right /tmp
 
-X11/XWayland supports native external file drag-and-drop. Native Wayland currently
-supports internal panel dragging only. --software is a diagnostic fallback with
-known bitmap-emoji limitations. System fonts must cover the displayed scripts.
+X11/XWayland supports native external file drag-and-drop. A native Wayland window
+drags between its own panels only, unless MIDNIGHT_WAYLAND_DND=1 enables its native
+transport, which has not been qualified on a compositor yet. --software is a
+diagnostic fallback with known bitmap-emoji limitations. System fonts must cover the
+displayed scripts.
 Fedora 44+ and openSUSE Leap 16/Tumbleweed are compatibility targets, but this
 preview has not been qualified on their native desktops. See SYSTEM_REQUIREMENTS.md.
 
@@ -87,6 +89,15 @@ of the script (this moves the sandbox permission to this installation):
 
 Settings: $XDG_CONFIG_HOME/midnight-explorer/preferences.json, normally
 $HOME/.config/midnight-explorer/preferences.json.
+
+Check for updates (toolbar and About) asks GitHub for a newer release, at startup
+too (at most once in 20 hours; Options > General > Updates turns it off). Download
+and install accepts only an archive whose checksums are signed with the project's
+release key, installs it on restart and restores this version if the new one does
+not start. It updates only a folder you can change, such as the extracted folder;
+for a folder that only root can change it offers the release page instead. See
+SECURITY.md (Update check).
+
 Releases up to 0.5.0 named the executable me. Settings stay where they were;
 install the desktop entry again as above and delete an earlier per-user copy,
 such as "$HOME/.local/bin/me".

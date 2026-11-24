@@ -123,8 +123,9 @@ cleanup, the reader budget) and
 
 The core and native host implement this prepared-Rename lifecycle
 (`midnight_core::RenameService`, implemented in `midnight-native-filesystem-host`'s
-`rename.rs`). Known limit: the engine and UI do
-not use it yet; Rename runs through the platform crates. This internal Rust contract does
+`rename.rs`). Known limit (VFS-01 in the
+[backlog](../IMPLEMENTATION_BACKLOG.md)): the engine and UI do not use it yet; Rename
+runs through the platform crates. This internal Rust contract does
 not change the public plugin ABI/SDK.
 Rename preparation requires native-address/prepared-Rename capabilities;
 unsupported providers do not fall back to host path mutation.

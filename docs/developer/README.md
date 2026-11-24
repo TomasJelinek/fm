@@ -235,16 +235,17 @@ are not a sandbox. An EXE alone is not a sandbox; restrictions come from the
 documented [worker containment](WORKER_SDK.md#startup-and-containment) or
 [web process policy](WEB_VIEWER_API.md). Install only code you trust. The
 installation, package, manifest and entry library must resolve to their expected
-canonical locations; redirections and insecure ownership/write permissions are
-refused at discovery or first load.
+canonical locations; redirections and objects owned by another account are refused at
+discovery or first load.
 
-Linux accepts current-user/root ownership and rejects group/other writes,
-including unsafe ancestors; a trusted-owned sticky ancestor can be allowed.
-Windows validates owner and DACL rights against the process user, System,
-Administrators and the OS-resolved TrustedInstaller identity, including ancestor
-rights that could replace installation objects. Use a private installation with
-safe ancestors; a broadly writable build/share directory can be unsuitable even
-when the DLL itself is read-only. See the
+Linux accepts current-user/root ownership; Windows validates owners against the
+process user, System, Administrators and the OS-resolved TrustedInstaller identity,
+and refuses permission entries it cannot interpret. Write permissions that other
+accounts hold (Windows ACL entries, including ancestor rights that could replace
+installation objects; Linux group/other write bits outside a trusted-owned sticky
+ancestor) make the installation **shared**: its plugins load, because those accounts
+could replace the executable too, and the application says so once. Runtime
+registrations and the deployments they select keep the strict policy. See the
 [native host reference](../../crates/midnight-plugin-host/README.md) for details.
 
 Windows uses an absolute library path and restricted DLL search flags; Linux uses
@@ -304,10 +305,12 @@ viewer loader.
 
 Current native [API](../../filesystem-api/midnight-filesystem-plugin-api/Cargo.toml)
 and [SDK](../../filesystem-api/midnight-filesystem-plugin-sdk/Cargo.toml) source
-packages are `0.2.0`. The [ABI definitions](../../filesystem-api/midnight-filesystem-plugin-api/src/abi.rs)
-add optional [ABI 1.3 prepared same-parent Rename](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3).
-The core/host lifecycle is implemented; engine/UI integration and installed-provider
-runtime qualification/deployment remain open. Generic provider mutation and
+packages are `0.2.0`, and the [ABI definitions](../../filesystem-api/midnight-filesystem-plugin-api/src/abi.rs)
+are at ABI 1.4: minor 3 adds optional
+[prepared same-parent Rename](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3)
+and minor 4 the [Local storage kind](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#local-storage-kind-abi-minor-4).
+The prepared Rename core/host lifecycle is implemented; the engine and UI do not use it
+yet (VFS-01 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). Generic provider mutation and
 credential/authentication brokering remain separate work. Browse/Read grants no
 write or source-removal authority. Internal Rust mount traits remain application
 implementation details, not public plugin exports.

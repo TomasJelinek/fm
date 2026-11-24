@@ -36,7 +36,11 @@ do, so the shared crates are reused rather than rebuilt with a different feature
 profile; the `debug|release` argument names the preceding build only, whose plugin
 packages the viewer scenarios stage: the script exports `MIDNIGHT_ACCEPTANCE_PLUGINS`
 as `${CARGO_TARGET_DIR:-<checkout>/_build}/<profile>` unless it is already set (made
-absolute; `--dry-run` prints it). Options:
+absolute; `--dry-run` prints it). The suite's own target is nevertheless built at
+`opt-level = 2` (`[profile.dev.package.midnight-acceptance]` in the root `Cargo.toml`),
+because its frame copies, hashes and comparisons would otherwise set the pace; the
+product crates it drives keep their debug profiles
+([acceptance time](../verification/2026-11-24-acceptance-time.md)). Options:
 
 | Option | Effect |
 | --- | --- |

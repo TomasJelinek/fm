@@ -220,6 +220,11 @@ An archive contains:
   library's and the adapted themes';
 - the module folders `viewers/`, `filesystems/` and `thumbnailers/`.
 
+Everything lies below one folder, `midnight-explorer-<version>-<target>/`, and the
+archive is named after it. The update check installs only an archive with exactly
+this layout whose `BUILD-INFO.json` matches its files
+([Updates](developer/UPDATES.md#trust)), so do not repack or rename it.
+
 The packager validates every module before copying it:
 
 - All six viewer packages under `viewers/` (or `--viewers-root`): platform, native ABI,

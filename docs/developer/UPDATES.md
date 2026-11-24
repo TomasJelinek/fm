@@ -37,6 +37,8 @@ and `crates/midnight-ui/ui/update-controls.slint` draws the button and the dialo
   opens the dialog with a check.
 - **Options › General › Updates**: "Check for updates at startup" and "Include preview
   releases", side by side, both on by default and part of the Options OK/Cancel draft.
+  Preferences schema 40 stores them only when one is off; every earlier file reads as
+  both on, so existing settings get the startup check.
 
 Downloading starts only when the user clicks Download and install, and installing only
 when the user clicks Restart now. A found update is never downloaded automatically:
@@ -54,8 +56,8 @@ out. The newest version above the running one by semantic-version order is offer
 A release is a *preview* when GitHub marks it as a pre-release or its version has a
 pre-release part; previews are offered only with "Include preview releases".
 
-That option is on by default because every release so far (0.1.0 and 0.5.0) is a
-GitHub pre-release: with it off, no current user would be offered anything until the
+That option is on by default because every release so far (0.1.0, 0.5.0 and 0.5.1) is
+a GitHub pre-release: with it off, no current user would be offered anything until the
 first stable release. Users who want only stable releases turn it off.
 
 The startup check runs on the update thread 5 seconds after the window shows with the
@@ -109,7 +111,8 @@ thumbnail cache follows, so an end-to-end run never reads or writes the user's p
 Release builds ignore all three: `Endpoints::loopback_test` returns
 `None` and `TrustAnchor::built_in` ignores the variable when `debug_assertions` is off,
 which `cargo test -p midnight-update --release` checks
-(`only_debug_builds_accept_a_loopback_test_server`).
+(`only_debug_builds_accept_a_loopback_test_server`). CI and full validation run the
+tests in the debug test profile only, so that release-build check is a manual step.
 
 ## Trust
 
@@ -193,8 +196,9 @@ no window. It:
    moved is moved back and the previous version starts again.
 4. Removes the used-up staged copy and `ready.json` (so the new version does not offer
    it again), releases the lock and starts the new executable, the name that the new
-   `BUILD-INFO.json` gives (`me.exe` now, a renamed executable later), with the original
-   arguments in the original working folder.
+   `BUILD-INFO.json` gives (`midnight-explorer.exe` or `midnight-explorer` now, a
+   renamed executable later), with the original arguments in the original working
+   folder.
 
 The user's settings are not in the installation folder (`%LOCALAPPDATA%\Midnight
 Explorer\preferences.json`, `~/.config/midnight-explorer/preferences.json`), so the new
@@ -282,7 +286,14 @@ injected):
   download → verify → stage flow, a tampered archive, another key (no archive
   downloaded), a build without a key, the startup interval and skip, rate limits and
   offline at startup, and a staged update offered as ready after a restart.
+- `loopback`: the real system transport (WinHTTP or `ureq`) runs the whole flow against
+  a local HTTP server through the debug-only test endpoint, and the GitHub policy
+  refuses that server before connecting.
 
-`scripts/tests/test_release_signing.py` covers the release tool, the UI's states are
-covered by `crates/midnight-ui/tests/update_dialog.rs`, and the settings schema by
-`crates/midnight-platform-common/src/settings/updates_tests.rs`.
+`scripts/tests/test_release_signing.py` covers the release tool (its key tests point the
+tool at a stand-in repository folder of their own, because the tool refuses a secret
+key inside the repository and CI's temporary folder lies inside the checkout), the
+UI's states are covered by `crates/midnight-ui/tests/update_dialog.rs`, and the
+settings schema by `crates/midnight-platform-common/src/settings/updates_tests.rs`.
+Evidence: [update check record](../verification/2026-11-23-update-check.md) (it names
+schema 39, the number in its export; main stores the choices as schema 40).

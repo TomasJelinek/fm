@@ -28,7 +28,13 @@ Install Microsoft's Visual C++ x64 Redistributable if VCRUNTIME140.dll is missin
 https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
 
 Targets Windows 10 22H2 / Windows 11 x64; tested on Windows 11 25H2.
-The executable is unsigned. No installer or automatic updater is included.
+The executable is unsigned. No installer is included. Check for updates (toolbar
+and About) asks GitHub for a newer release, at startup too (at most once in 20
+hours; Options > General > Updates turns it off). Download and install accepts only
+an archive whose checksums are signed with the project's release key, installs it
+on restart and restores this version if the new one does not start. It updates
+only a folder you can change; for a folder that only administrators can change it
+offers the release page instead. See SECURITY.md (Update check).
 Default graphics use Direct3D 12. --software is a diagnostic fallback with known
 bitmap-emoji limitations, not equivalent to the GPU renderer's Unicode coverage.
 

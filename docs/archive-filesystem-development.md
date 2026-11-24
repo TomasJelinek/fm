@@ -30,7 +30,9 @@ streaming, memory and integrity rules in detail.
   staging and the member cache (`crates/midnight-filesystem-host`), copy-out and saved
   locations. The [filesystem API reference](developer/FILESYSTEM_API.md) lists the
   limits.
-- The host starts the worker only from a protected installation; see
+- The host starts the worker only from an installation that passes the plugin trust
+  checks (no links or other redirections, nothing owned by another account); one that
+  other accounts can change through permissions is accepted and reported once. See
   [runtime discovery](developer/RUNTIME_DISCOVERY.md) and
   [dynamic viewers and filesystem plugins](../SECURITY.md#dynamic-viewers-and-filesystem-plugins).
   Tests use a private installation root; never weaken the trust checks to make a test
