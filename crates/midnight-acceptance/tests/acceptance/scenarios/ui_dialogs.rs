@@ -135,9 +135,15 @@ fn go_to(app: &mut App, pane: PaneId, folder: &Path) -> Result<(), String> {
 /// Back to plain browsing on freshly restored scratch folders.
 fn restore(app: &mut App, scratch: &Scratch) {
     let _phase = timing::Span::new("dialogs: restore");
-    files_support::dismiss_all(app);
+    // Close what is open (`dismiss_all` waits 120 ms even when nothing is), then give a
+    // late window or notice 150 ms to appear and close that too.
+    if !files_support::main_idle(app) {
+        files_support::dismiss_all(app);
+    }
     app.idle(Duration::from_millis(150));
-    files_support::dismiss_all(app);
+    if !files_support::main_idle(app) {
+        files_support::dismiss_all(app);
+    }
     if let Err(error) = scratch.reset_disk() {
         eprintln!("ui_polish_dialogs: restoring the scratch folders: {error}");
     }
@@ -809,8 +815,10 @@ fn body(context: &mut Context) -> Result<(), String> {
         );
         format!("shots/{}/dialogs-main.png", app::context_name())
     };
+    app.hold_clock();
     let mut issues = interact::hover_checks(&mut app, &Target::Main);
     issues.extend(interact::tooltip_checks(&mut app, &Target::Main));
+    app.resume_clock();
     gate::record(context, &shot_main, "main", issues);
     for spec in SPECS {
         let _surface = timing::Span::new(format!("surface {}", spec.name));

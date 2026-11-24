@@ -201,7 +201,7 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     let software = target.software(app);
     let window = software.window();
     gate::pointer_out(window);
-    app.idle(Duration::from_millis(150));
+    app.wait_ui(Duration::from_millis(150));
     let Some(root) = dialog_root(window, target) else {
         return vec![Issue::new(FOCUS_ESCAPES, "no dialog is open to check")];
     };
@@ -231,7 +231,7 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     let mut current = stop(window).flatten();
     for _ in 0..limit {
         input::key(window, Key::Tab);
-        app.idle(Duration::from_millis(160));
+        app.wait_ui(Duration::from_millis(160));
         let frame = Frame::of(&software);
         match stop(window) {
             None => {}
@@ -346,7 +346,7 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
         let mut backward = Vec::new();
         for _ in 0..cycle.len() {
             input::chord(window, &[Key::Shift], Key::Tab);
-            app.idle(Duration::from_millis(60));
+            app.wait_ui(Duration::from_millis(60));
             backward.push(stop(window).flatten());
         }
         let expected: Vec<Option<usize>> = (0..cycle.len())
@@ -385,7 +385,7 @@ pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
     let software = target.software(app);
     let window = software.window();
     gate::pointer_out(window);
-    app.idle(Duration::from_millis(200));
+    app.wait_ui(Duration::from_millis(200));
     let roots = match dialog_root(window, target) {
         Some(root) => vec![root],
         None => inspect::roots(window).into_iter().take(1).collect(),
@@ -413,10 +413,10 @@ pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
             let (x, y, w, h) = shown;
             let area = inflate(shown, 2.0);
             let before = Frame::of(&software);
-            app.idle(Duration::from_millis(180));
+            app.wait_ui(Duration::from_millis(180));
             let base = Frame::of(&software);
             gate::hover(window, x + w / 2.0, y + h / 2.0);
-            app.idle(Duration::from_millis(180));
+            app.wait_ui(Duration::from_millis(180));
             let frame = Frame::of(&software);
             if !changed_beyond(&frame, &base, &before, area) {
                 issues.push(Issue::new(
@@ -425,7 +425,7 @@ pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
                 ));
             }
             gate::pointer_out(window);
-            app.idle(Duration::from_millis(120));
+            app.wait_ui(Duration::from_millis(120));
         }
     }
     issues
@@ -519,10 +519,10 @@ pub fn tooltip_checks(app: &mut App, target: &Target) -> Vec<Issue> {
             app.settle();
             gate::hover(window, cx - 1.0, cy);
             gate::hover(window, cx, cy);
-            let deadline = Instant::now() + Duration::from_millis(delay.max(0) as u64 + 600);
+            // Up to the delay and 600 ms more of the window's time, read every 60 ms.
             let mut texts = Vec::new();
-            while Instant::now() < deadline {
-                app.idle(Duration::from_millis(60));
+            for _ in 0..(delay.max(0) as u64 + 600).div_ceil(60) {
+                app.wait_ui(Duration::from_millis(60));
                 texts = tooltip_texts(window);
                 if texts
                     .iter()
@@ -541,7 +541,7 @@ pub fn tooltip_checks(app: &mut App, target: &Target) -> Vec<Issue> {
                 ));
             }
             gate::pointer_out(window);
-            app.idle(Duration::from_millis(60));
+            app.wait_ui(Duration::from_millis(60));
         }
     }
     issues
@@ -1025,11 +1025,16 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
             return outcome;
         }
         Ok(target) => {
+            // Focus, hover and tooltips change only Slint's state: their waits are the
+            // window's time (animations, the tooltip delay) with the clock held, not
+            // real time.
+            app.hold_clock();
             outcome.issues.extend(focus_checks(app, &target));
             if surface.hover {
                 outcome.issues.extend(hover_checks(app, &target));
                 outcome.issues.extend(tooltip_checks(app, &target));
             }
+            app.resume_clock();
             let _phase = crate::timing::Span::new("interact: Escape");
             let window = target.software(app);
             input::key(window.window(), Key::Escape);

@@ -1108,6 +1108,18 @@ impl App {
         }
     }
 
+    /// Let `by` pass for Slint's timers and animations. With the clock held it moves by
+    /// `by` at once and one settle follows: an animation shows its state at that time and
+    /// a timer due by then fires, without waiting in real time. Otherwise [`App::idle`].
+    pub fn wait_ui(&mut self, by: Duration) {
+        if self.clock.is_held() {
+            self.clock.step(by);
+            self.settle();
+        } else {
+            self.idle(by);
+        }
+    }
+
     /// Let the held clock run with real time again, on from where it stands.
     pub fn resume_clock(&mut self) {
         self.clock.resume();
