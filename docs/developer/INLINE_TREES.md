@@ -53,6 +53,20 @@ identities grant no operation authority.
 Native namespace replacement remains live; the adapter does not promise an
 atomic snapshot or handle-relative no-follow branch enumeration.
 
+Windows compatibility junctions (`My Music` in Documents, `Application Data`,
+`Documents and Settings`) carry an explicit Everyone deny-list entry on the link
+itself; their targets stay readable. `providers::browse_listing` lists such a
+row for browsing: when a node known as a directory link fails to list with
+`PermissionDenied` before any entry, it lists the OS-resolved target
+(`resolve_size_directory`, the final path of an actual directory) and gives each
+entry its path below the link, so children, tokens and later actions keep the
+link's logical path, exactly as for a readable junction. Root-row presence hints
+(`folder_presence`), branch probes, expansions and refreshes (`NativeMount`) and
+watch probes of an expanded link (`ScopeTarget::link`) use it. An unresolvable link
+keeps its own denial and a target that cannot be listed reports its own error.
+Ordinary folders, other errors and other platforms list the path only; recursive
+walks (sizes, Find, Compare, Copy/Move) never use it.
+
 The native adapter validates immediate child paths and raw basenames before
 binding tokens. It forwards a consumer's callback stop result to the injected
 directory service and stops processing further callbacks after a stop or entry

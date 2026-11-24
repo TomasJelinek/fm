@@ -381,3 +381,39 @@ fn a_relative_directory_symbolic_link_stays_relative_or_becomes_a_junction_with_
     assert_eq!(fs::read(copied.join("file.txt")).unwrap(), b"sub");
     assert_eq!(done.note_count, 0, "{:?}", done.notes);
 }
+
+/// Windows' compatibility junctions (`My Music`) deny listing on the link itself: Copy
+/// keeps such a selected junction as a junction, or follows it into a copy of its
+/// readable target, without an error.
+#[test]
+fn a_denied_compatibility_junction_is_kept_or_followed_without_errors() {
+    for links in [CopyLinkPolicy::Preserve, CopyLinkPolicy::FollowLinks] {
+        let fixture = crate::providers::browse_listing::tests::denied_junctions();
+        let destination = fixture.alias.parent().unwrap().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let mut copy = job(
+            std::slice::from_ref(&fixture.alias),
+            &destination,
+            false,
+            links,
+        );
+        run(&mut copy);
+        let done = copy.finish();
+        assert_eq!(
+            done.state,
+            CopyOperationState::Completed,
+            "{links:?}: {done:?}"
+        );
+        let copied = destination.join("My Music");
+        assert_eq!(
+            is_link(&copied),
+            links == CopyLinkPolicy::Preserve,
+            "{links:?}"
+        );
+        assert_eq!(fs::read(copied.join("song.txt")).unwrap(), [1; 5]);
+        assert_eq!(
+            fs::read(copied.join("Album").join("track.bin")).unwrap(),
+            [2; 7]
+        );
+    }
+}

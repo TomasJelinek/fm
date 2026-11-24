@@ -622,7 +622,7 @@ fn presence_identity_cost_probe() {
     };
     let probes = median(&|| {
         for row in &rows {
-            assert!(native.has_subfolders(row, &cancel).unwrap());
+            assert!(native.has_subfolders(row, false, &cancel).unwrap());
         }
     });
     let identities = median(&|| {
@@ -631,4 +631,56 @@ fn presence_identity_cost_probe() {
         }
     });
     println!("200 rows: presence probes median {probes:?}, identity queries median {identities:?}");
+}
+
+/// The row badge of a Windows compatibility junction (`My Music`): its own listing is
+/// denied, its target's is not, so its hint is the target's. A junction to a folder that
+/// denies listing keeps its error.
+#[cfg(windows)]
+#[test]
+fn denied_compatibility_junction_hint_is_its_targets_and_a_denied_target_stays_unavailable() {
+    let fixture = crate::providers::browse_listing::tests::denied_junctions();
+    let directory = fixture.alias.parent().unwrap().to_owned();
+    let entries: Arc<[Entry]> = [
+        (1, &fixture.alias, EntryKind::DirectoryLink),
+        (2, &fixture.private_alias, EntryKind::DirectoryLink),
+        (3, &fixture.target, EntryKind::Directory),
+    ]
+    .into_iter()
+    .map(|(id, path, kind)| Entry::new(EntryId(id), path.clone(), kind))
+    .collect::<Vec<_>>()
+    .into();
+    let root = TreeRootSnapshot {
+        pane: PaneId::Left,
+        navigation: NavigationId(1),
+        index: Arc::new(DirectoryIndex::from_entries(&entries)),
+        entries,
+    };
+    let mut state = SnapshotState::default();
+    state.remember_native_tree_root(root.clone(), directory);
+    let snapshots = crate::test_snapshots([state, SnapshotState::default()]);
+    let request = FolderPresenceRequest {
+        root,
+        revision: FolderPresenceRevision(1),
+        visible: vec![EntryId(1), EntryId(2), EntryId(3)],
+        cancel: Cancellation::default(),
+    };
+    let result = run(
+        &request,
+        &request.cancel,
+        &snapshots,
+        &NativeProvider::new(Arc::new(midnight_platform::LocalFileSystem::new(None))),
+        &Arc::new(Semaphore::new(1)),
+        &crate::ReportArena::testing(),
+        &mut isolated(),
+    )
+    .unwrap();
+    assert_eq!(result[0], (EntryId(1), FolderPresence::HasFolders));
+    assert_eq!(result[1].0, EntryId(2));
+    assert!(
+        matches!(&result[1].1, FolderPresence::Unavailable(error) if error.as_str().contains("denied")),
+        "{:?}",
+        result[1].1
+    );
+    assert_eq!(result[2], (EntryId(3), FolderPresence::HasFolders));
 }

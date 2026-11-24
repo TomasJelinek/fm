@@ -28,6 +28,9 @@ pub(crate) struct ScopeTarget {
     /// that listing left them out. The tree's own listings (an expanded branch,
     /// the root once listed again) keep them in the model and so in probes.
     pub(crate) hide: bool,
+    /// The branch is a directory link: a denied Windows compatibility junction is
+    /// probed through its target, as its listing was (`browse_listing`).
+    pub(crate) link: bool,
     pub(crate) path_bytes: usize,
     pub(crate) _mounted: MountedTarget,
     pub(crate) _registration: Arc<RootRegistrationLease>,
@@ -70,8 +73,14 @@ impl ScopeTarget {
         }
         self.check_native_target()?;
         self.check_directory_identity(filesystem, cancel)?;
-        let observation =
-            signature::probe_shown(filesystem, &self.path, self.folders_only, self.hide, cancel)?;
+        let observation = signature::probe_shown(
+            filesystem,
+            &self.path,
+            self.folders_only,
+            self.hide,
+            self.link,
+            cancel,
+        )?;
         self.check_directory_identity(filesystem, cancel)?;
         self.check_native_target()?;
         if cancel.is_cancelled() {

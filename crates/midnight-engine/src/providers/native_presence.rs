@@ -4,18 +4,24 @@ use midnight_core::{Cancellation, EntryKind};
 use std::path::Path;
 
 impl NativeProvider {
+    /// `link`: `directory` is a directory link, which a denied Windows compatibility
+    /// junction probes through its target (`browse_listing`).
     pub(crate) fn has_subfolders(
         &self,
         directory: &Path,
+        link: bool,
         cancel: &Cancellation,
     ) -> Result<bool, ProviderError> {
         check_cancel(cancel)?;
         native_location(directory)?;
         let mut present = false;
         let mut failure = None;
-        let result = self
-            .filesystem
-            .read_directory(directory, cancel, &mut |entry| {
+        let result = crate::providers::browse_listing::read_browse_directory(
+            self.filesystem.as_ref(),
+            directory,
+            link,
+            cancel,
+            &mut |entry| {
                 if present || failure.is_some() {
                     return false;
                 }
@@ -37,7 +43,8 @@ impl NativeProvider {
                 }
                 present = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
                 !present
-            });
+            },
+        );
         check_cancel(cancel)?;
         if let Some(error) = failure {
             return Err(error);

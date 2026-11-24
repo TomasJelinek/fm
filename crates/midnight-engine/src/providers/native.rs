@@ -426,9 +426,13 @@ impl NativeMount {
         let mut reads = 0;
         let mut failure = None;
         let mut stopped = false;
-        let result = self
-            .filesystem
-            .read_directory(&node.path, cancel, &mut |mut entry| {
+        // A denied Windows compatibility junction lists its target below its own path.
+        let result = super::browse_listing::read_browse_directory(
+            self.filesystem.as_ref(),
+            &node.path,
+            node.kind == EntryKind::DirectoryLink,
+            cancel,
+            &mut |mut entry| {
                 if stopped {
                     return false;
                 }
@@ -505,7 +509,8 @@ impl NativeMount {
                         false
                     }
                 }
-            });
+            },
+        );
         if let Some(error) = failure {
             return Err(error);
         }

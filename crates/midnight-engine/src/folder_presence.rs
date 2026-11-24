@@ -467,7 +467,7 @@ fn run(
                 crate::providers::folder_probe::probe(&opened, cancel)
             } else {
                 let path = entry.native_path().ok_or(ProviderError::StaleReference)?;
-                native.has_subfolders(path, cancel)
+                native.has_subfolders(path, entry.kind == EntryKind::DirectoryLink, cancel)
             }
         })();
         values.push((

@@ -82,7 +82,7 @@ fn root() -> std::path::PathBuf {
 fn file_only_presence_does_not_spend_the_mount_node_budget() {
     let files = filesystem(100_001);
     assert_eq!(
-        NativeProvider::new(files.clone()).has_subfolders(&root(), &Cancellation::default()),
+        NativeProvider::new(files.clone()).has_subfolders(&root(), false, &Cancellation::default()),
         Ok(false)
     );
     assert_eq!(files.visited.load(Ordering::SeqCst), 100_001);
@@ -93,7 +93,7 @@ fn presence_can_find_a_folder_after_more_files_than_the_mount_node_budget() {
     let mut files = filesystem(100_001);
     Arc::get_mut(&mut files).unwrap().folder = true;
     assert_eq!(
-        NativeProvider::new(files.clone()).has_subfolders(&root(), &Cancellation::default()),
+        NativeProvider::new(files.clone()).has_subfolders(&root(), false, &Cancellation::default()),
         Ok(true)
     );
     assert_eq!(files.visited.load(Ordering::SeqCst), 100_002);
@@ -104,12 +104,12 @@ fn repeated_files_do_not_change_presence_but_foreign_children_are_rejected() {
     let mut files = filesystem(3);
     Arc::get_mut(&mut files).unwrap().duplicate = true;
     assert_eq!(
-        NativeProvider::new(files.clone()).has_subfolders(&root(), &Cancellation::default()),
+        NativeProvider::new(files.clone()).has_subfolders(&root(), false, &Cancellation::default()),
         Ok(false)
     );
     Arc::get_mut(&mut files).unwrap().outside = true;
     assert!(matches!(
-        NativeProvider::new(files).has_subfolders(&root(), &Cancellation::default()),
+        NativeProvider::new(files).has_subfolders(&root(), false, &Cancellation::default()),
         Err(ProviderError::InvalidResponse(_))
     ));
 }
@@ -119,14 +119,14 @@ fn cancellation_interrupts_presence_and_never_returns_empty() {
     let mut files = filesystem(100);
     Arc::get_mut(&mut files).unwrap().cancel_at = Some(3);
     assert_eq!(
-        NativeProvider::new(files.clone()).has_subfolders(&root(), &Cancellation::default()),
+        NativeProvider::new(files.clone()).has_subfolders(&root(), false, &Cancellation::default()),
         Err(ProviderError::Cancelled)
     );
     assert_eq!(files.visited.load(Ordering::SeqCst), 4);
     let cancel = Cancellation::default();
     cancel.cancel();
     assert_eq!(
-        NativeProvider::new(files.clone()).has_subfolders(&root(), &cancel),
+        NativeProvider::new(files.clone()).has_subfolders(&root(), false, &cancel),
         Err(ProviderError::Cancelled)
     );
     assert_eq!(files.visited.load(Ordering::SeqCst), 4);

@@ -424,3 +424,193 @@ async fn native_junction_tree_keeps_alias_actions_and_rejects_only_ancestor_loop
     tokio::time::timeout(WAIT, engine).await.unwrap().unwrap();
     assert_eq!(fs::read(&sentinel).unwrap(), b"unchanged target contents");
 }
+
+/// Restores a fixture DACL that denies Everyone listing (`deny_read_data`) on drop.
+struct DeniedListing(PathBuf, midnight_platform_windows::SavedDacl);
+impl DeniedListing {
+    fn new(path: &Path) -> Self {
+        Self(
+            path.to_owned(),
+            midnight_platform_windows::deny_read_data(path).unwrap(),
+        )
+    }
+}
+impl Drop for DeniedListing {
+    fn drop(&mut self) {
+        if let Err(error) = midnight_platform_windows::restore_dacl(&self.0, &self.1)
+            && !std::thread::panicking()
+        {
+            panic!("cannot restore fixture ACL at {:?}: {error}", self.0);
+        }
+    }
+}
+
+async fn expand_until(
+    commands: &midnight_engine::CommandSender,
+    events: &mut mpsc::Receiver<Event>,
+    visible: TreePublication,
+    branch: &Path,
+    request: TreeRequestId,
+    ready: impl Fn(&TreeProjection) -> bool,
+) -> TreePublication {
+    let row = row(&visible.view, branch).id;
+    tree(commands, TreeCommand::Commit(visible.view.clone())).await;
+    tree(
+        commands,
+        TreeCommand::Branch {
+            view: visible.view,
+            request,
+            row,
+            action: TreeBranchAction::ExpandRecursive,
+        },
+    )
+    .await;
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let current = publication(events).await;
+            tree(commands, TreeCommand::Commit(current.view.clone())).await;
+            if ready(&current.view) {
+                return current;
+            }
+        }
+    })
+    .await
+    .expect("the expansion must finish")
+}
+
+/// Windows' compatibility junctions (`My Music`) deny Everyone listing on the link
+/// itself; their targets stay readable. The tree expands one through its target, with
+/// its rows below the link's own path, while a junction to a denied folder still fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denied_compatibility_junction_expands_through_its_target_below_the_link() {
+    let owned = owned_fixture();
+    let root = owned.path().join("Documents 文档");
+    let target = owned.path().join("Music & co");
+    let private = owned.path().join("Private");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(target.join("Album").join("leaf")).unwrap();
+    fs::write(target.join("song.txt"), b"song").unwrap();
+    fs::create_dir_all(private.join("inner")).unwrap();
+    let alias = root.join("My Music");
+    let private_alias = root.join("My Private");
+    links::create(&alias, &target);
+    links::create(&private_alias, &private);
+    let _denied = [
+        DeniedListing::new(&alias),
+        DeniedListing::new(&private_alias),
+        DeniedListing::new(&private),
+    ];
+    assert_eq!(
+        fs::read_dir(&alias).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+
+    let filesystem = Arc::new(LocalFileSystem::new(None));
+    let (send, mut events) = mpsc::channel(32);
+    let mut engine = Engine::new(Engine::lifetime().unwrap(), filesystem, send);
+    let (commands, receive) = engine.command_channel(16).unwrap();
+    let engine = tokio::spawn(engine.run(receive));
+    commands
+        .send(Command::Navigate {
+            pane: PaneId::Left,
+            navigation: NavigationId(1),
+            path: root.clone(),
+            sort: SortSpec::default(),
+        })
+        .await
+        .unwrap();
+    let snapshot = tokio::time::timeout(WAIT, async {
+        loop {
+            match events.recv().await {
+                Some(Event::ListingFinished {
+                    pane,
+                    navigation,
+                    entries,
+                    index,
+                }) => {
+                    return TreeRootSnapshot {
+                        pane,
+                        navigation,
+                        entries,
+                        index,
+                    };
+                }
+                Some(Event::ListingFailed { error, .. }) => panic!("native root failed: {error}"),
+                Some(_) => {}
+                None => panic!("engine stopped before native root capture"),
+            }
+        }
+    })
+    .await
+    .expect("native root listing must finish");
+    tree(
+        &commands,
+        TreeCommand::Enable {
+            root: snapshot,
+            selection_revision: SelectionRevision(0),
+            selected: TreeRootSelection::Empty,
+        },
+    )
+    .await;
+    let visible = publication(&mut events).await;
+    assert_eq!(
+        row(&visible.view, &alias).entry.kind,
+        EntryKind::DirectoryLink
+    );
+
+    let leaf = alias.join("Album").join("leaf");
+    let visible = expand_until(
+        &commands,
+        &mut events,
+        visible,
+        &alias,
+        TreeRequestId(1),
+        |view| {
+            view.rows.iter().any(|row| {
+                row.entry.native_path() == Some(leaf.as_path())
+                    && row.disclosure == TreeDisclosure::Empty
+            })
+        },
+    )
+    .await;
+    let link = row(&visible.view, &alias);
+    assert_eq!(link.disclosure, TreeDisclosure::Expanded);
+    assert!(link.error.is_none(), "{:?}", link.error);
+    let album = row(&visible.view, &alias.join("Album"));
+    assert_eq!(album.parent, Some(link.id));
+    assert_eq!(album.disclosure, TreeDisclosure::Expanded);
+    assert_eq!(row(&visible.view, &leaf).parent, Some(album.id));
+
+    let visible = expand_until(
+        &commands,
+        &mut events,
+        visible,
+        &private_alias,
+        TreeRequestId(2),
+        |view| {
+            view.rows.iter().any(|row| {
+                row.entry.native_path() == Some(private_alias.as_path())
+                    && row.disclosure == TreeDisclosure::Failed
+            })
+        },
+    )
+    .await;
+    let failed = row(&visible.view, &private_alias);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|message| message.contains("denied")),
+        "{:?}",
+        failed.error
+    );
+    assert!(
+        !visible
+            .view
+            .rows
+            .iter()
+            .any(|row| row.parent == Some(failed.id))
+    );
+    commands.send(Command::Shutdown).await.unwrap();
+    tokio::time::timeout(WAIT, engine).await.unwrap().unwrap();
+}

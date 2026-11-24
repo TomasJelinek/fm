@@ -129,6 +129,14 @@ impl Session {
                 cached.clone()
             } else {
                 let root = branch == self.tree.root();
+                let link = !root
+                    && self
+                        .tree
+                        .state(branch)
+                        .ok_or(ProviderError::StaleReference)?
+                        .entry
+                        .kind
+                        == EntryKind::DirectoryLink;
                 let mounted = if root {
                     self.tree.root_target(&self.lifetime)?
                 } else {
@@ -200,6 +208,7 @@ impl Session {
                     full: if root { Some(display) } else { observation },
                     folders_only: !root,
                     hide,
+                    link,
                     directory_identity,
                     path_bytes,
                     _mounted: mounted,

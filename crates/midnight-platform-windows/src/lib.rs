@@ -53,10 +53,11 @@ mod terminal_process;
 mod test_child;
 #[cfg(any(test, feature = "test-fixtures"))]
 mod test_fixtures;
-/// A directory junction for other packages' tests, set natively without a shell: see the
-/// `test-fixtures` feature in Cargo.toml.
+/// A directory junction for other packages' tests, set natively without a shell, and the
+/// explicit "Everyone: deny list folder" entry Windows' compatibility junctions carry: see
+/// the `test-fixtures` feature in Cargo.toml.
 #[cfg(feature = "test-fixtures")]
-pub use test_fixtures::new_junction;
+pub use test_fixtures::{SavedDacl, deny_read_data, new_junction, restore_dacl};
 mod transfer;
 mod volume_details;
 mod volume_information;

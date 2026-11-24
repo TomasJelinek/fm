@@ -104,25 +104,32 @@ pub(crate) fn probe(
     folders_only: bool,
     cancel: &Cancellation,
 ) -> Result<Observation, ()> {
-    probe_shown(filesystem, path, folders_only, false, cancel)
+    probe_shown(filesystem, path, folders_only, false, false, cancel)
 }
 
 /// Observes `path`: `full` signs every entry, `display` every entry or only the
 /// folders. With `hide`, hidden entries join neither, by the listings' own rule
 /// (`hidden_entries`, decided on the enumerated entry), so the observation
-/// matches rows of a listing that left them out.
+/// matches rows of a listing that left them out. A directory `link` is observed
+/// as the tree listed it (`browse_listing`): a denied Windows compatibility
+/// junction through its target.
 pub(crate) fn probe_shown(
     filesystem: &dyn FileSystem,
     path: &Path,
     folders_only: bool,
     hide: bool,
+    link: bool,
     cancel: &Cancellation,
 ) -> Result<Observation, ()> {
     let mut full = Signature::default();
     let mut display = Signature::default();
     let mut failed = false;
-    filesystem
-        .read_directory(path, cancel, &mut |mut entry| {
+    crate::providers::browse_listing::read_browse_directory(
+        filesystem,
+        path,
+        link,
+        cancel,
+        &mut |mut entry| {
             if cancel.is_cancelled() {
                 return false;
             }
@@ -145,8 +152,9 @@ pub(crate) fn probe_shown(
                 return false;
             }
             !cancel.is_cancelled()
-        })
-        .map_err(|_| ())?;
+        },
+    )
+    .map_err(|_| ())?;
     if failed || cancel.is_cancelled() {
         return Err(());
     }

@@ -1395,6 +1395,19 @@ or any row of a full-pane scan without a selection) is measured through its
 target. Browsing a folder does not inspect a link target merely to choose its
 icon.
 
+Some Windows folder links are compatibility junctions that Windows itself does not
+let programs list through, so that tools which follow links blindly cannot loop or
+count a folder twice: My Music, My Pictures and My Videos in Documents, Application
+Data, My Documents and others in the user profile, and Documents and Settings on
+the system drive. The folders they point to stay readable. Entering such a link
+opens the folder it points to. Its **+** button, its expansion in an inline tree and
+the automatic refresh of an expanded one use that folder's contents, shown below the
+link's own name, so these rows show no error badge. A link whose target cannot be
+read still shows its error. These junctions are hidden system entries: they appear
+only while **Show hidden files** (Ctrl+H) is on. Folder sizes measure a selected
+junction through its target and skip junctions inside a measured folder; Find skips
+them; Copy and Move keep or follow them as their **Links** choice says.
+
 Paths and file identities are kept separately from their displayed text. A failed
 navigation preserves the last usable directory and reports the failed operation.
 Each pane remembers its last visited directory for each volume during this run.

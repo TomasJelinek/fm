@@ -430,6 +430,18 @@ inspected as possibly holding the item; neither is described as unneeded.
   Explicit navigation into a symbolic
   link/junction follows OS directory-navigation semantics; enumeration and metadata
   inspection do not recursively follow links or open special-file contents.
+  Windows compatibility junctions (`My Music`, `Documents and Settings`) deny
+  Everyone listing on the link only. Explicit navigation opens such a link's target
+  only after `ERROR_ACCESS_DENIED` on the link
+  ([junction navigation](docs/verification/2026-11-10-windows-junction-navigation.md)). The
+  inline tree's read-only presence probes, expansions, refreshes and watch probes
+  of a row known as a directory link likewise list the OS-resolved target (final
+  path of an actual directory, no privilege or ACL change) when the link's own
+  listing is denied before any entry, and address the entries below the link's
+  path, as any readable junction lists. A target that cannot be listed keeps its
+  error. This applies on Windows only and to browsing only: size scans, Find,
+  Compare, Copy/Move and mutation keep their own link rules and never use it; the
+  tree's ancestor-identity check still rejects a junction that loops.
 - Explicit Enter or an unmodified left double click is a separate activation
   action: directories stay internal; ordinary files use the host association,
   while executable activation can run programs. Selection, hover, right click

@@ -137,7 +137,25 @@ fn native_size_link_unavailable_target_is_skipped_inside_and_reported_as_a_root(
     assert!(warning.tooltip.contains("resolve directory size target"));
 }
 
-/// Manual throughput probe: `cargo test -p midnight-engine --lib
+/// A Windows compatibility junction denies listing on itself only: sizing it measures
+/// its readable target without an error, and one to a denied folder reports that folder.
+#[cfg(windows)]
+#[test]
+fn native_size_of_a_denied_compatibility_junction_measures_its_target() {
+    let fixture = crate::providers::browse_listing::tests::denied_junctions();
+    let size = measured(&fixture.alias, EntryKind::DirectoryLink);
+    assert_eq!(
+        (size.bytes, size.files, size.errors, size.skipped_links),
+        (12, 2, 0, 0)
+    );
+    assert!(size.finished);
+    assert!(size.warnings.is_none());
+    let denied = measured(&fixture.private_alias, EntryKind::DirectoryLink);
+    assert_eq!((denied.bytes, denied.files, denied.errors), (0, 0, 1));
+    assert!(denied.finished);
+}
+
+/// Manual throughput probe:`cargo test -p midnight-engine --lib
 /// folder_sizes::native_tests::native_size_scan_throughput_probe -- --ignored --nocapture`.
 #[test]
 #[ignore = "timing probe for manual before/after measurements"]

@@ -60,7 +60,11 @@ Details and Brief reserve the same disclosure gutter for every row, including
 files and known-empty directory links without an expansion button. Supported
 directory links, including Windows junctions such as `Documents and Settings`,
 can show an expander under the same disclosure rules as ordinary folders; their
-system link overlay remains visible. Thumbnail artwork retains its centered
+system link overlay remains visible. A compatibility junction that denies listing
+on itself (`My Music`) is probed, expanded and refreshed through its readable
+target, with rows below the link's own path
+([inline trees](INLINE_TREES.md#listing-and-disclosure)); one whose target denies
+listing still shows the failure. Thumbnail artwork retains its centered
 layout.
 
 Tree selection uses separate backend snapshots and at most 32 small pending
