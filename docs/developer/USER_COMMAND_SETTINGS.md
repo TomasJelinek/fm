@@ -104,6 +104,10 @@ Browse buttons use the backend's native program, directory and image pickers.
 Change icon uses the CommandIconResource native chooser; Browse image uses
 CommandIconImage, leaving unrelated Image pickers unchanged. Both return the
 managed PNG path to the same guarded icon draft.
+Explicit artwork selections resolve symbolic links before the native provider
+captures the regular target file, so linked Linux theme icons can be imported.
+Format routing and import errors retain the selected filename. Broken links and
+nonregular targets fail without publishing artwork.
 Requests capture the target field, draft revision and configuration identity;
 typing, changing pages or closing Options invalidates the result. Cancelling a
 native Browse dialog leaves the draft unchanged and adds no error. An existing

@@ -282,3 +282,30 @@ fn artwork_import_discovers_thumbnailers_from_the_resolved_installation() {
     assert_eq!(resolved.load(Ordering::Relaxed), 1);
     assert_eq!(native.stored.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn unavailable_artwork_reports_the_selected_path_without_publishing() {
+    let mut native = Native::fixture();
+    Arc::get_mut(&mut native).unwrap().source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../_build/missing-command-artwork/image.png");
+    assert!(!native.source.exists());
+    let filesystem = Arc::new(
+        midnight_native_filesystem_host::InstalledProvider::from_installation(
+            native.source.clone(),
+            None,
+        ),
+    );
+    let picker = with_installation(native.clone(), filesystem, Arc::default(), || {
+        Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("midnight-explorer"))
+    });
+    let error = picker
+        .pick_path(
+            &request(PathPickerKind::CommandIconImage),
+            &Cancellation::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error.operation, "import command icon");
+    assert_eq!(error.path, native.source);
+    assert_eq!(error.kind, io::ErrorKind::NotFound);
+    assert_eq!(native.stored.load(Ordering::Relaxed), 0);
+}

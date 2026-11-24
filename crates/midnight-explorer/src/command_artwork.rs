@@ -27,6 +27,12 @@ struct Picker {
     routing: Arc<Routing>,
 }
 
+fn selected_image_target(path: &Path) -> io::Result<PathBuf> {
+    // Theme icons commonly link to shared artwork. Resolve only this explicit
+    // selection; the provider still captures a regular file without following links.
+    path.canonicalize()
+}
+
 pub(crate) fn requires_import(kind: PathPickerKind, import_resource: bool) -> bool {
     kind == PathPickerKind::CommandIconImage
         || (import_resource && kind == PathPickerKind::CommandIconResource)
@@ -55,8 +61,9 @@ fn with_installation(
         routing,
         decode: Arc::new(move |path, associations, cancelled| {
             let executable = installation()?;
+            let target = selected_image_target(path)?;
             let source = filesystem
-                .capture(path, cancelled)
+                .capture(&target, cancelled)
                 .map_err(io::Error::other)?;
             let extension = path
                 .extension()
@@ -124,3 +131,7 @@ impl PathPickerService for Picker {
 #[cfg(test)]
 #[path = "command_artwork_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "command_artwork_linux_tests.rs"]
+mod linux_tests;
