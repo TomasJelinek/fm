@@ -215,6 +215,34 @@ container holding the other's) are not one column; a symbol caption joined to te
 segments sits on the text's baseline; the companion-button check applies inside dialogs
 and tool windows only, to a field or to a picker at least twice as wide as high.
 
+### Missing glyphs
+
+The gate judges a caption without letters by where its pixels sit, not by what they
+show, so it passes a character that the font cannot draw: released 0.5.2 showed an
+empty box on Find's filename mask history button ("▾", which Segoe UI lacks, U-D46),
+and U-K33 and U-K35 passed it. The `midnight-ui` test `caption_glyphs`
+(`crates/midnight-ui/tests/caption_glyphs.rs`, part of the normal `midnight-ui` tests
+on Windows and Linux) checks this instead of the gate:
+
+- It scans the string literals of the `.slint` sources (`midnight-ui`,
+  `midnight-viewer-ui`, `midnight-compare-ui`) and of the non-test Rust sources whose
+  texts the windows show (`midnight-ui`, `midnight-ui-input`, `midnight-core`,
+  `midnight-engine`, the platform crates, `midnight-update`, `midnight-explorer` and
+  the viewer and comparator UIs), without comments, test files and items under a
+  `test` cfg, and without spaces, joiners and private-use key codes.
+- It software-renders each non-ASCII character found with the application's font
+  family (`Theme.effective-font-family`), alone and between Latin letters, regular and
+  bold. Slint's software renderer shapes text with the same stack as the application's
+  renderer (parley over fontique's system collection), so the font chosen, the system's
+  fallback (DirectWrite on Windows, fontconfig on Linux) and the missing glyph are those
+  of the machine that runs the test.
+- A character drawn exactly like U+10FFFD (private use, in no font) is missing; the
+  test names it with its source lines. A letter drawn like it means that no font loaded.
+
+The gate's captured captions are not checked again: their fixed texts come from those
+sources, and their other texts are user data (file and folder names). Red on Windows
+before the fix: the test named "▾" (Find, Custom Commands) and "▸" (Custom Commands).
+
 ## Pending checks
 
 None (`ui_gate::PENDING` is empty). The decision windows' U-K01 mark was removed on
@@ -278,6 +306,7 @@ in the same change (run `20261124-111500`):
 | U-D43 | Copy, Move: a form note's text 2 px from the check box captions above and below it. | U-K34 |
 | U-D44 | Panel toolbar (the owner's request): View and Sort compact below 700 px whatever the drive buttons needed, 104 px wide whatever the font. | `panel_toolbar_fit` |
 | U-D45 | Attributes on Linux (the permission bits): "Bits:" centred on its column (the check box with its caption) 6.5–13 px below the SUID check box's centre, and the special bits 13 px under the matrix's last row instead of its 6 px, the rule between them taking a layout row (Linux whole-suite run of 1341a7ff, `ui_review` and `ui_polish_dialogs`). Fixed: "Bits:" is centred on the check boxes and the rule sits inside the 6 px gap; red and green in `unix_permissions::special_bits_keep_the_matrix_gap_and_a_centred_label`; Linux `20261124-181835` (`ui_review`) and `20261124-183335` (`ui_polish_dialogs`) pass. | U-K32, U-K39 |
+| U-D46 | Find (the owner's report, release 0.5.2): the filename mask history button's "▾", which Segoe UI cannot draw, shown as an empty box on Windows; the same for "▾" and "▸" on Custom Commands' Required captured values and Toolbar appearance. Fixed: a `FieldButton` with the bundled down chevron, and chevrons on the two disclosures. | `caption_glyphs` (`midnight-ui`) |
 
 Open: Attributes › Times in its narrowest layout (a row's Now button 6 px past the UTC
 offset field under it, exempt as open), and the viewers' "Aa" button and mode picker,
