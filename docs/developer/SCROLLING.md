@@ -490,7 +490,8 @@ whole distance in the next frame and stops at the top).
 Native redraw advances the discrete-wheel clock immediately before rendering;
 a timer only requests frames. A delayed frame must not consume an arbitrary
 amount of animation time and skip all intermediate positions. Pending wheel
-displacement is bounded, and direction changes remain responsive.
+displacement is kept whole and bounded in time instead (it arrives within one glide of the
+last input; [wheel glide](#wheel-glide)), and direction changes remain responsive.
 
 On Linux Wayland, `midnight_ui_input::NativePresentation` supplies the frame
 notification missing from Slint 1.18.1's FemtoVG-WGPU adapter. The application's
