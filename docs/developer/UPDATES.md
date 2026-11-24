@@ -136,7 +136,9 @@ An update is installed only if every check passes, in this order:
    newer release.
 4. `SHA256SUMS` lists the archive `midnight-explorer-<version>-<target>.<zip|tar.gz>`,
    whose name carries the offered version and this platform's target.
-5. The downloaded archive's SHA-256 equals its signed line. Only now is it opened.
+5. The downloaded archive's SHA-256 equals its signed line. Only now is it opened as
+   an archive, through the handle whose content was checked; on Windows that handle
+   keeps other programs from changing, renaming or deleting the file meanwhile.
 6. The archive holds only regular files and folders below the single folder
    `midnight-explorer-<version>-<target>/` (no links, `..`, absolute paths, names
    Windows refuses or duplicates; at most 65,536 entries and 6 GiB unpacked).

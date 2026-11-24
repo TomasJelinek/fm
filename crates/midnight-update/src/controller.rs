@@ -574,10 +574,14 @@ impl Worker {
             return self.fail(error.to_string());
         }
         self.update(|snapshot| snapshot.phase = Phase::Verifying);
-        if let Err(error) = signed.check_file(&archive_name, &archive) {
-            let _ = fs::remove_file(&archive);
-            return self.fail(error.to_string());
-        }
+        // Extracted through the handle that was checked (`SignedSums::open_checked`).
+        let checked = match signed.open_checked(&archive_name, &archive) {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = fs::remove_file(&archive);
+                return self.fail(error.to_string());
+            }
+        };
         let root = platform.archive_root(&release.version);
         let staging = installation.staging();
         let staged_folder = staging.join(&root);
@@ -585,7 +589,7 @@ impl Worker {
             .and_then(|()| fs::create_dir_all(&staging))
             .map_err(|error| error.to_string())
             .and_then(|()| {
-                archive::extract(&archive, &platform, &root, &staged_folder)
+                archive::extract(checked, &platform, &root, &staged_folder)
                     .map_err(|error| error.to_string())
             })
             .and_then(|()| {

@@ -15,7 +15,7 @@ fn staged(
     let archive = folder.path().join(platform.archive_name(&parsed));
     std::fs::write(&archive, pack(&platform.archive_root(&parsed), tree)).unwrap();
     let result = extract(
-        &archive,
+        std::fs::File::open(&archive).unwrap(),
         &platform,
         &platform.archive_root(&parsed),
         &folder.path().join("staged"),
@@ -146,7 +146,12 @@ fn a_damaged_archive_is_refused() {
     let folder = tempfile::tempdir().unwrap();
     let archive = folder.path().join("a");
     std::fs::write(&archive, b"not an archive").unwrap();
-    let result = extract(&archive, &platform, "root", &folder.path().join("out"));
+    let result = extract(
+        std::fs::File::open(&archive).unwrap(),
+        &platform,
+        "root",
+        &folder.path().join("out"),
+    );
     assert!(
         matches!(result, Err(StageError::Unreadable(_))),
         "{result:?}"

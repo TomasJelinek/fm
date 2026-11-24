@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fmt,
     fs::File,
-    io::{self, Read},
+    io::{self, Read, Seek},
     path::Path,
 };
 
@@ -135,17 +135,38 @@ impl SignedSums {
     }
 
     /// Checks that `path`'s SHA-256 equals the signed line for `name`.
-    pub fn check_file(&self, name: &str, path: &Path) -> Result<(), TrustError> {
+    /// Opens `path`, checks its digest against the signed line `name` and returns the
+    /// file positioned at its start, so that what is read from it next is the content
+    /// that was checked. On Windows the handle denies writing, renaming and deleting
+    /// while it is open: an elevated copy downloads to a folder that the user's other
+    /// programs can write.
+    pub fn open_checked(&self, name: &str, path: &Path) -> Result<File, TrustError> {
         let expected = self
             .digest(name)
             .ok_or_else(|| TrustError::NotListed(name.to_owned()))?;
-        let actual = sha256_file(path).map_err(|error| TrustError::Read(error.to_string()))?;
-        if actual == expected {
-            Ok(())
-        } else {
-            Err(TrustError::DigestMismatch(name.to_owned()))
+        let read = |error: io::Error| TrustError::Read(error.to_string());
+        let mut file = open_read_only(path).map_err(read)?;
+        let actual = sha256_reader(&mut file).map_err(read)?;
+        if actual != expected {
+            return Err(TrustError::DigestMismatch(name.to_owned()));
         }
+        file.rewind().map_err(read)?;
+        Ok(file)
     }
+}
+
+/// Opens `path` for reading while other handles may only read it.
+fn open_read_only(path: &Path) -> io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ`: no other handle may write, rename or delete the file.
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        options.share_mode(FILE_SHARE_READ);
+    }
+    options.open(path)
 }
 
 /// Verifies `signature` over `sums` with `anchor` and that its trusted comment names

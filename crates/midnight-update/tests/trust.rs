@@ -146,21 +146,48 @@ fn a_tampered_archive_is_refused_by_its_signed_line() {
     let signature = key.sign(&sums(), COMMENT);
     let signed = verify_sums(Some(&key.anchor()), &sums(), &signature, &version()).unwrap();
     let name = "midnight-explorer-0.5.1-x86_64-pc-windows-msvc.zip";
-    signed.check_file(name, &archive).unwrap();
+    signed.open_checked(name, &archive).unwrap();
     std::fs::write(&archive, b"windows archive with a payload").unwrap();
     assert_eq!(
-        signed.check_file(name, &archive).unwrap_err(),
+        signed.open_checked(name, &archive).unwrap_err(),
         TrustError::DigestMismatch(name.into())
     );
     assert_eq!(
         signed
-            .check_file(
+            .open_checked(
                 "midnight-explorer-0.5.2-x86_64-pc-windows-msvc.zip",
                 &archive
             )
             .unwrap_err(),
         TrustError::NotListed("midnight-explorer-0.5.2-x86_64-pc-windows-msvc.zip".into())
     );
+}
+
+/// The archive is checked and then extracted through one handle, so what is extracted
+/// is what was checked. On Windows that handle also keeps the file from being changed,
+/// renamed or deleted meanwhile (an elevated copy downloads to a folder the user's other
+/// programs can write).
+#[test]
+fn a_checked_archive_is_read_through_the_handle_that_was_checked() {
+    use std::io::Read;
+    let key = TestKey::generate();
+    let folder = tempfile::tempdir().unwrap();
+    let archive = folder.path().join("a.zip");
+    std::fs::write(&archive, b"windows archive").unwrap();
+    let signature = key.sign(&sums(), COMMENT);
+    let signed = verify_sums(Some(&key.anchor()), &sums(), &signature, &version()).unwrap();
+    let name = "midnight-explorer-0.5.1-x86_64-pc-windows-msvc.zip";
+    let mut file = signed.open_checked(name, &archive).unwrap();
+    #[cfg(windows)]
+    {
+        let options = std::fs::OpenOptions::new().write(true).open(&archive);
+        assert!(options.is_err(), "the checked archive can be written");
+        assert!(std::fs::rename(&archive, folder.path().join("b.zip")).is_err());
+        assert!(std::fs::remove_file(&archive).is_err());
+    }
+    let mut content = Vec::new();
+    file.read_to_end(&mut content).unwrap();
+    assert_eq!(content, b"windows archive", "read from its start");
 }
 
 #[test]

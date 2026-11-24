@@ -244,16 +244,16 @@ fn write_file(
     platform::set_executable(&path, executable).map_err(disk)
 }
 
-/// Extracts `archive` (`zip` or `tar.gz` after `platform`) into `destination`, which
-/// must not exist, keeping only what is below the release folder `root`.
+/// Extracts the archive `file` (`zip` or `tar.gz` after `platform`) into
+/// `destination`, which must not exist, keeping only what is below the release folder
+/// `root`.
 pub fn extract(
-    archive: &Path,
+    file: File,
     platform: &Platform,
     root: &str,
     destination: &Path,
 ) -> Result<(), StageError> {
     fs::create_dir(destination).map_err(disk)?;
-    let file = File::open(archive).map_err(disk)?;
     let mut budget = Budget {
         entries: 0,
         bytes: 0,

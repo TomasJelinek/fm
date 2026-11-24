@@ -355,13 +355,22 @@ fn a_late_confirmation_finishes_the_update_at_the_next_start() {
         ..fast()
     };
     let outcome = apply::apply(&setup.request, &launcher, timings);
-    assert!(matches!(outcome, Outcome::Unconfirmed { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, Outcome::Unconfirmed { .. }),
+        "{outcome:?}"
+    );
     let work = work_folder(&setup.installation);
-    assert!(work.join("backup").exists(), "kept until the start confirms");
+    assert!(
+        work.join("backup").exists(),
+        "kept until the start confirms"
+    );
     // The slow first start read the update in progress at its own start, and confirms.
     apply::confirm(&setup.installation, "0.5.1").unwrap();
     let report = apply::startup(&setup.installation, "0.5.1");
-    assert_eq!(report.confirm, None, "the update was confirmed by an earlier start");
+    assert_eq!(
+        report.confirm, None,
+        "the update was confirmed by an earlier start"
+    );
     assert!(!work.join("backup").exists());
     assert!(!work.join("pending.json").exists());
     assert!(!work.join("confirmed").exists());
