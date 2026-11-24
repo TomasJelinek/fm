@@ -1,5 +1,5 @@
 import { ScrollView } from "scroll-view.slint";
-import { HintedLineEdit, HintedActionButton, HintedComboBox, HistoryLineEdit } from "hinted-inputs.slint";
+import { FieldButton, HintedLineEdit, HintedActionButton, HintedComboBox, HistoryLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { FallbackIcons } from "action-icons.slint";
@@ -264,9 +264,12 @@ export component FindWindow inherits ToolWindow {
                                 }
                                 accepted => { root.submit(); }
                             }
-                            FindActionButton {
-                                text: "▾"; accessible-label: "Filename mask history";
-                                row-height: root.query-height; width: root.query-height;
+                            // The field's list button: a drawn chevron, which every font
+                            // shows, square at the query's height.
+                            FieldButton {
+                                text: "Filename mask history"; fallback-icon: FallbackIcons.chevron-down;
+                                accessible-label: "Filename mask history";
+                                width: root.query-height; height: root.query-height;
                                 hint: "Choose a previously used filename mask (Down in the filename field).";
                                 enabled: !root.running && root.mask-history.length > 0;
                                 clicked => { masks.open-list(); }

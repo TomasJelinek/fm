@@ -88,6 +88,64 @@ fn filename_history_dropdown_chooses_a_mask_without_starting_a_search() {
     window.hide().unwrap();
 }
 
+fn enabled(item: &ItemRc) -> bool {
+    item.accessible_string_property(AccessibleStringProperty::Enabled)
+        .is_none_or(|value| value == "true")
+}
+
+/// The button beside the File name field: square at the field's height, enabled only
+/// with a history and while no search runs, opening the field's history list. Its
+/// frames are the before/after artifacts of the missing "▾" glyph
+/// (`MIDNIGHT_UI_RENDER_DIR`, filter `find-mask-history`).
+#[test]
+fn filename_history_button_is_a_square_beside_the_field_and_opens_its_list() {
+    let (window, native) = open();
+    for (theme, name) in [(1, "dark"), (2, "light")] {
+        window.invoke_apply_preferences(theme, 0, "".into(), 12, 15);
+        modeless::draw(
+            &native,
+            780,
+            560,
+            &format!("find-mask-history-empty-{name}"),
+        );
+        let button = item(&native, AccessibleRole::Button, "Filename mask history");
+        assert!(!enabled(&button), "{name}: enabled without a history");
+    }
+    window.set_mask_history(slint::ModelRc::new(VecModel::from(vec![
+        "*.rs;*.toml".into(),
+        "*.txt".into(),
+    ])));
+    for (theme, name) in [(2, "light"), (1, "dark")] {
+        window.invoke_apply_preferences(theme, 0, "".into(), 12, 15);
+        modeless::draw(&native, 780, 560, &format!("find-mask-history-{name}"));
+    }
+    let field = item(&native, AccessibleRole::TextInput, "File name masks");
+    let button = item(&native, AccessibleRole::Button, "Filename mask history");
+    assert!(enabled(&button));
+    let (field_size, size) = (field.geometry().size, button.geometry().size);
+    assert!(
+        (size.width - size.height).abs() <= 0.5 && (size.height - field_size.height).abs() <= 0.5,
+        "not a square as tall as the field: {size:?} beside {field_size:?}"
+    );
+    let (field_at, at) = (
+        field.map_to_native_window(field.geometry().origin),
+        button.map_to_native_window(button.geometry().origin),
+    );
+    assert!(
+        (field_at.y - at.y).abs() <= 0.5 && at.x > field_at.x + field_size.width,
+        "not beside the field: {at:?} {size:?}, field {field_at:?} {field_size:?}"
+    );
+    modeless::click_item(&native, &button, "Filename mask history");
+    modeless::draw(&native, 780, 560, "find-mask-history-open-dark");
+    popup_item(&native, AccessibleRole::Button, "*.txt");
+    key(&native, Key::Escape.into());
+    window.set_running(true);
+    modeless::layout(&native, 780, 560);
+    let button = item(&native, AccessibleRole::Button, "Filename mask history");
+    assert!(!enabled(&button), "enabled while a search runs");
+    window.hide().unwrap();
+}
+
 fn checked(item: &ItemRc) -> bool {
     item.accessible_string_property(AccessibleStringProperty::Checked)
         .is_some_and(|value| value == "true")

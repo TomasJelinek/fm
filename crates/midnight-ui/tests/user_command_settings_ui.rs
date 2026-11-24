@@ -923,6 +923,13 @@ fn icon_artwork_uses_managed_picker_and_valid_completion_enables_update() {
     h.open();
     h.action("Toolbar appearance");
     h.ui.draw();
+    // The opened disclosure's down chevron.
+    bitmap::snapshot(
+        &h.ui.pixels,
+        h.ui.width,
+        h.ui.height,
+        "command-settings-appearance-open",
+    );
     assert!(
         ui::try_popup_item(
             &h.ui.window,

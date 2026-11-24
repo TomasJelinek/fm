@@ -61,6 +61,10 @@ export global FallbackIcons {
     out property <image> open-path: @image-url("icons/open-path.svg");
     // A field's Browse button shows a folder with an ellipsis (FieldButton).
     out property <image> browse: @image-url("icons/browse.svg");
+    // A field's list button (Find's mask history) and an open disclosure show a down
+    // chevron, a closed disclosure a right chevron: drawn, so no font misses them.
+    out property <image> chevron-down: @image-url("icons/chevron-down.svg");
+    out property <image> chevron-right: @image-url("icons/chevron-right.svg");
     out property <image> bookmarks: Theme.light ? @image-url("icons/star.svg") : @image-url("icons/star-dark.svg");
     out property <image> terminal: @image-url("icons/terminal.svg");
     out property <image> options: Theme.light ? @image-url("icons/settings.svg") : @image-url("icons/settings-dark.svg");
