@@ -178,6 +178,7 @@ const MENU: [(&str, &[&str]); 5] = [
             "Make File List…",
             "Compare files…",
             "Compare directories…",
+            "Clear comparison marks",
             "Calculate / cancel folder sizes",
             "Drive information",
             "Command line",
@@ -746,9 +747,49 @@ pub fn main_menu(context: &mut Context) -> Result<(), String> {
     })?;
     menu(&mut app, "Compare files…")?;
     log.push(observe(&mut app, "Compare files…")?);
+    // Clear comparison marks is unavailable until a comparison shows its marks.
+    if menu(&mut app, "Clear comparison marks").is_ok() {
+        return Err("Clear comparison marks is enabled with no comparison shown".into());
+    }
     menu(&mut app, "Compare directories…")?;
     wait(&mut app, "Compare directories", |app| {
         app.window.get_comparison_view().open
+    })?;
+    // Compare with subfolders (the dialog's button), which marks rows with badges:
+    // menu/ and menu-right/ share no name, so every row gets one.
+    let main = app.main.clone();
+    tools::set_check(&mut app, main.window(), "Compare subfolders", true)?;
+    let compare = tools::control(main.window(), AccessibleRole::Button, "Compare")?;
+    input::click_at(main.window(), inspect::center(&compare));
+    let badges = |app: &App| -> usize {
+        [PaneId::Left, PaneId::Right]
+            .into_iter()
+            .flat_map(|pane| app.rows(pane))
+            .filter(|row| row.compare_mark != 0)
+            .count()
+    };
+    wait(&mut app, "the comparison's badges", |app| {
+        !app.window.get_comparison_view().open && badges(app) > 0
+    })?;
+    let compared = selected(&app);
+    menu(&mut app, "Clear comparison marks")?;
+    wait(&mut app, "Clear comparison marks", |app| {
+        badges(app) == 0 && app.window.get_left_watch_status().is_empty()
+    })?;
+    if selected(&app) != compared {
+        return Err(format!(
+            "Clear comparison marks changed the selection from {compared:?} to {:?}",
+            selected(&app)
+        ));
+    }
+    log.push(format!(
+        "Clear comparison marks: badges gone, the selection {compared:?} stays"
+    ));
+    // The comparison selected the one-sided files: folder sizes below act on the folders.
+    panel::focus_list(&mut app, pane)?;
+    input::chord(app.slint(), &[Key::Control], "d");
+    wait(&mut app, "Ctrl+D to clear the selection", |app| {
+        selected(app).is_empty()
     })?;
     menu(&mut app, "Calculate / cancel folder sizes")?;
     wait(&mut app, "the folder size of sub", |app| {

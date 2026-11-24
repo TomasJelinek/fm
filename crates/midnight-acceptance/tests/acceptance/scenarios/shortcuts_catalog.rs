@@ -5,10 +5,11 @@
 //! The scenario walks the catalog itself, so an action or key added later fails the
 //! sweep ("no probe") until it is covered here. Each probe prepares its context (cursor
 //! row, marks, a filename search, the command editor, the drives popup, seeded tabs,
-//! Hot Paths or view mode), records the application's visible state, presses the key,
-//! waits for the action's own effect and then compares the whole state again: any other
-//! change fails the probe. A few probes press keys in a context where their action does
-//! not apply: Space, a digit and Insert in filename search; F7, Ctrl+A and a digit in
+//! Hot Paths, view mode or a directory comparison's badges), records the application's
+//! visible state, presses the key, waits for the action's own effect and then compares
+//! the whole state again: any other change fails the probe. A few probes press keys in a context where their action does
+//! not apply: Space, a digit and Insert in filename search; Escape with no comparison
+//! marks, and during a filename search over them; F7, Ctrl+A and a digit in
 //! the command editor; the number row's + − * and an uppercase letter in the file list,
 //! which are typed into a filename search. `footer` clicks the F1–F12 footer cells of
 //! each modifier layer with the same probes.
@@ -192,6 +193,8 @@ pub struct State {
     pub menu: &'static str,
     pub filter: bool,
     pub comparison: bool,
+    /// Rows of both panels that show a Compare directories badge.
+    pub badges: usize,
     pub file_list: bool,
     pub hot_paths: bool,
     pub command_focus: bool,
@@ -293,6 +296,11 @@ impl State {
             menu,
             filter: window.get_panel_filter_view().open,
             comparison: window.get_comparison_view().open,
+            badges: [PaneId::Left, PaneId::Right]
+                .into_iter()
+                .flat_map(|pane| app.rows(pane))
+                .filter(|row| row.compare_mark != 0)
+                .count(),
             file_list: window.global::<FileListPresentation>().get_active(),
             hot_paths: !window
                 .global::<HotPathsPresentation>()
@@ -366,6 +374,7 @@ impl State {
             ("menu", self.menu.to_owned()),
             ("filter", self.filter.to_string()),
             ("comparison", self.comparison.to_string()),
+            ("badges", self.badges.to_string()),
             ("file_list", self.file_list.to_string()),
             ("hot_paths", self.hot_paths.to_string()),
             ("command_focus", self.command_focus.to_string()),
@@ -392,7 +401,7 @@ impl State {
 
     /// What outlives a probe and must equal a fresh start before the next one.
     fn lasting(&self) -> Vec<(&'static str, String)> {
-        const LASTING: [&str; 21] = [
+        const LASTING: [&str; 22] = [
             "location0",
             "location1",
             "selection0",
@@ -414,6 +423,7 @@ impl State {
             "sizes1",
             "clipboard",
             "visible",
+            "badges",
         ];
         self.fields()
             .into_iter()
@@ -474,6 +484,9 @@ struct Setup {
     history: History,
     /// Copy `right/other.txt` to the clipboard first (Ctrl+V).
     clipboard: bool,
+    /// Compare the two folders with subfolders first: every row of both panels shows a
+    /// badge, the one-sided files are selected.
+    compared: bool,
 }
 
 impl Setup {
@@ -485,7 +498,13 @@ impl Setup {
             seed: Seed::Default,
             history: History::None,
             clipboard: false,
+            compared: false,
         }
+    }
+
+    fn compared(mut self) -> Self {
+        self.compared = true;
+        self
     }
 
     fn place(mut self, place: Place) -> Self {
@@ -796,6 +815,22 @@ fn probe_for(id: &str, paths: &Paths) -> Option<Probe> {
         "panel.compare" => probe(files, &["comparison", "popups", "focus"], |_, _, after| {
             same("Compare directories", after.comparison, true)
         })?,
+        // The badges and the result line go; the comparison's selection stays.
+        "panel.compare-clear" => probe(
+            Setup::at("alpha.txt").compared(),
+            &["badges"],
+            |app, before, after| {
+                if before.badges == 0 {
+                    return Err("the comparison showed no badges".into());
+                }
+                same("the badges", after.badges, 0)?;
+                same(
+                    "the result line",
+                    app.window.get_left_watch_status().as_str(),
+                    "",
+                )
+            },
+        )?,
         "panel.zoom" => probe(files, &["zoomed"], |_, _, after| {
             same("the enlarged panel", after.zoomed, true)
         })?,
@@ -1452,6 +1487,9 @@ fn prepare(app: &mut App, setup: &Setup, paths: &Paths) -> Result<(), String> {
         }
         panel::focus_list(app, LEFT)?;
     }
+    if setup.compared {
+        compare_folders(app)?;
+    }
     for mark in setup.marks {
         click_row(app, mark, &[Key::Control])?;
     }
@@ -1496,6 +1534,25 @@ fn prepare(app: &mut App, setup: &Setup, paths: &Paths) -> Result<(), String> {
     }
     app.idle(Duration::from_millis(30));
     Ok(())
+}
+
+/// Compare directories with subfolders (Ctrl+F10, Compare subfolders, then the dialog's
+/// Compare button), which marks rows with badges: `left` and `right` share no name, so
+/// every row of both panels gets one.
+fn compare_folders(app: &mut App) -> Result<(), String> {
+    input::chord(app.slint(), &[Key::Control], Key::F10);
+    wait(app, "the Compare directories dialog", |app| {
+        app.window.get_comparison_view().open
+    })?;
+    let main = app.main.clone();
+    tools::set_check(app, main.window(), "Compare subfolders", true)?;
+    let button = tools::control(main.window(), AccessibleRole::Button, "Compare")?;
+    input::click_at(main.window(), inspect::center(&button));
+    wait(app, "the comparison's badges", |app| {
+        let state = State::of(app);
+        !state.comparison && state.badges > 0
+    })?;
+    panel::focus_list(app, LEFT)
 }
 
 /// Nothing open over the panels.
@@ -1714,6 +1771,34 @@ fn scope_probes() -> Vec<ScopeProbe> {
                         after.search[0].clone(),
                         (true, "R".to_owned()),
                     )
+                }),
+                inert: false,
+            },
+        },
+        ScopeProbe {
+            label: "Escape in the file list without comparison marks does nothing",
+            key: "Escape",
+            probe: Probe {
+                setup: Setup::at("alpha.txt"),
+                changes: &[],
+                check: Box::new(|_, _, _| Ok(())),
+                inert: true,
+            },
+        },
+        ScopeProbe {
+            label: "Escape during filename search ends the search and keeps the comparison marks",
+            key: "Escape",
+            probe: Probe {
+                setup: Setup::at("alpha.txt")
+                    .compared()
+                    .place(Place::Search("n-0")),
+                changes: &["search0", "cursor0"],
+                check: Box::new(|_, before, after| {
+                    same("the search", after.search[0].0, false)?;
+                    if before.badges == 0 {
+                        return Err("the comparison showed no badges".into());
+                    }
+                    same("the badges", after.badges, before.badges)
                 }),
                 inert: false,
             },
