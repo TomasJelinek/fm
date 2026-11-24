@@ -1070,10 +1070,13 @@ fn verification_selects_only_producer_pass_history_and_restores_overall_history_
     assert!(verifying.verification_view);
     assert_eq!(verifying.file_progress, 0.25);
     assert_eq!(verifying.speed_chart.speed, "1.0 KiB/s");
-    assert_eq!(verifying.speed_chart.scale, "1.1 KiB/s");
+    assert_eq!(verifying.speed_chart.scale, "2 KiB/s");
     assert_eq!(verifying.speed_chart.history, "Elapsed 250 ms");
     assert!(verifying.speed_chart.verification.is_empty());
-    assert_eq!(verifying.speed_chart.primary, "M 0.00 9.09 L 1000.00 9.09");
+    assert_eq!(
+        verifying.speed_chart.primary,
+        "M 0.00 50.00 L 1000.00 50.00"
+    );
 
     value.wait_reason = Some(TransferWaitReason::Resources);
     let waiting = copy(&p, &value);
@@ -1264,7 +1267,7 @@ fn terminal_verification_rows_keep_overall_history_after_the_attempt_is_cleared(
         assert_eq!(terminal.speed_chart, original);
         assert_eq!(terminal.speed_chart.speed, "0 B/s");
         assert_eq!(terminal.speed_chart.verification_speed, "0 B/s");
-        assert_eq!(terminal.speed_chart.scale, "1.1 MiB/s");
+        assert_eq!(terminal.speed_chart.scale, "2 MiB/s");
         assert!(!terminal.speed_chart.primary.is_empty());
         assert_eq!(terminal.speed_chart.history, "Elapsed 1 s");
     }

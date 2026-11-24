@@ -20,13 +20,13 @@ export component OperationSpeedChart inherits Rectangle {
     private property <float> history-fraction: root.overall-progress && root.determinate
         ? clamp(root.progress, 0, 1) : 1;
     private property <bool> compact: root.height < 75px;
-    // What the chart measures. job_speed.rs sets the scale from the recent sustained
-    // speed (`sustained_scale`). Only the "i" button above the chart shows it.
+    // What the chart measures. job_speed_scale.rs keeps the scale steady (`Scale`).
+    // Only the "i" button above the chart shows it.
     private property <string> explanation: root.deletion
-        ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale follows the recent speed, so a brief peak above it is cut off at the top."
+        ? "Reported deleted items per second, including folders. System Trash may report only top-level items. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale rises at once to fit a faster speed and comes down one round step at a time, only after the speed stayed well below it for 10 seconds; an older peak above it is cut off at the top."
         : root.verification-phase ? "Current-file readback only. The chart starts fresh for each verification attempt; pause and resume keep the same attempt. Readback progress fills the 0 to 100% range; speed samples span elapsed time within its filled part. Reading every planned byte does not establish a successful checksum or publication."
         : root.chart.native-move ? "Native renames per second. A whole renamed folder counts once; descendants are not enumerated and no content is copied. The graph retains the entire operation."
-        : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale follows the recent speed, so a brief peak above it is cut off at the top. Current labels show the latest measured interval, not a completion percentage.";
+        : "Write: bytes written per second. Verify: destination readback and additional Move validation reads under the job's selected policy. The graph covers the entire operation from time zero; older intervals retain peak speeds. The scale rises at once to fit a faster speed and comes down one round step at a time, only after the speed stayed well below it for 10 seconds; an older peak above it is cut off at the top. Current labels show the latest measured interval, not a completion percentage.";
     accessible-role: groupbox;
     accessible-label: root.deletion ? "Deletion speed" : root.verification-phase ? "Verification speed" : "Transfer speed";
     accessible-value: root.chart.description;

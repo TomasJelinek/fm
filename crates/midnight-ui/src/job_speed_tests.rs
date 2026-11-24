@@ -1,5 +1,6 @@
 use super::*;
 use midnight_core::ThroughputSample;
+use scale::Scale;
 
 fn snapshot() -> Arc<OperationThroughput> {
     Arc::new(OperationThroughput {
@@ -42,7 +43,12 @@ fn native_move_uses_item_rate_without_claiming_written_or_verified_bytes() {
         .into();
     source.transfer_per_second = 0.0;
     source.verification_per_second = 0.0;
-    let chart = build(&source, View::Transfer, &NumberLocale::default());
+    let chart = build(
+        &source,
+        View::Transfer,
+        &NumberLocale::default(),
+        &mut Scale::default(),
+    );
     assert!(chart.native_move);
     assert!(chart.speed.ends_with("items/s"));
     assert!(chart.description.starts_with("Renamed:"));
@@ -51,13 +57,18 @@ fn native_move_uses_item_rate_without_claiming_written_or_verified_bytes() {
 
 #[test]
 fn graph_uses_time_spacing_and_keeps_writes_separate_from_readback() {
-    let chart = build(&snapshot(), View::Transfer, &NumberLocale::default());
+    let chart = build(
+        &snapshot(),
+        View::Transfer,
+        &NumberLocale::default(),
+        &mut Scale::default(),
+    );
     assert!(chart.has_samples);
     assert_eq!(chart.speed, "0 B/s");
     assert_eq!(chart.verification_speed, "2.0 KiB/s");
     assert!(chart.primary.contains("L 250.00"));
     assert!(chart.primary.contains("L 1000.00 100.00"));
-    assert!(chart.verification.contains("L 1000.00 9.09"));
+    assert!(chart.verification.contains("L 1000.00 0.00"));
     assert!(chart.area.ends_with("L 1000.00 100 Z"));
     assert_eq!(chart.history, "Elapsed 1 s");
 }
@@ -68,11 +79,11 @@ fn deletion_is_fractional_items_and_respects_locale() {
         decimal_separator: ",".into(),
         ..Default::default()
     };
-    let chart = build(&snapshot(), View::Deletion, &locale);
+    let chart = build(&snapshot(), View::Deletion, &locale, &mut Scale::default());
     assert_eq!(chart.speed, "0,5 items/s");
     assert!(chart.description.starts_with("Deleted: 0,5 items/s"));
     assert!(!chart.description.contains("B/s"));
-    assert!(chart.primary.contains("L 250.00 9.09"));
+    assert!(chart.primary.contains("L 250.00 60.00"));
 }
 
 #[test]
@@ -104,6 +115,7 @@ fn geometry_stays_bounded_and_empty_or_nonfinite_values_are_safe() {
         &OperationThroughput::default(),
         View::Transfer,
         &NumberLocale::default(),
+        &mut Scale::default(),
     );
     assert!(!empty.has_samples);
     assert!(empty.area.is_empty());
@@ -120,7 +132,12 @@ fn geometry_stays_bounded_and_empty_or_nonfinite_values_are_safe() {
         transfer_per_second: f64::NEG_INFINITY,
         ..Default::default()
     };
-    let chart = build(&source, View::Transfer, &NumberLocale::default());
+    let chart = build(
+        &source,
+        View::Transfer,
+        &NumberLocale::default(),
+        &mut Scale::default(),
+    );
     assert_eq!(chart.primary.matches(" L ").count(), 240);
     assert!(!chart.area.contains("NaN"));
     assert!(!chart.area.contains("inf"));
@@ -150,7 +167,12 @@ fn submillisecond_completed_work_has_a_visible_point_without_inventing_duration(
         .into(),
         ..Default::default()
     };
-    let chart = build(&source, View::Transfer, &NumberLocale::default());
+    let chart = build(
+        &source,
+        View::Transfer,
+        &NumberLocale::default(),
+        &mut Scale::default(),
+    );
     assert!(chart.single_sample && chart.has_samples);
     assert_eq!(chart.point_x, 0.0);
     assert!(chart.point_y < 100.0);
@@ -158,7 +180,7 @@ fn submillisecond_completed_work_has_a_visible_point_without_inventing_duration(
 }
 
 #[test]
-fn entire_history_shrinks_horizontally_and_a_short_history_scales_to_its_peak() {
+fn entire_history_shrinks_horizontally_and_its_peaks_set_the_scale() {
     let mut source = OperationThroughput {
         samples: vec![
             ThroughputSample {
@@ -178,8 +200,16 @@ fn entire_history_shrinks_horizontally_and_a_short_history_scales_to_its_peak() 
         transfer_per_second: 1024.0,
         ..Default::default()
     };
-    let before = build(&source, View::Transfer, &NumberLocale::default());
-    assert!(before.primary.starts_with("M 0.00 9.09 L 500.00 9.09"));
+    let before = build(
+        &source,
+        View::Transfer,
+        &NumberLocale::default(),
+        &mut Scale::default(),
+    );
+    // 8 KiB/s raised the scale to 10 KiB/s; an hour at 1 KiB/s lowered it one step.
+    assert_eq!(before.scale, "5 KiB/s");
+    assert!(before.primary.starts_with("M 0.00 0.00 L 500.00 0.00"));
+    assert!(before.primary.ends_with("L 1000.00 80.00"));
     assert_eq!(before.history, "Elapsed 2 h 00 min 00 s");
     assert_eq!(before.speed, "1.0 KiB/s");
     let mut samples = source.samples.to_vec();
@@ -190,9 +220,15 @@ fn entire_history_shrinks_horizontally_and_a_short_history_scales_to_its_peak() 
         ..Default::default()
     });
     source.samples = samples.into();
-    let after = build(&source, View::Transfer, &NumberLocale::default());
-    assert!(after.primary.starts_with("M 0.00 54.55 L 250.00 54.55"));
-    assert!(after.primary.ends_with("L 1000.00 9.09"));
+    let after = build(
+        &source,
+        View::Transfer,
+        &NumberLocale::default(),
+        &mut Scale::default(),
+    );
+    assert_eq!(after.scale, "20 KiB/s");
+    assert!(after.primary.starts_with("M 0.00 60.00 L 250.00 60.00"));
+    assert!(after.primary.ends_with("L 1000.00 20.00"));
     assert_eq!(after.history, "Elapsed 4 h 00 min 00 s");
     assert_eq!(
         after.speed, "1.0 KiB/s",
@@ -223,11 +259,11 @@ fn verification_view_uses_readback_for_its_only_series_and_scale() {
 
     assert!(!chart.native_move);
     assert_eq!(chart.speed, "512 B/s");
-    assert_eq!(chart.scale, "1.1 KiB/s");
-    assert_eq!(chart.primary, "M 0.00 9.09 L 1000.00 9.09");
+    assert_eq!(chart.scale, "2 KiB/s");
+    assert_eq!(chart.primary, "M 0.00 50.00 L 1000.00 50.00");
     assert_eq!(
         chart.area,
-        "M 0.00 100 L 0.00 9.09 L 1000.00 9.09 L 1000.00 100 Z"
+        "M 0.00 100 L 0.00 50.00 L 1000.00 50.00 L 1000.00 100 Z"
     );
     assert!(chart.verification.is_empty() && chart.verification_speed.is_empty());
     assert_eq!(chart.description, "Verify: 512 B/s. Elapsed 250 ms.");
@@ -365,7 +401,7 @@ fn verification_cache_refreshes_locale_and_releases_only_unretained_job_history(
     };
     let localized = cache.get_verification(OperationId(9), 1, &source, &decimal_comma);
     assert_eq!(localized.speed, "2,0 KiB/s");
-    assert_eq!(localized.scale, "2,2 KiB/s");
+    assert_eq!(localized.scale, "5 KiB/s");
 
     let deletion = snapshot();
     let deletion_weak = Arc::downgrade(&deletion);
@@ -400,57 +436,193 @@ fn writes(count: u64, step: u64, rate: impl Fn(u64) -> f64) -> OperationThroughp
     }
 }
 
-#[test]
-fn a_single_spike_raises_the_scale_briefly_and_then_stays_clipped_in_the_history() {
-    // 20 MiB/s, with one quarter second at 1 GiB/s ten seconds in.
-    let spiky = |tick| if tick == 40 { 1024.0 * MIB } else { 20.0 * MIB };
+/// The chart's top after each report of a job that samples every 250 ms (as the
+/// backend does) and reports every `report` milliseconds, for `seconds` of
+/// `rate(millis)` bytes per second; the presenter's cache sees each report once.
+fn tops(seconds: u64, report: u64, rate: impl Fn(u64) -> f64) -> Vec<(u64, f64)> {
+    let cache = Charts::default();
     let locale = NumberLocale::default();
-    let at_spike = build(&writes(40, 250, spiky), View::Transfer, &locale);
-    assert_eq!(at_spike.scale, "1.1 GiB/s", "the spike itself is in view");
-    let soon = build(&writes(48, 250, spiky), View::Transfer, &locale);
-    assert_eq!(soon.scale, "281.6 MiB/s", "two seconds on: a quarter");
-    let later = build(&writes(80, 250, spiky), View::Transfer, &locale);
-    assert_eq!(later.scale, "22.0 MiB/s", "ten seconds on: sustained");
-    assert!(
-        later.primary.contains("L 500.00 0.00"),
-        "the spike runs along the top edge: {}",
-        later.primary
-    );
-    assert!(later.primary.ends_with("L 1000.00 9.09"));
-    assert!(later.area.contains("L 500.00 0.00"));
+    let mut samples: Vec<ThroughputSample> = Vec::new();
+    let mut tops: Vec<(u64, f64)> = Vec::new();
+    let mut next_sample = 250;
+    let mut now = 0;
+    while now < seconds * 1000 {
+        now += report;
+        while next_sample <= now {
+            samples.push(ThroughputSample {
+                start_millis: next_sample - 250,
+                elapsed_millis: next_sample,
+                transfer_per_second: rate(next_sample),
+                ..Default::default()
+            });
+            next_sample += 250;
+        }
+        if samples.is_empty() {
+            continue;
+        }
+        // The backend keeps the newest 240 intervals.
+        let kept = samples[samples.len().saturating_sub(240)..].to_vec();
+        let source = Arc::new(OperationThroughput {
+            samples: kept.into(),
+            ..Default::default()
+        });
+        cache.get(OperationId(1), false, &source, &locale);
+        let top = cache.top(OperationId(1), false).expect("a cached chart");
+        if tops.last().is_none_or(|(_, last)| *last != top) {
+            tops.push((now, top));
+        }
+    }
+    tops
+}
+
+/// Rescales after the first scale, and the scales in order.
+fn rescales(tops: &[(u64, f64)]) -> usize {
+    tops.len().saturating_sub(1)
 }
 
 #[test]
-fn the_scale_follows_the_last_minute_and_ignores_a_few_peaks_in_it() {
-    let locale = NumberLocale::default();
-    // One-second samples: two minutes at 100 MiB/s, then 70 s at 10 MiB/s. The
-    // scale follows the slower speed and the earlier part runs along the top.
-    let slower = |second| {
-        if second <= 120 {
+fn a_steady_noisy_copy_keeps_one_scale() {
+    // 120 MiB/s ±20%, changing every quarter second, for two minutes.
+    let noisy =
+        |millis: u64| 120.0 * MIB * (1.0 + 0.2 * ((millis / 250 * 7919 % 11) as f64 / 5.0 - 1.0));
+    for report in [125, 250, 1000] {
+        let tops = tops(120, report, noisy);
+        assert_eq!(tops.len(), 1, "report every {report} ms: {tops:?}");
+        assert_eq!(tops[0].1, 200.0 * MIB);
+    }
+}
+
+#[test]
+fn spikes_raise_the_scale_at_once_and_it_then_holds_without_oscillating() {
+    // 100 MiB/s with a quarter second at 600 MiB/s every three seconds.
+    let spiky = |millis: u64| {
+        if millis.is_multiple_of(3000) {
+            600.0 * MIB
+        } else {
             100.0 * MIB
-        } else {
-            10.0 * MIB
         }
     };
-    let chart = build(&writes(190, 1000, slower), View::Transfer, &locale);
-    assert_eq!(chart.scale, "11.0 MiB/s");
-    assert!(
-        chart.primary.starts_with("M 0.00 0.00 L"),
-        "{}",
-        chart.primary
+    for report in [125, 250, 1000] {
+        let tops = tops(120, report, spiky);
+        let scales: Vec<f64> = tops.iter().map(|(_, top)| *top).collect();
+        assert_eq!(
+            scales,
+            [200.0 * MIB, 1024.0 * MIB],
+            "report every {report} ms"
+        );
+        // Up at the first spike, within one report.
+        assert!(tops[1].0 <= 3000 + report, "{tops:?}");
+    }
+}
+
+#[test]
+fn a_single_spike_steps_down_one_round_value_at_a_time_ten_seconds_apart() {
+    // 20 MiB/s, with a quarter second at 1 GiB/s ten seconds in.
+    let spike = |millis: u64| {
+        if millis == 10_000 {
+            1024.0 * MIB
+        } else {
+            20.0 * MIB
+        }
+    };
+    for report in [125, 250, 1000] {
+        let tops = tops(120, report, spike);
+        let scales: Vec<f64> = tops.iter().map(|(_, top)| *top).collect();
+        assert_eq!(
+            scales,
+            [
+                50.0 * MIB,
+                2048.0 * MIB,
+                1024.0 * MIB,
+                500.0 * MIB,
+                200.0 * MIB,
+                100.0 * MIB,
+                50.0 * MIB,
+            ],
+            "report every {report} ms"
+        );
+        for pair in tops[1..].windows(2) {
+            assert!(pair[1].0 - pair[0].0 >= 10_000, "{tops:?}");
+        }
+        assert!(rescales(&tops) <= 6);
+    }
+}
+
+#[test]
+fn a_ramp_down_lowers_the_scale_rarely_and_never_raises_it() {
+    // From 400 MiB/s down to 10 MiB/s over two minutes, then steady.
+    let ramp = |millis: u64| {
+        let share = (millis as f64 / 120_000.0).min(1.0);
+        (400.0 - 390.0 * share) * MIB
+    };
+    let ramped = tops(180, 125, ramp);
+    assert_eq!(ramped[0].1, 500.0 * MIB);
+    assert!(rescales(&ramped) <= 6, "{ramped:?}");
+    for pair in ramped.windows(2) {
+        assert!(pair[1].1 < pair[0].1, "never up: {ramped:?}");
+        assert!(
+            pair[1].0 - pair[0].0 >= 10_000,
+            "ten seconds apart: {ramped:?}"
+        );
+    }
+    assert_eq!(ramped.last().unwrap().1, 20.0 * MIB, "{ramped:?}");
+    // Each report interval gives the same scales.
+    assert_eq!(
+        tops(180, 1000, ramp)
+            .iter()
+            .map(|(_, top)| *top)
+            .collect::<Vec<_>>(),
+        ramped.iter().map(|(_, top)| *top).collect::<Vec<_>>()
     );
-    assert!(chart.primary.ends_with("L 1000.00 9.09"));
-    // Three short peaks in the last minute, a while ago, leave it alone.
-    let peaks = |tick| {
-        if [100, 150, 200].contains(&tick) {
-            900.0 * MIB
-        } else {
-            30.0 * MIB
-        }
+}
+
+#[test]
+fn alternating_speeds_and_pauses_hold_the_scale() {
+    // Five seconds at 100 MiB/s, five at 50 MiB/s, and a minute idle in between.
+    let alternating = |millis: u64| match millis {
+        60_001..=120_000 => 0.0,
+        _ if (millis / 5000).is_multiple_of(2) => 100.0 * MIB,
+        _ => 50.0 * MIB,
     };
-    let chart = build(&writes(240, 250, peaks), View::Transfer, &locale);
-    assert_eq!(chart.scale, "33.0 MiB/s");
-    // Readback shares the scale with the writes.
+    let tops = tops(180, 250, alternating);
+    assert_eq!(tops.len(), 1, "{tops:?}");
+    assert_eq!(tops[0].1, 200.0 * MIB);
+}
+
+#[test]
+fn scale_labels_are_round_values_of_their_unit() {
+    let locale = NumberLocale::default();
+    let chart = |rate: f64, deletion: bool| {
+        let source = OperationThroughput {
+            samples: vec![ThroughputSample {
+                elapsed_millis: 250,
+                transfer_per_second: rate,
+                items_per_second: rate,
+                ..Default::default()
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let view = if deletion {
+            View::Deletion
+        } else {
+            View::Transfer
+        };
+        build(&source, view, &locale, &mut Scale::default()).scale
+    };
+    assert_eq!(chart(150.0 * MIB, false), "200 MiB/s");
+    assert_eq!(chart(500.0 * MIB, false), "1 GiB/s");
+    assert_eq!(chart(300.0, false), "500 B/s");
+    assert_eq!(chart(900.0, false), "2 KiB/s");
+    assert_eq!(chart(1.0, false), "2 B/s");
+    assert_eq!(chart(30.0, true), "50 items/s");
+    assert_eq!(chart(0.3, true), "1 items/s");
+    assert_eq!(chart(3000.0, true), "5000 items/s");
+}
+
+#[test]
+fn readback_shares_the_scale_and_a_clipped_peak_runs_along_the_top() {
+    let locale = NumberLocale::default();
     let mut readback = writes(240, 250, |_| 30.0 * MIB);
     readback.samples = readback
         .samples
@@ -461,34 +633,20 @@ fn the_scale_follows_the_last_minute_and_ignores_a_few_peaks_in_it() {
         })
         .collect::<Vec<_>>()
         .into();
-    assert_eq!(
-        build(&readback, View::Transfer, &locale).scale,
-        "66.0 MiB/s"
+    let chart = build(&readback, View::Transfer, &locale, &mut Scale::default());
+    assert_eq!(chart.scale, "100 MiB/s");
+    assert!(chart.verification.ends_with("L 1000.00 40.00"));
+    assert!(chart.primary.ends_with("L 1000.00 70.00"));
+    // An older peak that the scale has come down from runs along the top edge.
+    let spike = |tick| if tick == 40 { 1024.0 * MIB } else { 20.0 * MIB };
+    let mut scale = Scale::default();
+    let chart = build(
+        &writes(240, 250, spike),
+        View::Transfer,
+        &locale,
+        &mut scale,
     );
-}
-
-#[test]
-fn a_pause_or_stall_holds_the_scale_instead_of_collapsing_it() {
-    let locale = NumberLocale::default();
-    // 10 s at 20 MiB/s, then 50 s recorded idle (a pause, a wait or a long sync).
-    let paused = |tick| if tick <= 40 { 20.0 * MIB } else { 0.0 };
-    let chart = build(&writes(240, 250, paused), View::Transfer, &locale);
-    assert_eq!(chart.scale, "22.0 MiB/s");
-    assert!(chart.primary.contains("L 166.67 9.09"), "{}", chart.primary);
-    assert!(chart.primary.ends_with("L 1000.00 100.00"));
-    // A spike just before the pause keeps the scale it raised until work resumes.
-    let spiked = |tick| match tick {
-        40 => 1024.0 * MIB,
-        1..=39 => 20.0 * MIB,
-        _ => 0.0,
-    };
-    let chart = build(&writes(240, 250, spiked), View::Transfer, &locale);
-    assert_eq!(chart.scale, "1.1 GiB/s");
-    let resumed = |tick| match tick {
-        40 => 1024.0 * MIB,
-        1..=39 | 201..=240 => 20.0 * MIB,
-        _ => 0.0,
-    };
-    let chart = build(&writes(240, 250, resumed), View::Transfer, &locale);
-    assert_eq!(chart.scale, "22.0 MiB/s", "ten seconds of work after it");
+    assert_eq!(chart.scale, "50 MiB/s");
+    assert!(chart.primary.contains("L 166.67 0.00"), "{}", chart.primary);
+    assert!(chart.primary.ends_with("L 1000.00 60.00"));
 }

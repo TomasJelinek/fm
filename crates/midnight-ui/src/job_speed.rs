@@ -8,15 +8,9 @@ use std::{
     sync::Arc,
 };
 
-/// The last minute of samples sets the sustained level, or the last
-/// `RECENT_SAMPLES` once long histories combine samples into longer intervals.
-const RECENT_MILLIS: u64 = 60_000;
-const RECENT_SAMPLES: usize = 12;
-/// Nearest-rank percentile of those samples that the scale follows.
-const SUSTAINED_PERCENTILE: f64 = 0.9;
-/// A higher sample still raises the scale, with a weight that halves this often.
-const PEAK_HALF_LIFE_MILLIS: f64 = 1000.0;
-const HEADROOM: f64 = 1.1;
+#[path = "job_speed_scale.rs"]
+mod scale;
+use scale::Scale;
 
 #[derive(Default)]
 pub(crate) struct Charts(RefCell<HashMap<(bool, OperationId), Cached>>);
@@ -32,6 +26,8 @@ struct Cached {
     view: View,
     source: Arc<OperationThroughput>,
     locale: NumberLocale,
+    /// The vertical scale, kept from report to report of the same view.
+    scale: Scale,
     chart: SpeedChartData,
 }
 
@@ -85,21 +81,35 @@ impl Charts {
         // The backend continues to own the separate whole-operation history.
         let item = cache
             .entry((view == View::Deletion, id))
-            .or_insert_with(|| Cached {
-                view,
-                source: source.clone(),
-                locale: locale.clone(),
-                chart: build(source, view, locale),
+            .or_insert_with(|| {
+                let mut scale = Scale::default();
+                Cached {
+                    view,
+                    source: source.clone(),
+                    locale: locale.clone(),
+                    chart: build(source, view, locale, &mut scale),
+                    scale,
+                }
             });
+        if item.view != view {
+            item.scale = Scale::default();
+        }
         if item.view != view || !Arc::ptr_eq(&item.source, source) || item.locale != *locale {
-            *item = Cached {
-                view,
-                source: source.clone(),
-                locale: locale.clone(),
-                chart: build(source, view, locale),
-            };
+            item.view = view;
+            item.source = source.clone();
+            item.locale = locale.clone();
+            item.chart = build(source, view, locale, &mut item.scale);
         }
         item.chart.clone()
+    }
+
+    /// The chart's top in rate units, for the scale tests.
+    #[cfg(test)]
+    fn top(&self, id: OperationId, deletion: bool) -> Option<f64> {
+        self.0
+            .borrow()
+            .get(&(deletion, id))
+            .map(|item| item.scale.top())
     }
 }
 
@@ -127,7 +137,12 @@ fn rate(value: f64, items: bool, locale: &NumberLocale) -> String {
     }
 }
 
-fn build(source: &OperationThroughput, view: View, locale: &NumberLocale) -> SpeedChartData {
+fn build(
+    source: &OperationThroughput,
+    view: View,
+    locale: &NumberLocale,
+    scale: &mut Scale,
+) -> SpeedChartData {
     let deletion = view == View::Deletion;
     let verification_only = matches!(view, View::Verification(_));
     let native_move = view == View::Transfer
@@ -161,20 +176,17 @@ fn build(source: &OperationThroughput, view: View, locale: &NumberLocale) -> Spe
             sample.transfer_per_second
         })
     };
-    let levels: Vec<_> = samples
-        .iter()
-        .map(|sample| {
-            let level = if items || verification_only {
-                primary(sample)
-            } else {
-                primary(sample).max(finite(sample.verification_per_second))
-            };
-            (sample.elapsed_millis, level)
-        })
-        .collect();
-    let scale = sustained_scale(&levels);
+    // Writes and readback share the scale.
+    scale.observe(&source.samples, items, |sample| {
+        if items || verification_only {
+            primary(sample)
+        } else {
+            primary(sample).max(finite(sample.verification_per_second))
+        }
+    });
+    let top = scale.top();
     // Above the scale a curve runs along the top edge: a clipped peak.
-    let height = |rate: f64| (100.0 - rate / scale * 100.0).clamp(0.0, 100.0);
+    let height = |rate: f64| (100.0 - rate / top * 100.0).clamp(0.0, 100.0);
     let mut line = String::new();
     let mut verification = String::new();
     let mut area = String::new();
@@ -243,52 +255,13 @@ fn build(source: &OperationThroughput, view: View, locale: &NumberLocale) -> Spe
         .into(),
         speed: speed.into(),
         verification_speed: verification_speed.into(),
-        scale: rate(scale, items, locale).into(),
+        scale: scale.label(items, locale).into(),
         history: history.into(),
         has_samples: !samples.is_empty(),
         single_sample: samples.len() == 1,
         point_x: last_x as f32,
         point_y: last_y as f32,
         verification_y: last_verification_y as f32,
-    }
-}
-
-/// The vertical scale follows sustained rates, not the history's peak: the 90th
-/// percentile of the last minute's active samples, raised by any higher sample with
-/// a weight that halves every second after it. A spike therefore lifts the scale
-/// briefly, which then comes back down within seconds and draws the spike as a
-/// clipped peak. Pauses, waits and stalls are recorded as idle (zero) intervals:
-/// they neither pull the scale down nor age a peak, so it holds still through them.
-/// `levels` are (end time, highest drawn rate) in time order.
-fn sustained_scale(levels: &[(u64, f64)]) -> f64 {
-    let active: Vec<_> = levels
-        .iter()
-        .copied()
-        .filter(|(_, level)| *level > 0.0)
-        .collect();
-    let Some(&(now, _)) = active.last() else {
-        return 1.0;
-    };
-    let older = active
-        .iter()
-        .rposition(|(at, _)| now.saturating_sub(*at) > RECENT_MILLIS)
-        .map_or(0, |index| index + 1);
-    let mut recent: Vec<f64> = active[older.min(active.len().saturating_sub(RECENT_SAMPLES))..]
-        .iter()
-        .map(|(_, level)| *level)
-        .collect();
-    let rank = (recent.len() as f64 * SUSTAINED_PERCENTILE).ceil() as usize;
-    let index = rank.clamp(1, recent.len()) - 1;
-    let sustained = *recent.select_nth_unstable_by(index, f64::total_cmp).1;
-    let peak = active.iter().fold(0.0_f64, |peak, (at, level)| {
-        let age = now.saturating_sub(*at) as f64;
-        peak.max(level * 0.5_f64.powf(age / PEAK_HALF_LIFE_MILLIS))
-    });
-    let level = sustained.max(peak);
-    if level <= f64::MAX / HEADROOM {
-        (level * HEADROOM).max(1.0)
-    } else {
-        level
     }
 }
 

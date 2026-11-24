@@ -523,14 +523,19 @@ and counts on. A Delete counts items only: `Discovering: 1,000 items`, then `Ite
 counted).
 
 The speed chart covers the job from time zero, and older intervals merged into one
-keep their peak rates. Its vertical scale follows the recent sustained rate, not the
-history's peak (`sustained_scale` in `job_speed.rs`): the 90th percentile of the
-last minute's active samples (of the last 12 when fewer fall in that minute, as long
-histories merge samples into longer intervals), raised by any higher sample with a
-weight that halves every second after it, plus 10% headroom. A spike lifts the
-scale for a few seconds, after which the chart draws it clipped at the top edge.
-Pauses, waits and stalls are recorded as idle intervals and neither lower the scale
-nor age a peak, so it holds still through them.
+keep their peak rates. Its vertical scale holds still while a job copies (`Scale` in
+`job_speed_scale.rs`, kept per job and view by the presenter's chart cache): a sample
+above the top raises it at once to the next round value at least 1.25 times that
+sample; it comes down only after the samples stayed below 40% of it for 10 seconds of
+activity, and then by one round step, provided the slower speed still fits below that
+step with the same headroom. Round values are 1, 2 and 5 times a power of ten of the
+scale's unit (`200 MiB/s`, `1 GiB/s`, `50 items/s`). Time comes from the samples' own
+intervals, never from the number of reports, so the progress interval does not change
+the scale. A spike therefore raises the scale once, which then steps down at most once
+every 10 seconds; a steady or noisy copy keeps one scale, and a speed that alternates
+or spikes repeatedly cannot make it oscillate. An older peak above the current scale is
+drawn clipped at the top edge. Pauses, waits and stalls are recorded as idle intervals
+and neither lower the scale nor count toward its step down.
 
 The chart itself shows no tooltip. Its explanation (what Write, Verify, Deleted or
 Renamed measure, the time axis and the scale) belongs to a small "i" button at the
