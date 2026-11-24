@@ -84,6 +84,10 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
             maximized: false,
             fullscreen: false,
         }),
+        find: midnight_core::FindPreferences {
+            mask_history: vec!["*.saved;文档*".into()],
+            window_geometry: None,
+        },
         archive_association_overrides: Default::default(),
         archive_custom_extensions: [("custom-bundle".into(), ArchiveFormat::Zip)].into(),
         disabled_viewer_plugins: Vec::new(),

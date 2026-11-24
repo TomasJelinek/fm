@@ -891,6 +891,34 @@ impl Search {
             .collect()
     }
 
+    /// Run the captured panel conversion on a worker, then deliver its ordinary
+    /// completion through the same event/sender path as the application.
+    fn complete_feed_build(&self) {
+        let request = self
+            .commands
+            .borrow()
+            .iter()
+            .find_map(|command| match command {
+                Command::BuildFindFeed(request) => Some(request.clone()),
+                _ => None,
+            })
+            .expect("Feed to panel submits a captured worker request");
+        let receipt = std::thread::spawn(move || FindFeedBuildResult {
+            request: request.stamp(),
+            result: request.prepare(),
+        })
+        .join()
+        .unwrap();
+        self.state.borrow_mut().apply_with_sender(
+            Event::FindFeedBuilt(Box::new(receipt)),
+            &|command| {
+                self.commands.borrow_mut().push(command);
+                true
+            },
+        );
+        midnight_ui::refresh(&self.main, &self.state.borrow());
+    }
+
     fn close(self) {
         self.main.invoke_close_find_windows();
         self.main.hide().unwrap();
@@ -1085,6 +1113,9 @@ fn find_copy_menu_and_feed_act_on_the_selected_results_or_the_acted_on_row() {
     search.click(3, &[Key::Shift]);
     click(&search.find, "Feed to panel");
     let feed = search.main.global::<FeedPresentation>();
+    assert!(!feed.get_left().open, "wait for the captured worker result");
+    search.complete_feed_build();
+    assert!(feed.get_left().open);
     let marks: Vec<bool> = feed
         .get_left_rows()
         .iter()
@@ -1092,6 +1123,98 @@ fn find_copy_menu_and_feed_act_on_the_selected_results_or_the_acted_on_row() {
         .collect();
     assert_eq!(marks, [true, true, true, false, false]);
     assert_eq!(feed.get_left().cursor, 2);
-    assert!(feed.get_left().status.starts_with("3 of 5 selected"));
+    let status = feed.get_left().status;
+    let mut lines = status.lines();
+    assert!(lines.next().unwrap().contains("file-3.txt"));
+    assert!(lines.any(|line| line.starts_with("3 of 5 selected")));
     search.close();
+}
+
+fn late_find_history_prefill(draft: Option<&str>) {
+    use i_slint_core::{
+        accessibility::{AccessibilityAction, AccessibleStringProperty},
+        items::AccessibleRole,
+    };
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(Windows(windows.clone()))).unwrap();
+    let main = MainWindow::new().unwrap();
+    let root = std::env::temp_dir().join("late-find-mask-history");
+    let state = Rc::new(RefCell::new(Presenter::new(root.clone(), root)));
+    let commands = Rc::new(RefCell::new(Vec::new()));
+    midnight_ui::install(
+        &main,
+        state.clone(),
+        Rc::new({
+            let commands = commands.clone();
+            move |command| {
+                commands.borrow_mut().push(command);
+                true
+            }
+        }),
+    );
+    main.show().unwrap();
+    draw(&windows.borrow()[0], 1000, 700);
+    main.invoke_find_files(0);
+    let find = windows.borrow()[1].clone();
+    draw(&find, 860, 620);
+    let input =
+        modeless::accessible_item(&find, AccessibleRole::TextInput, "File name masks").unwrap();
+    assert_eq!(
+        input
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .as_deref(),
+        Some("*.*")
+    );
+    if let Some(draft) = draft {
+        modeless::click_item(&find, &input, "File name masks");
+        input.accessible_action(&AccessibilityAction::SetSelectionOffsets(0, 3));
+        find.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: draft.into() });
+        find.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: draft.into() });
+    }
+    let mut preferences = UserPreferences::default();
+    preferences.find.mask_history = vec!["*.saved;文档*".into(), "*.older".into()];
+    state
+        .borrow_mut()
+        .apply(Event::PreferencesLoaded(Ok(Box::new(
+            AcceptedPreferences {
+                preferences,
+                comparators: FileComparatorSnapshot::default(),
+            },
+        ))));
+    midnight_ui::refresh(&main, &state.borrow());
+    draw(&find, 860, 620);
+    let expected = draft.unwrap_or("*.saved;文档*");
+    assert_eq!(
+        input
+            .accessible_string_property(AccessibleStringProperty::Value)
+            .as_deref(),
+        Some(expected)
+    );
+    click(&find, "Find");
+    let masks = commands
+        .borrow()
+        .iter()
+        .find_map(|command| match command {
+            Command::StartFind(request) => Some(request.masks.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(masks, expected);
+    main.invoke_close_find_windows();
+    main.hide().unwrap();
+    state.borrow_mut().retire_all();
+    let retired = state.borrow_mut().take_retired();
+    std::thread::spawn(move || drop(retired)).join().unwrap();
+}
+
+#[test]
+fn late_loaded_find_history_prefills_an_untouched_filename_query() {
+    late_find_history_prefill(None);
+}
+
+#[test]
+fn late_loaded_find_history_preserves_a_user_edited_filename_query() {
+    late_find_history_prefill(Some("*.my-draft"));
 }

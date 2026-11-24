@@ -341,6 +341,30 @@ fn member_names_match_inside_archives_with_their_folder_address() {
 }
 
 #[test]
+fn archive_search_honors_explicit_scan_budgets_without_limiting_default_searches() {
+    let temporary = fixture();
+    let root = temporary.path();
+    fs::remove_file(root.join("plain.txt")).unwrap();
+    let archives = FakeArchives::default();
+    let mut request = FindRequest::new(FindSessionId(1), FindGeneration(1), vec![root.into()]);
+    request.archives = true;
+    request.masks = "*.md".into();
+    request.limits.max_nodes = 2;
+    let (summary, _) = run(Some(&archives), &request, &Cancellation::default());
+    assert_eq!(summary.completion, FindCompletion::Incomplete);
+    assert_eq!(summary.progress.examined, 2);
+    assert_eq!(summary.progress.archive_members, 1);
+    assert!(summary.reached_budgets.contains(&FindBudget::Nodes));
+
+    request.limits.max_nodes = 0;
+    let (summary, results) = run(Some(&archives), &request, &Cancellation::default());
+    assert_eq!(summary.completion, FindCompletion::Completed, "{summary:?}");
+    assert_eq!(summary.progress.archive_members, 4);
+    assert_eq!(results.len(), 2);
+    assert!(!summary.reached_budgets.contains(&FindBudget::Nodes));
+}
+
+#[test]
 fn member_contents_are_read_through_the_provider() {
     let temporary = fixture();
     let root = temporary.path();

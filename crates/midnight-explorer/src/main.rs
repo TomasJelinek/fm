@@ -1045,6 +1045,9 @@ fn run_window(
     viewers.close_all();
     comparators.close_all();
     window.invoke_close_find_windows();
+    presenter
+        .borrow_mut()
+        .flush_find_window_preferences(&|command| commands.try_send(command).is_ok());
     window.invoke_close_checksum_windows();
     window.invoke_close_file_list_window();
     retry_pulse.stop();

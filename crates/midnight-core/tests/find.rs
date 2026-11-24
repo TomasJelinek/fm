@@ -68,6 +68,26 @@ fn find_modified_age_and_duplicate_candidate_limits_are_bounded() {
 }
 
 #[test]
+fn find_scan_count_is_unlimited_by_default_and_accepts_explicit_budgets() {
+    let mut request = FindRequest::new(
+        FindSessionId(1),
+        FindGeneration(1),
+        vec![std::env::current_dir().unwrap()],
+    );
+    assert_eq!(request.limits.max_nodes, 0);
+    assert_eq!(request.limits.max_results, 100_000);
+    assert!(request.validate().is_ok());
+    for maximum in [1, 2_000_000, u64::MAX] {
+        request.limits.max_nodes = maximum;
+        assert!(request.validate().is_ok(), "scan budget {maximum}");
+    }
+    request.limits.max_results = 100_001;
+    assert!(request.validate().is_err());
+    request.limits.max_results = 0;
+    assert!(request.validate().is_err(), "retained results stay bounded");
+}
+
+#[test]
 fn find_rejects_ambiguous_roots_and_empty_or_unbounded_content_queries() {
     let mut request =
         FindRequest::new(FindSessionId(1), FindGeneration(1), vec!["relative".into()]);

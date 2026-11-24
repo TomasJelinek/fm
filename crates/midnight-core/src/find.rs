@@ -1,5 +1,11 @@
 //! Bounded read-only recursive Find. All provider calls belong on backend workers.
+#[path = "find_feed_build.rs"]
+mod feed_build;
+pub use feed_build::*;
+#[path = "find_feed_projection.rs"]
+mod feed_projection;
 use crate::{Cancellation, EntryKind, EntryMetadata, FsError, TransferIdentity};
+pub use feed_projection::*;
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -32,6 +38,7 @@ pub struct FindContentQuery {
 #[derive(Clone, Copy, Debug)]
 pub struct FindLimits {
     pub max_results: usize,
+    /// Maximum examined native entries and archive members; zero scans without a count limit.
     pub max_nodes: u64,
     /// Maximum simultaneously retained directory frames, including the root.
     pub max_depth: usize,
@@ -43,8 +50,8 @@ pub struct FindLimits {
 impl Default for FindLimits {
     fn default() -> Self {
         Self {
-            max_results: 10_000,
-            max_nodes: 1_000_000,
+            max_results: 100_000,
+            max_nodes: 0,
             max_depth: 128,
             max_retained_bytes: 64 * 1024 * 1024,
             max_content_bytes_per_file: 1024 * 1024 * 1024,
@@ -136,8 +143,6 @@ impl FindRequest {
         let max = FindLimits::default();
         if l.max_results == 0
             || l.max_results > max.max_results
-            || l.max_nodes == 0
-            || l.max_nodes > max.max_nodes
             || l.max_depth == 0
             || l.max_depth > max.max_depth
             || l.max_retained_bytes == 0
@@ -150,7 +155,7 @@ impl FindRequest {
             || l.max_duplicate_candidates > max.max_duplicate_candidates
         {
             return Err(
-                "Find resource limits must be positive and no greater than their defaults.",
+                "Find result, depth, memory and content limits must be positive and no greater than their defaults.",
             );
         }
         Ok(())

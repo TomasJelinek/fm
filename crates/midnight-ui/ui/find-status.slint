@@ -6,6 +6,7 @@ import { ErrorGlyph } from "error-notice.slint";
 // page; the line itself is a summary, never the only copy of the diagnostic.
 export component FindStatusLine inherits Rectangle {
     in property <string> text;
+    in property <string> count;
     // Red text with an error icon; otherwise ordinary secondary status text.
     in property <bool> error;
     in property <bool> wrap;
@@ -36,6 +37,13 @@ export component FindStatusLine inherits Rectangle {
             wrap: root.wrap ? word-wrap : no-wrap; overflow: elide;
             vertical-alignment: center; horizontal-stretch: 1; min-width: 0px;
             accessible-role: none;
+        }
+        if root.count != "": Text {
+            text: "Found: " + root.count;
+            font-size: root.font-size; font-weight: 600;
+            color: Theme.strong-text; vertical-alignment: center;
+            horizontal-stretch: 0;
+            accessible-role: AccessibleRole.text; accessible-label: self.text;
         }
     }
     focus := FocusScope {

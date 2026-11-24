@@ -61,6 +61,18 @@ pub fn configure_dialog_window_attributes(attributes: WindowAttributes) -> Windo
 
 pub(crate) use platform::set_enabled;
 
+pub(crate) fn work_area(window: &slint::Window) -> Option<midnight_core::WindowRect> {
+    window
+        .with_winit_window(platform::work_area)
+        .flatten()
+        .map(|(x, y, width, height)| midnight_core::WindowRect {
+            x,
+            y,
+            width,
+            height,
+        })
+}
+
 pub(crate) fn attach(owner: &slint::Window, child: &slint::Window, role: WindowRole) {
     owner.with_winit_window(|owner| {
         child.with_winit_window(|child| platform::attach(owner, child, role));

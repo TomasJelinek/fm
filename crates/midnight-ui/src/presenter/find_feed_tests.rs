@@ -132,9 +132,23 @@ fn fed_with_folders(marks: &[&str]) -> Presenter {
 fn marked(p: &Presenter) -> Vec<&'static str> {
     let feed = p.feed(PaneId::Left).unwrap();
     ROWS.iter()
-        .zip(&feed.selected)
+        .zip(feed.selected.iter())
         .filter_map(|((name, _), selected)| selected.then_some(*name))
         .collect()
+}
+
+#[test]
+fn toolbar_availability_uses_the_feed_when_the_hidden_folder_has_no_target() {
+    let mut p = fed_with_folders(&[]);
+    p.panes[0].entries = Arc::from([]);
+    p.panes[0].cursor = None;
+    p.panes[0].parent_cursor = true;
+    p.panes[0].selection_pending_bulk = true;
+    assert!(p.can_target_cursor(PaneId::Left));
+    assert!(p.can_target_selection(PaneId::Left));
+    p.feed_close(PaneId::Left);
+    assert!(!p.can_target_cursor(PaneId::Left));
+    assert!(!p.can_target_selection(PaneId::Left));
 }
 
 /// A sender that keeps every command.
@@ -238,52 +252,86 @@ fn folder_actions_never_reach_the_folder_under_the_results() {
     );
     assert!(p.focused_name(PaneId::Left).is_some());
 
-    // Under the list, the toolbar, menus, command line and custom commands refuse.
-    let (mut p, id, _) = listed();
+    // Location-only actions remain unavailable: the virtual list has no
+    // destination folder, and must not fall through to the folder behind it.
+    let (mut p, id, root) = listed();
     p.feed_find_results(id).unwrap();
     let left = PaneId::Left;
     refused(&mut p, "New file", |p, send| {
         p.start_operation(left, MutationKind::CreateFile, send);
     });
-    refused(&mut p, "Rename", |p, send| {
-        p.start_operation(left, MutationKind::Rename, send);
-    });
     refused(&mut p, "Create folder", |p, send| {
         p.start_operation(left, MutationKind::CreateDirectory, send);
-    });
-    refused(&mut p, "Attributes, times and case", |p, send| {
-        p.open_metadata(left, false, send);
-    });
-    refused(&mut p, "Folder sizes", |p, send| p.folder_sizes(left, send));
-    refused(&mut p, "Checksums", |p, send| {
-        p.request_checksums(left, send)
-    });
-    assert!(p.checksums.sessions.is_empty(), "no Checksums dialog opens");
-    refused(&mut p, "Make file list", |p, send| {
-        p.request_make_file_list(left, send);
-    });
-    assert!(p.file_list.session.is_none());
-    refused(&mut p, "A custom command", |p, send| {
-        p.request_user_command(left, "test-command", false, send);
     });
     refused(&mut p, "Compare directories", |p, _| p.open_comparison());
     assert!(!p.comparison.open);
     refused(&mut p, "Paste", |p, send| p.paste_files(left, send));
     assert_eq!(
-        p.file_compare_launch(left).err(),
-        Some(refusal("Compare files")),
-        "both compared panels' focus would come from the folder"
-    );
-    assert_eq!(
         p.focused_name(left),
         None,
-        "a result's name would name a file of the folder under the list"
+        "the generic folder-name accessor never falls through to the hidden folder"
     );
-    let right = PaneId::Right;
+
+    // Rename is now supported, but prepares exactly the focused fed file.
+    let commands = RefCell::new(Vec::new());
+    p.start_operation(left, MutationKind::Rename, &|command| {
+        record(&commands, command)
+    });
+    let commands = commands.into_inner();
     assert!(
-        p.file_compare_launch(right)
-            .is_err_and(|error| error == refusal("Compare files")),
-        "the other panel compares against the left one"
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::PrepareOperation(_))),
+        "Rename must not use ordinary hidden-folder preparation"
+    );
+    let request = commands
+        .into_iter()
+        .find_map(|command| match command {
+            Command::PrepareCapturedRename(request) => Some(request),
+            _ => None,
+        })
+        .expect("Rename captures the fed focus");
+    assert_eq!(request.source_directory, root.join("a"));
+    struct Probe(std::sync::Mutex<Vec<PathBuf>>);
+    impl MutationService for Probe {
+        fn prepare(
+            &self,
+            path: &std::path::Path,
+            _: &Cancellation,
+        ) -> Result<Arc<dyn PreparedMutation>, FsError> {
+            self.0.lock().unwrap().push(path.to_owned());
+            Err(FsError::from_io(
+                "probe captured target",
+                path,
+                std::io::ErrorKind::Unsupported.into(),
+            ))
+        }
+    }
+    let probe = Probe(std::sync::Mutex::new(Vec::new()));
+    assert!(
+        request
+            .source
+            .prepare(&probe, &Cancellation::default())
+            .is_err()
+    );
+    assert_eq!(*probe.0.lock().unwrap(), [root.join("a").join("one.txt")]);
+    assert_eq!(
+        p.panes[0].entries[0].path,
+        root.join("hidden.txt"),
+        "the hidden folder's listing stays unchanged"
+    );
+}
+
+fn mask_target_changed_notice(p: &Presenter) {
+    let (title, body) = p
+        .desktop
+        .notice
+        .as_ref()
+        .expect("stale mask explains its captured target changed");
+    assert_eq!(title, "Select by mask");
+    assert!(
+        body.contains("changed") && body.contains("current rows"),
+        "{body}"
     );
 }
 
@@ -293,9 +341,15 @@ fn a_mask_dialog_opened_before_the_results_were_fed_leaves_the_folder_alone() {
     p.open_mask_selection(PaneId::Left, true);
     // The Find window is a window of its own: it can feed the panel meanwhile.
     p.feed_find_results(id).unwrap();
-    refused(&mut p, "Select by mask", |p, send| {
-        p.submit_mask_selection("*.txt", false, send);
-    });
+    let commands = RefCell::new(Vec::new());
+    p.submit_mask_selection("*.txt", false, &|command| record(&commands, command));
+    assert!(
+        commands.borrow().is_empty(),
+        "a stale dialog targets neither the hidden folder nor the new feed"
+    );
+    mask_target_changed_notice(&p);
+    assert_eq!(p.panes[0].selected_count(), 0);
+    assert_eq!(p.feed(PaneId::Left).unwrap().selected_count, 0);
     assert!(!p.mask_dialog.open, "the dialog closes");
     assert_eq!(
         p.preferences.values.mask_selection,
@@ -338,14 +392,13 @@ fn results_fed_while_the_mask_is_checked_leave_the_folder_alone() {
                 action: SelectionAction::Mask(_),
                 ..
             }) | Command::SavePreferences { .. }
+                | Command::ProjectFindFeed(_)
         )),
         "the folder under the list is not selected: {commands:?}"
     );
-    assert_eq!(
-        p.desktop.notice,
-        Some((REFUSED.into(), refusal("Select by mask"))),
-        "the list says why"
-    );
+    mask_target_changed_notice(&p);
+    assert_eq!(p.panes[0].selected_count(), 0);
+    assert_eq!(p.feed(PaneId::Left).unwrap().selected_count, 0);
     assert!(!p.mask_dialog.open, "the dialog closes");
     assert_eq!(
         p.preferences.values.mask_selection,
@@ -528,14 +581,14 @@ fn marks_cursor_and_totals_follow_keys_and_clicks() {
     act(&mut p, FeedAction::Bulk(SelectionOperation::InvertAll));
     let feed = p.feed(left).unwrap();
     assert_eq!(
-        feed.selected,
+        **feed.selected,
         [false, true, false],
         "invert files and folders"
     );
     assert_eq!((feed.selected_count, feed.selected_bytes), (1, 0));
     act(&mut p, FeedAction::Bulk(SelectionOperation::FilesOnly));
     let feed = p.feed(left).unwrap();
-    assert_eq!(feed.selected, [true, false, true], "the files only");
+    assert_eq!(**feed.selected, [true, false, true], "the files only");
     assert_eq!((feed.selected_count, feed.selected_bytes), (2, 30));
     act(&mut p, FeedAction::Bulk(SelectionOperation::Clear));
     p.feed_click(left, 0, false, false);
@@ -548,7 +601,7 @@ fn marks_cursor_and_totals_follow_keys_and_clicks() {
     );
     p.feed_click(left, 1, true, false);
     assert_eq!(
-        p.feed(left).unwrap().selected,
+        **p.feed(left).unwrap().selected,
         [true, false, true],
         "Ctrl+click toggles"
     );
@@ -765,6 +818,43 @@ fn delete_enters_the_captured_delete_flow_and_a_completed_delete_drops_its_rows(
         .unwrap();
     Arc::make_mut(progress).state = OperationState::Completed;
     p.flush_feeds();
+    let projection = RefCell::new(None);
+    p.flush_feed_projections(&|command| {
+        if let Command::ProjectFindFeed(request) = command {
+            *projection.borrow_mut() = Some(request);
+        }
+        true
+    });
+    let request = projection
+        .into_inner()
+        .expect("completed paths are pruned on a worker");
+    assert!(
+        request
+            .removed
+            .iter()
+            .flat_map(|batch| batch.iter())
+            .any(|path| path == &root.join("b"))
+    );
+    let retained: Arc<[Entry]> = vec![request.entries[0].clone()].into();
+    p.apply(Event::FindFeedProjected(Box::new(
+        FindFeedProjectionResult {
+            request: FindFeedProjectionStamp {
+                id: request.id,
+                pane: request.pane,
+                rows_serial: request.rows_serial,
+                selection_revision: request.selection_revision,
+            },
+            result: Ok(FindFeedProjection {
+                all_entries: retained.clone(),
+                index: Arc::new(DirectoryIndex::from_entries(&retained)),
+                entries: retained,
+                selected: Arc::new(vec![false]),
+                selected_count: 0,
+                selected_bytes: 0,
+                cursor: 0,
+            }),
+        },
+    )));
     let feed = p.feed(PaneId::Left).unwrap();
     let paths: Vec<_> = feed
         .entries
@@ -805,6 +895,70 @@ fn view_uses_the_results_as_the_viewer_listing_and_go_to_file_leaves_the_list() 
             .and_then(|pending| pending.wanted_cursor.clone()),
         Some(root.join("b").join("two.log"))
     );
+}
+
+#[test]
+fn refused_go_to_file_keeps_results_marks_and_cursor_for_retry() {
+    let (mut p, id, root) = searched();
+    p.feed_find_results(id).unwrap();
+    p.feed_click(PaneId::Left, 2, true, false);
+    p.feed_action(PaneId::Left, FeedAction::GoTo, &|_| false);
+    let feed = p
+        .feed(PaneId::Left)
+        .expect("busy navigation retains the results");
+    assert_eq!(feed.cursor, 2);
+    assert_eq!(feed.selected_count, 1);
+    assert_eq!(feed.focused().unwrap().path, root.join("b/two.log"));
+    assert!(p.panes[0].pending.is_none());
+    let commands = RefCell::new(Vec::new());
+    p.feed_action(PaneId::Left, FeedAction::GoTo, &|command| {
+        record(&commands, command)
+    });
+    assert!(p.feed(PaneId::Left).is_none());
+    assert_eq!(
+        p.panes[0].pending.as_ref().unwrap().wanted_cursor,
+        Some(root.join("b/two.log"))
+    );
+}
+
+#[test]
+fn feed_status_shows_focused_metadata_alongside_selection_counts() {
+    let (mut p, id, _) = searched();
+    p.feed_find_results(id).unwrap();
+    p.feed_click(PaneId::Left, 2, true, false);
+    let status = crate::find_windows::feed::status(p.feed(PaneId::Left).unwrap(), &p);
+    assert!(status.contains("two.log"), "{status}");
+    assert!(status.contains("20 bytes"), "{status}");
+    assert!(status.contains("1 of 3 selected"), "{status}");
+    p.feed_click(PaneId::Left, 0, false, false);
+    let status = crate::find_windows::feed::status(p.feed(PaneId::Left).unwrap(), &p);
+    assert!(status.contains("one.txt"), "{status}");
+    assert!(status.contains("10 bytes"), "{status}");
+    assert!(status.contains("1 of 3 selected"), "{status}");
+    p.feed_click(PaneId::Left, 1, false, false);
+    let status = crate::find_windows::feed::status(p.feed(PaneId::Left).unwrap(), &p);
+    assert!(status.contains("<DIR>"), "{status}");
+    assert!(!status.contains("0 bytes"), "{status}");
+}
+
+#[test]
+fn feed_status_uses_localized_times_and_native_attributes_without_metadata_io() {
+    let (mut p, id, _) = searched();
+    p.feed_find_results(id).unwrap();
+    let feed = p.finds.feeds[0].as_mut().unwrap();
+    let entries = Arc::make_mut(&mut feed.entries);
+    entries[0].metadata.localized_modified = Some(LocalizedDateTime {
+        date: "24.11.2026".into(),
+        time: "21:08:07".into(),
+    });
+    entries[0].metadata.unix_mode = Some(0o100640);
+    entries[0].metadata.native_attributes = Some(0x20);
+    let status = crate::find_windows::feed::status(p.feed(PaneId::Left).unwrap(), &p);
+    assert!(status.contains("24.11.2026 21:08:07"), "{status}");
+    #[cfg(target_os = "linux")]
+    assert!(status.contains("-rw-r----- (0640)"), "{status}");
+    #[cfg(windows)]
+    assert!(status.contains("Attributes"), "{status}");
 }
 
 #[test]

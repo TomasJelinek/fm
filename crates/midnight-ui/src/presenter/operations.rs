@@ -201,6 +201,9 @@ impl OperationsState {
 impl Presenter {
     /// Availability is based on native entry identities, never the rendered row label.
     pub(crate) fn can_target_cursor(&self, pane: PaneId) -> bool {
+        if let Some(feed) = self.feed(pane) {
+            return feed.focused().is_some();
+        }
         let p = &self.panes[pane.index()];
         !p.parent_cursor
             && !p.search_view_waiting()
@@ -208,6 +211,9 @@ impl Presenter {
     }
 
     pub(crate) fn can_target_selection(&self, pane: PaneId) -> bool {
+        if let Some(feed) = self.feed(pane) {
+            return feed.selected_count > 0 || feed.focused().is_some();
+        }
         let p = &self.panes[pane.index()];
         !p.search_view_waiting()
             && !p.selection_pending_bulk

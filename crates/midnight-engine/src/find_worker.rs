@@ -239,7 +239,7 @@ fn search(
             break;
         }
         let mut stack = vec![(source, root_cost)];
-        work.progress.directories += 1;
+        work.progress.directories = work.progress.directories.saturating_add(1);
         while !stack.is_empty() {
             if work.stopped() {
                 break 'roots;
@@ -270,18 +270,25 @@ fn search(
                     continue;
                 }
             };
-            if work.progress.examined >= request.limits.max_nodes {
-                work.budget(FindBudget::Nodes);
+            if !work.visit_node() {
                 break 'roots;
             }
-            work.progress.examined += 1;
             let mut source = match child {
                 FindChild::Entry(source) => source,
                 FindChild::Skipped { reason, .. } => {
                     match reason {
-                        FindSkipReason::Link => work.progress.skipped_links += 1,
-                        FindSkipReason::Special => work.progress.skipped_special += 1,
-                        FindSkipReason::MountBoundary => work.progress.skipped_mounts += 1,
+                        FindSkipReason::Link => {
+                            work.progress.skipped_links =
+                                work.progress.skipped_links.saturating_add(1)
+                        }
+                        FindSkipReason::Special => {
+                            work.progress.skipped_special =
+                                work.progress.skipped_special.saturating_add(1)
+                        }
+                        FindSkipReason::MountBoundary => {
+                            work.progress.skipped_mounts =
+                                work.progress.skipped_mounts.saturating_add(1)
+                        }
                     }
                     work.progress_if_due();
                     continue;
@@ -293,8 +300,10 @@ fn search(
                 }
             };
             match source.entry().kind {
-                EntryKind::Directory => work.progress.directories += 1,
-                EntryKind::File => work.progress.files += 1,
+                EntryKind::Directory => {
+                    work.progress.directories = work.progress.directories.saturating_add(1)
+                }
+                EntryKind::File => work.progress.files = work.progress.files.saturating_add(1),
                 _ => {
                     work.error(find_error(
                         &source.entry().path,
@@ -327,7 +336,8 @@ fn search(
                     ) {
                         ContentMatch::Match(matches) => matches,
                         ContentMatch::Limited(budget) => {
-                            work.progress.limited_files += 1;
+                            work.progress.limited_files =
+                                work.progress.limited_files.saturating_add(1);
                             work.budget(budget);
                             false
                         }
@@ -470,6 +480,17 @@ struct Work<'a> {
     archives_reported: bool,
 }
 impl Work<'_> {
+    /// Native traversal and archive members share an optional scan-count budget.
+    fn visit_node(&mut self) -> bool {
+        let maximum = self.request.limits.max_nodes;
+        if maximum != 0 && self.progress.examined >= maximum {
+            self.budget(FindBudget::Nodes);
+            return false;
+        }
+        self.progress.examined = self.progress.examined.saturating_add(1);
+        true
+    }
+
     /// Charges and batches one result. False when the search must end (result
     /// or memory limit, or the receiver stopped).
     fn publish(&mut self, entry: FindEntry, archive: Option<Arc<FindArchiveMember>>) -> bool {
@@ -552,7 +573,7 @@ impl Work<'_> {
             self.cancelled = true;
             return;
         }
-        self.progress.errors += 1;
+        self.progress.errors = self.progress.errors.saturating_add(1);
         if self.diagnostics.len() < MAX_FIND_DIAGNOSTICS {
             let cost = size_of::<FsError>()
                 + error.path.as_os_str().as_encoded_bytes().len()

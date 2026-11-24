@@ -52,7 +52,7 @@ pub(super) fn search(
             return !work.stopped();
         }
     };
-    work.progress.archives += 1;
+    work.progress.archives = work.progress.archives.saturating_add(1);
     // The archive must still be the file the walk found.
     let mut keep_going = match container.revalidate(work.cancel) {
         Ok(()) => walk(&opened, &archive, filter, content, work, accepted_at),
@@ -146,12 +146,10 @@ fn walk_folders(
             if work.stopped() {
                 return false;
             }
-            if work.progress.examined >= limits.max_nodes {
-                work.budget(FindBudget::Nodes);
+            if !work.visit_node() {
                 return false;
             }
-            work.progress.examined += 1;
-            work.progress.archive_members += 1;
+            work.progress.archive_members = work.progress.archive_members.saturating_add(1);
             let name = String::from_utf8_lossy(&node.raw_name).into_owned();
             let path = shown.join(&name);
             let entry = member_entry(&node, path, archive);
@@ -191,7 +189,8 @@ fn walk_folders(
                         {
                             ContentMatch::Match(matches) => matches,
                             ContentMatch::Limited(budget) => {
-                                work.progress.limited_files += 1;
+                                work.progress.limited_files =
+                                    work.progress.limited_files.saturating_add(1);
                                 work.budget(budget);
                                 false
                             }

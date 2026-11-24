@@ -61,9 +61,11 @@ impl Presenter {
         case: bool,
         send: &dyn Fn(Command) -> bool,
     ) {
-        if self.feed_refuses(pane, "Attributes, times and case")
-            || self.comparison_refuses("Attributes, times and case")
-        {
+        if self.comparison_refuses("Attributes, times and case") {
+            return;
+        }
+        if self.feed(pane).is_some() {
+            self.feed_metadata(pane, case, send);
             return;
         }
         if self.panes[pane.index()].tree_view().is_some() {

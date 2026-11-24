@@ -3,6 +3,8 @@ import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { FallbackIcons } from "action-icons.slint";
+import { ColumnGrip } from "column-grip.slint";
+import { SortHeading } from "find-results.slint";
 
 // One search result shown in a panel (Feed to panel).
 export struct FeedRow {
@@ -15,6 +17,55 @@ export struct FeedRow {
 // The search results a panel shows instead of its folder.
 export struct FeedView {
     open: bool, title: string, status: string, cursor: int,
+}
+
+struct FeedColumnWidths { name: length, folder: length, size: length, modified: length }
+
+// Headers and rows share widths and cell padding, including horizontal scrolling.
+component FeedColumns inherits HorizontalLayout {
+    in property <FeedRow> entry;
+    in property <bool> header;
+    in property <FeedColumnWidths> widths;
+    callback resize(int, length);
+    callback sort(int);
+    callback reveal(length, length);
+    padding-left: 8px; padding-right: 8px; spacing: 0px; alignment: start;
+    pure function column-width(index: int) -> length {
+        return index == 0 ? root.widths.name : index == 1 ? root.widths.folder
+            : index == 2 ? root.widths.size : root.widths.modified;
+    }
+    for title[index] in ["Name", "Folder", "Size", "Modified"]: HorizontalLayout {
+        padding-right: root.header ? 0px : 10px;
+        Rectangle {
+            width: root.column-width(index);
+            if root.header: SortHeading {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                title: title; align-right: index == 2;
+                accessible-label: title + " column";
+                sort => { root.sort(index); }
+                focused => { root.reveal(self.absolute-position.x - root.absolute-position.x,self.width); }
+            }
+            if !root.header && index != 1: Text {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: [root.entry.name, root.entry.folder, root.entry.size, root.entry.modified][index];
+                font-size: Theme.font-size;
+                font-weight: index == 0 && root.entry.directory ? 600 : 400;
+                color: root.entry.selected ? Theme.selected-text
+                    : index == 0 ? (root.entry.directory ? Theme.directory-text : Theme.text) : Theme.secondary-text;
+                vertical-alignment: center; horizontal-alignment: index == 2 ? right : left;
+                overflow: elide;
+            }
+            if !root.header && index == 1: PathText {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: root.entry.folder; tail: root.entry.folder-tail; font-size: Theme.font-size;
+                foreground: root.entry.selected ? Theme.selected-text : Theme.secondary-text;
+            }
+        }
+        if root.header: ColumnGrip {
+            active: true; title: title; start-width: root.column-width(index);
+            resize(width) => { root.resize(index, width); }
+        }
+    }
 }
 
 // Feed to panel: the search results each panel shows over its folder, and what
@@ -31,6 +82,7 @@ export global FeedPresentation {
     callback page-rows(int, int);
     // A panel action routed to the search results it shows; or refused there.
     callback action(int, int);
+    callback sort(int, int);
     callback refuse(int, string);
 }
 
@@ -59,6 +111,30 @@ export component FindFeedPanel inherits Rectangle {
     accessible-label: root.view.title;
     private property <length> row-height: Theme.row-height;
     private property <int> cursor: root.view.cursor;
+    // Each panel retains its widths while showing subsequent feeds.
+    private property <FeedColumnWidths> widths: {
+        name: Theme.small-font * 14, folder: Theme.small-font * 18,
+        size: Theme.small-font * 7, modified: Theme.small-font * 14,
+    };
+    private property <length> fixed-width: root.widths.name + root.widths.size + root.widths.modified + 56px;
+    private property <length> folder-width: max(root.widths.folder, list.visible-width - root.fixed-width);
+    private property <FeedColumnWidths> shown-widths: {
+        name: root.widths.name, folder: root.folder-width,
+        size: root.widths.size, modified: root.widths.modified,
+    };
+    function resize-column(index: int, width: length) {
+        if index == 0 { root.widths.name = width; }
+        else if index == 1 { root.widths.folder = width; }
+        else if index == 2 { root.widths.size = width; }
+        else if index == 3 { root.widths.modified = width; }
+    }
+    function reveal-column(left: length, width: length) {
+        let start = min(0px,list.visible-width - list.content-width);
+        if left + list.content-x < 0px { list.content-x = clamp(-left,start,0px); }
+        else if left + width + list.content-x > list.visible-width {
+            list.content-x = clamp(list.visible-width - left - width,start,0px);
+        }
+    }
     private property <int> shown-rows: max(1, floor(list.visible-height / root.row-height));
     changed shown-rows => { FeedPresentation.page-rows(root.pane, root.shown-rows); }
     changed cursor => { root.reveal-cursor(); }
@@ -92,6 +168,15 @@ export component FindFeedPanel inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     HintedActionButton {
+                        text: "Go to file"; fallback-icon: FallbackIcons.forward;
+                        enabled: root.cursor >= 0 && root.cursor < root.rows.length;
+                        hint: "Show the focused result in its folder (Enter).";
+                        clicked => { root.activate(); FeedPresentation.action(root.pane, 1); }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HintedActionButton {
                         text: "Back to folder"; fallback-icon: FallbackIcons.close;
                         hint: "Leave the search results (Backspace). The panel shows its folder again.";
                         clicked => { FeedPresentation.leave(root.pane); }
@@ -99,18 +184,17 @@ export component FindFeedPanel inherits Rectangle {
                 }
             }
         }
-        Rectangle {
-            height: Theme.column-height; background: Theme.header;
-            HorizontalLayout {
-                padding-left: 8px; padding-right: 8px; spacing: 10px;
-                Text { text: "Name"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
-                    vertical-alignment: center; width: parent.width * 0.32; overflow: elide; }
-                Text { text: "Folder"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
-                    vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                Text { text: "Size"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
-                    vertical-alignment: center; horizontal-alignment: right; width: Theme.small-font * 7; }
-                Text { text: "Modified"; color: Theme.secondary-text; font-size: Theme.small-font; font-weight: 600;
-                    vertical-alignment: center; width: Theme.small-font * 12; overflow: elide; }
+        Flickable {
+            height: Theme.column-height;
+            content-width: self.width; content-height: self.height;
+            interactive: false; mouse-drag-pan-enabled: false;
+            Rectangle { width: parent.width; height: parent.height; background: Theme.header; }
+            FeedColumns {
+                x: list.content-x; width: list.content-width; height: parent.height;
+                header: true; widths: root.shown-widths;
+                resize(index, width) => { root.resize-column(index, width); }
+                sort(column) => { FeedPresentation.sort(root.pane,column); }
+                reveal(left, width) => { root.reveal-column(left, width); }
             }
         }
         focus := FocusScope {
@@ -121,9 +205,11 @@ export component FindFeedPanel inherits Rectangle {
                 reject
             }
             list := ListView {
+                content-width: root.fixed-width + root.folder-width;
                 accessible-role: AccessibleRole.list; accessible-label: "Search results";
                 accessible-item-count: root.rows.length;
                 for row[index] in root.rows: Rectangle {
+                    width: list.content-width;
                     height: root.row-height;
                     background: root.cursor == index && root.active ? Theme.cursor-background
                         : root.cursor == index ? Theme.inactive-cursor
@@ -134,28 +220,9 @@ export component FindFeedPanel inherits Rectangle {
                     accessible-label: row.name + " · " + row.folder + " · " + row.size + " · " + row.modified;
                     accessible-item-selectable: true; accessible-item-selected: row.selected;
                     accessible-item-index: index;
-                    HorizontalLayout {
-                        padding-left: 8px; padding-right: 8px; spacing: 10px;
-                        Text {
-                            text: row.name; width: parent.width * 0.32; overflow: elide; vertical-alignment: center;
-                            font-size: Theme.font-size; font-weight: row.directory ? 600 : 400;
-                            color: row.selected ? Theme.selected-text : row.directory ? Theme.directory-text : Theme.text;
-                        }
-                        PathText {
-                            text: row.folder; tail: row.folder-tail;
-                            foreground: row.selected ? Theme.selected-text : Theme.secondary-text;
-                            font-size: Theme.font-size; horizontal-stretch: 1;
-                        }
-                        Text {
-                            text: row.size; width: Theme.small-font * 7; horizontal-alignment: right;
-                            vertical-alignment: center; overflow: elide; font-size: Theme.font-size;
-                            color: row.selected ? Theme.selected-text : Theme.secondary-text;
-                        }
-                        Text {
-                            text: row.modified; width: Theme.small-font * 12; vertical-alignment: center;
-                            overflow: elide; font-size: Theme.font-size;
-                            color: row.selected ? Theme.selected-text : Theme.secondary-text;
-                        }
+                    FeedColumns {
+                        x: 0px; y: 0px; width: parent.width; height: parent.height;
+                        entry: row; widths: root.shown-widths;
                     }
                     TouchArea {
                         pointer-event(event) => {
@@ -171,7 +238,7 @@ export component FindFeedPanel inherits Rectangle {
             }
         }
         Rectangle {
-            height: Theme.status-height; background: Theme.header;
+            height: Theme.status-height * 2; background: Theme.header;
             Text {
                 x: 8px; width: parent.width - 16px; height: parent.height;
                 text: root.view.status; color: Theme.secondary-text; font-size: Theme.small-font;

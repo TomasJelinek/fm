@@ -1699,6 +1699,15 @@ pub fn install_with_owned(
         p.change_terminal(index, !w.get_command_text().is_empty(), s);
     });
     callback!(on_insert_path, |w, p, _s, id| {
+        if let Some(path) = p
+            .feed(pane(id))
+            .and_then(|feed| feed.focused())
+            .and_then(|entry| entry.path.parent())
+            .map(std::path::Path::to_owned)
+        {
+            insert_literal(&w, p, &path, CommandInsertion::Directory);
+            return;
+        }
         if !p.native_action_allowed(pane(id)) {
             return;
         }
@@ -1706,8 +1715,12 @@ pub fn install_with_owned(
         insert_literal(&w, p, &path, CommandInsertion::Directory);
     });
     callback!(on_insert_name, |w, p, s| {
-        // Under search results the full path (`focused_full_path`) names the result.
-        if p.feed_refuses(p.active, "Inserting the focused name") {
+        // Mixed-folder results need an absolute path to name the focused file
+        // correctly from the command bar's current working directory.
+        if p.feed(p.active).is_some() {
+            if let Some(path) = p.focused_full_path(p.active) {
+                insert_literal(&w, p, &path, CommandInsertion::Filename);
+            }
             return;
         }
         let active = p.active;

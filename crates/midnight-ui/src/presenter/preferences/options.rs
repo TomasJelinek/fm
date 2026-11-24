@@ -111,6 +111,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         file_list,
         checksum_algorithms,
         window_geometry,
+        find,
         panel_split_basis_points,
         viewer,
         windows_shell,
@@ -128,6 +129,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         .clone_from(&file_list.template_history);
     to.file_list.path.clone_from(&file_list.path);
     to.checksum_algorithms = *checksum_algorithms;
+    to.find.clone_from(find);
     // Without a saved placement the window stays where it is.
     if window_geometry.is_some() {
         to.window_geometry.clone_from(window_geometry);

@@ -40,6 +40,8 @@ struct Scope {
     tree: Option<Arc<TreeProjection>>,
     archive: bool,
     fallback: Option<EntryId>,
+    /// Feed rows and their marks/cursor revision at capture; never a folder scope.
+    feed: Option<(u64, u64)>,
 }
 
 pub(crate) struct FileListSession {
@@ -87,7 +89,8 @@ impl FileListSession {
 
 impl Scope {
     fn matches(&self, pane: &Pane) -> bool {
-        self.navigation == pane.generation
+        self.feed.is_none()
+            && self.navigation == pane.generation
             && self.archive == pane.archive.is_some()
             && Arc::ptr_eq(&self.view, pane.display_index())
             && match (&self.tree, pane.tree_view()) {
@@ -178,7 +181,8 @@ impl Presenter {
     }
 
     pub(crate) fn request_make_file_list(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
-        if self.feed_refuses(pane, "Make file list") {
+        if self.feed(pane).is_some() {
+            self.open_feed_file_list(pane, send);
             return;
         }
         if self.operations.closing || self.file_list.session.is_some() {
@@ -211,6 +215,7 @@ impl Presenter {
             tree: p.tree_view().cloned(),
             archive: p.archive.is_some(),
             fallback: (!p.parent_cursor).then_some(p.cursor).flatten(),
+            feed: None,
         };
         let directory = p.display_location_text();
         let native_directory = p
@@ -220,6 +225,59 @@ impl Presenter {
             .unwrap_or(p.display_path())
             .to_owned();
         let capture = scope.capture(p, directory.clone()).map(Arc::new);
+        self.start_file_list(scope, directory, native_directory, capture, send);
+    }
+
+    /// Capture the fed list itself, including its order and explicit marks.
+    pub(crate) fn open_feed_file_list(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        if self.operations.closing || self.file_list.session.is_some() {
+            return;
+        }
+        let Some(feed) = self.feed(pane) else {
+            return;
+        };
+        let Some(files) = feed.files() else {
+            return;
+        };
+        let fallback = feed
+            .focused()
+            .filter(|_| files.selection.is_empty())
+            .map(|entry| entry.id);
+        let scope = Scope {
+            pane,
+            navigation: self.panes[pane.index()].generation,
+            revision: SelectionRevision(0),
+            view: files.view.clone(),
+            tree: None,
+            archive: false,
+            fallback,
+            feed: Some((feed.rows_serial, feed.selection_revision)),
+        };
+        let directory = feed.title.clone();
+        let Some(entry) = feed.focused().or_else(|| feed.entries.first()) else {
+            return;
+        };
+        let native_directory = entry.path.parent().unwrap_or(&entry.path).to_owned();
+        let capture = Arc::new(FileListCapture {
+            source: FileListSource::Native {
+                entries: feed.entries.clone(),
+                view: files.view,
+                selection: files.selection,
+                fallback,
+            },
+            directory: directory.clone(),
+        });
+        self.start_file_list(scope, directory, native_directory, Some(capture), send);
+    }
+
+    fn start_file_list(
+        &mut self,
+        scope: Scope,
+        directory: String,
+        native_directory: PathBuf,
+        capture: Option<Arc<FileListCapture>>,
+        send: &dyn Fn(Command) -> bool,
+    ) {
         let preferences = &self.preferences.values.file_list;
         let template = preferences
             .template_history
@@ -332,6 +390,7 @@ impl Presenter {
         }
         let scope_matches = s.scope.matches(&self.panes[s.scope.pane.index()]);
         let pane = s.scope.pane;
+        let feed_scope = s.scope.feed;
         let mut values = self.preferences.values.clone();
         if let Err(error) = values.file_list.remember(&s.template) {
             s.error = error;
@@ -349,7 +408,17 @@ impl Presenter {
         if save {
             self.save_file_list_preferences(values.file_list, send);
         }
-        if scope_matches && !self.bulk_selection(pane, SelectionOperation::Clear, send) {
+        if let Some((rows_serial, revision)) = feed_scope {
+            if self.feed(pane).is_some_and(|feed| {
+                feed.rows_serial == rows_serial && feed.selection_revision == revision
+            }) {
+                self.feed_action(
+                    pane,
+                    find::feed::FeedAction::Bulk(SelectionOperation::Clear),
+                    send,
+                );
+            }
+        } else if scope_matches && !self.bulk_selection(pane, SelectionOperation::Clear, send) {
             return;
         }
         if let Some(s) = self.file_list.session.take() {

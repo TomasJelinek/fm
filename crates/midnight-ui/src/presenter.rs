@@ -36,6 +36,8 @@ pub(crate) mod file_list;
 mod filename_colors;
 mod filter;
 pub(crate) mod find;
+mod find_feed_build;
+mod find_feed_projection;
 #[cfg(test)]
 mod find_roots_tests;
 #[cfg(test)]
@@ -533,8 +535,15 @@ impl Presenter {
         self.retired.push(Box::new(mem::take(&mut self.path_paste)));
         self.retired
             .push(Box::new(mem::take(&mut self.command_launches.jobs)));
+        for pane in [PaneId::Left, PaneId::Right] {
+            self.cancel_feed_build_for_pane(pane, None);
+            self.feed_close(pane);
+        }
         self.retired
             .push(Box::new(mem::take(&mut self.finds.sessions)));
+        if let Some(viewer) = self.take_find_viewer() {
+            self.retired.push(Box::new(viewer));
+        }
         self.retired
             .push(Box::new(mem::take(&mut self.checksums.sessions)));
         self.force_retire_copy_draft();
@@ -764,6 +773,7 @@ impl Presenter {
         mode: Reload,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.cancel_feed_build_for_pane(pane,Some("The panel navigated before its results were ready. Feed the current results again."));
         let p = &self.panes[pane.index()];
         let previous_view = p
             .pending
@@ -1041,6 +1051,8 @@ impl Presenter {
         self.inspect_copy_draft_links(None, send);
         self.flush_comparison(send);
         self.flush_find_panels();
+        self.flush_find_feed_builds(send);
+        self.flush_feed_projections(send);
         // A manifest destination was just chosen: save to it now.
         self.begin_pending_checksum_saves(send);
         self.flush_settings_file(send);
@@ -1237,6 +1249,12 @@ impl Presenter {
             return;
         };
         let Some(event) = self.apply_colors_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_feed_build_event(event) else {
+            return;
+        };
+        let Some(event) = self.apply_feed_projection_event(event) else {
             return;
         };
         let Some(event) = self.apply_filter_event(event) else {
@@ -1945,6 +1963,20 @@ impl Presenter {
         column: SortColumn,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if let Some(feed) = self.feed(pane) {
+            let column = match column {
+                SortColumn::Name => FindSortColumn::Name,
+                SortColumn::Type => FindSortColumn::Extension,
+                SortColumn::Size => FindSortColumn::Size,
+                SortColumn::Modified => FindSortColumn::Modified,
+            };
+            let sort = FindSortSpec {
+                column,
+                descending: feed.projection.desired.sort.column == column
+                    && !feed.projection.desired.sort.descending,
+            };
+            return self.request_feed_sort(pane, sort, send);
+        }
         let p = &self.panes[pane.index()];
         if p.tree_view().is_some() {
             let options = TreeProjectionOptions {

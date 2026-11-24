@@ -444,7 +444,18 @@ fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf>
     if selection.is_empty() || !Arc::ptr_eq(selection.basis(), pane.display_index()) {
         return None;
     }
-    selection
+    first_selected_checksum_file(files, |position| pane.display_entry(position))
+}
+
+fn first_selected_checksum_file<'a>(
+    files: &SelectedFiles,
+    entry_at: impl Fn(usize) -> Option<&'a Entry>,
+) -> Option<PathBuf> {
+    if !Arc::ptr_eq(files.selection.basis(), &files.view) {
+        return None;
+    }
+    files
+        .selection
         .bits()
         .iter()
         .enumerate()
@@ -456,14 +467,32 @@ fn selected_checksum_file(pane: &Pane, files: &SelectedFiles) -> Option<PathBuf>
                 Some(word * 64 + bit)
             })
         })
-        .filter_map(|position| pane.display_entry(position))
+        .filter_map(entry_at)
         .find(|entry| is_checksum_file(&entry.path, entry.kind))
         .map(|entry| entry.path.clone())
 }
 
 impl Presenter {
     pub(crate) fn request_checksums(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
-        if self.feed_refuses(pane, "Checksums") {
+        if let Some(feed) = self.feed(pane) {
+            let Some(files) = feed.files() else {
+                return;
+            };
+            let Some(focused) = feed.focused() else {
+                return;
+            };
+            let directory = focused.path.parent().unwrap_or(&focused.path).to_owned();
+            let manifest = Some(focused)
+                .filter(|entry| {
+                    is_checksum_file(&entry.path, entry.kind)
+                        && (files.selection.is_empty()
+                            || files.selection.contains_path(&entry.path))
+                })
+                .map(|entry| entry.path.clone())
+                .or_else(|| {
+                    first_selected_checksum_file(&files, |position| feed.entries.get(position))
+                });
+            self.open_checksum_session(directory, files, None, manifest, send);
             return;
         }
         if self.panes[pane.index()].tree_view().is_some() {

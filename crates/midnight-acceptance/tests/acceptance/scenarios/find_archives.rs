@@ -172,8 +172,8 @@ fn tree(work: &Path) -> Result<Tree, String> {
         .collect();
     write(&many.join("large.zip"), &encode::zip(&members))?;
 
-    // Eleven archives of 10 folders × 9,990 files (99,910 entries each, under the
-    // worker's 100,000): more than 1,000,000 visited entries.
+    // Eleven archives of 10 folders × 9,990 files (99,910 entries each):
+    // more than 1,000,000 visited entries without retaining matching results.
     let nodes = work.join("arch-nodes");
     let mut members = Vec::with_capacity(99_910);
     for folder in 0..10 {
@@ -815,7 +815,7 @@ fn stop(app: &mut App, context: &mut Context, tree: &Tree) -> Result<(), String>
     Ok(())
 }
 
-/// Members count as visited entries: eleven archives of 99,910 reach 1,000,000.
+/// Every member is visited beyond the former million-entry scan ceiling.
 fn nodes(app: &mut App, tree: &Tree) -> Result<(), String> {
     let window = open_on(app, PaneId::Left)?;
     find::add_root(app, &window, &tree.nodes, false)?;
@@ -833,9 +833,9 @@ fn nodes(app: &mut App, tree: &Tree) -> Result<(), String> {
     let took = started.elapsed();
     let texts = find::details(app, &window)?;
     find::close(app, &window);
-    if !text.starts_with("Incomplete")
-        || tools::count_before(&text, " examined") != Some(1_000_000)
-        || !find::mentions(&texts, "Reached limits: visited entries")
+    if !text.starts_with("Completed")
+        || tools::count_before(&text, " examined") != Some(11 * 99_910 + 11)
+        || find::mentions(&texts, "Reached limits: visited entries")
     {
         return Err(format!(
             "eleven archives of 99,910 members: {text:?} in {:.1} s, details {texts:?}",

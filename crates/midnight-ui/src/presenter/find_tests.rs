@@ -7,6 +7,23 @@ fn presenter() -> Presenter {
 }
 
 #[test]
+fn only_admitted_searches_remember_the_filename_mask() {
+    let mut p = presenter();
+    let id = p.create_find(PaneId::Left).unwrap();
+    let form = || FindForm {
+        masks: "*.文档;*.txt|old*".into(),
+        ..FindForm::default()
+    };
+    assert!(!p.start_find(id, form(), &|_| false));
+    assert!(p.preferences.values.find.mask_history.is_empty());
+    assert!(p.start_find(id, form(), &|_| true));
+    assert_eq!(
+        p.preferences.values.find.mask_history,
+        ["*.文档;*.txt|old*"]
+    );
+}
+
+#[test]
 fn admission_and_close_preserve_state_when_queue_is_full() {
     let mut p = presenter();
     let id = p.create_find(PaneId::Left).unwrap();

@@ -1,5 +1,6 @@
 //! Modeless Find presentation state; native work is dispatched through commands.
 use super::*;
+use std::{cell::RefCell, rc::Rc};
 #[path = "find_actions.rs"]
 mod actions;
 #[path = "find_feed.rs"]
@@ -41,6 +42,8 @@ impl Default for FindForm {
 #[derive(Default)]
 pub(crate) struct FindState {
     pub sessions: HashMap<FindSessionId, FindSession>,
+    /// A closing window can record placement while its caller already owns Presenter.
+    pub(crate) pending_window_geometry: Rc<RefCell<Option<WindowGeometry>>>,
     // Window refresh runs under an immutable Presenter borrow. Retain replaced
     // row-order owners here until the normal backend reclamation drain, without
     // borrowing the whole Presenter mutably from a synchronous Slint callback.
@@ -52,6 +55,8 @@ pub(crate) struct FindState {
     archive_cursor: Option<(PaneId, NavigationId, Vec<u8>)>,
     /// Feed to panel: the search results each panel shows instead of its folder.
     pub(crate) feeds: [Option<feed::FeedPane>; 2],
+    pub(crate) feed_builds: [Option<super::find_feed_build::PendingFeedBuild>; 2],
+    pub(crate) feed_focus: std::cell::Cell<Option<PaneId>>,
     /// A viewer requested from search results in a panel, opened by the application.
     feed_viewer: Option<ViewerLaunch>,
     /// Identifies each delete captured from search results.
@@ -75,6 +80,7 @@ pub(crate) struct FindSession {
     pub sort_revision: u64,
     pub current_directory: Option<Arc<PathBuf>>,
     pub running: bool,
+    pub feeding: bool,
     pub stopping: bool,
     pub duplicates: bool,
     pub progress: FindProgress,
@@ -100,7 +106,10 @@ impl FindState {
         std::mem::take(self.retired_orders.get_mut())
     }
 
-    fn session_mut(&mut self, id: &FindSessionId) -> Option<&mut FindSession> {
+    pub(in crate::presenter) fn session_mut(
+        &mut self,
+        id: &FindSessionId,
+    ) -> Option<&mut FindSession> {
         self.session_mut_if(id, |_| true)
     }
 
@@ -154,6 +163,7 @@ impl Presenter {
                 sort_revision: 0,
                 current_directory: None,
                 running: false,
+                feeding: false,
                 stopping: false,
                 duplicates: false,
                 progress: FindProgress::default(),
@@ -178,6 +188,7 @@ impl Presenter {
         form: FindForm,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        self.cancel_feed_builds_for_session(id);
         let Some(s) = self.finds.session_mut(&id) else {
             return false;
         };
@@ -208,6 +219,7 @@ impl Presenter {
             s.error = error.into();
             return false;
         }
+        let mask = request.masks.clone();
         if !send(Command::StartFind(Box::new(request))) {
             s.error = "Search queue is busy. Try again.".into();
             return false;
@@ -218,6 +230,7 @@ impl Presenter {
         self.retired.push(Box::new(s.viewer.take()));
         s.generation = generation;
         s.running = true;
+        s.feeding = false;
         s.duplicates = form.duplicates;
         s.stopping = false;
         s.error.clear();
@@ -229,6 +242,7 @@ impl Presenter {
         self.retired.push(Box::new(s.order.take()));
         self.retired.push(Box::new(mem::take(&mut s.results)));
         self.retired.push(Box::new(s.summary.take()));
+        self.remember_find_mask(&mask, send);
         true
     }
 
@@ -281,6 +295,7 @@ impl Presenter {
     }
 
     pub(crate) fn close_find(&mut self, id: FindSessionId, send: &dyn Fn(Command) -> bool) -> bool {
+        self.cancel_feed_builds_for_session(id);
         let Some(s) = self.finds.session_mut(&id) else {
             return true;
         };

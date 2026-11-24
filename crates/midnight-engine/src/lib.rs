@@ -56,6 +56,7 @@ mod engine_lifecycle_tests;
 #[cfg(test)]
 mod engine_resident_tests;
 mod entry_sizes;
+mod feed_projection;
 mod file_list_actor;
 mod file_list_output;
 mod file_list_records;
@@ -64,6 +65,7 @@ mod file_targets;
 mod filename_colors;
 mod filters;
 mod find;
+mod find_feed_sizes;
 mod find_sort;
 mod find_worker;
 mod folder_presence;
@@ -780,6 +782,15 @@ impl EngineServices {
         let size_budget = Arc::new(Semaphore::new(2));
         let size_delivery_cancel = Cancellation::default();
         let size_io_budget = Arc::new(folder_sizes::IoBudget::new());
+        let mut feed_sizes = find_feed_sizes::Controller::new(
+            self.filesystem.clone(),
+            self.outbox.clone(),
+            size_budget.clone(),
+            size_delivery_cancel.clone(),
+            size_io_budget.clone(),
+            scope.clone(),
+            resources.reports.clone(),
+        );
         let mut entry_sizes = entry_sizes::Controller::new(
             entry_sizes::Services {
                 filesystem: self.filesystem.clone(),
@@ -820,6 +831,9 @@ impl EngineServices {
         loop {
             // Drain completions before accepting another continuously-ready command.
             while tasks.try_join_next().is_some() {}
+            if feed_sizes.busy() {
+                feed_sizes.tick(&mut tasks);
+            }
             tokio::select! {
                 Some(prepared) = properties_ready.recv() => {
                     desktop.properties(self.filesystem.clone(), prepared.request, prepared.paths, prepared.cancel, &mut tasks).await;
@@ -1078,6 +1092,9 @@ impl EngineServices {
                         Some(Command::CancelComparison(id)) => comparison.cancel(id),
                         Some(Command::ValidatePanelFilter(request)) => filters.validate(request),
                         Some(Command::ValidateSelectionMask(request)) => filters.validate_mask(request),
+                        Some(Command::ProjectFindFeed(request)) => filters.project_feed(request, self.locale.clone()),
+                        Some(Command::BuildFindFeed(request)) => filters.build_feed(request),
+                        Some(Command::ComputeFindFeedSizes(request)) => feed_sizes.compute(request,&mut tasks),
                         Some(Command::ValidateFilenameColors(request)) => filename_colors.validate(request),
                         Some(Command::MatchFilenameColors(request)) => filename_colors.matches(request),
                         Some(Command::ClearFilenameColors { pane, id }) => filename_colors.clear(pane, id),
@@ -1441,6 +1458,7 @@ impl EngineServices {
         // reserved cleanup worker even when Shutdown precedes them in the queue.
         retire_commands(commands).await;
         archive_sizes.shutdown().await;
+        feed_sizes.cancel_all();
         size_delivery_cancel.cancel();
         for request in requests.into_iter().flatten() {
             request.cancel();

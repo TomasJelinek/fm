@@ -51,6 +51,9 @@ impl OwnedCommandScope for FixtureScope {
                 self.retire(Box::new(request.sources.clone()));
             }
             Command::RunFileList(request) => self.retire(Box::new(request.capture.clone())),
+            Command::ProjectFindFeed(request) => self.retire(Box::new(request.clone())),
+            Command::BuildFindFeed(request) => self.retire(Box::new(request.clone())),
+            Command::ComputeFindFeedSizes(request) => self.retire(Box::new(request.clone())),
             Command::CopyGeneratedText {
                 content, cancel, ..
             }

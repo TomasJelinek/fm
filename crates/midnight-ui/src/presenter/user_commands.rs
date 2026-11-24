@@ -101,6 +101,18 @@ impl Presenter {
         self.capture_user_command(pane, configuration, id, true, Some(origin), send)
     }
 
+    /// A fed list has no common folder: its focused result supplies directory variables.
+    fn user_command_directory(&self, pane: PaneId) -> Option<PathBuf> {
+        if let Some(feed) = self.feed(pane) {
+            return feed
+                .focused()
+                .map(|entry| entry.path.parent().unwrap_or(&entry.path).to_owned());
+        }
+        let pane = &self.panes[pane.index()];
+        pane.native_capabilities()
+            .then(|| pane.display_path().to_owned())
+    }
+
     fn capture_user_command(
         &mut self,
         pane: PaneId,
@@ -113,16 +125,6 @@ impl Presenter {
         // An unsaved editor draft can be the configuration's last owner. Keep
         // final destruction off the UI even if validation or transport refuses it.
         self.retired.push(Box::new(configuration.clone()));
-        // The folder, focus and selection a command captures are hidden under
-        // search results fed to the panel (toolbar, popup and F9 menu alike).
-        if self.feed(pane).is_some() {
-            self.report_user_command_error(
-                settings_preview.as_ref(),
-                find::feed::REFUSED,
-                find::feed::refusal("A custom command"),
-            );
-            return false;
-        }
         if self.operations.closing || !self.preferences.loaded {
             return false;
         }
@@ -154,8 +156,9 @@ impl Presenter {
         };
         self.command_launches.next = next;
         let p = &self.panes[pane.index()];
-        let other = &self.panes[pane.other().index()];
-        if p.loading || p.search_view_waiting() {
+        let feed = self.feed(pane);
+        let is_feed = feed.is_some();
+        if !is_feed && (p.loading || p.search_view_waiting()) {
             self.report_user_command_error(
                 settings_preview.as_ref(),
                 "Custom Commands",
@@ -163,15 +166,26 @@ impl Presenter {
             );
             return false;
         }
+        let feed_files = feed.and_then(|feed| feed.files());
+        if is_feed && feed_files.is_none() {
+            self.report_user_command_error(
+                settings_preview.as_ref(),
+                "Custom Commands",
+                "Select a search result before running a custom command.".into(),
+            );
+            return false;
+        }
         let context = UserCommandContext {
-            active: p.native_capabilities().then(|| p.display_path().to_owned()),
-            other: other
-                .native_capabilities()
-                .then(|| other.display_path().to_owned()),
+            active: self.user_command_directory(pane),
+            other: self.user_command_directory(pane.other()),
             files: None,
-            focus: (p.tree_view().is_none() && p.native_capabilities() && !p.parent_cursor)
-                .then(|| p.cursor.and_then(|id| p.entry_by_id(id)).cloned())
-                .flatten(),
+            focus: if let Some(feed) = feed {
+                feed.focused().cloned()
+            } else {
+                (p.tree_view().is_none() && p.native_capabilities() && !p.parent_cursor)
+                    .then(|| p.cursor.and_then(|id| p.entry_by_id(id)).cloned())
+                    .flatten()
+            },
         };
         let capture = CommandCapture {
             name: command.name.clone(),
@@ -185,6 +199,9 @@ impl Presenter {
             preview_only,
             settings_preview,
         };
+        if is_feed {
+            return self.submit_user_command(capture, feed_files, send);
+        }
         if p.tree_view().is_some() {
             return self.request_tree_user_command(pane, capture, send);
         }

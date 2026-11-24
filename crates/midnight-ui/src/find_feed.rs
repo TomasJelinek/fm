@@ -8,17 +8,51 @@ use crate::{
     shown_text,
 };
 use midnight_core::*;
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelNotify, ModelRc, ModelTracker};
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 struct PaneModel {
-    rows: Rc<VecModel<FeedRow>>,
+    rows: Rc<FeedRows>,
     /// The rows serial and revision last shown.
     shown: Cell<Option<(u64, u64)>>,
+    format: RefCell<Option<(SizeDisplay, NumberLocale)>>,
     open: Cell<bool>,
+}
+
+// The backend owns complete entries and indexes. Slint asks only for viewport
+// rows; refreshing a 100,000-row feed never formats or copies every row in a callback.
+struct FeedRows {
+    state: Weak<RefCell<Presenter>>,
+    pane: PaneId,
+    notify: ModelNotify,
+}
+impl Model for FeedRows {
+    type Data = FeedRow;
+    fn row_count(&self) -> usize {
+        self.state.upgrade().map_or(0, |state| {
+            state
+                .borrow()
+                .feed(self.pane)
+                .map_or(0, |feed| feed.entries.len())
+        })
+    }
+    fn row_data(&self, index: usize) -> Option<FeedRow> {
+        let state = self.state.upgrade()?;
+        let presenter = state.borrow();
+        let feed = presenter.feed(self.pane)?;
+        let entry = feed.entries.get(index)?;
+        let mut shown = row(entry, *feed.selected.get(index)?, &presenter);
+        if let Some(size) = feed.sizes.folder_size_text(entry, &presenter) {
+            shown.size = size.into();
+        }
+        Some(shown)
+    }
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
 }
 
 pub(crate) struct FeedModels {
@@ -50,6 +84,7 @@ const DELETE: i32 = 36;
 const CLIPBOARD_COPY: i32 = 37;
 const CLIPBOARD_CUT: i32 = 38;
 const PROPERTIES: i32 = 39;
+const MAKE_FILE_LIST: i32 = 40;
 
 fn action(code: i32) -> Option<FeedAction> {
     Some(match code {
@@ -77,6 +112,7 @@ fn action(code: i32) -> Option<FeedAction> {
         CLIPBOARD_COPY => FeedAction::Clipboard { cut: false },
         CLIPBOARD_CUT => FeedAction::Clipboard { cut: true },
         PROPERTIES => FeedAction::Properties,
+        MAKE_FILE_LIST => FeedAction::MakeFileList,
         _ => return None,
     })
 }
@@ -126,14 +162,13 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, key: &FileKey) -> Option<
         FileKey::Panel(14) => NEXT_SELECTED,
         FileKey::Panel(_) => return Some(1),
         // Keypad + and −, Ctrl+= and Ctrl+−: masks select folder entries.
-        FileKey::Bulk(6) => return refuse("Select by mask"),
-        FileKey::Bulk(7) => return refuse("Deselect by mask"),
+        FileKey::Bulk(6 | 7) => return None,
         // Keypad *: inverts the marks as in a panel, the folders' too when Select by
         // mask includes folders (`Presenter::mask_invert_operation`).
         FileKey::Bulk(8) => MASK_INVERT,
         FileKey::Bulk(operation) => BULK + operation,
         FileKey::Action(0 | 2 | 4) => LEAVE,
-        FileKey::Action(5) => return refuse("Show hidden files"),
+        FileKey::Action(5) => return None,
         FileKey::Action(_) => return Some(1),
         FileKey::View(basic) => {
             if *basic {
@@ -145,7 +180,7 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, key: &FileKey) -> Option<
         FileKey::Edit => EDIT,
         FileKey::Mutation(1) => TRASH,
         FileKey::Mutation(2) => DELETE,
-        FileKey::Mutation(0) => return refuse("Rename"),
+        FileKey::Mutation(0) => return None,
         FileKey::Mutation(3) => return refuse("Create folder"),
         FileKey::Mutation(_) => return refuse("New file"),
         FileKey::Clipboard(0) => CLIPBOARD_COPY,
@@ -154,17 +189,15 @@ pub(crate) fn dispatch(window: &MainWindow, pane: i32, key: &FileKey) -> Option<
         FileKey::Clipboard(4) => CLIPBOARD_CUT,
         FileKey::Clipboard(_) => return refuse("Paste"),
         FileKey::Properties => PROPERTIES,
-        FileKey::Sort(_) => {
-            return refuse("Sorting (sort the results in the Find window before feeding them)");
-        }
-        FileKey::FolderSizes => return refuse("Folder sizes"),
-        FileKey::Metadata(_) => return refuse("Attributes, times and case"),
-        FileKey::CompareFiles => return refuse("Compare files"),
-        FileKey::Checksums => return refuse("Checksums"),
-        FileKey::MakeFileList => return refuse("Make file list"),
-        FileKey::UserCommand(_) => return refuse("A custom command"),
+        FileKey::Sort(_) => return None,
+        FileKey::FolderSizes => return None,
+        FileKey::Metadata(_) => return None,
+        FileKey::CompareFiles => return None,
+        FileKey::Checksums => return None,
+        FileKey::MakeFileList => MAKE_FILE_LIST,
+        FileKey::UserCommand(_) => return None,
         FileKey::Compare => return refuse("Compare directories"),
-        FileKey::Filter => return refuse("The panel filter"),
+        FileKey::Filter => return None,
         FileKey::Native | FileKey::Consumed | FileKey::ClearSearch | FileKey::ErasePrevious => {
             return Some(1);
         }
@@ -186,9 +219,18 @@ pub(crate) fn install(
     begin_owned: &crate::BeginOwned,
 ) -> Rc<FeedModels> {
     let models = Rc::new(FeedModels {
-        panes: std::array::from_fn(|_| PaneModel {
-            rows: Rc::new(VecModel::default()),
+        panes: std::array::from_fn(|slot| PaneModel {
+            rows: Rc::new(FeedRows {
+                state: Rc::downgrade(state),
+                pane: if slot == 0 {
+                    PaneId::Left
+                } else {
+                    PaneId::Right
+                },
+                notify: ModelNotify::default(),
+            }),
             shown: Cell::new(None),
+            format: RefCell::new(None),
             open: Cell::new(false),
         }),
     });
@@ -250,6 +292,24 @@ pub(crate) fn install(
             p.feed_action(crate::pane(pane), action, send);
         }
     });
+    callback!(on_sort, |p, send, pane, column| {
+        let column = match column {
+            0 => FindSortColumn::Name,
+            1 => FindSortColumn::Path,
+            2 => FindSortColumn::Size,
+            3 => FindSortColumn::Modified,
+            _ => return,
+        };
+        let pane = crate::pane(pane);
+        if let Some(feed) = p.feed(pane) {
+            let sort = FindSortSpec {
+                column,
+                descending: feed.projection.desired.sort.column == column
+                    && !feed.projection.desired.sort.descending,
+            };
+            p.request_feed_sort(pane, sort, send);
+        }
+    });
     callback!(on_refuse, |p, _send, pane, label| {
         let _ = pane;
         p.feed_refuse(&label);
@@ -265,23 +325,19 @@ impl FeedModels {
             let view = match presenter.feed(pane) {
                 Some(feed) => {
                     let key = (feed.rows_serial, feed.revision);
-                    if model.shown.get().map(|(rows, _)| rows) != Some(key.0) {
-                        model.rows.set_vec(
-                            feed.entries
-                                .iter()
-                                .zip(&feed.selected)
-                                .map(|(entry, selected)| row(entry, *selected, presenter))
-                                .collect::<Vec<_>>(),
-                        );
-                    } else if model.shown.get() != Some(key) {
-                        for (index, selected) in feed.selected.iter().enumerate() {
-                            if let Some(mut shown) = model.rows.row_data(index)
-                                && shown.selected != *selected
-                            {
-                                shown.selected = *selected;
-                                model.rows.set_row_data(index, shown);
-                            }
-                        }
+                    let format_changed =
+                        model.format.borrow().as_ref().is_none_or(|(size, locale)| {
+                            *size != presenter.preferences.values.size_display
+                                || locale != &presenter.number_locale
+                        });
+                    if format_changed {
+                        *model.format.borrow_mut() = Some((
+                            presenter.preferences.values.size_display,
+                            presenter.number_locale.clone(),
+                        ));
+                    }
+                    if model.shown.get() != Some(key) || format_changed {
+                        model.rows.notify.reset();
                     }
                     model.shown.set(Some(key));
                     FeedView {
@@ -293,7 +349,7 @@ impl FeedModels {
                 }
                 None => {
                     if model.shown.take().is_some() {
-                        model.rows.set_vec(Vec::new());
+                        model.rows.notify.reset();
                     }
                     FeedView::default()
                 }
@@ -348,7 +404,7 @@ fn row(entry: &Entry, selected: bool, presenter: &Presenter) -> FeedRow {
     }
 }
 
-/// The list's status line: marks, their size, the results it cannot show and its keys.
+/// Focused metadata, then marks, their size, omitted results and list keys.
 pub(crate) fn status(
     feed: &crate::presenter::find::feed::FeedPane,
     presenter: &Presenter,
@@ -381,7 +437,30 @@ pub(crate) fn status(
         ));
     }
     text.push_str(" · Enter: go to file · Backspace: back to folder");
-    text
+    let Some(entry) = feed.focused() else {
+        return text;
+    };
+    let mut details = vec![entry.display_name.clone()];
+    details.push(if entry.kind == EntryKind::Directory {
+        "<DIR>".into()
+    } else {
+        entry.metadata.size.map_or_else(
+            || "Size unknown".into(),
+            |bytes| format!("{} bytes", locale.format_u64(bytes)),
+        )
+    });
+    if let Some(size) = feed.sizes.folder_size_text(entry, presenter) {
+        details.push(format!("Size: {size}"));
+    }
+    if let Some(time) = crate::time_presentation::modified(&entry.metadata) {
+        details.push(format!("{} {}", time.date, time.time));
+    }
+    details.extend(
+        crate::detail_attributes::fields(&entry.metadata)
+            .into_iter()
+            .map(|(label, value)| format!("{label}: {value}")),
+    );
+    format!("{}\n{text}", details.join(" · "))
 }
 
 #[cfg(test)]

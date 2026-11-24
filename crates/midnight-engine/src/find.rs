@@ -159,7 +159,7 @@ impl Controller {
         }
     }
 
-    /// Up to 10,000 results (paths and metadata) are freed on a backend worker.
+    /// Up to the Find result cap (paths and metadata) are freed on a backend worker.
     /// A full queue keeps the bounded fallback of dropping them here.
     fn retire(&self, results: Vec<Arc<FindResult>>) {
         if !results.is_empty() {

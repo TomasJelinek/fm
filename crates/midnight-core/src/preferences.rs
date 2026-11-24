@@ -434,6 +434,7 @@ pub struct UserPreferences {
     /// Algorithm choices for new checksum windows; recursion is deliberately not persisted.
     pub checksum_algorithms: crate::ChecksumAlgorithms,
     pub window_geometry: Option<crate::WindowGeometry>,
+    pub find: crate::FindPreferences,
     /// Normal left panel width as 1..=9999 basis points; panel zoom is transient.
     pub panel_split_basis_points: u16,
     /// Per-extension archive browsing choices; absent keys use the catalog default.
@@ -542,6 +543,7 @@ impl Default for UserPreferences {
             file_list: crate::FileListPreferences::default(),
             checksum_algorithms: crate::ChecksumAlgorithms::default(),
             window_geometry: None,
+            find: crate::FindPreferences::default(),
             panel_split_basis_points: DEFAULT_PANEL_SPLIT_BASIS_POINTS,
             archive_association_overrides: BTreeMap::new(),
             archive_custom_extensions: BTreeMap::new(),
@@ -653,6 +655,9 @@ impl UserPreferences {
             message = Some(error);
         }
         if let Err(error) = self.file_list.validate() {
+            message = Some(error);
+        }
+        if let Err(error) = self.find.validate() {
             message = Some(error);
         }
         if !THUMBNAIL_SIZES.contains(&self.thumbnail_size) {

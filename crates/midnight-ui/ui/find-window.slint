@@ -1,5 +1,5 @@
 import { ScrollView } from "scroll-view.slint";
-import { HintedLineEdit, HintedActionButton, HintedComboBox } from "hinted-inputs.slint";
+import { HintedLineEdit, HintedActionButton, HintedComboBox, HistoryLineEdit } from "hinted-inputs.slint";
 import { Theme } from "theme.slint";
 import { PathText } from "path-text.slint";
 import { FallbackIcons } from "action-icons.slint";
@@ -39,6 +39,11 @@ export component FindWindow inherits ToolWindow {
     preferred-width: 780px; preferred-height: 560px;
     icon: FallbackIcons.find;
     in property <[FindRow]> rows;
+    in property <[string]> mask-history;
+    in-out property <string> filename-mask: "*.*";
+    // User actions own the draft; host initialization never marks it as edited.
+    out property <bool> filename-mask-edited;
+    in property <string> found-count: "" + root.rows.length;
     // Whether each shown result is selected; the host keeps the selection.
     in property <[bool]> marks;
     in property <int> selected-count;
@@ -58,6 +63,7 @@ export component FindWindow inherits ToolWindow {
         roots.focus();
     }
     in property <bool> running;
+    in property <bool> feeding;
     in property <bool> stopping;
     in property <bool> duplicate-results;
     in property <string> progress;
@@ -158,7 +164,7 @@ export component FindWindow inherits ToolWindow {
     out property <int> footer-buttons: find-footer.shown-actions;
     out property <int> footer-overflow: find-footer.overflow-actions;
     callback copy-details();
-    public function begin() { masks.focus(); }
+    public function begin() { masks.focus-line(); }
     public function start-adding() {
         // The entry is created empty and focuses itself.
         root.new-root-text = "";
@@ -228,15 +234,31 @@ export component FindWindow inherits ToolWindow {
                             color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600;
                             vertical-alignment: center; min-width: 0px; wrap: root.compact-query ? no-wrap : word-wrap;
                         }
-                        masks := HintedLineEdit {
+                        HorizontalLayout {
                             row: root.name-row; col: root.name-row == 1 ? 0 : 1; colspan: root.name-row == 1 ? 2 : 1;
-                            text: "*.*"; enabled: !root.running; accessible-label: "File name masks";
-                            min-width: root.compact-query ? Theme.font-size * 4 : 0px;
-                            min-height: Theme.control-height; horizontal-stretch: 1;
-                            hint: mode.current-index == 2 ? "Typed metadata predicate, never a script. Example: kind = file and size >= 1MiB. Unknown metadata does not match comparisons."
-                                : mode.current-index == 1 ? "Bounded regular expression over the native filename."
-                                : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names.";
-                            accepted => { root.submit(); }
+                            spacing: 4px;
+                            masks := HistoryLineEdit {
+                                text <=> root.filename-mask;
+                                entries: root.mask-history;
+                                enabled: !root.running; accessible-name: "File name masks";
+                                min-width: root.compact-query ? Theme.font-size * 4 : 0px;
+                                min-height: Theme.control-height; horizontal-stretch: 1;
+                                hint: mode.current-index == 2 ? "Typed metadata predicate, never a script. Example: kind = file and size >= 1MiB. Unknown metadata does not match comparisons."
+                                    : mode.current-index == 1 ? "Bounded regular expression over the native filename."
+                                    : "* any text, ? one character, ; separates masks, | exclusions. Example: *.rs;*.toml|target*. *.* includes extensionless names. Down opens recent masks.";
+                                edited(text) => { root.filename-mask-edited = true; }
+                                chosen(index) => {
+                                    root.filename-mask-edited = true;
+                                    root.filename-mask = root.mask-history[index];
+                                }
+                                accepted => { root.submit(); }
+                            }
+                            FindActionButton {
+                                text: "▾"; accessible-label: "Filename mask history";
+                                hint: "Choose a previously used filename mask (Down in the filename field).";
+                                enabled: !root.running && root.mask-history.length > 0;
+                                clicked => { masks.open-list(); }
+                            }
                         }
                         HorizontalLayout {
                             row: root.narrow ? root.name-row + 1 : 0; col: root.narrow ? 0 : 2;
@@ -396,7 +418,7 @@ export component FindWindow inherits ToolWindow {
                         FindActionButton {
                             row: 0; col: 2;
                             text: "Feed to panel"; fallback-icon: FallbackIcons.make-file-list;
-                            enabled: !root.running && root.rows.length > 0;
+                            enabled: !root.running && !root.feeding && root.rows.length > 0;
                             hint: "Show the results as a list in the panel that opened this Find, and close this window. Selected results arrive marked there. View, Edit, Copy, Move, Delete and selection there act on the real files; Backspace returns to the folder.";
                             clicked => { root.feed-panel(); }
                         }
@@ -419,7 +441,7 @@ export component FindWindow inherits ToolWindow {
               if root.query-status: FindStatusLine {
                   x: 0px; y: parent.height - self.height; width: parent.width;
                   height: root.query-status-height - 3px;
-                  text: root.progress; error: root.attention; font-size: Theme.small-font;
+                  text: root.progress; count: root.found-count; error: root.attention; font-size: Theme.small-font;
                   details => { root.show-details = true; }
               }
               if root.show-details: ScrollView {
@@ -486,7 +508,7 @@ export component FindWindow inherits ToolWindow {
                     x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
                     mode: mode.current-index; enabled: !root.running;
                     init => { self.focus(); }
-                    use-example(query) => { masks.text = query; masks.focus(); }
+                    use-example(query) => { root.filename-mask-edited = true; masks.text = query; masks.focus-line(); }
                     close => { root.close-help(); }
                 }
             }
@@ -496,7 +518,7 @@ export component FindWindow inherits ToolWindow {
             }
             if root.progress != "" && root.inline-status: FindStatusLine {
                 height: max(18px, Theme.small-font + 4px);
-                text: root.progress; error: root.attention; font-size: Theme.small-font;
+                text: root.progress; count: root.found-count; error: root.attention; font-size: Theme.small-font;
                 details => { root.show-details = true; }
             }
             find-footer := DialogFooter {

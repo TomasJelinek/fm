@@ -6,6 +6,10 @@
 //! The folder under the list is never acted on: every entry point that would
 //! act on a panel's folder asks `feed_refuses` (or routes to the list) first.
 use super::*;
+#[path = "find_feed_mutations.rs"]
+mod mutations;
+#[path = "find_feed_sizes.rs"]
+pub(crate) mod sizes;
 
 #[cfg(test)]
 #[path = "find_feed_tests.rs"]
@@ -25,7 +29,9 @@ pub(crate) fn refusal(action: &str) -> String {
 pub(crate) struct FeedPane {
     pub(crate) entries: Arc<[Entry]>,
     pub(crate) index: Arc<DirectoryIndex>,
-    pub(crate) selected: Vec<bool>,
+    pub(crate) projection: crate::presenter::find_feed_projection::FeedProjectionState,
+    pub(crate) sizes: sizes::FeedSizeState,
+    pub(crate) selected: Arc<Vec<bool>>,
     pub(crate) selected_count: usize,
     pub(crate) selected_bytes: u64,
     pub(crate) cursor: usize,
@@ -39,21 +45,27 @@ pub(crate) struct FeedPane {
     pub(crate) location: String,
     /// Changes whenever rows, marks or the cursor change.
     pub(crate) revision: u64,
+    pub(crate) selection_revision: u64,
     /// Unique to these rows: a new feed or rows a delete removed get a new value.
     pub(crate) rows_serial: u64,
     /// A delete started from the list: its operation and targets.
     deleting: Option<(OperationId, Vec<PathBuf>)>,
+    mutation: Option<mutations::PendingMutation>,
 }
 
 /// A new value for `FeedPane::rows_serial`, never reused within the process.
-fn next_rows_serial() -> u64 {
+pub(in crate::presenter) fn next_rows_serial() -> u64 {
     static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl FeedPane {
-    fn changed(&mut self) {
+    pub(in crate::presenter) fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub(in crate::presenter) fn selection_changed(&mut self) {
+        self.selection_revision = self.selection_revision.wrapping_add(1);
     }
 
     pub(crate) fn focused(&self) -> Option<&Entry> {
@@ -61,13 +73,13 @@ impl FeedPane {
     }
 
     fn set_mark(&mut self, row: usize, mark: bool) {
-        let Some(old) = self.selected.get_mut(row) else {
+        let Some(old) = self.selected.get(row) else {
             return;
         };
         if *old == mark {
             return;
         }
-        *old = mark;
+        Arc::make_mut(&mut self.selected)[row] = mark;
         let size = self.entries[row]
             .metadata
             .size
@@ -80,6 +92,7 @@ impl FeedPane {
             self.selected_count -= 1;
             self.selected_bytes = self.selected_bytes.saturating_sub(size);
         }
+        self.changed();
     }
 
     /// The selected rows, or the focused one when nothing is selected.
@@ -87,7 +100,7 @@ impl FeedPane {
         if self.selected_count > 0 {
             self.entries
                 .iter()
-                .zip(&self.selected)
+                .zip(self.selected.iter())
                 .filter_map(|(entry, selected)| selected.then_some(entry))
                 .collect()
         } else {
@@ -96,9 +109,9 @@ impl FeedPane {
     }
 
     /// The list as a captured selection for the backend's path-based flows.
-    fn files(&self) -> Option<SelectedFiles> {
+    pub(crate) fn files(&self) -> Option<SelectedFiles> {
         let mut bits = vec![0u64; self.entries.len().div_ceil(64)];
-        for (entry, selected) in self.entries.iter().zip(&self.selected) {
+        for (entry, selected) in self.entries.iter().zip(self.selected.iter()) {
             if *selected {
                 let row = *self.index.by_id.get(&entry.id)?;
                 bits[row / 64] |= 1 << (row % 64);
@@ -139,7 +152,8 @@ pub(crate) enum FeedAction {
     Leave,
     GoTo,
     Move(FeedMove),
-    /// Insert marks and moves down; Space marks in place.
+    /// Both toggle and advance: true is Insert; false is Space, which also
+    /// measures the focused folder before advancing.
     Toggle {
         advance: bool,
     },
@@ -158,114 +172,105 @@ pub(crate) enum FeedAction {
         cut: bool,
     },
     Properties,
+    MakeFileList,
 }
 
 impl Presenter {
-    /// Feed to panel: the session's native results, in the Find window's order,
-    /// replace the folder of the panel that opened the Find. Returns that panel.
+    /// Headless fixtures use the same worker conversion; production callbacks
+    /// must call `request_feed_find_results` instead.
+    #[cfg(test)]
     pub(crate) fn feed_find_results(&mut self, id: FindSessionId) -> Option<PaneId> {
-        let s = self.finds.sessions.get(&id)?;
-        if s.running {
-            if let Some(s) = self.finds.session_mut(&id) {
-                s.error = "Wait for the search to finish, or stop it, before feeding its results to a panel.".into();
+        let session = self.finds.sessions.get(&id)?;
+        if session.running {
+            if let Some(session) = self.finds.session_mut(&id) {
+                session.error="Wait for the search to finish, or stop it, before feeding its results to a panel.".into();
             }
             return None;
         }
-        let ordered: Vec<&Arc<FindResult>> = match &s.order {
-            Some(order) if order.ids.len() == s.results.len() => order
-                .ids
-                .iter()
-                .filter_map(|id| s.results.get(usize::try_from(id.0.checked_sub(1)?).ok()?))
-                .collect(),
-            _ => s.results.iter().collect(),
+        let pane = session.origin;
+        let request = FindFeedBuildRequest {
+            id: 1,
+            pane,
+            session: id,
+            generation: session.generation,
+            results: session.results.clone().into(),
+            order: session.order.clone(),
+            selection_bits: session.selection.bits_snapshot(),
+            explicit_marks: session.selection_is_explicit(),
+            cursor: session
+                .selection
+                .cursor()
+                .map(|slot| FindResultId(slot as u64 + 1)),
+            cancel: Cancellation::default(),
         };
-        // The Find's selection arrives as the list's marks, unless it only follows the
-        // cursor; the list's cursor starts on the Find's cursor result.
-        let marked = s.selection_is_explicit();
-        let cursor_slot = s.selection.cursor();
-        let mut seen: HashMap<PathBuf, usize> = HashMap::new();
-        let mut entries = Vec::with_capacity(ordered.len());
-        let mut marks: Vec<usize> = Vec::new();
-        let mut cursor = 0;
-        let mut omitted = 0;
-        for result in ordered {
-            if result.archive.is_some()
-                || !matches!(result.entry.kind, EntryKind::File | EntryKind::Directory)
-            {
-                omitted += 1;
-                continue;
-            }
-            let row = *seen
-                .entry(result.entry.path.clone())
-                .or_insert(entries.len());
-            let slot = result_selection::slot(result.id);
-            if marked && slot.is_some_and(|slot| s.selection.is_selected(slot)) {
-                marks.push(row);
-            }
-            if slot.is_some() && slot == cursor_slot {
-                cursor = row;
-            }
-            if row < entries.len() {
-                continue;
-            }
-            let mut entry = Entry::new(
-                EntryId(entries.len() as u64 + 1),
-                result.entry.path.clone(),
-                result.entry.kind,
-            );
-            entry.metadata = result.entry.metadata.clone();
-            entries.push(entry);
-        }
-        let pane = s.origin;
-        if entries.is_empty() {
-            if let Some(s) = self.finds.session_mut(&id) {
-                s.error = if omitted > 0 {
-                    "Only archive members were found; open them with Go to file.".into()
-                } else {
-                    "There are no results to feed to a panel.".into()
-                };
-            }
-            return None;
-        }
-        let roots: Vec<_> = s
+        let sort = session.sort;
+        let roots = session
             .roots
             .iter()
             .filter(|root| root.searched)
-            .map(|root| root.path.to_string_lossy().into_owned())
-            .collect();
+            .map(|root| root.path.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let built = match request.prepare() {
+            Ok(built) => built,
+            Err(error) => {
+                if let Some(session) = self.finds.session_mut(&id) {
+                    session.error = error.message;
+                }
+                return None;
+            }
+        };
         let title = format!(
             "Search results ({}) · {}",
-            self.number_locale.format_u64(entries.len() as u64),
-            roots.join("; ")
+            self.number_locale.format_u64(built.entries.len() as u64),
+            roots
         );
-        let count = entries.len();
-        let index = Arc::new(DirectoryIndex::from_entries(&entries));
         let location = self.panes[pane.index()].display_location_text();
-        let mut feed = FeedPane {
-            entries: entries.into(),
-            index,
-            selected: vec![false; count],
-            selected_count: 0,
-            selected_bytes: 0,
-            cursor,
+        self.install_built_feed(pane, built, title, location, sort);
+        Some(pane)
+    }
+
+    pub(in crate::presenter) fn install_built_feed(
+        &mut self,
+        pane: PaneId,
+        built: FindFeedBuilt,
+        title: String,
+        location: String,
+        sort: FindSortSpec,
+    ) {
+        let projection = crate::presenter::find_feed_projection::FeedProjectionState::new(
+            built.entries.clone(),
+            sort,
+        );
+        let feed = FeedPane {
+            entries: built.entries,
+            index: built.index,
+            projection,
+            sizes: Default::default(),
+            selected: built.selected,
+            selected_count: built.selected_count,
+            selected_bytes: built.selected_bytes,
+            cursor: built.cursor,
             page: match self.finds.feed_pages[pane.index()] {
                 0 => 20,
                 rows => rows,
             },
             title,
-            omitted,
+            omitted: built.omitted,
             location,
             revision: 0,
+            selection_revision: 0,
             rows_serial: next_rows_serial(),
             deleting: None,
+            mutation: None,
         };
-        for row in marks {
-            feed.set_mark(row, true);
+        if let Some(previous) = &mut self.finds.feeds[pane.index()] {
+            previous.projection.cancel();
+            previous.sizes.cancel();
         }
         self.retired
             .push(Box::new(self.finds.feeds[pane.index()].replace(feed)));
         self.active = pane;
-        Some(pane)
     }
 
     /// The results the panel shows, while it still shows the location it was fed in.
@@ -275,7 +280,7 @@ impl Presenter {
             .filter(|feed| feed.location == self.panes[pane.index()].display_location_text())
     }
 
-    fn feed_mut(&mut self, pane: PaneId) -> Option<&mut FeedPane> {
+    pub(in crate::presenter) fn feed_mut(&mut self, pane: PaneId) -> Option<&mut FeedPane> {
         let location = self.panes[pane.index()].display_location_text();
         self.finds.feeds[pane.index()]
             .as_mut()
@@ -284,6 +289,11 @@ impl Presenter {
 
     /// Leave the list: the panel shows its folder again.
     pub(crate) fn feed_close(&mut self, pane: PaneId) {
+        self.cancel_feed_build_for_pane(pane, None);
+        if let Some(feed) = &mut self.finds.feeds[pane.index()] {
+            feed.projection.cancel();
+            feed.sizes.cancel();
+        }
         self.retired
             .push(Box::new(self.finds.feeds[pane.index()].take()));
     }
@@ -317,7 +327,7 @@ impl Presenter {
             feed.set_mark(row, mark);
         }
         feed.cursor = row;
-        feed.changed();
+        feed.selection_changed();
     }
 
     pub(crate) fn feed_action(
@@ -353,7 +363,7 @@ impl Presenter {
                         .find(|row| feed.selected[*row])
                         .unwrap_or(feed.cursor),
                 };
-                feed.changed();
+                feed.selection_changed();
             }
             A::Toggle { advance } => {
                 let feed = self.feed_mut(pane).expect("shown feed");
@@ -361,12 +371,14 @@ impl Presenter {
                     return;
                 }
                 let row = feed.cursor;
+                let measured = (!advance).then(|| feed.entries[row].clone());
                 let mark = !feed.selected[row];
                 feed.set_mark(row, mark);
-                if advance {
-                    feed.cursor = (row + 1).min(feed.entries.len().saturating_sub(1));
+                feed.cursor = (row + 1).min(feed.entries.len().saturating_sub(1));
+                feed.selection_changed();
+                if let Some(entry) = measured {
+                    self.measure_find_feed_entry(pane, entry, send);
                 }
-                feed.changed();
             }
             A::Bulk(operation) => self.feed_bulk(pane, operation),
             A::MaskInvert => self.feed_bulk(pane, self.mask_invert_operation()),
@@ -376,6 +388,7 @@ impl Presenter {
             A::Delete(mode) => self.feed_delete(pane, mode, send),
             A::Clipboard { cut } => self.feed_clipboard(pane, cut, send),
             A::Properties => self.feed_properties(pane, send),
+            A::MakeFileList => self.open_feed_file_list(pane, send),
         }
     }
 
@@ -392,7 +405,7 @@ impl Presenter {
             let mark = operation.selects(directory, feed.selected[row]);
             feed.set_mark(row, mark);
         }
-        feed.changed();
+        feed.selection_changed();
     }
 
     /// An action the list cannot offer, explained instead of acting on the folder
@@ -424,6 +437,8 @@ impl Presenter {
     ) {
         if let MutationKind::Delete(mode) = kind {
             self.feed_action(pane, FeedAction::Delete(mode), send);
+        } else if matches!(kind, MutationKind::Rename) {
+            self.feed_rename(pane, send);
         } else {
             self.feed_refuse(operations::mutation_action(kind));
         }
@@ -443,8 +458,8 @@ impl Presenter {
             };
             (parent.to_owned(), Some(entry.path.clone()))
         };
-        self.feed_close(pane);
         if self.navigate(pane, target, None, send) {
+            self.feed_close(pane);
             if let Some(pending) = &mut self.panes[pane.index()].pending {
                 pending.wanted_cursor = wanted;
             }
@@ -573,10 +588,10 @@ impl Presenter {
         let Some(feed) = self.feed(pane) else {
             return;
         };
-        if feed.deleting.is_some() {
+        if feed.deleting.is_some() || feed.mutation.is_some() {
             self.desktop.report(
                 "Delete",
-                "A delete from these search results is still running.".into(),
+                "A file change from these search results is still running.".into(),
             );
             return;
         }
@@ -671,12 +686,20 @@ impl Presenter {
     /// completed delete removed.
     pub(super) fn flush_feeds(&mut self) {
         for slot in 0..2 {
+            let pane = if slot == 0 {
+                PaneId::Left
+            } else {
+                PaneId::Right
+            };
+            if let Some(paths) = self.completed_feed_mutation_paths(pane) {
+                self.remove_feed_projection_paths(pane, paths);
+            }
             let location = self.panes[slot].display_location_text();
             if self.finds.feeds[slot]
                 .as_ref()
                 .is_some_and(|feed| feed.location != location)
             {
-                self.retired.push(Box::new(self.finds.feeds[slot].take()));
+                self.feed_close(pane);
                 continue;
             }
             let Some(feed) = &mut self.finds.feeds[slot] else {
@@ -695,41 +718,14 @@ impl Presenter {
                 Some((state, _)) if !state.is_terminal() => {}
                 Some((OperationState::Completed, 0)) => {
                     let (_, paths) = feed.deleting.take().expect("matched delete");
-                    let gone: HashSet<PathBuf> = paths.into_iter().collect();
-                    // A row went with a deleted path or a deleted folder above it:
-                    // one lookup per path component, not one scan of the deleted
-                    // paths per row.
-                    let keep: Vec<usize> = (0..feed.entries.len())
-                        .filter(|row| {
-                            !feed.entries[*row]
-                                .path
-                                .ancestors()
-                                .any(|path| gone.contains(path))
-                        })
-                        .collect();
-                    let entries: Vec<Entry> =
-                        keep.iter().map(|row| feed.entries[*row].clone()).collect();
-                    let selected: Vec<bool> = keep.iter().map(|row| feed.selected[*row]).collect();
-                    let cursor = keep
-                        .iter()
-                        .position(|row| *row >= feed.cursor)
-                        .unwrap_or(keep.len().saturating_sub(1));
-                    let index = Arc::new(DirectoryIndex::from_entries(&entries));
-                    self.retired
-                        .push(Box::new(mem::replace(&mut feed.entries, entries.into())));
-                    self.retired
-                        .push(Box::new(mem::replace(&mut feed.index, index)));
-                    feed.selected = selected;
-                    feed.selected_count = 0;
-                    feed.selected_bytes = 0;
-                    for row in 0..feed.selected.len() {
-                        if mem::take(&mut feed.selected[row]) {
-                            feed.set_mark(row, true);
-                        }
-                    }
-                    feed.cursor = cursor;
-                    feed.rows_serial = next_rows_serial();
-                    feed.changed();
+                    self.remove_feed_projection_paths(
+                        if slot == 0 {
+                            PaneId::Left
+                        } else {
+                            PaneId::Right
+                        },
+                        paths,
+                    );
                 }
                 // Cancelled, failed or forgotten: the rows stay; acting on a
                 // removed file reports that it is gone.

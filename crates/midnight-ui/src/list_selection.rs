@@ -89,6 +89,10 @@ impl ListSelection {
     pub(crate) fn words(&self) -> &[u64] {
         &self.bits
     }
+    /// Bounded copy for backend requests (Find holds at most 100,000 slots).
+    pub(crate) fn bits_snapshot(&self) -> std::sync::Arc<[u64]> {
+        self.bits.clone().into()
+    }
     /// How many selected slots `mask` (bits by slot) also has: word operations only.
     pub(crate) fn count_in(&self, mask: &[u64]) -> usize {
         self.bits

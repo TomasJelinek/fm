@@ -63,6 +63,31 @@ fn value(item: &ItemRc) -> String {
         .to_string()
 }
 
+#[test]
+fn filename_history_dropdown_chooses_a_mask_without_starting_a_search() {
+    let (window, native) = open();
+    window.set_mask_history(slint::ModelRc::new(VecModel::from(vec![
+        "*.rs".into(),
+        "*.文档;*.txt".into(),
+    ])));
+    let searches = Rc::new(Cell::new(0));
+    let count = searches.clone();
+    window.on_search(move |_| count.set(count.get() + 1));
+    modeless::layout(&native, 780, 560);
+    window.invoke_begin();
+    key(&native, Key::DownArrow.into());
+    modeless::layout(&native, 780, 560);
+    let choice = popup_item(&native, AccessibleRole::Button, "*.文档;*.txt");
+    modeless::click_item(&native, &choice, "previous filename mask");
+    modeless::layout(&native, 780, 560);
+    assert_eq!(
+        value(&item(&native, AccessibleRole::TextInput, "File name masks")),
+        "*.文档;*.txt"
+    );
+    assert_eq!(searches.get(), 0);
+    window.hide().unwrap();
+}
+
 fn checked(item: &ItemRc) -> bool {
     item.accessible_string_property(AccessibleStringProperty::Checked)
         .is_some_and(|value| value == "true")

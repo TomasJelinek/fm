@@ -2,6 +2,7 @@
 use super::*;
 mod archive_associations;
 mod file_list;
+mod find;
 mod options;
 pub(crate) mod settings_file;
 mod viewers;
@@ -50,6 +51,8 @@ pub(crate) struct PreferencesState {
 #[derive(Default)]
 pub(super) struct EditedFields {
     window_geometry: bool,
+    find_window_geometry: bool,
+    find_mask_history: bool,
     panel_split: bool,
     archive_associations: HashSet<String>,
     archive_custom_extensions: bool,
@@ -288,6 +291,14 @@ impl Presenter {
                 let edited = &self.preferences.edited;
                 if edited.window_geometry {
                     loaded.window_geometry = local.window_geometry.clone();
+                }
+                if edited.find_window_geometry {
+                    loaded.find.window_geometry = local.find.window_geometry.clone();
+                }
+                if edited.find_mask_history {
+                    for mask in local.find.mask_history.iter().rev() {
+                        let _ = loaded.find.remember_mask(mask);
+                    }
                 }
                 if edited.panel_split {
                     loaded.panel_split_basis_points = local.panel_split_basis_points;
@@ -858,6 +869,9 @@ impl Presenter {
         let previous = &self.preferences.values;
         let edited = &mut self.preferences.edited;
         edited.window_geometry |= preferences.window_geometry != previous.window_geometry;
+        edited.find_window_geometry |=
+            preferences.find.window_geometry != previous.find.window_geometry;
+        edited.find_mask_history |= preferences.find.mask_history != previous.find.mask_history;
         edited.panel_split |=
             preferences.panel_split_basis_points != previous.panel_split_basis_points;
         edited.archive_custom_extensions |=

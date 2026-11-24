@@ -1,8 +1,11 @@
 //! Exact occurrence directory-size requests and bounded backend publications.
+#[path = "find_feed_sizes.rs"]
+mod find_feed_sizes;
 use crate::{
     FolderSize, SelectedFolderSizes, SelectionRevision, TreeDiagnostic, TreeProjection,
     TreeRequestId, TreeRowId, TreeSelectionSnapshot, TreeViewStamp,
 };
+pub use find_feed_sizes::*;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,

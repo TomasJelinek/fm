@@ -381,3 +381,92 @@ fn adopted_tree_comparison_refuses_errored_root_file_and_parent_focus() {
     ));
     assert!(!view.index.native_root_files.contains(&EntryId(0)));
 }
+
+fn feed_action_fixture(p: &mut Presenter, pane: PaneId, paths: &[PathBuf]) {
+    let id = p.create_find(pane).unwrap();
+    let session = p.finds.sessions.get_mut(&id).unwrap();
+    session.results = paths
+        .iter()
+        .enumerate()
+        .map(|(row, path)| {
+            Arc::new(FindResult {
+                id: FindResultId(row as u64 + 1),
+                entry: FindEntry {
+                    path: path.clone(),
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata::default(),
+                    identity: TransferIdentity {
+                        device: 1,
+                        object: [row as u8; 16],
+                    },
+                    revision: FindRevision([0; 6]),
+                },
+                duplicate_group: None,
+                duplicate_group_size: 0,
+                archive: None,
+            })
+        })
+        .collect();
+    p.feed_find_results(id).unwrap();
+}
+
+#[test]
+fn fed_compare_captures_two_marked_results_without_the_hidden_panel_selection() {
+    let root = std::env::temp_dir();
+    let paths = [root.join("found/a.txt"), root.join("elsewhere/b.txt")];
+    let mut p = loaded();
+    feed_action_fixture(&mut p, PaneId::Left, &paths);
+    p.feed_click(PaneId::Left, 0, true, false);
+    p.feed_click(PaneId::Left, 1, true, false);
+    let launch = p
+        .file_compare_launch(PaneId::Left)
+        .expect("Compare marked results");
+    let [
+        FileCompareSource::Selected {
+            entries, selection, ..
+        },
+    ] = launch.sources.as_slice()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert_eq!(selection.len(), 2);
+    assert!(selection.contains_path(&paths[0]));
+    assert!(selection.contains_path(&paths[1]));
+    p.feed_close(PaneId::Left);
+    p.panes[0].entries = Arc::from([]);
+    assert_eq!(entries[1].path, paths[1]);
+}
+
+#[test]
+fn fed_compare_uses_one_result_per_feed_and_preserves_normal_same_name_counterparts() {
+    let root = std::env::temp_dir();
+    let left = root.join("found-left/文档.txt");
+    let right = root.join("found-right/文档.txt");
+    for other_is_feed in [false, true] {
+        let mut p = loaded();
+        feed_action_fixture(&mut p, PaneId::Left, std::slice::from_ref(&left));
+        if other_is_feed {
+            feed_action_fixture(&mut p, PaneId::Right, std::slice::from_ref(&right));
+        }
+        let launch = p
+            .file_compare_launch(PaneId::Left)
+            .expect("Compare results across panes");
+        assert!(matches!(&launch.sources[0], FileCompareSource::Focused(path) if path == &left));
+        if other_is_feed {
+            assert!(
+                matches!(&launch.sources[1], FileCompareSource::Focused(path) if path == &right)
+            );
+        } else {
+            assert!(
+                matches!(&launch.sources[1], FileCompareSource::SameName { directory, .. } if directory == Path::new("right"))
+            );
+        }
+    }
+}

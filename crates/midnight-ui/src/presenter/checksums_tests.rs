@@ -1302,3 +1302,88 @@ fn the_partial_save_question_counts_files_and_checksums_in_singular_and_plural()
         "3 files were excluded and discovery is incomplete. Save the 2 completed checksums anyway?"
     );
 }
+
+fn feed_action_fixture(p: &mut Presenter, pane: PaneId, paths: &[PathBuf]) {
+    let id = p.create_find(pane).unwrap();
+    let session = p.finds.sessions.get_mut(&id).unwrap();
+    session.results = paths
+        .iter()
+        .enumerate()
+        .map(|(row, path)| {
+            Arc::new(FindResult {
+                id: FindResultId(row as u64 + 1),
+                entry: FindEntry {
+                    path: path.clone(),
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata::default(),
+                    identity: TransferIdentity {
+                        device: 1,
+                        object: [row as u8; 16],
+                    },
+                    revision: FindRevision([0; 6]),
+                },
+                duplicate_group: None,
+                duplicate_group_size: 0,
+                archive: None,
+            })
+        })
+        .collect();
+    p.feed_find_results(id).unwrap();
+}
+
+#[test]
+fn fed_checksums_capture_selected_manifest_and_its_folder_without_hidden_panel_rows() {
+    let root = std::env::temp_dir();
+    let manifest = root.join("found/文档.sha256");
+    let mut p = Presenter::new(root.clone(), root.clone());
+    feed_action_fixture(
+        &mut p,
+        PaneId::Left,
+        &[root.join("data.bin"), manifest.clone()],
+    );
+    p.feed_click(PaneId::Left, 1, true, false);
+    p.request_checksums(PaneId::Left, &|_| true);
+    let session = p
+        .checksums
+        .sessions
+        .values()
+        .next()
+        .expect("Checksums from results");
+    assert!(session.verify_initial);
+    assert_eq!(session.manifest_suggested, manifest);
+    assert_eq!(session.directory, root.join("found"));
+    assert_eq!(session.files.selection.len(), 1);
+    assert!(session.files.selection.contains_path(&manifest));
+    let captured = session.files.selection.clone();
+    p.feed_close(PaneId::Left);
+    p.panes[0].path = root.join("another-folder");
+    assert!(Arc::ptr_eq(
+        &p.checksums
+            .sessions
+            .values()
+            .next()
+            .unwrap()
+            .files
+            .selection,
+        &captured
+    ));
+}
+
+#[test]
+fn fed_checksums_use_the_focused_result_when_no_rows_are_marked() {
+    let root = std::env::temp_dir();
+    let target = root.join("found/文档.bin");
+    let mut p = Presenter::new(root.clone(), root.clone());
+    feed_action_fixture(&mut p, PaneId::Left, std::slice::from_ref(&target));
+    p.request_checksums(PaneId::Left, &|_| true);
+    let session = p
+        .checksums
+        .sessions
+        .values()
+        .next()
+        .expect("Checksums from focused result");
+    assert!(!session.verify_initial);
+    assert!(session.files.selection.is_empty());
+    assert_eq!(session.files.fallback.as_ref(), Some(&target));
+    assert_eq!(session.directory, root.join("found"));
+}

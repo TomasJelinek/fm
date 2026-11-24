@@ -200,6 +200,10 @@ pub enum Command {
     /// Whether a Select/Deselect by mask pattern compiles within the selection
     /// workers' budget, answered by `Event::SelectionMaskValidated`.
     ValidateSelectionMask(crate::MaskValidationRequest),
+    /// Rebuild a fed result view on a bounded, coalescing worker for its pane.
+    ProjectFindFeed(Arc<crate::FindFeedProjectionRequest>),
+    BuildFindFeed(Arc<crate::FindFeedBuildRequest>),
+    ComputeFindFeedSizes(Arc<crate::FindFeedSizeRequest>),
     ValidateFilenameColors(crate::FilenameColorsValidation),
     MatchFilenameColors(crate::FilenameColorsRequest),
     ClearFilenameColors {
@@ -606,6 +610,9 @@ pub enum Event {
         request: crate::MaskValidationRequest,
         result: Result<(), String>,
     },
+    FindFeedProjected(Box<crate::FindFeedProjectionResult>),
+    FindFeedBuilt(Box<crate::FindFeedBuildResult>),
+    FindFeedSize(Box<crate::FindFeedSizeEvent>),
     FilenameColorsValidated {
         request: crate::FilenameColorsValidation,
         result: Result<(), String>,

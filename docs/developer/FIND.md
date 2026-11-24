@@ -21,13 +21,31 @@ search increments its generation. Up to two workers stream ordinary batches of a
 most 64 stable-ID results through bounded channels; a smaller pending batch is
 published with each progress sample (at most every 250 ms), so sparse matches
 appear while traversal continues. Duplicate groups publish as
-one complete batch, bounded by the 10,000-result limit, so Stop cannot leave half
+one complete batch, bounded by the 100,000-result limit, so Stop cannot leave half
 a group. Presenter and controller both
 reject late generations. Stop retains results: the final partial batch found
 before the worker observed Stop is still published for the same generation, and
 the retained results receive one automatic sort in the current header order.
 Close releases the session, and host shutdown closes the windows. Queue rejection never pretends cancellation
 or close succeeded. Large result allocations are reclaimed on backend workers.
+
+Find remembers its physical window size and position across sessions. Restoring
+placement fits it to an available display; Wayland controls absolute position.
+Moving and resizing are saved after a short pause and closing captures the final
+bounds. Settings writes run through the existing backend worker.
+
+The filename field starts with the latest accepted mask. Its dropdown lists up
+to 30 recent unique masks, newest first; choosing one edits the query without
+starting a search. Rejected search admission does not change history.
+
+There is no default limit on the number of examined native entries or archive
+members. A search retains at most 100,000 results. The existing retained-memory,
+folder-depth and content-read budgets still apply and report an incomplete
+search when reached, so long paths can reach the memory budget before the result
+cap. Backend callers may request an explicit nonzero scan-count budget;
+`FindLimits.max_nodes = 0` means unlimited. The found count describes retained
+results and stays beside the progress summary.
+
 Replaced row-model order owners enter a small interior-mutable retirement queue:
 refresh already holds a shared presenter borrow, so it must not request a mutable
 presenter borrow while notifying Slint. The normal `take_retired` handoff drains
@@ -144,7 +162,7 @@ Immutable group numbers/counts stay attached to rows when ordering changes.
 One fixed, coalescing backend sort task per session prepares keys, bounded to
 16 MiB aggregate and 4 MiB per key. Keys prepared for a generation and column are
 reused by its later re-sorts, so a streaming search derives native locale keys
-only for new results. The 10,000-result authority remains in discovery
+only for new results. The 100,000-result authority remains in discovery
 order for revalidation. A separate immutable ID permutation and inverse index
 lets the UI preserve the selected stable ID in constant time during reorder,
 including newly streamed tails. Stale generation/revision/count orders are
@@ -310,7 +328,7 @@ otherwise on that row alone:
 
 Two ignored measurement tests, `find_selection_measures_100k_results` and
 `find_window_marks_measure_100k_results` (run with `--ignored`), time the selection with
-100,000 results, ten times what a search keeps. In a Windows release build, best of
+100,000 results, the current result cap. In a Windows release build, best of
 five: a click 1 µs; Ctrl+A 1.4 ms; a Shift+click range over every result 1.4 ms; a
 Ctrl+click in a full selection 1.1 ms (the status line's byte total is summed again);
 100,000 mark lookups 89 µs; after Ctrl+A or such a range, the one notification and
@@ -444,14 +462,27 @@ result was selected, and the list's cursor starts on the Find's cursor result (s
 [Selecting several results](#selecting-several-results)). The list is a snapshot of the
 results: it is not updated by later file changes.
 
+Initial entry conversion, deduplication and directory indexing run on a cancellable
+backend worker. The existing panel stays visible until preparation completes and
+the source Find session accepts Close. A newer feed request, restarted search or
+panel navigation discards obsolete preparation. A busy command queue keeps the
+Find window open and retries admission.
+
 Keys keep their configured meaning: Up/Down, Page Up/Down, Home/End move; Insert
-marks and moves, Space marks in place, the bulk selection keys mark with a panel's
+marks and moves; Space also measures the focused folder before moving. The bulk
+selection keys mark with a panel's
 rules (`SelectionOperation`): select files only (Ctrl+A) replaces the marks with the
 files, invert files only (Ctrl+I) keeps folder marks, and Ctrl+Shift+A, Ctrl+D and
 Ctrl+Shift+I select, clear and invert files and folders; Ctrl+click and Shift+click
 mark with the pointer. Enter (or a double click) goes to the focused result: a
 folder is opened, a file is shown in its folder with the cursor on it, and the list
-is left. The actions act on the real files through the ordinary backend flows:
+is left. The visible **Go to file** button does the same. Refused navigation keeps
+the list, cursor and marks available for retry. Column separators resize Name,
+Folder, Size and Modified independently, with shared header/row widths and
+horizontal scrolling. The status shows focused-file metadata separately from
+selection counts and total selected file bytes. Rows load lazily from the
+retained results rather than formatting the whole list during each refresh.
+The actions act on the real files through the ordinary backend flows:
 
 - View (F3) and plain view (Alt+F3) open the focused file in the viewer, whose Space
   and Backspace walk the results; Edit (F4) opens the configured editor.
@@ -464,14 +495,38 @@ is left. The actions act on the real files through the ordinary backend flows:
   no longer the kind (or, for a file, the size) the search found. When the delete
   completes without failures, its rows leave the list.
 - Copy and Cut to the clipboard and Properties use the marked results' paths.
+- **Ctrl+M** opens Make File List on an immutable capture of the marks, or the
+  focused result when nothing is marked. Leaving the list or navigating the panel
+  cannot change that capture. Completion clears only the unchanged originating
+  list's marks.
+- **Ctrl+F8** calculates checksums for the same captured targets; a selected
+  checksum manifest opens Verify as in an ordinary panel. Compare files accepts
+  two marked results, or the focused file from each panel.
+- **F2** renames the focused result independently of marks. Attributes/times and
+  filename-case edits capture the marked native rows, or focus when unmarked,
+  with the existing 256-target bound and confirmation flow. Preparation rechecks
+  each captured path, kind and file size. Changed roots and descendants leave the
+  static search snapshot, so it never retains their old names or metadata.
+- Custom commands capture fed paths and marks. Directory variables use the
+  focused result's parent; the other panel supplies its native folder, or its
+  focused result's parent when it also shows a feed. **Ctrl+Enter** inserts the
+  focused absolute path, ensuring it names the result from the command bar's
+  working directory; **Ctrl+Shift+P** also inserts that full path.
+- Folder sizes measure captured shown folders, or the marked folders when there
+  is a selection. A files-only selection never falls back to the hidden folder.
+  Results retain the existing partial totals, warnings, cancellation and shared
+  storage-admission bounds.
+- Headers and ordinary sort shortcuts sort the results. The panel filter,
+  Show hidden files, and Select/Deselect by mask also act on the list. Matching,
+  sorting and index construction run on coalescing backend workers. Captured
+  source, view and selection revisions reject late results; newer explicit marks
+  supersede a pending mask. Filtered-out source rows remain available when the
+  filter is cleared, while rows removed after file changes cannot reappear.
 
 Not available in the list, and explained with a notice instead of acting on the
-folder hidden underneath: create folder or file, rename, paste, sorting (sort in the
-Find window before feeding), attributes, folder sizes, checksums, Make file list,
-Compare files, Compare directories, Select and Deselect by mask, Show hidden files,
-the panel filter, custom commands (from the toolbar, its popup and the F9 menu) and
-Ctrl+Enter (the focused name into the command line); Ctrl+Shift+P inserts the focused
-result's full path. The toolbar and menus refuse these the same way the keys do.
+folder hidden underneath: create folder or file, paste, and Compare directories.
+These require a single directory destination, which a mixed-folder result list
+does not supply. The toolbar and menus follow the same target rules as the keys.
 Keypad * (and its F10 Selection entry) inverts as in a panel: the files only, like
 Ctrl+I, or the folders too when Select by mask last included folders
 (`Presenter::mask_invert_operation`). The hidden rows start

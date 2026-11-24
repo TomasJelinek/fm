@@ -21,7 +21,7 @@ export struct FindRow {
 
 // A column's sort heading: a Tab stop that Return or Space sorts by, with a hover
 // fill and a focus frame. A click sorts and leaves the keyboard where it was.
-component SortHeading inherits Rectangle {
+export component SortHeading inherits Rectangle {
     in property <string> title;
     in property <bool> sorted;
     in property <bool> descending;

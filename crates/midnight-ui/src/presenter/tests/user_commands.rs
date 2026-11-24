@@ -464,3 +464,106 @@ fn separator_never_captures_selection_or_creates_a_launch_or_preview_job() {
     }
     assert!(p.command_launches.jobs.is_empty());
 }
+
+fn fed_command_fixture(p: &mut Presenter, pane: PaneId, paths: &[PathBuf]) {
+    let id = p.create_find(pane).unwrap();
+    let session = p.finds.sessions.get_mut(&id).unwrap();
+    session.results = paths
+        .iter()
+        .enumerate()
+        .map(|(row, path)| {
+            Arc::new(FindResult {
+                id: FindResultId(row as u64 + 1),
+                entry: FindEntry {
+                    path: path.clone(),
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata::default(),
+                    identity: TransferIdentity {
+                        device: 1,
+                        object: [row as u8; 16],
+                    },
+                    revision: FindRevision([0; 6]),
+                },
+                duplicate_group: None,
+                duplicate_group_size: 0,
+                archive: None,
+            })
+        })
+        .collect();
+    p.feed_find_results(id).unwrap();
+}
+
+#[test]
+fn fed_custom_commands_capture_raw_focus_marks_and_locations_for_preview_and_execution() {
+    for preview in [false, true] {
+        let (mut p, root) = loaded(true);
+        let paths = [
+            root.join("found/文档.txt"),
+            root.join("elsewhere/second.txt"),
+        ];
+        fed_command_fixture(&mut p, PaneId::Left, &paths);
+        p.feed_click(PaneId::Left, 0, true, false);
+        p.feed_click(PaneId::Left, 1, true, false);
+        let sent = RefCell::new(Vec::new());
+        assert!(
+            p.request_user_command(PaneId::Left, "test-command", preview, &|command| {
+                sent.borrow_mut().push(command);
+                true
+            })
+        );
+        let commands = sent.borrow();
+        let request = match &commands[0] {
+            Command::PreviewUserCommand(request) if preview => request,
+            Command::ExecuteUserCommand(request) if !preview => request,
+            _ => panic!("wrong activation route"),
+        };
+        assert!(request.validate().is_ok());
+        assert_eq!(
+            request.context.active.as_ref(),
+            Some(&root.join("elsewhere"))
+        );
+        assert_eq!(request.context.other.as_ref(), Some(&root.join("other")));
+        assert_eq!(request.context.focus.as_ref().unwrap().path, paths[1]);
+        let files = request.context.files.as_ref().unwrap();
+        assert_eq!(files.selection.len(), 2);
+        assert!(files.selection.contains_path(&paths[0]));
+        assert!(files.selection.contains_path(&paths[1]));
+        assert!(files.view.by_path.contains_key(&paths[0]));
+        p.feed_close(PaneId::Left);
+        p.panes[0].path = root.join("navigated");
+        p.panes[0].entries = Arc::from([]);
+        assert_eq!(request.context.focus.as_ref().unwrap().path, paths[1]);
+        assert_eq!(files.selection.len(), 2);
+    }
+}
+
+#[test]
+fn fed_custom_commands_capture_other_feed_context_and_focused_fallback() {
+    let (mut p, root) = loaded(true);
+    let active = root.join("found-left/文档.txt");
+    let other = root.join("found-right/other.txt");
+    fed_command_fixture(&mut p, PaneId::Left, std::slice::from_ref(&active));
+    fed_command_fixture(&mut p, PaneId::Right, std::slice::from_ref(&other));
+    let sent = RefCell::new(Vec::new());
+    assert!(
+        p.request_user_command(PaneId::Left, "test-command", false, &|command| {
+            sent.borrow_mut().push(command);
+            true
+        })
+    );
+    let commands = sent.borrow();
+    let Command::ExecuteUserCommand(request) = &commands[0] else {
+        panic!()
+    };
+    assert_eq!(
+        request.context.active.as_ref(),
+        Some(&root.join("found-left"))
+    );
+    assert_eq!(
+        request.context.other.as_ref(),
+        Some(&root.join("found-right"))
+    );
+    let files = request.context.files.as_ref().unwrap();
+    assert!(files.selection.is_empty());
+    assert_eq!(files.fallback.as_ref(), Some(&active));
+}

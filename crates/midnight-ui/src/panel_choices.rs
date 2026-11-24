@@ -69,7 +69,11 @@ fn act(
 
 pub(crate) fn refresh(main: &MainWindow, p: &Presenter) {
     let choices = main.global::<PanelChoices>();
-    let show = p.preferences.values.show_hidden_files;
+    let show = p
+        .feed(p.active)
+        .map_or(p.preferences.values.show_hidden_files, |feed| {
+            feed.projection.desired.show_hidden
+        });
     if choices.get_show_hidden_files() != show {
         choices.set_show_hidden_files(show);
     }

@@ -700,6 +700,25 @@ fn sorted_times<'a>(times: impl IntoIterator<Item = &'a SystemTime>) -> Vec<Syst
 }
 
 #[test]
+fn default_name_search_finds_a_late_match_after_more_than_one_million_entries() {
+    let root = std::env::current_dir().unwrap();
+    let expected = root.join("folder-0").join("file-1000000.txt");
+    let tree = synthetic::Tree {
+        folders: 1,
+        files: 1_000_001,
+        one_byte: None,
+        provider_locale: None,
+    };
+    let mut query = request(vec![root]);
+    query.masks = "file-1000000.txt".into();
+    let (summary, results) = synthetic_search(&tree, None, &query);
+    assert_eq!(summary.progress.examined, 1_000_002);
+    assert_eq!(summary.progress.files, 1_000_001);
+    assert_eq!(names(&results), [expected]);
+    assert!(summary.reached_budgets.is_empty(), "{summary:?}");
+}
+
+#[test]
 fn the_engine_locale_formats_each_published_result_once_and_no_other_node() {
     let root = std::env::current_dir().unwrap();
     // The three matches are folder-N/file-7.txt; the first one holds one byte.

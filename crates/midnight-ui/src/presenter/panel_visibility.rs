@@ -27,6 +27,10 @@ impl Pane {
 impl Presenter {
     /// The Show hidden files command (Ctrl+H, F10 and each panel's View menu).
     pub(crate) fn toggle_hidden_files(&mut self, send: &dyn Fn(Command) -> bool) {
+        if self.feed(self.active).is_some() {
+            self.change_feed_hidden(self.active, None, send);
+            return;
+        }
         // Both panels would be re-read only once a long comparison ends.
         if self.comparison_refuses("Show hidden files") {
             return;
@@ -43,6 +47,10 @@ impl Presenter {
 
     /// The Options checkbox previews the choice; the command saves it at once.
     pub(crate) fn change_show_hidden_files(&mut self, show: bool, send: &dyn Fn(Command) -> bool) {
+        if !self.preferences.options.open && self.feed(self.active).is_some() {
+            self.change_feed_hidden(self.active, Some(show), send);
+            return;
+        }
         self.preferences.edited.show_hidden_files = true;
         let preferences = UserPreferences {
             show_hidden_files: show,

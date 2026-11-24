@@ -26,14 +26,18 @@ pub(crate) struct MaskDialogState {
     pending: Option<u64>,
     /// A mask the backend accepted, applied once a sender is at hand.
     accepted: Option<MaskValidationRequest>,
+    feed: Option<(u64, u64)>,
 }
 
 impl Presenter {
     /// Ctrl+= or keypad + (`select`), Ctrl+− or keypad − opens the dialog for `pane`
     /// with the last choices.
     pub(crate) fn open_mask_selection(&mut self, pane: PaneId, select: bool) {
+        let feed = self
+            .feed(pane)
+            .map(|feed| (feed.rows_serial, feed.projection.view_revision));
         let p = &mut self.panes[pane.index()];
-        if p.network.is_some() || p.network_request {
+        if feed.is_none() && (p.network.is_some() || p.network_request) {
             p.set_error(
                 "Network locations cannot be selected by mask.",
                 &mut self.retired,
@@ -60,6 +64,7 @@ impl Presenter {
                 checks,
                 pending: None,
                 accepted: None,
+                feed,
             },
         )));
     }
@@ -123,14 +128,14 @@ impl Presenter {
     /// Search results fed to `pane` since the dialog opened hide its folder: say so
     /// and close the dialog.
     fn mask_feed_refuses(&mut self, pane: PaneId) -> bool {
-        let action = if self.mask_dialog.select {
-            "Select by mask"
-        } else {
-            "Deselect by mask"
-        };
-        if !self.feed_refuses(pane, action) {
+        if self
+            .feed(pane)
+            .map(|feed| (feed.rows_serial, feed.projection.view_revision))
+            == self.mask_dialog.feed
+        {
             return false;
         }
+        self.desktop.report("Select by mask", "The panel's result list changed. Reopen Select or Deselect by mask for its current rows.".into());
         self.cancel_mask_selection();
         true
     }
@@ -199,6 +204,9 @@ impl Presenter {
         mask: Arc<MaskSelection>,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
+        if self.feed(pane).is_some() {
+            return self.request_feed_mask(pane, mask, send);
+        }
         let p = &self.panes[pane.index()];
         if p.tree_view().is_some() {
             return self.send_tree_selection(pane, TreeSelectionAction::Mask(mask), send);

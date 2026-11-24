@@ -296,7 +296,7 @@ fn feed_to_panel_marks_an_explicit_selection_and_starts_at_the_cursor() {
     click(&mut p, id, 2, false, true);
     p.feed_find_results(id).unwrap();
     let feed = p.feed(PaneId::Left).unwrap();
-    assert_eq!(feed.selected, [false, true, true, true, false]);
+    assert_eq!(feed.selected.as_slice(), [false, true, true, true, false]);
     assert_eq!((feed.selected_count, feed.selected_bytes), (3, 4 + 3 + 2));
     assert_eq!(
         feed.cursor, 3,
@@ -338,7 +338,7 @@ fn feed_to_panel_marks_an_explicit_selection_and_starts_at_the_cursor() {
 
 /// Opt-in release measurement: `cargo test --release -p midnight-ui --lib
 /// find_selection_measures_100k -- --ignored --nocapture`. The retained-result limit is
-/// 10,000; this is ten times that.
+/// 100,000, so this exercises the current cap.
 #[test]
 #[ignore = "measurement; run in release with --ignored --nocapture"]
 fn find_selection_measures_100k_results() {

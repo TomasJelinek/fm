@@ -710,7 +710,8 @@ impl Presenter {
     }
 
     pub(crate) fn folder_sizes(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
-        if self.feed_refuses(pane, "Folder sizes") {
+        if self.feed(pane).is_some() {
+            self.request_find_feed_sizes(pane, send);
             return;
         }
         if self.panes[pane.index()].tree_view().is_some() {

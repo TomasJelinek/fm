@@ -3,6 +3,7 @@ use super::*;
 
 enum Target {
     Flat(u64),
+    Feed(u64, u64),
     Tree(TreeRootSnapshot, TreeSessionId),
 }
 
@@ -42,6 +43,12 @@ impl Presenter {
         if self.filter_dialog.open && self.filter_dialog.pane == pane {
             self.cancel_panel_filter();
         }
+        if let Some(feed) = self.feed(pane) {
+            let mut filter = feed.projection.desired.filter.clone();
+            filter.enabled = false;
+            self.request_feed_filter(pane, filter, send);
+            return;
+        }
         let p = &mut self.panes[pane.index()];
         if p.tree_view().is_some() {
             if p.tree.options.is_pending() {
@@ -76,6 +83,21 @@ impl Presenter {
         let Some(generation) = self.filter_dialog.generation.checked_add(1) else {
             return;
         };
+        if let Some(feed) = self.feed(pane) {
+            let target = Target::Feed(feed.rows_serial, feed.projection.view_revision);
+            let draft = feed.projection.desired.filter.clone();
+            self.retired
+                .push(Box::new(self.filter_dialog.target.replace(target)));
+            self.filter_dialog.generation = generation;
+            self.filter_dialog.open = true;
+            self.filter_dialog.pane = pane;
+            self.filter_dialog.draft = draft;
+            self.filter_dialog.error.clear();
+            self.filter_dialog.busy = false;
+            self.filter_dialog.pending = None;
+            self.filter_dialog.ready = None;
+            return;
+        }
         let p = &mut self.panes[pane.index()];
         if p.tree.options.is_pending() {
             p.set_error(
@@ -142,6 +164,12 @@ impl Presenter {
         if !self.filter_dialog.open || self.filter_dialog.pane != pane {
             return;
         }
+        if matches!(self.filter_dialog.target, Some(Target::Feed(..))) {
+            if !self.panel_filter_target_current() {
+                self.cancel_panel_filter();
+            }
+            return;
+        }
         let generation = self.panes[pane.index()].generation;
         match &mut self.filter_dialog.target {
             Some(Target::Flat(target)) if *target == generation => *target = navigation.0,
@@ -152,11 +180,20 @@ impl Presenter {
     fn panel_filter_target_current(&self) -> bool {
         let p = &self.panes[self.filter_dialog.pane.index()];
         match &self.filter_dialog.target {
+            Some(Target::Feed(serial, revision)) => {
+                self.feed(self.filter_dialog.pane).is_some_and(|feed| {
+                    feed.rows_serial == *serial && feed.projection.view_revision == *revision
+                })
+            }
             Some(Target::Tree(root, session)) => p.tree_view().is_some_and(|view| {
-                view.root.same_snapshot(root) && view.stamp.session == *session
+                self.feed(self.filter_dialog.pane).is_none()
+                    && view.root.same_snapshot(root)
+                    && view.stamp.session == *session
             }),
             Some(Target::Flat(generation)) => {
-                p.generation == *generation && p.tree_view().is_none()
+                self.feed(self.filter_dialog.pane).is_none()
+                    && p.generation == *generation
+                    && p.tree_view().is_none()
             }
             None => false,
         }
@@ -165,6 +202,9 @@ impl Presenter {
     /// Only a pending transition to another location makes the flat target stale;
     /// a same-folder re-read keeps the committed rows and the dialog's target.
     fn panel_filter_pane_settled(&self) -> bool {
+        if matches!(self.filter_dialog.target, Some(Target::Feed(..))) {
+            return true;
+        }
         let p = &self.panes[self.filter_dialog.pane.index()];
         !p.loading || p.keeps_rows()
     }
@@ -225,6 +265,11 @@ impl Presenter {
             if !current {
                 self.filter_dialog.error =
                     "The panel changed. Reopen the filter for the current folder.".into();
+                return;
+            }
+            if matches!(self.filter_dialog.target, Some(Target::Feed(..))) {
+                self.request_feed_filter(request.pane, request.filter, send);
+                self.cancel_panel_filter();
                 return;
             }
             if p.tree_view().is_some() {

@@ -21,6 +21,177 @@ fn fixture(send: &dyn Fn(Command) -> bool) -> (Presenter, DesktopRequestId) {
     (p, id)
 }
 
+fn fed_fixture() -> Presenter {
+    let root = std::env::temp_dir();
+    let mut p = Presenter::new(root.clone(), root.clone());
+    let id = p.create_find(PaneId::Left).unwrap();
+    let s = p.finds.sessions.get_mut(&id).unwrap();
+    s.results = (1..=2)
+        .map(|n| {
+            Arc::new(FindResult {
+                id: FindResultId(n),
+                entry: FindEntry {
+                    path: root.join(format!("result-folder-{n}/文档.txt")),
+                    kind: EntryKind::File,
+                    metadata: EntryMetadata::default(),
+                    identity: TransferIdentity {
+                        device: 1,
+                        object: [n as u8; 16],
+                    },
+                    revision: FindRevision([0; 6]),
+                },
+                duplicate_group: None,
+                duplicate_group_size: 0,
+                archive: None,
+            })
+        })
+        .collect();
+    p.feed_find_results(id).unwrap();
+    p.preferences.loaded = true;
+    p
+}
+
+#[test]
+fn fed_results_capture_their_own_paths_marks_and_cursor_for_make_file_list() {
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let root = std::env::temp_dir();
+    let mut p = fed_fixture();
+    p.feed_click(PaneId::Left, 1, true, false);
+    p.request_make_file_list(PaneId::Left, &send);
+    let session = p
+        .file_list
+        .session
+        .as_ref()
+        .expect("Make File List from results");
+    let capture = session.capture.clone().unwrap();
+    let FileListSource::Native {
+        entries,
+        selection,
+        fallback,
+        ..
+    } = &capture.source
+    else {
+        panic!()
+    };
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[1].path, root.join("result-folder-2/文档.txt"));
+    assert_eq!(selection.len(), 1);
+    assert!(selection.contains_path(&root.join("result-folder-2/文档.txt")));
+    assert_eq!(*fallback, None);
+    let id = session.id;
+    p.feed_close(PaneId::Left);
+    p.panes[0].entries = Arc::from([]);
+    p.panes[0].generation += 1;
+    let session = p.file_list.session.as_ref().unwrap();
+    assert!(Arc::ptr_eq(session.capture.as_ref().unwrap(), &capture));
+    p.generate_file_list(id, 0, String::new(), false, &send);
+    let commands = commands.borrow();
+    let Command::RunFileList(request) = commands.last().unwrap() else {
+        panic!()
+    };
+    assert!(Arc::ptr_eq(&request.capture, &capture));
+}
+
+#[test]
+fn fed_file_list_without_marks_falls_back_only_to_the_focused_result() {
+    let mut p = fed_fixture();
+    p.feed_click(PaneId::Left, 1, false, false);
+    p.open_feed_file_list(PaneId::Left, &|_| true);
+    let capture = p
+        .file_list
+        .session
+        .as_ref()
+        .unwrap()
+        .capture
+        .as_ref()
+        .unwrap();
+    let FileListSource::Native {
+        entries,
+        selection,
+        fallback,
+        ..
+    } = &capture.source
+    else {
+        panic!()
+    };
+    assert!(selection.is_empty());
+    assert_eq!(*fallback, Some(EntryId(2)));
+    assert_eq!(
+        entries[1].path,
+        std::env::temp_dir().join("result-folder-2/文档.txt")
+    );
+}
+
+fn finish_fed_file_list(p: &mut Presenter, send: &dyn Fn(Command) -> bool) {
+    let id = p.file_list.session.as_ref().unwrap().id;
+    let path = std::env::temp_dir().join("fed-file-list.txt");
+    p.generate_file_list(id, 2, path.to_string_lossy().into_owned(), false, send);
+    let generation = p.file_list.session.as_ref().unwrap().generation;
+    p.apply_file_list(FileListEvent {
+        id,
+        generation,
+        result: Ok(FileListUpdate::Saved {
+            path,
+            bytes: 0,
+            recovery: Vec::new(),
+            warning: None,
+        }),
+    });
+    p.flush_file_list(send);
+    assert!(p.file_list.session.is_none());
+}
+
+#[test]
+fn completed_fed_file_list_clears_only_its_feed_marks_and_never_the_folder_selection() {
+    let commands = RefCell::new(Vec::new());
+    let send = |command| {
+        commands.borrow_mut().push(command);
+        true
+    };
+    let mut p = fed_fixture();
+    let pane = &mut p.panes[0];
+    pane.entries = Arc::from([Entry::new(
+        EntryId(9),
+        std::env::temp_dir().join("underlying-folder-file.txt"),
+        EntryKind::File,
+    )]);
+    pane.index = Arc::new(DirectoryIndex::from_entries(&pane.entries));
+    pane.selected = Arc::new(SelectionSnapshot::from_bits(pane.index.clone(), vec![1]).unwrap());
+    let selected = pane.selected.clone();
+    p.feed_click(PaneId::Left, 1, true, false);
+    p.request_make_file_list(PaneId::Left, &send);
+    finish_fed_file_list(&mut p, &send);
+    assert_eq!(p.feed(PaneId::Left).unwrap().selected_count, 0);
+    assert!(Arc::ptr_eq(&selected, &p.panes[0].selected));
+    assert!(
+        !commands
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::Selection(_)))
+    );
+}
+
+#[test]
+fn completed_fed_file_list_preserves_new_marks_or_a_replacement_feed() {
+    for replacement in [false, true] {
+        let mut p = fed_fixture();
+        p.feed_click(PaneId::Left, 1, true, false);
+        p.request_make_file_list(PaneId::Left, &|_| true);
+        if replacement {
+            let id = *p.finds.sessions.keys().next().unwrap();
+            p.feed_find_results(id).unwrap();
+        }
+        p.feed_click(PaneId::Left, 0, true, false);
+        let selected = p.feed(PaneId::Left).unwrap().selected.clone();
+        finish_fed_file_list(&mut p, &|_| true);
+        assert_eq!(p.feed(PaneId::Left).unwrap().selected, selected);
+    }
+}
+
 #[derive(Debug)]
 struct Text;
 impl GeneratedTextSource for Text {

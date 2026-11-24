@@ -7,17 +7,17 @@ mod tests;
 
 impl Presenter {
     pub fn file_compare_launch(&self, active: PaneId) -> Result<FileCompareLaunch, String> {
-        let active_pane = &self.panes[active.index()];
-        let panes: &[PaneId] = if compare_selection_len(active_pane) == 2 {
+        let selected_count = |id: PaneId| {
+            self.feed(id).map_or_else(
+                || compare_selection_len(&self.panes[id.index()]),
+                |feed| feed.selected_count,
+            )
+        };
+        let panes: &[PaneId] = if selected_count(active) == 2 {
             std::slice::from_ref(&active)
         } else {
             &[PaneId::Left, PaneId::Right]
         };
-        // A compared panel's selection and focus belong to the folder hidden
-        // under search results fed to it.
-        if panes.iter().any(|pane| self.feed(*pane).is_some()) {
-            return Err(find::feed::refusal("Compare files"));
-        }
         let disabled_plugins = self
             .viewer_plugins
             .startup_disabled
@@ -34,8 +34,32 @@ impl Presenter {
             })?;
         let mut sources = Vec::with_capacity(panes.len());
         for id in panes {
+            if let Some(feed) = self.feed(*id) {
+                let source = if panes.len() == 2 && feed.selected_count > 1 {
+                    FileCompareSource::Unspecified
+                } else if let Some(files) = feed.files() {
+                    if !files.selection.is_empty() {
+                        FileCompareSource::Selected {
+                            entries: feed.entries.clone(),
+                            view: files.view,
+                            selection: files.selection,
+                        }
+                    } else {
+                        feed.focused()
+                            .filter(|entry| entry.kind == EntryKind::File)
+                            .and_then(|entry| entry.native_path())
+                            .map_or(FileCompareSource::Unspecified, |path| {
+                                FileCompareSource::Focused(path.to_owned())
+                            })
+                    }
+                } else {
+                    FileCompareSource::Unspecified
+                };
+                sources.push(source);
+                continue;
+            }
             let pane = &self.panes[id.index()];
-            let counterpart = panes.len() == 2 && *id != active && compare_selection_len(pane) == 0;
+            let counterpart = panes.len() == 2 && *id != active && selected_count(*id) == 0;
             if pane.tree_view().is_some() {
                 sources.extend(tree_sources(pane, counterpart, panes.len() == 2));
                 continue;

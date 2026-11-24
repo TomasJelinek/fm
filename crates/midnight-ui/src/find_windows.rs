@@ -19,6 +19,8 @@ use std::{
 };
 #[path = "find_feed.rs"]
 pub(crate) mod feed;
+#[path = "find_window_geometry.rs"]
+mod geometry;
 #[cfg(test)]
 #[path = "find_window_order_tests.rs"]
 mod order_tests;
@@ -179,6 +181,7 @@ impl Model for Marks {
 struct WindowRecord {
     window: FindWindow,
     host: Rc<DialogHost>,
+    placement: Rc<geometry::Placement>,
     shown: bool,
     rows: Rc<Rows>,
     marks: Rc<Marks>,
@@ -189,6 +192,9 @@ struct WindowRecord {
     // The session's Add count already shown to the window.
     added_root: u64,
     revision: Option<u64>,
+    history: Vec<String>,
+    /// A dialog can open before the first settings read finishes.
+    prefill_pending: bool,
 }
 type Windows = Rc<RefCell<HashMap<FindSessionId, WindowRecord>>>;
 
@@ -240,17 +246,28 @@ pub(crate) fn install(
             };
             refresh(&main, &windows, &sessions, &state, &send, &failures);
             feeds.refresh(&main, &state.borrow());
+            let focus = state.borrow().finds.feed_focus.take();
+            if let Some(pane) = focus {
+                main.set_active_pane(pane.index() as i32);
+                main.invoke_focus_files();
+            }
         });
     }
     main.on_close_find_windows(move || {
         closing.set(true);
         let records = std::mem::take(&mut *windows.borrow_mut());
+        let mut records: Vec<_> = records.into_iter().collect();
+        records.sort_by_key(|(id, _)| id.0);
         for (id, record) in records {
             // No Presenter borrow: the host's exit timer may already own it.
             // The engine Shutdown command subsequently cancels every session even
             // if this bounded per-window close cannot enter the full queue.
             let _ = send(Command::CloseFind(id));
+            record.placement.capture(record.window.window());
             record.host.close(record.window.window());
+        }
+        if let Ok(mut p) = state.try_borrow_mut() {
+            p.flush_find_window_preferences(send.as_ref());
         }
     });
 }
@@ -272,7 +289,17 @@ fn refresh(
         .collect();
     for id in removed {
         if let Some(record) = windows.borrow_mut().remove(&id) {
+            record.placement.capture(record.window.window());
             record.host.close(record.window.window());
+            // Refresh can run under a shared Presenter borrow. Commit the captured
+            // placement after that caller returns, without polling idle windows.
+            let state = state.clone();
+            let send = send.clone();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                if let Ok(mut p) = state.try_borrow_mut() {
+                    p.flush_find_window_preferences(send.as_ref());
+                }
+            });
         }
     }
     for id in ids {
@@ -299,6 +326,38 @@ fn refresh(
             continue;
         };
         let w = &record.window.clone_strong();
+        if record.prefill_pending && p.window_geometry_ready() {
+            record.prefill_pending = false;
+            if !w.get_filename_mask_edited() {
+                w.set_filename_mask(
+                    p.preferences
+                        .values
+                        .find
+                        .mask_history
+                        .first()
+                        .map_or("*.*", String::as_str)
+                        .into(),
+                );
+            }
+        }
+        if record.shown {
+            record.placement.ensure_restored(w, &record.host, state);
+        }
+        if record.history != p.preferences.values.find.mask_history {
+            record
+                .history
+                .clone_from(&p.preferences.values.find.mask_history);
+            w.set_mask_history(
+                Rc::new(VecModel::from(
+                    record
+                        .history
+                        .iter()
+                        .map(|mask| mask.as_str().into())
+                        .collect::<Vec<_>>(),
+                ))
+                .into(),
+            );
+        }
         let theme = main.global::<Theme>();
         w.invoke_apply_preferences(
             theme.get_scheme(),
@@ -351,13 +410,18 @@ fn refresh(
                 .and_then(|row| i32::try_from(row).ok())
                 .unwrap_or(-1),
         );
-        w.set_progress(status(s, &p).into());
+        w.set_progress(if s.feeding {
+            "Preparing results for the panel…".into()
+        } else {
+            status(s, &p).into()
+        });
         crate::tooltip::synchronize_find(w);
         let shown = if record.shown {
             Ok(())
         } else {
             record.host.show(w.window()).map(|()| {
                 record.shown = true;
+                record.placement.ensure_restored(w, &record.host, state);
                 w.invoke_begin();
             })
         };
@@ -382,6 +446,8 @@ fn show_session(
     p: &Presenter,
 ) -> Option<Arc<FindOrder>> {
     w.set_running(s.running);
+    w.set_feeding(s.feeding);
+    w.set_found_count(p.number_locale.format_u64(s.results.len() as u64).into());
     w.set_stopping(s.stopping);
     w.set_duplicate_results(s.duplicates);
     // Copy details formats the session again, with raw paths.
@@ -466,6 +532,24 @@ fn create(
     let (window, host) = DialogHost::create_tool(session, DialogOwner::new(main), FindWindow::new)?;
     let host = Rc::new(host);
     crate::tooltip::install_find(&window)?;
+    let placement = geometry::Placement::install(&window, state, send);
+    let (history, prefill_pending) = {
+        let p = state.borrow();
+        (
+            p.preferences.values.find.mask_history.clone(),
+            !p.window_geometry_ready(),
+        )
+    };
+    window.set_filename_mask(history.first().map_or("*.*", String::as_str).into());
+    window.set_mask_history(
+        Rc::new(VecModel::from(
+            history
+                .iter()
+                .map(|mask| mask.as_str().into())
+                .collect::<Vec<_>>(),
+        ))
+        .into(),
+    );
     let rows = Rc::new(Rows {
         state: Rc::downgrade(state),
         session: id,
@@ -510,10 +594,13 @@ fn create(
         let send = send.clone();
         let weak = window.as_weak();
         let main = main.as_weak();
+        let placement = placement.clone();
         window.on_close_session(move || {
             let Some(window) = weak.upgrade() else { return };
+            placement.capture(window.window());
             host.request_close(window.window(), || {
                 let mut p = state.borrow_mut();
+                p.flush_find_window_preferences(send.as_ref());
                 p.close_find(id, send.as_ref());
                 if p.finds.sessions.contains_key(&id) {
                     CloseDisposition::KeepOpen
@@ -547,25 +634,9 @@ fn create(
     callback!(on_reveal, |p, send, row| {
         p.reveal_find(id, &row, send);
     });
-    {
-        // The results stay in the panel; this window closes like Total Commander's.
-        let host = host.clone();
-        let state = state.clone();
-        let weak = window.as_weak();
-        let main = main.as_weak();
-        window.on_feed_panel(move || {
-            if !host.is_current(session) {
-                return;
-            }
-            let fed = state.borrow_mut().feed_find_results(id).is_some();
-            if fed && let Some(window) = weak.upgrade() {
-                window.invoke_close_session();
-            }
-            if let Some(main) = main.upgrade() {
-                crate::refresh(&main, &state.borrow());
-            }
-        });
-    }
+    callback!(on_feed_panel, |p, send| {
+        p.request_feed_find_results(id, send);
+    });
     callback!(on_file_action, |p, send, row, action| {
         if let Some(action) = file_action(action) {
             p.find_file_action(id, &row, action, send);
@@ -689,6 +760,7 @@ fn create(
     Ok(WindowRecord {
         window,
         host,
+        placement,
         shown: false,
         rows,
         marks,
@@ -696,6 +768,8 @@ fn create(
         root_rows,
         added_root: 0,
         revision: None,
+        history,
+        prefill_pending,
     })
 }
 

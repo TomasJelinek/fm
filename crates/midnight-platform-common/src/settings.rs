@@ -20,6 +20,7 @@ mod exchange;
 pub use exchange::{SETTINGS_FILE_VERSION, decode_settings_file, encode_settings_file};
 mod file_comparators;
 mod file_list;
+mod find;
 mod foreign;
 mod thumbnailer_associations;
 mod updates;
@@ -43,6 +44,8 @@ mod document_layout_tests;
 #[cfg(test)]
 mod file_list_tests;
 #[cfg(test)]
+mod find_tests;
+#[cfg(test)]
 mod panel_visibility_tests;
 #[cfg(test)]
 mod previews_tests;
@@ -59,7 +62,7 @@ mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 40;
+const CURRENT_PREFERENCES_VERSION: u32 = 41;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +89,13 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     updates: Option<updates::StoredUpdates>,
+    /// Schema 41: Find's accepted mask history and modeless window placement.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    find: Option<find::StoredFindPreferences>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -906,6 +916,7 @@ fn decode_preferences_impl(
         user_commands: user_commands.into(),
         checksum_algorithms: checksums::decode(stored.version, stored.checksum_algorithms)?,
         window_geometry,
+        find: find::decode(stored.version, stored.find)?,
         panel_split_basis_points: match (stored.version, stored.panel_split_basis_points) {
             (1..=22, None) => midnight_core::DEFAULT_PANEL_SPLIT_BASIS_POINTS,
             (23..=CURRENT_PREFERENCES_VERSION, Some(ratio)) => ratio,
@@ -1097,7 +1108,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || (foreign_commands && user_commands::kept_output(&foreign_settings)?);
     // Schema 40: update choices (off-by-default values only).
     let update_choices = preferences.updates != midnight_core::UpdatePreferences::default();
-    // Schemas 35 to 40 keep every field that versions 33 and 34 require.
+    let find_choices = preferences.find != midnight_core::FindPreferences::default();
+    // Schemas 35 to 41 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
@@ -1106,7 +1118,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || glide_choices
         || speed_choices
         || output_choices
-        || update_choices;
+        || update_choices
+        || find_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1185,6 +1198,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         scroll_glide: glide_choices.then_some(preferences.scroll_glide.percent()),
         wheel_speed: speed_choices.then_some(preferences.wheel_speed.percent()),
         updates: update_choices.then(|| updates::StoredUpdates::from(preferences.updates)),
+        find: find_choices.then(|| preferences.find.into()),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),
@@ -1244,7 +1258,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if update_choices {
+        version: if find_choices {
+            41
+        } else if update_choices {
             40
         } else if output_choices {
             39

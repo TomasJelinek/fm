@@ -86,6 +86,24 @@ fn a_short_idle_find_with_large_text_keeps_its_status_in_view() {
     assert!(findings.is_empty(), "{findings:#?}");
 }
 
+#[test]
+fn found_count_remains_visible_beside_a_long_status() {
+    let (window, native) = open();
+    window.set_progress(
+        "Incomplete · click for details · a deliberately long progress message".into(),
+    );
+    window.set_found_count("100,000".into());
+    for (width, height) in [(320, 200), (780, 560)] {
+        modeless::draw(&native, width, height, "find-found-count");
+        let count = modeless::accessible_item(&native, AccessibleRole::Text, "Found: 100,000")
+            .expect("a separate found count");
+        assert!(cut_off(&count, height as f32) < 0.5);
+        let (x, _, w, _) = bounds(&count);
+        assert!(x >= 0.0 && x + w <= width as f32 + 0.5);
+    }
+    window.hide().unwrap();
+}
+
 /// The part of `item` its clipping ancestors and the window show, when any.
 fn shown(item: &ItemRc, (width, height): (f32, f32)) -> Option<Rect> {
     if !item.is_visible() {
