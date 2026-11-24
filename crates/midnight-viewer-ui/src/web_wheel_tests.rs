@@ -296,9 +296,11 @@ fn same_travel_as_the_text_viewer(scale: f32) {
     for ((name, notches), expected) in schedules().into_iter().zip(text) {
         let html = fixture.travel(&notches);
         assert_eq!(html.len(), expected.len(), "{name}");
+        // A flick's notches 24 ms apart pace its glides to 50 ms: three notches move for
+        // 13 frames of 8 ms, one for 25.
         let moving = expected.iter().filter(|delta| **delta != [0.0; 2]).count();
         assert!(
-            moving >= 20,
+            moving >= 10,
             "{name}: the text viewer glides ({moving} frames)"
         );
         for (index, (html, text)) in html.iter().zip(&expected).enumerate() {
@@ -353,14 +355,15 @@ fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
     assert_eq!(moving.len(), 25, "200 ms of 8 ms frames");
     let notch_y = notch_distance(&fixture.open)[1];
     assert!((sum(&moving)[1] - notch_y * scale).abs() < 1e-3);
-    // The page moves for four frames and reaches its bottom while more notches arrive:
-    // the glide ends 120 ms after its last new frame instead of sending the rest of its
-    // deltas until 200 ms after the last notch (36 frames).
+    // The page moves for four frames and reaches its bottom while more notches arrive
+    // 40 ms apart: the glide ends 120 ms after its last new frame instead of sending the
+    // rest of its deltas until 80 ms (twice the notches' interval) after the last notch
+    // (25 frames).
     fixture.native(notch(-1.0));
     let mut edge = Vec::new();
     for frame in 1..=40 {
         edge.extend(fixture.frame(frame <= 4));
-        if matches!(frame, 5 | 8 | 11) {
+        if matches!(frame, 5 | 10 | 15) {
             fixture.native(notch(-1.0));
         }
     }
@@ -375,13 +378,14 @@ fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
     }
     assert_eq!(waiting.len(), 25);
     assert!((sum(&waiting)[1] - notch_y * scale).abs() < 1e-3);
-    // A page already at its edge never paints: a burst of 40 notches ends one second
-    // after it began instead of 200 ms after its last notch (142 frames).
+    // A page already at its edge never paints: a burst of 42 notches ends one second
+    // after it began instead of 50 ms (twice the notches' 24 ms interval) after its last
+    // notch (129 frames).
     fixture.native(notch(-1.0));
     let mut idle = Vec::new();
     for frame in 1..=160 {
         idle.extend(fixture.frame(false));
-        if frame % 3 == 0 && frame < 120 {
+        if frame % 3 == 0 && frame < 124 {
             fixture.native(notch(-1.0));
         }
     }

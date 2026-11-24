@@ -370,10 +370,13 @@ fn raster_wheel_retries_a_full_queue_without_losing_its_last_pixels() {
     let steps = submitted.borrow();
     assert!(steps.len() >= 10);
     let notch = image_motion::notch_pixels(&open, false);
+    // Fractional steps: the glide leaves at once, and the first step after the queue
+    // accepts again catches up the 32 ms it waited (a third of the notch), never all of it.
     assert!(
         steps
             .iter()
-            .all(|step| step[1] > 0.0 && step[1] < notch / 6.0)
+            .all(|step| step[1] > 0.0 && step[1] < notch / 2.0),
+        "{steps:?}"
     );
     let total: f32 = steps.iter().map(|step| step[1]).sum();
     assert!(

@@ -14,8 +14,8 @@ in for CPU timing, and a successful startup does not prove every font/glyph case
 
 ## Input contract
 
-- Unphased mouse-wheel line deltas receive a short, interruptible glide on Chromium's
-  wheel curve ([wheel glide](#wheel-glide)).
+- Unphased mouse-wheel line deltas receive a short, interruptible glide that never
+  scrolls slower than glide Off ([wheel glide](#wheel-glide)).
   Only undelivered displacement accumulates; reversal discards the old tail.
 - Precise pixel deltas and phased touchpad/touch gestures follow the finger
   without easing. Linux X11 and Wayland report no momentum after the lift, so the
@@ -140,41 +140,60 @@ system ([Scrolling glide setting](#scrolling-glide-setting)).
 
 Tests: `midnight-ui-input` `wheel_lines::tests` (one, three and six lines, bounds, one
 screen per notch, Linux's fixed notch), `glide::tests` (durations by distance and scale, the
-curve, a carried speed) and `wheel_motion::tests` (a notch's 200 ms at 60 Hz in 12 frames,
-300 px in 150 ms and 480 px in 100 ms, a notch during a glide keeping its speed, 30 Hz
-frames, a stall, scale 0 and 2); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
+curve), `wheel_motion::tests` (a notch's 200 ms at 60 Hz in 12 frames, 300 px in 150 ms
+and 480 px in 100 ms, a notch during a glide keeping its speed, pacing by the input's
+interval, 30 Hz frames, a stall, scale 0 and 2) and `wheel_motion::speed_tests` (bursts at
+16 to 100 ms and held keys at every stop against Off: the same distance, each target
+within one glide and its half well before, no backward motion or jump beyond Off's, the
+same motion at 30, 60 and 144 Hz, a spin trailing Off by twice its interval); `midnight-viewer-ui` `text_presentation_tests` and `web_wheel_tests`
 (a notch glides `image_motion::notch_pixels` in the text and HTML viewers; with less
 motion it moves whole on the next frame and a touchpad flick has no momentum) and
 `image_key_tests` (a notch and a key move a tiled image at once with less motion).
 
 ### Wheel glide
 
-A notch glides on Chromium's wheel animation (`midnight_ui_input::WheelMotion`,
+A notch glides for Chromium's wheel duration (`midnight_ui_input::WheelMotion`,
 `glide.rs`; Chromium's `cc/animation/scroll_offset_animation_curve.cc`, the inverse-delta
-duration of `ScrollType::kMouseWheel`):
+duration of `ScrollType::kMouseWheel`) on a curve that never makes scrolling slower than
+glide Off: every input moves exactly as far as with Off, and the glide only smooths the way
+there.
 
-- **Curve:** cubic-bezier(0.42, 0, 0.58, 1), an ease-in-out.
+- **Curve:** cubic-bezier(0.42, 1, 0.58, 1), Chromium's time axis without its ease-in. A
+  glide leaves at once at 1/0.42 (about 2.4) times its average speed, so a 100 px notch
+  moves 19 px on its first 60 Hz frame, and eases out to rest; half the time covers seven
+  eighths of the way. Chromium's cubic-bezier(0.42, 0, 0.58, 1) moved under 1 px of it on
+  the first frame and half of it only after half the glide, so every notch from rest and
+  the start of every spin trailed Off by most of a glide (a deliberate difference).
 - **Duration:** 200 ms for a glide of up to 120 px, falling linearly to 100 ms at 480 px
-  and beyond: a notch at the defaults glides for 200 ms.
-- **Successive notches:** a notch during a glide adds its distance to what is still to
-  come and glides the rest from the current speed (the curve's first control point rises
-  to keep it), ending no later than 2.5 times the remaining distance at that speed: a fast
-  spin catches up instead of trailing further behind. A notch against the glide drops the
-  rest of the old direction (Chromium would finish it first; a deliberate difference).
+  and beyond: a single notch at the defaults glides for 200 ms.
+- **Successive input:** a notch or key during a glide adds its whole distance to what is
+  still to come (a bound of 10^9 px only keeps the arithmetic finite; through 0.5.2 all but
+  2,400 px were dropped, so a held Page Down at Long or Very long covered about half the
+  distance). The glide is first brought to the input's moment, and the rest glides from
+  there over the shortest of: its own duration; twice the interval since the previous
+  input, at least 50 ms, both times the scale; and the time in which the current speed
+  covers it on the curve. The rest therefore starts at no less than the current speed, a
+  fast spin or a held key builds speed instead of trailing a whole glide behind, and the
+  last input's glide ends within twice the repeat interval. Firefox likewise shortens its
+  smooth scrolling as wheel events come closer together. A notch against the glide drops
+  the rest of the old direction (Chromium would finish it first; a deliberate difference).
   Moving the pointer does not stop a glide: the question a viewer asks the worker about
   what the pointer is over (links) is not an input that interrupts motion
   (`acceptance_seams_tests::hover_questions_during_a_glide_*`).
 - **Time:** the presented frames' time, each frame counted up to 50 ms: at 60 Hz, and at
   30 Hz under load, a notch takes its 200 ms of wall-clock time; a longer stall resumes
-  where it stopped instead of jumping by pixels nobody saw. Chromium computes the duration
-  from device pixels, so at 200 % its single notch glides for about 178 ms; the viewers use
-  logical pixels and glide 200 ms at every scale.
-- **Scale:** `midnight_ui_input::glide_scale()` multiplies the duration (and touchpad
-  momentum's decay time, below); 1.0 is Chromium's timing and the default, 0 moves a notch
-  at once. It belongs to the UI thread, which runs every window (panels, viewers and the
-  comparator); a host sets it with `set_glide_scale` (the Options page's Scrolling glide
-  setting, below).
+  where it stopped instead of jumping by pixels nobody saw; a glide that waited for content
+  restarts with one 60 Hz frame (`restart_remaining`). Input between frames starts its
+  glide at its own moment, so the motion is the same at 30, 60 and 144 Hz. Chromium
+  computes the duration from device pixels, so at 200 % its single notch glides for about
+  178 ms; the viewers use logical pixels and glide 200 ms at every scale.
+- **Scale:** `midnight_ui_input::glide_scale()` multiplies the durations (and touchpad
+  momentum's decay time, below); 1.0 is the default, 0 moves a notch at once. It belongs
+  to the UI thread, which runs every window (panels, viewers and the comparator); a host
+  sets it with `set_glide_scale` (the Options page's Scrolling glide setting, below).
 
+Measured against Off at every stop (bursts, held keys, 30, 60 and 144 Hz):
+[glide speed record](../verification/2026-11-24-scroll-glide-speed.md).
 Chromium's numbers, with links to its source, and the measurements:
 [scroll speed record](../verification/2026-11-23-scroll-speed.md).
 
@@ -231,8 +250,11 @@ beside the slider.
   0, so either one turns gliding off.
 - The wheel glide (`WheelMotion`) and the synthesised touchpad momentum
   (`KineticScroll`) read `midnight_ui_input::glide_scale` when a glide or a fling starts:
-  the glide's duration and the momentum's decay time constant are the base values times
-  the scale. The panels' row alignment glides for 200 ms times the scale (the window's
+  the glide's durations and the momentum's decay time constant are the base values times
+  the scale. A longer stop never moves less, nor later than one glide after an input: a
+  spin or a held key trails Off by twice its interval times the scale, and the momentum
+  only adds to the finger's own motion
+  (`kinetic::tests::a_flick_coasts_on_top_of_the_finger_at_every_glide_stop`). The panels' row alignment glides for 200 ms times the scale (the window's
   `glide-scale`).
 - At 0 (Off) nothing glides, and the setting applies to open windows at once because the
   hosts read it per notch: the panels move a notch at once and align at once;

@@ -308,3 +308,33 @@ fn the_glide_scale_lengthens_momentum_and_zero_starts_none() {
     );
     assert_eq!(travel(0.0), (false, 0.0));
 }
+
+#[test]
+fn a_flick_coasts_on_top_of_the_finger_at_every_glide_stop() {
+    // The hosts deliver the finger's own motion directly at every stop; the momentum only
+    // adds to it, in the flick's direction, and grows with the stop. Off adds none.
+    let coasts: Vec<f64> = [0.0, 0.25, 0.5, 1.0, 2.0, 4.0]
+        .into_iter()
+        .map(|scale| {
+            crate::set_glide_scale(scale);
+            let mut kinetic = KineticScroll::default();
+            stroke(&mut kinetic, -20.0, 6, ms(100), true);
+            let flung = kinetic.release(ms(100));
+            crate::set_glide_scale(1.0);
+            // Very long coasts longer than `coast` runs.
+            let mut total = 0.0;
+            for frame in 1..=4000 {
+                if let Some((_, y)) = kinetic.tick(ms(100) + FRAME * frame) {
+                    total += f64::from(y);
+                }
+            }
+            assert_eq!(flung, scale > 0.0);
+            assert!(!kinetic.active(), "momentum must finish at x{scale}");
+            total
+        })
+        .collect();
+    assert_eq!(coasts[0], 0.0);
+    for pair in coasts.windows(2) {
+        assert!(pair[1] <= pair[0] && pair[1] < 0.0, "{coasts:?}");
+    }
+}

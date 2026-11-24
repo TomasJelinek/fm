@@ -83,7 +83,9 @@ fn wheel_is_fractional_at_every_frame_and_ends_at_the_exact_requested_distance()
     for frame in 1..=25 {
         camera.tick(Duration::from_millis(frame * 8));
         let delta = camera.origin[1] - previous;
-        assert!((0.0..12.0).contains(&delta), "large physical step {delta}");
+        // The glide leaves at once: its first 8 ms frame moves a tenth of the 135
+        // physical pixels, every later one less.
+        assert!((0.0..13.5).contains(&delta), "large physical step {delta}");
         advances += usize::from(delta > 0.0);
         previous = camera.origin[1];
     }
@@ -197,7 +199,8 @@ fn delayed_frontier_resumes_with_small_frames_instead_of_spending_unseen_animati
     for frame in 61..=80 {
         camera.tick(Duration::from_millis(frame * 16));
         let step = camera.origin[1] - before;
-        assert!(step < 10.0, "frontier refill jumped {step} pixels");
+        // The remaining 55 px glide anew: a 16 ms frame moves a fifth of them, not all.
+        assert!(step < 12.0, "frontier refill jumped {step} pixels");
         before = camera.origin[1];
     }
     assert!((camera.origin[1] - 460.0).abs() < 0.001);
@@ -224,8 +227,8 @@ fn first_redraw_after_refill_advances_a_bounded_step_without_waiting_an_extra_fr
                         camera.tick(Duration::from_millis(millis));
                     }
                 } else {
-                    // The glide eases in (Chromium's curve): five frames reach the boundary,
-                    // then the window draws nothing until the refill.
+                    // Five frames reach the boundary, then the window draws nothing until
+                    // the refill.
                     for millis in (16..=80).step_by(16) {
                         camera.tick(Duration::from_millis(millis));
                     }
@@ -237,7 +240,8 @@ fn first_redraw_after_refill_advances_a_bounded_step_without_waiting_an_extra_fr
                 let now = Duration::from_millis(pause_ms + 16);
                 assert!(camera.tick(now), "the first covered redraw must move");
                 let step = (camera.origin[1] - boundary) * f64::from(direction) / scale;
-                assert!(step > 0.0 && step < 10.0, "unbounded resume step: {step}");
+                // The rest glides anew: a 16 ms frame moves a fifth of it, not all.
+                assert!(step > 0.0 && step < 12.0, "unbounded resume step: {step}");
                 assert!(
                     !camera.tick(now),
                     "the same timestamp must not replay movement"

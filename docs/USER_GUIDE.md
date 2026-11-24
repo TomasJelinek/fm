@@ -1026,8 +1026,11 @@ current keys.
   scrolls as far as it does in Chrome and in Electron applications: on Windows 100
   pixels at the default of three lines per notch (proportionally more or less for other
   settings, and seven eighths of the visible height when Windows scrolls one screen at a
-  time), on Linux 120 pixels; at Default each notch glides for a fifth of a second, as in
-  Chrome, and quick successive notches keep their speed. **Scrolling speed**
+  time), on Linux 120 pixels; at Default a single notch glides for a fifth of a second, as
+  long as in Chrome. Gliding never makes scrolling slower: every notch and key moves exactly
+  as far as with Off, a glide starts moving at once, and while you spin the wheel or hold a
+  key the glides shorten to keep pace, so the view stays just behind where Off would be
+  and settles soon after you stop. **Scrolling speed**
   (Appearance) scales that distance for a mouse wheel in the panels, lists, dialogs and
   every viewer: Very slow, Slow, Medium, Fast or Very fast, from half to twice the
   system's distance; Medium, the default, is the system's own speed. Touchpad gestures,

@@ -1,7 +1,14 @@
-//! Chromium's wheel glide: how long a wheel notch's eased motion lasts and the curve it
-//! follows (`cc/animation/scroll_offset_animation_curve.cc`, the `kInverseDelta` duration
-//! that `ScrollType::kMouseWheel` selects, and its ease-in-out timing function), with one
-//! scale for the glide and for touchpad momentum. Pure policy.
+//! The wheel glide: how long a wheel notch's eased motion lasts (Chromium's
+//! `cc/animation/scroll_offset_animation_curve.cc`, the `kInverseDelta` duration that
+//! `ScrollType::kMouseWheel` selects) and the curve it follows, with one scale for the glide
+//! and for touchpad momentum. Pure policy.
+//!
+//! The curve keeps the time axis of Chromium's ease-in-out (`kEaseInOutControlPoints`,
+//! cubic-bezier(0.42, 0, 0.58, 1)) but not its ease-in: a glide leaves at once, at
+//! [`START_SLOPE`] times its average speed, and eases out to rest (cubic-bezier(0.42, 1,
+//! 0.58, 1)). Chromium's curve spends the first third of a glide almost still, so every
+//! notch from rest, and every spin's first notches, trailed glide Off by most of the glide
+//! (docs/verification/2026-11-24-scroll-glide-speed.md).
 use std::cell::Cell;
 use std::time::Duration;
 
@@ -14,13 +21,13 @@ const RAMP_END: f64 = 480.0;
 /// Frames of the longest and the shortest glide (`kInverseDeltaMaxDuration`, `...Min...`).
 const LONGEST_FRAMES: f64 = 12.0;
 const SHORTEST_FRAMES: f64 = 6.0;
-/// The ease-in-out timing function's first and second control points' x
-/// (`kEaseInOutControlPoints`: cubic-bezier(0.42, 0, 0.58, 1)).
+/// The timing function's first and second control points' x (Chromium's
+/// `kEaseInOutControlPoints`); both control points' y are 1.
 const EASE_X1: f64 = 0.42;
 const EASE_X2: f64 = 0.58;
-/// A new notch during a glide ends no later than reaching the new target at the current
-/// speed would, with this allowance for the ease-out (`VelocityBasedDurationBound`).
-pub(crate) const VELOCITY_BOUND: f64 = 2.5;
+/// The curve's slope at its start: a glide of `d` pixels over `t` seconds leaves at
+/// `START_SLOPE * d / t` pixels a second (1 / [`EASE_X1`], about 2.4).
+pub(crate) const START_SLOPE: f64 = 1.0 / EASE_X1;
 
 thread_local! {
     /// The UI thread's glide scale; every window of the event loop shares it.
@@ -112,21 +119,23 @@ fn parameter(x: f64) -> f64 {
     t
 }
 
-/// The glide's progress (0 to 1) at time fraction `fraction` of its duration, on Chromium's
-/// ease-in-out curve whose first control point rises to `rise` (0 from rest; a glide that
-/// continues a moving one starts at its speed, see [`rise_for`]).
-pub(crate) fn progress(fraction: f64, rise: f64) -> f64 {
+/// The glide's progress (0 to 1) at time fraction `fraction` of its duration: the timing
+/// function cubic-bezier(0.42, 1, 0.58, 1), whose progress is `1 - (1 - t)^3` at curve
+/// parameter `t`. It leaves at [`START_SLOPE`] and eases out to rest, never overshooting
+/// or turning back.
+pub(crate) fn progress(fraction: f64) -> f64 {
     if fraction <= 0.0 {
         return 0.0;
     }
     if fraction >= 1.0 {
         return 1.0;
     }
-    bezier(parameter(fraction), rise, 1.0)
+    let rest = 1.0 - parameter(fraction);
+    1.0 - rest * rest * rest
 }
 
 /// The progress's slope (per unit of time fraction) at `fraction`.
-pub(crate) fn progress_slope(fraction: f64, rise: f64) -> f64 {
+pub(crate) fn progress_slope(fraction: f64) -> f64 {
     if !(0.0..1.0).contains(&fraction) {
         return 0.0;
     }
@@ -135,19 +144,7 @@ pub(crate) fn progress_slope(fraction: f64, rise: f64) -> f64 {
     if dx.abs() < 1e-12 {
         return 0.0;
     }
-    bezier_slope(t, rise, 1.0) / dx
-}
-
-/// The first control point's rise that starts a glide of `distance` over `duration`
-/// at `speed` (pixels a second along the same axis), as Chromium keeps a retargeted
-/// glide's speed (`EaseInOutWithInitialSlope`). Bounded to 0..=1, so progress never
-/// overshoots or turns back.
-pub(crate) fn rise_for(speed: f64, distance: f64, duration: Duration) -> f64 {
-    if distance == 0.0 || !speed.is_finite() || speed.signum() != distance.signum() {
-        return 0.0;
-    }
-    let slope = speed * duration.as_secs_f64() / distance;
-    (EASE_X1 * slope).clamp(0.0, 1.0)
+    3.0 * (1.0 - t) * (1.0 - t) / dx
 }
 
 #[cfg(test)]
@@ -184,28 +181,31 @@ mod tests {
     }
 
     #[test]
-    fn the_curve_is_chromiums_ease_in_out_and_keeps_a_carried_speed() {
-        // cubic-bezier(0.42, 0, 0.58, 1) is symmetric: half the time, half the way.
-        assert!((progress(0.5, 0.0) - 0.5).abs() < 1e-6);
-        assert!((progress(0.25, 0.0) + progress(0.75, 0.0) - 1.0).abs() < 1e-6);
-        // It starts and ends at rest, slowly.
-        assert!(progress(0.1, 0.0) < 0.03 && progress(0.9, 0.0) > 0.97);
-        assert!(progress_slope(0.0, 0.0).abs() < 1e-6);
+    fn the_curve_leaves_at_speed_and_eases_out_to_rest() {
+        // It leaves at 1/0.42 times the average speed, where Chromium's ease-in-out leaves
+        // at rest; half the time covers seven eighths of the way.
+        assert!((progress_slope(0.0) - START_SLOPE).abs() < 1e-6);
+        assert!((START_SLOPE - 1.0 / 0.42).abs() < 1e-12);
+        assert!((progress(0.5) - 0.875).abs() < 1e-6);
+        // A notch's first 60 Hz frame of 200 ms moves a sixth of it, not a hundredth.
+        let first = progress(1.0 / 12.0);
+        assert!(first > 0.16 && first < 0.2, "{first}");
+        // It ends at rest, slowly, without overshooting or turning back.
+        assert!(progress_slope(0.999) < 0.01);
         let mut previous = 0.0;
+        let mut slope = f64::INFINITY;
         for step in 1..=100 {
-            let value = progress(f64::from(step) / 100.0, 0.0);
-            assert!(value >= previous, "monotone at {step}");
+            let fraction = f64::from(step) / 100.0;
+            let value = progress(fraction);
+            assert!(value >= previous && value <= 1.0, "monotone at {step}");
+            let next = progress_slope(fraction);
+            assert!(next <= slope + 1e-9, "the speed only falls ({step})");
             previous = value;
+            slope = next;
         }
         assert_eq!(previous, 1.0);
-        // A rise of 0.42 × slope starts the curve at that slope.
-        let rise = rise_for(1000.0, 200.0, Duration::from_millis(150));
-        assert!((rise - 0.42 * 0.75).abs() < 1e-9);
-        assert!((progress_slope(0.0, rise) - 0.75).abs() < 1e-6);
-        // A reversed or missing speed starts from rest; a huge one is bounded.
-        assert_eq!(rise_for(-1000.0, 200.0, Duration::from_millis(150)), 0.0);
-        assert_eq!(rise_for(f64::NAN, 200.0, Duration::from_millis(150)), 0.0);
-        assert_eq!(rise_for(1e9, 200.0, Duration::from_millis(150)), 1.0);
+        assert_eq!(progress(-1.0), 0.0);
+        assert_eq!(progress_slope(1.0), 0.0);
     }
 
     #[test]

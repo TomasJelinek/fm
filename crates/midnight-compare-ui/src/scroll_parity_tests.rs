@@ -784,7 +784,8 @@ fn both_panes_stay_aligned_during_and_after_a_glide() {
             .panes_aligned()
             .unwrap_or_else(|error| panic!("frame {frame}: {error}"));
     }
-    assert!(summarize(&samples).moving_frames > 20);
+    // Five notches 24 ms apart pace their glides to 50 ms: about 150 ms of motion.
+    assert!(summarize(&samples).moving_frames > 12);
     // Five notches of the platform's distance: 100 px on Windows, 120 px on Linux.
     let notch = if cfg!(windows) { 100.0 } else { 120.0 };
     assert!(

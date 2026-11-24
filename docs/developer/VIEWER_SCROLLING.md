@@ -106,7 +106,7 @@ not an inferred end of file. A camera at rest stands on a whole raster pixel, wh
 strips are exact.
 
 A wheel notch moves the text, Source, Markdown and hex views, PDF and image tiles, the
-comparison and an HTML page by Chromium's distance on Chromium's glide, wall-clock timed
+comparison and an HTML page by Chromium's distance on the shared wheel glide, wall-clock timed
 ([wheel distance](SCROLLING.md#wheel-distance), [wheel glide](SCROLLING.md#wheel-glide)).
 A glide that reaches the edge of the prepared strips waits there and resumes with the
 remaining distance when the strips arrive.

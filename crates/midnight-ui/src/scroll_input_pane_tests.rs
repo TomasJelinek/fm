@@ -294,11 +294,15 @@ fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
         "timer wakeups cannot spend unpresented wheel frames"
     );
     let mut previous = 0.0;
+    let row = h.window.global::<Theme>().get_row_height();
+    let mut drawn_inside = 0;
     for _ in 0..7 {
         h.advance(1);
         let offset = h.offset(0);
+        // The glide leaves at once and eases out: the first presented frame, 32 ms after
+        // the notch, moves about a third of it, and no frame moves all of it.
         assert!(
-            offset < previous && offset > previous - 20.0,
+            offset < previous && offset > previous - 0.4 * notch(row),
             "fractional frame: {previous} -> {offset}"
         );
         assert!(
@@ -307,10 +311,13 @@ fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
         );
         assert_eq!(h.offset(1), 0.0, "the other pane remains stationary");
         previous = offset;
-        if offset > -20.0 {
+        // Between row boundaries, a row boundary is drawn inside the list's top row band.
+        let inside = (-offset).rem_euclid(row);
+        if inside > 2.0 && inside < row - 2.0 {
+            drawn_inside += 1;
             let x = (h.window.get_left_list_left() + 8.0) as usize;
             let top = h.window.get_left_list_top() as usize;
-            let row = h.window.global::<Theme>().get_row_height() as usize;
+            let row = row as usize;
             let pixels = h.pixels.borrow();
             let first = pixels[(top + 1) * 1340 + x];
             assert!(
@@ -319,9 +326,9 @@ fn real_file_panes_keep_fractional_wheel_positions_during_model_refresh() {
             );
         }
     }
+    assert!(drawn_inside > 0, "no frame stood between row boundaries");
     h.advance(6);
     // A notch moves the rows nearest to the line distance and lands on a row.
-    let row = h.window.global::<Theme>().get_row_height();
     assert!(
         (h.offset(0) + notch(row)).abs() < 0.01,
         "all wheel pixels delivered once"

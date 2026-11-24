@@ -170,7 +170,7 @@ carries the latest verdict and, once it has arrived, the chooser list.
 ### Scrolling text and bytes
 
 Compared text and the hex view scroll as the text viewer does, to the pixel: a wheel
-notch glides Chromium's distance on Chromium's curve, touchpad motion follows the finger
+notch glides Chromium's distance on the shared wheel glide, touchpad motion follows the finger
 with the shared momentum, and the keys move the text viewer's distances at once (Up and
 Down 28 logical pixels, Left and Right 40, Page Up and Page Down the whole view;
 `midnight_ui_input::key_scroll`, which the viewer uses too). Options › Appearance ›
