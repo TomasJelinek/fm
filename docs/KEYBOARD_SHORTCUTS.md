@@ -483,7 +483,7 @@ Viewer windows have their own configurable shortcut context:
 | Tab / Shift+Tab in content | Next / previous link of the shown Markdown page, with a focus ring; Tab starts at the first link in view (`viewer.next-link`, `viewer.previous-link`). From the last link Tab moves on to the window's controls, and so does Shift+Tab without a focused link. HTML pages keep these keys |
 | Enter in content | Follow the focused link (`viewer.follow-link`) |
 | Alt+Shift+Left / Alt+Shift+Right in content, mouse Back / Forward | Back to the document a link was followed from, and forward again (`viewer.link-back`, `viewer.link-forward`); nothing happens without a document in that direction. This also works in HTML pages, whose Back and Forward buttons do the same |
-| F5 / Ctrl+R in content | Read the shown file again from disk where it was (`viewer.reload`); an HTML page keeps its Online and JavaScript choices. Also the HTML row's Reload button |
+| F5 / Ctrl+R in content | Read the shown file again from disk (`viewer.reload`): a text page reopens where it was, an HTML page at its top, keeping its Online and JavaScript choices. Also the HTML row's Reload button |
 | Ctrl+F | Focus search |
 | Enter in search / F3 | Next match |
 | Shift+F3 | Previous match |

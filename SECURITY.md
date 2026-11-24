@@ -526,13 +526,15 @@ inspected as possibly holding the item; neither is described as unneeded.
   the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
   the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Supported schemas through version 36 include window geometry, monitor identity and a
+  Supported schemas through version 40 include window geometry, monitor identity and a
   validated integer panel split ratio, typed Network tabs, panel modes, native and
   archive bookmarks, fonts, command history, shortcuts, filters, editor, viewer,
   archive, preview size, archive-preview and filename-color choices, file comparator
   rules (version 33), the text rendering choice (version 34), the hidden-files and
-  selection-by-mask choices (version 35) and the document layout chosen last in the
-  viewer, Paged or Continuous (version 36). Earlier schemas migrate with explicit
+  selection-by-mask choices (version 35), the document layout chosen last in the
+  viewer, Paged or Continuous (version 36), the scrolling glide and speed (versions 37
+  and 38), a Run directly command's output mode (version 39) and the two update choices
+  (version 40). Earlier schemas migrate with explicit
   defaults; unsupported fields and versions fail atomically. Viewer options store
   presentation choices, never query text, document contents or per-file reading
   positions. Archive previews have a separate default-on preference, while their network
@@ -1391,7 +1393,11 @@ classifications.
   each file verified by size and SHA-256, the copy's permissions checked again, a restart
   offered only from a private copy, the original never deleted). Folders above the
   installation are never changed; securing reports one that other accounts can still
-  rename or replace. A file that another non-administrative account owns stays a
+  rename or replace. On Windows, securing takes a folder's owner as the user's when it
+  is the user or a group that the process token holds enabled (`CheckTokenMembership`):
+  an elevated administrator can secure a folder that Administrators owns, as one
+  created from an elevated prompt is, while a standard token, whose Administrators group
+  is deny-only, cannot. A file that another non-administrative account owns stays a
   refusal: it shows that another account placed or took over that object, and its owner
   can always grant itself access again, so securing the folder could not repair it. The
   elevated authorization helper is unaffected: it never runs from a location that

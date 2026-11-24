@@ -46,20 +46,16 @@ independent SHA-256 destination readback by default. Existing names prompt for S
 a different name, explicit folder Merge or recoverable Replace; replacement retains
 the displaced original. F6 and Ctrl+X/Ctrl+V move native files and folders. Copy and
 Move take up to 1,000,000 selected items at once; a large selection starts with its
-first item at once and totals the rest while it copies. A Move
-within one volume uses native rename without reading file contents. A Move from
-another drive copies and independently verifies each file, then deletes that exact
-source before continuing; recursive folders use the same per-file checks and remove
-emptied source folders last. A Move from another drive goes wherever Copy goes, a
-network location or a USB drive included: each file is copied and verified as Copy does,
-and its original is removed only after that. On Windows a read-only file is moved as
-Delete removes it. Moving from another drive works from any folder, from a USB drive
-or from a network share: each file is copied and verified, other programs cannot change
-it meanwhile, and then exactly that file is deleted. A file is left where it is, with the
-reason, only if deleting it would lose data a copy cannot carry (on Windows, alternate
-data streams) or cannot be done safely (on Linux, a file owned by another user, or one
-on a network filesystem).
-There is no source-recovery mode or journal.
+first item at once and totals the rest while it copies. A Move within one volume
+uses native rename without reading file contents. A Move from another drive goes
+wherever Copy goes, a network location or a USB drive included: each file is copied
+and independently verified as Copy does, other programs cannot change it meanwhile,
+and then exactly that source is deleted before the next one; emptied source folders
+are removed last. On Windows a read-only file is moved as Delete removes it. A file is
+left where it is, with the reason, only if deleting it would lose data a copy cannot
+carry (on Windows, alternate data streams) or cannot be done safely (on Linux, a file
+owned by another user, or one on a network filesystem). There is no source-recovery
+mode or journal.
 Copy and Move (F5, F6) ask how to handle links, alike on Windows and Linux. **Copy the
 files links point to** copies a link to a file as that file and a link to a folder as
 the folder with everything in it, verified like any copy; a Move then removes only the
@@ -111,12 +107,12 @@ progress-window component, with a separate modeless window for each operation.
 The speed chart also shows overall completion; its scale follows the recent speed, so
 a brief peak is cut off at the top. The small "i" button above the chart's top right
 corner explains the chart: point at it, or click it (or Tab to it and press Enter), for
-what each line measures; the chart itself shows no tooltip. Right under the chart, a Copy or Move always
-shows the file it is working on, by its path (the middle is left out when it is too
-long), and that file's own bar and percentage, in the same place for every file: a
-small file simply passes through to 100%, a large one fills its bar as it goes.
-Discovery precedes known totals (`Files: 12 of
-2,345 · Bytes: 1.5 MiB of 7.0 MiB` for Copy and Move, `Items deleted: 400 of 1,000`
+what each line measures; the chart itself shows no tooltip. Right under the chart, a
+Copy or Move always shows the file it is working on, by its path (the middle is left
+out when it is too long), and that file's own bar and percentage, in the same place for
+every file: a small file simply passes through to 100%, a large one fills its bar as it
+goes. Discovery precedes known totals (`Files: 12 of 2,345 · Bytes: 1.5 MiB of
+7.0 MiB` for Copy and Move, `Items deleted: 400 of 1,000`
 for Delete); totals that could only be estimated, because part of the source could
 not be read or a skipped file leaves part of the work undone, are marked `~`
 (`Bytes: 1.2 GiB of ~3.4 GiB`, `~2 min`) and keep the bar, which holds short of 100%
@@ -139,8 +135,9 @@ Mouse file dragging uses the same verified copy queue for drops into either pane
 displayed directory. In flat panels, ordinary file rows and image tiles target the
 panel's current folder; folder rows target that folder. Dragging a selected row keeps
 the selected group; dragging an unselected row targets that item. Native exchange
-with other applications uses Windows OLE, Linux X11/XWayland XDND or, in a native
-Wayland session, the Wayland data device. A drag that leaves the window goes to the
+with other applications uses Windows OLE or Linux X11/XWayland XDND; a native Wayland
+window uses the Wayland data device only when started with `MIDNIGHT_WAYLAND_DND=1`
+(not yet qualified on a compositor), and otherwise drags between its own panels only. A drag that leaves the window goes to the
 application under the pointer at once, which shows what a drop there would do; Windows
 targets also see the Shell's drag image with the item count. Internal drops move on a
 proven same volume and otherwise copy; Ctrl forces Copy and Shift forces Move. A drag
@@ -1122,8 +1119,9 @@ current keys.
   "Move 12 items to the Trash?"), says right under it that a permanent deletion cannot
   be undone, and lists the details below: for one item its name, type, size (readable,
   with the exact bytes), modified date/time and folder; for several the files and
-  folders counted, the first names, the files' total size and their folder. Folder
-  contents are not recursively counted just to open the confirmation: a folder's size
+  folders counted, the first names, the files' total size and their folder. A long
+  folder path is shortened as in the path bar: its first components, a marker and the
+  end that fits. Folder contents are not recursively counted just to open the confirmation: a folder's size
   is shown only when Folder sizes has measured it.
 - F11/F12: Windows system dialogs for connecting/disconnecting network drives.
   Their footer buttons are hidden when these dialogs are unavailable, including
@@ -1202,7 +1200,8 @@ current keys.
   row with complete `{left}` and `{right}` rows for the two files; other pairs use
   Automatic. See [file comparison](developer/FILE_COMPARISON.md).
 - F3 opens PDFs with the installed independent PDF viewer. Ctrl+PageUp/Down or
-  the page buttons switch pages; Fit, zoom and pan are shared with image viewing.
+  the page buttons switch pages, one page per press, also when presses come before the
+  previous page is shown; Fit, zoom and pan are shared with image viewing.
   Each new PDF opens fitted to the window. Page changes retain manual zoom/100%;
   Fit adapts to each page's dimensions. **Paged** shows one page, **Continuous** all
   pages in one column; the layout chosen last is remembered for every PDF opened
@@ -1271,7 +1270,8 @@ current keys.
   sets exactly that moment. A change that completes without problems closes
   without a summary; only failures, skips or cancellation report.
 - Click anywhere in the blank area after a panel's path breadcrumb, up to the end of
-  the path bar, or press Ctrl+G, to type or paste a path; a pasted path stays exactly
+  the path bar, or press Ctrl+G, to type or paste a path. The editor opens with the
+  whole path selected, so typing or pasting replaces it; a pasted path stays exactly
   as copied. Press Enter or click **Go** at the right end of the editor to open it;
   Escape cancels. Breadcrumb navigation/copy gestures remain available.
   The path may name a file, also pasted in double quotes as Windows "Copy as path"
@@ -1308,7 +1308,8 @@ current keys.
   tile less a small margin and 6 pixels taller than the thumbnail size, keeping its
   aspect ratio, and is prepared sharp for the display's scale. Larger sizes retain
   the current preview while a sharper image is prepared for that file; smaller
-  sizes reuse larger cached images. The setting previews immediately, Cancel restores it and OK saves it.
+  sizes reuse larger cached images. The setting previews immediately, Cancel restores
+  it and OK saves it.
   A selected or hovered video plays a short cycle of six moments from 10% to 85% of
   its length, in order and each for about 0.8 seconds, starting from its still picture;
   moments that are still being prepared join the cycle in their turn.
@@ -1331,7 +1332,8 @@ editing and IME behavior are protected. The [shortcut reference](KEYBOARD_SHORTC
 lists defaults. Numbered tab and Hot Path bindings use physical digits across layouts.
 
 Options, tabs, Hot Paths, panel filters, enabled command history, viewer preferences
-and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through 36) in the native
+and shortcut overrides are stored as versioned UTF-8 JSON (supported schemas through
+40; see [settings files](SETTINGS_FILES.md)) in the native
 `%LOCALAPPDATA%\Midnight Explorer\preferences.json` on Windows, or
 `$XDG_CONFIG_HOME/midnight-explorer/preferences.json` /
 `~/.config/midnight-explorer/preferences.json` on Linux. When the new file is absent,
@@ -1491,7 +1493,7 @@ Click it, or **Check for updates** in About, to open the update dialog:
 Options › General › Updates has two choices, both on by default:
 
 - **Check for updates at startup:** about 5 seconds after the window opens, at most
-  once a day, ask GitHub whether a newer version exists. It only shows the button's
+  once every 20 hours, ask GitHub whether a newer version exists. It only shows the button's
   dot; nothing is downloaded or installed until you choose to.
 - **Include preview releases:** offer releases that GitHub marks as previews. Every
   release so far is a preview, so turning this off waits for the first stable release.
@@ -1881,8 +1883,9 @@ for that folder:
   folder and everything in it to you, the system and administrators. On Windows it
   inherits its permissions from its parent again when that is private (this repairs a
   folder you moved there from a shared location, which keeps its old permissions), and
-  otherwise gets permissions of its own. Linux removes group and other write
-  permissions. Folders above the installation are never changed; the notice names one
+  otherwise gets permissions of its own; a folder that the Administrators group owns,
+  such as one created from an elevated prompt, counts as yours only while Midnight
+  Explorer runs as administrator. Linux removes group and other write permissions. Folders above the installation are never changed; the notice names one
   that other accounts can still rename or replace.
 - **Move to my profile…** copies the complete installation to
   `%LOCALAPPDATA%\Programs\Midnight Explorer` (Linux:

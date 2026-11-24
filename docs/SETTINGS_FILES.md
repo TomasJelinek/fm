@@ -59,9 +59,11 @@ such as checksum files and Make File List output. These files are not replaced a
 stay unchanged; choose another name instead:
 
 - a folder, a link or a special file;
-- on Windows, a file that is read-only, compressed or encrypted, or has alternate
-  data streams or extended attributes. This includes every file in an
-  NTFS-compressed folder, because files there are compressed too;
+- on Windows, a file that has alternate data streams or extended attributes, or whose
+  contents may not be on this computer (an offline or cloud file). A read-only,
+  hidden, compressed or encrypted file is replaced and keeps those attributes; a file
+  whose encryption cannot be kept is not replaced
+  ([the rules](developer/MAKE_FILE_LIST.md#output-lifetime-and-safety));
 - on Linux, a file that another user owns, that has setuid, setgid or sticky bits,
   or whose security attributes, permissions or filesystem flags could not be kept.
 

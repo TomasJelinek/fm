@@ -28,8 +28,9 @@ How to read it:
   every plugin package; release packages contain every viewer, filesystem and
   thumbnailer package.
 - **Linux specifics:** native Wayland drag and drop with other applications is new, not
-  yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which
-  it offers to install; Chromium never runs without its sandbox.
+  yet qualified on a compositor and off unless `MIDNIGHT_WAYLAND_DND=1` (PLAT-03). On
+  Ubuntu 23.10 and later the HTML viewer needs an AppArmor profile, which it offers to
+  install; Chromium never runs without its sandbox.
 - **Open:** macOS (PLAT-01); native and manual qualification on other distributions,
   desktops, physical GPUs and live removable or network mounts (PLAT-02); CI jobs for
   the HTML viewer and the bundled-FFmpeg video helper (CI-01); native tests in the
@@ -37,8 +38,10 @@ How to read it:
 - **Documents:** [user guide](USER_GUIDE.md#build-and-run) (Build and run),
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).
-- **Verified:** the last hosted CI run recorded as passing every job on Windows and
-  Linux is at `2b901122` ([CI time record](verification/2026-11-21-ci-time.md)).
+- **Verified:** the last hosted CI runs recorded as passing every job on Windows and
+  Linux are at `c8c20f49`, the `v0.5.1` tag, and `c6fc88e7`
+  ([documentation audit](verification/2026-11-24-docs-audit.md#ci-and-release-facts));
+  CI times are in the [CI time record](verification/2026-11-21-ci-time.md).
   Acceptance runs on Windows are listed in the
   [Windows acceptance record](developer/acceptance/windows.md); the area records below
   list the runs on both systems.
@@ -51,9 +54,11 @@ How to read it:
   `SHA256SUMS` with the built-in release key, the archive's SHA-256 and the staged
   `BUILD-INFO.json`, and install on Restart now, restoring the previous version when the
   new one does not confirm its start. Options › General › Updates: Check for updates at
-  startup (on) and Include preview releases (on); schema 40. Releases from 0.5.1 on are signed with the
-  owner's release key, whose public half is built in.
-- **Open:** copies that only administrators can change are not updated in place.
+  startup (on; at most once every 20 hours) and Include preview releases (on); settings
+  schema 40. Releases from 0.5.1 on are signed with the owner's release key, whose
+  public half is built in; the published 0.5.1 carries `SHA256SUMS.minisig`.
+- **Open:** copies that only administrators can change are not updated in place; the
+  release-build check of the test endpoint is not run by CI (REL-04).
 - **Documents:** [updates](developer/UPDATES.md), [user guide](USER_GUIDE.md#updates),
   [security](../SECURITY.md#update-check), [release signing](RELEASE_BUILD.md#signing-the-release).
 - **Verified:** [update check record](verification/2026-11-23-update-check.md).
@@ -62,10 +67,10 @@ How to read it:
 
 - **Windows and Linux:** two panels with tabs; history (Alt+Left, Alt+Right and the
   toolbar menus); drives and mounted volumes; a path bar with clickable segments and a
-  path editor (Ctrl+G, or a click after the path), which keeps a pasted path exactly as
-  copied and opens it with Enter or its Go button, where a file path opens its folder
-  with the cursor on the file; parent navigation that keeps the cursor on the folder left; Brief,
-  Detailed and Thumbnails views (Alt+2, Alt+3, Alt+5); locale-aware sorting; quick
+  path editor (Ctrl+G, or a click after the path), which opens with the whole path
+  selected, keeps a pasted path exactly as copied and opens it with Enter or its Go
+  button, where a file path opens its folder with the cursor on the file; parent
+  navigation that keeps the cursor on the folder left; Brief, Detailed and Thumbnails views (Alt+2, Alt+3, Alt+5); locale-aware sorting; quick
   search by typing; hidden files (Ctrl+H); Hot Paths, numbered Hot Path keys and saved
   tabs; folder sizes; native change watches with a 15-second check; startup folders
   from the command line; size-warning and error notices with details.
@@ -87,7 +92,8 @@ How to read it:
 
 ## Selection, search and filters
 
-- **Windows and Linux:** Insert, Space, Shift and Ctrl selection; rectangle selection
+- **Windows and Linux:** Insert, Space, Shift and Ctrl selection (a Shift range starts at
+  the cursor once the cursor has moved away from the last clicked row); rectangle selection
   in every view, in archives and in trees; selection by mask (Ctrl+=, Ctrl+− and the
   keypad + − *); the panel filter (Ctrl+F12 and the toolbar funnel) with masks, regular
   expressions and metadata expressions, recent filters and an active-filter indicator;
@@ -124,8 +130,8 @@ How to read it:
   keeps links as links; on Windows a junction is recreated without privilege, while a
   symbolic link needs Developer Mode or administrator rights. A Move on one volume
   renames without reading contents; across volumes it goes wherever Copy goes and each
-  file is copied and verified as Copy does before its source is removed. Copy and Move take up to 1,000,000 selected items: a large selection
-  starts copying its first item at once, totals the rest while it copies and opens each
+  file is copied and verified as Copy does before its source is removed. Copy and Move
+  take up to 1,000,000 selected items: a large selection starts copying its first item at once, totals the rest while it copies and opens each
   item only when it reaches it. I/O errors pause for Retry, Skip, Skip all or Cancel.
   "Preserve exact modified time" keeps the modification times of up to 64 copied files.
 - **Linux specifics:** Copy and cross-volume Move write only to filesystems with
@@ -156,7 +162,9 @@ How to read it:
 ## Delete, Trash, create, rename and properties
 
 - **Windows and Linux:** Delete and F8 move the selection to the system Trash (the
-  Recycle Bin on Windows); with Shift they delete permanently. Each entry that cannot
+  Recycle Bin on Windows); with Shift they delete permanently. The confirmation asks its
+  question first and lists the details below it, with a long folder path shortened as
+  in the path bar. Each entry that cannot
   be removed asks Retry, Skip, Skip all errors or Cancel. F7 creates folders, including
   missing parent folders; Shift+F4 creates an empty file and asks before it replaces
   one. F2 renames, with the shared overwrite flow. Attributes, Times and Case edit the
@@ -197,9 +205,10 @@ How to read it:
   once; released within 0.4 s of the press it is cancelled there too. Windows uses OLE
   with a Shell data object and the Shell drag image, and takes drops from .NET programs;
   Linux uses X11 or XWayland XDND and the X11 file clipboard, and under native Wayland,
-  with `MIDNIGHT_WAYLAND_DND=1`, the window's own data device. Archive and Network rows say why they do not drag.
-- **Open:** native Wayland exchange is implemented but not qualified on a compositor,
-  and the Linux changes have not run on Linux (PLAT-03); drops from other applications
+  with `MIDNIGHT_WAYLAND_DND=1`, the window's own data device. Archive and Network rows
+  say why they do not drag.
+- **Open:** native Wayland exchange is implemented but not run on a compositor; its unit
+  tests and the Linux build pass in hosted CI on Ubuntu 24.04 (PLAT-03); drops from other applications
   land in a panel's current folder, never in a folder row.
 - **Documents:** [keyboard shortcuts](KEYBOARD_SHORTCUTS.md),
   [security requirements](../SECURITY.md#file-drag-and-drop).
@@ -360,12 +369,11 @@ How to read it:
   results are copied or saved as checksum files; a Verify page checks SFV, MD5, SHA-1,
   SHA-256 and SHA-512 files. A run has no limit on files, folder depth or checksum file
   size.
-- **Open:** the scenario for an unlimited run is not written yet (HASH-01); further
-  algorithms and a hash plugin API (HASH-02).
+- **Open:** further algorithms and a hash plugin API (HASH-02).
 - **Documents:** [checksums](developer/CHECKSUMS.md).
 - **Verified:** `checksums`, `tools_checksum_algorithms`, `tools_checksum_manifests`,
-  `tools_checksum_large_stop`, `journeys_find_to_checksums`; statuses in the
-  [tools record](developer/acceptance/tools.md).
+  `tools_checksum_large_stop`, `tools_checksum_unlimited`, `journeys_find_to_checksums`;
+  statuses in the [tools record](developer/acceptance/tools.md).
 
 ## Make File List
 
@@ -390,8 +398,8 @@ How to read it:
   before), in an output window (live standard output and error, exit code, Stop, Copy
   all, Save as…, Clear, Find, close when finished successfully) or in a console window
   that stays open; the literal argument rows reach the program unchanged in every mode.
-  Settings schema 39. Verified on Windows; the Linux code has its own unit tests,
-  which have not run on Linux yet.
+  Settings schema 39. Verified on Windows; the Linux code's unit tests pass in hosted
+  CI on Ubuntu 24.04, and no acceptance check has run it on Linux.
 - **Open:** terminal sessions are not reused (TERM-01).
 - **Documents:** [Custom Commands](developer/USER_COMMANDS.md),
   [Custom Command settings](developer/USER_COMMAND_SETTINGS.md).

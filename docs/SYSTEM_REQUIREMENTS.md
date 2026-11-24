@@ -112,6 +112,10 @@ it is distinct from `--software` and says nothing about GPU performance. See the
 [scrolling contract](developer/SCROLLING.md) and the
 [native scrolling measurements](verification/2026-11-11-native-wheel-scrolling.md).
 
+The update check, at startup or on request, needs HTTPS access to `api.github.com`,
+`github.com` and GitHub's download servers; without that access only the check fails
+([updates](USER_GUIDE.md#updates)).
+
 **Windows:** install the Microsoft Visual C++ x64 runtime if it is not already
 present; the MSVC release executable uses `VCRUNTIME140.dll` and the Windows Universal
 CRT. Use Microsoft's
@@ -125,8 +129,8 @@ Windows PowerShell are part of Windows; the PowerShell choice uses PowerShell 7
 or Wayland client libraries, libudev, the Vulkan loader and the graphics driver's
 runtime libraries. Desktop integration also uses `xdg-open` (`xdg-utils`) and an
 installed terminal ([which terminals](USER_GUIDE.md#linux--ubuntu--mint)). External file
-drag and drop works through X11/XWayland and, not yet qualified, the native Wayland data
-device (PLAT-03).
+drag and drop works through X11/XWayland and, not yet qualified and only with
+`MIDNIGHT_WAYLAND_DND=1`, the native Wayland data device (PLAT-03).
 
 In a source checkout, `sh scripts/setup-linux.sh --install` installs the build
 packages and then these runtime libraries; it prints the plan without `--install`. On

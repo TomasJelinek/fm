@@ -89,8 +89,9 @@ build.bat release      # Windows, optimized release
 Debug is the default; `release` builds with full optimization and LTO. Build output
 goes to `_build/` (`_build/debug/` or `_build/release/`, with the executable
 `midnight-explorer.exe` or `midnight-explorer` and its `viewers/`, `filesystems/` and
-`thumbnailers/` folders); toolchain caches go to `.tools/`. On Windows, `build.bat` also deploys the build to a private
-installation that the built `midnight-explorer.exe` loads its plugins from.
+`thumbnailers/` folders); toolchain caches go to `.tools/`. On Windows, `build.bat` also
+deploys the build to a private installation that the built `midnight-explorer.exe`
+loads its plugins from.
 
 The [user guide](docs/USER_GUIDE.md#build-and-run) has the complete build and run
 instructions, [release build](docs/RELEASE_BUILD.md) describes release settings and

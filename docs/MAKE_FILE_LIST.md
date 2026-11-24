@@ -76,7 +76,9 @@ or cancelled generation does not partly append to the original file. Destination
 identity is retained through confirmation and checked again before publication.
 An existing file whose metadata cannot be kept exactly is refused instead of
 silently weakening its permissions (the same rules as for
-[replacing a settings file](SETTINGS_FILES.md#export-configuration)). A confirmed
+[replacing a settings file](SETTINGS_FILES.md#export-configuration)); on Windows a
+read-only, hidden, compressed or encrypted file is replaced and keeps those
+attributes. A confirmed
 Replace or Append keeps the original file in a recovery copy (a
 `.midnight-recovery-…` folder beside it), and a notice names that copy, as Shift+F4's
 Replace file does. Durability warnings are shown when the underlying filesystem
