@@ -9,6 +9,8 @@ use tokio::sync::{Notify, mpsc};
 
 #[path = "archive_copy_tests.rs"]
 mod archive;
+#[path = "copy_cadence_measure_tests.rs"]
+mod cadence_measure;
 #[path = "copy_cancel_queue_tests.rs"]
 mod cancel_queue;
 // Linux and Windows report a child that cannot be opened apart from its folder.

@@ -1075,3 +1075,94 @@ mod outcome_view;
 mod paused_file_progress;
 #[path = "support/window_polish.rs"]
 mod polish;
+
+/// Measurement, not a check (docs/verification/2026-11-24-progress-cadence.md): what one
+/// progress heartbeat costs the UI thread with the Jobs window and each job's progress
+/// window open: the presenter's event, the refresh and a software render of every window
+/// (the application renders on the GPU, so this is an upper bound). Run in a release
+/// build: `MIDNIGHT_MEASURE_JOBS=2 cargo test --release -p midnight-ui --test integration
+/// native_job_windows::measure_progress_event_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurement; run explicitly in a release build"]
+fn measure_progress_event_cost() {
+    let jobs: u64 = std::env::var("MIDNIGHT_MEASURE_JOBS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let h = Harness::new();
+    h.main.invoke_show_operations();
+    for id in 1..=jobs {
+        h.start(id);
+        h.main
+            .invoke_open_job_progress(format!("copy-job:{id}").into());
+    }
+    let samples: Arc<[ThroughputSample]> = (0..240)
+        .map(|index| ThroughputSample {
+            start_millis: index * 250,
+            elapsed_millis: (index + 1) * 250,
+            transfer_per_second: 400e6 + (index % 7) as f64 * 1e6,
+            verification_per_second: 900e6,
+            items_per_second: 120.0,
+        })
+        .collect();
+    let draw = |h: &Harness| {
+        for window in h.windows.borrow().iter().skip(1) {
+            if window.window().is_visible() {
+                modeless::draw(window, 700, 500, "measure");
+            }
+        }
+    };
+    let tick = |h: &Harness, index: u64| {
+        for id in 1..=jobs {
+            let mut progress = CopyProgress::queued(
+                OperationId(id),
+                "destination".into(),
+                1,
+                TransferIntent::Copy,
+            );
+            progress.state = CopyOperationState::Running;
+            progress.phase = CopyOperationPhase::Copying;
+            progress.discovery.files = 100_000;
+            progress.discovery.bytes = Some(4_000_000_000);
+            progress.files_completed = index * 50;
+            progress.completed_bytes = index * 2_000_000;
+            progress.copied_bytes = index * 2_000_000;
+            progress.verified_bytes = index * 1_900_000;
+            progress.current_file_size = Some(4_000_000);
+            progress.current_file_copied = index * 37 % 4_000_000;
+            progress.current_file_active_millis = 2_000;
+            progress.current_path = Some(format!("source/folder/file-{index}.bin").into());
+            progress.throughput = Arc::new(OperationThroughput {
+                samples: samples.clone(),
+                transfer_per_second: 400e6,
+                verification_per_second: 900e6,
+                items_per_second: 120.0,
+                smoothed_transfer_per_second: 400e6,
+                smoothed_verification_per_second: 900e6,
+                smoothed_entries_per_second: 120.0,
+            });
+            h.apply(Event::Copy(CopyEvent::Progress(Arc::new(progress))));
+        }
+        draw(h);
+    };
+    for index in 0..50 {
+        tick(&h, index);
+    }
+    let ticks = 1_000u64;
+    let started = std::time::Instant::now();
+    for index in 50..50 + ticks {
+        tick(&h, index);
+    }
+    let per_tick = started.elapsed().as_secs_f64() / ticks as f64;
+    eprintln!(
+        "MEASURE jobs={jobs} windows={} ms_per_tick={:.3} ui_pct_at_4hz={:.2} ui_pct_at_8hz={:.2}",
+        h.windows
+            .borrow()
+            .iter()
+            .filter(|w| w.window().is_visible())
+            .count(),
+        per_tick * 1e3,
+        per_tick * 4.0 * 100.0,
+        per_tick * 8.0 * 100.0,
+    );
+}

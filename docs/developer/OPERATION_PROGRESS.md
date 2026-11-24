@@ -457,7 +457,8 @@ all descendants. Permanent Delete can report recursive entries. Labels identify
 selected-root scope instead of implying that one renamed/trashed directory is one
 recursive file. Links are not followed by destructive traversal.
 
-One acknowledged 250 ms heartbeat (at most 4 Hz) coalesces ordinary discovery,
+One acknowledged 125 ms heartbeat (`CADENCE` in `operation_throughput.rs`; at most
+8 Hz per job, Copy, Move and Delete alike) coalesces ordinary discovery,
 throughput, verification-pass and wait-state updates. A full outbox leaves the
 latest change unacknowledged for retry on the next tick, including a blocked wait
 clear; discovery changes do not depend on throughput. Initial, decision and
@@ -484,7 +485,7 @@ the middle of a line that is too long, keeping the folder's last part
 both set by `current_file_tails` from the shown text). Both lines and the bar keep a
 fixed place and size for every file, between files and when there is no current file,
 so nothing appears, disappears or moves; every file updates them at the window's
-refresh cadence (the engine's progress heartbeat), so a small file may show 100% at once and costs the
+refresh cadence (the engine's progress heartbeat, 125 ms), so a small file may show 100% at once and costs the
 copy nothing extra. An empty file is full at once; an unknown size, steps other than
 writing and readback (such as Move proofs) and ended jobs leave the bar empty; a pause
 keeps it. Move's SHA explanation applies only when copying is required; native

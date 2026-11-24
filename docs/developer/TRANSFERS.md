@@ -479,7 +479,9 @@ and [Salamander reference audit](../verification/2026-11-08-transfer-error-refer
 Copy, Move and Delete expose `Arc<OperationThroughput>` snapshots alongside their
 progress. Engine-owned `Tracker` instances (`operation_throughput.rs` in
 `midnight-engine`) sample monotonic elapsed time and actual cumulative counters every
-250 ms (`CADENCE`). Each snapshot retains at most 240 intervals (`MAX_SAMPLES`) spanning
+125 ms (`CADENCE`; it was 250 ms before 2026-11-24, see the
+[cadence measurements](../verification/2026-11-24-progress-cadence.md)). Each snapshot
+retains at most 240 intervals (`MAX_SAMPLES`) spanning
 the whole operation. When full, adjacent intervals are combined
 and future intervals use the same coarser resolution. Original timestamps and
 per-series measured maxima survive, so early peaks remain visible; the vertical
@@ -489,9 +491,12 @@ Different series' peaks in a combined interval need not have
 occurred simultaneously. Current labels remain the latest actual interval rates,
 not aggregated peaks. Each operation's progress window displays that job's chart;
 the Jobs ledger has none. The UI caches chart geometry per job by snapshot identity
-and never measures I/O itself.
+and never measures I/O itself. Nothing else assumes the heartbeat's length: the
+remaining-time averages weigh each interval by its duration (an 8 s time constant,
+`SMOOTHING`), the chart's scale follows the last minute of samples by time
+(`job_speed.rs`), and the per-file bar shows whatever each heartbeat carries.
 
-The Copy/Move timer publishes the latest progress on each 250 ms tick,
+The Copy/Move timer publishes the latest progress on each 125 ms tick,
 including a sample already collected by the native I/O worker. Sampling a rate
 and delivering that status are independent decisions. A full UI outbox drops only
 that periodic attempt; the next tick tries the latest snapshot without blocking

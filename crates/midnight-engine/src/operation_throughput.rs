@@ -8,7 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) const CADENCE: Duration = Duration::from_millis(250);
+/// The progress heartbeat: Copy, Move and Delete sample their activity and publish their
+/// live status this often (8 Hz). Measured cost: docs/verification/2026-11-24-progress-cadence.md.
+pub(crate) const CADENCE: Duration = Duration::from_millis(125);
 const MAX_SAMPLES: usize = 240;
 /// Time constant of the remaining-time averages: an interval's weight falls to
 /// about a third after this much further activity.

@@ -439,3 +439,40 @@ fn entries_count_what_the_progress_window_counts() {
     assert_eq!(copy_counters(&progress).entries, 1, "selected items only");
     assert_eq!(copy_counters(&progress).items, 0, "the chart's renames");
 }
+
+/// The heartbeat is 125 ms (8 Hz): each interval of at least that length is a chart
+/// sample, a shorter one waits for the next tick, and the remaining-time averages,
+/// which weigh intervals by their duration, come out the same as at 250 ms.
+#[test]
+fn the_heartbeat_samples_eight_times_a_second_with_unchanged_averages() {
+    assert_eq!(CADENCE, Duration::from_millis(125));
+    let mut fast = Sampler::default();
+    fast.observe(Duration::ZERO, counts(0, 0, 0), true);
+    let early = fast.observe(Duration::from_millis(100), counts(800, 0, 0), true);
+    assert!(early.samples.is_empty(), "shorter than a heartbeat");
+    let mut snapshot = early;
+    for tick in 1..=80u64 {
+        snapshot = fast.observe(
+            Duration::from_millis(tick * 125),
+            counts(tick * 1000, 0, 0),
+            true,
+        );
+    }
+    assert_eq!(snapshot.samples.len(), 80);
+    assert_eq!(snapshot.transfer_per_second, 8000.0);
+    let mut slow = Sampler::default();
+    slow.observe(Duration::ZERO, counts(0, 0, 0), true);
+    let mut reference = slow.observe(Duration::ZERO, counts(0, 0, 0), true);
+    for tick in 1..=40u64 {
+        reference = slow.observe(
+            Duration::from_millis(tick * 250),
+            counts(tick * 2000, 0, 0),
+            true,
+        );
+    }
+    assert_eq!(reference.samples.len(), 40);
+    assert!(
+        (snapshot.smoothed_transfer_per_second - reference.smoothed_transfer_per_second).abs()
+            < 1e-6
+    );
+}
