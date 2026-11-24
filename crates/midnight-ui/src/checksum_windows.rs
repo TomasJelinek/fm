@@ -94,10 +94,26 @@ impl Model for Rows {
         &self.notify
     }
 }
+/// Above this many rows whose marks changed the list is reset instead of told of each
+/// row (`Rows::marks_changed`). One `row_changed` costs a notification of every view
+/// even for a row out of sight, so Select all at 100,000 rows sent 100,000 of them; a
+/// reset is one notification, after which the list reads again only the rows it shows
+/// (a few dozen), keeping its scroll position. A click or a key changes fewer rows.
+const MARKS_RESET: usize = 256;
+
 impl Rows {
-    /// The shown rows whose marks changed: each one is read again where it is shown.
+    /// The shown rows whose marks changed: each one is read again where it is shown, or,
+    /// past `MARKS_RESET` rows, every shown row through one reset.
     fn marks_changed(&self, changed: &[std::ops::Range<usize>]) {
         let count = self.row_count();
+        let rows: usize = changed
+            .iter()
+            .map(|range| range.end.min(count).saturating_sub(range.start))
+            .sum();
+        if rows > MARKS_RESET {
+            self.notify.reset();
+            return;
+        }
         for range in changed {
             for row in range.start..range.end.min(count) {
                 self.notify.row_changed(row);
@@ -1010,6 +1026,198 @@ mod tests {
         assert!(!window().get_selection_empty(), "the selection stays");
     }
 
+    /// A finished calculation of `count` files, refreshed into its window through this
+    /// module's own refresh.
+    struct Finished {
+        h: crate::test_harness::Harness,
+        state: Rc<RefCell<Presenter>>,
+        send: Rc<dyn Fn(Command) -> bool>,
+        id: ChecksumJobId,
+        windows: Windows,
+        sessions: RefCell<DialogSessions>,
+        failures: Failures<ChecksumJobId>,
+    }
+    impl Finished {
+        fn new(count: u64) -> Self {
+            let h = crate::test_harness::Harness::with_location(
+                UserPreferences::default(),
+                std::env::temp_dir(),
+            );
+            let state = h.presenter.clone();
+            let send: Rc<dyn Fn(Command) -> bool> = Rc::new(|_| true);
+            state
+                .borrow_mut()
+                .request_checksums(PaneId::Left, send.as_ref());
+            let id = *state.borrow().checksums.sessions.keys().next().unwrap();
+            let algorithms = state.borrow().checksums.sessions[&id].algorithms;
+            assert!(
+                state
+                    .borrow_mut()
+                    .start_checksums(id, algorithms, false, send.as_ref())
+            );
+            let base: std::sync::Arc<std::path::Path> = std::env::temp_dir().into();
+            let retention = ChecksumRetention::new(());
+            let mut rows = ChecksumRows::default();
+            let mut batch = Vec::new();
+            for index in 0..count {
+                batch.push(ChecksumRow {
+                    id: ChecksumRowId(index + 1),
+                    name: std::path::Path::new(&format!(
+                        "album {:02}/IMG_{index:07}.jpg",
+                        index % 40
+                    ))
+                    .into(),
+                    identity: None,
+                    kind: Some(EntryKind::File),
+                    state: ChecksumRowState::Calculated,
+                    bytes_read: 4096,
+                    digests: ChecksumDigests::new(&[(
+                        ChecksumAlgorithm::Sha256,
+                        &[index as u8; 32],
+                    )])
+                    .unwrap(),
+                    error: None,
+                });
+                if batch.len() == CHECKSUM_BATCH_SIZE || index + 1 == count {
+                    rows.push(std::sync::Arc::new(ChecksumChunk {
+                        base: base.clone(),
+                        rows: std::mem::take(&mut batch).into_boxed_slice(),
+                        retention: retention.clone(),
+                    }));
+                }
+            }
+            let generation = state.borrow().checksums.sessions[&id].generation;
+            state
+                .borrow_mut()
+                .apply(Event::Checksum(Box::new(ChecksumEvent {
+                    job: id,
+                    generation,
+                    update: ChecksumUpdate::Finished(std::sync::Arc::new(ChecksumRun {
+                        job: id,
+                        generation,
+                        algorithms,
+                        captured_roots: vec![std::env::temp_dir()].into(),
+                        rows,
+                        summary: ChecksumSummary {
+                            completion: ChecksumCompletion::Completed,
+                            progress: ChecksumProgress {
+                                calculated: count,
+                                ..Default::default()
+                            },
+                            diagnostics: vec![],
+                        },
+                        retention,
+                    })),
+                })));
+            let closing = Rc::new(Cell::new(false));
+            let failures = Failures::new(
+                &h.window,
+                &state,
+                &send,
+                &closing,
+                "Checksums",
+                Presenter::close_checksums,
+            );
+            let finished = Self {
+                h,
+                state,
+                send,
+                id,
+                windows: Rc::default(),
+                sessions: RefCell::new(DialogSessions::default()),
+                failures,
+            };
+            finished.refresh();
+            finished
+        }
+        fn refresh(&self) {
+            refresh(
+                &self.h.window,
+                &self.windows,
+                &self.sessions,
+                &self.state,
+                &self.send,
+                &self.failures,
+            );
+        }
+        fn window(&self) -> ChecksumWindow {
+            self.windows.borrow()[&self.id].window.clone_strong()
+        }
+    }
+
+    /// Counts what the rows model tells its views.
+    #[derive(Default)]
+    struct Notifications {
+        resets: Cell<usize>,
+        changed: Cell<usize>,
+    }
+    impl i_slint_core::model::ModelChangeListener for Notifications {
+        fn row_changed(self: std::pin::Pin<&Self>, _: usize) {
+            self.changed.set(self.changed.get() + 1);
+        }
+        fn row_added(self: std::pin::Pin<&Self>, _: usize, _: usize) {}
+        fn row_removed(self: std::pin::Pin<&Self>, _: usize, _: usize) {}
+        fn reset(self: std::pin::Pin<&Self>) {
+            self.resets.set(self.resets.get() + 1);
+        }
+    }
+
+    /// Select all, Deselect all and a click that drops a large selection tell the list
+    /// once, by a reset, however many rows they mark; a click or a key that marks a few
+    /// rows tells only those rows. The marks read back are the selection's.
+    #[test]
+    fn bulk_mark_changes_notify_the_list_once_and_small_ones_per_row() {
+        use i_slint_core::model::ModelChangeListenerContainer;
+        let count = 20_000;
+        let f = Finished::new(count);
+        let window = f.window();
+        let listener = Box::pin(ModelChangeListenerContainer::new(Notifications::default()));
+        window
+            .get_rows()
+            .model_tracker()
+            .attach_peer(listener.as_ref().model_peer());
+        let notified = || {
+            let counts = (listener.resets.get(), listener.changed.get());
+            listener.resets.set(0);
+            listener.changed.set(0);
+            counts
+        };
+        let selected = |row: usize| window.get_rows().row_data(row).unwrap().selected;
+        window.invoke_select_all();
+        assert_eq!(notified(), (1, 0), "Ctrl+A over {count} rows");
+        assert!(selected(0) && selected(count as usize - 1));
+        // A click drops every other mark: one reset again.
+        window.invoke_pick_row(5, false, false);
+        assert_eq!(notified(), (1, 0), "a click that drops {count} marks");
+        assert!(selected(5) && !selected(4) && !selected(6));
+        // A few rows: each one alone.
+        window.invoke_pick_row(7, true, false);
+        let (resets, changed) = notified();
+        assert_eq!(resets, 0);
+        assert!(
+            (1..=4).contains(&changed),
+            "{changed} rows told of a Ctrl+click"
+        );
+        window.invoke_move_cursor(8, false, false);
+        let (resets, changed) = notified();
+        assert_eq!(resets, 0);
+        assert!(
+            (1..=4).contains(&changed),
+            "{changed} rows told of a key move"
+        );
+        assert!(selected(8) && !selected(5) && !selected(7));
+        window.invoke_deselect_all();
+        let (resets, changed) = notified();
+        assert!(
+            resets + changed <= 1,
+            "Ctrl+D: {resets} resets, {changed} rows"
+        );
+        window.invoke_select_all();
+        window.invoke_deselect_all();
+        assert_eq!(notified(), (2, 0), "Ctrl+A, Ctrl+D");
+        assert!((0..count as usize).step_by(997).all(|row| !selected(row)));
+    }
+
     /// What the UI thread spends on a selection or a copy at `MIDNIGHT_CHECKSUM_ROWS` rows
     /// (100,000 by default), through the window's own callbacks: the presenter, the model
     /// notifications and the published properties. Reports timings without thresholds;
@@ -1017,87 +1225,34 @@ mod tests {
     #[test]
     #[ignore = "explicit checksum selection benchmark; reports timings without pass thresholds"]
     fn checksum_selection_benchmark() {
+        use i_slint_core::model::ModelChangeListenerContainer;
         use std::time::Instant;
         let count: u64 = std::env::var("MIDNIGHT_CHECKSUM_ROWS")
             .ok()
             .and_then(|rows| rows.parse().ok())
             .unwrap_or(100_000);
-        let h = crate::test_harness::Harness::with_location(
-            UserPreferences::default(),
-            std::env::temp_dir(),
+        let f = Finished::new(count);
+        let (h, state, send, id, windows, sessions, failures) = (
+            &f.h,
+            &f.state,
+            &f.send,
+            f.id,
+            &f.windows,
+            &f.sessions,
+            &f.failures,
         );
-        let state = h.presenter.clone();
-        let send: Rc<dyn Fn(Command) -> bool> = Rc::new(|_| true);
-        state
-            .borrow_mut()
-            .request_checksums(PaneId::Left, send.as_ref());
-        let id = *state.borrow().checksums.sessions.keys().next().unwrap();
-        let algorithms = state.borrow().checksums.sessions[&id].algorithms;
-        assert!(
-            state
-                .borrow_mut()
-                .start_checksums(id, algorithms, false, send.as_ref())
+        let listener = Box::pin(ModelChangeListenerContainer::new(Notifications::default()));
+        f.window()
+            .get_rows()
+            .model_tracker()
+            .attach_peer(listener.as_ref().model_peer());
+        f.window().invoke_select_all();
+        f.window().invoke_deselect_all();
+        println!(
+            "Ctrl+A then Ctrl+D at {count} rows: {} resets, {} row notifications",
+            listener.resets.get(),
+            listener.changed.get()
         );
-        let base: std::sync::Arc<std::path::Path> = std::env::temp_dir().into();
-        let retention = ChecksumRetention::new(());
-        let mut rows = ChecksumRows::default();
-        let mut batch = Vec::new();
-        for index in 0..count {
-            batch.push(ChecksumRow {
-                id: ChecksumRowId(index + 1),
-                name: std::path::Path::new(&format!("album {:02}/IMG_{index:07}.jpg", index % 40))
-                    .into(),
-                identity: None,
-                kind: Some(EntryKind::File),
-                state: ChecksumRowState::Calculated,
-                bytes_read: 4096,
-                digests: ChecksumDigests::new(&[(ChecksumAlgorithm::Sha256, &[index as u8; 32])])
-                    .unwrap(),
-                error: None,
-            });
-            if batch.len() == CHECKSUM_BATCH_SIZE || index + 1 == count {
-                rows.push(std::sync::Arc::new(ChecksumChunk {
-                    base: base.clone(),
-                    rows: std::mem::take(&mut batch).into_boxed_slice(),
-                    retention: retention.clone(),
-                }));
-            }
-        }
-        let generation = state.borrow().checksums.sessions[&id].generation;
-        state
-            .borrow_mut()
-            .apply(Event::Checksum(Box::new(ChecksumEvent {
-                job: id,
-                generation,
-                update: ChecksumUpdate::Finished(std::sync::Arc::new(ChecksumRun {
-                    job: id,
-                    generation,
-                    algorithms,
-                    captured_roots: vec![std::env::temp_dir()].into(),
-                    rows,
-                    summary: ChecksumSummary {
-                        completion: ChecksumCompletion::Completed,
-                        progress: ChecksumProgress {
-                            calculated: count,
-                            ..Default::default()
-                        },
-                        diagnostics: vec![],
-                    },
-                    retention,
-                })),
-            })));
-        let windows: Windows = Rc::default();
-        let sessions = RefCell::new(DialogSessions::default());
-        let closing = Rc::new(Cell::new(false));
-        let failures = Failures::new(
-            &h.window,
-            &state,
-            &send,
-            &closing,
-            "Checksums",
-            Presenter::close_checksums,
-        );
-        refresh(&h.window, &windows, &sessions, &state, &send, &failures);
         let window = windows.borrow()[&id].window.clone_strong();
         let time = |what: &str, action: &dyn Fn()| {
             let mut samples: Vec<f64> = (0..5)
@@ -1114,6 +1269,14 @@ mod tests {
             );
         };
         time("select all (Ctrl+A)", &|| window.invoke_select_all());
+        // The two ways of telling the list, alone: every row (before 24 November) or one
+        // reset (`MARKS_RESET`).
+        let rows = windows.borrow()[&id].rows.clone();
+        let every = 0..rows.row_count();
+        time("notify every row (the old Select all)", &|| {
+            every.clone().for_each(|row| rows.notify.row_changed(row))
+        });
+        time("notify one reset", &|| rows.notify.reset());
         time("click after select all (clears every mark)", &|| {
             window.invoke_select_all();
             window.invoke_pick_row(5, false, false);
@@ -1187,7 +1350,7 @@ mod tests {
             if let Some(s) = state.borrow_mut().checksums.sessions.get_mut(&id) {
                 s.revision = s.revision.wrapping_add(1);
             }
-            refresh(&h.window, &windows, &sessions, &state, &send, &failures);
+            refresh(&h.window, windows, sessions, state, send, failures);
         });
     }
 

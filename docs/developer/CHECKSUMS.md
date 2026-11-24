@@ -133,8 +133,12 @@ and Ctrl+D none. Ctrl+Space is left to the input method. The presenter keeps the
 selection by row identity in a bitset (a finished row by its ID, a listed file by its
 place in the listing, its mark following it to its row), so a lookup is O(1), Select
 all is one pass and the marks survive rows that arrive or move. A selection change
-notifies only the rows whose marks changed (every shown row once when more than 4,096
-marks go). What Copy can take is counted the same way: each row is marked once, when it
+that marks or unmarks at most 256 rows notifies those rows; a larger one (Select all,
+Deselect all, a click that drops a large selection, a long range) resets the list once
+instead (`MARKS_RESET` in `checksum_windows.rs`), and the list then reads again only the
+rows it shows and keeps its scroll position. Before 24 November Select all notified
+every row, 100,000 notifications at 100,000 rows
+([record](../verification/2026-11-24-ui-perf-fixes.md#checksums-select-all)). What Copy can take is counted the same way: each row is marked once, when it
 arrives, as having a checksum-file line (calculated) and a checksum (calculated or
 verified), so the counts behind Copy's caption and enabled state are word operations
 over the selection's bits (`ListSelection::count_in`), however many rows are selected.

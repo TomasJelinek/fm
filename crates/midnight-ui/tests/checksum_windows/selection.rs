@@ -382,6 +382,44 @@ fn the_keyboard_selects_extends_moves_and_toggles() {
     t.close();
 }
 
+/// Select all and Deselect all on a long list scrolled to its end tell the list once
+/// (`Rows::marks_changed` resets it): the same rows stay in view at the same place, all
+/// marked, then none.
+#[test]
+fn select_all_on_a_scrolled_list_keeps_its_rows_in_place() {
+    let t = Finished::new(3_000);
+    click_row(&t.native, "r2.bin", &[]);
+    t.frame();
+    t.key(&[], Key::End);
+    draw(&t.native, 1000, 620, "checksum-select-all-scrolled");
+    let names = |rows: Vec<(String, f32, f32)>| {
+        rows.into_iter()
+            .map(|(label, top, _)| {
+                let name = label.split(" · ").next().unwrap_or_default().to_owned();
+                (name, top)
+            })
+            .collect::<Vec<_>>()
+    };
+    let shown = names(shown_rows(&t.native));
+    assert!(
+        shown.iter().any(|(name, _)| name == "r3000.bin"),
+        "the end is in view: {shown:?}"
+    );
+    assert_eq!(selected_files(&t.native), ["r3000.bin"]);
+    for (chord, every) in [("a", true), ("d", false)] {
+        t.key(&[Key::Control], chord);
+        draw(&t.native, 1000, 620, "checksum-select-all-scrolled");
+        assert_eq!(
+            names(shown_rows(&t.native)),
+            shown,
+            "Ctrl+{chord} keeps the view"
+        );
+        let marked = selected_files(&t.native).len();
+        assert_eq!(marked, if every { shown.len() } else { 0 }, "Ctrl+{chord}");
+    }
+    t.close();
+}
+
 /// A bare window with 60 listed files f0… waiting.
 fn waiting_rows(windows: &Rc<RefCell<Vec<Rc<Native>>>>) -> (ChecksumWindow, Rc<Native>) {
     use midnight_ui::ChecksumDisplayRow;

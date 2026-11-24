@@ -3,8 +3,9 @@
 //! are sorted again. A cursor marks the keyboard's row and an anchor starts Shift ranges.
 //!
 //! The list says how it shows its rows ([`ListOrder`]); each operation returns the shown
-//! rows whose mark may have changed ([`Changed`]), which the list model notifies, so
-//! Select all and a range touch the model once per row, never rebuild it.
+//! rows whose mark may have changed ([`Changed`]), which the list model notifies: a few
+//! rows each, many (Select all, a long range) with one reset of the list
+//! (`checksum_windows::MARKS_RESET`; Find keeps its marks in a model of their own).
 //!
 //! Conventions, the same in every list that uses this module:
 //! - A click selects the row alone and makes it the cursor and the anchor; Ctrl+click
@@ -37,7 +38,7 @@ pub(crate) trait ListOrder {
 }
 
 /// Shown rows (display indices) whose mark may have changed; the list model notifies
-/// each of them. Overlapping ranges are harmless.
+/// them. Overlapping ranges are harmless.
 pub(crate) type Changed = Vec<Range<usize>>;
 
 /// One range of shown rows to notify.
