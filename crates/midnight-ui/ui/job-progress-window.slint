@@ -99,6 +99,25 @@ export component JobProgressWindow inherits DialogWindow {
         x: 0px; y: 0px; visible: false; text: "Cancel operation";
         font-family: Theme.effective-font-family; font-size: Theme.font-size;
     }
+    // The headline's line: the widths it keeps for the headline and for each speed.
+    private property <string> headline: root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
+    private property <length> headline-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
+    headline-width := Text {
+        x: 0px; y: 0px; visible: false; accessible-role: none; text: root.headline; font-size: root.headline-size;
+        font-family: Theme.effective-font-family;
+    }
+    headline-reserve := Text {
+        x: 0px; y: 0px; visible: false; accessible-role: none; text: "100% complete"; font-size: root.headline-size;
+        font-family: Theme.effective-font-family;
+    }
+    write-reserve := Text {
+        x: 0px; y: 0px; visible: false; accessible-role: none; text: " · write 8,888.8 MiB/s"; font-size: Theme.font-size;
+        font-family: Theme.effective-font-family;
+    }
+    verify-reserve := Text {
+        x: 0px; y: 0px; visible: false; accessible-role: none; text: " · verify 8,888.8 MiB/s"; font-size: Theme.font-size;
+        font-family: Theme.effective-font-family;
+    }
     FocusScope { focus-on-tab-navigation: false;
         capture-key-pressed(event) => {
             if event.text == Key.Escape { root.request-dismiss(); return accept; }
@@ -142,11 +161,35 @@ export component JobProgressWindow inherits DialogWindow {
                     }
                     if !root.cancel-confirmation && root.job.active : VerticalLayout {
                         padding-right: 8px; spacing: root.transfer ? 6px : 10px; alignment: start;
-                        Text {
-                            text: root.job.progress-label != "" ? root.job.progress-label : root.job.summary;
-                            color: root.job.failed ? Theme.error-text : Theme.strong-text;
-                            font-size: root.compact ? Theme.font-size : Theme.font-size * 1.25;
-                            overflow: elide;
+                        // The headline and, while a transfer runs, its write (and full
+                        // readback) speeds beside it. The headline keeps at least the width
+                        // of "100% complete" and each speed the width of its widest value,
+                        // so nothing on the line moves while the numbers change.
+                        HorizontalLayout {
+                            spacing: 0px;
+                            Text {
+                                text: root.headline;
+                                color: root.job.failed ? Theme.error-text : Theme.strong-text;
+                                font-size: root.headline-size;
+                                min-width: 0px; horizontal-stretch: 0;
+                                preferred-width: max(headline-width.preferred-width, headline-reserve.preferred-width);
+                                vertical-alignment: bottom; overflow: elide;
+                            }
+                            if root.job.write-speed != "" : Text {
+                                text: " · " + root.job.write-speed;
+                                color: Theme.text; font-size: Theme.font-size;
+                                min-width: 0px; horizontal-stretch: 0;
+                                preferred-width: write-reserve.preferred-width;
+                                vertical-alignment: bottom; overflow: elide;
+                            }
+                            if root.job.verify-speed != "" : Text {
+                                text: " · " + root.job.verify-speed;
+                                color: Theme.text; font-size: Theme.font-size;
+                                min-width: 0px; horizontal-stretch: 0;
+                                preferred-width: verify-reserve.preferred-width;
+                                vertical-alignment: bottom; overflow: elide;
+                            }
+                            Rectangle { min-width: 0px; horizontal-stretch: 1; }
                         }
                         // Files and size of a Copy or Move, items of a Delete, once counted.
                         if root.job.transfer-totals != "" : Text {

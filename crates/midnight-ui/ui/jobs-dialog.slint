@@ -35,6 +35,9 @@ export struct OperationRow {
     // `transfer-totals`: files and size for a Copy or Move, items for a Delete.
     transfer-directory: string, transfer-name: string, transfer-totals: string, transfer-outcome: string,
     transfer-speed-chart: SpeedChartData,
+    // Beside a running transfer's headline: "write 187.0 MiB/s" and, when it reads its
+    // copies back in full, "verify 160.4 MiB/s" ("write —" until a rate is measured).
+    write-speed: string, verify-speed: string,
     // `transfer-outcome` serves every kind of job: once a job ended without completing
     // cleanly, what it did and did not do. The errors it reported, and their count.
     issues: [JobIssue], issue-summary: string

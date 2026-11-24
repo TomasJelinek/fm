@@ -280,6 +280,8 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         issues: issues.rows,
         issue_summary: issues.summary,
         transfer_speed_chart: Default::default(),
+        write_speed: SharedString::default(),
+        verify_speed: SharedString::default(),
         speed_chart: if deletion {
             p.job_charts
                 .get(progress.id, true, &progress.throughput, &p.number_locale)
@@ -508,6 +510,8 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         transfer_directory,
         transfer_name,
         transfer_totals: meter.totals,
+        write_speed: meter.write_speed,
+        verify_speed: meter.verify_speed,
         transfer_outcome: transfer_outcome.into(),
         issues: issues.rows,
         issue_summary: issues.summary,

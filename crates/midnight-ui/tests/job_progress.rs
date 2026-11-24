@@ -721,3 +721,139 @@ fn only_the_info_button_above_the_chart_shows_its_explanation() {
     );
     drop(button);
 }
+
+/// A Copy at 42% through a long folder path, as the owner sees it: written as
+/// artifacts only (`MIDNIGHT_UI_RENDER_DIR`), so that it runs on either layout.
+fn owner_copy() -> OperationRow {
+    let mut copy = job("copy-job:61", "Copy");
+    copy.state = "Copying".into();
+    copy.active = true;
+    copy.pausable = true;
+    copy.determinate = true;
+    copy.progress = 0.42;
+    copy.progress_label = "42% complete".into();
+    copy.transfer_totals = "Files: 1,204 of 2,861 · Bytes: 18.4 GiB of 43.7 GiB".into();
+    copy.eta = "About 3 min".into();
+    copy.remaining = "Items remaining: 1,657".into();
+    let folder = "D:\\Projects\\Customer archive 2026\\Raw footage\\Day 03 - harbour\\Camera B";
+    copy.transfer_directory = folder.into();
+    copy.transfer_name = "C0042 harbour sunrise wide shot.MP4".into();
+    copy.current_path = format!("{folder}\\C0042 harbour sunrise wide shot.MP4").into();
+    copy.file_determinate = true;
+    copy.file_progress = 0.63;
+    copy.file_percent = "63%".into();
+    copy.file_progress_title = "Current file written".into();
+    copy.file_progress_label = "Current file written: 1,353,711,616 / 2,148,532,224 bytes".into();
+    copy.write_speed = "write 187.0 MiB/s".into();
+    copy.verify_speed = "verify 160.4 MiB/s".into();
+    copy.transfer_speed_chart = SpeedChartData {
+        area: "M 0 100 L 0 62 L 100 30 L 200 55 L 300 41 L 400 48 L 500 22 L 600 44 L 700 39 L 800 47 L 900 40 L 1000 43 L 1000 100 Z".into(),
+        primary: "M 0 62 L 100 30 L 200 55 L 300 41 L 400 48 L 500 22 L 600 44 L 700 39 L 800 47 L 900 40 L 1000 43".into(),
+        verification: "M 0 100 L 100 100 L 200 80 L 300 60 L 400 52 L 500 57 L 600 49 L 700 55 L 800 50 L 900 53 L 1000 51".into(),
+        speed: "187.0 MiB/s".into(),
+        verification_speed: "160.4 MiB/s".into(),
+        scale: "330.0 MiB/s".into(),
+        history: "Elapsed 1 min 41 s".into(),
+        has_samples: true,
+        ..Default::default()
+    };
+    copy
+}
+
+#[test]
+fn owner_progress_snapshots() {
+    let mut test = ui::TestUi::new();
+    for (scheme, density, font, width, height) in [
+        (0, 0, 12, 640, 420),
+        (1, 0, 12, 640, 420),
+        (0, 0, 8, 480, 360),
+        (1, 1, 32, 1100, 820),
+    ] {
+        test.window
+            .invoke_apply_preferences(scheme, density, "".into(), font, font);
+        test.window.set_job(owner_copy());
+        test.resize(width, height);
+        test.snapshot(&format!("owner-{scheme}-{density}-{font}"));
+    }
+}
+
+/// Fonts 8, 12 and 32, Desktop and Touch, dark and light, narrow and wide windows.
+const APPEARANCES: [(i32, i32, i32); 6] = [
+    (0, 0, 8),
+    (0, 0, 12),
+    (1, 0, 12),
+    (1, 1, 12),
+    (0, 1, 32),
+    (1, 0, 32),
+];
+const SIZES: [(usize, usize); 3] = [(1100, 820), (640, 420), (420, 360)];
+
+/// The speeds sit beside the headline on its line, and neither moves while the
+/// percentage and the rates change, nor when a rate is not measured ("—").
+#[test]
+fn the_speeds_beside_the_headline_hold_still_while_their_values_change() {
+    let mut test = ui::TestUi::new();
+    let states = [
+        ("9% complete", "write —", "verify —"),
+        ("42% complete", "write 187.0 MiB/s", "verify 160.4 MiB/s"),
+        ("99% complete", "write 1,023.9 KiB/s", "verify 1.2 GiB/s"),
+        ("100% complete", "write 8.5 B/s", "verify —"),
+    ];
+    for (scheme, density, font) in APPEARANCES {
+        test.window
+            .invoke_apply_preferences(scheme, density, "".into(), font, font);
+        for (width, height) in SIZES {
+            let size = format!("theme {scheme}, density {density}, font {font}, {width}x{height}");
+            let mut places = None;
+            for (headline, write, verify) in states {
+                let mut copy = owner_copy();
+                copy.progress_label = headline.into();
+                copy.write_speed = write.into();
+                copy.verify_speed = verify.into();
+                test.window.set_job(copy);
+                test.resize(width, height);
+                let label = ui::popup_item(&test.window, headline, AccessibleRole::Text);
+                let write =
+                    ui::popup_item(&test.window, &format!(" · {write}"), AccessibleRole::Text);
+                let verify =
+                    ui::popup_item(&test.window, &format!(" · {verify}"), AccessibleRole::Text);
+                let (label_rect, write_rect, verify_rect) = (
+                    native_rect(&label),
+                    native_rect(&write),
+                    native_rect(&verify),
+                );
+                // One line, in reading order, inside the window.
+                assert!(
+                    (label_rect.1 + label_rect.3 - (write_rect.1 + write_rect.3)).abs() <= 1.0,
+                    "same line: {size}"
+                );
+                assert!(label_rect.0 + label_rect.2 <= write_rect.0 + 0.5, "{size}");
+                assert!(write_rect.0 + write_rect.2 <= verify_rect.0 + 0.5, "{size}");
+                assert!(
+                    verify_rect.0 + verify_rect.2 <= width as f32,
+                    "inside: {size}"
+                );
+                let place = (write_rect.0, verify_rect.0, verify_rect.2);
+                assert_eq!(*places.get_or_insert(place), place, "no shift: {size}");
+            }
+            test.snapshot(&format!("speeds-{scheme}-{density}-{font}"));
+        }
+    }
+    // Without a sampled or full readback only the write speed shows; paused, none.
+    let mut copy = owner_copy();
+    copy.verify_speed = "".into();
+    test.window.set_job(copy.clone());
+    test.draw();
+    ui::popup_item(&test.window, " · write 187.0 MiB/s", AccessibleRole::Text);
+    assert!(
+        ui::find_popup_item(&test.window, " · verify 160.4 MiB/s", AccessibleRole::Text).is_none()
+    );
+    copy.write_speed = "".into();
+    copy.progress_label = "Paused".into();
+    test.window.set_job(copy);
+    test.draw();
+    ui::popup_item(&test.window, "Paused", AccessibleRole::Text);
+    assert!(
+        ui::find_popup_item(&test.window, " · write 187.0 MiB/s", AccessibleRole::Text).is_none()
+    );
+}

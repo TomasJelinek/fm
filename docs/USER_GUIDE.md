@@ -104,8 +104,11 @@ that you own inside the tree you confirmed for deletion are made writable as the
 emptied, so they do not stop it; the folder that contains the selection and anything
 owned by another user are never changed. Copy, Move and Delete share one
 progress-window component, with a separate modeless window for each operation.
-The speed chart also shows overall completion; its scale follows the recent speed, so
-a brief peak is cut off at the top. The small "i" button above the chart's top right
+Beside the percentage a running Copy or Move shows its current speed, averaged over the
+last few seconds: `42% complete · write 187.0 MiB/s · verify 160.4 MiB/s` (verify only
+when copies are checked with SHA-256; `—` until a speed is measured). The speed chart
+also shows overall completion; its scale follows the recent speed, so a brief peak is
+cut off at the top. The small "i" button above the chart's top right
 corner explains the chart: point at it, or click it (or Tab to it and press Enter), for
 what each line measures; the chart itself shows no tooltip. Right under the chart, a
 Copy or Move always shows the file it is working on, by its path (the middle is left
