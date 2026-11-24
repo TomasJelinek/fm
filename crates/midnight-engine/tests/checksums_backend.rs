@@ -36,6 +36,9 @@ mod links;
 #[path = "support/checksum_verify_links_linux.rs"]
 mod links;
 
+// Its own file of tests over the same included library sources.
+mod manifest_verification;
+
 #[tokio::test]
 async fn published_abc_vectors_are_calculated_together_and_manifest_is_verified() {
     let _quota_fixture = checksum::test_quota_fixture().await;

@@ -11,7 +11,6 @@
 
 mod archive_selection;
 mod checksum_actor;
-mod checksum_manifest_verification;
 mod checksums_backend;
 mod clipboard;
 mod desktop;

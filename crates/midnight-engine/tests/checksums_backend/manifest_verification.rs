@@ -1,39 +1,9 @@
-use midnight_engine::providers;
-
-#[path = "../src/copy_nested_retirement.rs"]
-#[allow(dead_code)]
-mod copy_nested_retirement;
-
-// Standalone fixtures omit other Engine users of the checked ownership re-exports.
-#[path = "../src/retirement.rs"]
-#[allow(dead_code, unused_imports)]
-mod retirement;
-
-#[path = "../src/checksum.rs"]
-#[allow(dead_code)] // This fixture does not include the tree-capture admission caller.
-mod checksum;
-
-// Manifest saves publish through it; the empty-file replacement is not included.
-#[path = "../src/verified_output.rs"]
-#[allow(dead_code)]
-mod verified_output;
-
+//! Manifest verification against native files. A submodule of `checksums_backend`, so
+//! the library sources it includes, and their own unit tests, are compiled into the
+//! integration executable once instead of once per test file.
+use super::{checksum, links, native_fixture};
 use midnight_core::*;
 use std::{fs, sync::Arc, time::Duration};
-
-#[cfg(windows)]
-#[path = "support/checksum_fixture_windows.rs"]
-mod native_fixture;
-
-#[cfg(windows)]
-#[path = "support/checksum_verify_links_windows.rs"]
-mod links;
-#[cfg(target_os = "linux")]
-#[path = "support/checksum_verify_links_linux.rs"]
-mod links;
-#[cfg(target_os = "linux")]
-#[path = "support/checksum_fixture_linux.rs"]
-mod native_fixture;
 
 async fn verify(path: &std::path::Path) -> Arc<ChecksumRun> {
     let mut controller = checksum::Controller::new(
