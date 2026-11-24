@@ -941,10 +941,30 @@ xattrs, sparse allocation, timestamps or links. Windows file sync does not promi
 power-loss durability of the parent entry; Linux separately reports parent-sync
 failure even if publication succeeded.
 
-Explicit RequireModifiedTime (**Preserve exact modified time**) accepts at most 64
-distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`), for Copy and Move
-alike: the dialog offers it only for 1 to 64 of them, and the backend refuses a larger
-request before a job starts, never falling back to content-only. It captures metadata from retained source handles before data
+**Preserve times and attributes** (`PreserveTimesAndAttributes`, the Copy/Move dialog's
+option) is best effort and never weakens the content contract: content is staged,
+verified and published exactly as without it, and only then are the source's times and
+attributes set on the published copy, through the handle or descriptor that wrote it
+(Windows: one `FILE_BASIC_INFO` call, Read-only together with the times as the last
+change; Linux: `futimens`, then `fchmod`), and on each folder the job created once its
+contents and staging folder are finished (Windows reopens the retained folder handle by
+an empty relative name and checks its identity; never a path). Source values are read
+from retained handles without following links and without write access to the source.
+Windows stages of such a job request FILE_WRITE_ATTRIBUTES on their own new file only.
+Copied attributes are limited to Read-only, Hidden, System, Archive and Not content
+indexed on Windows and to the permission bits 0777 on Linux: set-user-ID, set-group-ID
+and sticky are never copied, because the copy belongs to the user who made it and a set-ID
+bit would grant that user's or group's rights, which the source never granted;
+ownership, ACLs, extended attributes and streams are not copied. Linux permissions are
+not masked by the umask with the option: a world-writable source gives a world-writable
+copy, as `cp -p` does. A merged existing folder and a replaced file's displaced original
+keep theirs. A failure to set or read them is a warning of the job, never a failure, and
+never removes or rewrites the verified copy.
+
+Explicit RequireModifiedTime accepts at most 64 distinct native regular-file roots
+(`MAX_REQUIRED_METADATA_ROOTS`), for Copy and Move alike; the dialog no longer offers it,
+and the backend refuses a larger request before a job starts, never falling back to
+content-only. It captures metadata from retained source handles before data
 reads and preflights every source pin and owned destination stage before content writes.
 After the selected content-verification gate, the exact stage modified time is set,
 synced and independently read back without rounding tolerance. Value-specific precision
@@ -952,11 +972,12 @@ failures happen on unpublished stages after data verification; earlier completed
 may remain, but such a failure prevents removal of that source and stops subsequent Move
 work. Unsupported directories, links and virtual sources never silently downgrade to
 ContentOnly. Source write attributes are not requested; Windows adds WRITE_ATTRIBUTES
-only to owned required-metadata stages. Source/destination times supplement, never
+only to owned required-metadata stages and to the stages of a job that preserves times
+and attributes. Source/destination times supplement, never
 replace, the selected content checks and fresh native read guards. Published targets are
 never rewritten to hide a mismatch; late pre-deletion errors restore originals without
-replacement. Access/creation time, attributes, permissions, ACLs, xattrs, streams and
-link preservation remain separate features.
+replacement. Access and creation times and attributes are the separate best-effort
+option above; ACLs, xattrs, streams and link times are not preserved.
 
 Copy-fallback Move preflight obtains source mutation authority separately from Copy,
 retains every actual source reader and empty stage, and verifies native source

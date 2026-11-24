@@ -5,38 +5,54 @@ before confirmation. Navigation, sorting or a clipboard change cannot replace th
 captured input. The default is content-only copying with independent destination
 verification.
 
-“Preserve exact modified time” is an unchecked, per-dialog choice. It is limited to
-at most 64 distinct native regular files. Archive members, known folders and larger
-selections cannot enable it: the dialog offers the check box only where it can apply
-and leaves it out elsewhere. Cached selection/index facts determine availability;
-unknown native/clipboard kinds still require authoritative backend preflight.
-The UI never opens paths or enumerates selected rows to decide availability. The
-backend enforces the limit itself, whatever the dialog offered: more than 64 roots are
-refused before any source is captured (`MAX_REQUIRED_METADATA_ROOTS`, with
-`REQUIRED_METADATA_ROOTS_REFUSAL` for a Copy and a Move alike), never copied content-only
-instead. Without the option, Copy and Move take up to 1,000,000 items
-([selection sizes](TRANSFERS.md#selection-sizes)).
+## Preserve times and attributes
 
-An explicit choice maps to `Command::EnqueueTransferWithMetadata` with
-`TransferMetadataPolicy::RequireModifiedTime`, retaining the captured Selected or
-Clipboard input and Copy/Move intent. An unchecked option uses the
-ordinary enqueue commands. Unavailable required metadata is an error; it does not silently
-fall back to content-only behavior. A new dialog starts unchecked; queue refusal
-retains the current draft and option for retry. The choice is not saved in settings.
+“Preserve times and attributes” is a per-dialog check box, offered for every Copy and
+Move (native items, archive members, inline-tree and clipboard captures) of any size.
+It starts as Options › General › File operations › **Preserve times and attributes in
+Copy and Move** says, off by default; changing it in one dialog changes only that job.
+It is saved as `copy_preserve_metadata` (settings schema 43,
+[settings files](../SETTINGS_FILES.md)). It replaces the former “Preserve exact modified
+time” check box, which was limited to 64 regular files and never saved, so a settings
+file of an earlier schema starts with the new option off.
 
-The backend preflights source kinds, root count, required capabilities and staging
-rights before content writes. Exact value/precision support is verified on each
-unpublished destination stage after content verification; unsupported precision
-fails rather than rounding. Earlier completed copies can remain if a later file
-fails. Move removes each source only after that file's successful content and
-metadata proof; earlier completed moves remain after a later failure or cancel.
-Failure before that file's temporary staging leaves its original name. Every
-pre-deletion failure/cancel after staging attempts to restore the original name
-without replacing a new winner. Successful Move leaves no retained source copy
-or staging directory. An exceptional failed restore or cleanup reports its exact
-temporary location in Jobs. There is no recovery opt-in, catalogue or journal.
-See [native transfer guarantees](TRANSFERS.md).
+A checked option maps to `TransferMetadataPolicy::PreserveTimesAndAttributes`
+(`Command::EnqueueTransferWithMetadata`, `CopyOptionsRequest`, `CapturedTransferRequest`
+or `ArchiveCopyRequest::metadata`). The backend carries it as the job's frozen
+`preserve` choice (`CopyInput::preserve`, `Job::set_preserve_metadata`); it has no root
+bound and no preflight, so a selection of up to 1,000,000 items streams as without it
+([selection sizes](TRANSFERS.md#selection-sizes)). What it preserves, in which order and
+with which limits is in [preserved times and attributes](TRANSFERS.md#preserved-times-and-attributes).
+Paste and drag and drop, which have no dialog, copy content only.
 
-Known limit: this preserves the modified time only. Ownership, ACLs, the other timestamp
-fields and provider metadata are not preserved; Linux permission bits follow the
-ordinary copy rules ([current limits](TRANSFERS.md#current-limits-and-next-stage)).
+The default is off, as in Open Salamander, whose comparable options (Preserve directory
+times; Preserve Archive, Compressed and Encrypted attributes) are off by default: the
+option also copies access and creation times, folder times and Read-only, which change
+what later programs and Copy jobs can do with the copies, so users opt in.
+
+## Required modified time
+
+`TransferMetadataPolicy::RequireModifiedTime` remains an engine contract that the dialog
+no longer offers: at most 64 distinct native regular-file roots
+(`MAX_REQUIRED_METADATA_ROOTS`; more are refused before any source is captured with
+`REQUIRED_METADATA_ROOTS_REFUSAL`, for a Copy and a Move alike, never copied
+content-only instead), each pinned and staged before anything is copied, and an
+unsupported precision fails the file instead of rounding. Archive members are refused.
+See [required modified time](TRANSFERS.md#required-modified-time).
+
+## Other choices
+
+The dialog's Links choice is described in [links](TRANSFERS.md#links-in-copy-and-move);
+“Wait for earlier transfers” maps to `TransferStartPolicy::WaitForEarlier`. Queue
+refusal retains the current draft and its choices for retry.
+
+Move removes each source only after that file's successful content proof; earlier
+completed moves remain after a later failure or cancel. Failure before that file's
+temporary staging leaves its original name. Every pre-deletion failure/cancel after
+staging attempts to restore the original name without replacing a new winner.
+Successful Move leaves no retained source copy or staging directory. An exceptional
+failed restore or cleanup reports its exact temporary location in Jobs. There is no
+recovery opt-in, catalogue or journal. See [native transfer guarantees](TRANSFERS.md).
+
+Ownership, ACLs, extended attributes, alternate data streams and provider metadata are
+not preserved ([current limits](TRANSFERS.md#current-limits-and-next-stage)).

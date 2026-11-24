@@ -30,8 +30,11 @@ export component CopyConflictDialog inherits Rectangle {
     in property <bool> failure-mode;
     in property <bool> can-retry;
     in property <bool> can-skip;
-    // A Delete failure shares this prompt with its own heading and Skip all scope.
+    // A Delete failure shares this prompt with its own heading and Skip all scope; a
+    // Copy/Move warning with its own heading and Skip wording.
     in property <string> failure-title: "Copy/Move needs attention";
+    in property <string> skip-text: "Skip";
+    in property <string> skip-hint: "Skip this failed item and continue this job.";
     in property <string> skip-all-text: "Skip all this error type";
     in property <string> skip-all-hint: "Skip later failures of this kind at this step in this job only. Name conflicts still need a separate decision.";
     in property <string> source-details;
@@ -139,7 +142,7 @@ export component CopyConflictDialog inherits Rectangle {
                     // One conditional, with the row's spacing, instead of one per button.
                     if root.can-skip : HorizontalLayout {
                         spacing: 8px;
-                        HintedActionButton { text: "Skip"; hint: "Skip this failed item and continue this job."; clicked => { root.decide(0, ""); } }
+                        HintedActionButton { text: root.skip-text; hint: root.skip-hint; clicked => { root.decide(0, ""); } }
                         HintedActionButton { text: root.skip-all-text; hint: root.skip-all-hint; clicked => { root.decide(9, ""); } }
                     }
                 }

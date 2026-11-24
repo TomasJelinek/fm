@@ -50,7 +50,7 @@ fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
     form.set_has_name(true);
     form.set_option_visible(true);
     form.set_option_enabled(true);
-    form.set_option_label("Preserve exact modified time".into());
+    form.set_option_label("Preserve times and attributes".into());
     for title in ["Copy", "Move"] {
         form.set_title_text(title.into());
         form.set_confirm_text(title.into());
@@ -112,7 +112,7 @@ fn transfer_wait_option_toggles_without_submitting_and_preserves_default_enter()
     form.set_initial_name("D:\\target 文档".into());
     form.set_wait_visible(true);
     form.set_option_visible(true);
-    form.set_option_label("Preserve exact modified time".into());
+    form.set_option_label("Preserve times and attributes".into());
     for title in ["Copy", "Move"] {
         form.set_title_text(title.into());
         form.set_confirm_text(title.into());

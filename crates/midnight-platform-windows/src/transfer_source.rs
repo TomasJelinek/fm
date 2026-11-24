@@ -714,6 +714,14 @@ impl TransferSource for Source {
             cancel,
         )
     }
+    /// Read from the retained handle: a followed link's target, never the link.
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferPreservedMetadata, FsError> {
+        checked(cancel, &self.entry.item.path)?;
+        super::preserve::read(&self.file, &self.entry.item.path)
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,

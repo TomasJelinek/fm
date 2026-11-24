@@ -86,6 +86,16 @@ pub(super) fn stage(
     directory: &Directory,
     cancel: &Cancellation,
 ) -> Result<Option<Stage>, FsError> {
+    stage_with(directory, 0, cancel)
+}
+
+/// `stage` whose handle also has `access` (FILE_WRITE_ATTRIBUTES for a job that preserves
+/// times and attributes).
+pub(super) fn stage_with(
+    directory: &Directory,
+    access: u32,
+    cancel: &Cancellation,
+) -> Result<Option<Stage>, FsError> {
     if midnight_platform_common::transfer_namespace::current_transfer_namespace_changes().is_none()
     {
         return Ok(None);
@@ -118,7 +128,7 @@ pub(super) fn stage(
     let State::Folder(folder) = &*state else {
         return Ok(None);
     };
-    folder.stage(directory, cancel).map(Some)
+    folder.stage(directory, access, cancel).map(Some)
 }
 
 /// Remove `directory`'s staging folder, if the job has one there (`finish_staging`), and
@@ -184,7 +194,12 @@ impl Folder {
 
     /// Create a stage in this folder through its handle, outside any namespace turn: the
     /// folder's pin, reserved when it was created, covers it.
-    fn stage(&self, directory: &Directory, cancel: &Cancellation) -> Result<Stage, FsError> {
+    fn stage(
+        &self,
+        directory: &Directory,
+        access: u32,
+        cancel: &Cancellation,
+    ) -> Result<Stage, FsError> {
         let mut descriptor =
             security::FileDescriptor::inherited_from(&self.destination, &self.token)
                 .map_err(|e| error(&directory.path, e))?;
@@ -195,7 +210,7 @@ impl Folder {
             let created = descriptor.create(
                 &self.private.file,
                 &name,
-                STAGE_ACCESS | descriptor.access(),
+                STAGE_ACCESS | access | descriptor.access(),
                 FILE_SHARE_READ,
             );
             let file = match created {
@@ -213,6 +228,7 @@ impl Folder {
                 path,
                 replacement: None,
                 metadata: false,
+                attributes: access & FILE_WRITE_ATTRIBUTES != 0,
                 preserved: None,
                 _namespace_owner: namespace_owner,
             };

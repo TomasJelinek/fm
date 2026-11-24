@@ -79,6 +79,10 @@ pub struct ArchiveCopyRequest {
     pub selected: Arc<std::collections::HashSet<crate::EntryId>>,
     pub fallback: Option<crate::EntryId>,
     pub destination: PathBuf,
+    /// `PreserveTimesAndAttributes` gives each copied member its modified time (the
+    /// other times and attributes of a member are unknown); anything else copies content
+    /// only. Required modified time is refused for archive members.
+    pub metadata: crate::TransferMetadataPolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +258,10 @@ pub struct CopyProgress {
     /// (`TransferDirectory::creates_no_links`). They count neither as copied nor as
     /// skipped: the job completes.
     pub links_left_out: u64,
+    /// Copied files and created folders whose times or attributes could not all be
+    /// preserved (`CopyErrorStage::PreservingMetadata`). Warnings, not errors: the job
+    /// completes with warnings. Each also has a note.
+    pub metadata_not_preserved: u64,
     /// Present on terminal cancellation, partial completion or recorded issues.
     pub closure: Option<CopyClosureReceipt>,
 }
@@ -328,6 +336,7 @@ impl CopyProgress {
             notes: vec![],
             note_count: 0,
             links_left_out: 0,
+            metadata_not_preserved: 0,
             closure: None,
         }
     }
@@ -360,6 +369,10 @@ pub enum CopyErrorStage {
     MovingSource,
     RemovingSource,
     Cleanup,
+    /// The item was copied, but its times or attributes could not all be preserved
+    /// (`TransferMetadataPolicy::PreserveTimesAndAttributes`). A warning, never a failure:
+    /// Skip goes on, and Skip all errors stops asking about this warning for the job.
+    PreservingMetadata,
 }
 
 /// A worker-owned pause, distinct from overwrite consent. Capabilities describe

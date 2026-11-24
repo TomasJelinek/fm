@@ -72,9 +72,26 @@ into any filesystem but the kernel's own (/proc, /sys and the like). On Windows 
 junction is recreated without privilege; a symbolic link needs Developer Mode or
 administrator rights, and without them a directory symbolic link to a local folder
 becomes a junction (the job details say so), while a symbolic link to a file or a
-network share is left out with that reason. Moving archive members and full metadata
-preservation are not implemented yet; the optional exact modified time accepts at most
-64 regular files and no folders or links.
+network share is left out with that reason. Moving archive members is not implemented
+yet.
+
+**Preserve times and attributes** in the Copy and Move dialog gives every copied file and
+folder its source's created, modified and accessed times and its attributes: on Windows
+Read-only, Hidden, System, Archive and Not content indexed; on Linux the permission
+bits, without set-ID bits (Linux cannot set a creation time). Folders get theirs after
+their contents are written, and Read-only comes last, after the content is verified. An
+archive member keeps the modified time its archive records. Compressed and Encrypted stay
+as the destination folder decides; ownership, permissions lists (ACLs), alternate data
+streams and a kept link's own times are not copied. The option works for any number of
+items. It starts as Options › General › File operations › **Preserve times and
+attributes in Copy and Move** says (off unless you turn it on). A destination that cannot
+store a time or attribute keeps the copy as it is: the job asks once whether to
+**Continue**, **Skip all this warning type** for the rest of the job, or cancel, names
+each such item in its details and ends "Completed with warnings". FAT and exFAT drives
+store times more coarsely (FAT: modified time in 2-second steps, the access date only),
+which is not a warning. Where a drive records when folders are read (Windows does so on
+smaller drives), a folder's access time is when Copy read it. Paste and drag and drop
+copy content only.
 See [the transfer capabilities and implementation limits](developer/TRANSFERS.md).
 On Linux, Copy writes only to filesystems with anonymous `O_TMPFILE` files (ext4,
 XFS, Btrfs, tmpfs): FAT/exFAT/NTFS media and NFS/SMB, sshfs or GVfs shares are
@@ -91,8 +108,7 @@ Linux and Windows, a file or folder inside a copied folder that cannot be opened
 example one you may not read) pauses on its own: Retry opens it again, and Skip leaves
 out only that item while the rest of the folder is still copied. Likewise, one of
 several selected items that cannot be prepared offers Skip, and the other selected
-items are still copied, unless the job requires the exact modified time: that refuses
-the whole selection instead. On Linux, a Move within one volume of a folder you own
+items are still copied. On Linux, a Move within one volume of a folder you own
 works even when the folder is write-protected (Linux needs the folder itself writable
 to move it into another folder): it gets owner write permission only while it is
 renamed and keeps its own permissions afterwards, and a Retry still works after you
@@ -977,7 +993,8 @@ current keys.
   look for them: General, Appearance, Colors, Previews, Archives, Editors, Comparators,
   Custom Commands, Keyboard and Plugins ([why this order](developer/DIALOG_ERGONOMICS.md#options-page-order)).
   General holds the filename search filter, hidden files, readable or exact-byte
-  sizes, full SHA-256 or quick copy verification, the number of simultaneous disk
+  sizes, full SHA-256 or quick copy verification, whether the Copy and Move dialogs
+  start with Preserve times and attributes checked, the number of simultaneous disk
   operations (Automatic, up to 4, or 1–32) and command history persistence/Clear.
   Appearance offers 26 themes including Slate Blue, Slate Teal and Slate Violet,
   Desktop/Touch spacing, an installed font family and independent Desktop/Touch

@@ -415,6 +415,8 @@ impl Job {
             failure: None,
             failure_context: failures::Context::Entry,
             committed: None,
+            warning: None,
+            preserve: false,
             skipped_errors: HashSet::new(),
             halt: false,
             decision: None,

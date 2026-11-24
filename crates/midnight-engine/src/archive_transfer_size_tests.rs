@@ -116,6 +116,7 @@ fn request(
         entries: entries.into(),
         fallback: None,
         destination: destination.into(),
+        metadata: midnight_core::TransferMetadataPolicy::ContentOnly,
     }
 }
 

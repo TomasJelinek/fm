@@ -353,6 +353,7 @@ impl Preparation {
             job.attach_tracker(tracker.clone());
         }
         job.set_verification(self.input.verification);
+        job.set_preserve_metadata(self.input.preserve);
         job.prepare_discovery();
         if let Some(completions) = &self.input._completions {
             job.set_drop_completions(completions.clone());
@@ -1016,6 +1017,17 @@ impl TransferSource for SharedSource {
         cancel: &Cancellation,
     ) -> Result<Box<dyn TransferModifiedTimePin>, FsError> {
         self.source()?.prepare_modified_time(cancel)
+    }
+
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferPreservedMetadata, FsError> {
+        self.source()?.preserved_metadata(cancel)
+    }
+
+    fn recorded_modified(&self) -> Option<ArchiveTimestamp> {
+        self.source().ok()?.recorded_modified()
     }
 
     fn rewind_for_validation(

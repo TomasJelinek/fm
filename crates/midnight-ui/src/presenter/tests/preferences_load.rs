@@ -68,6 +68,7 @@ fn early_theme_preview_defers_saving_and_preserves_every_untouched_loaded_field(
     let generation = p.panes[0].generation;
     let saved = UserPreferences {
         copy_checksum_verification: true,
+        copy_preserve_metadata: true,
         disk_io_concurrency: DiskIoConcurrency::Manual(32),
         file_list: Default::default(),
         panel_split_basis_points: 5900,

@@ -251,6 +251,9 @@ fn format_failure(
         CopyErrorStage::MovingSource => "Moving the source",
         CopyErrorStage::RemovingSource => "Removing the verified source",
         CopyErrorStage::Cleanup => "Cleaning up temporary files",
+        CopyErrorStage::PreservingMetadata => {
+            "Preserving times and attributes (the item itself was copied)"
+        }
     };
     let mut detail = format!("{stage}\n\n{}", failure.error.message);
     if let Some(source) = &failure.source {

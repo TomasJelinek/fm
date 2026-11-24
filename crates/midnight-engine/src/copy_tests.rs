@@ -40,6 +40,8 @@ mod native_moves;
 mod pause;
 #[path = "copy_peer_refusal_tests.rs"]
 mod peer_refusal;
+#[path = "copy_preserve_tests.rs"]
+mod preserve;
 #[path = "copy_progress_discovery_tests.rs"]
 mod progress_discovery;
 #[path = "copy_progress_verification_tests.rs"]

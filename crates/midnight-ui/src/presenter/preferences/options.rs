@@ -47,6 +47,7 @@ pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.size_display = from.size_display;
     to.remember_command_history = from.remember_command_history;
     to.copy_checksum_verification = from.copy_checksum_verification;
+    to.copy_preserve_metadata = from.copy_preserve_metadata;
     to.disk_io_concurrency = from.disk_io_concurrency;
     to.command_history.clone_from(&from.command_history);
     to.editor.clone_from(&from.editor);
@@ -97,6 +98,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         disk_io_concurrency: _,
         remember_command_history: _,
         copy_checksum_verification: _,
+        copy_preserve_metadata: _,
         command_history: _,
         thumbnails_enabled: _,
         thumbnails_network: _,

@@ -40,6 +40,8 @@ use native_path::NativePath;
 #[cfg(test)]
 mod archives_tests;
 #[cfg(test)]
+mod copy_metadata_tests;
+#[cfg(test)]
 mod document_layout_tests;
 #[cfg(test)]
 mod file_list_tests;
@@ -62,7 +64,7 @@ mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 42;
+const CURRENT_PREFERENCES_VERSION: u32 = 43;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +98,14 @@ struct StoredPreferences {
         skip_serializing_if = "Option::is_none"
     )]
     find: Option<find::StoredFindPreferences>,
+    /// Schema 43: Options › General › File operations › Preserve times and attributes,
+    /// written only when it is on (the default is off).
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    copy_preserve_metadata: Option<bool>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -985,6 +995,15 @@ fn decode_preferences_impl(
                 ));
             }
         },
+        copy_preserve_metadata: match (stored.version, stored.copy_preserve_metadata) {
+            // Version 43 is written only for this choice.
+            (43, None) => return Err(invalid("missing schema 43 preferences")),
+            // Earlier files had no saved choice: the dialog's former "Preserve exact
+            // modified time" was never saved, so they read as off, the default.
+            (1..=CURRENT_PREFERENCES_VERSION, None) => false,
+            (43..=CURRENT_PREFERENCES_VERSION, Some(enabled)) => enabled,
+            _ => return Err(invalid("unexpected copy metadata preference")),
+        },
         file_list,
         viewer_associations: viewer_associations::decode(
             stored.version,
@@ -1202,7 +1221,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
             .iter()
             .filter_map(|bookmark| bookmark.archive.as_ref())
             .any(StoredArchiveAddress::nested);
-    // Schemas 35 to 42 keep every field that versions 33 and 34 require.
+    // Schema 43: preserve times and attributes (written only when on).
+    let preserve_choices = preferences.copy_preserve_metadata;
+    // Schemas 35 to 43 keep every field that versions 33 and 34 require.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
@@ -1213,7 +1234,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || output_choices
         || update_choices
         || find_choices
-        || nested_archive_choices;
+        || nested_archive_choices
+        || preserve_choices;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1293,6 +1315,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         wheel_speed: speed_choices.then_some(preferences.wheel_speed.percent()),
         updates: update_choices.then(|| updates::StoredUpdates::from(preferences.updates)),
         find: find_choices.then(|| preferences.find.into()),
+        copy_preserve_metadata: preserve_choices.then_some(true),
         show_hidden_files: hidden_choices.then_some(preferences.show_hidden_files),
         mask_selection: mask_choices.then(|| StoredMaskSelection {
             pattern: preferences.mask_selection.pattern.clone(),
@@ -1352,7 +1375,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if nested_archive_choices {
+        version: if preserve_choices {
+            43
+        } else if nested_archive_choices {
             42
         } else if find_choices {
             41

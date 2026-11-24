@@ -324,6 +324,24 @@ impl TransferSource for Source {
         self.0
             .with_active(cancel, |active| active.source.prepare_modified_time(cancel))
     }
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferPreservedMetadata, FsError> {
+        self.0
+            .with_active(cancel, |active| active.source.preserved_metadata(cancel))
+    }
+    fn recorded_modified(&self) -> Option<ArchiveTimestamp> {
+        let state = self.0.lock().ok()?;
+        if let Some(active) = state.as_ref() {
+            return active.source.recorded_modified();
+        }
+        self.0
+            .open(&Cancellation::default())
+            .ok()?
+            .source
+            .recorded_modified()
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,

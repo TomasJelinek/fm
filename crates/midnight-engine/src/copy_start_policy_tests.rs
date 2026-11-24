@@ -99,6 +99,7 @@ fn archive(policy: TransferStartPolicy) -> ArchiveCopyRequest {
         selected: Arc::default(),
         fallback: None,
         destination: native.destination,
+        metadata: midnight_core::TransferMetadataPolicy::ContentOnly,
     }
 }
 

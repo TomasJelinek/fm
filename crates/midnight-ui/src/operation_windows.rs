@@ -233,7 +233,12 @@ fn open(
     window.set_details(slint::ModelRc::new(slint::VecModel::from(details)));
     window.set_path_parts(slint::ModelRc::new(slint::VecModel::from(path_parts)));
     match &key {
-        Key::Copy(_) => copy_draft_windows::initialize(&window, main, p.copy_draft_links_view()),
+        Key::Copy(_) => copy_draft_windows::initialize(
+            &window,
+            main,
+            p.copy_draft_links_view(),
+            p.copy_preserve_metadata(),
+        ),
         Key::Operation(_) => {
             window.set_title_text(main.get_operation_title());
             window.set_kind(main.get_operation_kind());

@@ -119,6 +119,12 @@ impl TransferSource for Source {
     ) -> Result<Box<dyn TransferModifiedTimePin>, FsError> {
         self.0.prepare_modified_time(cancel)
     }
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferPreservedMetadata, FsError> {
+        self.0.preserved_metadata(cancel)
+    }
     fn supports_read_retry(&self) -> bool {
         self.0.supports_read_retry()
     }

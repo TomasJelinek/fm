@@ -24,7 +24,11 @@ pub(super) struct Issues {
 pub(super) fn transfer(p: &CopyProgress, failed: bool, locale: &NumberLocale) -> String {
     use CopyOperationState as S;
     if !p.state.is_terminal()
-        || (p.state == S::Completed && !failed && p.closure.is_none() && p.skipped == 0)
+        || (p.state == S::Completed
+            && !failed
+            && p.closure.is_none()
+            && p.skipped == 0
+            && p.metadata_not_preserved == 0)
     {
         return String::new();
     }
@@ -110,9 +114,24 @@ pub(super) fn transfer(p: &CopyProgress, failed: bool, locale: &NumberLocale) ->
             )
         });
     }
-    // Copy records a note only for a link it could not follow and so copied as a
-    // link; Copy details lists each one with its reason.
-    let link_notes = p.note_count.saturating_sub(p.links_left_out);
+    // Each item copied without all of its times or attributes has a note in Copy details.
+    if p.metadata_not_preserved > 0 {
+        lines.push(if p.metadata_not_preserved == 1 {
+            "1 item was copied without all of its times or attributes; Copy details names it."
+                .to_owned()
+        } else {
+            format!(
+                "{} items were copied without all of their times or attributes; Copy details names each.",
+                n(p.metadata_not_preserved)
+            )
+        });
+    }
+    // Copy records a note otherwise only for a link it could not follow and so copied
+    // as a link; Copy details lists each one with its reason.
+    let link_notes = p
+        .note_count
+        .saturating_sub(p.links_left_out)
+        .saturating_sub(p.metadata_not_preserved);
     if link_notes > 0 {
         lines.push(if link_notes == 1 {
             "1 link was copied as a link; Copy details says why.".to_owned()

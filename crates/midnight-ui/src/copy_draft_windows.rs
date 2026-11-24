@@ -6,11 +6,13 @@ use midnight_core::{Command, TransferMetadataPolicy, TransferStartPolicy};
 use slint::{ModelRc, SharedString, VecModel};
 use std::rc::Rc;
 
-/// `links` is the draft's link choice, None when it has none (archive members).
+/// `links` is the draft's link choice, None when it has none (archive members);
+/// `preserve` is how the option starts (Options › General).
 pub(super) fn initialize(
     window: &OperationPresentation<'_>,
     main: &MainWindow,
     links: Option<LinkChoiceView>,
+    preserve: bool,
 ) {
     let title = if main.get_copy_draft_move() {
         "Move"
@@ -41,14 +43,13 @@ pub(super) fn initialize(
     // The field's accessible name; the first line, which ends with "to:", labels it.
     window.set_input_label("Destination folder".into());
     window.set_native_icon(main.get_action_icons().copy);
-    // Exact modified time is offered only where it can apply (at most 64 native regular
-    // files), not shown disabled elsewhere.
-    let exact_time = main.get_copy_draft_metadata_enabled();
-    window.set_option_visible(exact_time);
-    window.set_option_enabled(exact_time);
-    window.set_option_checked(false);
-    window.set_option_label("Preserve exact modified time".into());
-    window.set_option_hint("Verify each destination file’s exact modified time. Up to 64 native regular files; folders, links and archive members are unsupported. Unsupported precision fails instead of rounding; earlier completed copies may remain.".into());
+    // Every Copy and Move can preserve times and attributes, of any number of items;
+    // archive members keep their modified time.
+    window.set_option_visible(true);
+    window.set_option_enabled(true);
+    window.set_option_checked(preserve);
+    window.set_option_label("Preserve times and attributes".into());
+    window.set_option_hint("Give each copied file and folder its source's created, modified and accessed times and its attributes (Windows: Read-only, Hidden, System, Archive, Not content indexed; Linux: permissions without set-ID bits; archive members: their modified time). The content is verified as always. What the destination cannot store is a warning of the job, not an error.".into());
 }
 
 /// Shows the presenter's link choice, why the default was chosen (at the start of the
@@ -76,7 +77,7 @@ pub(super) fn confirm(
     p: &mut Presenter,
     token: &str,
     destination: &str,
-    preserve_time: bool,
+    preserve: bool,
     wait_for_earlier: bool,
     copy_files: Option<bool>,
     send: &dyn Fn(Command) -> bool,
@@ -86,8 +87,8 @@ pub(super) fn confirm(
     p.confirm_copy_dialog_with_directory_links(
         token,
         destination,
-        if preserve_time {
-            TransferMetadataPolicy::RequireModifiedTime
+        if preserve {
+            TransferMetadataPolicy::PreserveTimesAndAttributes
         } else {
             TransferMetadataPolicy::ContentOnly
         },

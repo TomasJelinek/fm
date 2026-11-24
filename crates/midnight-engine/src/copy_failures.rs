@@ -21,6 +21,10 @@ pub(super) enum Context {
     /// is; Skip goes on with the next entry, and there is no Retry, which could
     /// replay the commit.
     Committed,
+    /// An item copied without all of its times or attributes (`Job::warning`), already
+    /// counted with the job's warnings, never as an error. Skip goes on; there is no
+    /// Retry.
+    Warning,
 }
 
 /// An entry whose change committed, or whose cleanup failed, without certainty: a
@@ -43,8 +47,17 @@ pub(super) struct Committed {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Scope(CopyErrorStage, io::ErrorKind, &'static str);
+impl Scope {
+    /// A warning's scope is its stage alone: skipping it covers the whole warning type.
+    pub(super) fn warning(stage: CopyErrorStage) -> Self {
+        Self(stage, io::ErrorKind::Other, "")
+    }
+}
 impl From<&CopyFailure> for Scope {
     fn from(failure: &CopyFailure) -> Self {
+        if failure.stage == CopyErrorStage::PreservingMetadata {
+            return Self::warning(failure.stage);
+        }
         Self(failure.stage, failure.error.kind, failure.error.operation)
     }
 }
@@ -64,6 +77,33 @@ impl Job {
         }
     }
 
+    /// Asks about the pending metadata warning.
+    pub(super) fn wait_for_warning(&mut self) -> Step {
+        let error = self
+            .warning
+            .as_ref()
+            .expect("pending metadata warning")
+            .error
+            .clone();
+        self.wait_for_failure(error, Context::Warning)
+    }
+
+    /// Drops the pending question of a context whose item is already in the job's
+    /// results (an uncertain commit, a warning). False for every other context.
+    fn drop_recorded(&mut self, context: Context) -> bool {
+        match context {
+            Context::Committed => {
+                self.committed = None;
+                true
+            }
+            Context::Warning => {
+                self.warning = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Asks about the pending uncertain commit or cleanup.
     pub(super) fn wait_for_committed(&mut self) -> Step {
         let error = self
@@ -76,12 +116,9 @@ impl Job {
     }
 
     pub(super) fn wait_for_failure(&mut self, error: FsError, context: Context) -> Step {
-        // A committed failure is already in the job's results.
-        let recorded = matches!(context, Context::Committed);
+        // A committed failure or a warning is already in the job's results.
         if self.cancel.is_cancelled() {
-            if recorded {
-                self.committed = None;
-            } else if error.kind != io::ErrorKind::Interrupted {
+            if !self.drop_recorded(context) && error.kind != io::ErrorKind::Interrupted {
                 self.record_cleanup_error(error);
             }
             return Step::Done;
@@ -173,6 +210,10 @@ impl Job {
                 let committed = self.committed.as_ref().expect("committed failure");
                 (committed.stage, committed.source.clone(), false, true)
             }
+            Context::Warning => {
+                let warning = self.warning.as_ref().expect("metadata warning");
+                (warning.stage, warning.source.clone(), false, true)
+            }
             Context::Root => (
                 if self.move_work.is_some() {
                     CopyErrorStage::MovingSource
@@ -196,9 +237,7 @@ impl Job {
             return Step::Done;
         }
         let Some(version) = self.version.checked_add(1) else {
-            if recorded {
-                self.committed = None;
-            } else {
+            if !self.drop_recorded(context) {
                 self.record(error);
             }
             return Step::Done;
@@ -210,6 +249,12 @@ impl Job {
                 .committed
                 .as_ref()
                 .expect("committed failure")
+                .destination
+                .clone(),
+            (Context::Warning, _, _) => self
+                .warning
+                .as_ref()
+                .expect("metadata warning")
                 .destination
                 .clone(),
             _ => self.current.as_ref().map_or_else(
@@ -247,12 +292,10 @@ impl Job {
             return Step::Failure(Arc::new(self.failure.as_ref().unwrap().clone()));
         };
         let failure = self.failure.take().expect("pending error decision");
-        let recorded = matches!(self.failure_context, Context::Committed);
+        let recorded = matches!(self.failure_context, Context::Committed | Context::Warning);
         match choice {
             CopyChoice::Cancel => {
-                if recorded {
-                    self.committed = None;
-                } else {
+                if !self.drop_recorded(self.failure_context) {
                     self.record_decided_error(failure.error);
                 }
                 self.cancel.cancel();
@@ -285,7 +328,9 @@ impl Job {
                         result
                     }
                     Context::Enumeration => unreachable!("enumeration cannot advertise retry"),
-                    Context::Committed => unreachable!("a committed failure cannot be retried"),
+                    Context::Committed | Context::Warning => {
+                        unreachable!("a committed failure or a warning cannot be retried")
+                    }
                     Context::Child => self.reopen_failed_child(),
                     // The next step takes the same item again.
                     Context::DirectoryRemoval | Context::Root => Ok(()),
@@ -306,6 +351,7 @@ impl Job {
                 self.progress.message.clear();
                 match self.failure_context {
                     Context::Committed => self.go_on_after_committed(),
+                    Context::Warning => self.warning = None,
                     Context::Entry => self.skip_current(),
                     Context::Root => self.skip_streamed_root(),
                     Context::Child => {

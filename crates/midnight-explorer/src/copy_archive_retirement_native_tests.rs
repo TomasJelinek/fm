@@ -648,6 +648,7 @@ async fn exercise(
         view: listing.index,
         fallback: None,
         destination: root.join("archive-output"),
+        metadata: midnight_core::TransferMetadataPolicy::ContentOnly,
     };
     session.send(Command::EnqueueArchiveCopy(request)).await?;
     session

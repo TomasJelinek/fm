@@ -513,6 +513,28 @@ impl VerifiedFileCopy {
         };
         Ok(outcome)
     }
+
+    /// Give the published copy `metadata` (`TransferMetadataPolicy::
+    /// PreserveTimesAndAttributes`) through the stage's own handle, before a Move's proof
+    /// reads it. Verification already read the copy, so it cannot change the access time
+    /// kept here. An error leaves the published copy as it is and is a warning for the
+    /// caller, never a failure of this copy.
+    pub fn apply_preserved_metadata(
+        &mut self,
+        metadata: &midnight_core::TransferPreservedMetadata,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let path = &self.source.entry().item.path;
+        check_cancel(cancel, path)?;
+        if self.phase != CopyPhase::Published {
+            return Err(failure(
+                path,
+                "times and attributes are preserved only on a published copy",
+            ));
+        }
+        let _permit = io_permit(cancel, path)?;
+        self.stage.apply_preserved_metadata(metadata, cancel)
+    }
 }
 fn io_permit(
     cancel: &Cancellation,

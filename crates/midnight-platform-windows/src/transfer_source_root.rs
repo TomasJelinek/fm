@@ -218,6 +218,12 @@ impl TransferSource for Prepared {
     ) -> Result<Box<dyn midnight_core::TransferModifiedTimePin>, FsError> {
         self.with_active(cancel, |source| source.prepare_modified_time(cancel))
     }
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferPreservedMetadata, FsError> {
+        self.with_active(cancel, |source| source.preserved_metadata(cancel))
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,

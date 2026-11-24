@@ -1,6 +1,9 @@
 //! Read-only virtual locations never contain a guessed native member path.
 use crate::{Cancellation, EntryKind, FsError};
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 /// Archive levels one path may open, counting the archive opened from a native file:
 /// archives inside archives open at most `MAX_ARCHIVE_DEPTH - 1` levels below it.
@@ -170,6 +173,122 @@ impl ArchiveTimestamp {
                     && second < 60
             }
         }
+    }
+
+    /// The instant this timestamp names, for a copied member's modified time. A local
+    /// calendar time (a ZIP entry's DOS time) is read in the native time zone, as archive
+    /// tools extract it: `locale` gives the zone's offset at that time (`local_calendar`),
+    /// found in two steps so a time near a daylight-saving change uses the offset in
+    /// force then. Without a locale, or for an invalid value, the instant is unknown.
+    pub fn instant(self, locale: Option<&dyn crate::LocaleService>) -> Option<SystemTime> {
+        if !self.is_valid() {
+            return None;
+        }
+        let (seconds, nanoseconds) = match self {
+            Self::Utc {
+                seconds,
+                nanoseconds,
+            } => (seconds, nanoseconds),
+            Self::Local {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+            } => {
+                let locale = locale?;
+                let wall = days_from_civil(year, month, day) * 86_400
+                    + i64::from(hour) * 3_600
+                    + i64::from(minute) * 60
+                    + i64::from(second);
+                let mut utc = wall;
+                for _ in 0..2 {
+                    let offset = locale.local_calendar(unix_instant(utc, 0)?)?.offset_seconds;
+                    utc = wall - i64::from(offset);
+                }
+                (utc, 0)
+            }
+        };
+        unix_instant(seconds, nanoseconds)
+    }
+}
+
+/// Days from 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's algorithm).
+fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
+    let year = i64::from(year) - i64::from(month <= 2);
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let shifted = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * shifted + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn unix_instant(seconds: i64, nanoseconds: u32) -> Option<SystemTime> {
+    let whole = std::time::Duration::from_secs(seconds.unsigned_abs());
+    let base = if seconds >= 0 {
+        UNIX_EPOCH.checked_add(whole)?
+    } else {
+        UNIX_EPOCH.checked_sub(whole)?
+    };
+    base.checked_add(std::time::Duration::from_nanos(u64::from(nanoseconds)))
+}
+
+#[cfg(test)]
+mod instant_tests {
+    use super::*;
+    use crate::{LocalCalendarTime, LocaleService, NumberLocale};
+    use std::time::Duration;
+
+    /// A zone one hour east of UTC.
+    struct Zone;
+    impl LocaleService for Zone {
+        fn number_locale(&self) -> Result<NumberLocale, FsError> {
+            Ok(NumberLocale::default())
+        }
+        fn local_calendar(&self, _value: SystemTime) -> Option<LocalCalendarTime> {
+            Some(LocalCalendarTime {
+                year: 0,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                nanosecond: 0,
+                offset_seconds: 3_600,
+            })
+        }
+    }
+
+    #[test]
+    fn utc_times_are_exact_and_local_times_use_the_native_offset() {
+        let utc = ArchiveTimestamp::Utc {
+            seconds: -86_401,
+            nanoseconds: 5,
+        };
+        assert_eq!(
+            utc.instant(None),
+            Some(UNIX_EPOCH - Duration::from_secs(86_401) + Duration::from_nanos(5))
+        );
+        let local = ArchiveTimestamp::Local {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 12,
+            minute: 34,
+            second: 56,
+        };
+        // 2024-02-29T12:34:56 at UTC+1 is 11:34:56 UTC.
+        assert_eq!(
+            local.instant(Some(&Zone)),
+            Some(UNIX_EPOCH + Duration::from_secs(1_709_206_496))
+        );
+        assert_eq!(local.instant(None), None);
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
     }
 }
 

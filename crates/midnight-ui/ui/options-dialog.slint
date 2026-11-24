@@ -469,6 +469,12 @@ export component OptionsBody inherits Rectangle {
                     // Every wrapped line counts in the page's scroll extent.
                     min-height: self.preferred-height; vertical-stretch: 0;
                 }
+                WrappingCheckBox {
+                    text: "Preserve times and attributes in Copy and Move";
+                    checked <=> PanelChoices.copy-preserve-metadata; min-height: Theme.control-height;
+                    toggled => { PanelChoices.copy-preserve-metadata-changed(self.checked); }
+                    hint: "How the Copy and Move dialogs start; each dialog can change it. Copies keep their sources' created, modified and accessed times and attributes (Windows: Read-only, Hidden, System, Archive, Not content indexed; Linux: permissions without set-ID bits), folders too. What a destination cannot store is a warning of the job.";
+                }
                 OptionsRule { }
                 Text { text: "Disk operations"; color: Theme.strong-text; font-size: Theme.font-size; font-weight: 600; }
                 OptionPicker {

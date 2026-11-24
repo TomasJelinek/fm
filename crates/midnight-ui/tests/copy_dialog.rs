@@ -369,7 +369,8 @@ fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_link
             _ => None,
         })
         .unwrap();
-    // A file, so that the dialog offers every option: Links first, then exact times.
+    // A file, so that the dialog offers every option: Links first, then Preserve times and
+    // attributes.
     let entries: Arc<[Entry]> = vec![Entry::new(
         EntryId(1),
         base.join("notes.txt"),
@@ -570,7 +571,7 @@ impl ArchiveMount for NoIoArchive {
 }
 
 #[test]
-fn archive_dialog_leaves_out_required_modified_time_and_keeps_ordinary_copy() {
+fn archive_dialog_offers_preserving_times_and_keeps_ordinary_copy() {
     let (mut ui, windows) = multi_window_ui();
     let root = std::env::temp_dir().join("archive dialog 文档");
     let state = Rc::new(RefCell::new(Presenter::new(
@@ -655,15 +656,20 @@ fn archive_dialog_leaves_out_required_modified_time_and_keeps_ordinary_copy() {
         accessible_item(&child, AccessibleRole::Combobox, link_option::LABEL)
             .is_none_or(|item| !item.is_visible())
     );
-    // Archive members cannot keep exact times: the dialog leaves the option out.
-    assert!(
-        accessible_item(
-            &child,
-            AccessibleRole::Checkbox,
-            "Preserve exact modified time"
-        )
-        .is_none_or(|item| !not_hidden(&item)),
-        "exact modified time is not offered for archive members"
+    // Archive members keep their recorded modified time: the dialog offers the option,
+    // unchecked by default.
+    let preserve = accessible_item(
+        &child,
+        AccessibleRole::Checkbox,
+        "Preserve times and attributes",
+    )
+    .filter(not_hidden)
+    .expect("the option is offered for archive members");
+    assert_eq!(
+        preserve
+            .accessible_string_property(AccessibleStringProperty::Checked)
+            .unwrap(),
+        "false"
     );
     let wait = accessible_item(
         &child,
@@ -681,6 +687,7 @@ fn archive_dialog_leaves_out_required_modified_time_and_keeps_ordinary_copy() {
         panic!("unavailable metadata must leave ordinary archive copy available");
     };
     assert_eq!(request.start_policy, TransferStartPolicy::WaitForEarlier);
+    assert_eq!(request.metadata, TransferMetadataPolicy::ContentOnly);
     assert_eq!(request.fallback, Some(EntryId(2)));
     assert_eq!(request.location.mount_id(), Some(42));
     ui.window.hide().unwrap();
@@ -881,7 +888,7 @@ fn destination_editor(
     let option = accessible_item(
         &child,
         i_slint_core::items::AccessibleRole::Checkbox,
-        "Preserve exact modified time",
+        "Preserve times and attributes",
     )
     .unwrap();
     assert_eq!(
@@ -1049,7 +1056,7 @@ fn destination_editor(
     assert_eq!(
         request.metadata,
         if preserve {
-            TransferMetadataPolicy::RequireModifiedTime
+            TransferMetadataPolicy::PreserveTimesAndAttributes
         } else {
             TransferMetadataPolicy::ContentOnly
         }
@@ -1350,7 +1357,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     let option = compact_item(
         &test,
         AccessibleRole::Checkbox,
-        "Preserve exact modified time",
+        "Preserve times and attributes",
     );
     let before = compact_bounds(&editor, false);
     let mut wheels = compact_reveal(&mut test, &editor, false, "Destination folder");
@@ -1416,7 +1423,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     let option = compact_item(
         &test,
         AccessibleRole::Checkbox,
-        "Preserve exact modified time",
+        "Preserve times and attributes",
     );
     assert_eq!(
         option
@@ -1546,7 +1553,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     };
     assert_eq!(
         request.metadata,
-        TransferMetadataPolicy::RequireModifiedTime
+        TransferMetadataPolicy::PreserveTimesAndAttributes
     );
     assert_eq!(
         request.intent,

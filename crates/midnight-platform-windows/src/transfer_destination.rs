@@ -307,10 +307,39 @@ impl TransferDirectory for Directory {
         policy: midnight_core::TransferMetadataPolicy,
         cancel: &Cancellation,
     ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        if policy == midnight_core::TransferMetadataPolicy::PreserveTimesAndAttributes {
+            // A stage of the job, as `stage_job_file`, whose handle may also set its
+            // times and attributes once it is published (`apply_preserved_metadata`).
+            return match staging::stage_with(self, FILE_WRITE_ATTRIBUTES, cancel)? {
+                Some(stage) => Ok(Box::new(stage)),
+                None => self
+                    .create_stage_with(false, true, None, cancel, || stage_name(&self.path))
+                    .map(|stage| Box::new(stage) as Box<dyn StagedTransferFile>),
+            };
+        }
         self.make_stage(
             policy == midnight_core::TransferMetadataPolicy::RequireModifiedTime,
             cancel,
         )
+    }
+    fn apply_preserved_metadata(
+        &self,
+        metadata: &midnight_core::TransferPreservedMetadata,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.path)?;
+        // The folder's own handle may only read its attributes and traverse it: reopen
+        // the retained object (an empty relative name, never the path) to set them.
+        let file = native::reopen(
+            &self.file,
+            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+        .map_err(|e| error(&self.path, e))?;
+        if identity(&file, &self.path)? != self.identity {
+            return Err(invalid(&self.path, "the copied folder changed"));
+        }
+        super::preserve::apply(&file, &self.path, metadata)
     }
 }
 impl Directory {
@@ -334,6 +363,18 @@ impl Directory {
     fn create_stage_named(
         &self,
         metadata: bool,
+        preserved: Option<preservation::Snapshot>,
+        cancel: &Cancellation,
+        next_name: impl FnMut() -> Result<OsString, FsError>,
+    ) -> Result<Stage, FsError> {
+        self.create_stage_with(metadata, metadata, preserved, cancel, next_name)
+    }
+
+    /// `attributes`: the stage's handle may also write its times and attributes.
+    fn create_stage_with(
+        &self,
+        metadata: bool,
+        attributes: bool,
         preserved: Option<preservation::Snapshot>,
         cancel: &Cancellation,
         mut next_name: impl FnMut() -> Result<OsString, FsError>,
@@ -367,7 +408,7 @@ impl Directory {
                                         | FILE_READ_ATTRIBUTES
                                         | DELETE
                                         | SYNCHRONIZE
-                                        | if metadata { FILE_WRITE_ATTRIBUTES } else { 0 },
+                                        | if attributes { FILE_WRITE_ATTRIBUTES } else { 0 },
                                     FILE_SHARE_READ,
                                     FILE_CREATE,
                                     FILE_NON_DIRECTORY_FILE,
@@ -390,6 +431,7 @@ impl Directory {
                         path,
                         replacement: None,
                         metadata,
+                        attributes,
                         preserved,
                         _namespace_owner: namespace_owner,
                     });
@@ -429,6 +471,9 @@ mod staging_tests;
 
 struct Stage {
     metadata: bool,
+    /// The handle may write the stage's times and attributes (a required-metadata stage,
+    /// or one of a job that preserves them).
+    attributes: bool,
     preserved: Option<preservation::Snapshot>,
     file: File,
     directory: Directory,
@@ -499,6 +544,28 @@ impl StagedTransferFile for Stage {
             ));
         }
         super::metadata::modified(&self.file, &self.path, cancel)
+    }
+    fn apply_preserved_metadata(
+        &mut self,
+        metadata: &midnight_core::TransferPreservedMetadata,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        let path = match &self.published_name {
+            Some(name) => self.directory.path.join(name),
+            None => self.path.clone(),
+        };
+        if !self.published || self.cleaned || !self.attributes {
+            return Err(unsupported(
+                &path,
+                "times and attributes are set only on a published copy whose handle may write them",
+            ));
+        }
+        checked(cancel, &path)?;
+        // Through the handle that wrote the copy: Windows then keeps these times when it
+        // closes, instead of the time of the last write.
+        // Only a published copy gets Read-only, so the cleanup of an unpublished stage
+        // never meets it.
+        super::preserve::apply(&self.file, &path, metadata)
     }
     fn rewind_for_validation(
         &mut self,

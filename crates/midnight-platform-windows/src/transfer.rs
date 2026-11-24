@@ -20,6 +20,8 @@ mod metadata;
 mod move_source;
 #[path = "transfer_namespace.rs"]
 mod namespace;
+#[path = "transfer_preserve.rs"]
+mod preserve;
 #[path = "transfer_source.rs"]
 mod source;
 #[path = "transfer_source_links.rs"]

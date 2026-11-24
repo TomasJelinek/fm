@@ -285,6 +285,20 @@ fn open(
         window.set_can_skip(main.get_copy_can_skip());
         window.set_source_details(main.get_copy_source_details());
         window.set_target_details(main.get_copy_target_details());
+        // A Copy/Move warning: the item was copied; Continue keeps it as it is.
+        if p.copy_failure_is_warning(&key.token) {
+            window.set_failure_title("Copy/Move warning".into());
+            window.set_skip_text("Continue".into());
+            window.set_skip_hint(
+                "Keep the copy without these times or attributes and continue this job.".into(),
+            );
+            window.set_skip_all_text("Skip all this warning type".into());
+            window.set_skip_all_hint(
+                "Continue without asking when later items' times or attributes cannot be \
+                 preserved in this job. The job details still name each one."
+                    .into(),
+            );
+        }
         // A Delete failure: its own heading, and Skip all covers every later failure.
         if key.token.starts_with("delete-error:") {
             window.set_native_icon(main.get_action_icons().delete);

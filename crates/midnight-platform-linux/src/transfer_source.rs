@@ -443,6 +443,14 @@ impl TransferSource for Source {
             cancel,
         )?
     }
+    /// Read from the retained descriptor: a followed link's target, never the link.
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<midnight_core::TransferPreservedMetadata, FsError> {
+        checked(cancel, &self.entry.item.path)?;
+        super::preserve::read(&self.file, &self.entry.item.path)
+    }
     fn prepare_modified_time(
         &self,
         cancel: &Cancellation,

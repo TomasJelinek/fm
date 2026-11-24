@@ -62,18 +62,20 @@ impl Drop for ArchiveOwner {
 
 impl From<CapturedTransferRequest> for CopyInput {
     fn from(request: CapturedTransferRequest) -> Self {
+        let preserve = request.metadata == TransferMetadataPolicy::PreserveTimesAndAttributes;
         Self {
             id: request.id,
             destination: request.destination,
             // The retained source is armed before its first foreign accessor.
             // The bounded worker initializes the actual intent before publishing.
             intent: TransferIntent::Copy,
-            metadata: request.metadata,
+            metadata: required(request.metadata),
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _completions: None,
             audited_native_children: None,
+            preserve,
             sources: Sources::Captured(CapturedOwner(Some(request.sources))),
         }
     }
@@ -84,12 +86,14 @@ impl From<ArchiveCopyRequest> for CopyInput {
             id: request.id,
             destination: request.destination.clone(),
             intent: TransferIntent::Copy,
-            metadata: TransferMetadataPolicy::ContentOnly,
+            // Required modified time stays refused for members (`validate`).
+            metadata: required(request.metadata),
             verification: request.verification,
             start_policy: request.start_policy,
             links: CopyLinkPolicy::Reject,
             _completions: None,
             audited_native_children: None,
+            preserve: request.metadata == TransferMetadataPolicy::PreserveTimesAndAttributes,
             sources: Sources::Archive(ArchiveOwner(Some(Box::new(request)))),
         }
     }
@@ -125,6 +129,17 @@ pub(super) enum Resolved {
     },
 }
 
+/// The required part of a request's metadata policy. Preserved times and attributes are
+/// best effort and travel as `CopyInput::preserve`, so every check of a required policy
+/// (`!= ContentOnly`) keeps meaning required modified time.
+fn required(metadata: TransferMetadataPolicy) -> TransferMetadataPolicy {
+    if metadata == TransferMetadataPolicy::PreserveTimesAndAttributes {
+        TransferMetadataPolicy::ContentOnly
+    } else {
+        metadata
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct CopyInput {
     pub(super) id: OperationId,
@@ -140,6 +155,9 @@ pub(super) struct CopyInput {
     // to Job. WorkerOwned keeps cancellation destruction off UI.
     pub(super) _completions: Option<Arc<HashMap<PathBuf, TreeCopyOccurrence>>>,
     audited_native_children: Option<bool>,
+    /// `TransferMetadataPolicy::PreserveTimesAndAttributes`: no bound, no preflight; the
+    /// job gives each copy its source's times and attributes (`Job::set_preserve_metadata`).
+    pub(super) preserve: bool,
 }
 
 impl From<CopyRequest> for CopyInput {
@@ -154,6 +172,7 @@ impl From<CopyRequest> for CopyInput {
             links: CopyLinkPolicy::Reject,
             _completions: None,
             audited_native_children: None,
+            preserve: false,
             sources: Sources::Paths(Arc::new(request.clipboard)),
         }
     }
@@ -171,6 +190,7 @@ impl From<SelectedCopyRequest> for CopyInput {
             links: CopyLinkPolicy::Reject,
             _completions: None,
             audited_native_children: None,
+            preserve: false,
             sources: Sources::Selection(request.files),
         }
     }
@@ -353,7 +373,8 @@ impl CopyInput {
             MetadataTransferInput::Clipboard(clipboard) => Self::move_clipboard(clipboard),
         };
         input.intent = request.intent;
-        input.metadata = request.metadata;
+        input.metadata = required(request.metadata);
+        input.preserve = request.metadata == TransferMetadataPolicy::PreserveTimesAndAttributes;
         input
     }
     pub(super) fn move_clipboard(request: ClipboardMoveRequest) -> Self {
@@ -367,6 +388,7 @@ impl CopyInput {
             links: CopyLinkPolicy::Reject,
             _completions: None,
             audited_native_children: None,
+            preserve: false,
             sources: Sources::SharedPaths(request.clipboard),
         }
     }
@@ -409,6 +431,15 @@ impl CopyInput {
                 &self.destination,
                 io::ErrorKind::Unsupported,
                 "Archive sources do not support link preservation.",
+            ));
+        }
+        if self.metadata != TransferMetadataPolicy::ContentOnly
+            && matches!(self.sources, Sources::Archive(_))
+        {
+            return Err(error(
+                &self.destination,
+                io::ErrorKind::Unsupported,
+                "Required modified time is unavailable for archive members.",
             ));
         }
         let clipboard = match &self.sources {

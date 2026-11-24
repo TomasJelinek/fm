@@ -87,6 +87,15 @@ impl Presenter {
         }
     }
 
+    /// Whether `token` asks about a Copy/Move warning (times or attributes not preserved)
+    /// rather than a failure.
+    pub(crate) fn copy_failure_is_warning(&self, token: &str) -> bool {
+        self.copies.failures.iter().any(|f| {
+            f.stage == midnight_core::CopyErrorStage::PreservingMetadata
+                && token == format!("copy-error:{}:{}", f.id.0, f.version)
+        })
+    }
+
     pub(super) fn decide_copy_failure(
         &mut self,
         token: &str,

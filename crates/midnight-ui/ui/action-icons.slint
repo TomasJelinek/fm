@@ -115,7 +115,8 @@ export global FallbackIcons {
                 || label == "Discard changes" || label == "Restore command" || label == "Restore defaults"
                 || label == "Restore all defaults" || label == "Reset shortcuts" || label == "Reset all shortcuts"
                 || label == "Leave permissions unchanged" ? FallbackIcons.refresh
-            : label == "Skip" || label == "Skip all" || label == "Skip all this error type" ? FallbackIcons.forward
+            : label == "Skip" || label == "Skip all" || label == "Skip all this error type"
+                || label == "Continue" || label == "Skip all this warning type" ? FallbackIcons.forward
             : label == "Decide later" ? FallbackIcons.back
             : label == "Details" || label == "Fewer details" || label == "Resolve"
                 || label == "Show built-in checkbox" ? FallbackIcons.view

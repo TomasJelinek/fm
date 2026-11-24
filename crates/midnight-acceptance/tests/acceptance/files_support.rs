@@ -708,7 +708,8 @@ pub struct TransferSpec<'a> {
     pub key: Key,
     /// Replace the suggested destination (the other panel's folder).
     pub destination: Option<&'a Path>,
-    pub preserve_time: bool,
+    /// Check "Preserve times and attributes".
+    pub preserve: bool,
     /// Make this Links choice ([`Self::link_input`] says how) once the destination's link
     /// facts arrived. The dialog must offer it: a choice it does not show fails.
     pub links: Option<LinkChoice>,
@@ -739,7 +740,7 @@ impl TransferSpec<'_> {
         Self {
             key: Key::F5,
             destination: None,
-            preserve_time: false,
+            preserve: false,
             links: None,
             link_input: LinkInput::default(),
             hold: false,
@@ -790,6 +791,8 @@ fn operation_form(app: &App) -> midnight_ui::OperationPresentation<'_> {
 
 /// The label of the dialog's queueing option.
 pub const WAIT_OPTION: &str = "Wait for earlier transfers";
+/// The Copy/Move dialog's option that keeps times and attributes.
+pub const PRESERVE_OPTION: &str = "Preserve times and attributes";
 
 /// The Copy/Move dialog's Links entries: the first copies the files links point to, the
 /// second keeps links as links.
@@ -948,8 +951,8 @@ fn confirm_dialog(
         )?;
         app.settle();
     }
-    if spec.preserve_time {
-        set_check(app, "Preserve exact modified time", true, |app| {
+    if spec.preserve {
+        set_check(app, PRESERVE_OPTION, true, |app| {
             operation_form(app).get_option_checked()
         })?;
     }

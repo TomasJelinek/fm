@@ -499,6 +499,25 @@ pub trait TransferSource: Send {
             "required modified time is unsupported",
         ))
     }
+    /// The times and attributes `TransferMetadataPolicy::PreserveTimesAndAttributes`
+    /// gives the copy, read from the retained object without following a link: a
+    /// file's after `open_for_reading` and before its first `read_chunk`, a folder's
+    /// before its first child. The default is the entry's modified time alone, what a
+    /// virtual source such as an archive member carries; wrappers forward it.
+    fn preserved_metadata(
+        &self,
+        _cancel: &Cancellation,
+    ) -> Result<crate::TransferPreservedMetadata, FsError> {
+        Ok(crate::TransferPreservedMetadata::modified_only(
+            self.entry().item.metadata.modified,
+        ))
+    }
+    /// A virtual source's modified time as its format records it, with its time zone
+    /// semantics (an archive member's), which the copy reads as an instant
+    /// (`ArchiveTimestamp::instant`). None for native sources; wrappers forward it.
+    fn recorded_modified(&self) -> Option<crate::ArchiveTimestamp> {
+        None
+    }
     /// Rewind the retained file and guard its current revision. This must continue
     /// working after recoverable source capture changes its original pathname.
     fn rewind_for_validation(
@@ -662,11 +681,17 @@ pub trait TransferDirectory: Send + Sync {
         ))
     }
     /// Optional owned-stage authority. ContentOnly callers keep using stage_file.
+    /// `PreserveTimesAndAttributes` asks for a stage of a job (`stage_job_file`) that can
+    /// take `StagedTransferFile::apply_preserved_metadata`; its default is
+    /// `stage_job_file`, whose stage then reports that it cannot.
     fn stage_file_with_metadata(
         &self,
-        _policy: crate::TransferMetadataPolicy,
-        _cancel: &Cancellation,
+        policy: crate::TransferMetadataPolicy,
+        cancel: &Cancellation,
     ) -> Result<Box<dyn StagedTransferFile>, FsError> {
+        if policy == crate::TransferMetadataPolicy::PreserveTimesAndAttributes {
+            return self.stage_job_file(cancel);
+        }
         Err(transfer_unsupported(
             self.path(),
             "required modified time is unsupported",
@@ -760,6 +785,21 @@ pub trait TransferDirectory: Send + Sync {
         _cancel: &Cancellation,
     ) -> Result<(), FsError> {
         Ok(())
+    }
+    /// Give a folder this job created its source folder's times and attributes
+    /// (`TransferMetadataPolicy::PreserveTimesAndAttributes`). The caller applies it once
+    /// the folder's contents are written and its staging is finished, so that nothing the
+    /// job does in the folder changes its times afterwards; it never applies it to a
+    /// folder that existed before (Merge). Best effort: an error is a warning of the job.
+    fn apply_preserved_metadata(
+        &self,
+        _metadata: &crate::TransferPreservedMetadata,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Err(transfer_unsupported(
+            self.path(),
+            "this location cannot preserve folder times and attributes",
+        ))
     }
     fn inspect(
         &self,
@@ -888,6 +928,22 @@ pub trait StagedTransferFile: Read + Write + Seek + Send {
         _cancel: &Cancellation,
     ) -> Result<(), FsError> {
         Ok(())
+    }
+    /// Give the published copy its source's times and attributes
+    /// (`TransferMetadataPolicy::PreserveTimesAndAttributes`) through the stage's own
+    /// handle, right after publication and before anything else reads it: the content
+    /// was verified first, so verification cannot change the access time it keeps, and
+    /// Read-only comes with the times as the last change. Stages that cannot apply it
+    /// report Unsupported; any error is a warning of the job, never a failure of the copy.
+    fn apply_preserved_metadata(
+        &mut self,
+        _metadata: &crate::TransferPreservedMetadata,
+        _cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        Err(transfer_unsupported(
+            Path::new(""),
+            "this location cannot preserve times and attributes",
+        ))
     }
     /// Revalidate the final name relative to the held directory against this exact
     /// stage inode, never adopting a concurrent replacement's identity.

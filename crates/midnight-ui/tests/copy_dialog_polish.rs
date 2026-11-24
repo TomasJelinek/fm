@@ -799,8 +799,8 @@ fn controls_start_at_one_edge(density: UiDensity, font: u16) {
             ("the Options heading", edge(AccessibleRole::Text, "Options")),
             ("the destination", field.0),
             (
-                "Preserve exact modified time",
-                edge(AccessibleRole::Checkbox, "Preserve exact modified time"),
+                "Preserve times and attributes",
+                edge(AccessibleRole::Checkbox, "Preserve times and attributes"),
             ),
             (
                 "Wait for earlier transfers",
@@ -831,10 +831,10 @@ fn controls_start_at_one_edge(density: UiDensity, font: u16) {
         modeless::accessible_popup_item(
             &h.native,
             AccessibleRole::Checkbox,
-            "Preserve exact modified time"
+            "Preserve times and attributes"
         )
-        .is_none_or(|item| !item.is_visible()),
-        "a folder among the items leaves exact times out"
+        .is_some_and(|item| item.is_visible()),
+        "a folder among the items keeps its times and attributes too"
     );
     h.close();
 }
@@ -861,7 +861,7 @@ fn tab_follows_the_visual_order_and_wraps() {
     let cycle = [
         control(AccessibleRole::TextInput, "Destination folder"),
         control(AccessibleRole::Combobox, "Links"),
-        control(AccessibleRole::Checkbox, "Preserve exact modified time"),
+        control(AccessibleRole::Checkbox, "Preserve times and attributes"),
         control(AccessibleRole::Checkbox, "Wait for earlier transfers"),
         control(AccessibleRole::Button, "Cancel"),
         control(AccessibleRole::Button, "Copy"),

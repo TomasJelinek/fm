@@ -10,7 +10,8 @@ license.workspace = true
 # `new_junction` (src/test_fixtures.rs) for other packages' Windows tests: a directory
 # junction set with FSCTL_SET_REPARSE_POINT, so no shell or command line sees a fixture
 # path (SECURITY.md), and `deny_read_data`/`restore_dacl`, which deny Everyone listing on
-# such a junction below `_build` as Windows' compatibility junctions do. Only
+# such a junction below `_build` as Windows' compatibility junctions do; and
+# `set_file_attributes`, a fixture's Windows attributes. Only
 # dev-dependencies enable it; the application builds without it.
 test-fixtures = []
 

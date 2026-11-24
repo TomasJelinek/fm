@@ -384,7 +384,7 @@ impl CopyDraftInput {
                     files,
                     destination,
                 };
-                if links.is_some() || metadata == TransferMetadataPolicy::RequireModifiedTime {
+                if links.is_some() || metadata != TransferMetadataPolicy::ContentOnly {
                     native_options(
                         MetadataTransferRequest {
                             input: MetadataTransferInput::Selected(request),
@@ -404,6 +404,7 @@ impl CopyDraftInput {
                 request.verification = verification;
                 request.id = id;
                 request.destination = destination;
+                request.metadata = metadata;
                 Command::EnqueueArchiveCopy(*request)
             }
             Self::Clipboard(clipboard) => {
@@ -414,7 +415,7 @@ impl CopyDraftInput {
                     clipboard,
                     destination,
                 };
-                if links.is_some() || metadata == TransferMetadataPolicy::RequireModifiedTime {
+                if links.is_some() || metadata != TransferMetadataPolicy::ContentOnly {
                     native_options(
                         MetadataTransferRequest {
                             input: MetadataTransferInput::Clipboard(request),
@@ -870,6 +871,7 @@ impl Presenter {
             selected: archive.selected.clone(),
             fallback: focused.map(|entry| entry.id),
             destination: destination.clone(),
+            metadata: midnight_core::TransferMetadataPolicy::ContentOnly,
         }));
         let request = self.desktop.request();
         Some(CopyDraft {

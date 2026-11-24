@@ -201,7 +201,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "files_copy_kinds",
                 area: "transfers",
-                summary: "F5 of every fixture entry kind one at a time and per-folder multi-selections into subfolders (exact times preserved); bytes, names and trees verified.",
+                summary: "F5 of every fixture entry kind one at a time and per-folder multi-selections into subfolders and the deep tree with Preserve times and attributes (times and attributes checked); bytes, names and trees verified.",
                 run: files_transfers::copy_every_kind,
                 timeout: minutes(30),
             },
@@ -320,7 +320,7 @@ pub fn all() -> &'static [Scenario] {
             Scenario {
                 name: "files_copy_options",
                 area: "transfers",
-                summary: "The Copy/Move dialog: summary, destination, options and policy; the Links choice proposing Keep links as links on a fixed local folder, no former link check box; refused destinations; exact times for files only; full and size-and-samples verification from Options; many small files.",
+                summary: "The Copy/Move dialog: summary, destination, options and policy; the Links choice proposing Keep links as links on a fixed local folder, no former link check box; refused destinations; Preserve times and attributes for files and folders; full and size-and-samples verification from Options; many small files.",
                 run: files_options::copy_options,
                 timeout: minutes(10),
             },

@@ -88,6 +88,7 @@ fn input(mount: Arc<MemoryMount>, destination: &Path) -> ArchiveCopyRequest {
         entries: entries.into(),
         fallback: None,
         destination: destination.into(),
+        metadata: midnight_core::TransferMetadataPolicy::ContentOnly,
     }
 }
 
@@ -200,6 +201,71 @@ fn mount(nodes: Vec<ArchiveNode>) -> Arc<MemoryMount> {
         payload: b"payload".to_vec(),
         changed: AtomicBool::new(false),
     })
+}
+
+/// Preserve times and attributes gives copied members, folders included, the modified
+/// time their archive records; without it they get the time of the copy.
+#[tokio::test]
+async fn preserving_gives_copied_members_their_recorded_modified_time() {
+    let recorded = |seconds: i64, nanoseconds: u32| {
+        (
+            Some(ArchiveTimestamp::Utc {
+                seconds,
+                nanoseconds,
+            }),
+            std::time::UNIX_EPOCH + Duration::new(seconds as u64, nanoseconds),
+        )
+    };
+    let (file_time, file_expected) = recorded(1_049_522_828, 765_432_100);
+    let (folder_time, folder_expected) = recorded(981_173_106, 0);
+    let (inner_time, inner_expected) = recorded(1_100_000_000, 500_000_000);
+    for metadata in [
+        TransferMetadataPolicy::PreserveTimesAndAttributes,
+        TransferMetadataPolicy::ContentOnly,
+    ] {
+        let temp = fixture();
+        let mut dated = node(2, 1, b"dated", EntryKind::File);
+        dated.modified = file_time;
+        let mut folder = node(3, 1, b"folder", EntryKind::Directory);
+        folder.modified = folder_time;
+        let mut inner = node(4, 3, b"inner", EntryKind::File);
+        inner.modified = inner_time;
+        let mut request = input(mount(vec![dated, folder, inner]), temp.path());
+        request.metadata = metadata;
+        let mut h = Harness::native();
+        h.controller.enqueue_archive(request).await;
+        let done = h.terminal(1).await;
+        assert_eq!(done.state, CopyOperationState::Completed, "{done:?}");
+        assert_eq!(done.metadata_not_preserved, 0, "{done:?}");
+        let time = |path: &Path| fs::metadata(path).unwrap().modified().unwrap();
+        let preserved = metadata == TransferMetadataPolicy::PreserveTimesAndAttributes;
+        for (path, expected) in [
+            (temp.path().join("dated"), file_expected),
+            (temp.path().join("folder"), folder_expected),
+            (temp.path().join("folder").join("inner"), inner_expected),
+        ] {
+            assert_eq!(time(&path) == expected, preserved, "{path:?}");
+        }
+        assert_eq!(fs::read(temp.path().join("dated")).unwrap(), b"payload");
+        h.close().await;
+    }
+}
+
+/// Required modified time stays refused for archive members.
+#[tokio::test]
+async fn required_modified_time_is_refused_for_archive_members() {
+    let temp = fixture();
+    let mut request = input(
+        mount(vec![node(2, 1, b"member", EntryKind::File)]),
+        temp.path(),
+    );
+    request.metadata = TransferMetadataPolicy::RequireModifiedTime;
+    let mut h = Harness::native();
+    h.controller.enqueue_archive(request).await;
+    let done = h.terminal(1).await;
+    assert_eq!(done.state, CopyOperationState::Failed, "{done:?}");
+    assert!(!temp.path().join("member").exists());
+    h.close().await;
 }
 
 #[tokio::test]

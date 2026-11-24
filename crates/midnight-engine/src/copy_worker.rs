@@ -23,6 +23,8 @@ mod metadata_job;
 mod move_job;
 #[path = "move_native.rs"]
 mod native_move;
+#[path = "copy_preserve_worker.rs"]
+mod preserve_job;
 #[path = "copy_streamed_roots.rs"]
 mod streamed;
 #[path = "copy_work_budget.rs"]
@@ -59,6 +61,8 @@ struct Frame {
     enumeration_complete: bool,
     failed_before: u64,
     skipped_before: u64,
+    /// The source folder's times and attributes for the folder this job created.
+    preserved: preserve_job::Preserved,
 }
 struct RootCompletion {
     source: CompletedCopySource,
@@ -87,6 +91,8 @@ struct EntryWork {
     /// copying, so its failure is not reported as creating a destination folder.
     source_move_failed: bool,
     force_prompt: bool,
+    /// The source file's times and attributes, read before its first byte.
+    preserved: preserve_job::Preserved,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Consent {
@@ -145,6 +151,11 @@ pub(super) struct Job {
     /// An uncertain commit or cleanup, already recorded, that the job asks about before
     /// its next step and while that question waits (`failures::Context::Committed`).
     committed: Option<failures::Committed>,
+    /// An item copied without all of its times or attributes, which the job asks about
+    /// before its next step (`failures::Context::Warning`).
+    warning: Option<failures::Committed>,
+    /// `TransferMetadataPolicy::PreserveTimesAndAttributes`, frozen with the request.
+    preserve: bool,
     skipped_errors: HashSet<failures::Scope>,
     halt: bool,
     decision: Option<CopyChoice>,
@@ -422,6 +433,9 @@ impl Job {
         }
         if self.committed.is_some() {
             return self.wait_for_committed();
+        }
+        if self.warning.is_some() {
+            return self.wait_for_warning();
         }
         if let Some(choice) = self.decision.take() {
             let conflict = self.conflict.take();
@@ -703,6 +717,8 @@ impl Job {
                     if let Err(error) = frame.destination.finish_staging() {
                         self.record_cleanup_error(error);
                     }
+                    // Nothing the job does changes the folder after this.
+                    self.preserve_folder();
                     if completed_before == (self.progress.failed, self.progress.skipped) {
                         self.progress.completed_directories += 1;
                     }
@@ -802,6 +818,7 @@ impl Job {
             move_preflight_done: false,
             source_move_failed: false,
             force_prompt: false,
+            preserved: None,
         });
         Step::Continue
     }
@@ -826,7 +843,7 @@ impl Job {
                 drop(work.into_inner());
                 Step::Continue
             }
-            Ok(Action::Directory(destination)) => {
+            Ok(Action::Directory(destination, preserved)) => {
                 self.stack.push(Frame {
                     removal: work.removal,
                     source: work.source.take().expect("directory source"),
@@ -835,6 +852,7 @@ impl Job {
                     enumeration_complete: false,
                     failed_before: self.progress.failed,
                     skipped_before: self.progress.skipped,
+                    preserved,
                 });
                 drop(work.into_inner());
                 Step::Continue
@@ -1038,13 +1056,16 @@ impl Job {
         // holds it without sharing) leaves no stage or folder behind while its question
         // waits, and Retry comes back here.
         source.open_for_reading(&self.cancel)?;
+        // Before the first byte or the listing, which can change the access time.
+        let preserved = self.read_preserved(source.as_ref());
         match source.entry().item.kind {
             EntryKind::Directory => {
                 if let Some(identity) = source.native_identity() {
                     work.destination
                         .reject_source_ancestor(identity, &self.cancel)?;
                 }
-                let destination = if work.consent == Some(Consent::Merge) {
+                let created = work.consent != Some(Consent::Merge);
+                let destination = if !created {
                     let target = work.target.as_ref().expect("consented target pin");
                     target.revalidate(&self.cancel)?;
                     let merged = work.destination.open_merge_directory(
@@ -1090,7 +1111,11 @@ impl Job {
                 if let Some(identity) = source.native_identity() {
                     destination.reject_source_ancestor(identity, &self.cancel)?;
                 }
-                Ok(Action::Directory(destination))
+                // A merged folder keeps its own times and attributes.
+                Ok(Action::Directory(
+                    destination,
+                    preserved.filter(|_| created),
+                ))
             }
             EntryKind::File => {
                 if source.entry().item.metadata.size.is_none() {
@@ -1125,7 +1150,7 @@ impl Job {
                         } else if move_work.metadata_policy == TransferMetadataPolicy::ContentOnly {
                             // Staged as Copy stages: in the job's staging folder where the
                             // destination has one (`stage_job_file`).
-                            work.destination.stage_job_file(&self.cancel)?
+                            preserve_job::job_stage(self.preserve, &work.destination, &self.cancel)?
                         } else {
                             work.destination
                                 .stage_file_with_metadata(move_work.metadata_policy, &self.cancel)?
@@ -1154,10 +1179,11 @@ impl Job {
                                 )
                             })?
                     } else {
-                        work.destination.stage_job_file(&self.cancel)?
+                        preserve_job::job_stage(self.preserve, &work.destination, &self.cancel)?
                     }
                 };
                 let source = work.source.take().expect("regular source");
+                work.preserved = preserved;
                 work.copy = Some(if let Some(metadata) = self.metadata.as_mut() {
                     let pin = metadata
                         .pins
@@ -1228,6 +1254,11 @@ impl Job {
                 &publication,
                 TransferPublication::Published(_) | TransferPublication::Replaced { .. }
             );
+            // The copy is in place and verified: its times and attributes come last, before
+            // a Move's proof reads it. An uncertain publication keeps it as it is.
+            if !matches!(publication, TransferPublication::RecoveryRequired { .. }) {
+                self.preserve_file(work);
+            }
             let completed_before = self.progress.files_completed;
             match publication {
                 TransferPublication::Published(_) => self.progress.files_completed += 1,
@@ -1615,12 +1646,16 @@ impl Job {
         // A panicking cleanup is never retried; its surrounding Scope retains it.
         self.finish_started = true;
         if let Some(failure) = self.failure.take()
-            && !matches!(self.failure_context, failures::Context::Committed)
+            && !matches!(
+                self.failure_context,
+                failures::Context::Committed | failures::Context::Warning
+            )
         {
             self.record_decided_error(failure.error);
         }
-        // Its error is already recorded.
+        // Its error (or warning) is already recorded.
         self.committed = None;
+        self.warning = None;
         // Clean and drop the active native object in the same order as normal
         // disposal. Keep only its diagnostic until the unused stages and Move
         // recovery finish, so they cannot evict the current partial's path.
@@ -1791,6 +1826,16 @@ fn terminal_progress(mut progress: CopyProgress, cancel: &Cancellation) -> CopyP
     if progress.skipped > 0 {
         lines.push(super::decisions::skipped_line(progress.skipped));
     }
+    match progress.metadata_not_preserved {
+        0 => {}
+        1 => lines.push(
+            "1 item was copied without all of its times or attributes; the job details name it."
+                .into(),
+        ),
+        count => lines.push(format!(
+            "{count} items were copied without all of their times or attributes; the job details name each."
+        )),
+    }
     match progress.links_left_out {
         0 => {}
         1 => lines
@@ -1825,7 +1870,9 @@ fn terminal_progress(mut progress: CopyProgress, cancel: &Cancellation) -> CopyP
 enum Action {
     Keep,
     Done,
-    Directory(Arc<dyn TransferDirectory>),
+    /// A folder to copy into, with its source's times and attributes when this job
+    /// created it and preserves them.
+    Directory(Arc<dyn TransferDirectory>, preserve_job::Preserved),
     Conflict(TransferEntry),
 }
 

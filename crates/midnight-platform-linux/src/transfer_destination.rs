@@ -399,6 +399,28 @@ impl TransferDirectory for Directory {
         )
         .map_err(|e| error(&self.path, e.into()))
     }
+    fn apply_preserved_metadata(
+        &self,
+        metadata: &midnight_core::TransferPreservedMetadata,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.path)?;
+        if !self.copied {
+            return Err(unsupported(
+                &self.path,
+                "only a folder this copy created takes its source's times and permissions",
+            ));
+        }
+        // As `set_published_permissions`: a set-group-ID bit the new folder inherited from
+        // its parent comes from the destination, and stays.
+        let inherited = self
+            .file
+            .metadata()
+            .map_err(|e| error(&self.path, e))?
+            .mode()
+            & 0o2000;
+        super::preserve::apply(&self.file, &self.path, metadata, inherited)
+    }
     fn stage_file(&self, cancel: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         self.make_stage(false, cancel)
     }
@@ -509,6 +531,29 @@ impl StagedTransferFile for Stage {
         let file = self.file().map_err(|e| error(&self.directory.path, e))?;
         rustix::fs::fchmod(file, Mode::from_raw_mode(published_mode(unix_mode)))
             .map_err(|e| error(&self.directory.path, e.into()))
+    }
+    fn apply_preserved_metadata(
+        &mut self,
+        metadata: &midnight_core::TransferPreservedMetadata,
+        cancel: &Cancellation,
+    ) -> Result<(), FsError> {
+        checked(cancel, &self.directory.path)?;
+        let path = match &self.published_name {
+            Some(name) => self.directory.path.join(name),
+            None => self.directory.path.clone(),
+        };
+        // A stage that keeps a replaced output's own mode keeps it.
+        if !self.published || self.preserved.is_some() {
+            return Err(unsupported(
+                &path,
+                "times and permissions are set only on a published copy",
+            ));
+        }
+        let file = self.file().map_err(|e| error(&path, e))?;
+        super::preserve::apply(file, &path, metadata, 0)?;
+        // A Move's proof reads the copy through this descriptor next.
+        super::preserve::keep_access_time(file);
+        Ok(())
     }
     fn set_modified_time(
         &mut self,

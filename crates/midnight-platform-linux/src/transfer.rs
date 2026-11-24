@@ -37,6 +37,8 @@ mod move_source;
 mod namespace;
 #[path = "transfer_native_location.rs"]
 mod native_location;
+#[path = "transfer_preserve.rs"]
+mod preserve;
 #[path = "transfer_source.rs"]
 mod source;
 #[path = "transfer_validation.rs"]

@@ -133,12 +133,18 @@ How to read it:
   file is copied and verified as Copy does before its source is removed. Copy and Move
   take up to 1,000,000 selected items: a large selection starts copying its first item at once, totals the rest while it copies and opens each
   item only when it reaches it. I/O errors pause for Retry, Skip, Skip all or Cancel.
-  "Preserve exact modified time" keeps the modification times of up to 64 copied files.
+  "Preserve times and attributes" (off unless Options turns it on) gives copied files and
+  folders their sources' times (Windows: created, modified, accessed; Linux: modified,
+  accessed) and attributes (Windows: Read-only, Hidden, System, Archive, Not content
+  indexed; Linux: permission bits without set-ID bits), folders after their contents
+  and Read-only last; archive members keep their recorded modified time; any number of
+  items; what a destination cannot store is a warning of the job.
 - **Linux specifics:** Copy and cross-volume Move write only to filesystems with
   `O_TMPFILE` (ext4, XFS, Btrfs, tmpfs); FAT, exFAT, NTFS, NFS, SMB, sshfs and GVfs
   destinations are refused.
-- **Open:** other times, attributes, ownership, ACLs, extended attributes, streams,
-  folder metadata and hard links are not preserved (COPY-03); a Move from another drive
+- **Open:** ownership, ACLs, extended attributes, streams, Linux creation times, a kept
+  link's own times and hard links are not preserved; Paste and drag and drop copy
+  content only (COPY-03); a Move from another drive
   keeps a Windows source with named streams (other Windows sources, from a USB drive or a
   share included, are removed after their verified copy), and on Linux removes only sources
   the user owns on a local filesystem; providers have no Move (MOVE-01); an archive

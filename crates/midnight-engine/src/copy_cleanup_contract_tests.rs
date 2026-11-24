@@ -248,6 +248,7 @@ fn cleanup_receipt_survives(pending_stages: u8) {
         move_preflight_done: false,
         source_move_failed: false,
         force_prompt: false,
+        preserved: None,
     });
     cancel.cancel();
     let done = job.finish();

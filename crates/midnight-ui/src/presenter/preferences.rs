@@ -76,6 +76,7 @@ pub(super) struct EditedFields {
     pub(super) size_display: bool,
     pub(super) remember_command_history: bool,
     pub(super) copy_checksum_verification: bool,
+    pub(super) copy_preserve_metadata: bool,
     pub(super) disk_io_concurrency: bool,
     pub(super) command_history: bool,
     pub(super) command_history_cleared: bool,
@@ -374,6 +375,9 @@ impl Presenter {
                 }
                 if edited.copy_checksum_verification {
                     loaded.copy_checksum_verification = local.copy_checksum_verification;
+                }
+                if edited.copy_preserve_metadata {
+                    loaded.copy_preserve_metadata = local.copy_preserve_metadata;
                 }
                 if edited.disk_io_concurrency {
                     loaded.disk_io_concurrency = local.disk_io_concurrency;
@@ -771,6 +775,35 @@ impl Presenter {
         );
     }
 
+    /// Options › General › Preserve times and attributes: whether a new Copy/Move dialog
+    /// starts with the option checked.
+    pub(crate) fn change_copy_preserve_metadata(
+        &mut self,
+        enabled: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        self.preferences.edited.copy_preserve_metadata = true;
+        self.update_preferences(
+            UserPreferences {
+                copy_preserve_metadata: enabled,
+                ..self.preferences.values.clone()
+            },
+            send,
+        );
+    }
+
+    /// The Copy/Move dialog's starting choice: the saved one while Options previews a
+    /// change, as `transfer_verification`.
+    pub(crate) fn copy_preserve_metadata(&self) -> bool {
+        self.preferences
+            .options
+            .baseline
+            .as_deref()
+            .filter(|_| !self.preferences.options.saving)
+            .unwrap_or(&self.preferences.values)
+            .copy_preserve_metadata
+    }
+
     pub(crate) fn transfer_verification(&self) -> TransferVerification {
         // Preview changes belong to Options until OK; queued requests retain this value.
         let preferences = self
@@ -921,6 +954,8 @@ impl Presenter {
         edited.size_display |= preferences.size_display != previous.size_display;
         edited.copy_checksum_verification |=
             preferences.copy_checksum_verification != previous.copy_checksum_verification;
+        edited.copy_preserve_metadata |=
+            preferences.copy_preserve_metadata != previous.copy_preserve_metadata;
         edited.disk_io_concurrency |=
             preferences.disk_io_concurrency != previous.disk_io_concurrency;
         edited.remember_command_history |=

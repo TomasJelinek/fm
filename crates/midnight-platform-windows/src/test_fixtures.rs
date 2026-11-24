@@ -407,6 +407,30 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "junction target is too long")
 }
 
+/// Set the Windows attributes of the file or folder at `path` (not following a link), for
+/// other packages' tests of preserved attributes.
+pub fn set_file_attributes(path: &Path, attributes: u32) -> io::Result<()> {
+    let file = OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let basic = FILE_BASIC_INFO {
+        // FILE_ATTRIBUTE_NORMAL: zero would leave the attributes unchanged.
+        FileAttributes: if attributes == 0 { 0x80 } else { attributes },
+        ..Default::default()
+    };
+    // SAFETY: a live handle with FILE_WRITE_ATTRIBUTES and an input of the declared size.
+    check(unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&basic as *const FILE_BASIC_INFO).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        )
+    })
+}
+
 /// Move a file's NTFS ChangeTime, or with `write` its LastWriteTime, one second later and
 /// change nothing else, as endpoint protection moves the ChangeTime of a freshly written
 /// file when it adds an alternate data stream. Attribute-only access takes no part in

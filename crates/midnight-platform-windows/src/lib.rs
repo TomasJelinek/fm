@@ -57,7 +57,9 @@ mod test_fixtures;
 /// explicit "Everyone: deny list folder" entry Windows' compatibility junctions carry: see
 /// the `test-fixtures` feature in Cargo.toml.
 #[cfg(feature = "test-fixtures")]
-pub use test_fixtures::{SavedDacl, deny_read_data, new_junction, restore_dacl};
+pub use test_fixtures::{
+    SavedDacl, deny_read_data, new_junction, restore_dacl, set_file_attributes,
+};
 mod transfer;
 mod volume_details;
 mod volume_information;

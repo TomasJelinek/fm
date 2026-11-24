@@ -2,7 +2,7 @@
 //! folder: "Keep links as links" of its two entries, no reason or warning), a destination
 //! typed as a missing folder, a relative path or nothing (refused in the dialog by Copy
 //! and Move alike, nothing copied), Escape, Move's Cancel button, the order in which Tab
-//! visits the dialog's controls, "Preserve exact modified time" offered for files only, the
+//! visits the dialog's controls, "Preserve times and attributes" offered for files and folders, the
 //! verification chosen in Options › General (full SHA-256, or size and samples) and what
 //! the job then verifies, and many small files in one job.
 use crate::{
@@ -28,7 +28,7 @@ const MISSING: &str = "Enter the full path of an existing destination folder.";
 /// What the dialog says under an empty destination field when Enter is pressed.
 const TYPE_FIRST: &str = "Type the destination folder first.";
 const VERIFY_OPTION: &str = "Verify entire copied file with SHA-256 (recommended)";
-const PRESERVE: &str = "Preserve exact modified time";
+const PRESERVE: &str = support::PRESERVE_OPTION;
 
 /// Open the F5/F6 dialog on the focused panel.
 fn open_dialog(app: &mut App, key: Key) {
@@ -52,11 +52,10 @@ fn checkbox(app: &App, label: &str) -> Option<(bool, bool)> {
 }
 
 /// Tab through the open dialog of one file from its destination field: Links, the
-/// exact-time option where it is offered, the queueing option, Cancel, the primary action
-/// (`verb`), then around to the destination field again (past the header's close button
-/// when it takes focus).
+/// preserve option, the queueing option, Cancel, the primary action (`verb`), then around
+/// to the destination field again (past the header's close button when it takes focus).
 fn tab_order(app: &mut App, verb: &str) -> Result<(), String> {
-    // The exact-time option is a stop only where it is offered.
+    // The preserve option is a stop wherever it is offered (every Copy and Move).
     let offered = checkbox(app, PRESERVE).is_some_and(|(_, enabled)| enabled);
     let stops: Vec<(AccessibleRole, &str)> = [
         (AccessibleRole::Combobox, support::LINKS_LABEL),
@@ -314,13 +313,14 @@ pub fn copy_options(context: &mut Context) -> Result<(), String> {
         ));
     }
 
-    // A folder cannot keep exact times; Move offers the same Links choice and renames.
+    // A folder keeps its times and attributes too; Move offers the same Links choice and
+    // renames.
     panel::select_row(&mut app, LEFT, "dir")?;
     open_dialog(&mut app, Key::F5);
     let preserve = checkbox(&app, PRESERVE);
-    if preserve.is_some_and(|(_, enabled)| enabled) {
+    if preserve != Some((false, true)) {
         failures.push(format!(
-            "{PRESERVE:?} is offered for a folder: {preserve:?}"
+            "{PRESERVE:?} for a folder is {preserve:?} (checked, enabled)"
         ));
     }
     close_dialog(&mut app);

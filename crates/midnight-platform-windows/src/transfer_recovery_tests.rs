@@ -343,6 +343,7 @@ fn stage(path: &Path) -> Stage {
     let namespace_owner = crate::transfer::namespace::owner_for(&file, &path.join("private-stage"));
     let mut stage = Stage {
         metadata: false,
+        attributes: false,
         preserved: None,
         file,
         directory,

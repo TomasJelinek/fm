@@ -849,7 +849,9 @@ Recursive Move evidence: [recursive Move record](../verification/2026-11-08-recu
 Requests and constructors default to `ContentOnly`. An explicit
 `Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
 `TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
-selection or shared clipboard input, with an explicit Copy/Move intent.
+selection or shared clipboard input, with an explicit Copy/Move intent. The dialog no
+longer offers it: its option is the unbounded, best-effort
+[preserved times and attributes](#preserved-times-and-attributes).
 It accepts at most 64 distinct native regular-file roots (`MAX_REQUIRED_METADATA_ROOTS`),
 each pinned and staged before anything is copied. The backend enforces this whatever the
 dialog offered: input resolution refuses more roots before any source is captured
@@ -857,8 +859,8 @@ dialog offered: input resolution refuses more roots before any source is capture
 most 64 distinct native regular files; transfer larger selections without it."
 (`REQUIRED_METADATA_ROOTS_REFUSAL`). There is no content-only fallback. Directories, links,
 virtual sources and
-unsupported providers are refused without a policy downgrade. The UI option is
-described separately in [transfer options](TRANSFER_OPTIONS.md).
+unsupported providers are refused without a policy downgrade, and so are archive
+members ([transfer options](TRANSFER_OPTIONS.md)).
 
 All source metadata pins and destination staging capabilities are prepared before
 content writes. Source pins capture a consistent native modified time and
@@ -902,6 +904,108 @@ verified after native synchronization, and native tests also check the final
 closed file. Native tests cover NTFS on Windows and ext on Linux; this does not
 extend remote commit or power-loss guarantees. Native
 version checks are still not immutable snapshots.
+
+## Preserved times and attributes
+
+`TransferMetadataPolicy::PreserveTimesAndAttributes`, the Copy/Move dialog's “Preserve
+times and attributes” ([transfer options](TRANSFER_OPTIONS.md)), gives every copied file
+and every folder the job creates its source's times and attributes. It is best effort and
+unbounded: it adds no preflight, no root bound and no pass over the selection, and what a
+destination cannot store is a warning of the job, never a failure of the copy. Content
+is verified exactly as without it. The engine part is `copy_preserve_worker.rs`; the
+native parts are `transfer_preserve.rs` in each platform crate.
+
+| Field | Windows | Linux |
+| --- | --- | --- |
+| Modified time | Exact (100 ns) | Exact (ns) |
+| Access time | Exact (100 ns) | Exact (ns) |
+| Creation time | Exact (100 ns) | Not preserved: no local filesystem lets a process set a birth time |
+| Attributes | Read-only, Hidden, System, Archive, Not content indexed (`PRESERVED_WINDOWS_ATTRIBUTES`) | Permission bits 0777, not masked by the umask (`PRESERVED_UNIX_MODE_BITS`) |
+
+Never copied: Compressed, Encrypted and Sparse, which are how the destination stores a
+file (its folder decides, as without the option); Linux set-user-ID, set-group-ID and
+sticky bits, since the copy belongs to the user who makes it and a set-ID bit would grant
+that user's or group's rights the source never granted (a folder keeps a set-group-ID
+bit it inherited from its destination parent); ownership, ACLs, extended attributes and
+alternate data streams.
+
+**When each value is read.** A file's source is read once, through its retained handle
+and without following a link (`TransferSource::preserved_metadata`; Windows: one
+`GetFileInformationByHandle`, Linux: one `statx`), right after it is opened for reading
+and before its first byte, so the copy's own reading cannot change the access time it
+keeps. A folder's is read before its listing, as the traversal enters it. A followed
+link gives its target's values. Wrappers forward the method; a source without native
+metadata gives its entry's modified time. An archive member gives the time its archive
+records (`TransferSource::recorded_modified`): a UTC time exactly, a ZIP DOS time (no time
+zone) in the native time zone at that time, as archive tools extract it
+(`ArchiveTimestamp::instant` through the job's locale); its other times and attributes
+are unknown, and a member without a time keeps the time of its copy.
+
+**When each value is set.** A file's copy gets them right after its publication, through
+the stage's own handle (`StagedTransferFile::apply_preserved_metadata`), before a Move's
+proof reads it: the content was verified first, so verification reads cannot change the
+access time it keeps, and Read-only arrives last, together with the times, after the
+verified content is in place. Windows sets all of them with one
+`SetFileInformationByHandle(FileBasicInfo)` call on the handle that wrote the copy, which
+then keeps them when it closes instead of the time of its last write; a stage of a
+preserving job is created with FILE_WRITE_ATTRIBUTES for this (`stage_file_with_metadata`
+with this policy: in the job's staging folder where the destination has one, else a
+`.me-*` stage of its own). Publication is a rename, which keeps a file's times on NTFS
+and ext4, and the values are set after it in any case, which also overrides NTFS's
+creation-time tunnelling when a Replace reuses a name. Linux sets the access and modified
+times with `futimens`, then the mode with `fchmod` on the published copy's descriptor,
+and marks the descriptor `O_NOATIME` so that a Move's proof reads do not move the access
+time it set. A Replace binds the stage to the existing target as before: the replaced
+file goes to private recovery whatever its attributes (a Read-only target included), and
+the copy then gets the source's attributes.
+
+A folder the job created gets its values once its frame completes: after all of its
+contents are written, after the source folder's removal in a Move and after its private
+staging folder is removed (`finish_staging`), so nothing the job does in it changes its
+times afterwards (`TransferDirectory::apply_preserved_metadata`). The traversal completes
+folders deepest first, so each parent is set after its children; this includes the
+selected folders themselves, while the destination folder the job copies into and a
+folder merged into (Merge) keep their own values. Windows reopens the folder's retained
+handle with FILE_WRITE_ATTRIBUTES (an empty relative name, never the path) and checks its
+identity; Linux uses the folder's own descriptor. Only the folder's own stack frame holds
+its values, so memory follows folder depth, not selection size.
+
+**Move.** A same-volume Move renames the source, which keeps every time and attribute
+with it. A Move across volumes copies each file and creates each folder as Copy does and
+gives them their values the same way, before each source is removed.
+
+**Links.** A link kept as a link (Preserve) is recreated without its own times or
+attributes, and no warning is raised; a followed link's target is copied and preserved as
+any file.
+
+**Warnings.** A source whose values cannot be read, or a copy or folder that cannot take
+them (a destination that refuses FILE_WRITE_ATTRIBUTES or `futimens`, a file server that
+refuses the call), keeps the copy as it is. The job counts it in
+`CopyProgress::metadata_not_preserved`, adds a note naming it (Copy details) and asks before
+its next step with a `CopyFailure` of `CopyErrorStage::PreservingMetadata`, without
+Retry: **Continue** (`CopyChoice::Skip`) goes on, **Skip all this warning type**
+(`SkipAllErrors`, scoped to the stage alone) goes on without asking again in the job, and
+Cancel job stops. Warnings are never errors: such a job ends Completed, shown as
+"Completed with warnings", with a line that counts them. A cancelled job raises none.
+
+**Filesystems.** The filesystem stores what it can: FAT and exFAT keep a modified time in
+2 s (FAT) or 10 ms (exFAT) steps, an access date without a time and Read-only, Hidden,
+System and Archive; NTFS and ReFS keep everything; ext4, XFS and Btrfs keep nanosecond
+access and modified times. The values are not read back, so such rounding is not a
+warning. A network share keeps what its server stores. A folder's access time is the one
+it had when the job read it: listing folders to total the job (discovery) updates it
+first where the filesystem records access on reading. NTFS with last-access updates on
+(`fsutil behavior query disablelastaccess`; "System Managed" turns them on for smaller
+volumes) moves a folder's access time on every listing, also one set a moment before
+(measured), so a copied folder gets the time of that listing; Linux `relatime` moves it
+when it is older than the folder's modified or change time. A file's access time is read
+before its first byte and is not affected. Another program that reads a copy afterwards
+(an indexer, a virus scanner) changes its access time as any reading does.
+
+**Cost.** Per file one metadata read of the source and one call (Windows) or two
+(`futimens`, `fchmod`; plus the `O_NOATIME` flag) on the copy; per created folder one
+read, and on Windows one reopen and one call. Native tests cover NTFS on Windows and ext4
+on Linux (`copy_preserve_tests.rs`, `transfer_preserve.rs`).
 
 ## Progressive selection feedback
 
@@ -1526,16 +1630,18 @@ then raises the limit again.
 
 ## Current limits and next stage
 
-Copy preserves verified content, with explicit required modified time as above.
-On Linux, Copy and cross-volume Move give each new file and folder the source's
+Copy preserves verified content, and times and attributes when the job preserves
+them ([preserved times and attributes](#preserved-times-and-attributes)); explicit
+required modified time is above. Otherwise, on Linux, Copy and cross-volume Move give
+each new file and folder the source's
 read, write and execute bits masked by the process umask, as `cp` without `-p`
 does: a file at publication, a folder once its contents were copied (it stays
 private until then). A source without modes, such as an archive entry, gets those
 of any new file or folder (0666 or 0777 masked by the umask). Set-user-ID,
 set-group-ID and sticky bits are not copied, and a merged existing folder keeps
 its permissions ([staging rules](../../SECURITY.md)).
-Remaining times/attributes, ownership, ACLs, extended attributes and alternate
-streams need their declared metadata capability matrix. Without an explicit link
+Ownership, ACLs, extended attributes, alternate streams, Linux creation times and a kept
+link's own times are not preserved. Without an explicit link
 policy (`CopyLinkPolicy::Reject`) existing source link/special entries are refused;
 the Copy/Move dialog always sends one, see [links](#links-in-copy-and-move).
 Special entries stay unsupported. A link cleanup failure or an uncertain link
@@ -1544,8 +1650,8 @@ publication (durability unconfirmed or recovery required) asks whether to go on
 Recursive directory Move uses the per-file proof and postorder empty-directory
 removal contract above. It does not infer descendant verification from root
 metadata. Skips retain ancestors; failures/cancellation preserve unfinished
-sources and earlier completed moves. Remaining directory metadata preservation
-needs its own declared postorder capability. Physical storage reclamation and
+sources and earlier completed moves. Folder times and attributes are applied in
+postorder as each created folder completes (above). Physical storage reclamation and
 atomic tree snapshots remain outside the contract.
 
 One native transfer takes at most 1,000,000 items ([selection sizes](#selection-sizes)),

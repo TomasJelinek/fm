@@ -734,6 +734,7 @@ fn archive_required_metadata_refuses_forged_option_without_native_access() {
             selected: Arc::default(),
             fallback: Some(EntryId(2)),
             destination: root.join("target"),
+            metadata: midnight_core::TransferMetadataPolicy::ContentOnly,
         }));
     assert!(!draft.metadata_available());
     let token = draft.token.clone();
@@ -747,6 +748,107 @@ fn archive_required_metadata_refuses_forged_option_without_native_access() {
     assert!(p.copies.draft.is_some());
     assert!(!p.copies.draft.as_ref().unwrap().error.is_empty());
     assert!(!p.has_live_operations());
+}
+
+/// "Preserve times and attributes" has no bound: a folder selection, which required
+/// modified time refuses, and archive members carry it to the backend.
+#[test]
+fn preserving_times_and_attributes_reaches_folders_and_archive_members() {
+    let (mut p, root) = loaded();
+    let navigation = begin(&mut p, PaneId::Left, root.to_str().unwrap());
+    finish(
+        &mut p,
+        PaneId::Left,
+        navigation,
+        vec![Entry::new(
+            EntryId(1),
+            root.join("folder"),
+            EntryKind::Directory,
+        )],
+    );
+    p.focus_display_row(PaneId::Left, 1);
+    p.request_copy_dialog(PaneId::Left, &|_| true);
+    let draft = p.copies.draft.as_ref().unwrap();
+    assert!(
+        !draft.metadata_available(),
+        "a folder cannot take required times"
+    );
+    let token = draft.token.clone();
+    let target = draft.destination.clone();
+    let queued = RefCell::new(Vec::new());
+    p.confirm_copy_dialog_metadata(
+        &token,
+        &target.to_string_lossy(),
+        TransferMetadataPolicy::PreserveTimesAndAttributes,
+        &|command| {
+            queued.borrow_mut().push(command);
+            true
+        },
+    );
+    let queued = queued.into_inner();
+    let [Command::EnqueueTransferWithMetadata(request)] = queued.as_slice() else {
+        panic!("one preserving request: {queued:?}");
+    };
+    assert_eq!(
+        request.metadata,
+        TransferMetadataPolicy::PreserveTimesAndAttributes
+    );
+    assert!(p.copies.draft.is_none());
+
+    p.request_copy_dialog(PaneId::Left, &|_| true);
+    let draft = p.copies.draft.as_mut().unwrap();
+    draft.input =
+        crate::presenter::copy_dialog::CopyDraftInput::Archive(Box::new(ArchiveCopyRequest {
+            start_policy: TransferStartPolicy::Immediate,
+            verification: midnight_core::TransferVerification::default(),
+            id: OperationId(0),
+            location: ArchiveLocation::unavailable(ArchiveAddress {
+                format: None,
+                provider: "fake.archive".into(),
+                container: root.join("source.zip"),
+                source_version: vec![1],
+                components: vec![],
+                nested: Vec::new(),
+            }),
+            entries: Arc::from([]),
+            view: Arc::default(),
+            selected: Arc::default(),
+            fallback: Some(EntryId(2)),
+            destination: root.join("target"),
+            metadata: TransferMetadataPolicy::ContentOnly,
+        }));
+    let token = draft.token.clone();
+    let queued = RefCell::new(Vec::new());
+    p.confirm_copy_dialog_metadata(
+        &token,
+        &target.to_string_lossy(),
+        TransferMetadataPolicy::PreserveTimesAndAttributes,
+        &|command| {
+            queued.borrow_mut().push(command);
+            true
+        },
+    );
+    let queued = queued.into_inner();
+    let [Command::EnqueueArchiveCopy(request)] = queued.as_slice() else {
+        panic!("one archive request: {queued:?}");
+    };
+    assert_eq!(
+        request.metadata,
+        TransferMetadataPolicy::PreserveTimesAndAttributes
+    );
+}
+
+/// Options › General keeps the dialog's starting choice; it is off by default, and an
+/// unsaved change in Options does not reach a dialog until OK.
+#[test]
+fn the_preserve_default_comes_from_options() {
+    let (mut p, _root) = loaded();
+    assert!(!p.copy_preserve_metadata());
+    p.change_copy_preserve_metadata(true, &|_| true);
+    assert!(p.preferences.values.copy_preserve_metadata);
+    assert!(p.copy_preserve_metadata());
+    p.change_copy_preserve_metadata(false, &|_| true);
+    assert!(!p.copy_preserve_metadata());
 }
 
 #[test]

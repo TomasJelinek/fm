@@ -139,6 +139,8 @@ pub(crate) struct Traversal {
 struct Source {
     mount: MountReference,
     member: Member,
+    /// The member's modified time as the archive records it.
+    recorded: Option<ArchiveTimestamp>,
     entry: TransferEntry,
     /// The member's path for progress (`TransferSource::display_path`): the archive's
     /// display path, the folders inside it and the member's name.
@@ -289,6 +291,7 @@ impl Source {
                 kind: node.kind,
                 size: node.size,
             },
+            recorded: node.modified,
             entry,
             shown,
             offset: 0,
@@ -301,6 +304,11 @@ impl Source {
 impl TransferSource for Source {
     fn virtual_identity(&self) -> Option<VirtualEntryId> {
         Some(self.member.id)
+    }
+    /// The member's modified time as the archive records it; its other times and its
+    /// attributes are unknown.
+    fn recorded_modified(&self) -> Option<ArchiveTimestamp> {
+        self.recorded
     }
     fn entry(&self) -> &TransferEntry {
         &self.entry

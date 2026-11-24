@@ -1,5 +1,6 @@
-//! `PanelChoices` presentation: Show hidden files and the Select/Deselect by mask
-//! dialog. The Presenter owns the choices; this bridge only mirrors and forwards.
+//! `PanelChoices` presentation: Show hidden files, the Copy/Move dialog's Preserve times
+//! and attributes default and the Select/Deselect by mask dialog. The Presenter owns the
+//! choices; this bridge only mirrors and forwards.
 use crate::{MainWindow, PanelChoices, Presenter, dialog_focus::restore_after_popup};
 use midnight_core::Command;
 use slint::{ComponentHandle, SharedString};
@@ -19,6 +20,12 @@ pub(crate) fn install(
     choices.on_show_hidden_files_changed(move |show| {
         act(&window, &presenter, None, |p| {
             p.change_show_hidden_files(show, sender.as_ref());
+        });
+    });
+    let (window, presenter, sender) = context.clone();
+    choices.on_copy_preserve_metadata_changed(move |enabled| {
+        act(&window, &presenter, None, |p| {
+            p.change_copy_preserve_metadata(enabled, sender.as_ref());
         });
     });
     let (window, presenter, sender) = context.clone();
@@ -76,6 +83,10 @@ pub(crate) fn refresh(main: &MainWindow, p: &Presenter) {
         });
     if choices.get_show_hidden_files() != show {
         choices.set_show_hidden_files(show);
+    }
+    let preserve = p.preferences.values.copy_preserve_metadata;
+    if choices.get_copy_preserve_metadata() != preserve {
+        choices.set_copy_preserve_metadata(preserve);
     }
     let dialog = &p.mask_dialog;
     let error = SharedString::from(dialog.error.as_str());

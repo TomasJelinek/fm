@@ -340,7 +340,11 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             S::WaitingForDecision => "Needs a decision",
             S::CancelRequested => "Cancelling",
             S::Cancelled => "Cancelled",
-            S::Completed if progress.closure.is_some() || progress.skipped > 0 => {
+            S::Completed
+                if progress.closure.is_some()
+                    || progress.skipped > 0
+                    || progress.metadata_not_preserved > 0 =>
+            {
                 "Completed with warnings"
             }
             S::Completed => "Completed",

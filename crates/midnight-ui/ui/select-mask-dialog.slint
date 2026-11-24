@@ -14,6 +14,9 @@ import { FallbackIcons } from "action-icons.slint";
 export global PanelChoices {
     in-out property <bool> show-hidden-files: true;
     callback show-hidden-files-changed(bool);
+    // Options › General › Preserve times and attributes: how the Copy/Move dialog starts.
+    in-out property <bool> copy-preserve-metadata;
+    callback copy-preserve-metadata-changed(bool);
     // An empty token means the mask dialog is closed; each opening has a new one.
     in-out property <string> mask-token;
     in-out property <bool> mask-select: true;

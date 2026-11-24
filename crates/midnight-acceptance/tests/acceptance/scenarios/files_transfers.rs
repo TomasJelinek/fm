@@ -7,9 +7,11 @@
 //! Copy keeps the verified content and exact name, and gives every file and new folder
 //! it creates, inside copied folders too, the source's read, write and execute bits
 //! masked by the process umask (never setuid, setgid or sticky; a new folder may inherit
-//! set-group-ID from its parent); "Preserve exact modified time" (at most 64 regular
-//! files) also keeps the modified time to the nanosecond. A same-volume Move is a native
-//! rename, so content, mode and times stay those of the moved entry.
+//! set-group-ID from its parent); "Preserve times and attributes" gives every copied file
+//! and folder its source's modified and accessed times exactly, on Windows also its
+//! creation time and Read-only, Hidden, System, Archive and Not content indexed, on Linux
+//! its permission bits without the umask. A same-volume Move is a native rename, so
+//! content, mode and times stay those of the moved entry.
 use crate::{
     Context,
     app::{App, Config},
@@ -50,6 +52,65 @@ fn mode_deviation(path: &str, source: &Facts, copy: &Facts, umask: u32) -> Optio
             source.mode, copy.mode
         )
     })
+}
+
+/// A source's times and attributes, read before the copy reads it (`fs::symlink_metadata`
+/// opens nothing for reading, so it does not move the access time itself).
+fn before_copy(path: &Path) -> Result<fs::Metadata, String> {
+    fs::symlink_metadata(path).map_err(|error| io_error(path, error))
+}
+
+/// What "Preserve times and attributes" promises (TRANSFERS.md, preserved times and
+/// attributes), against the source as it was before the copy (`before_copy`): the modified
+/// time exactly, and a file's access time from before the copy read it (reading it moves
+/// the source's own); on Windows also the creation time and the Read-only, Hidden, System,
+/// Archive and Not content indexed attributes; on Linux the permission bits, not masked by
+/// the umask. A folder's access time is not checked: listing it to total the job moves it
+/// first where the volume records access. `Some` describes a deviation.
+fn preserved_deviation(
+    label: &str,
+    wanted: &fs::Metadata,
+    copy: &Path,
+) -> Result<Option<String>, String> {
+    let found = fs::symlink_metadata(copy).map_err(|error| io_error(copy, error))?;
+    let mut differences = Vec::new();
+    let mut times = vec![("modified", wanted.modified(), found.modified())];
+    if !wanted.is_dir() {
+        times.push(("accessed", wanted.accessed(), found.accessed()));
+    }
+    #[cfg(windows)]
+    times.push(("created", wanted.created(), found.created()));
+    for (name, wanted, found) in times {
+        let (wanted, found) = (
+            wanted.map_err(|error| io_error(copy, error))?,
+            found.map_err(|error| io_error(copy, error))?,
+        );
+        if wanted != found {
+            differences.push(format!("{name} {found:?} instead of {wanted:?}"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const PRESERVED: u32 = 0x1 | 0x2 | 0x4 | 0x20 | 0x2000;
+        let (wanted, found) = (
+            wanted.file_attributes() & PRESERVED,
+            found.file_attributes() & PRESERVED,
+        );
+        if wanted != found {
+            differences.push(format!("attributes {found:#x} instead of {wanted:#x}"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let wanted = wanted.permissions().mode() & 0o777;
+        let found = found.permissions().mode() & 0o777;
+        if wanted != found {
+            differences.push(format!("mode {found:o} instead of {wanted:o}"));
+        }
+    }
+    Ok((!differences.is_empty()).then(|| format!("{label}: {}", differences.join(", "))))
 }
 
 /// [`mode_deviation`] of every entry of a copied tree (relative paths below `path`).
@@ -229,8 +290,8 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
         leave_both(&mut app)?;
     }
 
-    // Multi-selection into a subfolder: Ctrl+A (files only) with "Preserve exact
-    // modified time", destination typed into the dialog.
+    // Multi-selection into a subfolder: Ctrl+A (files only) with "Preserve times and
+    // attributes", destination typed into the dialog.
     let mut preserved = 0;
     for kind in KINDS {
         panel::enter(&mut app, left, kind)?;
@@ -250,12 +311,16 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
             },
         );
         let destination = into.join(kind);
+        let originals = files
+            .iter()
+            .map(|name| before_copy(&source.join(kind).join(name)))
+            .collect::<Result<Vec<_>, _>>()?;
         let run = support::transfer(
             &mut app,
             context,
             TransferSpec {
                 destination: Some(destination.as_path()),
-                preserve_time: true,
+                preserve: true,
                 shot: (kind == "text").then_some("copy-into-subfolder-dialog"),
                 ..TransferSpec::copy()
             },
@@ -267,28 +332,20 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
                     failures.push(error);
                 }
                 timings.add_for("multi-file F5 confirm to report", kind, run.elapsed);
-                for name in &files {
-                    let expected = facts(&source.join(kind).join(name))?;
-                    let found = facts(&destination.join(name));
-                    if let (Ok(found), Some(umask)) = (&found, umask) {
-                        deviations.extend(mode_deviation(
-                            &format!("{kind}/{name} into"),
-                            &expected,
-                            found,
-                            umask,
-                        ));
-                    }
-                    match found {
-                        Err(error) => failures.push(format!("{kind}/{name} into: {error}")),
-                        Ok(found) if found.content != expected.content => failures
-                            .push(format!("{kind}/{name} into: content {:?}", found.content)),
-                        Ok(found) if found.modified != expected.modified => {
-                            failures.push(format!(
-                                "{kind}/{name} into: modified {:?} instead of the preserved {:?}",
-                                found.modified, expected.modified
-                            ));
+                for (name, original) in files.iter().zip(&originals) {
+                    let from = source.join(kind).join(name);
+                    let to = destination.join(name);
+                    let deviation =
+                        preserved_deviation(&format!("{kind}/{name} into"), original, &to);
+                    let expected = facts(&from)?;
+                    match (facts(&to), deviation) {
+                        (Err(error), _) | (_, Err(error)) => {
+                            failures.push(format!("{kind}/{name} into: {error}"))
                         }
-                        Ok(_) => preserved += 1,
+                        (Ok(found), _) if found.content != expected.content => failures
+                            .push(format!("{kind}/{name} into: content {:?}", found.content)),
+                        (_, Ok(Some(deviation))) => failures.push(deviation),
+                        (Ok(_), Ok(None)) => preserved += 1,
                     }
                 }
                 // Completed roots are deselected.
@@ -332,6 +389,48 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
         }
     }
 
+    // The same tree with "Preserve times and attributes", typed into another folder: every
+    // folder keeps its source's times although the job wrote its contents after creating it.
+    let mut preserved_tree = 0;
+    let entries: Vec<String> = std::iter::once(String::new())
+        .chain(deep.keys().cloned())
+        .collect();
+    let originals = entries
+        .iter()
+        .map(|relative| before_copy(&source.join("deep").join(relative)))
+        .collect::<Result<Vec<_>, _>>()?;
+    panel::select_row(&mut app, left, "deep")?;
+    match support::transfer(
+        &mut app,
+        context,
+        TransferSpec {
+            destination: Some(into.as_path()),
+            preserve: true,
+            ..TransferSpec::copy()
+        },
+    ) {
+        Err(error) => failures.push(format!("F5 deep/ preserving: {error}")),
+        Ok(run) => {
+            if let Err(error) = support::completed(&run, "F5 deep/ preserving") {
+                failures.push(error);
+            }
+            timings.add_for("tree F5 preserving confirm to report", "deep", run.elapsed);
+            for (relative, original) in entries.iter().zip(&originals) {
+                let to = into.join("deep").join(relative);
+                match preserved_deviation(&format!("deep/{relative}"), original, &to) {
+                    Err(error) => failures.push(error),
+                    Ok(Some(deviation)) => failures.push(deviation),
+                    Ok(None) => preserved_tree += 1,
+                }
+            }
+            // Reading the copies' contents moves their access times: compare them last.
+            let differences = compare_trees(&deep, &tree_facts(&into.join("deep"))?, false);
+            if !differences.is_empty() {
+                failures.push(format!("the preserved deep/ tree differs: {differences:?}"));
+            }
+        }
+    }
+
     // The sources are untouched.
     let differences = compare_trees(&source_before, &tree_facts(&source)?, true);
     if !differences.is_empty() {
@@ -357,7 +456,7 @@ pub fn copy_every_kind(context: &mut Context) -> Result<(), String> {
         ),
     }
     context.note(format!(
-        "F5 copied {copied} entries one at a time (bytes, exact names and trees verified), the 12-level deep/ tree, and {preserved} files as per-folder multi-selections into subfolders with \"Preserve exact modified time\" (times equal to the nanosecond)"
+        "F5 copied {copied} entries one at a time (bytes, exact names and trees verified), the 12-level deep/ tree, {preserved} files as per-folder multi-selections into subfolders with \"Preserve times and attributes\" and the deep/ tree again with it ({preserved_tree} files and folders): times equal to the nanosecond (Windows: created, modified, accessed and the Read-only, Hidden, System, Archive and Not content indexed attributes; Linux: modified, accessed and the permission bits)"
     ));
     context.note(format!(
         "not promised, observed: {time_changes} plain copies got a new modified time"

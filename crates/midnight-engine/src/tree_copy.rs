@@ -649,6 +649,15 @@ impl TransferSource for LeasedSource {
     ) -> Result<Box<dyn TransferModifiedTimePin>, FsError> {
         self.source.prepare_modified_time(cancel)
     }
+    fn preserved_metadata(
+        &self,
+        cancel: &Cancellation,
+    ) -> Result<TransferPreservedMetadata, FsError> {
+        self.source.preserved_metadata(cancel)
+    }
+    fn recorded_modified(&self) -> Option<ArchiveTimestamp> {
+        self.source.recorded_modified()
+    }
     fn rewind_for_validation(
         &mut self,
         cancel: &Cancellation,
