@@ -289,6 +289,7 @@ fn child(
         });
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(context)));
     finished.store(true, Ordering::Release);
+    context.outcome.notes.extend(crate::timing::take_notes());
     let (status, message) = match &outcome {
         // A passing scenario's message says what it skipped, if anything.
         Ok(Ok(())) => ("PASS", context.outcome.message.clone()),

@@ -22,7 +22,7 @@
 use crate::{
     Context,
     app::{App, Config},
-    encode, input, panel, viewers_stage,
+    encode, input, panel, timing, viewers_stage,
     viewers_support::{self as support, Canvas, Failures, Viewing, clip, generated, millis, probe},
 };
 use i_slint_core::items::AccessibleRole;
@@ -215,7 +215,9 @@ fn run(context: &mut Context) -> Result<(), String> {
             failures.skip(subject.label, &reason);
             continue;
         }
-        match open(&mut app, subject) {
+        match timing::time(&format!("{}: open", subject.label), || {
+            open(&mut app, subject)
+        }) {
             Ok(viewing) => {
                 context.note(format!(
                     "latency\tscroll subject\t{}\t{}\t{}",
@@ -223,14 +225,16 @@ fn run(context: &mut Context) -> Result<(), String> {
                     viewing.latency.as_millis(),
                     clip(&viewing.status(), 80)
                 ));
-                exercise(
-                    &mut app,
-                    context,
-                    &failures,
-                    subject,
-                    &viewing,
-                    (&mut notches, &mut native),
-                );
+                timing::time(&format!("{}: checks", subject.label), || {
+                    exercise(
+                        &mut app,
+                        context,
+                        &failures,
+                        subject,
+                        &viewing,
+                        (&mut notches, &mut native),
+                    );
+                });
                 failures.check(
                     &format!("{}: close", subject.label),
                     viewing.close(&mut app),
@@ -284,9 +288,11 @@ fn run(context: &mut Context) -> Result<(), String> {
     ));
     failures.check(
         "horizontal scrollbar of a long line",
-        horizontal(&mut app, context),
+        timing::time("horizontal scrollbar", || horizontal(&mut app, context)),
     );
-    source_highlighting(&mut app, context, &failures);
+    timing::time("source highlighting", || {
+        source_highlighting(&mut app, context, &failures);
+    });
     failures.skip(
         "kinetic (touchpad) coasting",
         "not written yet: Slint's own PointerScrolled events carry no touchpad phases; the \
@@ -358,9 +364,13 @@ fn exercise(
     failures.check(&format!("{label}: scrollbar shown"), thumb_shown(viewing));
     failures.check(
         &format!("{label}: scrollbar drags land"),
-        sweep(app, context, subject, viewing),
+        timing::time(&format!("{label}: sweep"), || {
+            sweep(app, context, subject, viewing)
+        }),
     );
-    match wheel_travel(app, context, viewing, label) {
+    match timing::time(&format!("{label}: pixel deltas"), || {
+        wheel_travel(app, context, viewing, label)
+    }) {
         Ok(travel) => {
             notches.push((label.to_owned(), travel.0));
             failures.check(
@@ -372,23 +382,29 @@ fn exercise(
     }
     failures.check(
         &format!("{label}: keys"),
-        keys(app, context, subject, viewing),
+        timing::time(&format!("{label}: keys"), || {
+            keys(app, context, subject, viewing)
+        }),
     );
-    native_notch(app, context, failures, viewing, subject, native);
+    timing::time(&format!("{label}: native notches"), || {
+        native_notch(app, context, failures, viewing, subject, native);
+    });
     if subject.label == "large log" {
         failures.check(
             &format!("{label}: the system's wheel setting and reduced motion"),
-            wheel_settings(app, context, viewing),
+            timing::time("large log: wheel settings", || {
+                wheel_settings(app, context, viewing)
+            }),
         );
     }
     if subject.kind == Kind::Document {
         failures.check(
             &format!("{label}: new frames while the scrollbar is dragged"),
-            drag_frames(app, context, viewing),
+            timing::time("PDF: drag frames", || drag_frames(app, context, viewing)),
         );
         failures.check(
             &format!("{label}: sharp text at a typed {SHARP_ZOOM} % zoom"),
-            sharp_text(app, context, viewing),
+            timing::time("PDF: sharp text", || sharp_text(app, context, viewing)),
         );
     }
 }
@@ -1029,6 +1045,7 @@ fn measure(
 /// arrives, then resumes, is not cut short this way.
 fn settled_canvas(app: &mut App, viewing: &Viewing) -> Result<Canvas, String> {
     let started = Instant::now();
+    let _phase = timing::Span::new("probe: settled canvas");
     loop {
         let still = probe::still_canvas(app, viewing, STEP)?;
         probe::pause(app, Duration::from_millis(700));

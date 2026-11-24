@@ -259,6 +259,7 @@ pub fn drag(
     to: LogicalPosition,
     steps: u32,
 ) {
+    let _phase = crate::timing::Span::new("probe: drag");
     let button = PointerEventButton::Left;
     app.settle();
     window.dispatch_event(WindowEvent::PointerMoved { position: from });
@@ -394,6 +395,7 @@ pub const QUIET: Duration = Duration::from_millis(300);
 /// Run the viewer until it has no requested position pending, does not say it is
 /// loading one, and its positions held still for [`QUIET`].
 pub fn settle(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settled, String> {
+    let _phase = crate::timing::Span::new("probe: settle");
     let started = Instant::now();
     let mut last: Option<(f32, f32, f32)> = None;
     let mut since: Option<Instant> = None;
@@ -416,6 +418,9 @@ pub fn settle(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settl
         }
         last = Some(now);
         if since.is_some_and(|since| since.elapsed() >= QUIET) {
+            if let Some(since) = since {
+                crate::timing::add("probe: settle, until still", since - started);
+            }
             app.settle();
             return Ok(Settled {
                 position: now.0,
@@ -513,6 +518,7 @@ impl StatusWatch {
 /// Render the content until it holds still: the same pixels for [`QUIET`], with no
 /// position pending.
 pub fn still_canvas(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Canvas, String> {
+    let _phase = crate::timing::Span::new("probe: still canvas");
     app.settle();
     let started = Instant::now();
     let mut previous = None;

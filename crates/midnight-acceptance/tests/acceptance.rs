@@ -38,6 +38,8 @@ mod report;
 mod review;
 #[path = "acceptance/scenarios/mod.rs"]
 mod scenarios;
+#[path = "acceptance/timing.rs"]
+mod timing;
 #[path = "acceptance/tool.rs"]
 mod tool;
 #[path = "acceptance/tools_support.rs"]
@@ -420,6 +422,7 @@ fn run_one(
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut context)));
             let mut outcome = std::mem::take(&mut context.outcome);
+            outcome.notes.extend(timing::take_notes());
             match result {
                 Ok(Ok(())) => {
                     if outcome.status == Status::Pass && !outcome.flags.is_empty() {

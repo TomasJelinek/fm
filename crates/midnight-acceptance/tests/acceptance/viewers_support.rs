@@ -1548,6 +1548,7 @@ impl Viewing {
 
     /// Software-render the viewer: (width, height, pixels).
     pub fn render(&self) -> (usize, usize, Vec<slint::Rgb8Pixel>) {
+        let _phase = crate::timing::Span::new("viewer: render");
         super::app::render(&self.software)
     }
 

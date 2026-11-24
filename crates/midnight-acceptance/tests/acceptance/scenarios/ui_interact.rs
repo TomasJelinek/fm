@@ -196,6 +196,7 @@ fn ring_colour(frame: &Frame, area: inspect::Rect) -> Option<[u8; 3]> {
 /// dialog, Shift+Tab visits the stops in reverse, and every stop looks focused with an
 /// indicator of at least 3:1.
 pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
+    let _phase = crate::timing::Span::new("interact: focus checks");
     let mut issues = Vec::new();
     let software = target.software(app);
     let window = software.window();
@@ -379,6 +380,7 @@ pub fn focus_checks(app: &mut App, target: &Target) -> Vec<Issue> {
 /// pointer away: pixels that change between those two (a caret blinking, progress) are
 /// left out, so that only the hover's own change counts.
 pub fn hover_checks(app: &mut App, target: &Target) -> Vec<Issue> {
+    let _phase = crate::timing::Span::new("interact: hover checks");
     let mut issues = Vec::new();
     let software = target.software(app);
     let window = software.window();
@@ -475,6 +477,7 @@ fn tooltip_texts(window: &slint::Window) -> Vec<String> {
 
 /// Every icon-only button with a tooltip area shows a tooltip with text on hovering.
 pub fn tooltip_checks(app: &mut App, target: &Target) -> Vec<Issue> {
+    let _phase = crate::timing::Span::new("interact: tooltip checks");
     let mut issues = Vec::new();
     let software = target.software(app);
     let window = software.window();
@@ -632,6 +635,7 @@ fn windows_of(app: &App) -> Vec<Rc<MinimalSoftwareWindow>> {
 }
 
 fn state(app: &App, folders: &[PathBuf], skip: &[(usize, inspect::Rect)]) -> State {
+    let _phase = crate::timing::Span::new("interact: state sample");
     let windows = windows_of(app);
     let mut texts = Vec::new();
     let mut controls = Vec::new();
@@ -930,9 +934,12 @@ fn act(
     dismissal: bool,
 ) -> Result<Acted, String> {
     let baseline = titles(app);
+    let phase = crate::timing::Span::new("act: open");
     let target = (surface.open)(app)?;
     gate::pointer_out(target.window(app));
     app.idle(Duration::from_millis(150));
+    drop(phase);
+    let phase = crate::timing::Span::new("act: before the action");
     if button.is_none()
         && let Some(text) = surface.enter_text
     {
@@ -970,6 +977,8 @@ fn act(
         app.idle(Duration::from_millis(250));
         quiet = state(app, &surface.folders, &skip);
     }
+    drop(phase);
+    let phase = crate::timing::Span::new("act: after the action");
     match clicked {
         Some((x, y, w, h)) => input::click_at(
             target.window(app),
@@ -987,12 +996,16 @@ fn act(
             break;
         }
     }
+    drop(phase);
+    let phase = crate::timing::Span::new("act: dismissal wait");
     let extra = if dismissal {
         app.idle(Duration::from_millis(500));
         extra_surfaces(app, &baseline, what, surface.nested)
     } else {
         None
     };
+    drop(phase);
+    let _phase = crate::timing::Span::new("act: reset");
     (surface.reset)(app);
     Ok((found, extra, unsettled(&noisy, &quiet)))
 }
@@ -1017,6 +1030,7 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
                 outcome.issues.extend(hover_checks(app, &target));
                 outcome.issues.extend(tooltip_checks(app, &target));
             }
+            let _phase = crate::timing::Span::new("interact: Escape");
             let window = target.software(app);
             input::key(window.window(), Key::Escape);
             if !wait_closed(app, surface, &target, Duration::from_secs(3)) {

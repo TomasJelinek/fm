@@ -938,6 +938,7 @@ impl App {
     /// Apply every pending Engine event and repaint what changed, like idle frames of the
     /// event loop.
     pub fn settle(&mut self) {
+        let _phase = crate::timing::Span::new("app: settle");
         for _ in 0..4 {
             let mut consumed = false;
             for _ in 0..256 {

@@ -18,7 +18,7 @@ use crate::{
         ui_gate::{self as gate, Target},
         ui_interact::{self as interact, Surface},
     },
-    tools_support, viewers_stage,
+    timing, tools_support, viewers_stage,
 };
 use midnight_core::PaneId;
 use midnight_ui::{FileListPresentation, HotPathsPresentation};
@@ -134,6 +134,7 @@ fn go_to(app: &mut App, pane: PaneId, folder: &Path) -> Result<(), String> {
 
 /// Back to plain browsing on freshly restored scratch folders.
 fn restore(app: &mut App, scratch: &Scratch) {
+    let _phase = timing::Span::new("dialogs: restore");
     files_support::dismiss_all(app);
     app.idle(Duration::from_millis(150));
     files_support::dismiss_all(app);
@@ -812,13 +813,16 @@ fn body(context: &mut Context) -> Result<(), String> {
     issues.extend(interact::tooltip_checks(&mut app, &Target::Main));
     gate::record(context, &shot_main, "main", issues);
     for spec in SPECS {
+        let _surface = timing::Span::new(format!("surface {}", spec.name));
         restore(&mut app, &scratch);
         // A screenshot with the static and contrast checks first.
         let shot = format!("dialogs-{}", spec.name);
         let opened = (spec.open)(&mut app);
         match opened {
             Ok(target) => {
-                gate::capture(&mut app, context, &target, spec.name, &shot, spec.name);
+                timing::time("dialogs: capture", || {
+                    gate::capture(&mut app, context, &target, spec.name, &shot, spec.name);
+                });
             }
             Err(error) => {
                 gate::record(
