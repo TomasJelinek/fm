@@ -609,7 +609,7 @@ fn chart_explanation_snapshots() {
 
 /// Only the "i" button above the chart's top right corner explains the chart: the
 /// chart shows no tooltip; hovering the button shows the explanation as a tooltip,
-/// and focusing or clicking it opens the same text without moving anything.
+/// and clicking it (or Enter once focused) opens the same text without moving anything.
 #[test]
 fn only_the_info_button_above_the_chart_shows_its_explanation() {
     let mut test = ui::TestUi::new();

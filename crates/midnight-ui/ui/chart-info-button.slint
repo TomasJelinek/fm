@@ -2,9 +2,11 @@ import { Theme } from "theme.slint";
 import { TipBody } from "controls.slint";
 
 // A small "i" button that alone explains a chart: hovering it shows the shared
-// tooltip, and Tab to it, a click, Enter or Space opens the same text below it,
-// right-aligned with the chart, until the next click anywhere or focus leaving it.
-// The chart itself shows nothing on hover.
+// tooltip, and a click, Enter or Space opens the same text below it, right-aligned
+// with the chart, until the next click anywhere or focus leaving it. Tab only focuses
+// it: an explanation that opened on Tab would be a popup taking the keyboard and the
+// pointer, so Tab could not go on through the dialog. The chart itself shows nothing
+// on hover.
 export component ChartInfoButton inherits Rectangle {
     in property <string> text;
     // The width of the opened explanation: at most the chart's width, so that it
@@ -27,11 +29,7 @@ export component ChartInfoButton inherits Rectangle {
             }
             reject
         }
-        // Tab opens it, as hovering shows it; leaving it closes it, but not for the
-        // popup that opening it shows.
-        focus-gained(reason) => {
-            if reason == FocusReason.tab-navigation { root.open(); }
-        }
+        // Leaving it closes it, but not for the popup that opening it shows.
         focus-lost(reason) => {
             if reason != FocusReason.popup-activation { details.close(); }
         }

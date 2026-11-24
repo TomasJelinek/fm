@@ -536,7 +536,8 @@ The chart itself shows no tooltip. Its explanation (what Write, Verify, Deleted 
 Renamed measure, the time axis and the scale) belongs to a small "i" button at the
 right end of the legend above the chart (`ChartInfoButton`, accessible name "Chart
 details", the text also its accessible description): hovering it shows the shared
-tooltip; Tab to it, a click, Enter or Space opens the same text in a popup below it,
+tooltip; a click, or Enter or Space once Tab has focused it, opens the same text in a
+popup below it (Tab alone only focuses it, so Tab keeps moving through the dialog),
 right-aligned with the chart and at most as wide as the chart, until the next click
 anywhere or focus leaving the button closes it. Opening it moves nothing.
 
