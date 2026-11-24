@@ -7,6 +7,8 @@ mod admission;
 mod admission_tests;
 mod appearance;
 #[cfg(test)]
+mod close_release_tests;
+#[cfg(test)]
 mod external_outcome_tests;
 #[cfg(test)]
 mod external_retry_tests;
@@ -66,9 +68,13 @@ type NativeObserver =
     Rc<RefCell<dyn FnMut(&slint::winit_030::winit::event::WindowEvent) -> EventResult>>;
 pub type FontListener = Rc<dyn Fn(String)>;
 
+/// The open comparison windows of one manager (at most two), shared weakly with each
+/// window so that a closed one can leave the list (`OpenWindow::release`).
+type OpenWindows = RefCell<Vec<Rc<OpenWindow>>>;
+
 pub struct ComparatorWindows {
     service: Service,
-    windows: RefCell<Vec<Rc<OpenWindow>>>,
+    windows: Rc<OpenWindows>,
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
     appearance: RefCell<Option<appearance::Presentation>>,
@@ -79,11 +85,14 @@ pub struct ComparatorWindows {
 /// One comparison window. It arms no timer while idle (Slint's own text cursor still
 /// blinks in a focused file field): the worker's outputs arrive through `output-ready`,
 /// geometry through `geometry-changed`, and the batch timer runs only while inputs arrive
-/// or wait for room in the queue of a running worker.
+/// or wait for room in the queue of a running worker. Closing it releases it, its
+/// component and its session on the next turn of the event loop (`release`).
 struct OpenWindow {
     window: ComparatorWindow,
     session: Session,
     me: std::rc::Weak<OpenWindow>,
+    /// The manager's list of open windows, which a closed window leaves.
+    owner: RefCell<std::rc::Weak<OpenWindows>>,
     /// Paces input batches and retries inputs the full session queue refused.
     batch: Timer,
     /// Polls the mailbox, only on a platform whose event loop the worker cannot wake.
@@ -166,6 +175,7 @@ impl OpenWindow {
             window,
             session,
             me: me.clone(),
+            owner: RefCell::new(std::rc::Weak::new()),
             batch: Timer::default(),
             poll: Timer::default(),
             closed: Cell::new(false),
@@ -358,7 +368,33 @@ impl OpenWindow {
             *self.surfaces.borrow_mut() = images::Surfaces::default();
             self.window.set_accessible_text("".into());
             let _ = self.window.hide();
+            self.release();
         }
+    }
+    /// Take this closed window out of its manager's list on the next turn of the event
+    /// loop, which drops it: its component, its timers and its session, whose mailbox,
+    /// with any output the worker left in it, is dropped on a blocking thread
+    /// (`Session`'s `Drop`). Not at once: closing runs in the window's own callbacks (its
+    /// Close button, the title bar), and a component must not be dropped inside one.
+    /// Until then the window is hidden and counts as closed, so it never holds one of the
+    /// two places.
+    fn release(&self) {
+        let (owner, me) = (self.owner.borrow().clone(), self.me.clone());
+        Timer::single_shot(Duration::ZERO, move || {
+            let Some(windows) = owner.upgrade() else {
+                return;
+            };
+            let released: Vec<Rc<OpenWindow>> = {
+                let mut windows = windows.borrow_mut();
+                let (released, open) = std::mem::take(&mut *windows)
+                    .into_iter()
+                    .partition(|open| std::ptr::eq(Rc::as_ptr(open), me.as_ptr()));
+                *windows = open;
+                released
+            };
+            // Dropped with no borrow of the list held.
+            drop(released);
+        });
     }
 }
 
@@ -366,7 +402,7 @@ impl ComparatorWindows {
     pub fn new(service: Service) -> Self {
         Self {
             service,
-            windows: RefCell::new(Vec::new()),
+            windows: Rc::default(),
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
             appearance: RefCell::new(None),
@@ -504,6 +540,7 @@ impl ComparatorWindows {
                 });
         }
         open.window.invoke_focus_content();
+        *open.owner.borrow_mut() = Rc::downgrade(&self.windows);
         self.windows.borrow_mut().push(open);
         Ok(weak)
     }

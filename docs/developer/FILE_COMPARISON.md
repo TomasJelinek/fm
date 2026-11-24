@@ -325,8 +325,12 @@ anchored pass emits about a million operations) aligns in about a second
 
 The same native comparator window hosts the File A / File B form and the resulting
 text, image or byte comparison. It retains main-window placement/size, native resizing/moving,
-Escape and the close button. Each input has Browse; Enter submits both nonempty
-fields. Short forms center within the window, scroll at 320×200 and keep Compare and
+Escape and the close button. At most two comparator windows are open. A closed one is
+hidden at once and released on the next turn of the event loop (`OpenWindow::release`),
+not inside the callback that closed it: its component, timers and session go, and the
+session's mailbox, with any output the worker left in it, is dropped on a blocking
+thread ([record](../verification/2026-11-24-ui-perf-fixes.md#closed-comparator-windows)).
+Each input has Browse; Enter submits both nonempty fields. Short forms center within the window, scroll at 320×200 and keep Compare and
 Cancel outside the scrolling area. File fields own their editing/navigation keys.
 
 The main branch's wake-driven path avoids idle polling on a platform with an
