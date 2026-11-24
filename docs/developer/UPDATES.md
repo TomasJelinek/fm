@@ -60,8 +60,9 @@ That option is on by default because every release so far (0.1.0, 0.5.0 and 0.5.
 a GitHub pre-release: with it off, no current user would be offered anything until the
 first stable release. Users who want only stable releases turn it off.
 
-The startup check runs on the update thread 5 seconds after the window shows with the
-user's settings, never before or during startup, and only when "Check for updates at
+The startup check runs on the update thread 5 seconds after the window shows, once the
+user's settings are read (it is skipped in a run whose settings are not read within two
+minutes), never before or during startup, and only when "Check for updates at
 startup" is on. It asks at most once in 20 hours (`update-state.json` records the last
 answered check). It shows nothing unless it finds a version the user has not skipped:
 a failure leaves the button idle and backs off for 30 minutes, doubling up to a day.
@@ -210,8 +211,15 @@ version reads the same settings and restores the same panels and tabs; explicit
 ## Startup check and rollback
 
 The new version holds the instance lock and finds `pending.json` naming its own
-version. Once its window shows with the user's settings read, it writes
-`.update/confirmed`. The updater waits up to 180 s:
+version. Once its main window shows and its event loop runs, it writes
+`.update/confirmed`: the new version starts and is usable. Reading the user's settings
+does not hold the confirmation back; a read that is refused or slower than the
+updater's wait leaves the defaults in place, and the startup check (which follows the
+user's choices) waits for the settings for up to two minutes after the window shows
+and is skipped in that run if they have not arrived. The 500 ms timer that drives both
+stops once the start is confirmed and the startup check ran or was skipped
+(`StartupSchedule` in `crates/midnight-explorer/src/updates.rs`). The updater waits up
+to 180 s:
 
 - **Confirmed:** it removes the backup and `pending.json`, writes `result.json` and
   exits. The new version's dialog says "Updated to version Y."; a later start does not

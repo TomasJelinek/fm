@@ -14,7 +14,7 @@
 //!    are renames on one volume; a failed step moves everything back;
 //! 4. starts the new executable with the original arguments and working folder, and
 //!    waits for its startup check: the new version writes `.update/confirmed` once its
-//!    window shows with the user's settings and panels restored;
+//!    main window shows and its event loop runs (its settings need not be read yet);
 //! 5. on confirmation removes the backup; when the new version exits before confirming,
 //!    moves its files to `.update/failed/`, restores the backup and starts the previous
 //!    version again; when neither happens in time, keeps the backup and leaves the
@@ -542,7 +542,7 @@ pub fn startup(installation: &Path, version: &str) -> StartupReport {
     report
 }
 
-/// The new version's startup check passed: its window shows with the user's settings.
+/// The new version's startup check passed: its main window shows and its event loop runs.
 pub fn confirm(installation: &Path, version: &str) -> io::Result<()> {
     let work = work_folder(installation);
     let path = work.join("confirmed");

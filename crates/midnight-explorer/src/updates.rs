@@ -14,7 +14,7 @@ use midnight_update::{
 };
 use slint::ComponentHandle;
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     ffi::OsString,
     path::{Path, PathBuf},
     rc::Rc,
@@ -24,6 +24,77 @@ use std::{
 
 /// The startup check waits this long after the window shows.
 const STARTUP_DELAY: Duration = Duration::from_secs(5);
+/// A run whose settings have not been read this long after its window showed makes no
+/// startup check (the check follows the user's choice, which only the settings hold).
+const PREFERENCES_WAIT: Duration = Duration::from_secs(120);
+
+/// The startup work of the update service, ticked by a timer from the event loop: the
+/// new version's confirmation and the startup check.
+struct StartupSchedule {
+    /// The update in progress whose start this run confirms: its version and folder.
+    confirm: Option<(String, PathBuf)>,
+    /// False for smoke and probe runs, which never check on their own.
+    automatic: bool,
+    shown_at: Option<Instant>,
+    /// The startup check ran, or will not run in this process.
+    checked: bool,
+}
+
+/// What one tick asks of the update service.
+#[derive(Debug, Default)]
+struct Tick {
+    /// Confirm this version's start in this installation folder.
+    confirm: Option<(String, PathBuf)>,
+    /// Run the startup check with these choices.
+    check: Option<midnight_core::UpdatePreferences>,
+    /// Nothing remains to do: the timer stops.
+    stop: bool,
+}
+
+impl StartupSchedule {
+    fn new(confirm: Option<(String, PathBuf)>, automatic: bool) -> Self {
+        Self {
+            confirm,
+            automatic,
+            shown_at: None,
+            checked: false,
+        }
+    }
+    /// `revealed`: the main window shows. A tick runs on the event loop, so the new
+    /// version then runs and is usable: it confirms its start whether or not its settings
+    /// have been read (a refused or slow read leaves the defaults in place). A process
+    /// that ends before its window shows never confirms, and the updater rolls back.
+    fn tick(
+        &mut self,
+        now: Instant,
+        revealed: bool,
+        preferences: Option<midnight_core::UpdatePreferences>,
+    ) -> Tick {
+        if !revealed {
+            return Tick::default();
+        }
+        let confirm = self.confirm.take();
+        let shown = *self.shown_at.get_or_insert(now);
+        let waited = now.saturating_duration_since(shown);
+        let mut check = None;
+        if !self.checked {
+            match preferences {
+                _ if !self.automatic => self.checked = true,
+                Some(updates) if waited >= STARTUP_DELAY => {
+                    self.checked = true;
+                    check = updates.check_at_startup.then_some(updates);
+                }
+                None if waited >= PREFERENCES_WAIT => self.checked = true,
+                _ => {}
+            }
+        }
+        Tick {
+            confirm,
+            check,
+            stop: self.checked,
+        }
+    }
+}
 
 /// What the process learns about updates before its window exists.
 #[derive(Clone)]
@@ -242,8 +313,7 @@ impl Updates {
         confirm: Option<(String, PathBuf)>,
     ) {
         let this = Rc::downgrade(self);
-        let shown_at = Cell::new(None::<Instant>);
-        let confirm = RefCell::new(confirm);
+        let schedule = RefCell::new(StartupSchedule::new(confirm, automatic));
         self._timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(500),
@@ -251,36 +321,28 @@ impl Updates {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
-                let Some(updates) = presenter
+                let preferences = presenter
                     .try_borrow()
                     .ok()
-                    .and_then(|p| p.loaded_update_preferences())
-                else {
-                    return;
-                };
-                if !revealed() {
-                    return;
-                }
-                // The new version's startup check: its window shows with the user's
-                // settings, panels and tabs restored.
-                if let Some((version, folder)) = confirm.borrow_mut().take() {
+                    .and_then(|p| p.loaded_update_preferences());
+                let tick = schedule
+                    .borrow_mut()
+                    .tick(Instant::now(), revealed(), preferences);
+                if let Some((version, folder)) = tick.confirm {
                     std::thread::spawn(move || {
                         if let Err(error) = apply::confirm(&folder, &version) {
                             eprintln!("Midnight Explorer: cannot confirm the update: {error}");
                         }
                     });
                 }
-                let shown = shown_at.get().unwrap_or_else(Instant::now);
-                shown_at.set(Some(shown));
-                if shown.elapsed() < STARTUP_DELAY {
-                    return;
-                }
-                if automatic && updates.check_at_startup {
+                if let Some(updates) = tick.check {
                     this.controller
                         .borrow()
                         .startup_check(updates.previews, STARTUP_INTERVAL);
                 }
-                this._timer.stop();
+                if tick.stop {
+                    this._timer.stop();
+                }
             },
         );
     }
@@ -309,4 +371,164 @@ pub(crate) fn start_updater(
     .map_err(|error| format!("The update cannot be started: {error}"))?;
     apply::start_updater(&updater, &request)
         .map_err(|error| format!("The updater cannot be started: {error}"))
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use midnight_core::UpdatePreferences;
+
+    const TICK: Duration = Duration::from_millis(500);
+    const VERSION: &str = "0.5.2";
+
+    /// An installation folder with an update in progress.
+    fn installation(name: &str) -> PathBuf {
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../_build/tmp")
+            .join(format!("update-start-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(midnight_update::install::work_folder(&folder)).unwrap();
+        folder
+    }
+
+    /// Whether the updater, which reads `confirmed` while it waits, sees this start
+    /// confirmed.
+    fn confirmed(folder: &Path) -> bool {
+        std::fs::read_to_string(midnight_update::install::work_folder(folder).join("confirmed"))
+            .is_ok_and(|text| text.trim() == VERSION)
+    }
+
+    /// Ticks the timer every 500 ms for `span`, as the event loop does: the window shows
+    /// from `shown` on and the settings are read from `read` on (`None`: never). Returns
+    /// when the start was confirmed, when the startup check ran and when the timer
+    /// stopped, as times since the first tick.
+    struct Run {
+        confirmed: Option<Duration>,
+        checked: Option<Duration>,
+        stopped: Option<Duration>,
+    }
+    fn simulate(
+        folder: &Path,
+        automatic: bool,
+        span: Duration,
+        shown: Option<Duration>,
+        read: Option<Duration>,
+    ) -> Run {
+        let start = Instant::now();
+        let mut schedule =
+            StartupSchedule::new(Some((VERSION.into(), folder.to_owned())), automatic);
+        let mut result = Run {
+            confirmed: None,
+            checked: None,
+            stopped: None,
+        };
+        let mut elapsed = Duration::ZERO;
+        while elapsed <= span {
+            let preferences = read
+                .filter(|read| elapsed >= *read)
+                .map(|_| UpdatePreferences {
+                    check_at_startup: true,
+                    previews: true,
+                });
+            let revealed = shown.is_some_and(|shown| elapsed >= shown);
+            let tick = schedule.tick(start + elapsed, revealed, preferences);
+            if let Some((version, installation)) = tick.confirm {
+                assert!(result.confirmed.is_none(), "confirmed twice");
+                apply::confirm(&installation, &version).unwrap();
+                result.confirmed = Some(elapsed);
+            }
+            if tick.check.is_some() {
+                assert!(result.checked.is_none(), "checked twice");
+                result.checked = Some(elapsed);
+            }
+            if tick.stop {
+                result.stopped = Some(elapsed);
+                break;
+            }
+            elapsed += TICK;
+        }
+        result
+    }
+
+    #[test]
+    fn a_settings_read_slower_than_the_confirmation_window_does_not_roll_the_update_back() {
+        let window = apply::Timings::default().confirm;
+        let folder = installation("slow-settings");
+        // The window shows after the startup deadline; the settings arrive after the
+        // updater stopped waiting.
+        let late = window + Duration::from_secs(20);
+        let run = simulate(
+            &folder,
+            true,
+            late * 2,
+            Some(Duration::from_secs(10)),
+            Some(late),
+        );
+        let at = run.confirmed.expect("the start was never confirmed");
+        assert!(at <= Duration::from_secs(10) + TICK, "{at:?}");
+        assert!(at < window);
+        assert!(confirmed(&folder));
+        // Settings that arrive this late skip the startup check of this run.
+        assert_eq!(run.checked, None);
+        assert_eq!(
+            run.stopped,
+            Some(Duration::from_secs(10) + PREFERENCES_WAIT)
+        );
+        let _ = std::fs::remove_dir_all(&folder);
+        // Read within the wait, they decide the startup check as before.
+        let folder = installation("late-settings");
+        let read = Duration::from_secs(60);
+        let run = simulate(
+            &folder,
+            true,
+            late,
+            Some(Duration::from_secs(10)),
+            Some(read),
+        );
+        assert_eq!(run.confirmed, Some(Duration::from_secs(10)));
+        assert_eq!(run.checked, Some(read));
+        assert_eq!(run.stopped, Some(read));
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_start_whose_window_never_shows_stays_unconfirmed_and_rolls_back() {
+        let folder = installation("never-shown");
+        let window = apply::Timings::default().confirm;
+        let run = simulate(&folder, true, window * 2, None, Some(Duration::ZERO));
+        assert_eq!(run.confirmed, None);
+        assert_eq!(run.checked, None);
+        // The updater finds no confirmation: when this process exits it rolls back.
+        assert!(!confirmed(&folder));
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn the_timer_stops_once_confirmed_even_when_the_settings_never_arrive() {
+        let folder = installation("no-settings");
+        let run = simulate(
+            &folder,
+            true,
+            Duration::from_secs(3600),
+            Some(Duration::ZERO),
+            None,
+        );
+        assert_eq!(run.confirmed, Some(Duration::ZERO));
+        assert_eq!(run.checked, None);
+        assert_eq!(run.stopped, Some(PREFERENCES_WAIT));
+        // A run that never checks on its own stops as soon as it confirmed.
+        let run = run_manual(&folder);
+        assert_eq!(run.stopped, Some(Duration::ZERO));
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    fn run_manual(folder: &Path) -> Run {
+        simulate(
+            folder,
+            false,
+            Duration::from_secs(60),
+            Some(Duration::ZERO),
+            None,
+        )
+    }
 }
