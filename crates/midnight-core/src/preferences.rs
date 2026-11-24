@@ -504,7 +504,7 @@ pub struct UserPreferences {
     pub foreign_settings: Arc<Vec<crate::ForeignSetting>>,
 }
 
-/// Options › General › Updates. Both are on by default; settings from before schema 39
+/// Options › General › Updates. Both are on by default; settings from before schema 40
 /// read as the defaults, so existing users get the startup check too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UpdatePreferences {

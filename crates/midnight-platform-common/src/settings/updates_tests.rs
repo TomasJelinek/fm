@@ -22,7 +22,7 @@ fn both_choices_are_on_by_default_and_need_no_new_schema() {
 }
 
 #[test]
-fn settings_from_before_schema_39_turn_the_startup_check_on() {
+fn settings_from_before_schema_40_turn_the_startup_check_on() {
     // A schema 38 file (a wheel speed choice) has no update choices.
     let schema_38 = stored(&UserPreferences {
         wheel_speed: WheelSpeed::Fast,
