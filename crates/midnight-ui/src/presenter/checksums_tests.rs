@@ -892,6 +892,68 @@ fn listed_files_wait_for_their_rows_in_reading_order_and_leave_with_the_run() {
     assert_eq!(p.checksums.sessions[&id].pending_count(), 0);
 }
 
+/// A listed file gone before it is read, and the files of a folder gone by then, never
+/// get a row: the files read after them still leave the waiting list as their rows come,
+/// and the gone files stop waiting once reading is well past them.
+#[test]
+fn files_that_never_get_a_row_do_not_keep_later_files_waiting() {
+    let (mut p, id) = setup(&|_| true);
+    let generation = p.checksums.sessions[&id].generation;
+    let root = std::env::temp_dir();
+    let event = |update| {
+        Event::Checksum(Box::new(ChecksumEvent {
+            job: id,
+            generation,
+            update,
+        }))
+    };
+    // f0000 is deleted after the listing; gone/ (f0100..f0299) is deleted too.
+    let listed_names: Vec<String> = (0..1_000)
+        .map(|index| {
+            if (100..300).contains(&index) {
+                format!("gone/f{index:04}")
+            } else {
+                format!("f{index:04}")
+            }
+        })
+        .collect();
+    let all: Vec<&str> = listed_names.iter().map(String::as_str).collect();
+    p.apply(event(ChecksumUpdate::Planned(listed(&root, &all[..600]))));
+    p.apply(event(ChecksumUpdate::Planned(listed(&root, &all[600..]))));
+    let row =
+        |name: &str, id: u64| result_row(id, Path::new(name), ChecksumRowState::Calculated, &[]);
+    let read: Vec<&str> = all
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 0 && !(100..300).contains(index))
+        .map(|(_, name)| *name)
+        .collect();
+    // The reading pass, in listing order, with one row of an entry nobody listed.
+    let mut next_id = 1;
+    for names in read.chunks(50) {
+        let mut rows: Vec<_> = names
+            .iter()
+            .map(|name| {
+                next_id += 1;
+                row(name, next_id - 1)
+            })
+            .collect();
+        if next_id == 51 {
+            rows.push(row("link", 10_000));
+        }
+        p.apply(event(ChecksumUpdate::Batch(chunk(&root, rows))));
+    }
+    let s = &p.checksums.sessions[&id];
+    assert_eq!(s.rows().len(), read.len() + 1);
+    assert_eq!(
+        s.pending().count(),
+        0,
+        "every file read has its row and no other file is still read"
+    );
+    assert_eq!(s.pending_count(), 0);
+    assert_eq!(s.pending_at(0), None);
+}
+
 #[test]
 fn copy_writes_the_lines_a_saved_checksum_file_has() {
     let commands = std::cell::RefCell::new(Vec::new());

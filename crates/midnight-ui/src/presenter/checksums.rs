@@ -1,5 +1,6 @@
 //! Captured checksum sessions. Enumeration, hashing, export and clipboard I/O stay in the engine.
 use super::*;
+use std::hash::BuildHasher as _;
 
 mod events;
 mod output;
@@ -82,15 +83,17 @@ pub(crate) struct ChecksumSession {
     copyable: selection::Copyable,
 }
 
-/// How far ahead of the next waiting file a row's file is looked for among the listed
-/// ones. Rows come in listing order, apart from rows of entries the listing leaves out
-/// (an unreadable folder, a link): those match no listed file, and a file listed but
-/// gone by the time it is read never gets a row. Only matching effort is bounded: an
-/// unmatched row is a result like any other.
+/// How far from the reading position a row's file is looked for among the listed ones
+/// before the listing is searched by name. Rows come in listing order, apart from rows
+/// of entries the listing leaves out (an unreadable folder, a link): those match no
+/// listed file. A file listed but gone by the time it is read never gets a row, nor do
+/// the files of a folder that is unreadable or gone by then. A listed file this far
+/// behind the reading position no longer waits: the reading pass does not go back.
 const LISTED_LOOKAHEAD: usize = 64;
 
-/// Listed files, as the engine sent them, and which of them already have a row. Rows
-/// normally arrive in listing order, so the waiting files are the tail after `first`.
+/// Listed files, as the engine sent them, and which of them already have a row (or no
+/// longer wait for one). Rows normally arrive in listing order, so the waiting files are
+/// a few near the reading position, then every file after it.
 #[derive(Default)]
 pub(crate) struct Planned {
     chunks: Vec<Arc<ChecksumPlanned>>,
@@ -101,8 +104,16 @@ pub(crate) struct Planned {
     finished: usize,
     /// No listed file before this one waits.
     first: usize,
-    /// Files at or after `first` that already have a row.
+    /// One past the furthest listed file with a row: every file from here on waits.
+    /// `first <= next` and `next - first <= LISTED_LOOKAHEAD`, unless all are done.
+    next: usize,
+    /// Files in `first..next` that no longer wait.
     later_done: usize,
+    /// The waiting files' places by the hash of their names, built when a row is not
+    /// found near the reading position (a gap in the listing, or a row for an entry the
+    /// listing left out); then every later row costs one lookup, never a scan.
+    by_name: Option<HashMap<u64, usize>>,
+    hasher: std::hash::RandomState,
 }
 
 impl Planned {
@@ -114,6 +125,13 @@ impl Planned {
             self.len += planned.files.len();
             self.chunks.push(planned.clone());
             self.done.resize(self.len, false);
+            if let Some(by_name) = self.by_name.as_mut() {
+                for (offset, file) in planned.files.iter().enumerate() {
+                    by_name
+                        .entry(self.hasher.hash_one(&*file.name))
+                        .or_insert(start + offset);
+                }
+            }
         }
         start..self.len
     }
@@ -128,57 +146,94 @@ impl Planned {
     pub(crate) fn base(&self) -> Option<&Path> {
         self.chunks.first().map(|chunk| chunk.base.as_ref())
     }
+    fn waits_as(&self, index: usize, name: &Path) -> bool {
+        !self.done[index] && self.file(index).is_some_and(|file| *file.name == *name)
+    }
+    /// The waiting file named `name`: near the reading position, else by name.
+    fn find(&mut self, name: &Path) -> Option<usize> {
+        let near = self.first.max(self.next.saturating_sub(LISTED_LOOKAHEAD))
+            ..self.len.min(self.next.saturating_add(LISTED_LOOKAHEAD));
+        if let Some(index) = near.into_iter().find(|index| self.waits_as(*index, name)) {
+            return Some(index);
+        }
+        let hash = self.hasher.hash_one(name);
+        if self.by_name.is_none() {
+            let mut by_name = HashMap::with_capacity(self.len - self.first);
+            for index in (self.first..self.len).filter(|index| !self.done[*index]) {
+                if let Some(file) = self.file(index) {
+                    by_name
+                        .entry(self.hasher.hash_one(&*file.name))
+                        .or_insert(index);
+                }
+            }
+            self.by_name = Some(by_name);
+        }
+        // A hash shared by two names finds only the first; the other is then
+        // matched near the reading position, or waits until the run ends.
+        let index = *self.by_name.as_ref()?.get(&hash)?;
+        self.waits_as(index, name).then_some(index)
+    }
     /// A row for `name` arrived: the place of the listed file it finishes, if any.
-    fn finished(&mut self, name: &Path) -> Option<usize> {
-        let index = (self.first..self.len.min(self.first + LISTED_LOOKAHEAD))
-            .filter(|index| !self.done[*index])
-            .find(|index| self.file(*index).is_some_and(|file| *file.name == *name))?;
+    /// `abandoned` is told the place of each listed file that now waits no longer
+    /// because reading went on too far past it.
+    fn finished(&mut self, name: &Path, abandoned: &mut dyn FnMut(usize)) -> Option<usize> {
+        let index = self.find(name)?;
         self.done[index] = true;
         self.finished += 1;
+        // Files skipped on the way to this one still wait, before the new `next`.
         self.later_done += 1;
-        while self.done.get(self.first).copied().unwrap_or(false) {
+        self.next = self.next.max(index + 1);
+        while self.first < self.next
+            && (self.done[self.first] || self.first + LISTED_LOOKAHEAD < self.next)
+        {
+            if self.done[self.first] {
+                self.later_done -= 1;
+            } else {
+                self.done[self.first] = true;
+                self.finished += 1;
+                abandoned(self.first);
+            }
             self.first += 1;
-            self.later_done -= 1;
         }
         Some(index)
     }
     pub(crate) fn waiting_count(&self) -> usize {
         self.len - self.finished
     }
-    /// The place of the `k`th waiting file, without a scan when rows came in order.
+    /// Waiting files before the reading position.
+    fn waiting_before_next(&self) -> usize {
+        self.next - self.first - self.later_done
+    }
+    /// The place of the `k`th waiting file, scanning at most the few files before the
+    /// reading position.
     pub(crate) fn waiting_index(&self, k: usize) -> Option<usize> {
-        if self.later_done == 0 {
-            let index = self.first.checked_add(k)?;
-            return (index < self.len).then_some(index);
+        let before = self.waiting_before_next();
+        if k < before {
+            return (self.first..self.next)
+                .filter(|index| !self.done[*index])
+                .nth(k);
         }
-        (self.first..self.len)
-            .filter(|index| !self.done[*index])
-            .nth(k)
+        let index = self.next.checked_add(k - before)?;
+        (index < self.len).then_some(index)
     }
     /// Which waiting file the listed file at `index` is; none once it has a row.
     pub(crate) fn waiting_position(&self, index: usize) -> Option<usize> {
         if index >= self.len || self.done[index] || index < self.first {
             return None;
         }
-        let before = index - self.first;
-        if self.later_done == 0 {
-            return Some(before);
+        if index >= self.next {
+            return Some(self.waiting_before_next() + (index - self.next));
         }
         Some(
-            before
-                - self.done[self.first..index]
-                    .iter()
-                    .filter(|done| **done)
-                    .count(),
+            self.done[self.first..index]
+                .iter()
+                .filter(|done| !**done)
+                .count(),
         )
     }
     /// The places of the waiting files from the `k`th on, in order.
     pub(crate) fn waiting_from(&self, k: usize) -> impl Iterator<Item = usize> + '_ {
-        let start = if self.later_done == 0 {
-            self.first.saturating_add(k).min(self.len)
-        } else {
-            self.waiting_index(k).unwrap_or(self.len)
-        };
+        let start = self.waiting_index(k).unwrap_or(self.len);
         (start..self.len).filter(|index| !self.done[*index])
     }
 }
@@ -256,7 +311,13 @@ impl ChecksumSession {
     /// Accept rows of the running run; a listed file's row takes its place.
     pub(super) fn stream(&mut self, chunk: &Arc<ChecksumChunk>) {
         for row in chunk.rows.iter() {
-            let listed = self.planned.finished(&row.name);
+            let marks = &mut self.selection;
+            let listed = self.planned.finished(&row.name, &mut |place| {
+                // As when the run ends: a file that gets no row leaves the selection.
+                if let Some(slot) = selection::listed_slot(place) {
+                    marks.set(slot, false);
+                }
+            });
             self.row_arrived(&chunk.base, row, listed);
         }
         self.streamed.push(chunk.clone());
