@@ -1260,7 +1260,7 @@ destination first (`TransferDirectory::creates_no_links`) and leaves each link o
 without a question, names it in the job details ("… was left out: no links are created
 at a network location."), and completes; the outcome counts the links left out
 (`CopyProgress::links_left_out`, "2 links were left out: no links are created there;
-Details names each."). A typed folder whose
+Copy details names each."). A typed folder whose
 default differs from the choice shown, while the user has not chosen, holds the
 confirmation once and shows that folder's default and reason. A confirmation before the
 answer arrives starts with the choice shown, which keeps links.

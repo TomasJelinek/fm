@@ -304,7 +304,7 @@ fn cancelling_delete_exposes_close_actions_in_progress_window() {
 }
 
 #[test]
-fn cancelling_delete_shows_one_status_with_progress_and_details() {
+fn cancelling_delete_shows_one_status_with_progress_and_keeps_its_details() {
     use i_slint_core::{accessibility::AccessibleStringProperty, items::AccessibleRole};
 
     let h = Harness::new();
@@ -352,20 +352,19 @@ fn cancelling_delete_shows_one_status_with_progress_and_details() {
         .strip_prefix("Permanently delete\nCancelling\n\n")
         .and_then(|body| body.strip_suffix("\n\nCancelling..."))
         .expect("Jobs clipboard details retain their full title, state and message");
-    for label in ["Close", "Details", "Jobs"] {
+    for label in ["Close", "Jobs"] {
         assert!(modeless::accessible_item(&progress, AccessibleRole::Button, label).is_some());
     }
+    // The window has no Details button; Jobs' Copy details keeps the whole details.
+    assert!(modeless::accessible_item(&progress, AccessibleRole::Button, "Details").is_none());
     modeless::draw(&progress, 350, 300, "delete-cancelling-polish-compact");
     assert_eq!(status_count(), 1);
 
     modeless::draw(&progress, 700, 500, "delete-cancelling-polish");
-    modeless::click(&progress, "Details");
-    modeless::draw(&progress, 700, 500, "delete-cancelling-polish-details");
     assert_eq!(status_count(), 1);
     assert!(detail.contains("Source folder\nsource"));
     assert!(detail.contains("Current item\nsource/資料.txt"));
     assert!(!detail.contains("Cancelling"));
-    assert!(modeless::accessible_item(&progress, AccessibleRole::Text, detail).is_some());
 }
 
 #[test]
@@ -571,7 +570,7 @@ fn accepted_copy_cancel_updates_paused_header_and_keeps_it_cancelling_through_cl
         assert!(after.active && !after.paused && !after.pause_requested);
         assert_eq!(after.file_progress, before.file_progress);
         assert_eq!(after.file_progress_label, before.file_progress_label);
-        assert_eq!(after.speed_chart, before.speed_chart);
+        assert_eq!(after.transfer_speed_chart, before.transfer_speed_chart);
         h.complete(id);
         h.children(0);
     }

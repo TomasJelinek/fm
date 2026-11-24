@@ -1,13 +1,13 @@
 //! The polish gate on states that take a running application to reach:
 //!
-//! - `ui_polish_jobs`: Copy job windows paused, waiting, running, with details shown,
-//!   asking to cancel, cancelled, completed, completed with errors (few and many) and
-//!   with notes; the name-conflict and the failure (Retry/Skip) decision windows; and
-//!   the Jobs window listing them. Every window is captured at its preferred and at its
-//!   minimum size with the static and contrast checks; the windows also get the focus,
-//!   hover and tooltip checks, and targeted interactive checks: Details changes the
-//!   window, Escape on an active job asks to cancel, a cancelled or finished job's window
-//!   leaves no notice or extra window behind.
+//! - `ui_polish_jobs`: Copy job windows paused (without a Details button), waiting,
+//!   running, asking to cancel, cancelled, completed, completed with errors (few and
+//!   many) and with notes; the name-conflict and the failure (Retry/Skip) decision
+//!   windows; and the Jobs window listing them. Every window is captured at its
+//!   preferred and at its minimum size with the static and contrast checks; the windows
+//!   also get the focus, hover and tooltip checks, and targeted interactive checks: no
+//!   Details button, Escape on an active job asks to cancel, a cancelled or finished
+//!   job's window leaves no notice or extra window behind.
 //! - `ui_polish_viewers`: viewer windows (text, source with a selection, image,
 //!   Markdown, hex), a comparator and the archive password dialog (F3 on an encrypted
 //!   member of a ZipCrypto archive; static and interactive checks), in a dark and a
@@ -119,27 +119,6 @@ fn interactive_checks(
     issues.extend(interact::hover_checks(app, &target));
     issues.extend(interact::tooltip_checks(app, &target));
     gate::record(context, shot, surface, issues);
-}
-
-/// Click the button `label` and require that the window shows something new: other
-/// button captions or other texts (the window must be still when this is called).
-fn button_changes(app: &mut App, window: &Tool, label: &str) -> Result<(), String> {
-    let before = (
-        inspect::labels(window.window(), AccessibleRole::Button),
-        texts(window),
-    );
-    tools::click_last(window.window(), label)?;
-    app.idle(Duration::from_millis(400));
-    gate::pointer_out(window.window());
-    app.settle();
-    let after = (
-        inspect::labels(window.window(), AccessibleRole::Button),
-        texts(window),
-    );
-    if before == after {
-        return Err(format!("{label:?} changes nothing in its window"));
-    }
-    Ok(())
 }
 
 /// After closing or finishing: no notice and no window beyond `allowed`.
@@ -295,26 +274,17 @@ fn long_copy(app: &mut App, context: &mut Context, prefix: &str) -> Result<(), S
         "Copy job, paused",
     );
     interactive_checks(app, context, &window, &surface, &paused);
-    // Details shows the job's details in the window itself.
-    let details = button_changes(app, &window, "Details");
-    if let Err(error) = details {
+    // The window has no Details button: its details are in Jobs' Copy details.
+    if tools::has(window.window(), AccessibleRole::Button, "Details") {
         gate::record(
             context,
             &paused,
             &surface,
-            vec![Issue::new(interact::NO_EFFECT, error)],
+            vec![Issue::new(
+                interact::NO_EFFECT,
+                "the progress window still offers Details",
+            )],
         );
-    } else {
-        gate::capture(
-            app,
-            context,
-            &Target::Tool(window.clone()),
-            &format!("{prefix}/job/paused-details"),
-            &format!("{prefix}-job-paused-details"),
-            "Copy job, paused, details shown",
-        );
-        let _ = tools::click_last(window.window(), "Fewer details");
-        app.settle();
     }
     // A second copy that waits for the paused one.
     let waiting_before = copy_windows(app).len();
@@ -519,26 +489,7 @@ fn errors(
     );
     if label == "few" {
         interactive_checks(app, context, &job_window, &surface, &job_shot);
-        match button_changes(app, &job_window, "Details") {
-            Err(error) => {
-                gate::record(
-                    context,
-                    &job_shot,
-                    &surface,
-                    vec![Issue::new(interact::NO_EFFECT, error)],
-                );
-            }
-            Ok(()) => {
-                gate::capture(
-                    app,
-                    context,
-                    &Target::Tool(job_window.clone()),
-                    &format!("{surface}-details"),
-                    &format!("{prefix}-job-errors-{label}-details"),
-                    "Copy job with errors, details shown",
-                );
-            }
-        }
+
         let commands = app.recent_events().len();
         let notes_before = texts(&job_window);
         if tools::click_last(job_window.window(), "Copy details").is_ok() {
@@ -1024,7 +975,7 @@ pub fn jobs_scenario() -> Scenario {
     Scenario {
         name: "ui_polish_jobs",
         area: "ui",
-        summary: "Polish gate on job windows (paused, waiting, running, details, cancel question, cancelled, completed, errors, notes), decision windows (conflict, Retry/Skip failure) and Jobs, at preferred and minimum size.",
+        summary: "Polish gate on job windows (paused, waiting, running, cancel question, cancelled, completed, errors, notes), decision windows (conflict, Retry/Skip failure) and Jobs, at preferred and minimum size.",
         run: jobs,
         timeout: JOBS_TIMEOUT,
     }

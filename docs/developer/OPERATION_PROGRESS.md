@@ -27,7 +27,7 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   99,875`, `Items deleted: 108 · Not deleted: 24,284`, `Copy cancelled; files
   already copied are kept.` or `Move cancelled; completed moves remain, and files
   already copied to the destination are kept.` (the engine's sentence from the job's
-  message, which Details shows too; a Move can leave a file copied with its source
+  message, which Copy details holds too; a Move can leave a file copied with its source
   restored), and counts of skipped items, links copied as links and files kept
   in recovery folders. A clean completion shows its summary. Only errors are listed,
   while the job runs and after it, one row each with the reason and the path
@@ -35,12 +35,16 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   Space on a row opens its whole path, message and operation in place. Informational
   notes (a link copied as a link because it could not be followed) and the items a
   cancellation left unprocessed are only counted.
-- Details shows and hides an area below the progress or outcome with the job's
-  complete details (counters, source, destination, diagnostics, every retained
-  error and informational note), in a box of its own that scrolls; a window lower
-  than 350 px (`compact` in `job-progress-window.slint`) adds them to the end of its
-  scrolled content instead. Copy details
-  copies the same text.
+- The window has no Details button. The job's complete details (counters, source,
+  destination, diagnostics, every retained error and informational note) are the
+  text Copy details copies: from the window's footer once the job has ended, and
+  from Jobs (Copy details for the selected job) at any time. What the window showed
+  only under Details is either shown always now (the current file's bar, with the
+  bytes written or read back as its accessible description) or dropped deliberately:
+  a Copy or Move's `Items remaining` line (its totals count files of the total), the
+  current file's byte line (its percentage and bar stay) and the separate chart of
+  the current file's readback (the whole job's chart keeps its Verify curve and the
+  file's bar turns to the readback's colour and share).
 - While a job's own window is open, the main window adds no notice when the job
   ends, whether it was cancelled, failed or completed: the window shows the outcome.
   A job whose window is not open (closed while it was cancelling, or a Rename,
@@ -483,10 +487,8 @@ so nothing appears, disappears or moves; every file updates them at the window's
 refresh cadence (the engine's progress heartbeat), so a small file may show 100% at once and costs the
 copy nothing extra. An empty file is full at once; an unknown size, steps other than
 writing and readback (such as Move proofs) and ended jobs leave the bar empty; a pause
-keeps it. Details add the
-current file's written bytes (`Current file written: X / Y bytes`) or, during
-readback, the verification chart. Move's SHA explanation applies only when copying
-is required; native rename reads no content and shows no hash percentage.
+keeps it. Move's SHA explanation applies only when copying is required; native
+rename reads no content and shows no hash percentage.
 
 `verification_pass_id` and `verification_throughput` belong to the same current
 copy as its size/copied/verified counters. Every new copy attempt or explicit
@@ -498,10 +500,11 @@ proof-only work and terminal cleanup publish zero/empty pass fields.
 
 The pass history contains only current-file readback, at most 240 samples, and
 captures fast final read intervals between heartbeat ticks. It excludes writes
-and Move proof bytes. UI binds the exact pass ID/history during current-file
-verification, including its paused view, and restores whole-job history outside
-that phase. The separate verification chart has a clear 0..100% byte scale;
-reading 100% does not establish digest success, publication or source removal.
+and Move proof bytes. The UI uses the pass ID to tell a readback attempt from the
+next (`verification_view`, the file's bar in the readback's colour); it no longer
+charts the pass history, since the window charts the whole job in every phase.
+Reading 100% of a file does not establish digest success, publication or source
+removal.
 
 Whole-job completion remains independent and below 100 until backend success: the
 headline's `N% complete` divides the bytes of the files already copied plus those
@@ -603,8 +606,9 @@ MiB/s`), so the line does not move as the numbers change (`write_speed` and
 `verify_speed` of `OperationRow`, from `copy_speeds` in `job_progress_meter.rs`). A
 paused, waiting, deciding, cancelling or ended job, and a Move that only renames
 entries, shows no rates; its headline says why. Native same-volume Move displays
-renamed items/s. Delete displays items/s, as Windows Explorer does. Current source and destination
-are retained in Details; Delete shows its current item and remaining count. Each
+renamed items/s. Delete displays items/s, as Windows Explorer does. Current source
+and destination are retained in Copy details; Delete shows its current item and
+remaining count. Each
 per-file meter retains the immutable source/target identities of its own lane.
 
 ## Related contracts and evidence

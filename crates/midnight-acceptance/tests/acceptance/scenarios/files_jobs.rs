@@ -105,8 +105,8 @@ enum SlowBar {
 }
 
 /// The job `start`'s window always shows the current file's own "Current file progress"
-/// bar under its chart, from the first frame and without Details (a failure when it is
-/// missing); wait until the bar shows the large file's share, a percentage.
+/// bar under its chart, from the first frame (a failure when it is missing); wait until
+/// the bar shows the large file's share, a percentage.
 fn current_file_bar(app: &mut App, window: &Tool, start: usize) -> Result<SlowBar, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
@@ -116,7 +116,7 @@ fn current_file_bar(app: &mut App, window: &Tool, start: usize) -> Result<SlowBa
             "Current file progress",
         ) else {
             return Err(format!(
-                "the window shows no \"Current file progress\" bar without Details: {:?}",
+                "the window shows no \"Current file progress\" bar: {:?}",
                 texts(window)
             ));
         };
@@ -582,8 +582,8 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
     }
     support::dismiss_all(&mut app);
 
-    // The progress window of the large file: totals, time remaining, the speed chart
-    // and, under Details, the current file's progress.
+    // The progress window of the large file: totals, time remaining, the speed chart,
+    // the current file's folder and name lines and its own bar, and no Details button.
     let before = titled(&app, "Copy").len();
     panel::select_row(&mut app, LEFT, "large.bin")?;
     let large = support::start_transfer(
@@ -595,24 +595,35 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
         },
     )?;
     let window4 = new_window(&mut app, "Copy", before)?;
+    // Running, the headline shows the write speed beside the percentage (and the
+    // verify speed with the default SHA-256 readback), "—" until one is measured.
+    // A measured rate, once a second of copying averaged it; until then a dash.
+    let speed = wait_text(&mut app, &window4, Duration::from_secs(10), |text| {
+        text.starts_with(" · write ") && !text.ends_with('—')
+    })
+    .or_else(|| {
+        wait_text(&mut app, &window4, Duration::from_secs(20), |text| {
+            text.starts_with(" · write ")
+        })
+    });
+    let verify = texts(&window4)
+        .into_iter()
+        .find(|text| text.starts_with(" · verify "));
     // Paused in the middle of the file, the window holds still for reading.
     pause(&mut app, &window4, large, "the large file's copy")?;
-    tools::click_last(window4.window(), "Details")?;
-    let per_file = wait_text(&mut app, &window4, Duration::from_secs(10), |text| {
-        text.starts_with("Current file written")
-    });
     let shown = texts(&window4);
     seen_texts.extend(shown.clone());
     app.screenshot_window(
         context,
         &window4,
-        "progress-details",
-        "A large file's progress with Details",
+        "progress-paused",
+        "A large file's progress, paused",
     );
     let has = |prefix: &str| shown.iter().any(|text| text.starts_with(prefix));
     for (prefix, what) in [
         ("Time remaining:", "the time remaining"),
         ("Scale:", "the speed chart's scale"),
+        ("large.bin", "the current file's name on its own line"),
     ] {
         if !has(prefix) {
             failures.push(format!("the progress window shows no {what}: {shown:?}"));
@@ -626,37 +637,38 @@ pub fn transfer_jobs(context: &mut Context) -> Result<(), String> {
             "the progress window shows no totals of files and bytes: {shown:?}"
         ));
     }
-    if per_file.is_none() && !has("Current file written") {
-        failures.push(format!(
-            "Details shows no progress of the current file: {shown:?}"
-        ));
+    match (&speed, &verify) {
+        (Some(_), Some(_)) => {}
+        _ => failures.push(format!(
+            "the running copy showed no write and verify speeds beside its percentage: {speed:?}, {verify:?}"
+        )),
+    }
+    if has(" · write ") {
+        failures.push(format!("a paused copy still shows a speed: {shown:?}"));
+    }
+    if tools::has(window4.window(), AccessibleRole::Button, "Details") {
+        failures.push("the progress window still offers Details".into());
     }
     context.note(format!(
-        "large file progress: {:?}",
+        "large file progress: {speed:?} {verify:?} {:?}",
         shown
             .iter()
-            .filter(|text| [
-                "Files: ",
-                "Time remaining",
-                "Scale:",
-                "Current file",
-                "Write:"
-            ]
-            .iter()
-            .any(|prefix| text.starts_with(prefix)))
+            .filter(
+                |text| ["Files: ", "Time remaining", "Scale:", "large.bin", "Write:"]
+                    .iter()
+                    .any(|prefix| text.starts_with(prefix))
+            )
             .collect::<Vec<_>>()
     ));
-    // Without Details, the current file's own bar is always under the chart, and shows
-    // the large file's share as it is copied after Resume.
-    tools::click_last(window4.window(), "Fewer details")?;
-    app.settle();
+    // The current file's own bar is always under the chart, and shows the large file's
+    // share as it is copied after Resume.
     if tools::has(window4.window(), AccessibleRole::Button, "Resume") {
         tools::click_last(window4.window(), "Resume")?;
     }
     match current_file_bar(&mut app, &window4, large) {
         Ok(SlowBar::Shown(value)) => {
             context.note(format!(
-                "the current file's own bar showed {value:?} under the chart without Details"
+                "the current file's own bar showed {value:?} under the chart"
             ));
         }
         Ok(SlowBar::NotObservable) => context

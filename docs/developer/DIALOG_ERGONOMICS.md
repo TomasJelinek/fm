@@ -179,13 +179,14 @@ measurement.
   mark and the colour keep their contrast, and in every theme the active frame stands
   out from the surface at least as much as the resting one.
 - A job window's footer leaves out Copy details, then Jobs, when they would not fit
-  whole beside its dismiss button (Jobs offers Copy details too). Where the actions that
-  stay (Pause or Resume, Details, Resolve, or the question's Cancel operation) still
-  cannot show their captions there, they show their glyphs only, as the Options
-  footer's Export and Import do: each keeps its caption as its accessible label and on
-  its tooltip's first line, and Resolve has a glyph of its own, apart from Details'.
+  whole beside its dismiss button (Jobs offers Copy details too). It has no Details
+  button: the job's whole details are what Copy details copies. Where the actions that
+  stay (Pause or Resume, Resolve, or the question's Cancel operation) still cannot
+  show their captions there, they show their glyphs only, as the Options footer's
+  Export and Import do: each keeps its caption as its accessible label and on its
+  tooltip's first line, and Resolve has a glyph of its own, apart from Pause's.
   The footer is not stacked. The job window is never narrower than its widest footer,
-  Pause, Details and Resolve as glyphs beside Cancel operation, so they stay whole at
+  Pause and Resolve as glyphs beside Cancel operation, so they stay whole at
   its minimum size with any font. A notice's Details and Copy details go glyph-only
   beside Close the same way. The failure decision window is never narrower than its
   Retry, Skip and Skip all buttons.

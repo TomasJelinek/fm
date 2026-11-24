@@ -2,8 +2,9 @@
 //! window's footer keeps every action whole beside its dismiss button. Where its
 //! actions cannot all show their captions there, they show their glyphs only, each with
 //! a tooltip that names the action and with its accessible label unchanged, instead of
-//! cutting Details after its glyph and first letter (Dark Touch at 320×200, Blue Desktop
-//! from 14 px). Copy details, then Jobs, still leave first. Measured with the fonts of
+//! cutting an action after its glyph and first letter (Dark Touch at 320×200, Blue
+//! Desktop from 14 px). Copy details, then Jobs, still leave first. The window has no
+//! Details button. Measured with the fonts of
 //! the platform the test runs on.
 #[path = "support/window_polish.rs"]
 mod polish;
@@ -33,11 +34,9 @@ use std::{
 type Rect = (f32, f32, f32, f32);
 
 /// Every footer action, by its caption (which is also its accessible label).
-const ACTIONS: [&str; 8] = [
+const ACTIONS: [&str; 6] = [
     "Pause",
     "Resume",
-    "Details",
-    "Fewer details",
     "Jobs",
     "Copy details",
     "Resolve",
@@ -395,88 +394,102 @@ fn tooltip_of(fixture: &Fixture, item: &ItemRc) -> Vec<String> {
 #[test]
 fn glyph_only_actions_name_their_action_in_a_tooltip_and_keep_their_labels() {
     let mut fixture = Fixture::new();
-    let dark_touch = LOOKS[4];
-    for (what, job, expected) in [
-        ("running", copy_job(|_| {}), &["Pause", "Details"][..]),
-        (
-            "paused",
-            copy_job(|row| {
-                row.paused = true;
-                row.pause_requested = true;
-            }),
-            &["Resume", "Details"][..],
-        ),
-        (
-            "waiting for a decision",
-            copy_job(|row| row.attention = true),
-            &["Pause", "Details", "Resolve"][..],
-        ),
-    ] {
-        fixture.show(&job, false, dark_touch, None);
-        // Three glyphs beside Cancel operation need more than 320 px in Dark Touch.
-        assert!(
-            fixture.size.0 > 320,
-            "{what}: the minimum width {:?} keeps the widest footer whole",
-            fixture.size
-        );
-        let buttons = footer_buttons(&fixture.native);
-        let names: Vec<&str> = buttons.iter().map(|(name, _)| name.as_str()).collect();
-        let mut wanted = expected.to_vec();
-        wanted.push("Cancel operation");
-        assert_eq!(names, wanted, "{what}: the footer, left to right");
-        for (name, button) in &buttons {
-            if name == "Cancel operation" {
+    let mut glyphs = 0;
+    for look in LOOKS {
+        for (what, job, expected) in [
+            ("running", copy_job(|_| {}), &["Pause"][..]),
+            (
+                "paused",
+                copy_job(|row| {
+                    row.paused = true;
+                    row.pause_requested = true;
+                }),
+                &["Resume"][..],
+            ),
+            (
+                "waiting for a decision",
+                copy_job(|row| row.attention = true),
+                &["Pause", "Resolve"][..],
+            ),
+        ] {
+            fixture.show(&job, false, look, None);
+            let what = format!("{what}, {} {}px at {:?}", look.0, look.3, fixture.size);
+            let buttons = footer_buttons(&fixture.native);
+            let names: Vec<&str> = buttons
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .filter(|name| *name != "Jobs")
+                .collect();
+            let mut wanted = expected.to_vec();
+            wanted.push("Cancel operation");
+            assert_eq!(
+                names, wanted,
+                "{what}: the footer, left to right, no Details"
+            );
+            for (name, button) in &buttons {
+                if name == "Cancel operation" {
+                    assert!(
+                        caption(button).is_some(),
+                        "{what}: the dismiss button keeps its caption"
+                    );
+                    continue;
+                }
+                if caption(button).is_some() {
+                    continue;
+                }
+                // Where the caption does not fit, the glyph stays and the tooltip names it.
+                glyphs += 1;
+                assert!(has_glyph(button), "{what}: {name:?} shows a glyph");
+                let tip = tooltip_of(&fixture, button);
                 assert!(
-                    caption(button).is_some(),
-                    "{what}: the dismiss button keeps its caption"
+                    tip.iter()
+                        .any(|text| text.lines().next() == Some(name.as_str())),
+                    "{what}: {name:?}'s tooltip names the action on its first line: {tip:?}"
                 );
-                continue;
             }
-            assert!(
-                caption(button).is_none() && has_glyph(button),
-                "{what}: {name:?} shows its glyph only at the minimum size in Dark Touch, caption {:?}",
-                caption(button)
-            );
-            let tip = tooltip_of(&fixture, button);
-            assert!(
-                tip.iter()
-                    .any(|text| text.lines().next() == Some(name.as_str())),
-                "{what}: {name:?}'s tooltip names the action on its first line: {tip:?}"
-            );
         }
     }
-    // A glyph-only action still works, and toggling it moves no other action.
+    assert!(glyphs > 0, "some minimum size shows glyph-only actions");
+    // An action still works, and Pause turning into Resume moves no other action.
+    let dark_touch = LOOKS[6];
     fixture.show(&copy_job(|_| {}), false, dark_touch, None);
-    let before: Vec<(String, Rect)> = footer_buttons(&fixture.native)
-        .iter()
-        .map(|(name, item)| (name.clone(), polish::bounds(item)))
-        .collect();
-    let details = footer_buttons(&fixture.native)
+    let paused = Rc::new(Cell::new(None));
+    let seen = paused.clone();
+    fixture
+        .window
+        .on_set_paused(move |value| seen.set(Some(value)));
+    let places = |fixture: &Fixture| -> Vec<(String, f32)> {
+        footer_buttons(&fixture.native)
+            .iter()
+            .map(|(name, item)| (name.clone(), polish::bounds(item).0))
+            .collect()
+    };
+    let before = places(&fixture);
+    let pause = footer_buttons(&fixture.native)
         .into_iter()
-        .find(|(name, _)| name == "Details")
-        .expect("Details")
+        .find(|(name, _)| name == "Pause")
+        .expect("Pause")
         .1;
-    let (x, y, w, h) = polish::bounds(&details);
+    let (x, y, w, h) = polish::bounds(&pause);
     let position = slint::LogicalPosition::new(x + w / 2.0, y + h / 2.0);
     let button = slint::platform::PointerEventButton::Left;
     let window = fixture.native.window();
     window.dispatch_event(WindowEvent::PointerPressed { position, button });
     window.dispatch_event(WindowEvent::PointerReleased { position, button });
+    assert_eq!(paused.get(), Some(true), "Pause asks to pause");
+    fixture.window.set_job(copy_job(|row| {
+        row.paused = true;
+        row.pause_requested = true;
+    }));
     fixture.draw();
-    let after: Vec<(String, Rect)> = footer_buttons(&fixture.native)
-        .iter()
-        .map(|(name, item)| (name.clone(), polish::bounds(item)))
-        .collect();
-    let expected: Vec<(String, Rect)> = before
-        .into_iter()
-        .map(|(name, rect)| {
-            let name = if name == "Details" {
-                "Fewer details".to_owned()
-            } else {
-                name
-            };
-            (name, rect)
-        })
-        .collect();
-    assert_eq!(after, expected, "Details toggles in place");
+    let after = places(&fixture);
+    assert_eq!(after.len(), before.len());
+    for ((name, x), (was, at)) in after.iter().zip(&before) {
+        if was == "Pause" {
+            assert_eq!(name, "Resume");
+        }
+        if was == "Pause" || was == "Cancel operation" {
+            assert_eq!(x, at, "{was} stays in place");
+        }
+    }
 }

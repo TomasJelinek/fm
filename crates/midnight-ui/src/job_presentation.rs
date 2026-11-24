@@ -217,16 +217,7 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         detail.push_str("\n\n");
         detail.push_str(message);
     }
-    // The progress window already gives cancellation its own status line.
-    let progress_detail = if deletion && progress.state == OperationState::CancelRequested {
-        if !message.is_empty() && message.trim_end_matches(['.', '…']) != state {
-            body.push_str("\n\n");
-            body.push_str(message);
-        }
-        body.into()
-    } else {
-        SharedString::default()
-    };
+
     let outcome = match progress.kind {
         MutationKind::Delete(mode) => outcome::deletion(progress, mode, &p.number_locale),
         _ => outcome::change(progress),
@@ -250,7 +241,6 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         )
         .into(),
         detail: detail.into(),
-        progress_detail,
         cancellable,
         attention: mutation_attention(p, progress.id),
         failed: progress.failed > 0
@@ -492,7 +482,6 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         state: state.into(),
         summary: summary.clone().into(),
         detail: detail.into(),
-        progress_detail: SharedString::default(),
         cancellable: !progress.state.is_terminal() && progress.state != S::CancelRequested,
         attention: copy_attention(p, progress.id),
         failed,
@@ -536,24 +525,9 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
         transfer_outcome: transfer_outcome.into(),
         issues: issues.rows,
         issue_summary: issues.summary,
-        speed_chart: if !progress.state.is_terminal()
-            && progress.phase == CopyOperationPhase::Verifying
-        {
-            if verification_view {
-                p.job_charts.get_verification(
-                    progress.id,
-                    progress.verification_pass_id,
-                    &progress.verification_throughput,
-                    &p.number_locale,
-                )
-            } else {
-                // A phase alone does not identify a copied-file readback attempt.
-                // Never substitute compressed whole-operation history here.
-                Default::default()
-            }
-        } else {
-            transfer_speed_chart.clone()
-        },
+        // A transfer's window charts the whole job (`transfer_speed_chart`); the
+        // current file's readback shows in its own bar.
+        speed_chart: Default::default(),
         transfer_speed_chart,
     }
 }

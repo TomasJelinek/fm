@@ -1,12 +1,9 @@
 //! What a job window shows: no close button of its own beside the native frame's,
 //! how a finished job ended instead of its last progress, its errors one per row
-//! with the path and message in place, and a Details area of its own that scrolls.
+//! with the path and message in place, and no Details button: Copy details keeps them.
 use super::outcome_notices::{deletion, lists, shows};
 use super::*;
-use i_slint_core::{
-    item_tree::ItemRc,
-    items::{AccessibleRole, Flickable},
-};
+use i_slint_core::{item_tree::ItemRc, items::AccessibleRole};
 
 fn apply_deletion(h: &Harness, progress: OperationProgress) {
     h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
@@ -19,20 +16,6 @@ fn buttons(window: &MinimalSoftwareWindow, label: &str) -> usize {
         .into_iter()
         .filter(ItemRc::is_visible)
         .count()
-}
-
-fn scrolls(item: &ItemRc) -> bool {
-    if item.downcast::<Flickable>().is_some() {
-        return true;
-    }
-    let mut child = item.first_child();
-    while let Some(item) = child {
-        child = item.next_sibling();
-        if scrolls(&item) {
-            return true;
-        }
-    }
-    false
 }
 
 fn details_area(window: &MinimalSoftwareWindow) -> Option<ItemRc> {
@@ -48,36 +31,22 @@ fn row(h: &Harness, identity: &str) -> midnight_ui::OperationRow {
         .expect("the job is listed")
 }
 
-/// Details shows the job's whole details in an area with room and a scroll bar;
-/// Fewer details hides it again.
-fn toggle_details(h: &Harness, window: &MinimalSoftwareWindow, identity: &str, children: usize) {
+/// The window offers no Details button and shows no details area; the job's whole
+/// details stay with Copy details (here once the job ended, and in Jobs).
+fn no_details(h: &Harness, window: &MinimalSoftwareWindow, identity: &str) {
+    for label in ["Details", "Fewer details"] {
+        assert_eq!(buttons(window, label), 0, "{identity}: {label}");
+    }
     assert!(
         details_area(window).is_none(),
-        "{identity}: hidden at first"
+        "{identity}: no details area"
     );
-    modeless::click(window, "Details");
-    h.children(children);
-    let area = details_area(window).unwrap_or_else(|| panic!("{identity}: Details does nothing"));
-    assert!(
-        area.geometry().height() >= 60.0,
-        "{identity}: the area has room"
-    );
-    assert!(scrolls(&area), "{identity}: the area scrolls");
     let job = row(h, identity);
-    let text = if job.progress_detail.is_empty() {
-        job.detail
-    } else {
-        job.progress_detail
-    };
     assert!(
-        modeless::accessible_item(window, AccessibleRole::Text, &text).is_some(),
-        "{identity}: the area shows the job's details"
+        job.detail.contains(job.title.as_str()),
+        "{identity}: Copy details keeps the job's details"
     );
-    modeless::click(window, "Fewer details");
-    h.children(children);
-    assert!(details_area(window).is_none(), "{identity}: hidden again");
 }
-
 #[test]
 fn job_windows_have_no_close_button_beside_the_native_one() {
     let h = Harness::new();
@@ -178,17 +147,17 @@ fn a_finished_delete_shows_its_outcome_and_opens_its_error_in_place() {
     assert!(!shows(&progress, "Operation: delete"), "Return closes it");
     assert_eq!(buttons(&progress, "Close"), 1);
     assert_eq!(buttons(&progress, "Copy details"), 1);
-    toggle_details(&h, &progress, "93", 1);
+    no_details(&h, &progress, "93");
 }
 
 #[test]
-fn details_show_and_hide_an_area_in_copy_move_and_delete_windows() {
+fn copy_move_and_delete_windows_offer_no_details_button() {
     let h = Harness::new();
     for (id, intent) in [(1, TransferIntent::Copy), (2, TransferIntent::Move)] {
         h.start(id);
         h.copy_progress(id, intent, CopyOperationState::Running, None);
         let progress = h.children(1).remove(0);
-        toggle_details(&h, &progress, &format!("copy-job:{id}"), 1);
+        no_details(&h, &progress, &format!("copy-job:{id}"));
         let mut failed = CopyProgress::queued(OperationId(id), "destination".into(), 1, intent);
         failed.state = CopyOperationState::CompletedWithErrors;
         failed.files_completed = 1;
@@ -200,17 +169,17 @@ fn details_show_and_hide_an_area_in_copy_move_and_delete_windows() {
         ));
         h.apply(Event::Copy(CopyEvent::Progress(Arc::new(failed))));
         assert!(Rc::ptr_eq(&progress, &h.children(1)[0]));
-        toggle_details(&h, &progress, &format!("copy-job:{id}"), 1);
+        no_details(&h, &progress, &format!("copy-job:{id}"));
         input::key(&progress, Key::Escape);
         h.children(0);
     }
     apply_deletion(&h, deletion(94, OperationState::Running, ""));
     let progress = h.children(1).remove(0);
-    toggle_details(&h, &progress, "94", 1);
+    no_details(&h, &progress, "94");
 }
 
 #[test]
-fn notes_are_counted_and_only_details_list_them() {
+fn notes_are_counted_and_only_copy_details_lists_them() {
     let h = Harness::new();
     h.start(1);
     h.copy_progress(1, TransferIntent::Copy, CopyOperationState::Running, None);
@@ -244,7 +213,9 @@ fn notes_are_counted_and_only_details_list_them() {
         row(&h, "copy-job:1").issue_summary.is_empty(),
         "notes are not errors"
     );
-    modeless::click(&progress, "Details");
-    h.children(1);
-    assert!(shows(&progress, "link-0 was copied"), "Details lists them");
+    no_details(&h, &progress, "copy-job:1");
+    assert!(
+        row(&h, "copy-job:1").detail.contains("link-0 was copied"),
+        "Copy details lists them"
+    );
 }

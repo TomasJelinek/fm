@@ -19,11 +19,9 @@ pub(crate) struct Charts(RefCell<HashMap<(bool, OperationId), Cached>>);
 enum View {
     Transfer,
     Deletion,
-    Verification(u64),
 }
 
 struct Cached {
-    view: View,
     source: Arc<OperationThroughput>,
     locale: NumberLocale,
     /// The vertical scale, kept from report to report of the same view.
@@ -56,19 +54,6 @@ impl Charts {
         )
     }
 
-    /// `source` contains only this backend-identified readback attempt's history.
-    /// Pause/resume retains its identity; each new file or retry supplies a fresh pass.
-    /// Whole-operation samples cannot reconstruct this view after interval compaction.
-    pub(crate) fn get_verification(
-        &self,
-        id: OperationId,
-        pass_identity: u64,
-        source: &Arc<OperationThroughput>,
-        locale: &NumberLocale,
-    ) -> SpeedChartData {
-        self.get_view(id, View::Verification(pass_identity), source, locale)
-    }
-
     fn get_view(
         &self,
         id: OperationId,
@@ -77,25 +62,18 @@ impl Charts {
         locale: &NumberLocale,
     ) -> SpeedChartData {
         let mut cache = self.0.borrow_mut();
-        // A new view replaces the copy job's slot rather than retaining every pass.
-        // The backend continues to own the separate whole-operation history.
         let item = cache
             .entry((view == View::Deletion, id))
             .or_insert_with(|| {
                 let mut scale = Scale::default();
                 Cached {
-                    view,
                     source: source.clone(),
                     locale: locale.clone(),
                     chart: build(source, view, locale, &mut scale),
                     scale,
                 }
             });
-        if item.view != view {
-            item.scale = Scale::default();
-        }
-        if item.view != view || !Arc::ptr_eq(&item.source, source) || item.locale != *locale {
-            item.view = view;
+        if !Arc::ptr_eq(&item.source, source) || item.locale != *locale {
             item.source = source.clone();
             item.locale = locale.clone();
             item.chart = build(source, view, locale, &mut item.scale);
@@ -144,7 +122,6 @@ fn build(
     scale: &mut Scale,
 ) -> SpeedChartData {
     let deletion = view == View::Deletion;
-    let verification_only = matches!(view, View::Verification(_));
     let native_move = view == View::Transfer
         && source
             .samples
@@ -170,15 +147,13 @@ fn build(
     let primary = |sample: &midnight_core::ThroughputSample| {
         finite(if items {
             sample.items_per_second
-        } else if verification_only {
-            sample.verification_per_second
         } else {
             sample.transfer_per_second
         })
     };
     // Writes and readback share the scale.
     scale.observe(&source.samples, items, |sample| {
-        if items || verification_only {
+        if items {
             primary(sample)
         } else {
             primary(sample).max(finite(sample.verification_per_second))
@@ -196,7 +171,7 @@ fn build(
     for (index, sample) in samples.iter().enumerate() {
         let x = (sample.elapsed_millis as f64 / span * 1000.0).clamp(last_x, 1000.0);
         let y = height(primary(sample));
-        let verify_y = if deletion || verification_only {
+        let verify_y = if deletion {
             100.0
         } else {
             height(finite(sample.verification_per_second))
@@ -204,15 +179,11 @@ fn build(
         if index == 0 {
             let initial_x = (sample.start_millis as f64 / span * 1000.0).clamp(0.0, x);
             let _ = write!(line, "M {initial_x:.2} {y:.2}");
-            if !verification_only {
-                let _ = write!(verification, "M {initial_x:.2} {verify_y:.2}");
-            }
+            let _ = write!(verification, "M {initial_x:.2} {verify_y:.2}");
             let _ = write!(area, "M {initial_x:.2} 100 L {initial_x:.2} {y:.2}");
         }
         let _ = write!(line, " L {x:.2} {y:.2}");
-        if !verification_only {
-            let _ = write!(verification, " L {x:.2} {verify_y:.2}");
-        }
+        let _ = write!(verification, " L {x:.2} {verify_y:.2}");
         let _ = write!(area, " L {x:.2} {y:.2}");
         last_x = x;
         last_y = y;
@@ -224,28 +195,20 @@ fn build(
     let speed = rate(
         if items {
             source.items_per_second
-        } else if verification_only {
-            source.verification_per_second
         } else {
             source.transfer_per_second
         },
         items,
         locale,
     );
-    let verification_speed = if verification_only {
-        String::new()
-    } else {
-        rate(source.verification_per_second, false, locale)
-    };
+    let verification_speed = rate(source.verification_per_second, false, locale);
     let history = format!("Elapsed {}", elapsed(end, locale));
     SpeedChartData {
         native_move,
         area: area.into(),
         primary: line.into(),
         verification: verification.into(),
-        description: if verification_only {
-            format!("Verify: {speed}. {history}.")
-        } else if deletion {
+        description: if deletion {
             format!("Deleted: {speed}. {history}.")
         } else if native_move {
             format!("Renamed: {speed}. No content copied. {history}.")

@@ -67,7 +67,7 @@ fn a_cancelled_copy_counts_what_it_did_not_copy_and_lists_no_notes() {
         "Copy cancelled; files already copied are kept.\n\
          Files copied: 23,956 · Not copied: 99,875\n\
          Bytes copied: 4,000 · Not copied: 6,000\n\
-         12 links were copied as links; Details says why."
+         12 links were copied as links; Copy details says why."
     );
     let issues = transfer_issues(&p, &locale());
     assert!(issues.summary.is_empty() && rows(&issues).is_empty());
@@ -225,7 +225,7 @@ fn skips_recovery_and_unconfirmed_source_changes_are_counted() {
         text,
         "Files copied: 3\n\
          2 skipped items were not copied.\n\
-         1 file was kept in a recovery folder; Details shows where."
+         1 file was kept in a recovery folder; Copy details shows where."
     );
     assert!(!text.contains(".midnight-recovery"), "{text}");
     p.intent = TransferIntent::Move;
@@ -244,7 +244,7 @@ fn skips_recovery_and_unconfirmed_source_changes_are_counted() {
 }
 
 /// Links left out where no links are created are counted apart from the links copied as
-/// links; Details names each. The job completed, so only an asked-for outcome shows it.
+/// links; Copy details names each. The job completed, so only an asked-for outcome shows it.
 #[test]
 fn a_completed_copy_counts_the_links_it_left_out() {
     let mut p = queued(TransferIntent::Copy);
@@ -263,8 +263,8 @@ fn a_completed_copy_counts_the_links_it_left_out() {
     let text = transfer(&p, true, &locale());
     assert!(
         text.contains(
-            "2 links were left out: no links are created there; Details names each.\n\
-             1 link was copied as a link; Details says why."
+            "2 links were left out: no links are created there; Copy details names each.\n\
+             1 link was copied as a link; Copy details says why."
         ),
         "{text}"
     );

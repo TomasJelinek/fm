@@ -110,7 +110,6 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     for row in &mut rows {
         make_shown(&mut row.title);
         make_shown(&mut row.detail);
-        make_shown(&mut row.progress_detail);
         make_shown(&mut row.current_path);
         make_shown(&mut row.transfer_directory);
         make_shown(&mut row.transfer_name);

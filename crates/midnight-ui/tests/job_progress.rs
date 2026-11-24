@@ -17,47 +17,86 @@ fn job(id: &str, title: &str) -> OperationRow {
         ..Default::default()
     }
 }
+/// The window has no Details button in any state: a running or paused job, one that
+/// waits for a decision, the cancel question and an ended job. The current file's bar
+/// is always shown for a transfer, and a Delete charts its own speed.
 #[test]
-fn progress_meter_is_visible_even_with_unknown_totals_and_current_file_has_its_own_meter() {
+fn the_progress_window_has_no_details_button_and_always_shows_the_current_file() {
     let mut test = ui::TestUi::new();
     let mut row = job("copy-job:7", "Copy");
     row.active = true;
+    row.pausable = true;
     row.file_determinate = true;
     row.file_progress = 0.5;
+    row.file_percent = "50%".into();
     row.file_progress_label = "Current file written: 500 / 1000 bytes".into();
+    let no_details = |test: &ui::TestUi, what: &str| {
+        for label in ["Details", "Fewer details"] {
+            assert!(
+                ui::find_popup_item(&test.window, label, AccessibleRole::Button).is_none(),
+                "{what}: {label}"
+            );
+        }
+    };
     test.window.set_job(row.clone());
     test.draw();
+    no_details(&test, "running");
     ui::popup_item(
         &test.window,
         "Overall progress",
         AccessibleRole::ProgressIndicator,
     );
-    assert!(
-        ui::find_popup_item(
-            &test.window,
-            "Current file written",
-            AccessibleRole::ProgressIndicator
-        )
-        .is_none()
-    );
-    ui::click_popup(&test.window, "Details", AccessibleRole::Button);
-    test.draw();
-    ui::popup_item(
+    let bar = ui::popup_item(
         &test.window,
-        "Current file written",
+        "Current file progress",
         AccessibleRole::ProgressIndicator,
     );
+    assert_eq!(
+        bar.accessible_string_property(AccessibleStringProperty::Description)
+            .unwrap(),
+        "Current file written: 500 / 1000 bytes"
+    );
+    for label in ["Pause", "Jobs", "Cancel operation"] {
+        ui::popup_item(&test.window, label, AccessibleRole::Button);
+    }
+    row.paused = true;
+    row.pause_requested = true;
+    test.window.set_job(row.clone());
+    test.draw();
+    no_details(&test, "paused");
+    ui::popup_item(&test.window, "Resume", AccessibleRole::Button);
+    row.attention = true;
+    test.window.set_job(row.clone());
+    test.draw();
+    no_details(&test, "deciding");
+    ui::popup_item(&test.window, "Resolve", AccessibleRole::Button);
+    test.window.set_cancel_confirmation(true);
+    test.draw();
+    no_details(&test, "cancel question");
+    test.window.set_cancel_confirmation(false);
+    row.active = false;
+    row.attention = false;
+    row.state = "Completed with errors".into();
+    test.window.set_job(row.clone());
+    test.draw();
+    no_details(&test, "ended");
+    ui::popup_item(&test.window, "Copy details", AccessibleRole::Button);
+    row.active = true;
     row.kind = 1;
     row.file_determinate = false;
     test.window.set_job(row);
     test.draw();
+    no_details(&test, "delete");
     ui::popup_item(&test.window, "Deletion speed", AccessibleRole::Groupbox);
     ui::key(&test.window, Key::Escape);
     assert!(!ui::has_popup(&test.window));
 }
 
+/// During the current file's readback the window keeps charting the whole job, with
+/// its write and verify curves; the file's own bar turns to the readback's colour and
+/// share. There is no separate chart of the readback.
 #[test]
-fn verification_keeps_the_aggregate_chart_and_exposes_readback_in_details() {
+fn verification_keeps_the_whole_job_chart_and_the_file_bar_shows_readback() {
     let mut test = ui::TestUi::new();
     let mut row = job("copy-job:22", "Copy");
     row.active = true;
@@ -67,16 +106,10 @@ fn verification_keeps_the_aggregate_chart_and_exposes_readback_in_details() {
     row.verification_view = true;
     row.file_determinate = true;
     row.file_progress = 0.25;
+    row.file_percent = "Verifying 25%".into();
     row.file_progress_title = "Current file verification".into();
     row.file_progress_label = "Verifying samples: 49152 / 196608 bytes".into();
     row.activity_label = "Verifying current file...".into();
-    row.speed_chart = SpeedChartData {
-        area: "M 0 100 L 0 80 L 1000 40 L 1000 100 Z".into(),
-        primary: "M 0 80 L 1000 40".into(),
-        speed: "128 KiB/s".into(),
-        has_samples: true,
-        ..Default::default()
-    };
     row.transfer_speed_chart = SpeedChartData {
         primary: "M 0 20 L 1000 40".into(),
         verification: "M 0 100 L 1000 50".into(),
@@ -84,20 +117,15 @@ fn verification_keeps_the_aggregate_chart_and_exposes_readback_in_details() {
         ..Default::default()
     };
     test.window.set_job(row);
-    test.draw();
-    assert!(
-        ui::find_popup_item(&test.window, "Verification speed", AccessibleRole::Groupbox).is_none()
-    );
-    ui::click_popup(&test.window, "Details", AccessibleRole::Button);
-    test.draw();
     for (density, font) in [(0, 13), (1, 32)] {
         test.window
             .invoke_apply_preferences(3, density, "".into(), font, font);
         for (width, height) in [(1000, 700), (480, 360), (320, 200)] {
             test.resize(width, height);
-            let chart =
-                ui::popup_item(&test.window, "Verification speed", AccessibleRole::Groupbox);
-            assert_eq!(check_history_width(&chart), 1, "readback has one curve");
+            assert!(
+                ui::find_popup_item(&test.window, "Verification speed", AccessibleRole::Groupbox)
+                    .is_none()
+            );
             let aggregate =
                 ui::popup_item(&test.window, "Transfer speed", AccessibleRole::Groupbox);
             assert_eq!(
@@ -118,17 +146,19 @@ fn verification_keeps_the_aggregate_chart_and_exposes_readback_in_details() {
             );
             let file = ui::popup_item(
                 &test.window,
-                "Current file verification progress",
+                "Current file progress",
                 AccessibleRole::ProgressIndicator,
             );
             assert_eq!(
                 file.accessible_string_property(AccessibleStringProperty::Value)
                     .unwrap(),
+                "Verifying 25%"
+            );
+            assert_eq!(
+                file.accessible_string_property(AccessibleStringProperty::Description)
+                    .unwrap(),
                 "Verifying samples: 49152 / 196608 bytes"
             );
-            for endpoint in ["0%", "100%"] {
-                ui::popup_item(&test.window, endpoint, AccessibleRole::Text);
-            }
             let close = ui::popup_item(&test.window, "Cancel operation", AccessibleRole::Button);
             let rect = close.geometry();
             let location = close.map_to_native_window(rect.origin);
@@ -139,7 +169,6 @@ fn verification_keeps_the_aggregate_chart_and_exposes_readback_in_details() {
         }
     }
 }
-
 #[test]
 fn waiting_status_replaces_an_empty_eta_without_claiming_calculation() {
     let mut test = ui::TestUi::new();

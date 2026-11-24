@@ -58,7 +58,7 @@ const QUICK_NOTE: &str = "Drag cancelled: released within 0.4 s";
 const ROWS: usize = 60;
 const LONG: &str = "one, the longest of the three files\n";
 /// The Copy window's outcome line for the original kept by Replace · keep original.
-const KEPT: &str = "1 file was kept in a recovery folder; Details shows where.";
+const KEPT: &str = "1 file was kept in a recovery folder; Copy details shows where.";
 
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {

@@ -8,7 +8,7 @@ import { FallbackIcons } from "action-icons.slint";
 import { HintedActionButton } from "hinted-inputs.slint";
 import { OperationRow } from "jobs-dialog.slint";
 import { OperationSpeedChart } from "operation-speed-chart.slint";
-import { JobDetails, JobIssueList } from "job-outcome.slint";
+import { JobIssueList } from "job-outcome.slint";
 import { PathText } from "path-text.slint";
 
 // Copy, Move and Delete share one progress window.
@@ -25,7 +25,6 @@ export component JobProgressWindow inherits DialogWindow {
     callback show-jobs();
     callback request-dismiss();
     callback confirm-cancel(string);
-    private property <bool> details-visible;
     private property <bool> compact: root.height < 350px;
     private property <bool> transfer: root.job.kind == 0;
     private property <bool> can-request-cancel: root.job.active && root.job.cancellable;
@@ -37,13 +36,14 @@ export component JobProgressWindow inherits DialogWindow {
     // Copy details and Jobs leave the footer where they would sit half outside its
     // scroller beside the dismiss button (DialogFooter's inline room); Copy details stays
     // longer, and Jobs offers it too. An action is its caption, its glyph and 28px of
-    // padding, 8px from the next (ActionButtonContent). Pause and Details count with
-    // their longer captions, so that toggling them never moves another action.
+    // padding, 8px from the next (ActionButtonContent). Pause counts with its longer
+    // caption, Resume, so that toggling it never moves another action. The window has
+    // no Details button: the job's whole details are in Copy details, here once the job
+    // ended and in Jobs at any time.
     private property <length> action-pad: Theme.icon-size + 28px + 8px;
     private property <length> kept-actions: root.cancel-confirmation ? cancel-caption.preferred-width + root.action-pad
         : !root.show-actions ? 0px
         : (root.job.pausable ? resume-caption.preferred-width + root.action-pad : 0px)
-            + details-caption.preferred-width + root.action-pad
             + (root.job.attention ? resolve-caption.preferred-width + root.action-pad : 0px);
     private property <length> action-room: footer.inline-room + 8px;
     // Where even the actions that stay do not fit with their captions, they show their
@@ -57,13 +57,14 @@ export component JobProgressWindow inherits DialogWindow {
             + jobs-caption.preferred-width + root.action-pad <= root.action-room;
     title: root.job.title;
     preferred-width: max(640px, Theme.font-size * 34);
-    preferred-height: root.transfer ? max(380px, Theme.font-size * 22) : max(420px, Theme.font-size * 24);
-    // Never narrower than the widest footer: Pause, Details and Resolve as glyphs beside
+    // A transfer's current file takes a folder line and a name line under its chart.
+    preferred-height: root.transfer ? max(400px, Theme.font-size * 23) : max(420px, Theme.font-size * 24);
+    // Never narrower than the widest footer: Pause and Resolve as glyphs beside
     // Cancel operation, the longest dismiss caption, inside the padding of a window that
     // is not compact. A glyph is its icon and 24px of padding, 8px from the next.
     min-width: max(320px, 2 * (root.transfer ? 10px : 16px)
         + max(80px, cancel-caption.preferred-width + Theme.icon-size + 28px)
-        + 3 * (Theme.icon-size + 24px + 8px));
+        + 2 * (Theme.icon-size + 24px + 8px));
     request-close => { root.request-dismiss(); }
     public function apply-preferences(scheme: int, density: int, family: string, desktop: int, touch: int) {
         root.apply-tool-theme(scheme, density, family, desktop, touch);
@@ -77,10 +78,6 @@ export component JobProgressWindow inherits DialogWindow {
     // The footer's captions in the actions' font, each rounded as its button rounds it.
     resume-caption := Text {
         x: 0px; y: 0px; visible: false; text: "Resume";
-        font-family: Theme.effective-font-family; font-size: Theme.font-size;
-    }
-    details-caption := Text {
-        x: 0px; y: 0px; visible: false; text: "Fewer details";
         font-family: Theme.effective-font-family; font-size: Theme.font-size;
     }
     resolve-caption := Text {
@@ -205,22 +202,6 @@ export component JobProgressWindow inherits DialogWindow {
                                     && root.job.cancellable && !root.job.attention ? "Calculating..." : "Unavailable");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
-                        // The current file's own bytes and bar. A transfer shows them under
-                        // Details only, and above its chart, where the Details panel below
-                        // leaves them in view. Only a Copy or Move reports a current file.
-                        if root.job.file-progress-label != "" && (!root.transfer
-                            || (root.details-visible && !root.job.verification-view)) : VerticalLayout {
-                            spacing: 4px;
-                            Text {
-                                text: root.job.file-progress-label; color: Theme.secondary-text;
-                                font-size: Theme.small-font; wrap: word-wrap;
-                            }
-                            if root.job.file-determinate : ProgressIndicator {
-                                accessible-label: root.job.file-progress-title != "" ? root.job.file-progress-title : "Current file written";
-                                accessible-value: root.job.file-progress-label;
-                                progress: root.job.file-progress; height: 8px;
-                            }
-                        }
                         if !root.job.determinate : ProgressIndicator {
                             accessible-label: root.cancelling-delete ? "Deletion progress"
                                 : root.job.activity-label != "" ? root.job.activity-label : "Discovering operation items";
@@ -285,13 +266,6 @@ export component JobProgressWindow inherits DialogWindow {
                             text: root.job.current-path; color: Theme.text; font-size: Theme.font-size;
                             wrap: char-wrap; min-width: 0px;
                         }
-                        if root.transfer && root.details-visible && root.job.verification-view : OperationSpeedChart {
-                            chart: root.job.speed-chart; overall-progress: true; verification-phase: true;
-                            determinate: root.job.file-determinate; progress: root.job.file-progress;
-                            progress-label: root.job.file-progress-label;
-                            waiting-label: root.job.activity-label;
-                            height: max(130px, Theme.font-size * 7.5);
-                        }
                         if !root.transfer && !root.cancelling-delete : Text {
                             text: root.job.eta == "" && root.job.activity-label != ""
                                 ? root.job.activity-label
@@ -299,7 +273,8 @@ export component JobProgressWindow inherits DialogWindow {
                                     : root.job.paused ? "Paused" : "Calculating...");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
                         }
-                        if root.job.remaining != "" && (!root.transfer || root.details-visible) : Text {
+                        // A Copy or Move counts its files in its totals instead.
+                        if root.job.remaining != "" && !root.transfer : Text {
                             text: root.job.remaining; color: Theme.text;
                             font-size: Theme.font-size; wrap: word-wrap;
                         }
@@ -324,20 +299,7 @@ export component JobProgressWindow inherits DialogWindow {
                         padding-top: 8px; padding-right: 8px;
                         issues: root.job.issues; summary: root.job.issue-summary;
                     }
-                    if root.details-visible && root.compact && !root.cancel-confirmation : VerticalLayout {
-                        padding-top: 8px; padding-right: 8px;
-                        Text {
-                            text: root.job.progress-detail != "" ? root.job.progress-detail : root.job.detail;
-                            color: Theme.text; font-size: Theme.small-font; min-width: 0px; wrap: char-wrap;
-                        }
-                    }
                 }
-            }
-            // A good part of the window, leaving the content above some room. A
-            // small window has no room for both: its details end the scrolled content.
-            if root.details-visible && !root.compact && !root.cancel-confirmation : JobDetails {
-                height: min(max(Theme.font-size * 6, root.height * 0.38), root.height * 0.45);
-                text: root.job.progress-detail != "" ? root.job.progress-detail : root.job.detail;
             }
             if root.awaiting-copy-confirmation || root.copy-cancel-submitted : Text {
                 text: root.awaiting-copy-confirmation
@@ -385,23 +347,9 @@ export component JobProgressWindow inherits DialogWindow {
                         + "Pause or resume this operation at a safe file-operation checkpoint.";
                     clicked => { root.set-paused(!root.job.pause-requested); }
                 }
-                // One conditional, with the footer's spacing, instead of one per button.
-                if root.show-actions : HorizontalLayout {
-                    spacing: 8px;
-                    HintedActionButton {
-                        private property <string> caption: root.details-visible ? "Fewer details" : "Details";
-                        text: root.glyph-actions ? "" : self.caption;
-                        accessible-label: self.caption;
-                        fallback-icon: FallbackIcons.view;
-                        hint: (root.glyph-actions ? self.caption + "\n" : "")
-                            + (root.details-visible ? "Hide the operation's details."
-                                : "Show operation counters, source, destination, diagnostics and notes.");
-                        clicked => { root.details-visible = !root.details-visible; }
-                    }
-                    if root.offers-jobs : HintedActionButton {
-                        text: "Jobs"; hint: "Open the session's job list.";
-                        clicked => { root.show-jobs(); }
-                    }
+                if root.offers-jobs : HintedActionButton {
+                    text: "Jobs"; hint: "Open the session's job list, with each job's Copy details.";
+                    clicked => { root.show-jobs(); }
                 }
                 if root.offers-copy-details : HintedActionButton {
                     text: "Copy details"; fallback-icon: FallbackIcons.copy;
@@ -411,7 +359,7 @@ export component JobProgressWindow inherits DialogWindow {
                 if root.show-actions && root.job.attention : HintedActionButton {
                     text: root.glyph-actions ? "" : "Resolve";
                     accessible-label: "Resolve";
-                    // Not Details' eye: beside it, a glyph-only Resolve must look different.
+                    // Not Pause's glyph: beside it, a glyph-only Resolve must look different.
                     fallback-icon: FallbackIcons.edit;
                     hint: (root.glyph-actions ? "Resolve\n" : "")
                         + "Review this operation's pending overwrite or error decision.";

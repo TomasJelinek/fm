@@ -1045,8 +1045,10 @@ fn readback_history() -> Arc<OperationThroughput> {
     })
 }
 
+/// A transfer's window charts the whole job in every phase; the current file's
+/// readback shows in that file's own bar, not in a chart of its own.
 #[test]
-fn verification_selects_only_producer_pass_history_and_restores_overall_history_elsewhere() {
+fn verifying_rows_chart_the_whole_job_and_the_files_bar_follows_its_readback() {
     let p = Presenter::new("left".into(), "right".into());
     let mut value = progress(26);
     value.current_file_size = Some(1000);
@@ -1069,33 +1071,34 @@ fn verification_selects_only_producer_pass_history_and_restores_overall_history_
     let verifying = copy(&p, &value);
     assert!(verifying.verification_view);
     assert_eq!(verifying.file_progress, 0.25);
-    assert_eq!(verifying.speed_chart.speed, "1.0 KiB/s");
-    assert_eq!(verifying.speed_chart.scale, "2 KiB/s");
-    assert_eq!(verifying.speed_chart.history, "Elapsed 250 ms");
-    assert!(verifying.speed_chart.verification.is_empty());
-    assert_eq!(
-        verifying.speed_chart.primary,
-        "M 0.00 50.00 L 1000.00 50.00"
-    );
+    assert_eq!(verifying.file_percent, "Verifying 25%");
+    assert_eq!(verifying.file_progress_label, "Verifying: 250 / 1000 bytes");
+    assert_eq!(verifying.speed_chart, SpeedChartData::default());
+    let chart = &verifying.transfer_speed_chart;
+    assert_eq!(chart.speed, "1.0 MiB/s");
+    assert_eq!(chart.verification_speed, "2.0 MiB/s");
+    assert_eq!(chart.scale, "5 MiB/s");
+    assert_eq!(chart.history, "Elapsed 5 s");
 
     value.wait_reason = Some(TransferWaitReason::Resources);
     let waiting = copy(&p, &value);
     assert!(waiting.waiting && !waiting.discovering);
     assert_eq!(waiting.file_progress, 0.25);
     assert_eq!(waiting.file_progress_label, "Verifying: 250 / 1000 bytes");
-    assert_eq!(waiting.speed_chart, verifying.speed_chart);
+    assert_eq!(waiting.transfer_speed_chart, verifying.transfer_speed_chart);
     value.wait_reason = None;
     value.phase = CopyOperationPhase::ValidatingAfterMove;
     value.validation_bytes = 9000;
     let validation = copy(&p, &value);
     assert!(!validation.verification_view && !validation.file_determinate);
-    assert_eq!(validation.speed_chart.speed, "1.0 MiB/s");
-    assert_eq!(validation.speed_chart.verification_speed, "2.0 MiB/s");
-    assert_eq!(validation.speed_chart.history, "Elapsed 5 s");
+    assert_eq!(
+        validation.transfer_speed_chart,
+        verifying.transfer_speed_chart
+    );
 }
 
 #[test]
-fn verification_requires_a_nonzero_pass_and_current_file_without_whole_history_fallback() {
+fn verification_requires_a_nonzero_pass_and_current_file() {
     let p = Presenter::new("left".into(), "right".into());
     for (pass_id, size, eligible) in [
         (0, None, false),
@@ -1126,30 +1129,24 @@ fn verification_requires_a_nonzero_pass_and_current_file_without_whole_history_f
             row.verification_view, eligible,
             "pass {pass_id}, size {size:?}"
         );
-        assert!(!row.speed_chart.native_move);
-        assert!(!row.speed_chart.has_samples);
-        if eligible {
-            assert_eq!(row.speed_chart.speed, "0 B/s");
-            assert!(row.speed_chart.description.starts_with("Verify:"));
-        } else {
+        assert_eq!(row.speed_chart, SpeedChartData::default());
+        if !eligible {
             assert!(!row.file_determinate);
             assert_eq!(row.file_progress, 0.0);
-            assert!(row.speed_chart.description.is_empty());
-            assert!(row.speed_chart.primary.is_empty());
         }
         if pass_id == 0 {
             value.phase = CopyOperationPhase::CapturingSources;
             value.current_file_size = None;
             let renamed = copy(&p, &value);
             assert!(!renamed.verification_view && !renamed.file_determinate);
-            assert!(renamed.speed_chart.native_move);
-            assert_eq!(renamed.speed_chart.speed, "10.0 items/s");
+            assert!(renamed.transfer_speed_chart.native_move);
+            assert_eq!(renamed.transfer_speed_chart.speed, "10.0 items/s");
         }
     }
 }
 
 #[test]
-fn new_verification_pass_clears_trace_but_retains_resumed_checkpoint_bytes() {
+fn new_verification_pass_retains_resumed_checkpoint_bytes() {
     let mut p = Presenter::new("left".into(), "right".into());
     let mut value = progress(28);
     value.current_file_size = Some(1000);
@@ -1159,56 +1156,22 @@ fn new_verification_pass_clears_trace_but_retains_resumed_checkpoint_bytes() {
     value.verification_throughput = readback_history();
     p.copies.progress = vec![Arc::new(value.clone())];
     let initial = rows(&p).pop().unwrap();
-    let repeated = rows(&p).pop().unwrap();
     assert_eq!(initial.file_progress, 0.25);
-    assert_eq!(repeated.speed_chart, initial.speed_chart);
 
     value.current_file_verified = 500;
-    value.verification_throughput = Arc::new(OperationThroughput {
-        samples: vec![
-            ThroughputSample {
-                elapsed_millis: 250,
-                verification_per_second: 1024.0,
-                ..Default::default()
-            },
-            ThroughputSample {
-                start_millis: 250,
-                elapsed_millis: 500,
-                verification_per_second: 2048.0,
-                ..Default::default()
-            },
-        ]
-        .into(),
-        verification_per_second: 2048.0,
-        ..Default::default()
-    });
     p.copies.progress = vec![Arc::new(value.clone())];
     let running = rows(&p).pop().unwrap();
     assert_eq!(running.file_progress, 0.5);
-    assert_eq!(running.speed_chart.primary.matches(" L ").count(), 2);
-    assert_eq!(running.speed_chart.speed, "2.0 KiB/s");
 
-    let active_history = value.verification_throughput.clone();
     value.paused = true;
     value.pause_requested = true;
-    value.verification_throughput = Arc::new(OperationThroughput {
-        samples: active_history.samples.clone(),
-        ..Default::default()
-    });
     p.copies.progress = vec![Arc::new(value.clone())];
     let paused = rows(&p).pop().unwrap();
     assert_eq!(paused.activity_label, "Paused");
     assert_eq!(paused.file_progress, 0.5);
-    assert_eq!(paused.speed_chart.primary, running.speed_chart.primary);
-    assert_eq!(paused.speed_chart.speed, "0 B/s");
 
     value.paused = false;
     value.pause_requested = false;
-    value.verification_throughput = active_history;
-    p.copies.progress = vec![Arc::new(value.clone())];
-    let resumed = rows(&p).pop().unwrap();
-    assert_eq!(resumed.speed_chart, running.speed_chart);
-
     value.verification_pass_id = 42;
     value.verification_throughput = Arc::default();
     p.copies.progress = vec![Arc::new(value.clone())];
@@ -1216,9 +1179,6 @@ fn new_verification_pass_clears_trace_but_retains_resumed_checkpoint_bytes() {
     assert!(retried.verification_view && retried.file_determinate);
     assert_eq!(retried.file_progress, 0.5);
     assert_eq!(retried.file_progress_label, "Verifying: 500 / 1000 bytes");
-    assert!(!retried.speed_chart.has_samples);
-    assert!(retried.speed_chart.primary.is_empty());
-    assert_eq!(retried.speed_chart.history, "Elapsed 0 ms");
 
     value.phase = CopyOperationPhase::Copying;
     value.verification_pass_id = 43;
@@ -1250,7 +1210,7 @@ fn terminal_verification_rows_keep_overall_history_after_the_attempt_is_cleared(
         .into(),
         ..Default::default()
     });
-    let original = copy(&p, &value).speed_chart;
+    let original = copy(&p, &value).transfer_speed_chart;
     value.phase = CopyOperationPhase::Verifying;
     value.current_file_size = None;
     value.verification_pass_id = 0;
@@ -1264,12 +1224,12 @@ fn terminal_verification_rows_keep_overall_history_after_the_attempt_is_cleared(
         value.state = state;
         let terminal = copy(&p, &value);
         assert!(!terminal.verification_view && !terminal.file_determinate);
-        assert_eq!(terminal.speed_chart, original);
-        assert_eq!(terminal.speed_chart.speed, "0 B/s");
-        assert_eq!(terminal.speed_chart.verification_speed, "0 B/s");
-        assert_eq!(terminal.speed_chart.scale, "2 MiB/s");
-        assert!(!terminal.speed_chart.primary.is_empty());
-        assert_eq!(terminal.speed_chart.history, "Elapsed 1 s");
+        assert_eq!(terminal.transfer_speed_chart, original);
+        assert_eq!(terminal.transfer_speed_chart.speed, "0 B/s");
+        assert_eq!(terminal.transfer_speed_chart.verification_speed, "0 B/s");
+        assert_eq!(terminal.transfer_speed_chart.scale, "2 MiB/s");
+        assert!(!terminal.transfer_speed_chart.primary.is_empty());
+        assert_eq!(terminal.transfer_speed_chart.history, "Elapsed 1 s");
     }
 
     value.current_file_size = Some(1000);
@@ -1277,7 +1237,7 @@ fn terminal_verification_rows_keep_overall_history_after_the_attempt_is_cleared(
     value.verification_pass_id = 9;
     let failed = copy(&p, &value);
     assert!(!failed.verification_view);
-    assert_eq!(failed.speed_chart, original);
+    assert_eq!(failed.transfer_speed_chart, original);
     assert!(failed.file_determinate);
     assert_eq!(failed.file_progress, 0.75);
     assert_eq!(failed.file_progress_label, "Verifying: 750 / 1000 bytes");

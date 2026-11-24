@@ -127,6 +127,9 @@ time estimate averages the measured byte and item rates; once the totals are kno
 Calculating...
 stands in for it until a first rate is measured, and a paused job keeps it, as in
 `About 3 min (paused)`.
+The window keeps to the progress itself and has no Details button: Copy details, in its
+footer once the job has ended or in Jobs at any time, copies the job's full details
+(source, destination, counters, errors and notes) to the clipboard.
 X, Escape and Cancel operation first ask whether to cancel that exact job, with
 Continue as the default. Confirming requests cancellation, including cleanup of
 unpublished temporary files; Continue leaves the job and its progress window as they

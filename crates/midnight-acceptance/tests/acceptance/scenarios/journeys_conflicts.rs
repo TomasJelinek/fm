@@ -280,7 +280,7 @@ fn steps(
     let outcome = [
         "Files copied: 2",
         "1 skipped item was not copied.",
-        "1 file was kept in a recovery folder; Details shows where.",
+        "1 file was kept in a recovery folder; Copy details shows where.",
     ];
     // A tool window is sized before it is read: an unsized one has no area, so none of
     // its text is in view.

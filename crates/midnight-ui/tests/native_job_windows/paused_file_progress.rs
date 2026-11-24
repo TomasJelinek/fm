@@ -1,14 +1,14 @@
-//! WIN-1 of the Windows acceptance run: with Details open, a Copy paused in the middle
-//! of a large file shows the current file's progress ("Current file written: … / …
-//! bytes" and its bar) without scrolling, in a window of its preferred size. The
-//! Details panel takes a good part of the window's height, so that line must not wait
-//! below the speed chart. Blue Desktop and Dark Touch with their default and larger
-//! fonts (`minimum_size`), the 32 px touch font of `tool_reflow`, and the 760×560
-//! window of the acceptance run. The row comes from the presenter, so the line is the
-//! one the window really shows.
+//! WIN-1 of the Windows acceptance run: a Copy paused in the middle of a large file
+//! shows the current file's progress (its folder and name lines, and its bar with the
+//! bytes written as its description) without scrolling, in a window of its preferred
+//! size, and offers no Details button. Blue Desktop and Dark Touch with their default
+//! and larger fonts (`minimum_size`), the 32 px touch font of `tool_reflow`, and the
+//! 760×560 window of the acceptance run. The row comes from the presenter (through the
+//! main window's model, as the window really shows it).
 use super::polish;
 use super::*;
 use i_slint_core::{
+    accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ItemTreeRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable},
     layout::Orientation,
@@ -85,16 +85,25 @@ fn viewport(item: &ItemRc) -> Option<ItemRc> {
     None
 }
 
-/// What keeps the current file's line or bar from being shown whole without scrolling.
+/// What keeps the current file's lines or bar from being shown whole without scrolling.
 fn hidden_file_progress(window: &MinimalSoftwareWindow, job: &OperationRow) -> Vec<String> {
-    let line = modeless::accessible_item(window, AccessibleRole::Text, &job.file_progress_label);
+    let folder = modeless::accessible_item(window, AccessibleRole::Text, &job.transfer_directory);
+    let name = modeless::accessible_item(window, AccessibleRole::Text, &job.transfer_name);
     let bar = modeless::accessible_item(
         window,
         AccessibleRole::ProgressIndicator,
-        &job.file_progress_title,
+        "Current file progress",
     );
     let mut findings = Vec::new();
-    for (what, item) in [("the line", line), ("its bar", bar)] {
+    if let Some(bar) = &bar
+        && bar
+            .accessible_string_property(AccessibleStringProperty::Description)
+            .as_deref()
+            != Some(job.file_progress_label.as_str())
+    {
+        findings.push("the bar's description is not the file's bytes".to_owned());
+    }
+    for (what, item) in [("the folder", folder), ("the name", name), ("its bar", bar)] {
         let Some(item) = item else {
             findings.push(format!("{what} is missing"));
             continue;
@@ -125,7 +134,7 @@ fn hidden_file_progress(window: &MinimalSoftwareWindow, job: &OperationRow) -> V
 }
 
 #[test]
-fn details_show_a_paused_large_files_progress_without_scrolling() {
+fn a_paused_large_files_progress_shows_without_scrolling_or_details() {
     let h = Harness::new();
     h.start(1);
     h.apply(Event::Copy(CopyEvent::Progress(Arc::new(
@@ -149,6 +158,8 @@ fn details_show_a_paused_large_files_progress_without_scrolling() {
         job.file_progress_label
     );
     assert_eq!(job.file_progress_title, "Current file written");
+    assert_eq!(job.transfer_name, "large.bin");
+    assert!(job.transfer_directory.ends_with("資料"));
     let reported = APPEARANCES.into_iter().map(|appearance| (appearance, None));
     let acceptance = (("Blue Desktop", 0, 0, 12), Some((760, 560)));
     let mut findings = Vec::new();
@@ -160,15 +171,12 @@ fn details_show_a_paused_large_files_progress_without_scrolling() {
         window.invoke_apply_preferences(scheme, density, "".into(), font, font);
         modeless::layout(&native, 900, 700);
         let (width, height) = size.unwrap_or_else(|| preferred_size(native.window()));
-        let frame = format!("details-file-progress-{scheme}-{density}-{font}");
-        modeless::draw(&native, width, height, &frame);
-        modeless::click(&native, "Details");
+        let frame = format!("file-progress-{scheme}-{density}-{font}");
         modeless::draw(&native, width, height, &frame);
         let what = format!("{name} {font}px at {width}x{height}");
         assert!(
-            modeless::accessible_item(&native, AccessibleRole::Groupbox, "Details")
-                .is_some_and(|details| details.is_visible()),
-            "{what}: Details are open below the progress"
+            modeless::accessible_item(&native, AccessibleRole::Button, "Details").is_none(),
+            "{what}: no Details button"
         );
         findings.extend(
             hidden_file_progress(&native, &job)

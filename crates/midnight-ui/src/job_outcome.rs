@@ -99,36 +99,36 @@ pub(super) fn transfer(p: &CopyProgress, failed: bool, locale: &NumberLocale) ->
             format!("{} skipped items were not {verb}.", n(p.skipped))
         });
     }
-    // A link left out where no links are created has its own note in Details.
+    // A link left out where no links are created has its own note in Copy details.
     if p.links_left_out > 0 {
         lines.push(if p.links_left_out == 1 {
-            "1 link was left out: no links are created there; Details names it.".to_owned()
+            "1 link was left out: no links are created there; Copy details names it.".to_owned()
         } else {
             format!(
-                "{} links were left out: no links are created there; Details names each.",
+                "{} links were left out: no links are created there; Copy details names each.",
                 n(p.links_left_out)
             )
         });
     }
     // Copy records a note only for a link it could not follow and so copied as a
-    // link; Details lists each one with its reason.
+    // link; Copy details lists each one with its reason.
     let link_notes = p.note_count.saturating_sub(p.links_left_out);
     if link_notes > 0 {
         lines.push(if link_notes == 1 {
-            "1 link was copied as a link; Details says why.".to_owned()
+            "1 link was copied as a link; Copy details says why.".to_owned()
         } else {
             format!(
-                "{} links were copied as links; Details says why.",
+                "{} links were copied as links; Copy details says why.",
                 n(link_notes)
             )
         });
     }
     if p.recovery_count > 0 {
         lines.push(if p.recovery_count == 1 {
-            "1 file was kept in a recovery folder; Details shows where.".to_owned()
+            "1 file was kept in a recovery folder; Copy details shows where.".to_owned()
         } else {
             format!(
-                "{} files were kept in recovery folders; Details shows where.",
+                "{} files were kept in recovery folders; Copy details shows where.",
                 n(p.recovery_count)
             )
         });

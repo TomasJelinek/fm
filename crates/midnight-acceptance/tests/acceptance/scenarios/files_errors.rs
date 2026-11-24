@@ -293,6 +293,17 @@ fn close_job_windows(app: &mut App) {
     }
 }
 
+/// The ended job's whole details, as its window's Copy details puts them on the
+/// clipboard. The window has no Details button: it shows the outcome and its errors,
+/// and Copy details (here or in Jobs) holds everything else.
+fn copied_details(app: &mut App, window: &Tool) -> Result<String, String> {
+    if tools::has(window.window(), AccessibleRole::Button, "Details") {
+        return Err("the job window still offers Details".into());
+    }
+    let before = tools::clipboard_writes(app);
+    tools::click_last(window.window(), "Copy details")?;
+    tools::wait_copied(app, before, "the job's details")
+}
 /// The progress window titled `title` that is still open, if any.
 fn progress_window(app: &mut App, title: &str) -> Option<Tool> {
     let window = tools::tool_titled(app, title)?;
@@ -302,7 +313,7 @@ fn progress_window(app: &mut App, title: &str) -> Option<Tool> {
 }
 
 /// The checks of a job that ended with errors: its own window shows the error
-/// details, no dialog follows it, and Details shows more.
+/// details, no dialog follows it, and Copy details copies the job's whole details.
 fn check_error_window(
     app: &mut App,
     context: &mut Context,
@@ -337,15 +348,12 @@ fn check_error_window(
         ));
     }
     if let Some(window) = &window {
-        let before = inspect::visible_texts(window.window()).len();
-        let clicked = tools::click_last(window.window(), "Details");
-        app.settle();
-        let after = inspect::visible_texts(window.window()).len();
-        match clicked {
+        match copied_details(app, window) {
             Err(error) => failures.push(format!("{what}: {error}")),
-            Ok(()) if after > before => {}
-            Ok(()) => failures.push(format!(
-                "{what}: Details showed {before} texts, then {after}"
+            Ok(text) if text.contains("Destination") => {}
+            Ok(text) => failures.push(format!(
+                "{what}: Copy details copied no job details: {:?}",
+                text.lines().take(8).collect::<Vec<_>>()
             )),
         }
     }
@@ -421,7 +429,10 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
     chmod(&ro_move, 0o555)?;
     chmod(&source.join("locked"), 0o555)?;
     chmod(&source.join("ro-src"), 0o555)?;
-    let mut app = App::start(Config::new(&source, &target));
+    // An in-process clipboard: the job windows' Copy details is read back from it.
+    let mut config = Config::new(&source, &target);
+    config.clipboard = true;
+    let mut app = App::start(config);
     let mut failures = Vec::new();
 
     // A read-only destination: the error offers Retry, Skip, Skip all this error type
@@ -1028,7 +1039,7 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
     for wanted in [
         "Files copied: ",
         "1 skipped item was not copied.",
-        "1 link was copied as a link; Details says why.",
+        "1 link was copied as a link; Copy details says why.",
     ] {
         if wanted.contains("link") && !LINK_NOTE {
             continue;
@@ -1059,33 +1070,13 @@ pub fn transfer_errors(context: &mut Context) -> Result<(), String> {
             "outcome-counts",
             "Counts of a skipped folder and a link",
         );
-        let before = inspect::visible_texts(window.window()).len();
-        let shown = tools::click_last(window.window(), "Details").map(|()| {
-            app.settle();
-            inspect::visible_texts(window.window())
-        });
-        match shown {
-            Err(error) => failures.push(format!("the outcome's Details: {error}")),
+        match copied_details(&mut app, window) {
+            Err(error) => failures.push(format!("the outcome's Copy details: {error}")),
             Ok(details) => {
-                if details.len() <= before
-                    || (LINK_NOTE
-                        && !details
-                            .iter()
-                            .any(|text| text.contains("because its target does not exist")))
-                {
+                if LINK_NOTE && !details.contains("because its target does not exist") {
                     failures.push(format!(
-                        "Details does not show the link's reason: {:?}",
-                        details.iter().take(16).collect::<Vec<_>>()
-                    ));
-                }
-                let hidden = tools::click_last(window.window(), "Fewer details")
-                    .or_else(|_| tools::click_last(window.window(), "Details"));
-                app.settle();
-                let after = inspect::visible_texts(window.window()).len();
-                if hidden.is_err() || after >= details.len() {
-                    failures.push(format!(
-                        "Details did not hide again ({before} texts, {} with Details, {after} after)",
-                        details.len()
+                        "Copy details does not give the link's reason: {:?}",
+                        details.lines().take(16).collect::<Vec<_>>()
                     ));
                 }
             }

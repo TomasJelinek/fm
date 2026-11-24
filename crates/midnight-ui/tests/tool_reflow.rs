@@ -157,7 +157,7 @@ fn minimum_checksum_window_keeps_both_page_and_algorithm_pickers_usable_at_font3
 }
 
 #[test]
-fn small_progress_scrolls_chart_and_details_without_moving_close() {
+fn small_progress_scrolls_its_chart_without_moving_close() {
     let mut test = ui::TestUi::new();
     test.window
         .invoke_apply_preferences(0, 1, "".into(), 32, 32);
@@ -169,8 +169,6 @@ fn small_progress_scrolls_chart_and_details_without_moving_close() {
         active: true, ..Default::default()
     });
     test.window.show().unwrap();
-    test.draw();
-    ui::click_popup(&test.window, "Details", AccessibleRole::Button);
     test.draw();
     let close = ui::popup_item(&test.window, "Close", AccessibleRole::Button);
     inside(&close, 320.0, 200.0);
