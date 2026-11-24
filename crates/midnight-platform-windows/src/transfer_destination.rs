@@ -13,6 +13,8 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
 };
 
+#[path = "transfer_descriptor.rs"]
+mod descriptor;
 #[path = "transfer_link_stage.rs"]
 mod link_stage;
 #[path = "transfer_preservation.rs"]

@@ -707,6 +707,7 @@ fn trusted_recovery_parent(file: &File) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     let mut storage = vec![0u64; (needed as usize).div_ceil(8)];
+    let length = needed as usize;
     let descriptor = storage.as_mut_ptr().cast();
     // SAFETY: the writable aligned allocation covers the probed native length.
     if unsafe {
@@ -721,6 +722,7 @@ fn trusted_recovery_parent(file: &File) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
+    super::descriptor::checked(&storage, length)?;
     let trusted = |sid: PSID| {
         // SAFETY: SID pointers borrow the live descriptor/token buffers. Validate
         // before comparing; administrators/System are outside this isolation boundary.

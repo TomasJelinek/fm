@@ -362,6 +362,7 @@ fn security(file: &File, path: &Path) -> Result<Vec<u64>, FsError> {
 }
 
 fn security_parts(storage: &[u64], path: &Path) -> Result<Vec<Vec<u8>>, FsError> {
+    super::descriptor::checked(storage, size_of_val(storage)).map_err(|e| error(path, e))?;
     let descriptor = storage.as_ptr().cast_mut().cast();
     let mut owner = ptr::null_mut();
     let mut group = ptr::null_mut();
