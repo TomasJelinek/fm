@@ -163,6 +163,38 @@ fn space_received_before_completion_survives_location_change() {
     assert_eq!(p.panes[0].space.unwrap().available, 42);
 }
 #[test]
+fn a_reread_of_the_shown_folder_keeps_showing_its_free_space_until_it_answers() {
+    let space = |available| SpaceInfo {
+        available,
+        total: 1000,
+    };
+    let mut p = Presenter::new("a".into(), "right".into());
+    let shown = begin(&mut p, PaneId::Left, "a");
+    finish(&mut p, PaneId::Left, shown, vec![]);
+    p.apply(Event::SpaceUpdated {
+        pane: PaneId::Left,
+        navigation: shown,
+        space: space(500),
+    });
+    // A watch hint or a finished job lists the folder again in the background.
+    assert!(p.refresh_if_changed(PaneId::Left, shown, &|_| true));
+    assert!(p.panes[0].loading);
+    assert_eq!(p.panes[0].visible_space(), Some(space(500)));
+    let reread = NavigationId(p.panes[0].generation);
+    p.apply(Event::SpaceUpdated {
+        pane: PaneId::Left,
+        navigation: reread,
+        space: space(400),
+    });
+    assert_eq!(p.panes[0].visible_space(), Some(space(400)));
+    finish(&mut p, PaneId::Left, reread, vec![]);
+    assert_eq!(p.panes[0].visible_space(), Some(space(400)));
+
+    // Another folder shows no free space until its own answer arrives.
+    begin(&mut p, PaneId::Left, "b");
+    assert_eq!(p.panes[0].visible_space(), None);
+}
+#[test]
 fn each_pane_remembers_its_own_last_successful_path_on_a_volume() {
     let c = test_root().join("volume-c");
     let d = test_root().join("volume-d");

@@ -2144,9 +2144,14 @@ impl Pane {
         if self.network_request || (self.network.is_some() && self.pending.is_none()) {
             return None;
         }
-        self.pending
-            .as_ref()
-            .map_or(self.space, |request| request.space)
+        // A re-read of the shown folder keeps showing its free space until it answers.
+        self.pending.as_ref().map_or(self.space, |request| {
+            request.space.or(if request.path == self.path {
+                self.space
+            } else {
+                None
+            })
+        })
     }
     /// The visible location's storage, `Unknown` while it is not classified yet.
     pub(crate) fn visible_storage_kind(&self) -> StorageKind {
