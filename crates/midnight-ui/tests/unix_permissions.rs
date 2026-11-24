@@ -1,4 +1,6 @@
 //! Native Slint events exercise permission drafts without touching the filesystem.
+#[path = "support/window_polish.rs"]
+mod polish;
 #[path = "support/render.rs"]
 mod render;
 use crate::support::ui;
@@ -7,6 +9,7 @@ use i_slint_core::{
     accessibility::AccessibleStringProperty,
     item_tree::{ItemRc, ParentItemTraversalMode},
     items::{AccessibleRole, Flickable, TextInput},
+    window::{WindowInner, WindowKind},
 };
 use midnight_ui::MetadataDraft;
 use slint::{ComponentHandle, platform::Key};
@@ -400,4 +403,47 @@ fn permission_dialog_keeps_dismissal_reachable_at_small_sizes_and_large_fonts() 
             "Escape must close the compact editor"
         );
     }
+}
+
+/// The polish gate's alignment rules in the special bits row (U-K32, U-K39): "Bits:" is
+/// centred on the SUID check box, not on the check box with its caption, and the special
+/// bits follow the matrix's last row at the matrix's own gap, in both densities and at a
+/// large font.
+#[test]
+fn special_bits_keep_the_matrix_gap_and_a_centred_label() {
+    let mut h = Harness::new(0o2755, 0o7777);
+    let mut findings = Vec::new();
+    for (index, (density, font)) in [(0, 0), (1, 0), (0, 20)].into_iter().enumerate() {
+        h.ui.window.invoke_apply_preferences(1, density);
+        if font > 0 {
+            h.ui.window.invoke_apply_fonts("".into(), font, font);
+        }
+        h.ui.resize(1340, 960);
+        h.ui.window
+            .set_metadata_token(format!("unix-rhythm:{index}").into());
+        settle(&mut h.ui);
+        let root = WindowInner::from_pub(h.ui.window.window())
+            .active_popups()
+            .iter()
+            .filter(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
+            .map(|popup| ItemRc::new_root(popup.component.clone()))
+            .next_back()
+            .expect("the Attributes dialog");
+        findings.extend(
+            polish::alignment::check(&polish::alignment_elements(&root), None)
+                .into_iter()
+                .filter(|finding| {
+                    [
+                        polish::alignment::ROW_ALIGNMENT,
+                        polish::alignment::OPTION_ROWS,
+                    ]
+                    .contains(&finding.kind)
+                        && ["Bits:", "SUID", "SGID", "Sticky"]
+                            .iter()
+                            .any(|name| finding.detail.contains(name))
+                })
+                .map(|finding| format!("density {density}, font {font}: {finding}")),
+        );
+    }
+    assert!(findings.is_empty(), "{findings:#?}");
 }

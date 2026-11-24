@@ -137,22 +137,33 @@ export component UnixPermissions inherits VerticalLayout {
             activate(reset) => { root.change(permission.bit, reset); }
         }
     }
-    Rectangle { height: 1px; background: Theme.frame; }
-    HorizontalLayout {
-        Text { text: "Bits:"; color: Theme.text; font-size: Theme.font-size;
-            width: root.label-width; horizontal-stretch: 0; vertical-alignment: center; }
-        for special in [
-            { label: "SUID", bit: 2048 }, { label: "SGID", bit: 1024 }, { label: "Sticky", bit: 512 },
-        ]: VerticalLayout {
-            spacing: 0px;
-            PermissionCell {
-                label: special.label; state: root.state(special.bit);
-                pending: root.has(root.active-mask, special.bit);
-                enabled: root.enabled && !root.busy && !root.invalid-octal && root.has(root.supported-mask, special.bit);
-                activate(reset) => { root.change(special.bit, reset); }
+    // The special bits' check boxes keep the matrix's row gap (the polish gate's U-K39):
+    // the rule between them is drawn inside that gap, taking no height of its own, and
+    // "Bits:" is centred on the check boxes, not on the check boxes with their captions.
+    Rectangle {
+        HorizontalLayout {
+            VerticalLayout {
+                width: root.label-width; horizontal-stretch: 0; alignment: start;
+                Text { text: "Bits:"; color: Theme.text; font-size: Theme.font-size;
+                    height: Theme.control-height; vertical-alignment: center; }
             }
-            Text { text: special.label; color: Theme.text; font-size: Theme.small-font;
-                horizontal-alignment: center; }
+            for special in [
+                { label: "SUID", bit: 2048 }, { label: "SGID", bit: 1024 }, { label: "Sticky", bit: 512 },
+            ]: VerticalLayout {
+                spacing: 0px;
+                PermissionCell {
+                    label: special.label; state: root.state(special.bit);
+                    pending: root.has(root.active-mask, special.bit);
+                    enabled: root.enabled && !root.busy && !root.invalid-octal && root.has(root.supported-mask, special.bit);
+                    activate(reset) => { root.change(special.bit, reset); }
+                }
+                Text { text: special.label; color: Theme.text; font-size: Theme.small-font;
+                    horizontal-alignment: center; }
+            }
+        }
+        Rectangle {
+            x: 0px; y: -(root.spacing + 1px) / 2; width: parent.width; height: 1px;
+            background: Theme.frame;
         }
     }
     Rectangle { height: 1px; background: Theme.frame; }
