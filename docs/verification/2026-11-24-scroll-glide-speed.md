@@ -194,6 +194,27 @@ the worker thread per turn; no frame waits for it
 (`a_fast_wheel_spin_never_waits_for_the_next_page` and
 `page_down_never_waits_for_the_next_page` pass).
 
+## Test runs (Windows, 24 November 2026)
+
+- `cargo test -p midnight-ui-input`: 73 unit tests pass (1 measurement ignored) and 8
+  integration tests.
+- `midnight-ui` (1,713 unit, 1,236 integration), `midnight-viewer-ui` (244 unit, 36
+  integration), `midnight-compare-ui` (42 unit, 19 integration) and `midnight-viewer-engine`
+  (657 unit) pass, run one executable at a time. One run of the viewer engine's
+  `office_real_generated_links_resolve_from_bootstrap_catalog_and_nested_sheets` failed with
+  "Source changed since capture" on its temporary workbook and passed in the other runs; it
+  does not scroll.
+- `cargo clippy --workspace --all-targets --locked --offline --features
+  midnight-acceptance/acceptance -- -D warnings`, `cargo fmt --all -- --check` and
+  `scripts\check-source-size.ps1` are clean. A Linux cross-check from Windows stops at
+  `yeslogic-fontconfig-sys` (Slint's font backend needs `pkg-config`); the changed code has
+  no platform-specific parts.
+- Acceptance with the 0.5.2 release's plugins (run `20261124-201319`): `panels_scrolling`,
+  `viewers_scroll` (with its two standing SKIPs: the HTML page's Slint pixel delta and
+  touchpad coasting) and `viewers_compare` PASS. `journeys_pointer_only` failed once at its
+  rubber band from the gutter (a pointer drag; nothing marked) and passed on its rerun
+  (`20261124-202533`).
+
 ## Remaining limits
 
 - A frame later than 50 ms still advances a glide by 50 ms, so below 20 frames a second a
