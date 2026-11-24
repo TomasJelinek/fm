@@ -12,6 +12,17 @@ pub(super) fn case_variant<'a>(entries: &'a [Entry], typed: &OsStr) -> Option<&'
     named.next().is_none().then_some(entry)
 }
 
+/// Whether `entries` has a file (not a folder) whose name is `typed` in any letter
+/// case. One pass, comparing UTF-16 units in place: no name is copied or case-mapped.
+pub(super) fn lists_file_in_other_case(entries: &[Entry], typed: &OsStr) -> bool {
+    entries.iter().any(|entry| {
+        !matches!(
+            entry.kind,
+            midnight_core::EntryKind::Directory | midnight_core::EntryKind::DirectoryLink
+        ) && same_name(&entry.name, typed)
+    })
+}
+
 fn same_name(listed: &OsStr, typed: &OsStr) -> bool {
     let (mut listed, mut typed) = (listed.encode_wide(), typed.encode_wide());
     loop {

@@ -551,19 +551,9 @@ impl Presenter {
         else {
             return false;
         };
-        let same = |entry: &std::ffi::OsStr| {
-            if cfg!(windows) {
-                entry.to_string_lossy().to_lowercase() == name.to_lowercase()
-            } else {
-                entry == std::ffi::OsStr::new(name)
-            }
-        };
         self.panes.iter().any(|pane| {
             pane.display_path() == directory
-                && pane.entries.iter().any(|entry| {
-                    !matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink)
-                        && entry.path.file_name().is_some_and(same)
-                })
+                && path_target::lists_file(&pane.entries, &pane.index, &directory, name)
         })
     }
 

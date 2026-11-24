@@ -51,6 +51,21 @@ pub(super) fn listed_file_target(
     Some(entry.id)
 }
 
+/// Whether the listing of `directory` shows a file (not a folder) named `name`: by its
+/// exact path through the index, else, on Windows, in other letter case (`name_case`).
+pub(super) fn lists_file(
+    entries: &[Entry],
+    index: &DirectoryIndex,
+    directory: &Path,
+    name: &str,
+) -> bool {
+    index
+        .by_path
+        .get(&directory.join(name))
+        .is_some_and(|id| !index.is_directory(*id))
+        || name_case::lists_file_in_other_case(entries, std::ffi::OsStr::new(name))
+}
+
 impl Presenter {
     /// Open the native `path` typed in the path bar. A file that the panel's listing
     /// shows gets the cursor at once; any other path is navigated to, and when the

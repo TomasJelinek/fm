@@ -7,3 +7,8 @@ use std::ffi::OsStr;
 pub(super) fn case_variant<'a>(_: &'a [Entry], _: &OsStr) -> Option<&'a Entry> {
     None
 }
+
+/// No file is named in other letter case.
+pub(super) fn lists_file_in_other_case(_: &[Entry], _: &OsStr) -> bool {
+    false
+}

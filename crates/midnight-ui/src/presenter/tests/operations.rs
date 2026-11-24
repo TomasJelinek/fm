@@ -543,6 +543,47 @@ fn a_new_empty_file_over_a_listed_file_asks_then_replaces() {
     assert!(p.operations.replace_name.is_none());
 }
 
+/// Only a listed file asks to be replaced: a folder of that name does not, and a name
+/// in other letter case is the same file only where folders ignore letter case.
+#[test]
+fn a_new_empty_file_asks_only_for_a_listed_file_in_the_folder_s_letter_case_rules() {
+    let asks = |name: &str| {
+        let path = test_root().join("operations");
+        let mut p = Presenter::new(path.clone(), path.clone());
+        let generation = begin(&mut p, PaneId::Left, path.to_str().unwrap());
+        finish(
+            &mut p,
+            PaneId::Left,
+            generation,
+            vec![
+                Entry::new(EntryId(1), path.join("文档.txt"), EntryKind::File),
+                Entry::new(EntryId(2), path.join("second.txt"), EntryKind::File),
+                Entry::new(EntryId(3), path.join("Složka"), EntryKind::Directory),
+            ],
+        );
+        p.start_operation(PaneId::Left, MutationKind::CreateFile, &|_| true);
+        let id = p.operations.pending.expect("prepared create");
+        p.apply(Event::Operation(OperationEvent::Preview(Arc::new(
+            OperationPreview {
+                id,
+                kind: MutationKind::CreateFile,
+                files: 0,
+                folders: 0,
+                file_bytes: None,
+                sample: vec![],
+            },
+        ))));
+        p.confirm_operation(&id.0.to_string(), name.into(), &|_| true);
+        p.operations.replace_name.is_some()
+    };
+    assert!(asks("second.txt"));
+    assert!(!asks("Složka"), "a folder is not replaced");
+    assert!(!asks("third.txt"));
+    assert_eq!(asks("SECOND.TXT"), cfg!(windows));
+    assert_eq!(asks("文档.TXT"), cfg!(windows));
+    assert!(!asks("sLOžKA"), "nor a folder in other letter case");
+}
+
 /// Confirm a Rename of the focused `文档.txt` to `renamed.txt`; returns its job.
 fn confirmed_rename(p: &mut Presenter) -> OperationId {
     p.start_operation(PaneId::Left, MutationKind::Rename, &|_| true);
