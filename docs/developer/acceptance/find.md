@@ -17,7 +17,7 @@ Run them with `bash scripts/acceptance.sh --only find`. `find_archives` and
 `find_viewers` stage the installed plugin packages (`MIDNIGHT_ACCEPTANCE_PLUGINS`, see
 ACCEPTANCE.md); without them they fail at staging, not skip.
 
-Last runs: the Linux run `20261122-182452` and the Windows runs `20261122-165028` and `20261122-191856` (smoke scale, debug test builds of origin/main 66a02637 with the Find and tools changes of this record; Linux: WSL 2, Ubuntu 24.04 on ext4, the plugin packages built from b1b89343, the shared Cargo target cleaned of every path package before the build; Windows: Windows 11, the release plugin packages built from d7ff8860). Every Find scenario passed in both; on Windows `find_feed_panel` first failed on a stale expectation (F-F19: the Copy dialog's summary line changed in 142aa74b) and passed with the updated check in `20261122-191856`. Statuses are from these runs unless another is named, and the Seconds column is the Linux run's. The new checks were each made to expect a wrong value once and failed with their own message (Linux red runs `20261122-093311`, `20261122-094218`, `20261122-095108` and, for the updated F-F19, `20261122-181712`). Earlier: the runs `20261122-100257` (Linux) and `20261122-112449` (Windows) of 26c18895 with these checks, all PASS; the Linux run `20261121-144246` of commit 3f6fff8a (every scenario of the suite) and 2026-11-20 on Linux, smoke scale, with the plugin packages built from the tree of that day.
+Last runs: the Linux run `20261122-182452` and the Windows runs `20261122-165028` and `20261122-191856` (smoke scale, debug test builds of origin/main 66a02637 with the Find and tools changes of this record; Linux: WSL 2, Ubuntu 24.04 on ext4, the plugin packages built from b1b89343, the shared Cargo target cleaned of every path package before the build; Windows: Windows 11, the release plugin packages built from d7ff8860). Every Find scenario passed in both; on Windows `find_feed_panel` first failed on a stale expectation (F-F19: the Copy dialog's summary line changed in 142aa74b) and passed with the updated check in `20261122-191856`. Statuses are from these runs unless another is named, and the Seconds column is the Linux run's. After d75e82b1 (no default visited-entries limit, 100,000 results, actions on a fed list) `tools_find_results`, `find_feed_panel`, `find_budgets` and `find_archives` were updated and rerun on 24 November: Linux `20261124-181835` and Windows `20261124-183236`, all PASS; their rows' Seconds are from the Linux run. The new checks were each made to expect a wrong value once and failed with their own message (Linux red runs `20261122-093311`, `20261122-094218`, `20261122-095108` and, for the updated F-F19, `20261122-181712`). Earlier: the runs `20261122-100257` (Linux) and `20261122-112449` (Windows) of 26c18895 with these checks, all PASS; the Linux run `20261121-144246` of commit 3f6fff8a (every scenario of the suite) and 2026-11-20 on Linux, smoke scale, with the plugin packages built from the tree of that day.
 
 ## Scenarios
 
@@ -26,12 +26,12 @@ Last runs: the Linux run `20261122-182452` and the Windows runs `20261122-165028
 | `find_by_mask` | Alt+F7, a mask search, Go to file | PASS | 6.5 |
 | `tools_find_criteria` | masks, Regex, Expression, content, Identical files, column widths | PASS | 75 |
 | `tools_find_folders_help` | search folders, syntax help, status details | PASS | 23 |
-| `tools_find_results` | 10,000 results, Stop, Feed to panel operations, no archive provider | PASS | 99 |
+| `tools_find_results` | 100,000 results, Stop, Feed to panel operations, no archive provider | PASS | 25 |
 | `find_query_syntax` | masks, Regex and Expression in depth; content encodings; Modified within; Identical files | PASS | 72 |
 | `find_roots_windows` | several search folders; ways to open Find; four windows; two searches at once; Escape and Close | PASS | 52 |
 | `find_result_actions` | several results selected, Ctrl+C, the context menu, Copy details, sorting, collation, Go to file, View/Edit/Open, stale results, Stop, scrolling, a rebound View key | PASS | 142 |
-| `find_feed_panel` | Feed to panel: list, the Find selection carried as marks, clipboard, marks, keys, refusals, viewers, file operations, right panel | PASS | 137 |
-| `find_budgets` | folder depth, content per file, result count with a group, duplicate candidates | PASS | 26 |
+| `find_feed_panel` | Feed to panel: list, the Find selection carried as marks, clipboard, marks, keys, refusals of the folder-only actions, the other actions on the results, viewers, file operations, right panel | PASS | 29 |
+| `find_budgets` | folder depth, content per file, a group over the former result limit, duplicate candidates | PASS | 22 |
 | `find_layout` | Blue, Dark and Touch at preferred, narrow and compact sizes; column drags; path tails; the fitted footer and More… (also with 32 px text) | PASS (FIND-COMPACT-STATUS-OVERLAP fixed) | 34 |
 | `find_archives` | Search inside archives through the installed plugin, many and large archives, Stop, visited entries | PASS (also at full scale, run `20261121-171419`, 75 s) | 87 |
 | `find_viewers` | viewer windows from the results and from a fed list; a viewer keeping what it captured | PASS | 13 |
@@ -137,7 +137,7 @@ that verified it.
 | F-S02 | Every column sorted both ways with its arrow; folders first and missing extensions last under Extension; equal keys by path | `find_result_actions` | exact orders and header arrows | PASS |
 | F-S03 | A new search keeps the window's order | `find_result_actions` | exact order | PASS |
 | F-S04 | Name order equals the panels' collation | `find_result_actions` | same names, same order | PASS |
-| F-S05 | Large result lists; the 10,000 results | `tools_find_results` | every entry of `many/`; 10,000 rows | PASS |
+| F-S05 | Large result lists; the 100,000 results | `tools_find_results` | every entry of `many/`; 100,000 rows | PASS |
 | F-S06 | Every column resized by dragging; a drag never sorts; the width is kept for the next search | `tools_find_criteria`, `find_layout` | widths; order; arrow | PASS |
 | F-S07 | Keys in the results; Left and Right scroll sideways | `find_result_actions`, `find_layout` | selected row; header position | PASS (the sideways part with the check adjusted on 21 November; also held on Windows in run 20261121-042048, [windows.md](windows.md)) |
 | F-S08 | Go to file by Enter, double click and button, for the cursor's result, files and folders; the window stays open | `find_result_actions`, `find_by_mask` | panel folder and cursor | PASS |
@@ -174,13 +174,14 @@ that verified it.
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| F-B01 | Result count (10,000) | `tools_find_results` | 10,000 rows; "result count" | PASS |
+| F-B01 | Result count (100,000; 10,000 before d75e82b1) | `tools_find_results` | 100,050 files: Incomplete, 100,000 rows; "result count" | PASS |
 | F-B02 | Folder depth (128 retained levels) | `find_budgets` | the files of 127 levels; "folder depth" | PASS |
 | F-B03 | Content read per file (1 GiB) | `find_budgets` | the small file only; "content read per file"; 1 size-limited file | PASS |
 | F-B04 | Duplicate candidates (100,000) | `find_budgets` | "duplicate candidates"; 100,000 candidates | PASS |
-| F-B05 | Visited entries (1,000,000), archive members included | `find_archives` | 1,000,000 examined; "visited entries" | PASS |
+| F-B05 | No visited-entries limit by default (1,000,000 before d75e82b1), archive members included | `find_archives` | eleven archives of 99,910 members: Completed, 1,099,021 examined, no "visited entries" | PASS |
 | F-B06 | Retained memory (64 MiB) | – | – | PENDING: no fixture reaches it in reasonable time and the window cannot lower it |
 | F-B07 | Total content read (16 GiB) | – | – | PENDING: it needs 16 GiB actually read and the window cannot lower it |
+| F-B08 | An identical group larger than the former 10,000-result limit is listed whole beside a later pair; at default limits no group can exceed the result limit, as the 100,000 duplicate candidates come first (the engine's `an_omitted_oversized_group_does_not_stop_later_groups_that_fit` lowers the limit to omit a group whole) | `find_budgets` | Completed; 2 verified groups, 10,003 candidates and rows; each group's rows under one label | PASS |
 
 ## Search inside archives (installed archive plugin)
 
@@ -196,7 +197,7 @@ that verified it.
 | F-A08 | A broken archive is reported and the search goes on | `find_archives` | Incomplete; the other file found; details name it | PASS |
 | F-A09 | Go to file opens the archive at the member; Backspace returns | `find_archives` | path bar, cursor; back in the folder at the archive | PASS |
 | F-A10 | View, Edit and Open are disabled for members; F3 explains | `find_archives` | button states; error line | PASS |
-| F-A11 | Feed to panel leaves members out and counts them; only members are refused | `find_archives` | list rows and status; error line | PASS |
+| F-A11 | Feed to panel leaves members out and counts them; only members are refused (since d75e82b1 by the backend's feed preparation, whose details add "Operation: feed search results") | `find_archives` | list rows and status; error line | PASS |
 | F-A12 | 300 ZIPs and one of 20,000 members, all searched | `find_archives` | 301 rows; 301 archives and 20,600 members in the details | PASS |
 | F-A13 | Stop ends a search inside archives promptly while a panel opens an archive | `find_archives` | Cancelled within 5 s; the panel lists the archive | PASS |
 | F-A14 | An archive over 100,000 entries is searched completely | `find_archives` | the last member found | PASS |
@@ -208,10 +209,10 @@ that verified it.
 
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
-| F-F01 | The list: the Find window's order, title, status, Folder column, folder rows | `find_feed_panel` | exact rows and texts | PASS |
+| F-F01 | The list: the Find window's order, title, status (the focused result's facts, then the counts), Folder column, folder rows | `find_feed_panel` | exact rows and texts | PASS |
 | F-F02 | Cursor keys | `find_feed_panel` | cursor after Down, End, Up, Home, Page Down, Page Up | PASS |
 | F-F03 | Alt+Right and Ctrl+R do nothing in the list | `find_feed_panel` | list unchanged, no notice | PASS |
-| F-F04 | Insert and Space mark; the status counts and sums | `find_feed_panel` | marks, cursor, status | PASS |
+| F-F04 | Insert marks and moves; Space marks and moves (since d75e82b1, measuring a folder too); the status counts and sums | `find_feed_panel` | marks, cursor, status | PASS |
 | F-F05 | Ctrl+Shift+A, Ctrl+A, Ctrl+D, Ctrl+I, Ctrl+Shift+I with the keys' panel meaning; keypad * like Ctrl+I | `find_feed_panel` | marks after each key from a known state | PASS, the folders case included (keypad * as Ctrl+Shift+I once Select by mask last had Include folders, `find_feed.rs` since 4d788480); also PASS on Windows in run 20261121-024756 ([Windows results](windows.md#results)) |
 | F-F06 | Ctrl+click, Shift+click, Alt+Down and Alt+Up | `find_feed_panel` | marks and cursor | PASS |
 | F-F07 | Enter, Ctrl+Page Down and a double click go to a file or open a folder | `find_feed_panel` | panel folder and cursor; list closed | PASS |
@@ -220,15 +221,17 @@ that verified it.
 | F-F10 | Alt+Enter summarizes the marked results | `find_feed_panel` | a properties notice, not a refusal | PASS |
 | F-F11 | F5 copies the marked results; F6 moves the focused one and the list keeps its row | `find_feed_panel`, `tools_find_results` | files on disk; rows | PASS |
 | F-F12 | F8, Delete and Shift+Delete ask; Shift+F8 deletes a marked folder and the result inside it | `find_feed_panel`, `tools_find_results` | dialogs; disk; rows | PASS |
-| F-F13 | Refused keys and keypad keys explain themselves and change nothing | `find_feed_panel` | notice title and text per key; folder unchanged | PASS |
-| F-F14 | The toolbar, the function bar and the main menu refuse the same way | `find_feed_panel` | same | PASS |
-| F-F15 | A custom command from the toolbar is refused and does not run | `find_feed_panel` | notice; no marker file | PASS |
+| F-F13 | The actions that need one folder explain themselves and change nothing: F7, Shift+F4, Ctrl+V, Ctrl+F10 (since d75e82b1 the others act on the results, F-F22) | `find_feed_panel` | notice title and text per key; folder unchanged | PASS |
+| F-F14 | The toolbar, the function bar and the main menu refuse the same way (New empty file, F7, F10 Create folder…) | `find_feed_panel` | same | PASS |
+| F-F15 | A custom command from the toolbar runs with the list's paths (refused before d75e82b1) | `find_feed_panel` › actions on the results | the marker file it creates | PASS |
 | F-F16 | Ctrl+C and Ctrl+X put the marked results on the clipboard, to copy and to move | `find_feed_panel` › the Find selection carried to the list | the clipboard's files and intent | PASS (SKIP before: the clipboard was not installed) |
 | F-F17 | A Find from the right panel feeds the right panel | `find_feed_panel` | rows and title in the right panel | PASS |
 | F-F18 | In a viewer opened from the list, Space and Backspace walk the list's results; Alt+F3 shows the source | `find_viewers` | the viewer's text after each key | PASS |
 | F-F19 | The Find selection arrives as the list's marks: three results Ctrl+clicked (" · 3 selected · 11 B"), all six listed, exactly those marked ("3 of 6 selected · …"), the list's cursor on the Find's cursor result; F5's Copy dialog reads "Copy 3 files (11 B) to:", its source "Search results" (cancelled; before 142aa74b it named "3 selected search results"); after a plain click only, nothing is marked and the cursor is on that result | `find_feed_panel` › the Find selection carried to the list | marks, cursor, status, the dialog's text | PASS |
 | F-F20 | With no result chosen in the Find window, the list's cursor starts on its first row | `find_feed_panel` › the list | the list's cursor | PASS |
 | F-F21 | A viewer opened from the results keeps the content it captured when the file changes afterwards; a new View of the changed result is refused and opens nothing | `find_viewers` › from the results | the open viewer's text; the error line; the viewer count | PASS |
+| F-F22 | The other actions act on the list's rows, here the focused `src/sub/g.txt` that the folder underneath does not show: F2 renames it, Ctrl+F2, Ctrl+F7 and the toolbar's Attributes button capture it, Ctrl+F8 and F10 Checksums… calculate it alone, Ctrl+M previews it, Ctrl+Enter inserts its full path, Ctrl+Shift+S measures a folder result, Ctrl+F6 twice, F10 Sort by name and Ctrl+F3 sort the list, Ctrl+= and Ctrl+− mark by mask and Num + and Num − open those dialogs, Ctrl+F12 opens the filter, Ctrl+H toggles the list's own Show hidden files, Ctrl+Shift+C is not refused; each is cancelled and the folders are unchanged | `find_feed_panel` › actions on the results | the rename dialog's name, the Attributes summary, the Checksums rows, the Make File List preview, the command line, the row's size, the order, the marks, the dialogs | PASS |
+| F-F23 | Compare files from a fed list takes the focused result as File A and asks for File B | `viewers_combinations` › Find results and a fed list | the comparator's File A (`sub/c.txt`) and empty File B | PASS |
 
 ## Size, density and theme
 

@@ -150,6 +150,7 @@ besides the action's own effect fails it.
 | O-S16 | An uppercase letter starts a filename search | search text | PASS (after the fix for finding O-1) |
 | O-S17 | Viewer and comparison keys; F3, Alt+F3, Ctrl+Shift+C | viewer windows exist only in staged processes; covered by `viewers_files`, `viewers_controls`, `viewers_compare` | SKIP |
 | O-S18 | Actions without a default key (Options, Jobs, About, Custom Commands, Manage Hot Paths, Deselect files only) | reached from F10 (`tools_main_menu`) and Options | PASS |
+| O-S19 | Clear comparison (`panel.compare-clear`, b70cf8df): Escape and Ctrl+Shift+F11 after Compare directories with subfolders; Escape with nothing compared does nothing; Escape during a filename search ends the search and keeps the badges; the footer's Ctrl+Shift+F11 cell | both panels' badges, the result line, the selection; `shortcuts_footer` the same probe | PASS on Linux (`20261124-183335`) and Windows (`20261124-183236`) |
 
 ## Shortcut hints and the footer
 

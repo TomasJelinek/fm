@@ -106,7 +106,7 @@ flagged and its corrected twin must pass every check.
 | U-K36 | uneven gaps between rows | In a column of controls (one left edge, one viewport) with at least three free gaps, a gap at least three times the median and 12 px more; the gap above a dialog's last row (its footer) is exempt. | Case 24: gaps 6, 46, 6 px → 6, 6, 6 px. |
 | U-K37 | controls touching | Controls side by side, or fields and pickers stacked, less than 2 px apart; a control (narrower than 90 % of its dialog) within 2 px of its dialog's or tool window's edge. Segments of one control (tabs, checkable page buttons, a list's rows) are exempt. | Case 25: buttons 1 px apart → 8 px. |
 | U-K38 | text elided although there is room | A label shortened with "…" whose free room to its right (to 2 px before its row's next element, the gap U-K37 requires, or to its container's edge less 16 px) would show it whole. | Case 26: "Current folder: projects" in 80 px with 300 px free → 300 px. |
-| U-K39 | uneven gaps between option rows | Check boxes, radio buttons and switches stacked in a column (one left edge, one viewport, nothing between two neighbours): a gap more than 1 px from the column's most common gap. On the Options pages that gap is `OptionRows.row-gap`. | Case 28: a last gap 8 px wider than the others → even gaps. |
+| U-K39 | uneven gaps between option rows | Check boxes, radio buttons and switches stacked in a column (one left edge, one viewport, nothing between two neighbours): a gap more than 1 px from the column's most common gap. On the Options pages that gap is `OptionRows.row-gap`. Anything reaching into a gap, such as a row's wrapped description, exempts that gap, also where the viewport cuts it. | Case 28: a last gap 8 px wider than the others → even gaps; case 29: a wrapped description running past a page's bottom edge is no finding (the twin), a wider gap still is. |
 
 ## Surfaces and states
 
@@ -277,6 +277,7 @@ in the same change (run `20261124-111500`):
 | U-D42 | Custom Commands: Enabled at the top of the type picker's row; the main menu's category headings 4 px off the picker and the entries. | U-K32, U-K34 |
 | U-D43 | Copy, Move: a form note's text 2 px from the check box captions above and below it. | U-K34 |
 | U-D44 | Panel toolbar (the owner's request): View and Sort compact below 700 px whatever the drive buttons needed, 104 px wide whatever the font. | `panel_toolbar_fit` |
+| U-D45 | Attributes on Linux (the permission bits): "Bits:" centred on its column (the check box with its caption) 6.5–13 px below the SUID check box's centre, and the special bits 13 px under the matrix's last row instead of its 6 px, the rule between them taking a layout row (Linux whole-suite run of 1341a7ff, `ui_review` and `ui_polish_dialogs`). Fixed: "Bits:" is centred on the check boxes and the rule sits inside the 6 px gap; red and green in `unix_permissions::special_bits_keep_the_matrix_gap_and_a_centred_label`; Linux `20261124-181835` (`ui_review`) and `20261124-183335` (`ui_polish_dialogs`) pass. | U-K32, U-K39 |
 
 Open: Attributes › Times in its narrowest layout (a row's Now button 6 px past the UTC
 offset field under it, exempt as open), and the viewers' "Aa" button and mode picker,
