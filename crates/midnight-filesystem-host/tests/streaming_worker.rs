@@ -353,9 +353,15 @@ fn installed_worker_asks_for_checks_and_uses_one_archive_password() {
         mount.read(plain.id.entry, 0, whole, &cancel).unwrap(),
         FIXTURE_PAYLOAD
     );
-    assert_eq!(mount.unlock(&wrong).unwrap(), ArchiveUnlock::WrongPassword);
+    assert_eq!(
+        mount.unlock(&wrong, &Cancellation::default()).unwrap(),
+        ArchiveUnlock::WrongPassword
+    );
     assert!(!mount.unlocked());
-    assert_eq!(mount.unlock(&right).unwrap(), ArchiveUnlock::Unlocked);
+    assert_eq!(
+        mount.unlock(&right, &Cancellation::default()).unwrap(),
+        ArchiveUnlock::Unlocked
+    );
     assert!(mount.unlocked());
     for member in [&balcony, &legacy] {
         assert_eq!(
@@ -371,9 +377,15 @@ fn installed_worker_asks_for_checks_and_uses_one_archive_password() {
     let error = mount.list(1, &cancel).unwrap_err();
     assert!(is_archive_password_required(&error), "{error:?}");
     assert!(mount.listing_locked());
-    assert_eq!(mount.unlock(&wrong).unwrap(), ArchiveUnlock::WrongPassword);
+    assert_eq!(
+        mount.unlock(&wrong, &Cancellation::default()).unwrap(),
+        ArchiveUnlock::WrongPassword
+    );
     assert!(mount.listing_locked());
-    assert_eq!(mount.unlock(&right).unwrap(), ArchiveUnlock::Unlocked);
+    assert_eq!(
+        mount.unlock(&right, &Cancellation::default()).unwrap(),
+        ArchiveUnlock::Unlocked
+    );
     assert!(!mount.listing_locked());
     let secret = named(&mount.list(1, &cancel).unwrap(), "secret.txt");
     assert_eq!(secret.access.encryption, ArchiveEncryption::SevenZipAes256);

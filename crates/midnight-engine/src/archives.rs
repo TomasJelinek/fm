@@ -116,6 +116,8 @@ pub(crate) struct Controller {
     /// MAX_REQUESTS navigation shares; see [`Controller::admission`].
     requests: Arc<Semaphore>,
     cancellations: [Cancellation; PANES],
+    /// Cancels password checks (`unlock`) when the engine stops.
+    unlocks: Cancellation,
     /// Wakes navigations waiting for a worker after a cancellation.
     superseded: Arc<Notify>,
     outbox: Outbox,
@@ -147,6 +149,7 @@ impl Controller {
             budget: Arc::new(Semaphore::new(MAX_WORKERS)),
             requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
+            unlocks: Cancellation::default(),
             superseded: Arc::new(Notify::new()),
             outbox: outbox.clone(),
             snapshots,
@@ -377,6 +380,7 @@ impl Controller {
             budget,
             requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             cancellations: std::array::from_fn(|_| Cancellation::default()),
+            unlocks: Cancellation::default(),
             superseded: Arc::new(Notify::new()),
             outbox,
             snapshots,
@@ -426,6 +430,7 @@ impl Drop for Controller {
         for cancel in &self.cancellations {
             cancel.cancel();
         }
+        self.unlocks.cancel();
         self.superseded.notify_waiters();
     }
 }

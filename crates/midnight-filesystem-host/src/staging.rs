@@ -239,6 +239,16 @@ impl Staging {
         self.trim();
         Some(lease)
     }
+    /// Bytes of the sealed scratch stages, which the worker reads with `SpoolRead`; the
+    /// budgets of an exchange grow with them (`session_budget.rs`).
+    pub(crate) fn scratch_length(&self) -> u64 {
+        self.sealed
+            .values()
+            .filter(|sealed| sealed.purpose == StagePurpose::Scratch)
+            .fold(0, |total, sealed| {
+                total.saturating_add(sealed.spool.length())
+            })
+    }
     /// Return a nested reply, or None for a terminal message handled by the caller.
     pub(crate) fn nested(
         &mut self,

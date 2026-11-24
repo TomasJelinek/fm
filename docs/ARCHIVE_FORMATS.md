@@ -284,11 +284,12 @@ ZIP support is Stored/Deflate, including password-protected members (below); oth
 codecs, encrypted Office containers, DRM and corrupt archives fail explicitly, and the
 panel names the reason. The current worker
 has no artificial source, member or expansion-ratio byte ceiling: available spool
-storage limits decoded content. Nothing limits how many members an archive has, how
-many a folder lists or how long their names are in total: the archive's index lives
-in its worker, whose 1 GiB of memory holds about nine million TAR, two million 7z or
-one and a half million ZIP members, and panels, F5 copy-out, folder sizes and Find
-all take a folder of any size; F5 also copies a selection of any size. A panel
+storage limits decoded content. Nothing limits how many members an archive has: the
+archive's index lives in its worker, whose 1 GiB of memory holds about nine million
+TAR, two million 7z or one and a half million ZIP members, and panels, F5 copy-out,
+folder sizes and Find take any folder such a worker lists; F5 also copies a selection
+of any size. The host stops a worker that reads more than four times its archive plus 1 GiB, or works longer than its time budget,
+for one request ([filesystem API](developer/FILESYSTEM_API.md#errors-cancellation-and-resource-bounds)). A panel
 showing an archive folder holds about 640 bytes per member in the application (about
 610 MiB for a million members). An
 archive that needs more than its worker has says that the worker ran out of memory;

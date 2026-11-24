@@ -494,7 +494,11 @@ fn cancelled_session_does_not_shortcut_an_incomplete_supervisor_wait() {
     fixture.gates.source.release();
     let cancel = Cancellation::default();
     cancel.cancel();
-    fixture.supervision.begin(Instant::now(), Some(&cancel));
+    fixture.supervision.begin(
+        Instant::now(),
+        Some(crate::session::Hard::Startup(&cancel)),
+        Duration::from_secs(600),
+    );
     fixture.gates.wait.wait_entered();
     let (done, worker) = fixture.release();
     assert!(fixture.pending());

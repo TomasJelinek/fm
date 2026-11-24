@@ -13,9 +13,10 @@ impl Controller {
     ) {
         let outbox = self.outbox.clone();
         let scope = self.scope.clone();
+        let cancel = self.unlocks.clone();
         tasks.spawn(self.scope.future(async move {
             let result = tokio::task::spawn_blocking(scope.blocking(move || {
-                let result = mount.unlock(&password);
+                let result = mount.unlock(&password, &cancel);
                 // Zeroized here, before the answer leaves the worker.
                 drop(password);
                 // The command's reference is given up on this backend worker; the pane
@@ -67,7 +68,11 @@ mod tests {
         fn unlocked(&self) -> bool {
             self.unlocked.load(Ordering::Acquire)
         }
-        fn unlock(&self, password: &ArchivePassword) -> Result<ArchiveUnlock, FsError> {
+        fn unlock(
+            &self,
+            password: &ArchivePassword,
+            _: &Cancellation,
+        ) -> Result<ArchiveUnlock, FsError> {
             if password.as_bytes() == "správné".as_bytes() {
                 self.unlocked.store(true, Ordering::Release);
                 Ok(ArchiveUnlock::Unlocked)

@@ -372,10 +372,11 @@ impl ArchiveMount for LeasedArchive {
     fn unlock(
         &self,
         password: &midnight_core::ArchivePassword,
+        cancel: &Cancellation,
     ) -> Result<midnight_core::ArchiveUnlock, FsError> {
-        let request = self.context().request(&Cancellation::default());
+        let request = self.context().request(cancel);
         self.check(&request)?;
-        self.source().unlock(password)
+        self.source().unlock(password, &request)
     }
 
     fn stage_member(

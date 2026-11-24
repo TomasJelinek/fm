@@ -118,9 +118,10 @@ archive addresses retain their decoder independently of subsequent suffix edits.
 4. The host sends serial `List` and `Read` requests. Each has one terminal reply;
    nested source broker exchanges are allowed before that reply. Request IDs
    strictly increase; stale or mismatched responses fail the session.
-5. `Close`, pipe closure, worker failure, a protocol violation, a cancelled startup
-   or deadline expiry ends the session. Cancelling a listing or member read does not
-   (see [cancellation](#errors-cancellation-and-resource-bounds)). The current host
+5. `Close`, pipe closure, worker failure, a protocol violation, an exhausted exchange
+   budget, a cancelled startup or deadline expiry ends the session. Cancelling a member
+   read does not; a cancelled listing or unlock ends it only when its exchange does not
+   finish within a grace (see [cancellation](#errors-cancellation-and-resource-bounds)). The current host
    terminates the worker when its last mount lease is released; destruction never
    waits for a child on the UI thread.
 
@@ -258,18 +259,25 @@ diagnostic bytes. Report unsupported/encrypted codecs explicitly; never retry
 through an external utility or a host path. The host ends the mount on a failed exchange, except the explicitly negotiated
 protocol-3 cooperative cancellation acknowledgement described below and the protocol-4
 `PasswordRequired`/`WrongPassword` replies that staged nothing. Protocol violations, truncated frames and unexpected replies
-also fail closed. Cancelling one request never ends a mount that other tabs,
-viewers and jobs share: a listing stops between pages and discards a conforming
-in-flight page; protocol-3 member reads cancel cooperatively through both the ordinary
+also fail closed. Cancelling one member read never ends a mount that other tabs,
+viewers and jobs share. A cancelled listing stops between pages; a page in flight that
+arrives within 2 seconds of the cancellation (`Budget::cancel_grace`) is discarded
+and the mount serves on, and a worker that has not answered by then is stopped, which
+retires the mount (it reports why, and opening the archive again starts a new worker).
+A cancelled `Unlock` (the engine cancels it when it stops) ends the same way; an answer
+within the grace still records whether the worker now holds the password. Protocol-3
+member reads cancel cooperatively through both the ordinary
 and the preview read entry points; a protocol-1/2 member read cannot be interrupted,
 so a cancelled one finishes its exchange under the idle-progress watchdog and the
 host discards its result. Such a legacy read can therefore delay its caller's
-cancellation until the member is staged. Only the startup exchange, whose caller
-still owns the whole mount, is hard-cancellable. Mount teardown, protocol
-violations and the idle watchdog always terminate the worker. Deadlines apply to
+cancellation until the member is staged, within the exchange budgets below. The startup
+exchange, whose caller still owns the whole mount, ends at once when cancelled. Mount
+teardown, protocol violations, exhausted budgets and the idle watchdog always terminate
+the worker. Deadlines apply to
 blocking pipe reads as well as decoding. A request in flight when the worker ends,
 and every later request of that mount, reports why it ended: the failed exchange
-with its failure, or idle-deadline expiry. That report says to open the archive again
+with its failure (an exhausted byte budget is one), idle-deadline expiry, an exhausted
+time budget, or a cancelled listing or unlock that did not end within its grace. That report says to open the archive again
 and has the kind `InvalidData` (`STOPPED` in `session.rs`), which Copy does not offer
 to retry; the request whose own exchange failed
 reports that failure with its own kind. A worker that ends by itself
@@ -301,7 +309,32 @@ list to the panel as `Event::ArchiveSessionsFull`, with the navigation that open
 archive again, right before the failed listing. Protocol 2 adds no aggregate CPU
 ceiling; inherited OS resource policy remains in effect. Only successful bounded
 byte I/O and monotonic decoded work renew the watchdog. Protocol 1 retains its
-legacy limits. Shared tab/viewer leases count as the same mount. Source reads may
+legacy limits.
+
+Every exchange of every protocol also has two budgets (`session_budget.rs`), so that a
+worker that keeps requesting source reads, which renew the idle watchdog, cannot hold
+an exchange, the mount's channel and its native slot forever:
+
+- **Bytes served.** `SourceData` and `SpoolData` together may carry at most four times
+  the source length plus the sealed scratch stages, plus 1 GiB, in one exchange
+  (protocol 1 keeps its budget of the source length). The bundled worker reads through
+  a window that keeps what it fetched, so it reads each range about once per exchange.
+  The read that would exceed the budget is refused: the request fails with "Archive
+  worker read more than N MiB of its archive for one request" and the worker is stopped.
+- **Time.** 10 minutes plus one second per 2 MiB of source and scratch (a 10 GiB archive:
+  about 95 minutes, enough to decode a whole compressed TAR with bzip2, the slowest
+  bundled decoder, in one exchange). Only a progress reply of the worker (an
+  acknowledged `StageAppend` or `StageProgress`) grants the budget again; a read it
+  requests does not. The supervisor ends an exchange that exceeds it, so a request
+  blocked on the pipe returns too; it and every later request of the mount report
+  "Archive worker did not finish a request within its time budget of … and was stopped;
+  open the archive again" (`STOPPED`). Requests waiting for the mount's channel then
+  find the worker stopped and return with that report.
+
+A worker that keeps reporting progress keeps its exchange: decoded progress is not
+checked against the source, so such a worker is bounded by the idle watchdog, the
+caller's cancellation (protocol 3 member reads, listings, unlock) and the spool volume's
+reserve, not by time. Shared tab/viewer leases count as the same mount. Source reads may
 revisit captured ranges and are bounded to 256 KiB. Nothing limits how many members
 a directory lists or how many bytes their names take: the host requests page after
 page for as long as the worker says more follow, checking cancellation between

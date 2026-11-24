@@ -344,7 +344,8 @@ validation between worker exchanges failed: the mount survives that failure.
 
 A failure inside an exchange with the archive worker (a source read the host could not
 complete, a member the worker could not read, a protocol violation) stops that worker,
-and so does the 20-second idle watchdog (`DEADLINE` in `session.rs`). The mount then
+and so does the 20-second idle watchdog (`DEADLINE` in `session.rs`) or an exhausted
+exchange budget (`session_budget.rs`). The mount then
 never serves another request: each one fails with "Archive worker was stopped after a
 failed request (…); open the archive again" or "Archive worker made no progress for 20
 seconds and was stopped; open the archive again", as `InvalidData` (`STOPPED`), so the

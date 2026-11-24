@@ -440,7 +440,12 @@ pub trait ArchiveMount: Send + Sync + std::fmt::Debug {
     /// Backend only: verify `password` for this mount's encrypted members and keep it
     /// for the mount's lifetime when it opens them. An archive inside an archive is a
     /// mount of its own, with its own password. Providers without passwords refuse.
-    fn unlock(&self, _password: &ArchivePassword) -> Result<ArchiveUnlock, FsError> {
+    /// Cancelling `cancel` ends the exchange; a provider may stop its worker for it.
+    fn unlock(
+        &self,
+        _password: &ArchivePassword,
+        _cancel: &Cancellation,
+    ) -> Result<ArchiveUnlock, FsError> {
         Err(FsError::from_io(
             "archive password",
             std::path::Path::new(""),

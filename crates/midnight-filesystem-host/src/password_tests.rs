@@ -140,7 +140,10 @@ fn a_locked_member_keeps_the_session_and_reads_after_unlock() {
     assert!(!fixture.stopped(), "a locked member ended the session");
     assert!(!fixture.mount.unlocked());
     assert_eq!(
-        fixture.mount.unlock(&password()).unwrap(),
+        fixture
+            .mount
+            .unlock(&password(), &Cancellation::default())
+            .unwrap(),
         ArchiveUnlock::Unlocked
     );
     assert!(fixture.mount.unlocked());
@@ -168,11 +171,17 @@ fn refused_unlocks_and_a_member_with_another_password_keep_the_session_locked() 
     replies.extend(staged(4, 1));
     let fixture = Fixture::new(Protocol::V4, replies);
     assert_eq!(
-        fixture.mount.unlock(&password()).unwrap(),
+        fixture
+            .mount
+            .unlock(&password(), &Cancellation::default())
+            .unwrap(),
         ArchiveUnlock::WrongPassword
     );
     assert_eq!(
-        fixture.mount.unlock(&password()).unwrap(),
+        fixture
+            .mount
+            .unlock(&password(), &Cancellation::default())
+            .unwrap(),
         ArchiveUnlock::NotEncrypted
     );
     assert!(!fixture.mount.unlocked());
@@ -223,14 +232,21 @@ fn a_password_reply_after_a_stage_began_ends_the_session() {
 #[test]
 fn a_protocol_three_worker_refuses_unlock_without_an_exchange() {
     let fixture = Fixture::new(Protocol::V3, vec![]);
-    let error = fixture.mount.unlock(&password()).unwrap_err();
+    let error = fixture
+        .mount
+        .unlock(&password(), &Cancellation::default())
+        .unwrap_err();
     assert_eq!(error.kind, io::ErrorKind::Unsupported);
     assert!(fixture.sent().is_empty());
     assert!(!fixture.stopped());
     let empty = midnight_core::ArchivePassword::new(String::new());
     let fixture = Fixture::new(Protocol::V4, vec![]);
     assert_eq!(
-        fixture.mount.unlock(&empty).unwrap_err().kind,
+        fixture
+            .mount
+            .unlock(&empty, &Cancellation::default())
+            .unwrap_err()
+            .kind,
         io::ErrorKind::InvalidInput
     );
     assert!(fixture.sent().is_empty());

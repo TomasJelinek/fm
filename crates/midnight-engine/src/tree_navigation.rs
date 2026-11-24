@@ -193,8 +193,9 @@ impl ArchiveMount for NavigationArchive {
     fn unlock(
         &self,
         password: &midnight_core::ArchivePassword,
+        cancel: &Cancellation,
     ) -> Result<midnight_core::ArchiveUnlock, FsError> {
-        self.source().unlock(password)
+        self.source().unlock(password, cancel)
     }
     fn stage_member(
         &self,
