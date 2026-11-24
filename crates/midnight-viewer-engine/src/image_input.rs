@@ -12,6 +12,8 @@ pub(crate) struct ImageFrames {
     /// The first and the latest frame published for this image or document. Page turns
     /// keep them: a relative page step names the document, not the page it was made on.
     published: Option<[u64; 2]>,
+    /// The first published frame of the document layout shown last, and that layout.
+    layout: Option<(u64, midnight_core::DocumentLayout)>,
 }
 
 impl ImageFrames {
@@ -58,6 +60,13 @@ impl ImageFrames {
         }
     }
 
+    /// Record the document layout of the published `frame`.
+    pub fn layout(&mut self, frame: u64, layout: midnight_core::DocumentLayout) {
+        if self.layout.is_none_or(|(_, shown)| shown != layout) {
+            self.layout = Some((frame, layout));
+        }
+    }
+
     pub fn resized(&mut self) {
         self.coordinate_minimum = self.last.saturating_add(1);
     }
@@ -68,21 +77,28 @@ impl ImageFrames {
             && (!anchored || frame >= self.coordinate_minimum)
     }
 
-    /// Document coordinates refer to the single published camera snapshot.
+    /// Camera-anchored document inputs (a layout switch, a pointer zoom by a factor) are
+    /// resolved against the published camera snapshot, so they hold only for the latest
+    /// frame.
     pub fn accepts_document(&self, frame: u64, anchored: bool) -> bool {
         self.accepts(frame, anchored) && (!anchored || frame == self.last)
     }
 
+    /// A source-anchored zoom (`ViewZoom`) names a source point of the frame the window
+    /// showed. Its meaning depends only on the page (reset by [`Self::page_turned`]), the
+    /// layout and the viewport size ([`Self::resized`]) of that frame, not on its camera:
+    /// it holds for every frame since the layout shown last was published, so a zoom key
+    /// pressed before the window applied the latest zoomed frame is not lost.
     pub fn accepts_document_image(&self, frame: u64, input: &ViewerImageInput) -> bool {
-        let anchored = matches!(
-            input,
-            ViewerImageInput::ViewZoom { .. }
-                | ViewerImageInput::Zoom {
-                    anchor: Some(_),
-                    ..
-                }
-        );
-        self.accepts_document(frame, anchored)
+        match input {
+            ViewerImageInput::ViewZoom { .. } => {
+                self.accepts(frame, true) && self.layout.is_some_and(|(first, _)| frame >= first)
+            }
+            ViewerImageInput::Zoom {
+                anchor: Some(_), ..
+            } => self.accepts_document(frame, true),
+            _ => self.accepts_document(frame, false),
+        }
     }
 }
 
@@ -127,8 +143,13 @@ mod tests {
     #[test]
     fn documents_refuse_old_coordinate_frames_but_keep_relative_gesture_bursts() {
         let mut frames = ImageFrames::default();
+        let paged = midnight_core::DocumentLayout::Paged;
+        frames.painted(6);
+        frames.layout(6, midnight_core::DocumentLayout::Continuous);
         frames.painted(7);
+        frames.layout(7, paged);
         frames.painted(8);
+        frames.layout(8, paged);
         assert!(!frames.accepts_document(7, true));
         assert!(frames.accepts_document(8, true));
         let coordinates = ViewerImageInput::ViewZoom {
@@ -136,8 +157,20 @@ mod tests {
             source_anchor: [100.0, 80.0],
             viewport_anchor: [50.0, 40.0],
         };
-        assert!(!frames.accepts_document_image(7, &coordinates));
+        let pointer = ViewerImageInput::Zoom {
+            factor: 1.25,
+            anchor: Some([50.0, 40.0]),
+        };
+        // Source anchors hold for every frame of the layout shown last; camera anchors
+        // only for the latest frame.
+        assert!(
+            !frames.accepts_document_image(6, &coordinates),
+            "other layout"
+        );
+        assert!(frames.accepts_document_image(7, &coordinates));
         assert!(frames.accepts_document_image(8, &coordinates));
+        assert!(!frames.accepts_document_image(7, &pointer));
+        assert!(frames.accepts_document_image(8, &pointer));
         assert!(frames.accepts_document_image(7, &ViewerImageInput::Drag { x: 3.0, y: 2.0 }));
         frames.resized();
         assert!(!frames.accepts_document_image(8, &coordinates));

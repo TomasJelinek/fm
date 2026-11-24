@@ -483,3 +483,96 @@ fn a_document_opens_in_the_layout_chosen_last_at_the_top_of_its_first_page() {
         assert!(frame.tiles.is_some());
     }
 }
+
+/// Zoom keys pressed while the window still shows the frame before a zoom the engine has
+/// just published: the source point a zoom names holds for every frame of one page and
+/// layout, so the final press applies instead of being lost to the frame race.
+#[test]
+fn source_anchored_zoom_from_the_frame_before_a_published_zoom_applies() {
+    for layout in [DocumentLayout::Paged, DocumentLayout::Continuous] {
+        let (mut worker, output, displayed) = document_worker([160, 120], layout, Some(1.0));
+        let image = displayed.image.as_ref().unwrap();
+        let source = [image.origin[0] + 80.0, image.origin[1] + 60.0];
+        let zoom = |scale| ViewerInput::Image {
+            frame: displayed.revision,
+            input: ViewerImageInput::ViewZoom {
+                zoom: ViewerZoomPreference::ScaleBasisPoints(scale),
+                source_anchor: source,
+                viewport_anchor: [80.0, 60.0],
+            },
+        };
+        worker.input(zoom(12500), &output);
+        let zoomed = publish_document(&mut worker, &output);
+        assert!(zoomed.revision > displayed.revision);
+        // The window has not applied `zoomed` yet: the next press names `displayed`.
+        worker.input(zoom(15625), &output);
+        let view = worker.image.as_ref().unwrap().geometry.clone().unwrap();
+        assert_eq!(
+            view.scale, 1.5625,
+            "{layout:?}: the final zoom press was lost"
+        );
+        for axis in 0..2 {
+            near(
+                view.origin[axis] + [80.0, 60.0][axis] / view.scale,
+                source[axis],
+            );
+        }
+        assert!(publish_document(&mut worker, &output).revision > zoomed.revision);
+    }
+}
+
+/// A published layout switch retires the source coordinates of the frames before it,
+/// which the window resolved in the other layout.
+#[test]
+fn source_anchored_zoom_from_before_a_published_layout_switch_is_refused() {
+    for layout in [DocumentLayout::Paged, DocumentLayout::Continuous] {
+        let (mut worker, output, displayed) = document_worker([160, 120], layout, Some(1.0));
+        let target = if layout == DocumentLayout::Paged {
+            DocumentLayout::Continuous
+        } else {
+            DocumentLayout::Paged
+        };
+        worker.input(
+            ViewerInput::DocumentLayout {
+                frame: displayed.revision,
+                layout: target,
+            },
+            &output,
+        );
+        let switched = publish_document(&mut worker, &output);
+        let before = worker.image.as_ref().unwrap().revision;
+        let image = displayed.image.as_ref().unwrap();
+        worker.input(
+            ViewerInput::Image {
+                frame: displayed.revision,
+                input: ViewerImageInput::ViewZoom {
+                    zoom: ViewerZoomPreference::ScaleBasisPoints(20000),
+                    source_anchor: [image.origin[0] + 80.0, image.origin[1] + 60.0],
+                    viewport_anchor: [80.0, 60.0],
+                },
+            },
+            &output,
+        );
+        let image = worker.image.as_ref().unwrap();
+        assert_eq!(
+            image.revision, before,
+            "{layout:?}: stale layout coordinates"
+        );
+        assert_eq!(image.geometry.as_ref().unwrap().scale, 1.0);
+        // Coordinates of the switched frame hold.
+        let shown = switched.image.as_ref().unwrap();
+        worker.input(
+            ViewerInput::Image {
+                frame: switched.revision,
+                input: ViewerImageInput::ViewZoom {
+                    zoom: ViewerZoomPreference::ScaleBasisPoints(20000),
+                    source_anchor: [shown.origin[0] + 80.0, shown.origin[1] + 60.0],
+                    viewport_anchor: [80.0, 60.0],
+                },
+            },
+            &output,
+        );
+        let image = worker.image.as_ref().unwrap();
+        assert_eq!(image.geometry.as_ref().unwrap().scale, 2.0);
+    }
+}

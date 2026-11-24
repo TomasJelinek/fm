@@ -244,7 +244,13 @@ other camera change (page turn, zoom, Fit, layout, resize, and `Scroll`/`Seek` i
 that did not come from the tiled camera) gets a new surface, so the UI adopts the
 engine's camera; textures are reused by tile identity across surfaces. Coordinate
 inputs (zoom anchors, layout switches) refer to the shown surface, so they are accepted
-for any frame of it (`ImageFrames::surface_frame`); a resize still fences them.
+for any frame of it (`ImageFrames::surface_frame`); a resize still fences them. A zoom
+key or the zoom field sends `ViewZoom`, which names a source point of the shown frame;
+it depends on that frame's page and layout, not on its camera, so it is accepted for any
+frame since the layout shown last was published, also one before a zoomed frame (a new
+surface) the window has not applied yet: a quick second press is not lost. A layout
+switch and a pointer zoom by a factor resolve against the published camera, so they
+need its latest frame.
 `ViewerImageInfo::extent` is the scrollable extent: the page in the Paged layout, the
 whole column in the Continuous one. Tiles are drawn on whole physical pixels: the
 centring margin is rounded, the canvas phase removed and a document camera snapped to

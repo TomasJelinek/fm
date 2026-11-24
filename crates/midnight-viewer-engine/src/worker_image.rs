@@ -270,6 +270,7 @@ impl Worker {
         image.frames.surface(revision, image.scene.surface);
         if let Some(document) = &mut image.document_view {
             document.painted(revision);
+            image.frames.layout(revision, document.layout);
         }
         let crate::image_view::Paint::Tiles(tiles) = paint;
         let (width, height, pixels, tiles) = (
