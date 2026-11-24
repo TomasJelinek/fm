@@ -17,7 +17,9 @@
 //!    window shows with the user's settings and panels restored;
 //! 5. on confirmation removes the backup; when the new version exits before confirming,
 //!    moves its files to `.update/failed/`, restores the backup and starts the previous
-//!    version again.
+//!    version again; when neither happens in time, keeps the backup and leaves the
+//!    update to the new version: the first start after its confirmation removes the
+//!    backup (`Pending::unattended`).
 //!
 //! `result.json` tells the next start how it went; `update.log` records every step.
 use crate::{
@@ -146,6 +148,11 @@ pub enum Outcome {
 pub struct Pending {
     pub from: String,
     pub to: String,
+    /// The updater stopped waiting for the startup check (`Outcome::Unconfirmed`): no
+    /// updater removes the backup any more, so the first start that finds the new
+    /// version's confirmation finishes the update.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unattended: bool,
 }
 
 /// Starts a program and reports when it exits; replaced in tests.
@@ -303,9 +310,10 @@ fn apply_logged(
     };
     let from = previous.version.to_string();
     let to = new.version.to_string();
-    let pending = Pending {
+    let mut pending = Pending {
         from: from.clone(),
         to: to.clone(),
+        unattended: false,
     };
     if let Err(error) = write_json(&work.join("pending.json"), &pending) {
         return not_applied(log, error.to_string());
@@ -372,6 +380,10 @@ fn apply_logged(
                 }
                 if Instant::now() >= deadline {
                     log.line("no confirmation in time; the backup is kept");
+                    pending.unattended = true;
+                    if let Err(error) = write_json(&work.join("pending.json"), &pending) {
+                        log.line(&format!("cannot hand the confirmation over: {error}"));
+                    }
                     return Outcome::Unconfirmed { from, to };
                 }
                 thread::sleep(timings.poll);
@@ -498,11 +510,21 @@ pub fn startup(installation: &Path, version: &str) -> StartupReport {
     let pending = fs::read(work.join("pending.json"))
         .ok()
         .and_then(|text| serde_json::from_slice::<Pending>(&text).ok());
+    // A start of the new version after an unattended update (`Pending::unattended`)
+    // that an earlier start already confirmed finishes it, as its updater would have.
+    let finished = pending.as_ref().is_some_and(|pending| {
+        pending.unattended
+            && pending.to == version
+            && fs::read_to_string(work.join("confirmed")).is_ok_and(|text| text.trim() == version)
+    });
+    if finished {
+        let _ = fs::remove_file(work.join("pending.json"));
+    }
     match pending {
-        Some(pending) if pending.to == version => report.confirm = Some(pending.to),
+        Some(pending) if pending.to == version && !finished => report.confirm = Some(pending.to),
         // The updater is still at work (or stopped mid-way): leave its folders alone.
-        Some(_) => return report,
-        None => {
+        Some(_) if !finished => return report,
+        _ => {
             let _ = remove_tree(&work.join("failed"));
             let _ = remove_tree(&work.join("updater"));
             // A backup without an update in progress belongs to a confirmed update

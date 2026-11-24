@@ -220,8 +220,10 @@ version. Once its window shows with the user's settings read, it writes
   the previous version with the same arguments, which reads it and says "Version Y did
   not start correctly, so the previous version was restored." with the reason. That
   start also removes `failed/`.
-- **No answer in time while the new version runs:** the backup is kept and the updater
-  exits; the next start after a confirmation removes it.
+- **No answer in time while the new version runs:** the backup is kept, the updater
+  marks `pending.json` unattended and exits. Until the new version confirms, each of
+  its starts confirms (and says "Updated to version Y."); the first start that finds
+  the confirmation removes the backup, `confirmed` and `pending.json`, and says nothing.
 
 `update.log` in `.update/` records every step with Unix timestamps (at most 1 MiB).
 A start that finds no `pending.json` removes what earlier updates left (`failed/`,
@@ -277,7 +279,8 @@ injected):
 - `archive`: extraction and `BUILD-INFO.json` checks: renamed executables, another
   version, a changed module or executable, escaping entries, no `BUILD-INFO.json`.
 - `apply`: in temporary folders, a confirmed update, a renamed executable, a rollback
-  when the new version exits before confirming, another running copy, a staged copy
+  when the new version exits before confirming, a late confirmation finished by the
+  next start, another running copy, a staged copy
   changed after staging, a staged folder elsewhere, settings outside the installation
   untouched. `apply_windows`: a file held open without delete sharing (as a running
   program's files can be) that is released in time, one that stays held (everything

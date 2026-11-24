@@ -30,6 +30,8 @@ pub enum Behaviour {
     Confirms,
     /// Exits before its startup check.
     Crashes,
+    /// Keeps running without confirming in time, like a slow first start.
+    Slow,
 }
 
 /// One program the updater started.
@@ -92,6 +94,7 @@ impl Launcher for FakeLauncher {
                 Ok(Box::new(Exited(None)))
             }
             (Some(_), Behaviour::Crashes) => Ok(Box::new(Exited(Some(3)))),
+            (Some(_), Behaviour::Slow) => Ok(Box::new(Exited(None))),
             // The previous version started again after a rollback.
             (None, _) => Ok(Box::new(Exited(None))),
         }
@@ -338,4 +341,47 @@ fn a_start_after_an_interrupted_update_leaves_the_updater_alone() {
     // The new version confirms.
     let report = apply::startup(&setup.installation, "0.5.1");
     assert_eq!(report.confirm.as_deref(), Some("0.5.1"));
+}
+
+/// The updater stops waiting for a slow first start (`Unconfirmed`) and keeps the backup.
+/// Once that start confirms, the next start finishes the update: it removes the backup
+/// and no longer reports the update as new.
+#[test]
+fn a_late_confirmation_finishes_the_update_at_the_next_start() {
+    let setup = setup("me.exe");
+    let launcher = launcher(&setup, Behaviour::Slow);
+    let timings = Timings {
+        confirm: Duration::from_millis(100),
+        ..fast()
+    };
+    let outcome = apply::apply(&setup.request, &launcher, timings);
+    assert!(matches!(outcome, Outcome::Unconfirmed { .. }), "{outcome:?}");
+    let work = work_folder(&setup.installation);
+    assert!(work.join("backup").exists(), "kept until the start confirms");
+    // The slow first start read the update in progress at its own start, and confirms.
+    apply::confirm(&setup.installation, "0.5.1").unwrap();
+    let report = apply::startup(&setup.installation, "0.5.1");
+    assert_eq!(report.confirm, None, "the update was confirmed by an earlier start");
+    assert!(!work.join("backup").exists());
+    assert!(!work.join("pending.json").exists());
+    assert!(!work.join("confirmed").exists());
+    assert_eq!(apply::startup(&setup.installation, "0.5.1").confirm, None);
+}
+
+/// Until the slow start confirms, a later start of the new version confirms instead.
+#[test]
+fn an_unconfirmed_update_is_confirmed_by_a_later_start() {
+    let setup = setup("me.exe");
+    let launcher = launcher(&setup, Behaviour::Slow);
+    let timings = Timings {
+        confirm: Duration::from_millis(100),
+        ..fast()
+    };
+    assert!(matches!(
+        apply::apply(&setup.request, &launcher, timings),
+        Outcome::Unconfirmed { .. }
+    ));
+    let report = apply::startup(&setup.installation, "0.5.1");
+    assert_eq!(report.confirm.as_deref(), Some("0.5.1"));
+    assert!(work_folder(&setup.installation).join("backup").exists());
 }
