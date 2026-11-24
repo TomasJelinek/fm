@@ -1,7 +1,8 @@
 # Midnight Explorer application icon
 
-A moon with a silver illuminated half and a midnight-blue shaded half. The
-transparent background works on both light and dark desktops. This is application
+A moon with a silver illuminated half and a midnight-blue shaded half, glowing with
+a warm yellow aura that fades out towards the icon's edge. The transparent background
+works on both light and dark desktops. This is application
 branding; file and drive icons continue to come from the operating system.
 
 - `moon-master.png`: original generated artwork, retained for future exports.
@@ -21,8 +22,10 @@ or additional objects. A second pass requested a cleaner outer silhouette while
 preserving the moon and shading.
 
 To regenerate the size exports on Windows, run `powershell -NoProfile -File
-scripts/build-app-icon.ps1` from the repository root. This only scales and packages
-the committed master; it does not call an image service. Normal project builds on
+scripts/build-app-icon.ps1` from the repository root. It composes the icon once at
+1024 pixels (the master moon scaled to 84 %, in front of a yellow radial glow that is
+strongest at the moon's edge and clear at the canvas edge) and scales and packages
+that; it does not call an image service. Normal project builds on
 Windows and Linux use the committed exports and do not run this maintenance step.
 No intermediate artwork is written outside `_build`; the three files here are
 intentional source assets. Future macOS application packaging can derive ICNS

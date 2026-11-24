@@ -348,7 +348,8 @@ component Sky inherits Rectangle {
     // the title.
     Rectangle {
         x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
-        background: @radial-gradient(circle, #8fa2ff77 0%, #8fa2ff00 70%);
+        // A warm yellow glow, as the application icon's own glow around the Moon.
+        background: @radial-gradient(circle, #ffd65c88 0%, #ffd65c00 70%);
         opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
         visible: !root.compact;
     }
