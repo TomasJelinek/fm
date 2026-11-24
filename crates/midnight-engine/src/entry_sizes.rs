@@ -203,6 +203,10 @@ impl Controller {
                 !worker_cancel.is_cancelled()
             }))
             .await;
+            // Finished before the event leaves: a refresh that the engine handles after
+            // the UI has seen the completion must not take this scan for a running one
+            // and carry its sizes into a listing that no longer names it.
+            done.store(true, Ordering::Release);
             final_outbox
                 .send(Event::FolderSizesFinished {
                     pane,
@@ -211,7 +215,6 @@ impl Controller {
                     cancelled: final_cancel.is_cancelled() || !matches!(result, Ok(true)),
                 })
                 .await;
-            done.store(true, Ordering::Release);
         }));
         self.pending[pane.index()].push(Request {
             navigation,
