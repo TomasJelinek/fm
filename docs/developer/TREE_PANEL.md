@@ -806,7 +806,13 @@ The synthetic parent and context-only ancestors are not action targets.
 Properties, file opening and system menus resolve native paths on admitted backend
 workers and retain the source through the native call. UI labels are never paths
 with authority. Captured desktop work uses the bounded process and cleanup
-ownership of flat panels.
+ownership of flat panels. On Windows several captured items open one Shell Properties
+sheet, as in flat panels (`desktop_properties.rs`, on the Shell menu's
+process-lifetime STA): items of one folder through that folder's own Properties
+command, items of several folders (expanded branches, search results) through
+`SHMultiFileProperties`, which the Shell titles "Various Folders"; one item keeps
+`SHObjectProperties`, and paths the Shell cannot parse keep the application's summary.
+Linux shows the application's summary.
 
 Managed Copy/Cut/Delete/Rename verbs re-enter the typed action flows above.
 Paste into one captured folder resolves that destination on the backend; ordinary

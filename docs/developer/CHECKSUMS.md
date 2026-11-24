@@ -253,7 +253,10 @@ An existing file is never silently overwritten: the backend refuses it with
 `AlreadyExists`, the window asks, and only Replace sends an explicit `overwrite`.
 A confirmed replacement pins the existing regular file and publishes through the
 platform's recoverable replacement; the replaced file is kept in a private
-`.midnight-recovery-…` folder beside it. The native Save picker offers the chosen
+`.midnight-recovery-…` folder beside it. The replacement keeps the replaced file's
+metadata; on Windows a compressed, read-only or encrypted original is replaced too,
+with the rules in [Make File List](MAKE_FILE_LIST.md#output-lifetime-and-safety).
+The native Save picker offers the chosen
 format's filter and default extension; choosing a file there starts the save.
 
 Successful export receipts report the actual path (an appended extension

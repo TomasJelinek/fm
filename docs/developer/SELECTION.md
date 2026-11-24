@@ -46,6 +46,20 @@ notifications happen after mutable presenter and gesture borrows have ended.
 Stale archive response indexes and selected sets enter the retirement
 queue, including the last owner of an obsolete listing.
 
+## Shift ranges
+
+Shift+click selects, and Ctrl+Shift+click adds, the inclusive range from the
+pane's anchor to the clicked row in Detailed, Brief and Thumbnails, in native
+folders, archives and expanded trees. A click or Ctrl+click sets the anchor and
+records the cursor with it (`Pane::keep_anchor` in
+`crates/midnight-ui/src/presenter.rs`). The anchor starts the next range only while
+the cursor is still there (`Pane::anchor_current`, one comparison per click).
+Once the cursor moved without Shift (keys in any view, Space, Insert, search, a
+jump) or a bulk change (Select all, Deselect all, Invert, masks) forgot it, the
+range starts at the cursor's row; with no shown cursor row it starts at the
+clicked row (`presenter/selection_preview.rs`, `presenter/tree_selection.rs`).
+Tests: UI presenter `selection_anchor`.
+
 ## Selection by mask
 
 Select and Deselect by mask (Ctrl+= or Ctrl++ and Ctrl+−, keypad + and −, or the F10

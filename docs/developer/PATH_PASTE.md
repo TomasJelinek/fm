@@ -83,7 +83,9 @@ presenter path-paste tests and separate native clipboard text/transport tests. E
 
 A click anywhere in the blank part of the path bar after the path components, up to
 the bar's right end, opens the editor with the shown path; Ctrl+G does the same from
-the keyboard. Clicking a component still opens that folder, and a right click still
+the keyboard. Gaining focus selects the whole path (`input.select-all()` in
+`path-editor.slint`), as a browser's address bar does, so what is typed or pasted
+replaces it. Clicking a component still opens that folder, and a right click still
 copies its path. The open editor ends in a Go button: a click on it, or Enter or Space
 while it has keyboard focus (Tab moves there from the editor), does exactly what Enter
 in the editor does, with the same file-path handling and the same errors. Escape

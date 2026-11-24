@@ -111,6 +111,13 @@ later Replace/Append confirmation.
 Input capture is immutable, and successful output clears selection only when the
 original panel/view/selection revision still matches.
 
+The line template is the dialogs' common edit (`ThemedLineEdit` with its inline clear
+×); Down or Alt+Down in it opens the recent templates (`HistoryList`), and Escape
+closes an open list before the dialog. Presets, Insert variable and Output are the
+common dropdown (`CompactPicker`) in `file-list-dialog.slint`; the column's layout is
+in [dialog ergonomics](DIALOG_ERGONOMICS.md#make-file-list-layout) (UI tests
+`file_list_layout`).
+
 The modal admission follows the reference file manager's Make File List: OK gates
 output and Cancel exports nothing, a folder is refused as the destination, replacing
 an existing file is asked first, and the selected entries or the focused one are

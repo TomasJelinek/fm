@@ -551,6 +551,7 @@ Insert variable stand side by side while both captions fit and one above the oth
 otherwise; a short dialog scrolls the form and keeps the footer whole. The
 `file_list_layout` tests check this at 8, 12 and 32 px fonts, desktop and touch
 density, Dark and Light, a wide and a narrow window and the 328 × 208 minimum.
+
 ## Review checklist
 
 Use isolated preferences and owned fixtures. Exercise mouse and keyboard,

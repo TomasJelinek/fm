@@ -50,7 +50,9 @@ job performs one native call at a time and holds its disk slot only while it
 executes native steps. The copy actor runs a job's steps on a blocking worker in calls
 of at most 5 ms (`STEP_BUDGET`, `Job::steps` in `copy_worker.rs`), so a small file's
 quick steps take one hop; each call returns at every boundary the actor acts on, and the
-actor checks pause, Cancel and the disk slot between calls; see
+actor checks pause, Cancel and the disk slot between calls. An aborted actor ends
+each running call after its step in flight
+([engine lifetime](ENGINE_LIFETIME.md)); see
 [operation progress](OPERATION_PROGRESS.md#admission-policy-and-waits). A job never
 copies in parallel streams: the
 [local concurrency experiment](../verification/2026-11-10-ssd-copy-probe.md) measured
@@ -1546,5 +1548,5 @@ needs its own declared postorder capability. Physical storage reclamation and
 atomic tree snapshots remain outside the contract.
 
 One native transfer takes at most 1,000,000 items ([selection sizes](#selection-sizes)),
-the bound on the memory of their list; a larger selection streams item by item, so open
-handles follow folder depth, not selection size.
+the bound on the memory of their list; a selection of more than 64 items streams item
+by item, so open handles follow folder depth, not selection size.
