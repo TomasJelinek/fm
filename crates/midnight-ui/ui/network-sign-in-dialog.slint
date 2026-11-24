@@ -74,20 +74,20 @@ export component NetworkSignInDialog inherits Rectangle {
                     }
                     if NetworkSignIn.error != "": ErrorNotice { text: NetworkSignIn.error; }
                     username := ThemedLineEdit {
-                        enabled: root.input-enabled; accessible-label: "Username";
+                        enabled: root.input-enabled; clear-button: true; accessible-label: "Username";
                         placeholder-text: "Username";
                         min-width: 0px; control-height: root.field-height;
                         accepted => { password.focus-value(); }
                     }
                     password := ThemedLineEdit {
-                        enabled: root.input-enabled; accessible-label: "Password";
+                        enabled: root.input-enabled; clear-button: true; accessible-label: "Password";
                         placeholder-text: "Password";
                         input-type: InputType.password; protected-value: true;
                         min-width: 0px; control-height: root.field-height;
                         accepted => { root.submit-fields(); }
                     }
                     domain := ThemedLineEdit {
-                        enabled: root.input-enabled; accessible-label: "Domain (optional)";
+                        enabled: root.input-enabled; clear-button: true; accessible-label: "Domain (optional)";
                         placeholder-text: "Domain (optional)";
                         min-width: 0px; control-height: root.field-height;
                         accepted => { root.submit-fields(); }
