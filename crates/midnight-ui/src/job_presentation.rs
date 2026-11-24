@@ -12,13 +12,24 @@ mod outcome;
 #[path = "job_presentation_tests.rs"]
 mod tests;
 
+/// The Jobs window's rows as its bindings read them (`JobsView` in jobs-dialog.slint):
+/// through the model's tracker, so that the binding that called is evaluated again when
+/// a row it read changes in place (`operation_presentation::refresh`), and when rows
+/// come or go, not only when the model is replaced.
+fn tracked_rows(rows: &ModelRc<OperationRow>) -> impl Iterator<Item = OperationRow> + '_ {
+    use slint::{Model as _, ModelExt as _};
+    rows.model_tracker().track_row_count_changes();
+    (0..rows.row_count()).filter_map(|row| rows.row_data_tracked(row))
+}
+
+/// Whether a Clear action has a finished job to remove. Rows after the first finished one
+/// are not read: while that row stays finished they cannot change the answer.
 pub(crate) fn has_finished(rows: ModelRc<OperationRow>, without_errors: bool) -> bool {
-    rows.iter()
-        .any(|row| !row.active && (!without_errors || !row.failed))
+    tracked_rows(&rows).any(|row| !row.active && (!without_errors || !row.failed))
 }
 
 pub(crate) fn find(rows: ModelRc<OperationRow>, identity: SharedString) -> i32 {
-    rows.iter()
+    tracked_rows(&rows)
         .position(|row| row.identity == identity)
         .map_or(if rows.row_count() == 0 { -1 } else { 0 }, |index| {
             index as i32

@@ -23,17 +23,17 @@ mod native;
 
 /// Cadence while a gesture, cancellation, shutdown, native hand-off, external hover
 /// or refused drag command is pending: pointer feedback and retries stay prompt.
+/// Otherwise the bridge arms no timer and never wakes the event loop by itself: every
+/// input of the published regions wakes it for one turn instead. Refreshes, target
+/// invalidations, native presses, releases, keys, wheel and touch input, size and scale
+/// changes queue that turn, and so do the window's change handlers for the list bounds
+/// and for everything else `rectangles` reads (`drag-regions-open` and
+/// `drag-regions-shape` in `main.slint`). A popup opens on input, which already queued
+/// a turn after it; no popup of this window opens on a timer.
 const ACTIVE_POLL: Duration = Duration::from_millis(16);
-/// Safety net otherwise. Refreshes, invalidations and native releases, wheel and touch
-/// input republish on the next loop turn. A region change without any of those reaches
-/// the published targets only here, up to this interval late, in either direction: a
-/// region that became droppable (a scroll animation ended) can refuse a drop meant for
-/// it, and a region that should be withdrawn (a popup opened by a timer, such as a
-/// long-press context menu) can still accept one.
-const IDLE_POLL: Duration = Duration::from_millis(250);
 /// How long the source panel's status line keeps the note that a drag was released
-/// too soon (`MIN_DRAG_DURATION`); the next drag removes it at once. It goes on the
-/// next poll after this time, up to `IDLE_POLL` later.
+/// too soon (`MIN_DRAG_DURATION`); the next drag removes it at once. A single-shot
+/// timer retires it then.
 const QUICK_NOTE: Duration = Duration::from_secs(4);
 
 thread_local! {
@@ -59,6 +59,7 @@ struct Target {
 }
 
 struct Bridge {
+    me: Weak<Bridge>,
     window: slint::Weak<MainWindow>,
     presenter: Rc<RefCell<Presenter>>,
     send: Rc<dyn Fn(Command) -> bool>,
@@ -72,7 +73,11 @@ struct Bridge {
     shutdown_pending: Cell<bool>,
     visual: RefCell<Option<DragVisual>>,
     lifetime: RefCell<Option<(u64, Cancellation)>>,
+    /// Runs `ACTIVE_POLL` turns while drag work is pending, else at most one turn when
+    /// the quick-drag note is due, else nothing.
     timer: slint::Timer,
+    /// The timer runs the `ACTIVE_POLL` cadence.
+    polling: Cell<bool>,
     /// One zero-delay turn is queued; later requests in the same loop turn share it.
     turn_scheduled: Cell<bool>,
     /// The last publication could not run or a drag command was refused.
@@ -188,6 +193,7 @@ impl Bridge {
     fn observe(&self, sent: bool) -> bool {
         if !sent {
             self.retry.set(true);
+            self.poll_quickly();
         }
         sent
     }
@@ -251,6 +257,7 @@ impl Bridge {
         let send = |command| self.observe((self.send)(command));
         if self.shutdown_pending.get() {
             let Ok(mut p) = self.presenter.try_borrow_mut() else {
+                self.poll_quickly();
                 return false;
             };
             self.shutdown_pending.set(false);
@@ -260,6 +267,7 @@ impl Bridge {
             return true;
         };
         let Ok(mut p) = self.presenter.try_borrow_mut() else {
+            self.poll_quickly();
             return false;
         };
         self.cancel_pending.set(None);
@@ -389,6 +397,7 @@ impl Bridge {
         let rectangles = rectangles(window);
         let Ok(mut p) = self.presenter.try_borrow_mut() else {
             self.retry.set(true);
+            self.poll_quickly();
             return;
         };
         // This flush retries every queued drag command; its refusals set the cadence.
@@ -414,6 +423,8 @@ impl Bridge {
         self.cadence();
     }
 
+    /// Poll at `ACTIVE_POLL` while drag work is pending; otherwise arm only the quick
+    /// note's retirement, or nothing.
     fn cadence(&self) {
         let pending = self.retry.get()
             || self.handoff.get()
@@ -424,10 +435,37 @@ impl Bridge {
                 .presenter
                 .try_borrow()
                 .map_or(true, |p| p.drag_drop.hover.is_some());
-        let interval = if pending { ACTIVE_POLL } else { IDLE_POLL };
-        if self.timer.interval() != interval {
-            self.timer.set_interval(interval);
+        if pending {
+            self.poll_quickly();
+            return;
         }
+        self.polling.set(false);
+        let due = self
+            .quick_note
+            .get()
+            .zip(self.window.upgrade())
+            .map(|(shown, window)| QUICK_NOTE.saturating_sub(now(&window).saturating_sub(shown)));
+        match due {
+            Some(due) => self.start_timer(slint::TimerMode::SingleShot, due),
+            None => self.timer.stop(),
+        }
+    }
+
+    /// Run turns at `ACTIVE_POLL` from now on, unless they already run.
+    fn poll_quickly(&self) {
+        if !(self.polling.get() && self.timer.running()) {
+            self.polling.set(true);
+            self.start_timer(slint::TimerMode::Repeated, ACTIVE_POLL);
+        }
+    }
+
+    fn start_timer(&self, mode: slint::TimerMode, interval: Duration) {
+        let (window, bridge) = (self.window.clone(), self.me.clone());
+        self.timer.start(mode, interval, move || {
+            if let (Some(window), Some(bridge)) = (window.upgrade(), bridge.upgrade()) {
+                bridge.turn(&window);
+            }
+        });
     }
 
     /// Queue one zero-delay turn after the current callback has released its borrows.
@@ -517,6 +555,7 @@ impl Bridge {
         self.cursor.set(slint::LogicalPosition::new(x, y));
         self.publish(window);
         self.update(window);
+        self.cadence();
     }
 
     fn released(&self, window: &MainWindow, x: f32, y: f32) {
@@ -563,6 +602,7 @@ impl Bridge {
             self.quick_note.set(Some(now(window)));
             self.show_details(window, pane);
         }
+        self.cadence();
     }
 
     fn cancel(&self, window: &MainWindow, force: bool) -> bool {
@@ -661,7 +701,8 @@ pub(crate) fn install(
             p.drag_drop.lifecycle.snapshot(),
         )
     };
-    let bridge = Rc::new(Bridge {
+    let bridge = Rc::new_cyclic(|me| Bridge {
+        me: me.clone(),
         window: window.as_weak(),
         presenter,
         send,
@@ -676,6 +717,7 @@ pub(crate) fn install(
         visual: RefCell::new(None),
         lifetime: RefCell::new(None),
         timer: slint::Timer::default(),
+        polling: Cell::new(false),
         turn_scheduled: Cell::new(false),
         retry: Cell::new(false),
         press: Cell::new(None),
@@ -778,15 +820,6 @@ pub(crate) fn install(
         state.flush_cancel();
         state.cadence();
     });
-    let weak = window.as_weak();
-    let state = Rc::downgrade(&bridge);
-    bridge
-        .timer
-        .start(slint::TimerMode::Repeated, IDLE_POLL, move || {
-            if let (Some(window), Some(state)) = (weak.upgrade(), state.upgrade()) {
-                state.turn(&window);
-            }
-        });
     bridge.cadence();
 }
 

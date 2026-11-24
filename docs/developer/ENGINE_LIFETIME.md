@@ -209,7 +209,13 @@ text's `SelectionClear`: it counts the text as owned until its own file publicat
 replaces it, so after a text copy the session stays open, idle in that wait.
 Measured on Linux (Xvfb) over two idle seconds after a read, a file copy and a text
 copy alike, the worker does not wake. The drag/drop workers do not
-poll while idle either. The preparation worker sleeps until queued work, a retired
+poll while idle either, nor does the UI's drag bridge (`drag_bridge.rs`): it polls every
+16 ms only while a gesture, an external hover, a cancellation, a shutdown or a refused
+drag command is pending, and otherwise arms no timer, except one single shot that
+retires a quick-drag note after 4 s. Every change of the published drop regions queues
+one republish turn instead: refreshes, native input, size and scale changes, and the
+main window's change handlers for the list bounds and the other properties the regions
+depend on ([record](../verification/2026-11-24-ui-perf-fixes.md#drag-bridge-wake-ups)). The preparation worker sleeps until queued work, a retired
 owner or shutdown signals it, and the hover forwarder until a drag event, a changed
 hover or refusal report, or shutdown. The native drag actor waits in its open
 native session (`FileDragDropSession::wait_pending`): on Windows in

@@ -1,5 +1,6 @@
 //! Selection-preserving cursor navigation in displayed source order, across every panel layout.
 use super::*;
+use std::{cell::RefCell, sync::Weak};
 
 impl Presenter {
     pub(super) fn move_to_selected(&mut self, pane: PaneId, backwards: bool) {
@@ -43,17 +44,15 @@ impl Pane {
                 }
             } else if self.selection_preview.is_empty() && !self.selection_deferred.any() {
                 if let Some(archive) = &self.archive {
-                    let positions = archive
-                        .selected
-                        .iter()
-                        .filter_map(|id| self.display_index().by_id.get(id).copied())
-                        .filter(|position| (first..end).contains(position));
-                    return if backwards {
-                        positions.max()
-                    } else {
-                        positions.min()
-                    }
-                    .map(|position| position + offset);
+                    return archive
+                        .selected_positions
+                        .nearest(
+                            &archive.selected,
+                            self.display_index(),
+                            first..end,
+                            backwards,
+                        )
+                        .map(|position| position + offset);
                 }
                 if self.selected.is_empty() {
                     return None;
@@ -76,6 +75,71 @@ impl Pane {
             (first..end).find(selected)
         }
         .map(|position| position + offset)
+    }
+}
+
+/// The display positions of an archive folder's selected members, sorted, so that a jump
+/// between them is a binary search instead of a lookup of every selected member. Built
+/// once per selection and shown rows: it keeps weak references to both and is rebuilt
+/// when either is another allocation. Every change of the selection makes one: a new set
+/// replaces it, and `Arc::make_mut` moves a set that this cache still references weakly
+/// into a new allocation (a move, not a copy of its members). A weak reference keeps its
+/// allocation from being reused while the cache holds it, so an address seen again is
+/// the same set.
+#[derive(Clone, Default)]
+pub(super) struct SelectedPositions(RefCell<Option<Positions>>);
+
+#[derive(Clone)]
+struct Positions {
+    selected: Weak<HashSet<EntryId>>,
+    shown: Weak<DirectoryIndex>,
+    sorted: Vec<usize>,
+}
+
+impl SelectedPositions {
+    /// The selected member shown nearest to the edge of `range` it is searched from: the
+    /// first one in `range`, or the last when `backwards`.
+    fn nearest(
+        &self,
+        selected: &Arc<HashSet<EntryId>>,
+        shown: &Arc<DirectoryIndex>,
+        range: std::ops::Range<usize>,
+        backwards: bool,
+    ) -> Option<usize> {
+        if selected.is_empty() {
+            return None;
+        }
+        let mut cache = self.0.borrow_mut();
+        let current = cache.as_ref().is_some_and(|positions| {
+            std::ptr::eq(positions.selected.as_ptr(), Arc::as_ptr(selected))
+                && std::ptr::eq(positions.shown.as_ptr(), Arc::as_ptr(shown))
+        });
+        if !current {
+            let mut sorted: Vec<usize> = selected
+                .iter()
+                .filter_map(|id| shown.by_id.get(id).copied())
+                .collect();
+            sorted.sort_unstable();
+            *cache = Some(Positions {
+                selected: Arc::downgrade(selected),
+                shown: Arc::downgrade(shown),
+                sorted,
+            });
+        }
+        let sorted = &cache.as_ref()?.sorted;
+        if backwards {
+            let after = sorted.partition_point(|position| *position < range.end);
+            after
+                .checked_sub(1)
+                .map(|last| sorted[last])
+                .filter(|position| *position >= range.start)
+        } else {
+            let first = sorted.partition_point(|position| *position < range.start);
+            sorted
+                .get(first)
+                .copied()
+                .filter(|position| *position < range.end)
+        }
     }
 }
 

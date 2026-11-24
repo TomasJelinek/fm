@@ -554,10 +554,22 @@ too.
   A multi-line control (a list, a multi-line field) is exempt.
 - **A field and its button.** The small button that belongs to a field (Browse beside a
   path) is `FieldButton`: square, as tall as the field, showing a centred glyph (for
-  Browse a folder with an ellipsis) rather than a font's "…", whose dots sit on the
-  baseline, near the button's bottom edge. Its
-  caption chooses the glyph and heads its tooltip; its accessible label names its
-  action.
+  Browse a folder with an ellipsis, for Find's filename mask history a down chevron)
+  rather than a font's "…", whose dots sit on the baseline, near the button's bottom
+  edge. Its caption chooses the glyph and heads its tooltip; its accessible label names
+  its action.
+- **Every character drawn.** A caption, label or message uses only characters that the
+  application font, or the fallback the system finds for it, can draw. The font differs
+  per platform (Segoe UI on Windows, the fontconfig default on Linux), and a symbol of
+  the Common script (arrows, triangles, check marks) gets no script fallback, so a
+  character the font lacks is drawn as an empty box. A field's list button and a
+  section's disclosure show the bundled chevrons (`FallbackIcons.chevron-down`,
+  `FallbackIcons.chevron-right`), not "▾" or "▸". The `midnight-ui` test
+  `tests/caption_glyphs.rs` draws every non-ASCII character of the `.slint` string
+  literals and of the non-test Rust sources whose text the windows show, with the
+  application's font on the platform that runs it, and fails on any drawn like the
+  missing-glyph box. The alignment checks judge a symbol caption only by where its
+  pixels sit, so they pass a box.
 - **Captions in the middle.** A button's, picker's or tab's caption is centred
   vertically (its line box within 1.5 px, the glyphs of a caption without letters within
   2 px or an eighth of the font) and is never cut at its top or bottom.

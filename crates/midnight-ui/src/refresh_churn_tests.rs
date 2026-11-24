@@ -112,3 +112,86 @@ fn a_path_paste_waiting_for_the_clipboard_refreshes_only_when_it_inserts() {
         h.window.get_left_path_draft()
     );
 }
+
+/// A progress report changes its job's row in place: the Jobs model stays the same
+/// model, so its rows are not rebuilt, and only the rows that differ are told. A job
+/// that ends, or a new one, still shows; one that is cleared leaves.
+#[test]
+fn job_progress_updates_its_row_in_place_and_keeps_the_jobs_model() {
+    use midnight_core::{
+        CopyEvent, CopyOperationState, CopyProgress, DragDropEvent, DropToken, OperationId,
+        TransferIntent,
+    };
+    use slint::Model;
+    let mut h = Harness::new(UserPreferences::default());
+    let job = |id: u64| {
+        let destination = std::env::temp_dir().join("refresh-churn-jobs");
+        h.presenter.borrow_mut().apply_with_sender(
+            Event::DragDrop(DragDropEvent::DropAccepted {
+                drag: None,
+                token: DropToken(id),
+                pane: PaneId::Right,
+                item_count: 1,
+                intent: TransferIntent::Copy,
+                verification: None,
+                destination: Arc::new(destination),
+            }),
+            &|_| true,
+        );
+    };
+    job(1);
+    job(2);
+    h.refresh();
+    let identities = |h: &Harness| {
+        h.window
+            .get_operations()
+            .iter()
+            .map(|row| row.identity.to_string())
+            .collect::<Vec<_>>()
+    };
+    let shown = identities(&h);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    let model = h.window.get_operations();
+    let id = |identity: &str| {
+        identity
+            .strip_prefix("copy-job:")
+            .and_then(|id| id.parse().ok())
+            .map(OperationId)
+            .unwrap()
+    };
+    let progress = |h: &mut Harness, identity: &str, state, bytes| {
+        let mut progress =
+            CopyProgress::queued(id(identity), "destination".into(), 1, TransferIntent::Copy);
+        progress.state = state;
+        progress.completed_bytes = bytes;
+        h.presenter.borrow_mut().apply_with_sender(
+            Event::Copy(CopyEvent::Progress(Arc::new(progress))),
+            &|_| true,
+        );
+        h.refresh();
+    };
+    for bytes in [1_000, 2_000, 3_000] {
+        progress(&mut h, &shown[1], CopyOperationState::Running, bytes);
+        assert!(
+            h.window.get_operations() == model,
+            "a report keeps the model"
+        );
+        assert_eq!(identities(&h), shown);
+    }
+    progress(&mut h, &shown[1], CopyOperationState::Completed, 3_000);
+    assert!(
+        h.window.get_operations() == model,
+        "an ended job keeps the model"
+    );
+    let ended = model.row_data(1).unwrap();
+    assert!(
+        !ended.active,
+        "the row shows that it ended: {}",
+        ended.state
+    );
+    // Clearing the finished job removes its row: a new model of the remaining job.
+    h.window.invoke_clear_finished_jobs(false);
+    h.refresh();
+    assert_eq!(identities(&h), [shown[0].clone()]);
+    assert!(h.window.get_operations() != model);
+}

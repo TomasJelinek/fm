@@ -119,7 +119,8 @@ export component UserCommandForm inherits VerticalLayout {
         }
         HorizontalLayout {
             alignment: start;
-            HintedActionButton { text: (root.show-variables ? "▾ " : "▸ ") + "Required captured values";
+            HintedActionButton { text: "Required captured values";
+                fallback-icon: root.show-variables ? FallbackIcons.chevron-down : FallbackIcons.chevron-right;
                 accessible-label: "Required terminal values"; compact: true;
                 hint: "Review which captured values the script requires. Inserting a value declares it automatically.";
                 clicked => { root.show-variables = !root.show-variables; } }
@@ -189,7 +190,8 @@ export component UserCommandForm inherits VerticalLayout {
     }
     if UserCommandSettingsView.draft.kind != 2 : HorizontalLayout {
         alignment: start;
-        HintedActionButton { text: (root.show-appearance ? "▾ " : "▸ ") + "Toolbar appearance";
+        HintedActionButton { text: "Toolbar appearance";
+            fallback-icon: root.show-appearance ? FallbackIcons.chevron-down : FallbackIcons.chevron-right;
             accessible-label: "Toolbar appearance"; compact: true;
             hint: "Optional toolbar label and icon. Leave the label empty for an icon-only button.";
             clicked => { root.show-appearance = !root.show-appearance; } }

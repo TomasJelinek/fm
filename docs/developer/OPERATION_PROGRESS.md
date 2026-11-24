@@ -272,7 +272,13 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   Pausing; it must not claim a native call has stopped. Resume and Cancel remain
   available while paused. Cancellation wakes paused waits and takes precedence.
 - Finished records stay for the session, with separate **Clear all finished** and
-  **Clear finished without errors** actions. Metadata outcome details follow the same
+  **Clear finished without errors** actions. A refresh changes the rows of the jobs
+  whose presentation changed in place (`navigation_models::update`), so a progress
+  report does not rebuild the Jobs list's rows; the model is replaced only when jobs
+  come, go or change order. The Jobs window's bindings read the rows through the
+  model's tracker (`job_presentation::has_finished` and `find`), so a job that
+  finished in place enables the Clear actions and the selected job's details follow
+  ([record](../verification/2026-11-24-ui-perf-fixes.md#jobs-rows-in-place)). Metadata outcome details follow the same
   lifetime: there is no last-16-jobs eviction. Results are keyed by operation ID
   for constant-time lookup/replacement; each result still has at most 32 sampled
   outcomes plus complete totals. Clearing also removes matching details, and late

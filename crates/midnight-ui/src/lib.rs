@@ -34,6 +34,8 @@ mod window_position;
 pub use dialog_native::configure_dialog_window_attributes;
 pub use window_position::restore_window_position;
 #[cfg(test)]
+mod allocation_meter;
+#[cfg(test)]
 mod compact_focus_tests;
 #[cfg(test)]
 mod compare_badges_tests;

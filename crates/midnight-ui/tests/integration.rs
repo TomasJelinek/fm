@@ -33,6 +33,7 @@ mod argument_lists;
 mod bottom_bar;
 mod bulk_selection;
 mod busy_folder_native;
+mod caption_glyphs;
 mod checksum_polish;
 mod checksum_verify_field;
 mod checksum_windows;

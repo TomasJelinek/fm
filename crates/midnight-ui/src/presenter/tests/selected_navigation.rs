@@ -172,3 +172,109 @@ fn selected_navigation_archive_uses_opaque_ids_instead_of_duplicate_display_name
     p.move_cursor(PaneId::Left, 13, &|_| false);
     assert_eq!(p.panes[0].cursor, Some(folder));
 }
+
+/// Jumps between the selected members of a large archive folder read an index of the
+/// selection built once per selection, instead of looking up every selected member on
+/// each key: 1,000 jumps over 100,000 members, every other one selected, take well under
+/// a second even unoptimized (before the index each jump looked up 50,000 members). A
+/// Ctrl+click between jumps is seen by the next jump in both directions.
+#[test]
+fn selected_navigation_archive_jumps_read_an_index_of_the_selection() {
+    let count = 100_000;
+    let mut p = archives::archive_pane_of(
+        (0..count)
+            .map(|n| archives::node(n + 2, &format!("m{n:06}.txt"), EntryKind::File))
+            .collect(),
+    );
+    let shown: Vec<EntryId> = (0..count as usize)
+        .map(|row| p.panes[0].display_entry(row).unwrap().id)
+        .collect();
+    p.panes[0].archive.as_mut().unwrap().selected =
+        Arc::new(shown.iter().step_by(2).copied().collect::<HashSet<_>>());
+    let offset = p.panes[0].parent_offset();
+    p.focus_display_row(PaneId::Left, offset);
+    let started = std::time::Instant::now();
+    for jump in 1..=1_000 {
+        p.move_cursor(PaneId::Left, 14, &|_| panic!("no provider call for focus"));
+        assert_eq!(p.panes[0].cursor, Some(shown[2 * jump]));
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "1,000 jumps took {elapsed:?}"
+    );
+    // Ctrl+click the unselected member after the cursor's (row 2,001): the next jump
+    // forward stops there, and back from it reaches the cursor's row again.
+    p.select_row_modified(PaneId::Left, offset + 2_001, true, false, &|_| true);
+    assert!(
+        p.panes[0]
+            .archive
+            .as_ref()
+            .unwrap()
+            .selected
+            .contains(&shown[2_001])
+    );
+    p.focus_display_row(PaneId::Left, offset + 2_000);
+    p.move_cursor(PaneId::Left, 14, &|_| false);
+    assert_eq!(p.panes[0].cursor, Some(shown[2_001]));
+    p.move_cursor(PaneId::Left, 13, &|_| false);
+    assert_eq!(p.panes[0].cursor, Some(shown[2_000]));
+    // Deselect it again: forward from 2,000 skips to 2,002.
+    p.select_row_modified(PaneId::Left, offset + 2_001, true, false, &|_| true);
+    p.focus_display_row(PaneId::Left, offset + 2_000);
+    p.move_cursor(PaneId::Left, 14, &|_| false);
+    assert_eq!(p.panes[0].cursor, Some(shown[2_002]));
+    // No selection: no jump.
+    p.panes[0].archive.as_mut().unwrap().selected = Arc::default();
+    p.move_cursor(PaneId::Left, 14, &|_| false);
+    assert_eq!(p.panes[0].cursor, Some(shown[2_002]));
+}
+
+/// What a jump costs at 100,000 archive members, every other one selected: through the
+/// index, and the old way (a lookup of every selected member) for comparison. Reports
+/// timings without thresholds; run alone, in release, with --ignored --nocapture.
+#[test]
+#[ignore = "explicit selected-jump benchmark; reports timings without pass thresholds"]
+fn selected_navigation_archive_jump_benchmark() {
+    let count = 100_000;
+    let mut p = archives::archive_pane_of(
+        (0..count)
+            .map(|n| archives::node(n + 2, &format!("m{n:06}.txt"), EntryKind::File))
+            .collect(),
+    );
+    let selected: HashSet<EntryId> = (0..count as usize)
+        .step_by(2)
+        .map(|row| p.panes[0].display_entry(row).unwrap().id)
+        .collect();
+    p.panes[0].archive.as_mut().unwrap().selected = Arc::new(selected);
+    let offset = p.panes[0].parent_offset();
+    let jumps = 1_000;
+    p.focus_display_row(PaneId::Left, offset);
+    let started = std::time::Instant::now();
+    p.move_cursor(PaneId::Left, 14, &|_| false);
+    let first = started.elapsed();
+    let started = std::time::Instant::now();
+    for _ in 1..jumps {
+        p.move_cursor(PaneId::Left, 14, &|_| false);
+    }
+    let rest = started.elapsed() / (jumps - 1);
+    let pane = &p.panes[0];
+    let archive = pane.archive.as_ref().unwrap();
+    let started = std::time::Instant::now();
+    for jump in 0..20 {
+        let first = 2 * jump + 1;
+        let nearest = archive
+            .selected
+            .iter()
+            .filter_map(|id| pane.display_index().by_id.get(id).copied())
+            .filter(|position| *position >= first)
+            .min();
+        assert_eq!(nearest, Some(2 * jump + 2));
+    }
+    let old = started.elapsed() / 20;
+    println!(
+        "archive jump at {count} members, {} selected: first {first:?} (builds the index), \
+         then {rest:?} each; the old lookup of every selected member {old:?} each",
+        archive.selected.len()
+    );
+}

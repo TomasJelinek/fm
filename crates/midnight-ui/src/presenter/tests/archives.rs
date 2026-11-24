@@ -22,7 +22,7 @@ impl ArchiveMount for FixtureMount {
         panic!("UI performed validation")
     }
 }
-fn node(id: u64, name: &str, kind: EntryKind) -> Entry {
+pub(super) fn node(id: u64, name: &str, kind: EntryKind) -> Entry {
     Entry::from_archive(ArchiveNode {
         modified: None,
         id: VirtualEntryId {
@@ -39,6 +39,15 @@ fn node(id: u64, name: &str, kind: EntryKind) -> Entry {
     })
 }
 pub(super) fn archive_pane() -> Presenter {
+    archive_pane_of(vec![
+        node(2, "folder", EntryKind::Directory),
+        node(3, "same.txt", EntryKind::File),
+        node(4, "same.txt", EntryKind::File),
+    ])
+}
+
+/// The left pane showing an archive folder of `entries`.
+pub(super) fn archive_pane_of(entries: Vec<Entry>) -> Presenter {
     let mut p = Presenter::new(test_root(), test_root());
     let path = p.panes[0].path.to_string_lossy().into_owned();
     let nav = begin(&mut p, PaneId::Left, &path);
@@ -56,12 +65,7 @@ pub(super) fn archive_pane() -> Presenter {
         directory: 1,
         trail: vec![(1, "sample.zip".into())],
     };
-    let entries: Arc<[Entry]> = vec![
-        node(2, "folder", EntryKind::Directory),
-        node(3, "same.txt", EntryKind::File),
-        node(4, "same.txt", EntryKind::File),
-    ]
-    .into();
+    let entries: Arc<[Entry]> = entries.into();
     p.panes[0].folder_column_samples.observe(u64::MAX);
     p.apply(Event::ArchiveListed {
         pane: PaneId::Left,

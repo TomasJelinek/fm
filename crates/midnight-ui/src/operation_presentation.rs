@@ -117,12 +117,15 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         make_shown(&mut row.transfer_outcome);
         make_shown(&mut row.file_progress_title);
     }
-    // Copy/Move/Run often have no native icon; an absent image never equals
-    // itself, so plain equality would replace this model on every refresh.
-    update_model_by(
+    // A progress report changes its job's row in place, so the Jobs list keeps its row
+    // delegates; the model is replaced only when jobs come, go or change order. The
+    // Jobs window's bindings follow rows changed in place (`job_presentation::find`).
+    // Copy/Move/Run often have no native icon; an absent image never equals itself,
+    // so rows compare by their presentation, not by plain equality.
+    navigation_models::update(
         window.get_operations(),
         rows,
-        OperationRow::same_presentation,
+        |row| row.identity.clone(),
         |model| window.set_operations(model),
     );
     copy_presentation::refresh(window, presenter);

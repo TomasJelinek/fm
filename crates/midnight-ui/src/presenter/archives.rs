@@ -8,6 +8,9 @@ pub(super) struct ArchivePane {
     pub(super) origin: PathBuf,
     pub(super) wanted_cursor: Option<VirtualEntryId>,
     pub(super) selected: Arc<HashSet<EntryId>>,
+    /// Where the selected members are shown, for jumps between them; built on the first
+    /// jump after the selection or the shown rows changed (`selected_navigation`).
+    pub(super) selected_positions: super::selected_navigation::SelectedPositions,
     pub(super) totals: ArchiveSelectionTotals,
     pub(super) selection_pending: bool,
     pub(super) selection_revision: SelectionRevision,
@@ -61,6 +64,7 @@ impl ArchivePane {
             origin,
             wanted_cursor: None,
             selected: Arc::default(),
+            selected_positions: Default::default(),
             totals: ArchiveSelectionTotals::default(),
             selection_pending: false,
             selection_revision: SelectionRevision(0),
@@ -631,6 +635,7 @@ impl Presenter {
                                 location: listing.location,
                                 wanted_cursor: None,
                                 selected: Arc::default(),
+                                selected_positions: Default::default(),
                                 totals: ArchiveSelectionTotals::default(),
                                 selection_pending: false,
                                 selection_revision: SelectionRevision(0),
