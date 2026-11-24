@@ -583,8 +583,10 @@ impl Bridge {
         busy |= self.take_ready(&mut state, scale, &mut changed) || changed.len() > presented;
         // Each animated tile steps on its own clock, however often passes run.
         changed.extend(state.advance_thumbnail_animation((self.clock)()));
-        // Keep passing while a tile animates.
-        busy |= !state.animated_thumbnail_identities().is_empty();
+        // Keep passing while a tile animates where it can be seen. A minimized window
+        // stays visible to Slint; its restore resizes the window, which wakes this pulse.
+        busy |=
+            !window.window().is_minimized() && !state.animated_thumbnail_identities().is_empty();
         // Slint can synchronously read presenter-backed models while refreshing.
         // Finish all mutations before it borrows the presenter again.
         drop(state);

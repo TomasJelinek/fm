@@ -402,6 +402,16 @@ fn an_animated_thumbnail_keeps_the_pulse_until_it_is_deselected() {
         fixture.advance();
         assert!(fixture.running(), "pass {pass} keeps animating");
     }
+    // Nobody sees a minimized window's tiles: the pulse stops until a restore,
+    // whose resize wakes it, and the tile then animates again.
+    fixture.window.window().set_minimized(true);
+    fixture.settle();
+    fixture.window.window().set_minimized(false);
+    wake_pulse();
+    for pass in 0..3 {
+        fixture.advance();
+        assert!(fixture.running(), "restored pass {pass} keeps animating");
+    }
     fixture
         .presenter
         .borrow_mut()
