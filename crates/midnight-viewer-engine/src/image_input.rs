@@ -9,12 +9,36 @@ pub(crate) struct ImageFrames {
     coordinate_minimum: u64,
     /// The first published frame of the surface shown last, and that surface.
     surface: Option<(u64, midnight_core::ViewerSurfaceId)>,
+    /// The first and the latest frame published for this image or document. Page turns
+    /// keep them: a relative page step names the document, not the page it was made on.
+    published: Option<[u64; 2]>,
 }
 
 impl ImageFrames {
     pub fn painted(&mut self, frame: u64) {
         self.first.get_or_insert(frame);
         self.last = frame;
+        self.published = Some([self.published.map_or(frame, |[first, _]| first), frame]);
+    }
+
+    /// The page changed: no coordinate of a frame published so far holds for the new
+    /// page, so every image input waits for its first frame. Page steps keep naming the
+    /// document ([`Self::accepts_page_step`]).
+    pub fn page_turned(&mut self) {
+        *self = Self {
+            published: self.published,
+            ..Self::default()
+        };
+    }
+
+    /// A relative page step (Ctrl+PageDown/Up, the page buttons) carries no coordinates,
+    /// only the frame the window showed: it holds for every frame published for this
+    /// document, so a step made while the previous page is still rendering is not lost.
+    /// A frame of another document (another `ImageFrames`) or one never published is
+    /// refused.
+    pub fn accepts_page_step(&self, frame: u64) -> bool {
+        self.published
+            .is_some_and(|[first, last]| frame >= first && frame <= last)
     }
 
     /// Record the surface of the published `frame`.
@@ -121,6 +145,40 @@ mod tests {
         frames.painted(9);
         assert!(frames.accepts_document_image(9, &coordinates));
         assert!(!frames.accepts_document(8, true));
+    }
+
+    #[test]
+    fn page_steps_name_the_document_while_page_turns_retire_coordinates() {
+        let mut frames = ImageFrames::default();
+        assert!(!frames.accepts_page_step(0), "nothing published yet");
+        frames.painted(7);
+        frames.surface(7, midnight_core::ViewerSurfaceId(1));
+        frames.painted(8);
+        frames.page_turned();
+        // The next page is still rendering: the window shows frame 8 (or 7).
+        assert!(frames.accepts_page_step(7) && frames.accepts_page_step(8));
+        assert!(!frames.accepts_page_step(9), "not published yet");
+        assert!(
+            !frames.accepts_document(8, true),
+            "coordinates of the old page"
+        );
+        assert!(!frames.accepts_document_image(8, &ViewerImageInput::Fit));
+        assert_eq!(
+            frames.surface_frame(7),
+            7,
+            "the old page's surface is retired"
+        );
+        frames.painted(9);
+        frames.surface(9, midnight_core::ViewerSurfaceId(2));
+        assert!(frames.accepts_page_step(7) && frames.accepts_page_step(9));
+        assert!(!frames.accepts_page_step(6) && !frames.accepts_page_step(10));
+        assert!(frames.accepts_document(9, true));
+        assert!(!frames.accepts_document(8, true));
+        // Another document starts its own frames: a step made on this one is refused.
+        let mut next_document = ImageFrames::default();
+        next_document.painted(12);
+        assert!(!next_document.accepts_page_step(9));
+        assert!(next_document.accepts_page_step(12));
     }
 
     #[test]

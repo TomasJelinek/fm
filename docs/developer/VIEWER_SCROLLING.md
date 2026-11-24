@@ -250,6 +250,22 @@ whole column in the Continuous one. Tiles are drawn on whole physical pixels: th
 centring margin is rounded, the canvas phase removed and a document camera snapped to
 whole raster pixels, so glyph edges are not resampled between screen pixels.
 
+**Page steps.** Ctrl+PageDown, Ctrl+PageUp and the page buttons send
+`ViewerInput::DocumentPage { frame, delta }`, a step relative to the latest requested
+page, not to the page shown. It carries no coordinates, so the engine accepts it for any
+frame published for the open document (`ImageFrames::accepts_page_step`), including one
+the window still showed while the page before was rendering; a frame of another
+document, or one never published, is refused. Steps add up and are clamped to the
+document's pages (`ImageView::page_step`): n presses move n pages, never past the first
+or the last page, and no step is queued. A step made while the visible tiles of the
+camera in progress are still rendering waits with those before it until that camera is
+published, as a pan does, so a held key shows the pages it passes instead of chasing
+every step and showing none, and stops as soon as the key is released. Another camera
+input (a key scroll, a seek, a zoom, a layout switch, a resize) turns the waiting steps
+first, so it applies to the page they reach. A page turn retires the coordinates of
+every earlier frame (`ImageFrames::page_turned`): a zoom anchor or layout switch made on
+the previous page is refused until the new page is published.
+
 **Budget.** The backend tile cache and the UI texture cache each keep
 `viewer_document_tile_cache_bytes(view)` for a raster view of `view` pixels: the shown
 and prefetched tiles and half again (at most 64 MiB more), and at least three views

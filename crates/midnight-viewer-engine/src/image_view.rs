@@ -32,6 +32,11 @@ pub(crate) struct ImageView {
     /// those tiles are published, so a fast scrollbar drag shows the cameras it passes
     /// instead of chasing every new one and showing none.
     pub deferred_pan: Option<(ViewerSurfaceId, u64, [f64; 2])>,
+    /// Relative page steps made while the visible tiles of the camera in progress were
+    /// still rendering, summed and clamped to the document's pages. They turn the page
+    /// once that camera is published, so a held page key shows the pages it passes
+    /// instead of chasing every step and showing none. At most the page count.
+    deferred_pages: i32,
 }
 
 impl ImageView {
@@ -53,6 +58,7 @@ impl ImageView {
             failure: None,
             waiting_budget: false,
             deferred_pan: None,
+            deferred_pages: 0,
         }
     }
 
@@ -123,9 +129,55 @@ impl ImageView {
         self.apply_pan(surface, sequence, origin)
     }
 
+    /// A relative document page step (Ctrl+PageDown/Up, the page buttons). Steps add up
+    /// against the latest requested page, not the page shown, clamped to the document: n
+    /// steps move n pages and never past the first or the last page, and no step waits in
+    /// a queue. While the visible tiles of the camera in progress are still rendering, the
+    /// step waits with those before it (`deferred_pages`) until that camera is published.
+    /// True when the page changed now (`changed_by` already ran).
+    pub fn page_step(&mut self, delta: i32) -> bool {
+        let Some(document) = &self.document_view else {
+            return false;
+        };
+        let page = document.page as i64;
+        let last = document.placements.len() as i64 - 1;
+        let target = (page + i64::from(self.deferred_pages) + i64::from(delta)).clamp(0, last);
+        // `DocumentView` holds at most 4096 pages, so the difference fits.
+        self.deferred_pages = (target - page) as i32;
+        // Wait only for a camera that is still to be shown: its publication turns the page.
+        let unpublished = self
+            .published
+            .is_none_or(|(revision, _)| revision != self.revision);
+        if unpublished && self.pending.is_some() && !self.scene.visible_ready() {
+            return false;
+        }
+        self.turn_deferred_pages()
+    }
+
+    /// Turn the page by the steps that waited for the camera in progress, if any. Another
+    /// camera input calls this first, so that it applies to the page the steps reach,
+    /// as it would had they not waited. True when the page changed (`changed_by` ran).
+    pub fn turn_deferred_pages(&mut self) -> bool {
+        let delta = std::mem::take(&mut self.deferred_pages);
+        let Some(document) = &mut self.document_view else {
+            return false;
+        };
+        if delta == 0 || !document.change_page(delta) {
+            return false;
+        }
+        // A pan of the old page's surface is moot: the page gets a new surface.
+        self.deferred_pan = None;
+        self.frames.page_turned();
+        self.changed();
+        true
+    }
+
     /// A frame was published: move on to the camera that waited for it, if any. True when
     /// the camera changed (`changed_by` already ran).
     pub fn published(&mut self) -> bool {
+        if self.turn_deferred_pages() {
+            return true;
+        }
         let Some((surface, sequence, origin)) = self.deferred_pan.take() else {
             return false;
         };

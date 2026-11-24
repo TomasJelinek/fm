@@ -69,7 +69,13 @@ fn document_worker(
     (worker, output, displayed)
 }
 
-fn publish_document(worker: &mut Worker, output: &Mailbox) -> ViewerFrame {
+pub(super) fn publish_document(worker: &mut Worker, output: &Mailbox) -> ViewerFrame {
+    try_publish_document(worker, output)
+        .expect("document input must be followed by its replacement publication")
+}
+
+/// As [`publish_document`]; `None` when the camera shown last is still the latest.
+pub(super) fn try_publish_document(worker: &mut Worker, output: &Mailbox) -> Option<ViewerFrame> {
     // Substitute only provider pixels: every band of the current camera's tiles. The
     // production publication path records both Worker/ImageFrames acceptance and the
     // document's published-camera snapshot.
@@ -89,14 +95,10 @@ fn publish_document(worker: &mut Worker, output: &Mailbox) -> ViewerFrame {
     image.pending = None;
     image.validated = Some(image.revision);
     worker.paint_image(output).unwrap();
-    output
-        .take()
-        .into_iter()
-        .find_map(|event| match event {
-            ViewerOutput::Frame(frame) => Some(*frame),
-            _ => None,
-        })
-        .expect("document input must be followed by its replacement publication")
+    output.take().into_iter().find_map(|event| match event {
+        ViewerOutput::Frame(frame) => Some(*frame),
+        _ => None,
+    })
 }
 
 fn page_turn_then_resize(worker: &mut Worker, output: &Mailbox, displayed: &ViewerFrame) {

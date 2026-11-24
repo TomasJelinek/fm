@@ -197,7 +197,10 @@ input whose frame is older than the latest page it published
 (`midnight-viewer-engine` `worker_image.rs`, `self.frames.accepts(*frame)`), so a key
 pressed while the previous page is being rendered is lost. A person who presses
 Ctrl+PageDown quickly, or holds it, gets fewer pages than presses. The scenario is
-right; the viewer needs the fix (owner: the Viewer agent).
+right. **Fixed** the same day ("Viewer: document page steps pressed before the page is
+shown all count"): a page step is fenced by the document, not by the latest frame, and
+steps add up against the requested page ([page steps](../developer/VIEWER_SCROLLING.md));
+with the fix `viewers_presentation`'s six presses reached page 6 in every run.
 
 ## Rust tests
 

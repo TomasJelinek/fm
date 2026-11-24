@@ -18,6 +18,9 @@ mod text_position;
 #[path = "worker_pdf_continuous_tests.rs"]
 mod pdf_continuous;
 
+#[path = "worker_page_step_tests.rs"]
+mod page_steps;
+
 #[path = "worker_raster_tests.rs"]
 mod raster;
 #[path = "worker_source_continuity_tests.rs"]
@@ -360,7 +363,9 @@ fn newly_opened_pdf_fits_window_instead_of_reusing_another_documents_manual_zoom
         worker.sync_preferences(&output);
         for delta in [1, -1] {
             let frame = worker.frames.painted().unwrap();
+            worker.image.as_mut().unwrap().frames.painted(frame);
             assert!(worker.image_input(&ViewerInput::DocumentPage { frame, delta }));
+            assert_eq!(worker.image.as_ref().unwrap().page, delta.max(0) as usize);
             let view = worker.image.as_ref().unwrap().geometry.as_ref().unwrap();
             assert!(!view.fitted);
             assert_eq!(

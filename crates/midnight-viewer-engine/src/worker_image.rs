@@ -6,10 +6,30 @@ impl Worker {
         let Some(image) = &mut self.image else {
             return false;
         };
+        // Page steps that wait for the camera in progress come first: a later camera input
+        // applies to the page they reach. A pan of the old page's tiles does not turn it.
+        if matches!(
+            input,
+            ViewerInput::Resize(_)
+                | ViewerInput::DocumentLayout { .. }
+                | ViewerInput::Scroll { .. }
+                | ViewerInput::Seek(_)
+                | ViewerInput::Pan(_)
+                | ViewerInput::Image { .. }
+        ) && !matches!(
+            input,
+            ViewerInput::Image {
+                input: ViewerImageInput::PanTo { .. },
+                ..
+            }
+        ) && image.turn_deferred_pages()
+        {
+            self.frames.invalidate();
+            self.dirty = true;
+        }
         let before = image.geometry.clone();
         let page_before = image.page;
         let layout_before = image.document_view.as_ref().map(|view| view.layout);
-        let mut page_turn = false;
         let pan_ack = matches!(
             input,
             ViewerInput::Image {
@@ -38,11 +58,15 @@ impl Worker {
                         return true;
                     }
                 }
+                // A step is relative to the latest requested page, so it holds for any
+                // frame of this document, even one the window showed while the page
+                // before was still rendering (`ImageFrames::accepts_page_step`).
                 ViewerInput::DocumentPage { frame, delta } => {
-                    if !self.frames.accepts(*frame) || !document.change_page(*delta) {
-                        return true;
+                    if image.frames.accepts_page_step(*frame) && image.page_step(*delta) {
+                        self.frames.invalidate();
+                        self.dirty = true;
                     }
-                    page_turn = true;
+                    return true;
                 }
                 ViewerInput::Scroll { x, y } => document.scroll([f64::from(*x), f64::from(*y)]),
                 ViewerInput::Seek(position) => document.seek(1, *position),
@@ -121,9 +145,7 @@ impl Worker {
             || image.document_view.as_ref().map(|view| view.layout) != layout_before
             || pan_ack
         {
-            if page_turn {
-                image.frames = Default::default();
-            } else if image.document_view.is_some() && matches!(input, ViewerInput::Resize(_)) {
+            if image.document_view.is_some() && matches!(input, ViewerInput::Resize(_)) {
                 image.frames.resized();
             }
             image.changed_by(pan_ack);
