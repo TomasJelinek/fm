@@ -133,6 +133,16 @@ file whose first 256 KiB hold a control byte is refused after that first block.
 Reading a large file reports its progress (*Reading File A: 12 of 30 MiB…*), then
 *Matching lines…*; both stop at the next block or alignment step after Escape or Close.
 
+Both files are captured exactly, change time included (see
+[content reads](CONTENT_READS.md#change-time-drift-view-05)). When a text source fails
+revalidation and a fresh capture of its path differs only in the change time (endpoint
+protection adding a stream to a fresh file, for example), the comparator reads that
+capture completely, as the first read does, and adopts it only when its decoded text and
+encoding equal the retained ones; whole-input verification then starts again
+(`revalidation.rs`). An interrupted first read is repeated once on the fresh capture.
+Any other change, and image and byte comparisons, report that a compared file changed
+(COMPARE-02 in the [backlog](../IMPLEMENTATION_BACKLOG.md)).
+
 The installed fixed-pitch families are scanned on a `comparator-fonts` thread, started
 when a text comparison begins reading; the scan reads every installed family and can
 take seconds on a loaded machine. At most one scan runs per service: a comparison that

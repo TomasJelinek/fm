@@ -368,12 +368,16 @@ status line as the browser's notice until the next user action.
 ## The small browser (application)
 
 The HTML row of the viewer window has Back, Forward and Reload buttons before the Online
-and JavaScript boxes. Back and Forward go through the documents opened from links in that
-window (`ViewerLinkInput::Back`/`Forward`); the engine reports whether each has a document
-to go to (`ViewerOutput::LinkHistory`), which enables the buttons. Reload
-(`ViewerLinkInput::Reload`, `viewer.reload`, F5 and Ctrl+R) captures the shown file again
-and reopens it where it was, keeping the history and an HTML page's Online and JavaScript
-choices for that file only. After Chromium's editable-focus arbitration, Alt+Left and
+and JavaScript boxes; a narrow window leaves the three buttons out and keeps the boxes and
+the zoom, while the keys and mouse buttons below still work. Back and Forward
+(`viewer.link-back`, Alt+Shift+Left; `viewer.link-forward`, Alt+Shift+Right) go through
+the documents opened from links in that window (`ViewerLinkInput::Back`/`Forward`); the
+engine reports whether each has a document to go to (`ViewerOutput::LinkHistory`), which
+enables the buttons. Reload (`ViewerLinkInput::Reload`, `viewer.reload`, F5 and Ctrl+R)
+captures the shown file again and reopens it, keeping the history and an HTML page's
+Online and JavaScript choices for that file only. A text page reopens where it was; an
+HTML page starts at its top, because Chromium reports no scroll position
+(`worker_links.rs`, `reload`). After Chromium's editable-focus arbitration, Alt+Left and
 Alt+Right go Back and Forward while there is a page in that direction and otherwise keep
 their bound file action (`web_input::browser_history`); the mouse's Back and Forward
 buttons go through the history. The status line shows the page's title (the file name
@@ -381,6 +385,7 @@ until it has one) or "Loading…", then the policy, a notice and the Find result
 shows "Loading…" too (`ViewerOutput::WebState::loading`). The page's cursor
 (`EventKind::Cursor`, from CEF's `OnCursorChange`) reaches the window as
 `ViewerOutput::WebCursor` and is set on the native window through winit while the pointer
-is over the page, on Windows and Linux alike (`crates/midnight-viewer-ui/src/web_cursor.rs`):
-Slint never sees the pointer there, because those events go to the browser. Leaving the
-page restores the window's default cursor.
+is over the page, on Windows and Linux alike
+(`crates/midnight-viewer-ui/src/web_cursor.rs`): Slint never sees the pointer there,
+because those events go to the browser. Leaving the page restores the window's default
+cursor.

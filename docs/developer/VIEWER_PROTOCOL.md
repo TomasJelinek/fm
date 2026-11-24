@@ -1,9 +1,7 @@
 # Viewer protocol reference
 
-The baseline schemas describe public API 0.1.0 with the source-implemented
-optional preparation extension in API/SDK0.2.0; C ABI remains 1.0. Full
-Source plugin recovery remains separate from the verified local0.2
-publication and selected host/engine gate. Source definitions are
+The baseline schemas describe public plugin API 0.1.0; API/SDK 0.2.0 adds the
+optional Source preparation extension. The C ABI remains 1.0. Source definitions are
 [messages.rs](../../api/midnight-plugin-api/src/messages.rs),
 [viewer.rs](../../api/midnight-plugin-api/src/viewer.rs) and
 [document.rs](../../api/midnight-plugin-api/src/document.rs). See
@@ -45,7 +43,7 @@ missing optional values.
 | `REQUEST_CLOSE` (4) | No typed close model | Empty payload is allowed; session/generation are in the envelope |
 | `REQUEST_SERVICE_REPLY` (5) | `ReadReply` | `0: revision u64`, `1: offset u64`, `2: bytes u32`, `3: eof bool`, `4: status u32` |
 | `REQUEST_LOCATE` (6) | `Locate` | Optional source coordinates; `0: source_anchor u64`; may complete without a position |
-| `REQUEST_PREPARE_SOURCE` (7) | `PrepareSource` | Optional0.2: `0: revision u64`, `1: viewport Viewport`, `2: max_scan_bytes u32` |
+| `REQUEST_PREPARE_SOURCE` (7) | `PrepareSource` | Optional 0.2: `0: revision u64`, `1: viewport Viewport`, `2: max_scan_bytes u32` |
 | `SERVICE_READ_AT` (1001) | `ReadAt` | `0: reader u64`, `1: revision u64`, `2: offset u64`, `3: length u32` |
 | `SERVICE_CLOSE_READER` (1002) | `CloseReader` | `0: reader u64` |
 
@@ -106,7 +104,7 @@ coordinates for later pages. Evidence: [large text viewers record](../verificati
 | `EVENT_SEARCH_MATCH` (5) | `SearchMatch` | `0: source SourceRange`, `1: preview String`; source length is nonzero |
 | `EVENT_PROGRESS` (6) | `Progress` | `0: completed u64`, `1: total ?u64`, `2: phase u16`; completed cannot exceed known total |
 | `EVENT_TEXT_POSITION` (7) | `TextPosition` | Optional exact source coordinates; see [source positions](../../api/SOURCE_POSITION.md) |
-| `EVENT_SOURCE_PREPARED` (8) | `SourcePrepared` | Optional0.2: `0: revision u64`, `1: frontier u64`, `2: ready bool` |
+| `EVENT_SOURCE_PREPARED` (8) | `SourcePrepared` | Optional 0.2: `0: revision u64`, `1: frontier u64`, `2: ready bool` |
 | `EVENT_COMPLETED` (100) | Empty | Successful terminal for this request |
 | `EVENT_CANCELLED` (101) | Empty | Cancelled terminal for this request |
 | `EVENT_FAILED` (102) | `Failure` | `0: code u32`, `1: message String`; failed terminal |

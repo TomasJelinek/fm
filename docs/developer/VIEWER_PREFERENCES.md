@@ -144,10 +144,13 @@ by itself.
 - **Back and Forward** (Alt+Shift+Left and Alt+Shift+Right, or the mouse's Back and
   Forward buttons) go through the documents opened from links in this window, up to 64
   each way (`HISTORY`), at the place each was left; with nothing in that direction they
-  do nothing. Known limit: an HTML document opened this way starts at its top; neither
-  its place nor a link's `#fragment` is applied to it. Alt+Left and Alt+Right (and Space and Backspace)
-  keep cycling files; a document opened from a link is the only file they cycle until
-  Back returns to the previous order.
+  do nothing. The HTML row also has Back and Forward buttons, and over an HTML page
+  Alt+Left and Alt+Right go Back and Forward while there is a document in that
+  direction ([small browser](WEB_VIEWER_API.md#the-small-browser-application)). Known
+  limit: an HTML document opened this way starts at its top; neither its place nor a
+  link's `#fragment` is applied to it. Otherwise Alt+Left and Alt+Right (and Space and
+  Backspace) keep cycling files; a document opened from a link is the only file they
+  cycle until Back returns to the previous order.
 - **Inside an archive**, fragments and external links work, and a file a viewer shows
   in the document's folder or below opens in the same window. Links above the
   document's folder, to folders, or to files no viewer shows only say so on the status
