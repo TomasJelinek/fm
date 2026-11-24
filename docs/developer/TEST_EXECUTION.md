@@ -182,6 +182,14 @@ requires the `acceptance` feature of `crates/midnight-acceptance`, so
 See [the acceptance suite](ACCEPTANCE.md) and its
 [Windows results](acceptance/windows.md).
 
+The suite's own test target is built at `opt-level = 2` even in the debug test profile
+(`[profile.dev.package.midnight-acceptance]` in the root `Cargo.toml`): its probes copy,
+hash and compare whole rendered frames many times a second, and unoptimized those loops,
+not the product, set the pace of the viewer and UI polish scenarios. The product crates
+it drives keep their debug profiles. Each scenario's report ends with `timing` notes,
+the time spent per named phase ([results](ACCEPTANCE.md#results)); look there before
+making a scenario faster ([acceptance time](../verification/2026-11-24-acceptance-time.md)).
+
 ## Targeted test execution
 
 Use `scripts/run-targeted-tests.py` for independent **headless Rust libtest** targets that have already been built. It does not change CI coverage, compile code, discover executables by glob, or delete build artifacts. Native dialogs, desktop input, renderer pacing and profiling are unsupported: run their dedicated tools serially, with compilers and other test processes idle. For example, `scripts/probe-keyboard-search.ps1` drives the release `native_keyboard_search` example with real Windows keyboard input on a desktop session (see its [verification record](../verification/2026-11-07-keyboard-native-input.md)). Idle event-loop wakeups are measured the same way: `MIDNIGHT_IDLE_WAKEUP_PROBE=<warmup_s>:<seconds>[:thumbnails]` makes `me` use in-memory default preferences, count winit wakeups by cause after the warmup and print one `idle_wakeups=` line to stderr before it quits. Only the preferences are isolated: the probe uses the plugins installed next to `me` and the real preview cache, so set `LOCALAPPDATA` (Windows) or `XDG_CACHE_HOME` (Linux) to a scratch directory for the run. Run one probe at a time with the pointer outside the window (see the [idle wakeup record](../verification/2026-11-18-ui-idle-wakeups.md)).
