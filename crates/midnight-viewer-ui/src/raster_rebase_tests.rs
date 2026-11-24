@@ -519,7 +519,13 @@ fn raster_rebase_native_detents_are_queued_until_a_corrected_frame_is_presented(
     present(&open, &service, frame(&open, 11, 0, Some(1)));
     assert!(scroll_y(&received).is_empty());
     advance(&open, 16);
-    assert!(scroll_y(&received)[0] > 0.0 && scroll_y(&received)[0] < 20.0);
+    // The queued notch glides: its first frame moves part of the notch's
+    // LINE_PIXELS, not all of it (the glide starts at full speed and eases out).
+    let first = scroll_y(&received)[0];
+    assert!(
+        first > 0.0 && first < midnight_ui_input::LINE_PIXELS,
+        "first frame {first}"
+    );
     manager.close_all();
 }
 

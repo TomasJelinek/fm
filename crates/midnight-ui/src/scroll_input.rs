@@ -688,8 +688,10 @@ mod tests {
             Some(slint::LogicalPosition::new(60.0, 100.0))
         );
         assert!(state.active());
+        // The notch glides: its first frame moves part of the line notch's 120 pixels,
+        // not all of them (the glide starts at its full speed and eases out).
         let frame = state.wheel.tick(Duration::from_millis(16)).unwrap();
-        assert!(frame.1 < 0.0 && frame.1 > -20.0);
+        assert!(frame.1 < 0.0 && frame.1 > -120.0, "first frame {}", frame.1);
         for millis in (2..=16).map(|frame| frame * 16) {
             state.wheel.tick(Duration::from_millis(millis));
         }
