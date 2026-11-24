@@ -85,6 +85,7 @@ mod tool_window_shutdown_tests;
 mod watch_status_tests;
 pub use owned_commands::{BeginOwned, OwnedCommandScope, with_owned_commands};
 mod archive_passwords;
+mod network_sign_in;
 mod panel_choices;
 mod update_presentation;
 pub use update_presentation::{
@@ -697,6 +698,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     panel_choices::refresh(window, presenter);
     update_presentation::refresh(window, presenter);
     archive_passwords::refresh(window, presenter);
+    network_sign_in::refresh(window, presenter);
     window.invoke_refresh_hot_paths_window();
     let volume_icons = presenter
         .volumes
@@ -1195,6 +1197,7 @@ pub fn install_with_owned(
     panel_choices::install(window, presenter.clone(), send.clone());
     update_presentation::install(window, presenter.clone(), send.clone());
     archive_passwords::install(window, presenter.clone(), send.clone());
+    network_sign_in::install(window, presenter.clone(), send.clone());
     hot_path_windows::install(window, presenter.clone(), send.clone());
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");

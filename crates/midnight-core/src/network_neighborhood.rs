@@ -130,12 +130,60 @@ pub enum NetworkDestination {
     Native(PathBuf),
 }
 
+/// Credentials for one explicit network activation. The password is wiped on
+/// drop and none of the fields appear in debug output.
+pub struct NetworkCredentials {
+    username: String,
+    domain: String,
+    password: zeroize::Zeroizing<String>,
+}
+
+impl NetworkCredentials {
+    /// Reject fields that cannot cross the provider's bounded UTF-8 interface.
+    pub fn new(username: String, domain: String, password: String) -> Result<Self, &'static str> {
+        let password = zeroize::Zeroizing::new(password);
+        if username.is_empty() {
+            return Err("Enter a username.");
+        }
+        if [username.as_str(), domain.as_str(), password.as_str()]
+            .iter()
+            .any(|field| field.len() > 4096 || field.contains('\0'))
+        {
+            return Err("Sign-in fields must be at most 4096 bytes and contain no NUL characters.");
+        }
+        Ok(Self {
+            username,
+            domain,
+            password,
+        })
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    pub fn password(&self) -> &[u8] {
+        self.password.as_bytes()
+    }
+}
+
+impl std::fmt::Debug for NetworkCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NetworkCredentials(<redacted>)")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum NetworkAction {
     OpenRoot,
     Parse(String),
     Browse(NetworkAddress),
     Activate(NetworkAddress),
+    SignIn(NetworkAddress, Arc<NetworkCredentials>),
     Parent(NetworkAddress),
     Refresh(NetworkAddress),
 }
@@ -167,6 +215,11 @@ pub enum NetworkUpdate {
         error: Option<NetworkFailure>,
     },
     Native(PathBuf),
+    /// Explicit activation paused without changing the committed location.
+    SignInRequired {
+        address: NetworkAddress,
+        rejected: bool,
+    },
     Failed(NetworkFailure),
 }
 
@@ -190,6 +243,20 @@ pub trait NetworkNeighborhood: Send + Sync + std::fmt::Debug {
         address: &NetworkAddress,
         cancel: &Cancellation,
     ) -> Result<NetworkDestination, NetworkFailure>;
+    fn supports_sign_in(&self) -> bool {
+        false
+    }
+    fn sign_in(
+        &self,
+        _address: &NetworkAddress,
+        _credentials: &NetworkCredentials,
+        _cancel: &Cancellation,
+    ) -> Result<NetworkDestination, NetworkFailure> {
+        Err(NetworkFailure::new(
+            NetworkFailureKind::Unsupported,
+            "This network provider does not support sign-in.",
+        ))
+    }
     fn refresh(
         &self,
         address: &NetworkAddress,

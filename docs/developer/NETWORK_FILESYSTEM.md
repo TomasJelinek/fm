@@ -15,9 +15,10 @@ OS-supplied absolute native path. The host validates the platform/path and keeps
 the Network view until native navigation succeeds. No display text, remote URI,
 caption or generated path grants native filesystem authority.
 
-`filesystem-network` manifests require exactly `browse`, `stat`, `volumes`,
-`activate`, `refresh` and `resolve-text`, opaque address encoding, and host minor
-version 2. They cannot serve as the installed native filesystem provider.
+`filesystem-network` manifests require `browse`, `stat`, `volumes`, `activate`,
+`refresh` and `resolve-text`, opaque address encoding, and host minor version 2
+or later. The bundled Linux network provider adds `sign-in` and requires ABI
+minor 5. Network packages cannot serve as the installed native filesystem provider.
 The host reuses its audited C transport, trust checks and response-buffer leases.
 
 Resolve/stat/parent/manual parsing perform no discovery. Listing is incremental,
@@ -141,9 +142,13 @@ Entire Network wrapper. Native provider errors remain visible even after a slow
 call, with cancellation taking precedence. An unavailable Windows browser service
 does not imply that another provider or an explicitly entered UNC share is absent.
 Linux loads system GIO/GObject/GLib lazily and uses GVfs target URIs. Explicit
-activation can initialize a namespace or request a share mount; credential
-challenges abort with a distinct authentication-required result. Native handoff
-requires the actual GIO/GVfs path, usually supplied by GVfs FUSE.
+activation can initialize a namespace or request a share mount. When a protected
+SMB server or share requests credentials, the first mount attempt ends and the app
+shows its sign-in dialog. No worker waits for the dialog. Submission starts a new
+activation for the same opaque location, with one credential response to GIO. A
+repeated challenge opens the dialog again. Canceling the dialog leaves the
+previous listing in place. A server and a share may each request credentials.
+Native handoff requires the actual GIO/GVfs path, usually supplied by GVfs FUSE.
 
 Use plugin tests with fake adapters for discovery, paging, deadlines, cancellation,
 resource limits and failure states. Ordinary tests must not probe a real LAN.

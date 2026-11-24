@@ -42,7 +42,14 @@ impl Adapter for Linux {
         backend::next(&gio::Gio, cursor, context)
     }
     fn activate(target: &Target, context: &Context<'_>) -> Result<api::ActivationTarget, Failure> {
-        backend::activate(&gio::Gio, target, context)
+        backend::activate(&gio::Gio, target, None, context)
+    }
+    fn sign_in(
+        target: &Target,
+        credentials: &api::NetworkCredentials,
+        context: &Context<'_>,
+    ) -> Result<api::ActivationTarget, Failure> {
+        backend::activate(&gio::Gio, target, Some(credentials), context)
     }
 }
 #[cfg(test)]

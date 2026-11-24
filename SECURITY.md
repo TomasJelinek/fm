@@ -259,7 +259,17 @@ validated, OS-supplied absolute native path before ordinary file operations are
 enabled; failed activation preserves the discovery view. Known native share
 paths do not depend on discovery availability.
 
-No subnet/port scans or stored passwords are used. Cache entries, leases, worker
+On Linux, explicit SMB activation can open an in-app sign-in dialog. The dialog
+authorizes one retry for the requested location and navigation generation. The
+host sends credentials only to its ABI 1.5 Linux network provider, after checking
+that resolving the address returned the same opaque identity. Passwords stay
+out of addresses, preferences, clipboard copies, logs and events. Rust-owned
+passwords and the encoded ABI request are wiped when released. Slint, GIO and
+GVfs manage their own internal buffers. The provider requests
+`G_PASSWORD_SAVE_NEVER` and answers at most one password challenge per retry.
+An authenticated OS mount can remain available in the desktop session.
+
+Discovery does not scan subnets or ports. Cache entries, leases, worker
 slots and result pages have shared resource limits. Canceled or timed-out native
 calls retain their worker permit until they really return; cancellation does not
 spawn replacement workers or terminate OS threads. See the

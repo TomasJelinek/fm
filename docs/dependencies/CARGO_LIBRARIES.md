@@ -718,7 +718,7 @@ captures and does not prove that old captures match today's source files.
 | [zerofrom](https://crates.io/crates/zerofrom/0.1.8) | 0.1.8 | Unicode-3.0 | app, pdf-viewer, renderer-tests, thumbnail-image | Linux, Windows | — |
 | [zerofrom-derive](https://crates.io/crates/zerofrom-derive/0.1.7) | 0.1.7 | Unicode-3.0 | renderer-tests | Linux, Windows | — |
 | [zerofrom-derive](https://crates.io/crates/zerofrom-derive/0.1.8) | 0.1.8 | Unicode-3.0 | app, pdf-viewer, thumbnail-image | Linux, Windows | — |
-| [zeroize](https://crates.io/crates/zeroize/1.9.1) | 1.9.1 | Apache-2.0 OR MIT | app, archive, filesystem-api, html-viewer | Linux, Windows | yes |
+| [zeroize](https://crates.io/crates/zeroize/1.9.1) | 1.9.1 | Apache-2.0 OR MIT | app, archive, filesystem-api, html-viewer, native-linux, native-macos, native-windows, network | Linux, Windows, macOS arm64, macOS x86-64 | yes |
 | [zerotrie](https://crates.io/crates/zerotrie/0.2.5) | 0.2.5 | Unicode-3.0 | app, renderer-tests | Linux, Windows | — |
 | [zerovec](https://crates.io/crates/zerovec/0.11.8) | 0.11.8 | Unicode-3.0 | renderer-tests | Linux, Windows | — |
 | [zerovec](https://crates.io/crates/zerovec/0.11.9) | 0.11.9 | Unicode-3.0 | app | Linux, Windows | — |

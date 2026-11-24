@@ -11,6 +11,7 @@ struct Fake {
     fail_list: bool,
     fail_after_row: bool,
     native: bool,
+    sign_in: bool,
     entered: Mutex<Option<oneshot::Sender<()>>>,
     release: Option<Arc<(Mutex<bool>, Condvar)>>,
 }
@@ -82,6 +83,38 @@ impl NetworkNeighborhood for Fake {
         address: &NetworkAddress,
         _: &Cancellation,
     ) -> Result<NetworkDestination, NetworkFailure> {
+        if self.sign_in && address.opaque.as_ref() == [1] {
+            return Err(NetworkFailure::new(
+                NetworkFailureKind::AuthenticationRequired,
+                "private provider diagnostic",
+            ));
+        }
+        self.destination(address)
+    }
+    fn supports_sign_in(&self) -> bool {
+        self.sign_in
+    }
+    fn sign_in(
+        &self,
+        address: &NetworkAddress,
+        credentials: &NetworkCredentials,
+        _: &Cancellation,
+    ) -> Result<NetworkDestination, NetworkFailure> {
+        assert_eq!(address.opaque.as_ref(), [1]);
+        if credentials.password() != b"fixture-password" {
+            return Err(NetworkFailure::new(
+                NetworkFailureKind::AuthenticationRequired,
+                "private provider diagnostic",
+            ));
+        }
+        self.destination(address)
+    }
+    fn refresh(&self, _: &NetworkAddress, _: &Cancellation) -> Result<(), NetworkFailure> {
+        Ok(())
+    }
+}
+impl Fake {
+    fn destination(&self, address: &NetworkAddress) -> Result<NetworkDestination, NetworkFailure> {
         if self.native {
             Ok(NetworkDestination::Native(std::path::PathBuf::from(env!(
                 "CARGO_MANIFEST_DIR"
@@ -89,9 +122,6 @@ impl NetworkNeighborhood for Fake {
         } else {
             Ok(NetworkDestination::Browse(address.clone()))
         }
-    }
-    fn refresh(&self, _: &NetworkAddress, _: &Cancellation) -> Result<(), NetworkFailure> {
-        Ok(())
     }
 }
 fn controller(provider: Fake) -> (Controller, mpsc::Receiver<Event>, Snapshots) {
@@ -306,6 +336,73 @@ async fn native_handoff_keeps_network_authority_until_native_commit() {
         Some(NavigationId(4))
     );
     assert!(!snapshots.lock().unwrap()[0].has_native_view());
+}
+
+#[tokio::test]
+async fn sign_in_for_an_explicit_address_preserves_the_previous_listing_until_handoff() {
+    let (mut controller, mut events, snapshots) = controller(Fake {
+        native: true,
+        sign_in: true,
+        ..Default::default()
+    });
+    let mut tasks = JoinSet::new();
+    let mut previous = address();
+    previous.opaque = Arc::from([2]);
+    let actions = [
+        NetworkAction::Browse(previous),
+        NetworkAction::Parse("smb://server/".into()),
+        NetworkAction::SignIn(
+            address(),
+            Arc::new(NetworkCredentials::new("user".into(), "".into(), "wrong".into()).unwrap()),
+        ),
+        NetworkAction::SignIn(
+            address(),
+            Arc::new(
+                NetworkCredentials::new("user".into(), "".into(), "fixture-password".into())
+                    .unwrap(),
+            ),
+        ),
+    ];
+    for (index, action) in actions.into_iter().enumerate() {
+        let navigation = NavigationId(index as u64 + 1);
+        controller.navigate(
+            PaneId::Left,
+            navigation,
+            action,
+            SortSpec::default(),
+            &mut tasks,
+        );
+        drain(&mut tasks).await;
+        let mut last = None;
+        while let Ok(Event::NetworkUpdated { update, .. }) = events.try_recv() {
+            last = Some(*update);
+        }
+        match (index, last.unwrap()) {
+            (0, NetworkUpdate::Listing { done: true, .. }) => {}
+            (
+                1 | 2,
+                NetworkUpdate::SignInRequired {
+                    address: target,
+                    rejected,
+                },
+            ) => {
+                assert_eq!(target, address());
+                assert_eq!(rejected, index == 2);
+            }
+            (3, NetworkUpdate::Native(_)) => {}
+            (_, update) => panic!("Unexpected network update: {update:?}"),
+        }
+        let states = snapshots.lock().unwrap();
+        assert_eq!(states[0].network.as_ref().unwrap().0, NavigationId(1));
+        assert_eq!(
+            states[0].network_navigation,
+            Some(if index == 3 {
+                navigation
+            } else {
+                NavigationId(1)
+            })
+        );
+    }
 }
 
 // Paused time: the failing root is published only after its blocking call returns,

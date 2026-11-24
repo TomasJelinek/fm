@@ -214,6 +214,7 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
             "refresh" => abi::CAP_REFRESH,
             "resolve-text" => abi::CAP_RESOLVE_TEXT,
             "prepared-rename" => abi::CAP_PREPARED_RENAME,
+            "sign-in" => abi::CAP_SIGN_IN,
             _ => return Err(invalid("Unknown native filesystem capability")),
         };
         if capabilities & bit != 0 {
@@ -227,9 +228,18 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
         | abi::CAP_ACTIVATE
         | abi::CAP_REFRESH
         | abi::CAP_RESOLVE_TEXT;
-    if network && (capabilities != network_caps || manifest.minimum_host_minor < 2) {
+    if network
+        && (capabilities & !abi::CAP_SIGN_IN != network_caps || manifest.minimum_host_minor < 2)
+    {
         return Err(invalid(
             "Network provider requires the discovery-only ABI 1.2 capabilities",
+        ));
+    }
+    if capabilities & abi::CAP_SIGN_IN != 0
+        && (!network || !is_sign_in_provider(&manifest.id) || manifest.minimum_host_minor < 5)
+    {
+        return Err(invalid(
+            "Network sign-in requires the Linux network provider and ABI 1.5",
         ));
     }
     if !network && capabilities & abi::CAP_NATIVE_ADDRESS == 0 {
@@ -252,6 +262,10 @@ fn parse_manifest(text: &str, directory: &Path) -> Result<Package, Failure> {
         capabilities,
         encoding,
     })
+}
+
+pub(crate) fn is_sign_in_provider(id: &str) -> bool {
+    cfg!(target_os = "linux") && id == "network.linux"
 }
 
 pub(crate) fn invalid(error: impl std::fmt::Display) -> Failure {

@@ -387,6 +387,12 @@ impl<A: Adapter> NetworkFilesystem<A> {
     pub(super) fn refresh(&self, mount: u64, node: u64) -> Result<Reply, Failure> {
         let (_, node) = self.node(mount, node)?;
         let directory = self.directory(&node)?;
+        self.invalidate_directory(&directory)?;
+        Reply::stateless(Response::Unit)
+    }
+
+    /// Retire any pre-authentication listing for the exact activated address.
+    pub(super) fn invalidate_directory(&self, directory: &Arc<Directory>) -> Result<(), Failure> {
         let (retired, cache) = {
             let mut state = lock(&self.state);
             directory
@@ -399,7 +405,7 @@ impl<A: Adapter> NetworkFilesystem<A> {
             let retired: Vec<_> = state
                 .cursors
                 .extract_if(|_, cursor| {
-                    if Arc::ptr_eq(&cursor.directory, &directory) {
+                    if Arc::ptr_eq(&cursor.directory, directory) {
                         cursor.closed.store(true, Ordering::Release);
                         true
                     } else {
@@ -415,7 +421,7 @@ impl<A: Adapter> NetworkFilesystem<A> {
         };
         drop(retired);
         drop(cache);
-        Reply::stateless(Response::Unit)
+        Ok(())
     }
 }
 

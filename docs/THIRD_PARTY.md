@@ -220,6 +220,9 @@ texts are in the [Office preview notices](dependencies/OFFICE_PREVIEW_NOTICES.md
   1.0.5 (MIT) load the system's GIO at run time. GLib/GIO, GVfs and its backends are
   system components and are not bundled; see the plugin's
   [THIRD-PARTY.md](../plugins/midnight-filesystem-network/THIRD-PARTY.md).
+- Network sign-in uses zeroize 1.9.1 (`alloc` only, MIT selected from
+  Apache-2.0 OR MIT) in the host, public filesystem plugin API and Linux network
+  provider. Native filesystem packages use the same API and carry its notice.
 
 Each plugin package carries its own `THIRD-PARTY.md` with the selected license texts.
 Every independent plugin pins each registry dependency exactly to its locked version

@@ -128,6 +128,7 @@ mod navigation_location_layout;
 mod network_bookmarks;
 mod network_navigation;
 mod network_path_omission;
+mod network_sign_in_dialog;
 mod notice_choices;
 mod operation_defaults;
 mod operations_native_ui;

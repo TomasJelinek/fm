@@ -182,7 +182,7 @@ fn extensions_require_their_defining_minor_and_unknown_capabilities_are_incompat
         descriptor(CAP_PREPARED_RENAME | CAP_ACTIVATE, 2).validate(size),
         Err(INCOMPATIBLE)
     );
-    for unknown in [1 << 11, 1 << 20, 1 << 63] {
+    for unknown in [1 << 12, 1 << 20, 1 << 63] {
         assert_eq!(
             descriptor(legacy | CAP_VOLUME_DETAILS | unknown, ABI_MINOR).validate(size),
             Err(INCOMPATIBLE),
@@ -228,7 +228,7 @@ fn prepared_rename_is_additive_and_requires_an_honest_minor_three_descriptor() {
 /// reports the value may require host minor 4.
 #[test]
 fn minor_four_adds_only_the_local_storage_value() {
-    assert_eq!(ABI_MINOR, 4);
+    const { assert!(ABI_MINOR >= 4) };
     assert_eq!(LOCAL_STORAGE_HOST_MINOR, 4);
     let size = size_of::<Api>() as u32;
     let storage = CAP_BROWSE | CAP_READ | CAP_STAT | CAP_STORAGE | CAP_NATIVE_ADDRESS;
@@ -244,7 +244,20 @@ fn minor_four_adds_only_the_local_storage_value() {
         Err(INCOMPATIBLE)
     );
     let header = include_str!("../../include/midnight_filesystem.h");
-    for declaration in ["#define ME_FS_ABI_MINOR 4", "ME_FS_STORAGE_KIND_LOCAL=4"] {
-        assert!(header.contains(declaration), "{declaration}");
-    }
+    assert!(header.contains("ME_FS_STORAGE_KIND_LOCAL=4"));
+}
+
+#[test]
+fn sign_in_requires_both_provider_and_host_minor_five() {
+    let size = size_of::<Api>() as u32;
+    let mut sign_in = descriptor(CAP_SIGN_IN | CAP_ACTIVATE, 5);
+    assert_eq!(sign_in.validate(size), Ok(()));
+    sign_in.header.minimum_host_minor = 4;
+    assert_eq!(sign_in.validate(size), Err(INCOMPATIBLE));
+    sign_in.header.minimum_host_minor = 5;
+    sign_in.header.abi_minor = 4;
+    assert_eq!(sign_in.validate(size), Err(INCOMPATIBLE));
+    let header = include_str!("../../include/midnight_filesystem.h");
+    assert!(header.contains("#define ME_FS_ABI_MINOR 5"));
+    assert!(header.contains("ME_FS_CAP_SIGN_IN UINT64_C(2048)"));
 }

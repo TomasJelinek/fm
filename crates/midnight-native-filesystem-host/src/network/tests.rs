@@ -144,6 +144,81 @@ fn activation_preserves_opaque_addresses_and_rejects_native_uri_confusion() {
     assert!(provider.activate_inner(&address(), &|| false).is_err());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn sign_in_only_sends_credentials_to_the_resolved_target_of_the_linux_provider() {
+    use midnight_core::{Cancellation, NetworkCredentials, NetworkNeighborhood};
+
+    let (mut provider, transport) = fixture(vec![
+        resolved(),
+        Response::Activated(ActivationTarget::WithinProvider(node(1).address)),
+    ]);
+    provider.client.capabilities |= abi::CAP_SIGN_IN;
+    let credentials =
+        NetworkCredentials::new("éloïse".into(), "WORKGROUP".into(), "fixture".into()).unwrap();
+    let cancel = Cancellation::default();
+    assert!(!provider.supports_sign_in());
+    assert!(provider.sign_in(&address(), &credentials, &cancel).is_err());
+    assert!(transport.calls.lock().unwrap().is_empty());
+
+    provider.id = "network.linux".into();
+    let mut target = address();
+    target.provider = provider.id.clone();
+    assert!(provider.supports_sign_in());
+    let NetworkDestination::Browse(next) =
+        provider.sign_in(&target, &credentials, &cancel).unwrap()
+    else {
+        panic!("Expected the authenticated server");
+    };
+    assert_eq!(next.opaque, target.opaque);
+    let calls = transport.calls.lock().unwrap();
+    let [
+        Request::Resolve { address },
+        Request::SignIn {
+            mount: 1,
+            node: 1,
+            credentials,
+        },
+        Request::CloseMount { mount: 1 },
+    ] = calls.as_slice()
+    else {
+        panic!("Unexpected sign-in requests: {calls:?}");
+    };
+    assert_eq!(address.bytes, [1]);
+    assert_eq!(credentials.username, "éloïse");
+    assert_eq!(credentials.domain, "WORKGROUP");
+    assert_eq!(credentials.password(), b"fixture");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sign_in_refuses_a_changed_resolved_address_and_closes_the_mount() {
+    use midnight_core::{
+        Cancellation, NetworkCredentials, NetworkFailureKind, NetworkNeighborhood,
+    };
+
+    let (mut provider, transport) = fixture(vec![Response::Resolved {
+        mount: 1,
+        node: node(2),
+    }]);
+    provider.id = "network.linux".into();
+    provider.client.capabilities |= abi::CAP_SIGN_IN;
+    let mut target = address();
+    target.provider = provider.id.clone();
+    let credentials = NetworkCredentials::new("user".into(), "".into(), "fixture".into()).unwrap();
+    assert_eq!(
+        provider
+            .sign_in(&target, &credentials, &Cancellation::default())
+            .unwrap_err()
+            .kind,
+        NetworkFailureKind::Invalid
+    );
+    assert!(matches!(
+        transport.calls.lock().unwrap().as_slice(),
+        [Request::Resolve { .. }, Request::CloseMount { mount: 1 }]
+    ));
+}
+
 #[test]
 fn zero_network_mount_is_rejected_without_arming_a_failing_cleanup() {
     let (provider, fake) = fixture(vec![Response::Resolved {

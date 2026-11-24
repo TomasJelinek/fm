@@ -4,7 +4,8 @@ import { DialogFrame, PopupFocus } from "dialog-frame.slint";
 import { Theme } from "theme.slint";
 import { MaskSelectionDialog, PanelChoices } from "select-mask-dialog.slint";
 import { ArchivePasswordDialog, ArchivePasswords } from "archive-password-dialog.slint";
-export { PanelChoices, ArchivePasswords }
+import { NetworkSignInDialog, NetworkSignIn } from "network-sign-in-dialog.slint";
+export { PanelChoices, ArchivePasswords, NetworkSignIn }
 
 export global PanelFilterPresentation {
     in-out property <PanelFilterView> model;
@@ -20,13 +21,44 @@ export global PanelFilterPresentation {
 
 // The native window stays enabled; both modal layers live in its popup stack.
 // It also hosts Select/Deselect by mask, the other pattern dialog of a panel, and the
-// password of an archive that a panel's action needs.
+// credentials of an archive or network device that a panel's action needs.
 export component EmbeddedPanelFilter inherits Rectangle {
     private property <string> token: PanelFilterPresentation.token;
     private property <string> mask-token: PanelChoices.mask-token;
     private property <string> password-token: ArchivePasswords.token;
-    out property <bool> active: root.token != "" || root.mask-token != "" || root.password-token != "";
+    private property <string> sign-in-token: NetworkSignIn.token;
+    out property <bool> active: root.token != "" || root.mask-token != ""
+        || root.password-token != "" || root.sign-in-token != "";
     background: transparent;
+    changed sign-in-token => {
+        PopupFocus.update();
+        if root.sign-in-token != "" { sign-in-popup.close(); sign-in-popup.show(); }
+        else { sign-in-popup.close(); }
+        PopupFocus.update();
+    }
+    sign-in-popup := PopupWindow {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        close-policy: no-auto-close;
+        sign-in-frame := DialogFrame {
+            x: 0px; y: 0px; width: root.width; height: root.height;
+            desired-width: max(460px, Theme.font-size * 24);
+            desired-height: max(310px, Theme.control-height * 5 + 130px);
+            dim: true; dismiss-on-outside: false;
+            init => { self.reset(); }
+            NetworkSignInDialog {
+                x: 0px; y: 0px;
+                width: sign-in-frame.body-width; height: sign-in-frame.body-height;
+                private property <string> occurrence;
+                input-enabled: self.occurrence == NetworkSignIn.token;
+                init => { self.occurrence = NetworkSignIn.token; self.begin(); }
+                move-dialog(dx, dy) => { sign-in-frame.move-by(dx, dy); }
+                submit(username, domain, password) => {
+                    NetworkSignIn.submit(self.occurrence, username, domain, password);
+                }
+                cancel => { NetworkSignIn.dismiss(self.occurrence); }
+            }
+        }
+    }
     changed password-token => {
         PopupFocus.update();
         if root.password-token != "" { password-popup.close(); password-popup.show(); }

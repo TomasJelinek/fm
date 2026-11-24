@@ -398,6 +398,7 @@ fn c_header_values_match_the_public_codec() {
         Operation::Rename,
         Operation::GetRenameState,
         Operation::CloseRename,
+        Operation::SignIn,
     ] {
         // `ListBegin` is declared as `ME_FS_LIST_BEGIN`.
         let mut name = String::new();

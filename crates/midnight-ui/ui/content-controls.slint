@@ -14,6 +14,9 @@ export component ThemedLineEdit inherits Rectangle {
     in property <bool> read-only;
     in property <string> placeholder-text;
     in property <InputType> input-type: InputType.text;
+    // A masked credential must not be exported as accessibility text or copied
+    // by the native editor (including Linux's pointer selection clipboard).
+    in property <bool> protected-value;
     in property <TextHorizontalAlignment> horizontal-alignment: TextHorizontalAlignment.left;
     in property <length> font-size: Theme.font-size;
     in property <length> control-height: Theme.control-height;
@@ -61,7 +64,7 @@ export component ThemedLineEdit inherits Rectangle {
     accessible-role: text-input;
     accessible-enabled: root.enabled;
     accessible-read-only: root.read-only;
-    accessible-value <=> root.text;
+    accessible-value: root.protected-value ? "" : root.text;
     accessible-placeholder-text: root.placeholder-text;
     accessible-action-default => { if root.enabled { edit.focus(); } }
     accessible-action-set-value(value) => {
@@ -73,7 +76,7 @@ export component ThemedLineEdit inherits Rectangle {
         edit.set-selection-offsets(anchor, cursor);
     }
     ContextMenuArea {
-        enabled: root.enabled;
+        enabled: root.enabled && !root.protected-value;
         Menu {
             MenuItem { title: @tr("Undo"); enabled: !root.read-only; activated => { edit.undo(); } }
             MenuItem { title: @tr("Redo"); enabled: !root.read-only; activated => { edit.redo(); } }
@@ -126,10 +129,23 @@ export component ThemedLineEdit inherits Rectangle {
                 }
                 accepted => { root.accepted(self.text); }
                 edited => { root.edited(self.text); }
-                key-pressed(event) => { root.key-pressed(event) }
+                key-pressed(event) => {
+                    if root.protected-value && event.modifiers.control
+                        && (event.text == "c" || event.text == "x" || event.text == "z"
+                            || event.text == "Z" || event.text == "y") {
+                        return accept;
+                    }
+                    root.key-pressed(event)
+                }
                 key-released(event) => { root.key-released(event) }
             }
         }
+    }
+    // Slint's TextInput copies on pointer release even for InputType.password.
+    // A pointer can focus this field, and only the keyboard changes its selection.
+    TouchArea {
+        enabled: root.enabled && root.protected-value;
+        clicked => { edit.focus(); }
     }
     if root.clear-shown: Image {
         x: parent.width - 6px - self.width; y: (parent.height - self.height) / 2;

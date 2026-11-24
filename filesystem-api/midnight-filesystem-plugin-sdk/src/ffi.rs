@@ -86,6 +86,10 @@ pub unsafe fn entry_requiring_host_minor<F: Filesystem>(
         if capabilities & CAP_PREPARED_RENAME != 0 {
             header.minimum_host_minor = 3;
         }
+        let sign_in = capabilities & CAP_SIGN_IN != 0;
+        if sign_in {
+            header.minimum_host_minor = 5;
+        }
         header.minimum_host_minor = header.minimum_host_minor.max(minimum_host_minor);
         let local_storage = header.minimum_host_minor >= LOCAL_STORAGE_HOST_MINOR;
         let table = Api {
@@ -100,10 +104,12 @@ pub unsafe fn entry_requiring_host_minor<F: Filesystem>(
                 len: version.len() as u64,
             },
             create: Some(create::<F>),
-            call: Some(if local_storage {
-                call::<F, true>
+            call: Some(if sign_in {
+                call::<F, true, true>
+            } else if local_storage {
+                call::<F, true, false>
             } else {
-                call::<F, false>
+                call::<F, false, false>
             }),
             release_buffer: Some(release::<F>),
             destroy: Some(destroy::<F>),
@@ -139,7 +145,8 @@ unsafe extern "C" fn create<F: Filesystem>(config: *const Config, out: *mut u64)
     })
 }
 /// `LOCAL_STORAGE`: the descriptor requires a host minor that knows `StorageKind::Local`.
-unsafe extern "C" fn call<F: Filesystem, const LOCAL_STORAGE: bool>(
+/// `SIGN_IN`: this provider advertised `CAP_SIGN_IN`.
+unsafe extern "C" fn call<F: Filesystem, const LOCAL_STORAGE: bool, const SIGN_IN: bool>(
     id: u64,
     input: *const Call,
     out: *mut Buffer,
@@ -163,6 +170,9 @@ unsafe extern "C" fn call<F: Filesystem, const LOCAL_STORAGE: bool>(
             Ok(instance) => instance,
             Err(status) => return status,
         };
+        if input.operation == api::Operation::SignIn as u32 && !SIGN_IN {
+            return UNSUPPORTED;
+        }
         if input
             .payload
             .validate(instance.config.request_bytes)

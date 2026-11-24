@@ -326,6 +326,7 @@ impl Presenter {
             }
             return false;
         }
+        self.retire_network_sign_in(pane);
         self.clear_tree(pane, Some(navigation));
         let p = &mut self.panes[pane.index()];
         p.generation = navigation.0;

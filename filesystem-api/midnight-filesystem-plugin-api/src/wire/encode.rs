@@ -1,6 +1,9 @@
 use super::{PREFIX, validate};
 use crate::*;
 
+/// Encodes one request. The caller must wipe a SignIn frame after the call (even
+/// on failure) and must never log or store the bytes. The complete frame size is
+/// checked and reserved before any fields are written.
 pub fn encode_request(value: &Request, maximum: usize) -> Result<Vec<u8>, WireError> {
     validate::request(value)?;
     Writer::frame(maximum, |out| write_request(out, value))
@@ -20,6 +23,17 @@ fn write_request(out: &mut Writer, value: &Request) -> Result<(), WireError> {
         | Request::PrepareRename { mount, node } => {
             out.u64(*mount)?;
             out.u64(*node)?;
+        }
+        Request::SignIn {
+            mount,
+            node,
+            credentials,
+        } => {
+            out.u64(*mount)?;
+            out.u64(*node)?;
+            out.text(&credentials.username)?;
+            out.text(&credentials.domain)?;
+            out.blob(credentials.password())?;
         }
         Request::ListBegin {
             mount,

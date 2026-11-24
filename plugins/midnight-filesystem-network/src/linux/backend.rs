@@ -1,7 +1,7 @@
 use super::{Linux, uri};
 use crate::{
     adapter::{Adapter, Context, NodeKind, Record, Target},
-    api::{ActivationTarget, Address, AddressEncoding, ErrorCode, Failure},
+    api::{ActivationTarget, Address, AddressEncoding, ErrorCode, Failure, NetworkCredentials},
 };
 pub(super) struct Entry {
     pub uri: Vec<u8>,
@@ -15,7 +15,12 @@ pub(super) trait Backend {
         cursor: &mut Self::Cursor,
         context: &Context<'_>,
     ) -> Result<Option<Entry>, Failure>;
-    fn activate(&self, target: &Target, context: &Context<'_>) -> Result<Option<Vec<u8>>, Failure>;
+    fn activate(
+        &self,
+        target: &Target,
+        credentials: Option<&NetworkCredentials>,
+        context: &Context<'_>,
+    ) -> Result<Option<Vec<u8>>, Failure>;
 }
 pub(super) fn begin<B: Backend>(
     backend: &B,
@@ -77,11 +82,18 @@ pub(super) fn next<B: Backend>(
 pub(super) fn activate<B: Backend>(
     backend: &B,
     target: &Target,
+    credentials: Option<&NetworkCredentials>,
     context: &Context<'_>,
 ) -> Result<ActivationTarget, Failure> {
     context.check()?;
     Linux::validate(target)?;
-    let native = backend.activate(target, context)?;
+    if credentials.is_some() && !matches!(target.kind, NodeKind::Server | NodeKind::Share) {
+        return Err(Failure::new(
+            ErrorCode::Unsupported,
+            "Sign-in requires an SMB server or share.",
+        ));
+    }
+    let native = backend.activate(target, credentials, context)?;
     context.check()?;
     if target.kind != NodeKind::Share {
         return Ok(ActivationTarget::WithinProvider(Address {

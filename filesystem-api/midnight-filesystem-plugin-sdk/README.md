@@ -1,6 +1,6 @@
 # Native filesystem author SDK
 
-The standard-library-only SDK supplies the synchronous C entry, bounded instance
+The SDK supplies the synchronous C entry, bounded instance
 and buffer admission, borrowed cancellation and panic containment. Implement
 `Filesystem::create(Config)` to construct bounded state without a private worker
 pool, and `Filesystem::handle(Request, &CallContext)` to return `Result<Reply,
@@ -23,6 +23,12 @@ An adapter whose `storage_kind` or volume information may report
 api::abi::LOCAL_STORAGE_HOST_MINOR)` (`entry_requiring_host_minor`) and require the
 same minor in its manifest. A descriptor that admits an older host reports `Local`
 as `Unknown`, which such a host understands.
+
+For an independent network provider, advertising `CAP_SIGN_IN` raises its minimum
+host minor to 5. The package manifest must declare that minimum and `sign-in`.
+The SDK rejects credential calls to a descriptor without the capability before
+decoding the request. See the [sign-in protocol](../NATIVE_PLUGIN_PROTOCOL.md#optional-network-sign-in-abi-minor-5)
+for credential lifetimes.
 
 Prepared Rename is optional. Advertise `api::abi::CAP_PREPARED_RENAME` (1024)
 explicitly in `export_filesystem!` only when implemented. The SDK sets minimum

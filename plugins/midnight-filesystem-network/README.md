@@ -16,7 +16,12 @@ Opening a namespace or share explicitly may initialize it without interactive
 credential UI. A share activates only when the OS supplies a usable native path;
 Linux therefore needs the actual GIO native/FUSE path. Unavailable runtime,
 offline, mount required, authentication required, permission denied and unsupported
-handoff are separate outcomes. This version has no credential-entry workflow.
+handoff are separate outcomes. On Linux, a protected SMB server or share can be
+opened with the application's Sign in dialog. It retries the selected location
+with the supplied username, password and optional domain. Each submission can
+answer one password request. GVfs handles authentication and retains the mounted
+session. The plugin asks GVfs to keep the password out of the keyring. Windows
+sign-in is handled by its native network connection dialog.
 
 On Ubuntu/Mint, local network browsing needs the desktop's runtime packages:
 
@@ -29,6 +34,9 @@ an empty `network:///` listing while `gio list wsdd:///` reports that its helper
 cannot start. Devices may take a moment to appear; refresh the Network view after
 discovery settles. A known server can also be entered as `smb://server/` in the
 panel path. Other distributions supply equivalent GIO/GVfs/discovery packages.
+
+The Linux package requires filesystem host ABI minor 5 for explicit sign-in.
+The Windows package requires minor 2.
 
 The catalog streams up to 128 entries per page and caches only complete listings
 for 30 seconds; on Linux each asynchronous GIO request returns up to 32 discovery

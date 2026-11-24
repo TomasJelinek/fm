@@ -17,7 +17,7 @@ from pathlib import Path
 
 REQUIRED_VIEWERS = ("midnight.viewer.basic", "midnight.viewer.source", "midnight.viewer.markdown",
                     "midnight.viewer.image", "midnight.viewer.pdf", "midnight.viewer.html")
-FILESYSTEM_ABI_MINOR = 4
+FILESYSTEM_ABI_MINOR = 5
 # The application executable: the `midnight-explorer` Cargo binary (releases up to 0.5.0
 # named it `me`). Packages and runtime installations carry it under exactly this name.
 APPLICATION = "midnight-explorer"
@@ -464,15 +464,18 @@ def library_filesystem_manifest(manifest, package, files, target):
     fields = {"schema_version", "id", "kind", "version", "entry_library", "target", "protocol",
               "abi_major", "minimum_host_minor", "capabilities", "address_encoding"}
     network = manifest["kind"] == "filesystem-network"
-    supported = ({"browse", "stat", "volumes", "activate", "refresh", "resolve-text"} if network else
+    discovery = {"browse", "stat", "volumes", "activate", "refresh", "resolve-text"}
+    supported = (discovery if network else
                  {"browse", "read", "stat", "volumes", "storage", "native-address", "volume-details",
                   "prepared-rename"})
+    if network and "-linux-" in target and manifest.get("id") == "network.linux":
+        supported = supported | {"sign-in"}
     capabilities = manifest.get("capabilities")
     version = manifest.get("version")
     minimum_host_minor = manifest.get("minimum_host_minor")
     minimum_minor = 2 if network else 0
     encoding = "opaque" if network else "windows-utf16le" if "windows" in target else "unix-bytes"
-    required = supported if network else {"native-address"}
+    required = discovery if network else {"native-address"}
     if (set(manifest) != fields or type(manifest.get("schema_version")) is not int
             or manifest["schema_version"] != 1 or manifest.get("target") != target
             or not isinstance(version, str) or not 1 <= len(version.encode("utf-8")) <= 64
@@ -484,7 +487,8 @@ def library_filesystem_manifest(manifest, package, files, target):
             or not isinstance(capabilities, list) or not 1 <= len(capabilities) <= len(supported)
             or any(not isinstance(value, str) or value not in supported for value in capabilities)
             or len(set(capabilities)) != len(capabilities) or not required.issubset(capabilities)
-            or ("prepared-rename" in capabilities and minimum_host_minor < 3)):
+            or ("prepared-rename" in capabilities and minimum_host_minor < 3)
+            or ("sign-in" in capabilities and minimum_host_minor < 5)):
         raise ValueError("Incompatible library filesystem manifest")
     library = manifest.get("entry_library")
     if not isinstance(library, str):

@@ -49,7 +49,10 @@ impl Publication {
             NetworkUpdate::Listing { listing, .. } => Some(listing.entries.clone()),
             _ => None,
         };
-        let failed = matches!(update.as_ref(), NetworkUpdate::Failed(_));
+        let restore_previous = matches!(
+            update.as_ref(),
+            NetworkUpdate::Failed(_) | NetworkUpdate::SignInRequired { .. }
+        );
         let event = Event::NetworkUpdated {
             pane: self.pane,
             navigation: self.navigation,
@@ -64,7 +67,7 @@ impl Publication {
                 // The pane shows Network now: its last archive listing's root, which
                 // holds that archive's session, goes too.
                 retired_root = state.take_archive_tree_root();
-            } else if failed
+            } else if restore_previous
                 && state
                     .network
                     .as_ref()

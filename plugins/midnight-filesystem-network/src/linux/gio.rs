@@ -6,18 +6,17 @@ use super::{
 };
 use crate::{
     adapter::{Context, NodeKind, Target},
-    api::{ErrorCode, Failure},
+    api::{ErrorCode, Failure, NetworkCredentials},
 };
 use libloading::Library;
 use std::{
     ffi::{CString, c_char, c_int, c_void},
     ptr,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, OnceLock},
     time::Duration,
 };
+mod challenge;
+use challenge::MountChallenge;
 
 type Object = *mut c_void;
 type Callback = unsafe extern "C" fn(Object, Object, Object);
@@ -70,10 +69,14 @@ symbols! {
     g_cancellable_cancel: unsafe extern "C" fn(Object) -> () => 0,
     g_mount_operation_new: unsafe extern "C" fn() -> Object => 0,
     g_mount_operation_reply: unsafe extern "C" fn(Object,c_int) -> () => 0,
+    g_mount_operation_set_username: unsafe extern "C" fn(Object,*const c_char) -> () => 0,
+    g_mount_operation_set_domain: unsafe extern "C" fn(Object,*const c_char) -> () => 0,
+    g_mount_operation_set_password: unsafe extern "C" fn(Object,*const c_char) -> () => 0,
     g_mount_operation_set_password_save: unsafe extern "C" fn(Object,c_int) -> () => 0,
     g_io_error_quark: unsafe extern "C" fn() -> u32 => 0,
     g_object_unref: unsafe extern "C" fn(Object) -> () => 1,
     g_signal_connect_data: unsafe extern "C" fn(Object,*const c_char,unsafe extern "C" fn(),Object,Option<unsafe extern "C" fn(Object,Object)>,u32) -> usize => 1,
+    g_signal_handler_disconnect: unsafe extern "C" fn(Object,usize) -> () => 1,
     g_main_context_new: unsafe extern "C" fn() -> Object => 2,
     g_main_context_unref: unsafe extern "C" fn(Object) -> () => 2,
     g_main_context_push_thread_default: unsafe extern "C" fn(Object) -> () => 2,
@@ -385,40 +388,6 @@ unsafe fn bounded_bytes(pointer: *const c_char) -> Result<Vec<u8>, Failure> {
     Ok(unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), length) }.to_vec())
 }
 
-struct Challenge {
-    reply: unsafe extern "C" fn(Object, c_int),
-    password: AtomicBool,
-}
-unsafe extern "C" fn password_requested(
-    operation: Object,
-    _message: *const c_char,
-    _user: *const c_char,
-    _domain: *const c_char,
-    _flags: u32,
-    data: Object,
-) {
-    // SAFETY: activation owns this state until the operation has completed and signals disconnected.
-    let challenge = unsafe { &*data.cast::<Challenge>() };
-    challenge.password.store(true, Ordering::Release);
-    // SAFETY: live emitting operation; ABORTED requires no UI or credential values.
-    unsafe {
-        (challenge.reply)(operation, 1);
-    }
-}
-unsafe extern "C" fn question_requested(
-    operation: Object,
-    _message: *const c_char,
-    _choices: *const *const c_char,
-    data: Object,
-) {
-    // SAFETY: same owned activation state as password_requested.
-    let challenge = unsafe { &*data.cast::<Challenge>() };
-    // SAFETY: reject interaction rather than presenting an implicit question.
-    unsafe {
-        (challenge.reply)(operation, 1);
-    }
-}
-
 impl Backend for Gio {
     type Cursor = Cursor;
     fn begin(&self, uri: &[u8], context: &Context<'_>) -> Result<Cursor, Failure> {
@@ -517,51 +486,17 @@ impl Backend for Gio {
             .map_err(|_| Failure::new(ErrorCode::Invalid, "GIO returned a non-UTF-8 caption."))?;
         Ok(Some(Entry { uri, display }))
     }
-    fn activate(&self, target: &Target, context: &Context<'_>) -> Result<Option<Vec<u8>>, Failure> {
+    fn activate(
+        &self,
+        target: &Target,
+        credentials: Option<&NetworkCredentials>,
+        context: &Context<'_>,
+    ) -> Result<Option<Vec<u8>>, Failure> {
         context.check()?;
         let api = runtime()?;
         let main = MainContext::new(&api)?;
         let file = file(&api, &target.key)?;
-        let mut challenge = Box::new(Challenge {
-            reply: api.g_mount_operation_reply,
-            password: AtomicBool::new(false),
-        });
-        // SAFETY: new plain GMountOperation, never GtkMountOperation or a UI proxy.
-        let operation = OwnedObject::new(&api, unsafe { (api.g_mount_operation_new)() })?;
-        // SAFETY: signal signatures match GMountOperation documentation; state outlives operation.
-        unsafe {
-            (api.g_mount_operation_set_password_save)(operation.pointer, 0);
-            let data = (&mut *challenge as *mut Challenge).cast();
-            (api.g_signal_connect_data)(
-                operation.pointer,
-                c"ask-password".as_ptr(),
-                std::mem::transmute::<
-                    unsafe extern "C" fn(
-                        Object,
-                        *const c_char,
-                        *const c_char,
-                        *const c_char,
-                        u32,
-                        Object,
-                    ),
-                    unsafe extern "C" fn(),
-                >(password_requested),
-                data,
-                None,
-                0,
-            );
-            (api.g_signal_connect_data)(
-                operation.pointer,
-                c"ask-question".as_ptr(),
-                std::mem::transmute::<
-                    unsafe extern "C" fn(Object, *const c_char, *const *const c_char, Object),
-                    unsafe extern "C" fn(),
-                >(question_requested),
-                data,
-                None,
-                0,
-            );
-        }
+        let challenge = MountChallenge::new(&api, context, credentials)?;
         let mounted = run(
             &api,
             &main,
@@ -573,7 +508,7 @@ impl Backend for Gio {
                     (api.g_file_mount_enclosing_volume)(
                         file.pointer,
                         0,
-                        operation.pointer,
+                        challenge.pointer(),
                         cancel,
                         callback,
                         data,
@@ -581,13 +516,8 @@ impl Backend for Gio {
                 }
             },
         );
-        context.check()?;
-        if challenge.password.load(Ordering::Acquire) {
-            return Err(Failure::new(
-                ErrorCode::AuthenticationRequired,
-                "This network location requires authentication. Connect through the desktop session, then retry.",
-            ));
-        }
+        challenge.check()?;
+        drop(challenge);
         match mounted {
             Ok(_) => {}
             // Only G_IO_ERROR_ALREADY_MOUNTED is success, never a generic busy result.

@@ -15,6 +15,8 @@ crate-type = ["cdylib", "rlib"]
 midnight-filesystem-plugin-api = { version = "=0.2.0", path = "../../filesystem-api/midnight-filesystem-plugin-api" }
 midnight-filesystem-plugin-sdk = { version = "=0.2.0", path = "../../filesystem-api/midnight-filesystem-plugin-sdk" }
 
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+
 [profile.release]
 overflow-checks = true
 panic = "unwind"

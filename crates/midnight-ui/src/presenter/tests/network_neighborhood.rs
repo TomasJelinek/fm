@@ -38,6 +38,99 @@ fn network_pane() -> Presenter {
     p
 }
 
+fn sign_in_required(pane: PaneId, navigation: NavigationId, id: u8, rejected: bool) -> Event {
+    Event::NetworkUpdated {
+        pane,
+        navigation,
+        update: Box::new(NetworkUpdate::SignInRequired {
+            address: address(id),
+            rejected,
+        }),
+    }
+}
+
+#[test]
+fn sign_in_retries_the_resolved_device_and_keeps_no_credentials_in_the_view() {
+    let mut p = network_pane();
+    assert!(p.network_navigate(
+        PaneId::Left,
+        NetworkAction::Parse("smb://test/".into()),
+        &|_| true
+    ));
+    let first = NavigationId(p.panes[0].generation);
+    p.apply(sign_in_required(PaneId::Left, first, 2, false));
+    assert_eq!(p.network_sign_in_prompt().unwrap().address, address(2));
+    assert_eq!(p.panes[0].display_len(), 1);
+    assert!(!p.panes[0].loading);
+
+    let submit = |p: &mut Presenter, send: &dyn Fn(Command) -> bool| {
+        let token = p.network_sign_in_prompt().unwrap().token();
+        p.submit_network_sign_in(
+            &token,
+            "user".into(),
+            "domain".into(),
+            "secret".into(),
+            send,
+        );
+    };
+    submit(&mut p, &|_| false);
+    assert!(!p.network_sign_in_prompt().unwrap().error.is_empty());
+    assert!(p.panes[0].error.is_empty());
+
+    let sent = RefCell::new(Vec::new());
+    submit(&mut p, &|command| {
+        sent.borrow_mut().push(command);
+        true
+    });
+    assert!(matches!(
+        sent.borrow().as_slice(),
+        [Command::NetworkNavigate { pane: PaneId::Left, action: NetworkAction::SignIn(target, _), .. }]
+            if *target == address(2)
+    ));
+    assert!(p.network_sign_in_prompt().is_none());
+    assert!(matches!(
+        p.panes[0].network_pending,
+        Some(NetworkAction::Activate(_))
+    ));
+    assert!(p.panes[0].pending_network_browse().is_none());
+
+    let retry = NavigationId(p.panes[0].generation);
+    p.apply(sign_in_required(PaneId::Left, retry, 2, true));
+    let prompt = p.network_sign_in_prompt().unwrap();
+    assert_eq!(prompt.address, address(2));
+    assert_eq!(
+        prompt.error,
+        "Sign-in failed. Check your credentials and try again."
+    );
+    let token = prompt.token();
+    p.cancel_network_sign_in(&token);
+    assert!(p.network_sign_in_prompt().is_none());
+    assert!(p.panes[0].error.is_empty());
+    assert_eq!(p.panes[0].display_len(), 1);
+}
+
+#[test]
+fn a_stale_or_mismatched_sign_in_prompt_cannot_submit_credentials() {
+    let mut p = network_pane();
+    assert!(p.network_navigate(PaneId::Left, NetworkAction::Activate(address(2)), &|_| true));
+    let navigation = NavigationId(p.panes[0].generation);
+    p.apply(sign_in_required(PaneId::Left, navigation, 10, false));
+    assert!(p.network_sign_in_prompt().is_none(), "different device");
+
+    assert!(p.network_navigate(PaneId::Left, NetworkAction::Activate(address(2)), &|_| true));
+    let next = NavigationId(p.panes[0].generation);
+    p.apply(sign_in_required(PaneId::Left, navigation, 2, false));
+    assert!(p.network_sign_in_prompt().is_none(), "superseded request");
+    p.apply(sign_in_required(PaneId::Left, next, 2, false));
+    let token = p.network_sign_in_prompt().unwrap().token();
+
+    assert!(p.new_tab(PaneId::Left, &|_| true));
+    assert!(p.network_sign_in_prompt().is_none());
+    p.submit_network_sign_in(&token, "user".into(), "".into(), "secret".into(), &|_| {
+        panic!("stale dialog must not send credentials")
+    });
+}
+
 #[test]
 fn wsdd_uri_navigation_routes_to_the_network_provider_without_native_path_fallback() {
     for available in [false, true] {

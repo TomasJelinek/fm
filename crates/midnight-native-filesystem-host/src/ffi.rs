@@ -135,7 +135,7 @@ impl Transport for Instance {
                 "Native filesystem instance failed; restart required",
             ));
         }
-        let payload = match opening_payload {
+        let mut payload = match opening_payload {
             Some(payload) => payload,
             None => encode_request(
                 request,
@@ -143,14 +143,17 @@ impl Transport for Instance {
             )
             .map_err(invalid)?,
         };
+        let sensitive_payload = matches!(request, Request::SignIn { .. })
+            .then(|| zeroize::Zeroizing::new(std::mem::take(&mut payload)));
+        let data = sensitive_payload.as_deref().unwrap_or(&payload);
         // Controls inspect/dispose existing state even after user cancellation.
         let cancel = Cancellation(if control { &|| false } else { cancellation });
         let call = abi::Call {
             struct_size: size_of::<abi::Call>() as u32,
             operation: request.operation() as u32,
             payload: abi::Slice {
-                data: payload.as_ptr(),
-                len: payload.len() as u64,
+                data: data.as_ptr(),
+                len: data.len() as u64,
             },
             cancel: abi::Cancellation {
                 context: (&cancel as *const Cancellation<'_>) as u64,
@@ -160,6 +163,7 @@ impl Transport for Instance {
         let mut buffer = abi::Buffer::default();
         // SAFETY: retained instance/code and request/cancel storage lives through this call.
         let code = unsafe { (self.call)(self.instance, &call, &mut buffer) };
+        drop(sensitive_payload);
         if let Err(failure) = status(code) {
             // Failure transfers no buffer ownership. A contradictory nonzero
             // output can name somebody else's handle: never release it.

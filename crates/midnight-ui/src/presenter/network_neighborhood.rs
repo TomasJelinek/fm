@@ -1,6 +1,21 @@
 //! Presentation of virtual devices/shares; none of these rows authorizes file operations.
 use super::*;
 
+const NETWORK_QUEUE_BUSY: &str = "Network navigation queue is busy. Try again.";
+
+pub(crate) struct NetworkSignInPrompt {
+    pane: PaneId,
+    navigation: NavigationId,
+    pub(crate) address: NetworkAddress,
+    pub(crate) error: String,
+}
+
+impl NetworkSignInPrompt {
+    pub(crate) fn token(&self) -> String {
+        format!("{}:{}", self.pane.index(), self.navigation.0)
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct NetworkPane {
     pub(super) address: NetworkAddress,
@@ -42,7 +57,9 @@ impl Pane {
         self.network_pending
             .as_ref()
             .and_then(|action| match action {
-                NetworkAction::Activate(_) | NetworkAction::Parse(_) => None,
+                NetworkAction::Activate(_)
+                | NetworkAction::Parse(_)
+                | NetworkAction::SignIn(..) => None,
                 action => Some(action.clone()),
             })
     }
@@ -54,6 +71,7 @@ impl Pane {
             NetworkAction::Parse(text) => text.as_str(),
             NetworkAction::Browse(address)
             | NetworkAction::Activate(address)
+            | NetworkAction::SignIn(address, _)
             | NetworkAction::Parent(address)
             | NetworkAction::Refresh(address) => address.display.as_str(),
         })
@@ -67,9 +85,82 @@ impl Pane {
                         && network.address.opaque == address.opaque))
         })
     }
+
+    fn finish_failed_network_request(&mut self, retired: &mut Vec<DeferredDrop>) {
+        self.loading = false;
+        self.network_request = false;
+        retired.push(Box::new(self.network_pending.take()));
+        // Tab activation uses the common navigation transition, but its
+        // pending native placeholder grants no authority.
+        retired.push(Box::new(self.pending.take()));
+        self.retire_stream(retired);
+        if let Some(network) = &mut self.network {
+            network.requested_history = None;
+            network.wanted_cursor = None;
+        }
+    }
 }
 
 impl Presenter {
+    pub(crate) fn network_sign_in_prompt(&self) -> Option<&NetworkSignInPrompt> {
+        self.network_sign_in
+            .as_ref()
+            .filter(|prompt| self.panes[prompt.pane.index()].generation == prompt.navigation.0)
+    }
+
+    pub(super) fn retire_network_sign_in(&mut self, pane: PaneId) {
+        if self
+            .network_sign_in
+            .as_ref()
+            .is_some_and(|prompt| prompt.pane == pane)
+        {
+            self.retired.push(Box::new(self.network_sign_in.take()));
+        }
+    }
+
+    pub(crate) fn cancel_network_sign_in(&mut self, token: &str) {
+        if let Some(prompt) = self
+            .network_sign_in_prompt()
+            .filter(|prompt| prompt.token() == token)
+        {
+            self.retire_network_sign_in(prompt.pane);
+        }
+    }
+
+    pub(crate) fn submit_network_sign_in(
+        &mut self,
+        token: &str,
+        username: String,
+        domain: String,
+        password: String,
+        send: &dyn Fn(Command) -> bool,
+    ) {
+        // Wrap the password even when the dialog was superseded.
+        let credentials = NetworkCredentials::new(username, domain, password);
+        let Some(prompt) = self
+            .network_sign_in_prompt()
+            .filter(|prompt| prompt.token() == token)
+        else {
+            return;
+        };
+        match credentials {
+            Ok(credentials) => {
+                let pane = prompt.pane;
+                let action = NetworkAction::SignIn(prompt.address.clone(), Arc::new(credentials));
+                if !self.network_navigate(pane, action, send)
+                    && let Some(prompt) = &mut self.network_sign_in
+                {
+                    prompt.error = NETWORK_QUEUE_BUSY.into();
+                }
+            }
+            Err(error) => {
+                if let Some(prompt) = &mut self.network_sign_in {
+                    prompt.error = error.into();
+                }
+            }
+        }
+    }
+
     pub(crate) fn network_navigate(
         &mut self,
         pane: PaneId,
@@ -81,8 +172,17 @@ impl Presenter {
             NetworkAction::Browse(address) | NetworkAction::Refresh(address)
                 if address.provider == network.address.provider && address.opaque == network.address.opaque));
         let activated = match &action {
-            NetworkAction::Activate(address) => Some(address.clone()),
+            NetworkAction::Activate(address) | NetworkAction::SignIn(address, _) => {
+                Some(address.clone())
+            }
             _ => None,
+        };
+        let signing_in = matches!(&action, NetworkAction::SignIn(..));
+        // Only the submitted command owns credentials. The pending view needs
+        // the same target and cursor behavior as ordinary activation.
+        let pending = match &action {
+            NetworkAction::SignIn(address, _) => NetworkAction::Activate(address.clone()),
+            action => action.clone(),
         };
         let Some(navigation) = p.generation.checked_add(1).map(NavigationId) else {
             return false;
@@ -90,21 +190,21 @@ impl Presenter {
         if !send(Command::NetworkNavigate {
             pane,
             navigation,
-            action: action.clone(),
+            action,
             sort: p.sort,
         }) {
-            p.set_error(
-                "Network navigation queue is busy. Try again.",
-                &mut self.retired,
-            );
+            if !signing_in {
+                p.set_error(NETWORK_QUEUE_BUSY, &mut self.retired);
+            }
             return false;
         }
+        self.retire_network_sign_in(pane);
         self.clear_tree(pane, Some(navigation));
         let p = &mut self.panes[pane.index()];
         p.generation = navigation.0;
         p.network_request = true;
         self.retired
-            .push(Box::new(p.network_pending.replace(action)));
+            .push(Box::new(p.network_pending.replace(pending)));
         p.archive_request = false;
         p.loading = true;
         p.set_error("", &mut self.retired);
@@ -236,17 +336,42 @@ impl Presenter {
                 }
                 match *update {
                     NetworkUpdate::Failed(error) => {
-                        p.loading = false;
-                        p.network_request = false;
-                        self.retired.push(Box::new(p.network_pending.take()));
+                        p.finish_failed_network_request(&mut self.retired);
                         p.set_error(error.to_string(), &mut self.retired);
-                        // Tab activation uses the common navigation transition,
-                        // but its pending native placeholder grants no authority.
-                        self.retired.push(Box::new(p.pending.take()));
-                        p.retire_stream(&mut self.retired);
-                        if let Some(network) = &mut p.network {
-                            network.requested_history = None;
-                            network.wanted_cursor = None;
+                    }
+                    NetworkUpdate::SignInRequired { address, rejected } => {
+                        // Only an explicit activation or a manually entered
+                        // address is allowed to open the credential dialog.
+                        let requested = match p.network_pending.as_ref() {
+                            Some(NetworkAction::Activate(target)) => {
+                                target.provider == address.provider
+                                    && target.opaque == address.opaque
+                            }
+                            Some(NetworkAction::Parse(_)) => true,
+                            _ => false,
+                        };
+                        p.finish_failed_network_request(&mut self.retired);
+                        if requested && self.network_sign_in.is_none() {
+                            self.network_sign_in = Some(NetworkSignInPrompt {
+                                pane,
+                                navigation,
+                                address,
+                                error: if rejected {
+                                    "Sign-in failed. Check your credentials and try again.".into()
+                                } else {
+                                    String::new()
+                                },
+                            });
+                        } else {
+                            self.retired.push(Box::new(address));
+                            p.set_error(
+                                if requested {
+                                    "Sign-in required. Open the device again to sign in."
+                                } else {
+                                    "Invalid network sign-in response."
+                                },
+                                &mut self.retired,
+                            );
                         }
                     }
                     NetworkUpdate::Native(_) => {

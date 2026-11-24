@@ -6,5 +6,8 @@ rust-version = "1.99"
 publish = false
 description = "Public synchronous Browse/Read ABI for independent filesystem packages"
 
+[dependencies]
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+
 [lints.rust]
 unsafe_code = "forbid"

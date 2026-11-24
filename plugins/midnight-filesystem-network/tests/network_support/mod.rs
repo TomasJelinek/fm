@@ -30,7 +30,8 @@ impl Client {
                         | abi::CAP_VOLUMES
                         | abi::CAP_ACTIVATE
                         | abi::CAP_REFRESH
-                        | abi::CAP_RESOLVE_TEXT,
+                        | abi::CAP_RESOLVE_TEXT
+                        | abi::CAP_SIGN_IN,
                 )
             },
             abi::OK
@@ -60,7 +61,9 @@ impl Client {
             let predicate = unsafe { &*(value as usize as *const &(dyn Fn() -> bool + Sync)) };
             u32::from(predicate())
         }
-        let bytes = encode_request(&request, DEFAULT_REQUEST_BYTES as usize).unwrap();
+        let bytes = zeroize::Zeroizing::new(
+            encode_request(&request, DEFAULT_REQUEST_BYTES as usize).unwrap(),
+        );
         let input = abi::Call {
             struct_size: size_of::<abi::Call>() as u32,
             operation: request.operation() as u32,

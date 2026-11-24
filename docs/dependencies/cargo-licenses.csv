@@ -657,7 +657,7 @@ zerocopy-derive,0.8.63,BSD-2-Clause OR Apache-2.0 OR MIT,registry+https://github
 zerofrom,0.1.8,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app; pdf-viewer; renderer-tests; thumbnail-image,Linux; Windows,
 zerofrom-derive,0.1.7,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 zerofrom-derive,0.1.8,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app; pdf-viewer; thumbnail-image,Linux; Windows,
-zeroize,1.9.1,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; archive; filesystem-api; html-viewer,Linux; Windows,midnight-core; midnight-filesystem-api
+zeroize,1.9.1,Apache-2.0 OR MIT,registry+https://github.com/rust-lang/crates.io-index,app; archive; filesystem-api; html-viewer; native-linux; native-macos; native-windows; network,Linux; Windows; macOS arm64; macOS x86-64,midnight-core; midnight-filesystem-api; midnight-filesystem-network; midnight-filesystem-plugin-api; midnight-native-filesystem-host
 zerotrie,0.2.5,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app; renderer-tests,Linux; Windows,
 zerovec,0.11.8,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,renderer-tests,Linux; Windows,
 zerovec,0.11.9,Unicode-3.0,registry+https://github.com/rust-lang/crates.io-index,app,Linux; Windows,

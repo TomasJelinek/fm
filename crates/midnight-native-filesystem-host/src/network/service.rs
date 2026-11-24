@@ -106,6 +106,32 @@ impl NetworkNeighborhood for NetworkProvider {
             cancel,
         )
     }
+    fn supports_sign_in(&self) -> bool {
+        crate::discovery::is_sign_in_provider(&self.id)
+            && self.client.capabilities & abi::CAP_SIGN_IN != 0
+    }
+    fn sign_in(
+        &self,
+        address: &NetworkAddress,
+        credentials: &NetworkCredentials,
+        cancel: &Cancellation,
+    ) -> Result<NetworkDestination, NetworkFailure> {
+        if !self.supports_sign_in() {
+            return Err(NetworkFailure::new(
+                NetworkFailureKind::Unsupported,
+                "This network provider does not support sign-in.",
+            ));
+        }
+        // Do not propagate provider diagnostics from a credential-bearing request.
+        finish(
+            self.activate_with(address, Some(credentials), &|| cancel.is_cancelled())
+                .map_err(|mut failure| {
+                    failure.message = "Network sign-in failed.".into();
+                    failure
+                }),
+            cancel,
+        )
+    }
     fn refresh(
         &self,
         address: &NetworkAddress,

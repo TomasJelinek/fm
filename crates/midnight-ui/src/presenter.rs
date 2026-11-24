@@ -320,6 +320,7 @@ pub struct Presenter {
     pub(crate) mask_dialog: mask_selection::MaskDialogState,
     /// The password of a mounted archive that an action needs (`archive_password`).
     pub(crate) archive_password: archive_password::ArchivePasswordState,
+    network_sign_in: Option<network_neighborhood::NetworkSignInPrompt>,
     /// Archive sessions held by tabs and viewers, and the ones tabs let go of.
     pub(crate) archive_sessions: archive_sessions::State,
     /// The offer to close an archive when every one that may be open is open.
@@ -388,6 +389,7 @@ impl Presenter {
             filter_dialog: filter::FilterDialogState::default(),
             mask_dialog: mask_selection::MaskDialogState::default(),
             archive_password: archive_password::ArchivePasswordState::default(),
+            network_sign_in: None,
             archive_sessions: archive_sessions::State::default(),
             archive_prompt: archive_prompt::State::default(),
             hidden_entries: panel_visibility::HiddenEntriesState::default(),
@@ -562,6 +564,7 @@ impl Presenter {
         // draft, a viewer launch).
         self.retired
             .push(Box::new(mem::take(&mut self.archive_password)));
+        self.retired.push(Box::new(self.network_sign_in.take()));
         self.retire_metadata();
         self.force_retire_drag_owners();
         self.retire_drag_drop();
@@ -789,6 +792,7 @@ impl Presenter {
         mode: Reload,
         send: &dyn Fn(Command) -> bool,
     ) {
+        self.retire_network_sign_in(pane);
         self.cancel_feed_build_for_pane(pane,Some("The panel navigated before its results were ready. Feed the current results again."));
         let p = &self.panes[pane.index()];
         let previous_view = p

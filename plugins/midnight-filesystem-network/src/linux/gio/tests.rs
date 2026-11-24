@@ -1,7 +1,7 @@
 use super::*;
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::AtomicUsize,
+    sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
     time::Instant,
 };
 
@@ -208,31 +208,128 @@ fn unsuccessful_boolean_completion_is_not_reported_as_success() {
     ));
 }
 
+fn ask_password(api: &Symbols, operation: Object, flags: u32) {
+    // SAFETY: the operation is live and the arguments match the GLib ask-password signal.
+    unsafe {
+        let emit = *api._libraries[1]
+            .get::<unsafe extern "C" fn(Object, *const c_char, ...)>(b"g_signal_emit_by_name\0")
+            .unwrap();
+        emit(
+            operation,
+            c"ask-password".as_ptr(),
+            c"Fixture".as_ptr(),
+            c"untrusted-user".as_ptr(),
+            c"untrusted-domain".as_ptr(),
+            flags,
+        );
+    }
+}
+
 #[test]
-fn password_challenge_is_recorded_and_aborted_without_credentials() {
-    use std::sync::atomic::AtomicI32;
-    unsafe extern "C" fn reply(operation: Object, value: c_int) {
-        // SAFETY: this fixture supplies an AtomicI32 in place of an OS operation.
-        unsafe { &*operation.cast::<AtomicI32>() }.store(value, Ordering::SeqCst);
+fn activation_without_credentials_reports_the_password_challenge() {
+    let api = runtime().unwrap();
+    let context = context(&|| false);
+    let mount = MountChallenge::new(&api, &context, None).unwrap();
+    ask_password(&api, mount.pointer(), 7);
+    assert_eq!(
+        mount.check().unwrap_err().code,
+        ErrorCode::AuthenticationRequired
+    );
+}
+
+#[test]
+fn canceled_and_unsupported_challenges_leave_password_unset() {
+    let api = runtime().unwrap();
+    let credentials = NetworkCredentials::new("test".into(), String::new(), b"fixture".to_vec());
+    for (cancel, flags, expected) in [
+        (true, 7, ErrorCode::Cancelled),
+        (false, 33, ErrorCode::Unsupported), // GIO wants additional TCRYPT fields
+    ] {
+        let canceled = AtomicBool::new(false);
+        let predicate = || canceled.load(Ordering::Acquire);
+        let context = context(&predicate);
+        let mount = MountChallenge::new(&api, &context, Some(&credentials)).unwrap();
+        canceled.store(cancel, Ordering::Release);
+        ask_password(&api, mount.pointer(), flags);
+        // SAFETY: the documented getter reads this still-live GMountOperation.
+        unsafe {
+            let password = *api._libraries[0]
+                .get::<unsafe extern "C" fn(Object) -> *const c_char>(
+                    b"g_mount_operation_get_password\0",
+                )
+                .unwrap();
+            assert!(password(mount.pointer()).is_null());
+        }
+        assert_eq!(mount.check().unwrap_err().code, expected);
     }
-    let replied = AtomicI32::new(-1);
-    let mut challenge = Challenge {
-        reply,
-        password: AtomicBool::new(false),
-    };
-    let data = (&mut challenge as *mut Challenge).cast();
-    let operation = (&replied as *const AtomicI32).cast_mut().cast();
-    // SAFETY: handlers do not access message pointers, and fixture state outlives both calls.
+}
+
+#[test]
+fn explicit_sign_in_answers_only_one_supported_password_prompt() {
+    let api = runtime().unwrap();
+    let context = context(&|| false);
+    let credentials = crate::api::NetworkCredentials::new(
+        "uživatel".into(),
+        "WORKGROUP".into(),
+        b"fixture-password".to_vec(),
+    );
+    unsafe extern "C" fn record_reply(_: Object, result: c_int, data: Object) {
+        // SAFETY: the reply fixture owns this AtomicI32 until the operation is dropped.
+        unsafe { &*data.cast::<AtomicI32>() }.store(result, Ordering::Release);
+    }
+    let reply = AtomicI32::new(-1);
+    let mount = MountChallenge::new(&api, &context, Some(&credentials)).unwrap();
+    let operation = mount.pointer();
+    // SAFETY: these are documented GObject/GIO operations from the retained runtime.
     unsafe {
-        question_requested(operation, ptr::null(), ptr::null(), data);
+        let handler = (api.g_signal_connect_data)(
+            operation,
+            c"reply".as_ptr(),
+            std::mem::transmute::<
+                unsafe extern "C" fn(Object, c_int, Object),
+                unsafe extern "C" fn(),
+            >(record_reply),
+            (&reply as *const AtomicI32).cast_mut().cast(),
+            None,
+            0,
+        );
+        assert_ne!(handler, 0);
+        let username = *api._libraries[0]
+            .get::<unsafe extern "C" fn(Object) -> *const c_char>(
+                b"g_mount_operation_get_username\0",
+            )
+            .unwrap();
+        let domain = *api._libraries[0]
+            .get::<unsafe extern "C" fn(Object) -> *const c_char>(b"g_mount_operation_get_domain\0")
+            .unwrap();
+        let password = *api._libraries[0]
+            .get::<unsafe extern "C" fn(Object) -> *const c_char>(
+                b"g_mount_operation_get_password\0",
+            )
+            .unwrap();
+        let save = *api._libraries[0]
+            .get::<unsafe extern "C" fn(Object) -> c_int>(b"g_mount_operation_get_password_save\0")
+            .unwrap();
+        ask_password(&api, operation, 15);
+        let field = |ptr: *const c_char| {
+            assert!(!ptr.is_null());
+            std::ffi::CStr::from_ptr(ptr).to_bytes()
+        };
+        assert_eq!(field(username(operation)), "uživatel".as_bytes());
+        assert_eq!(field(domain(operation)), b"WORKGROUP");
+        assert_eq!(field(password(operation)), b"fixture-password");
+        assert_eq!(save(operation), 0);
+        assert_eq!(reply.load(Ordering::Acquire), 0);
+        assert!(mount.check().is_ok());
+
+        // A second prompt means the same credentials were insufficient and
+        // requires a new user submission.
+        ask_password(&api, operation, 15);
+        assert!(password(operation).is_null());
+        assert_eq!(reply.load(Ordering::Acquire), 1);
+        assert_eq!(
+            mount.check().unwrap_err().code,
+            ErrorCode::AuthenticationRequired
+        );
     }
-    assert_eq!(replied.load(Ordering::SeqCst), 1);
-    assert!(!challenge.password.load(Ordering::Acquire));
-    replied.store(-1, Ordering::SeqCst);
-    // SAFETY: same valid fixture state; no credentials are supplied or retained.
-    unsafe {
-        password_requested(operation, ptr::null(), ptr::null(), ptr::null(), 0, data);
-    }
-    assert_eq!(replied.load(Ordering::SeqCst), 1);
-    assert!(challenge.password.load(Ordering::Acquire));
 }

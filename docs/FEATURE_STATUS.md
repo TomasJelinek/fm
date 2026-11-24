@@ -359,14 +359,17 @@ How to read it:
 - **Windows and Linux:** a discovery plugin (the Windows networking functions; GIO on
   Linux) lists computers and shares, opens a share when asked, and keeps saved tabs, Hot
   Paths and the ancestor parts of the path bar.
-- **Open:** no run against a real SMB server or SMB and FUSE shares, no sign-in prompt
-  (a share that needs one says "Sign-in required") and no macOS adapter (NET-01);
-  other remote filesystems (REMOTE-01).
+- **Linux:** explicit activation of an SMB device or share can request credentials
+  in the app and retry the original target. Passwords are not saved.
+- **Open:** no run against a real SMB server or SMB and FUSE shares, no in-app
+  sign-in on Windows, and no macOS adapter (NET-01). Other remote filesystems
+  remain separate (REMOTE-01).
 - **Documents:** [Network Neighborhood contract](developer/NETWORK_FILESYSTEM.md),
   [security requirements](../SECURITY.md#network-neighborhood-discovery).
 - **Verified:** plugin and host tests; dated records:
   [Network Neighborhood](verification/2026-11-09-network-neighborhood.md),
   [Linux discovery](verification/2026-11-13-linux-network-discovery.md),
+  [Linux sign-in](verification/2026-11-24-network-sign-in.md),
   [network Hot Paths](verification/2026-11-11-network-hot-paths.md). No acceptance
   scenario covers it.
 

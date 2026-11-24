@@ -13,11 +13,13 @@ and redistribution obligations still apply.
 | Windows | windows-link 0.2.1 | no features | MIT |
 | Linux | libloading 0.8.9 | no optional features | ISC |
 | Linux | cfg-if 1.0.5 | no optional features | MIT |
+| Both | zeroize 1.9.1 | no defaults; alloc | MIT |
 
 Exact registry source manifests and retained license files were inspected.
 Cargo.lock records all checksums. The selected target graph excludes libloading
 on Windows and windows-sys/windows-link on Linux. MIT is selected from the
-MIT OR Apache-2.0 alternatives. Full selected crate notices follow below.
+MIT OR Apache-2.0 alternatives. The API and this plugin use zeroize to wipe
+one-use sign-in buffers. Full selected crate notices follow below.
 
 ## Optional system runtime on Linux
 
@@ -117,3 +119,31 @@ DEALINGS IN THE SOFTWARE.
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE
+
+## zeroize 1.9.1 — MIT
+
+Copyright (c) 2018-2026 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.

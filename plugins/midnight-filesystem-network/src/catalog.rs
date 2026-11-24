@@ -76,7 +76,12 @@ impl<A: Adapter> Filesystem for NetworkFilesystem<A> {
                     }
                 }))
             }
-            Request::Activate { mount, node } => self.activate(mount, node, context),
+            Request::Activate { mount, node } => self.activate(mount, node, None, context),
+            Request::SignIn {
+                mount,
+                node,
+                credentials,
+            } => self.activate(mount, node, Some(&credentials), context),
             Request::ListBegin {
                 mount,
                 directory,
@@ -221,7 +226,13 @@ impl<A: Adapter> NetworkFilesystem<A> {
         transaction.ids.push(id);
         Ok(node)
     }
-    fn activate(&self, mount: u64, node: u64, call: &CallContext<'_>) -> Result<Reply, Failure> {
+    fn activate(
+        &self,
+        mount: u64,
+        node: u64,
+        credentials: Option<&NetworkCredentials>,
+        call: &CallContext<'_>,
+    ) -> Result<Reply, Failure> {
         let (mount, node) = self.node(mount, node)?;
         let cancelled = || call.is_cancelled() || mount.closed.load(Ordering::Acquire);
         let context = Context {
@@ -231,7 +242,10 @@ impl<A: Adapter> NetworkFilesystem<A> {
         context.check()?;
         let _permit = DiscoveryPermit::acquire()?;
         let target = &node.location.trail.last().ok_or_else(stale)?.target;
-        let activation = A::activate(target, &context)?;
+        let activation = match credentials {
+            Some(credentials) => A::sign_in(target, credentials, &context)?,
+            None => A::activate(target, &context)?,
+        };
         context.check()?;
         let activation = match activation {
             ActivationTarget::WithinProvider(address)
@@ -239,6 +253,12 @@ impl<A: Adapter> NetworkFilesystem<A> {
                     && address.bytes == target.key
                     && target.kind != NodeKind::Share =>
             {
+                if credentials.is_some() {
+                    let directory = lock(&self.state).directories.get(&node.key).cloned();
+                    if let Some(directory) = directory {
+                        self.invalidate_directory(&directory)?;
+                    }
+                }
                 ActivationTarget::WithinProvider(node.location.encode()?)
             }
             ActivationTarget::Native(address) if target.kind == NodeKind::Share => {

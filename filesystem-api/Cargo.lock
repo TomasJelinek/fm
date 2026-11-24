@@ -12,6 +12,9 @@ dependencies = [
 [[package]]
 name = "midnight-filesystem-plugin-api"
 version = "0.2.0"
+dependencies = [
+ "zeroize",
+]
 
 [[package]]
 name = "midnight-filesystem-plugin-sdk"

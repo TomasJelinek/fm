@@ -11,7 +11,7 @@ broker, viewer window and independent Basic, Source and Markdown viewers are
 implemented and integrated. ABI 1.0 and package version 0.2.0 remain a versioned
 draft, not a long-term compatibility promise. This ABI's `KIND_FILESYSTEM` constant
 stays reserved and unused: filesystem providers are implemented through separate
-public contracts, the native filesystem ABI 1.4 (`midnight_filesystem_entry_v1`, see
+public contracts, the native filesystem ABI 1.5 (`midnight_filesystem_entry_v1`, see
 [the protocol](../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md)) and the restricted
 archive worker protocol (`midnight-filesystem-api`).
 

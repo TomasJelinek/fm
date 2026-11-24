@@ -161,6 +161,7 @@ pub enum Operation {
     Rename = 21,
     GetRenameState = 22,
     CloseRename = 23,
+    SignIn = 24,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -185,6 +186,12 @@ pub enum Request {
     Activate {
         mount: u64,
         node: u64,
+    },
+    /// Explicit authenticated activation of the node selected by the user.
+    SignIn {
+        mount: u64,
+        node: u64,
+        credentials: crate::NetworkCredentials,
     },
     /// Explicit cache invalidation, without activating or connecting to a target.
     Refresh {
@@ -259,6 +266,7 @@ impl Request {
             Self::GetRenameState { .. } => Operation::GetRenameState,
             Self::CloseRename { .. } => Operation::CloseRename,
             Self::Activate { .. } => Operation::Activate,
+            Self::SignIn { .. } => Operation::SignIn,
             Self::Refresh { .. } => Operation::Refresh,
             Self::ResolveText { .. } => Operation::ResolveText,
             Self::Resolve { .. } => Operation::Resolve,

@@ -1,9 +1,9 @@
 # Native filesystem API
 
-Public, standard-library-only C ABI model and bounded binary codec for independent
-filesystem plugins. Crate version 0.2.0 exposes ABI **1.4**; the FSBR payload format
+Public C ABI model and bounded binary codec for independent
+filesystem plugins. Crate version 0.2.0 exposes ABI **1.5**; the FSBR payload format
 remains version 1, with unchanged entry symbol and C descriptor layout. It covers
-Browse/Read, optional volume and activation services and optional prepared Rename.
+Browse/Read, optional volume and activation services, network sign-in and prepared Rename.
 
 See [the protocol](../NATIVE_PLUGIN_PROTOCOL.md), [C header](../include/midnight_filesystem.h),
 [ABI definitions](src/abi.rs), [request/response model](src/model.rs) and
@@ -14,12 +14,20 @@ layouts, strings and allocations never cross the C boundary.
 bounded ID/version, required callbacks and capabilities. Unknown capability bits
 are INCOMPATIBLE, as is an extension advertised by a descriptor whose ABI minor is
 below the minor that defines it (1 for VolumeDetails; 2 for Activate, Refresh and
-ResolveText; 3 for PreparedRename). Those minor-2 and minor-3 extensions also need
-that minimum host minor; VolumeDetails may keep 0 because older hosts reject its
+ResolveText; 3 for PreparedRename; 5 for SignIn). Those extensions need their
+defining host minor. VolumeDetails may keep 0 because older hosts reject its
 manifest capability before loading. Minor 4 defines storage kind 4,
 `StorageKind::Local`, without a capability bit: a provider that may report it
 requires host minor 4 (`abi::LOCAL_STORAGE_HOST_MINOR`) in its descriptor and
 manifest, because an older host rejects the value.
+
+## Optional network sign-in
+
+`CAP_SIGN_IN = 2048` and request `SignIn` (24) allow one explicit authenticated
+activation of an issued node. A provider must require host minor 5. Owned
+credentials are wiped on drop with pinned `zeroize` 1.9.1 (`alloc` only,
+Apache-2.0 or MIT). The host must wipe the encoded credential frame after the
+call. See the [sign-in protocol](../NATIVE_PLUGIN_PROTOCOL.md#optional-network-sign-in-abi-minor-5).
 
 ## Optional prepared Rename
 

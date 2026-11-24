@@ -261,12 +261,13 @@ impl<A: NativeAdapter> NativeFilesystem<A> {
             Request::VolumeInformation { address } => Ok(Response::VolumeInformation(
                 A::volume_information(&Self::path(&address)?, context)?,
             )),
-            Request::Activate { .. } | Request::Refresh { .. } | Request::ResolveText { .. } => {
-                Err(Failure::new(
-                    ErrorCode::Unsupported,
-                    "Native browsing does not provide virtual-location activation.",
-                ))
-            }
+            Request::Activate { .. }
+            | Request::SignIn { .. }
+            | Request::Refresh { .. }
+            | Request::ResolveText { .. } => Err(Failure::new(
+                ErrorCode::Unsupported,
+                "Native browsing does not provide virtual-location activation.",
+            )),
         }
     }
 }

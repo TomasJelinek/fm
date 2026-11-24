@@ -86,7 +86,7 @@ class NativeFilesystemPackages(unittest.TestCase):
         source, package = self.native()
         path = package / "plugin.toml"
         original = path.read_text()
-        for old, new in [('minimum_host_minor=0', 'minimum_host_minor=5'),
+        for old, new in [('minimum_host_minor=0', 'minimum_host_minor=6'),
                          ('abi_major=1', 'abi_major=2'),
                          ('"unix-bytes"', '"windows-utf16le"'),
                          ('"volume-details"', '"invented"'),
@@ -121,7 +121,7 @@ class NativeFilesystemPackages(unittest.TestCase):
         source, package = self.native()
         path = package / "plugin.toml"
         original = path.read_text()
-        for minor in range(5):
+        for minor in range(6):
             with self.subTest(minor=minor):
                 path.write_text(original.replace('minimum_host_minor=0',
                                                  f'minimum_host_minor={minor}'))
@@ -166,7 +166,7 @@ class NativeFilesystemPackages(unittest.TestCase):
         source, package, manifest = self.rename_native("linux")
         path = package / "plugin.toml"
         original = path.read_text(encoding="utf-8")
-        for minor in ("-1", "0", "1", "2", "5", "true", '"3"'):
+        for minor in ("-1", "0", "1", "2", "6", "true", '"3"'):
             with self.subTest(minor=minor):
                 path.write_text(original.replace("minimum_host_minor = 3",
                                                  f"minimum_host_minor = {minor}"),

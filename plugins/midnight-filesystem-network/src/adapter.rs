@@ -1,5 +1,5 @@
 //! OS adapters discover targets; the shared policy owns identities, cache and pages.
-use crate::api::{ActivationTarget, ErrorCode, Failure};
+use crate::api::{ActivationTarget, ErrorCode, Failure, NetworkCredentials};
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -99,4 +99,15 @@ pub trait Adapter: Send + Sync + 'static {
     /// Explicit activation only. WithinProvider carries the unchanged adapter key;
     /// shared policy replaces it with the retained complete provider address.
     fn activate(target: &Target, context: &Context<'_>) -> Result<ActivationTarget, Failure>;
+    /// Explicit retry of the selected target. Credentials are borrowed for this call only.
+    fn sign_in(
+        _: &Target,
+        _: &NetworkCredentials,
+        _: &Context<'_>,
+    ) -> Result<ActivationTarget, Failure> {
+        Err(Failure::new(
+            ErrorCode::Unsupported,
+            "Network sign-in is unavailable.",
+        ))
+    }
 }

@@ -138,7 +138,7 @@ fn enforces_admission_limits_and_rejects_native_path_nul() {
         ..Default::default()
     };
     assert_eq!(
-        backend::activate(&fake, &target, &context(&|| false))
+        backend::activate(&fake, &target, None, &context(&|| false))
             .unwrap_err()
             .code,
         ErrorCode::Invalid
@@ -207,7 +207,12 @@ impl Backend for Fake {
     fn next(&self, cursor: &mut FakeCursor, _: &Context<'_>) -> Result<Option<Entry>, Failure> {
         Ok(cursor.entries.pop_front())
     }
-    fn activate(&self, _: &Target, _: &Context<'_>) -> Result<Option<Vec<u8>>, Failure> {
+    fn activate(
+        &self,
+        _: &Target,
+        _: Option<&api::NetworkCredentials>,
+        _: &Context<'_>,
+    ) -> Result<Option<Vec<u8>>, Failure> {
         self.mounts.set(self.mounts.get() + 1);
         if let Some(code) = self.error {
             Err(Failure::new(code, "Fixture failure."))
@@ -308,7 +313,7 @@ fn explicit_namespace_activation_returns_only_provider_ready_marker() {
     let fake = Fake::default();
     let target = Linux::root().target;
     assert_eq!(
-        backend::activate(&fake, &target, &context(&|| false)).unwrap(),
+        backend::activate(&fake, &target, None, &context(&|| false)).unwrap(),
         api::ActivationTarget::WithinProvider(api::Address {
             encoding: api::AddressEncoding::Opaque,
             bytes: target.key
@@ -321,7 +326,7 @@ fn share_activation_requires_actual_native_path_and_preserves_raw_bytes() {
     let target = Linux::manual("smb://host/share/").unwrap().target;
     let missing = Fake::default();
     assert_eq!(
-        backend::activate(&missing, &target, &context(&|| false))
+        backend::activate(&missing, &target, None, &context(&|| false))
             .unwrap_err()
             .code,
         ErrorCode::Unsupported
@@ -332,7 +337,7 @@ fn share_activation_requires_actual_native_path_and_preserves_raw_bytes() {
         ..Default::default()
     };
     assert_eq!(
-        backend::activate(&mounted, &target, &context(&|| false)).unwrap(),
+        backend::activate(&mounted, &target, None, &context(&|| false)).unwrap(),
         api::ActivationTarget::Native(api::Address {
             encoding: api::AddressEncoding::UnixBytes,
             bytes: raw
@@ -343,7 +348,7 @@ fn share_activation_requires_actual_native_path_and_preserves_raw_bytes() {
         ..Default::default()
     };
     assert_eq!(
-        backend::activate(&relative, &target, &context(&|| false))
+        backend::activate(&relative, &target, None, &context(&|| false))
             .unwrap_err()
             .code,
         ErrorCode::Invalid
@@ -364,7 +369,7 @@ fn activation_preserves_authentication_offline_and_cancelled_states() {
             ..Default::default()
         };
         assert_eq!(
-            backend::activate(&fake, &target, &context(&|| false))
+            backend::activate(&fake, &target, None, &context(&|| false))
                 .unwrap_err()
                 .code,
             code
@@ -372,7 +377,7 @@ fn activation_preserves_authentication_offline_and_cancelled_states() {
     }
     let fake = Fake::default();
     assert_eq!(
-        backend::activate(&fake, &target, &context(&|| true))
+        backend::activate(&fake, &target, None, &context(&|| true))
             .unwrap_err()
             .code,
         ErrorCode::Cancelled

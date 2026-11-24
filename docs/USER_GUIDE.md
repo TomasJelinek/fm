@@ -311,6 +311,12 @@ Ubuntu and Mint, network discovery and SMB share browsing use
 `gvfs-backends gvfs-fuse wsdd`; install them if missing. `wsdd` finds Windows
 computers, and a known server can also be entered as `smb://server/` in a panel's path.
 
+On Linux, open a protected SMB device or share from Network Neighborhood to get
+the **Sign in** dialog. Enter your username, password and, if required, your
+domain or workgroup. **Sign in** retries opening that location. **Cancel** returns
+to the panel you were browsing. The app does not save the password. A device and
+one of its shares can each ask you to sign in.
+
 Folders that you may not read offer **Retry with authorization**: a one-time listing
 through Windows UAC or Linux polkit (`pkexec` and a desktop authentication agent) by
 `midnight-elevated-listing`, which the build helpers build beside the host. The helper

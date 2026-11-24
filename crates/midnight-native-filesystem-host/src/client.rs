@@ -116,7 +116,10 @@ impl NativeProvider {
             (Request::Resolve { .. }, Response::Resolved { .. })
                 | (Request::ResolveText { .. }, Response::Resolved { .. })
                 | (Request::Parent { .. }, Response::Parent(_))
-                | (Request::Activate { .. }, Response::Activated(_))
+                | (
+                    Request::Activate { .. } | Request::SignIn { .. },
+                    Response::Activated(_)
+                )
                 | (Request::Refresh { .. }, Response::Unit)
                 | (Request::Stat { .. }, Response::Node(_))
                 | (

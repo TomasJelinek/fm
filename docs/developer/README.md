@@ -298,7 +298,8 @@ advertised formats, limits, identity rules, installation and independent builds.
 Installed [native filesystem libraries](NATIVE_FILESYSTEM_API.md) implement
 Browse/Read and related metadata/storage services through a separate C ABI.
 [Network Neighborhood](NETWORK_FILESYSTEM.md) uses that ABI's 1.2 activation,
-refresh and text-resolution extensions. The application loads these DLL/SO providers
+refresh and text-resolution extensions and Linux uses the 1.5 sign-in extension.
+The application loads these DLL/SO providers
 through its native filesystem host. The viewer C ABI's `KIND_FILESYSTEM = 2`
 remains reserved; neither filesystem libraries nor archive workers use that
 viewer loader.
@@ -306,12 +307,13 @@ viewer loader.
 Current native [API](../../filesystem-api/midnight-filesystem-plugin-api/Cargo.toml)
 and [SDK](../../filesystem-api/midnight-filesystem-plugin-sdk/Cargo.toml) source
 packages are `0.2.0`, and the [ABI definitions](../../filesystem-api/midnight-filesystem-plugin-api/src/abi.rs)
-are at ABI 1.4: minor 3 adds optional
+are at ABI 1.5: minor 3 adds optional
 [prepared same-parent Rename](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#optional-prepared-rename-abi-minor-3)
 and minor 4 the [Local storage kind](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#local-storage-kind-abi-minor-4).
+Minor 5 adds [network sign-in](../../filesystem-api/NATIVE_PLUGIN_PROTOCOL.md#optional-network-sign-in-abi-minor-5).
 The prepared Rename core/host lifecycle is implemented; the engine and UI do not use it
-yet (VFS-01 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). Generic provider mutation and
-credential/authentication brokering remain separate work. Browse/Read grants no
+yet (VFS-01 in the [backlog](../IMPLEMENTATION_BACKLOG.md)). Generic provider mutation
+remains separate work. Browse/Read grants no
 write or source-removal authority. Internal Rust mount traits remain application
 implementation details, not public plugin exports.
 

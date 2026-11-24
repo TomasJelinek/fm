@@ -87,6 +87,24 @@ impl Adapter for Fixture {
             bytes: target.key.clone(),
         }))
     }
+
+    fn sign_in(
+        target: &Target,
+        credentials: &NetworkCredentials,
+        context: &Context<'_>,
+    ) -> Result<ActivationTarget, Failure> {
+        context.check()?;
+        if target.key != b"server-a"
+            || credentials.username != "demo"
+            || credentials.password() != b"fixture"
+        {
+            return Err(Failure::new(
+                ErrorCode::AuthenticationRequired,
+                "Fixture rejected sign-in.",
+            ));
+        }
+        Self::activate(target, context)
+    }
 }
 fn reset(count: usize, fail: usize) {
     COUNT.store(count, Ordering::SeqCst);
@@ -240,6 +258,57 @@ fn later_failure_preserves_published_nodes_and_never_populates_cache() {
     }));
     assert_eq!(BEGINS.load(Ordering::SeqCst), 2);
     client.call(Request::CloseList { cursor: next });
+}
+
+#[test]
+fn sign_in_refreshes_only_the_authenticated_servers_listing() {
+    let _serial = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
+    reset(1, usize::MAX);
+    let client = support::Client::new::<Fixture>();
+    let resolve = |text: &str| {
+        let Response::Resolved { mount, node } =
+            client.call(Request::ResolveText { text: text.into() })
+        else {
+            panic!("fixture server was not resolved")
+        };
+        (mount, node)
+    };
+    let rows = |mount, directory| {
+        let (cursor, _, done, entries) = page(client.call(Request::ListBegin {
+            mount,
+            directory,
+            max_entries: 64,
+        }));
+        assert!(done);
+        assert_eq!(client.call(Request::CloseList { cursor }), Response::Unit);
+        entries.len()
+    };
+    let (a_mount, a) = resolve("server-a");
+    let (b_mount, b) = resolve("server-b");
+    assert_eq!(rows(a_mount, a.id), 1);
+    assert_eq!(rows(b_mount, b.id), 1);
+    COUNT.store(2, Ordering::SeqCst);
+    assert_eq!(
+        rows(a_mount, a.id),
+        1,
+        "pre-authentication listing is cached"
+    );
+
+    let sign_in = |password: &[u8]| {
+        client.call(Request::SignIn {
+            mount: a_mount,
+            node: a.id,
+            credentials: NetworkCredentials::new("demo".into(), String::new(), password.to_vec()),
+        })
+    };
+    failed(sign_in(b"different"), ErrorCode::AuthenticationRequired);
+    assert_eq!(rows(a_mount, a.id), 1);
+    assert_eq!(
+        sign_in(b"fixture"),
+        Response::Activated(ActivationTarget::WithinProvider(a.address)),
+    );
+    assert_eq!(rows(a_mount, a.id), 2);
+    assert_eq!(rows(b_mount, b.id), 1);
 }
 
 #[test]

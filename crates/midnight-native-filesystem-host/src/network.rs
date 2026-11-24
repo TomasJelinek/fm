@@ -4,7 +4,7 @@ use crate::{
     client::{Lease, check_cancel},
     discovery::invalid,
 };
-use midnight_core::{NetworkAddress, NetworkDestination, NetworkNode};
+use midnight_core::{NetworkAddress, NetworkCredentials, NetworkDestination, NetworkNode};
 use midnight_filesystem_plugin_api::{
     ActivationTarget, Address, AddressEncoding, Failure, Kind, Node, Request, Response, abi,
 };
@@ -76,16 +76,40 @@ impl NetworkProvider {
         address: &NetworkAddress,
         cancelled: Cancel<'_>,
     ) -> Result<NetworkDestination, Failure> {
-        self.client.require(abi::CAP_ACTIVATE)?;
+        self.activate_with(address, None, cancelled)
+    }
+    fn activate_with(
+        &self,
+        address: &NetworkAddress,
+        credentials: Option<&NetworkCredentials>,
+        cancelled: Cancel<'_>,
+    ) -> Result<NetworkDestination, Failure> {
+        self.client.require(if credentials.is_some() {
+            abi::CAP_SIGN_IN
+        } else {
+            abi::CAP_ACTIVATE
+        })?;
         let (_lease, mount, node) = self.resolve(address, cancelled)?;
-        let Response::Activated(target) = self.client.exchange(
+        let request = if let Some(credentials) = credentials {
+            if node.address.bytes != address.opaque.as_ref() {
+                return Err(invalid("Network sign-in target changed"));
+            }
+            Request::SignIn {
+                mount,
+                node: node.id,
+                credentials: midnight_filesystem_plugin_api::NetworkCredentials::new(
+                    credentials.username().into(),
+                    credentials.domain().into(),
+                    credentials.password().to_vec(),
+                ),
+            }
+        } else {
             Request::Activate {
                 mount,
                 node: node.id,
-            },
-            cancelled,
-        )?
-        else {
+            }
+        };
+        let Response::Activated(target) = self.client.exchange(request, cancelled)? else {
             return Err(invalid("Missing activation target"));
         };
         check_cancel(cancelled)?;

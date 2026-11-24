@@ -1,0 +1,111 @@
+import { HintedActionButton } from "hinted-inputs.slint";
+import { ThemedLineEdit } from "content-controls.slint";
+import { VScrollView } from "scroll-view.slint";
+import { Theme } from "theme.slint";
+import { ErrorNotice } from "error-notice.slint";
+import { DialogHeader } from "dialog-frame.slint";
+import { DialogFooter } from "dialog-footer.slint";
+import { FallbackIcons } from "action-icons.slint";
+
+export global NetworkSignIn {
+    // An empty token means closed. Only callbacks carry typed credentials.
+    in-out property <string> token;
+    in-out property <string> device;
+    in-out property <string> error;
+    callback submit(string, string, string, string);
+    callback dismiss(string);
+}
+
+export component NetworkSignInDialog inherits Rectangle {
+    in property <bool> input-enabled: true;
+    callback submit(string, string, string);
+    callback cancel();
+    callback move-dialog(length, length);
+    private property <bool> compact: root.height < 260px;
+    private property <length> field-height: root.compact ? max(26px, Theme.control-height) : max(32px, Theme.control-height);
+    private property <length> focused-y: password.has-focus ? password.y
+        : domain.has-focus ? domain.y : username.y;
+    public function begin() {
+        if root.input-enabled { username.focus-value(); }
+    }
+    function submit-fields() {
+        if !root.input-enabled || username.text == "" { return; }
+        let secret = password.text;
+        password.text = "";
+        password.focus-value();
+        root.submit(username.text, domain.text, secret);
+    }
+    function cancel-form() {
+        if !root.input-enabled { return; }
+        password.text = "";
+        root.cancel();
+    }
+    changed focused-y => {
+        body.viewport-y = min(0px, max(-root.focused-y,
+            min(body.viewport-y, body.visible-height - root.focused-y - root.field-height)));
+    }
+    background: Theme.surface; border-radius: 8px;
+    border-width: 1px; border-color: Theme.active-frame;
+    accessible-role: groupbox;
+    accessible-label: "Network sign-in";
+    FocusScope {
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if root.input-enabled && event.text == Key.Escape { root.cancel-form(); return accept; }
+            reject
+        }
+        VerticalLayout {
+            padding: root.compact ? 8px : 16px; spacing: root.compact ? 4px : 8px;
+            DialogHeader {
+                title: "Network sign-in";
+                fallback-icon: FallbackIcons.network;
+                compact: root.compact; enabled: root.input-enabled;
+                close => { root.cancel-form(); }
+                dragged(dx, dy) => { root.move-dialog(dx, dy); }
+            }
+            body := VScrollView {
+                min-height: 0px; vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: root.compact ? 4px : 8px; alignment: start;
+                    Text {
+                        text: "Sign in to " + NetworkSignIn.device;
+                        color: Theme.text; font-size: Theme.font-size; overflow: elide;
+                        accessible-role: text;
+                    }
+                    if NetworkSignIn.error != "": ErrorNotice { text: NetworkSignIn.error; }
+                    username := ThemedLineEdit {
+                        enabled: root.input-enabled; accessible-label: "Username";
+                        placeholder-text: "Username";
+                        min-width: 0px; control-height: root.field-height;
+                        accepted => { password.focus-value(); }
+                    }
+                    password := ThemedLineEdit {
+                        enabled: root.input-enabled; accessible-label: "Password";
+                        placeholder-text: "Password";
+                        input-type: InputType.password; protected-value: true;
+                        min-width: 0px; control-height: root.field-height;
+                        accepted => { root.submit-fields(); }
+                    }
+                    domain := ThemedLineEdit {
+                        enabled: root.input-enabled; accessible-label: "Domain (optional)";
+                        placeholder-text: "Domain (optional)";
+                        min-width: 0px; control-height: root.field-height;
+                        accepted => { root.submit-fields(); }
+                    }
+                }
+            }
+            DialogFooter {
+                compact-height: root.compact;
+                dismiss-enabled: root.input-enabled;
+                dismiss => { root.cancel-form(); }
+                HintedActionButton {
+                    text: "Sign in"; primary: true;
+                    enabled: root.input-enabled && username.text != "";
+                    min-width: 72px; min-height: Theme.control-height;
+                    hint: "Connect to this network device.";
+                    clicked => { root.submit-fields(); }
+                }
+            }
+        }
+    }
+}

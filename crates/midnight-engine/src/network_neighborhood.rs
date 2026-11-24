@@ -261,14 +261,23 @@ fn run(
                 emit,
             );
         }
-        NetworkAction::Activate(address) => match provider.activate(&address, cancel)? {
-            NetworkDestination::Browse(address) => address,
-            NetworkDestination::Native(path) => {
-                check_cancel(cancel)?;
-                emit(NetworkUpdate::Native(path));
+        NetworkAction::Activate(address) => {
+            let result = provider.activate(&address, cancel);
+            let Some(address) = finish_activation(provider, address, result, false, cancel, emit)?
+            else {
                 return Ok(());
-            }
-        },
+            };
+            address
+        }
+        NetworkAction::SignIn(address, credentials) => {
+            let result = provider.sign_in(&address, &credentials, cancel);
+            drop(credentials);
+            let Some(address) = finish_activation(provider, address, result, true, cancel, emit)?
+            else {
+                return Ok(());
+            };
+            address
+        }
         NetworkAction::Parent(address) => provider
             .parent(&address, cancel)?
             .ok_or_else(|| failure("Network root has no parent"))?,
@@ -334,6 +343,32 @@ fn run(
         publish(&entries, true, result.err(), emit);
     }
     Ok(())
+}
+
+fn finish_activation(
+    provider: &dyn NetworkNeighborhood,
+    address: NetworkAddress,
+    result: Result<NetworkDestination, NetworkFailure>,
+    rejected: bool,
+    cancel: &Cancellation,
+    emit: &mut dyn FnMut(NetworkUpdate) -> bool,
+) -> Result<Option<NetworkAddress>, NetworkFailure> {
+    check_cancel(cancel)?;
+    match result {
+        Ok(NetworkDestination::Browse(address)) => Ok(Some(address)),
+        Ok(NetworkDestination::Native(path)) => {
+            emit(NetworkUpdate::Native(path));
+            Ok(None)
+        }
+        Err(error)
+            if error.kind == NetworkFailureKind::AuthenticationRequired
+                && provider.supports_sign_in() =>
+        {
+            emit(NetworkUpdate::SignInRequired { address, rejected });
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn failure(message: impl std::fmt::Display) -> NetworkFailure {

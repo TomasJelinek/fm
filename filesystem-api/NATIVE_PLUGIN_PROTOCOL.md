@@ -1,4 +1,4 @@
-# Native filesystem protocol 1 (ABI 1.4)
+# Native filesystem protocol 1 (ABI 1.5)
 
 This is an additive in-process filesystem service. The archive worker protocol
 (`midnight-filesystem-api`) and the viewer plugin ABI are separate contracts. Native
@@ -7,15 +7,16 @@ existing package trust, canonical path and restricted library-loading checks bef
 calling the entry point.
 
 The public Rust model/codec is `midnight-filesystem-plugin-api`; Rust authors can
-use `midnight-filesystem-plugin-sdk`. Both use only the standard library. Their
-independent workspace is this directory; native packages are separate Cargo
+use `midnight-filesystem-plugin-sdk`. The model uses the pinned `zeroize` crate
+(1.9.1, Apache-2.0 or MIT, `alloc` only) to wipe owned credential buffers. Their
+independent workspace is this directory. Native packages are separate Cargo
 workspaces depending only on these public crates and their OS bindings.
 
 ## Entry and lifetime
 
 `midnight_filesystem_entry_v1(Api *out, uint32_t capacity)` fills the descriptor
 declared in [the C header](include/midnight_filesystem.h). The current ABI is
-major 1, minor 4, service kind 2. Explicit structure capacities are required.
+major 1, minor 5, service kind 2. Explicit structure capacities are required.
 Older minor descriptors remain valid when their capabilities and minimum host
 minor are compatible. Function pointers are nullable in the representation;
 required null callbacks fail validation.
@@ -24,9 +25,9 @@ capability bits and invalid bounded ID/version metadata before creating instance
 The public `abi::Api::validate` performs these descriptor checks. It also returns
 INCOMPATIBLE when the descriptor ABI minor is below the minor that defines an
 advertised extension: 1 for VolumeDetails, 2 for Activate, Refresh and ResolveText,
-3 for PreparedRename. The minimum host minor must reach 2 or 3 for those later
-extensions; VolumeDetails may keep 0 (see ABI minor 1 below). Minor 4 adds a value
-only, storage kind 4 (see ABI minor 4 below).
+3 for PreparedRename, and 5 for SignIn. Those extensions also require their
+defining host minor. VolumeDetails may keep 0 (see ABI minor 1 below). Minor 4
+adds storage kind 4 (see ABI minor 4 below).
 
 Callbacks are synchronous: create, call, release_buffer, destroy. All calls,
 encoding and resource destruction run on backend workers. The host retains the
@@ -126,9 +127,10 @@ Rename pins have additional slot, charge and receipt admission described below.
 | 21 Rename | prepared, attempt, raw name, policy | RenameState; requires PreparedRename |
 | 22 GetRenameState | prepared | RenameState; requires PreparedRename |
 | 23 CloseRename | prepared | Unit; requires PreparedRename |
+| 24 SignIn | mount, node, username, domain, password | Activated; requires SignIn |
 
 Capabilities independently advertise Browse, Read, Stat, Volumes, Storage,
-NativeAddress, VolumeDetails, Activate, Refresh, ResolveText and PreparedRename.
+NativeAddress, VolumeDetails, Activate, Refresh, ResolveText, PreparedRename and SignIn.
 Hosts check optional capabilities before dispatch. Unsupported services return
 Unsupported, never a host-native fallback. Failed responses carry a typed error,
 optional OS code and bounded diagnostic. Rename also carries failures inside
@@ -283,7 +285,7 @@ application's stronger verified-copy/remove protocols.
 
 Browse/Read capabilities grant no mutation authority. The separate PreparedRename
 extension (ABI minor 3) defines only prepared same-parent Rename; this protocol
-does not define generic writes, Watch, delete, recursive traversal, authentication,
+does not define generic writes, Watch, delete, recursive traversal, native authentication,
 executable launch or UI callbacks. Host composition must route listing and native
 F3 capture through loaded packages and disable those capabilities when a package
 is absent.
@@ -339,6 +341,30 @@ The plugin parses its own user-facing syntax without opening the endpoint. The
 host never constructs a provider's opaque storage codec or uses a display caption
 as an address. This allows manual server entry when discovery is unavailable.
 These capabilities also require host minor at least 2; no old operation is repurposed.
+
+## Optional network sign-in, ABI minor 5
+
+`CAP_SIGN_IN = 2048` advertises operation 24. The descriptor and manifest
+must require host minor 5. The SDK raises the descriptor's minimum and rejects
+SignIn calls to providers lacking the capability before decoding credentials.
+The C descriptor, entry symbol and FSBR version are unchanged.
+
+The request body after the usual prefix is `mount: u64, node: u64, username:
+text, domain: text, password: text`. Both handles must be nonzero and refer to
+the already-issued target of an explicit activation. Each text field uses a
+little-endian u64 byte length followed by its UTF-8 bytes, bounded at 4,096 bytes
+per field. NUL is rejected. Username is required; domain and password may be
+empty. A successful reply uses `Activated` as with operation 17. A provider can
+return AuthenticationRequired on a rejected sign-in or renewed challenge.
+
+Only an explicit user submission for that target authorizes sending the
+credentials. The recipient provider must consume them for this activation
+only and never persist, report, retain or retry them on another request. The
+borrowed C payload is valid only during the call. The caller must wipe its
+encoded frame after return on every exit path. In Rust, decoded
+`NetworkCredentials` buffers are zeroized on drop and the type's debug
+representation has no field values. Mounts made by the OS may outlive the
+request, including an obsolete reply.
 
 ## Optional prepared Rename, ABI minor 3
 

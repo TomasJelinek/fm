@@ -92,6 +92,7 @@ pub fn decode_request(operation: u32, bytes: &[u8], maximum: usize) -> Result<Re
         23 => Request::CloseRename {
             prepared: input.u64()?,
         },
+        24 => return input.sign_in(),
         _ => return Err(WireError::Unsupported),
     };
     input.finish()?;
@@ -282,6 +283,31 @@ impl<'a> Reader<'a> {
             .map_err(|_| WireError::Limit)?;
         owned.extend_from_slice(bytes);
         Ok(owned)
+    }
+    fn sign_in(mut self) -> Result<Request, WireError> {
+        let mount = self.u64()?;
+        let node = self.u64()?;
+        if mount == 0 || node == 0 {
+            return Err(WireError::Malformed);
+        }
+        let username = self.credential_field()?;
+        let domain = self.credential_field()?;
+        let password = self.credential_field()?;
+        self.finish()?;
+        let fields = NetworkCredentials::validate_fields(username, domain, password)?;
+        let credentials = NetworkCredentials::copy_validated(fields)?;
+        Ok(Request::SignIn {
+            mount,
+            node,
+            credentials,
+        })
+    }
+    fn credential_field(&mut self) -> Result<&'a [u8], WireError> {
+        let length = usize::try_from(self.u64()?).map_err(|_| WireError::Limit)?;
+        if length > MAX_NETWORK_CREDENTIAL_BYTES {
+            return Err(WireError::Limit);
+        }
+        self.take(length)
     }
     fn rename_name(&mut self) -> Result<NativeText, WireError> {
         let encoding = match self.u8()? {

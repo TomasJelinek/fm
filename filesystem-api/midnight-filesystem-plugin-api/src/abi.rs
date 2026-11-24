@@ -1,6 +1,6 @@
 //! Synchronous C declarations; pointers are borrowed only during calls unless leased.
 pub const ABI_MAJOR: u16 = 1;
-pub const ABI_MINOR: u16 = 4;
+pub const ABI_MINOR: u16 = 5;
 /// The host minor that defines storage kind 4, `StorageKind::Local`. It adds no
 /// capability: a provider that may report it requires this host minor in its manifest
 /// and descriptor (the SDK's `entry_requiring_host_minor`), since an older host rejects
@@ -31,6 +31,8 @@ pub const CAP_REFRESH: u64 = 256;
 pub const CAP_RESOLVE_TEXT: u64 = 512;
 /// Prepared same-parent Rename; requires host minor version 3.
 pub const CAP_PREPARED_RENAME: u64 = 1024;
+/// Explicit authenticated activation. Requires host minor version 5.
+pub const CAP_SIGN_IN: u64 = 2048;
 /// Capabilities that ABI minor 1 defines. Older hosts reject their manifest spelling
 /// before loading, so they do not raise the minimum host minor.
 const MINOR_ONE_CAPABILITIES: u64 = CAP_VOLUME_DETAILS;
@@ -45,7 +47,8 @@ const KNOWN_CAPABILITIES: u64 = CAP_BROWSE
     | CAP_NATIVE_ADDRESS
     | MINOR_ONE_CAPABILITIES
     | MINOR_TWO_CAPABILITIES
-    | CAP_PREPARED_RENAME;
+    | CAP_PREPARED_RENAME
+    | CAP_SIGN_IN;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -188,12 +191,14 @@ pub type Entry = unsafe extern "C" fn(*mut Api, u32) -> Status;
 impl Api {
     /// Rejects unsupported capability bits and an extension advertised by a
     /// descriptor whose ABI minor is below the minor that defines it: 1 for
-    /// VolumeDetails, 2 for Activate, Refresh and ResolveText, 3 for PreparedRename.
-    /// The minor-2 and minor-3 extensions also require that minimum host minor;
+    /// VolumeDetails, 2 for Activate, Refresh and ResolveText, 3 for PreparedRename,
+    /// and 5 for SignIn. Those extensions also require their defining host minor;
     /// VolumeDetails may keep 0.
     pub fn validate(&self, capacity: u32) -> Result<(), Status> {
         self.header.validate(capacity, size_of::<Self>() as u32)?;
-        let host_minor = if self.capabilities & CAP_PREPARED_RENAME != 0 {
+        let host_minor = if self.capabilities & CAP_SIGN_IN != 0 {
+            5
+        } else if self.capabilities & CAP_PREPARED_RENAME != 0 {
             3
         } else if self.capabilities & MINOR_TWO_CAPABILITIES != 0 {
             2

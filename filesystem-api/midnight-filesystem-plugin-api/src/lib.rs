@@ -4,6 +4,8 @@ pub mod abi;
 mod activation;
 pub use activation::ActivationTarget;
 mod model;
+mod network_credentials;
+pub use network_credentials::{MAX_NETWORK_CREDENTIAL_BYTES, NetworkCredentials};
 mod rename;
 pub use rename::*;
 mod volume;

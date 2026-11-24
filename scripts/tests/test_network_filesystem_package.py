@@ -1,6 +1,7 @@
 """Network packages retain their opaque-address ABI and independent notices."""
 from pathlib import Path
 import shutil
+import tomllib
 import unittest
 
 import test_native_filesystem_package as native
@@ -14,13 +15,17 @@ class NetworkFilesystemPackages(unittest.TestCase):
     notices = native.NativeFilesystemPackages.notices
     native = native.NativeFilesystemPackages.native
 
-    def network(self):
+    def network(self, *, legacy=False):
         source, _ = self.native()
         package = source / "network.linux"
         package.mkdir()
         root = Path(__file__).resolve().parents[2]
         shutil.copyfile(root / "plugins/midnight-filesystem-network/plugin.linux.toml",
                         package / "plugin.toml")
+        if legacy:
+            path = package / "plugin.toml"
+            manifest = path.read_text().replace("minimum_host_minor = 5", "minimum_host_minor = 2")
+            path.write_text(manifest.replace(', "sign-in"', ''))
         (package / "libmidnight_filesystem_network.so").write_bytes(b"network library")
         (package / "THIRD-PARTY.md").write_text("Embedded crate and system runtime notices")
         return source, package
@@ -34,7 +39,8 @@ class NetworkFilesystemPackages(unittest.TestCase):
         entry = result[2]
         self.assertEqual(len(entry["package_sha256"]), 64)
         self.assertEqual(entry["address_encoding"], "opaque")
-        self.assertEqual(entry["minimum_host_minor"], 2)
+        self.assertEqual(entry["minimum_host_minor"], 5)
+        self.assertIn("sign-in", entry["capabilities"])
         library = self.stage / "filesystems/network.linux/libmidnight_filesystem_network.so"
         self.assertEqual(library.read_bytes(), b"network library")
         self.assertFalse(next(file for file in entry["files"]
@@ -44,8 +50,9 @@ class NetworkFilesystemPackages(unittest.TestCase):
         source, package = self.network()
         path = package / "plugin.toml"
         original = path.read_text()
-        for old, new in [('minimum_host_minor = 2', 'minimum_host_minor = 1'),
-                         ('minimum_host_minor = 2', 'minimum_host_minor = 5'),
+        for old, new in [('minimum_host_minor = 5', 'minimum_host_minor = 4'),
+                         ('minimum_host_minor = 5', 'minimum_host_minor = 6'),
+                         ('id = "network.linux"', 'id = "unknown.network"'),
                          ('abi_major = 1', 'abi_major = 2'),
                          ('"opaque"', '"unix-bytes"'),
                          ('"activate"', '"read"'),
@@ -59,11 +66,11 @@ class NetworkFilesystemPackages(unittest.TestCase):
                     packaging.copy_filesystem_packages(self.stage, source, self.target)
                 self.assertEqual(list(self.stage.iterdir()), [])
 
-    def test_network_minors_two_and_three_keep_discovery_only_capabilities(self):
-        source, package = self.network()
+    def test_legacy_network_manifests_remain_compatible(self):
+        source, package = self.network(legacy=True)
         path = package / "plugin.toml"
         original = path.read_text()
-        for minor in (2, 3):
+        for minor in (2, 3, 4, 5):
             with self.subTest(minor=minor):
                 path.write_text(original.replace("minimum_host_minor = 2",
                                                  f"minimum_host_minor = {minor}"))
@@ -77,10 +84,10 @@ class NetworkFilesystemPackages(unittest.TestCase):
                 self.assertEqual(result[2]["address_encoding"], "opaque")
 
     def test_prepared_rename_is_rejected_for_network_at_every_supported_minor(self):
-        source, package = self.network()
+        source, package = self.network(legacy=True)
         path = package / "plugin.toml"
         original = path.read_text()
-        for minor in (2, 3):
+        for minor in (2, 3, 4, 5):
             for replacement in ('"prepared-rename"', '"resolve-text", "prepared-rename"'):
                 with self.subTest(minor=minor, replacement=replacement):
                     text = original.replace("minimum_host_minor = 2",
@@ -89,6 +96,20 @@ class NetworkFilesystemPackages(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         packaging.copy_filesystem_packages(self.stage, source, self.target)
                     self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_sign_in_is_rejected_on_windows_network_manifests(self):
+        _, package = self.network()
+        path = package / "plugin.toml"
+        target = "x86_64-pc-windows-msvc"
+        library = "midnight_filesystem_network.dll"
+        manifest = path.read_text().replace(self.target, target).replace("network.linux", "network.windows")
+        manifest = manifest.replace("libmidnight_filesystem_network.so", library)
+        entry = package / library
+        entry.write_bytes(b"network library")
+        files = {entry, package / "THIRD-PARTY.md"}
+        data = tomllib.loads(manifest)
+        with self.assertRaises(ValueError):
+            packaging.library_filesystem_manifest(data, package, files, target)
 
     def test_network_library_and_notices_required_before_copy(self):
         source, package = self.network()

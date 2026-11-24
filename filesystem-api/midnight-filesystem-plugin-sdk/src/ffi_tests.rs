@@ -31,6 +31,39 @@ fn activation_capability_requires_new_host_but_old_native_descriptors_do_not() {
     assert_eq!(table.header.minimum_host_minor, 2);
     table.validate(size_of::<Api>() as u32).unwrap();
 }
+#[test]
+fn sdk_never_passes_credentials_to_a_provider_without_sign_in_capability() {
+    let table = descriptor::<Fake>();
+    let instance = create_instance(&table, Config::default());
+    let request = Request::SignIn {
+        mount: 1,
+        node: 2,
+        credentials: NetworkCredentials::new("test".into(), String::new(), b"dummy".to_vec()),
+    };
+    let (status, buffer) = invoke(&table, instance, request, Cancellation::default());
+    assert_eq!(status, UNSUPPORTED);
+    assert_eq!(buffer.id, 0);
+    assert_eq!(destroy(&table, instance), OK);
+}
+
+#[test]
+fn sdk_requires_minor_five_when_a_provider_advertises_sign_in() {
+    let mut table = Api::default();
+    // SAFETY: live aligned caller-owned output table with its exact capacity.
+    let status = unsafe {
+        entry::<Fake>(
+            &mut table,
+            size_of::<Api>() as u32,
+            "network.test",
+            "0.1.0",
+            CAP_BROWSE | CAP_ACTIVATE | CAP_SIGN_IN,
+        )
+    };
+    assert_eq!(status, OK);
+    assert_eq!(table.header.minimum_host_minor, 5);
+    table.validate(size_of::<Api>() as u32).unwrap();
+}
+
 impl Filesystem for Fake {
     fn create(_: Config) -> Result<Self, Failure> {
         Ok(Self {

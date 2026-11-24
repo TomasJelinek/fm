@@ -60,6 +60,14 @@ pub(super) fn request(value: &Request) -> Result<(), WireError> {
         | Request::Parent { mount, node }
         | Request::OpenRead { mount, node }
         | Request::PrepareRename { mount, node } => require(*mount != 0 && *node != 0),
+        Request::SignIn {
+            mount,
+            node,
+            credentials,
+        } => {
+            require(*mount != 0 && *node != 0)?;
+            credentials.validate()
+        }
         Request::ListBegin {
             mount,
             directory,
