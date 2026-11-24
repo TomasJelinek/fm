@@ -459,6 +459,31 @@ fn folders_the_attempted_scan_never_covered_are_not_reported_as_unfinished() {
     }
 }
 
+/// Timing evidence for the new-folder note of every keep-rows re-read after a full
+/// size scan: `cargo test -p midnight-ui --lib -- --ignored --nocapture note_new_folders`.
+#[test]
+#[ignore = "timing measurement"]
+fn note_new_folders_timing_over_a_million_rows() {
+    let entries: Vec<Entry> = (0..1_000_000u64)
+        .map(|id| {
+            let kind = if id % 20 == 0 {
+                EntryKind::Directory
+            } else {
+                EntryKind::File
+            };
+            Entry::new(EntryId(id), PathBuf::from(format!("left/{id:07}")), kind)
+        })
+        .collect();
+    let index = DirectoryIndex::from_entries(&entries);
+    let mut new = HashSet::new();
+    let started = std::time::Instant::now();
+    for _ in 0..10 {
+        crate::presenter::note_new_folders(&mut new, &index, &entries, &index);
+    }
+    eprintln!("note_new_folders: {:?} per re-read", started.elapsed() / 10);
+    assert!(new.is_empty());
+}
+
 #[test]
 fn resort_keeps_a_retained_watch_hint_until_the_folder_is_read_again() {
     let mut p = Presenter::new("left".into(), "right".into());

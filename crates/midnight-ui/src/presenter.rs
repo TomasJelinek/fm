@@ -1532,7 +1532,7 @@ impl Presenter {
                     // is not calculated rather than unfinished; the others keep
                     // their own state.
                     if p.size_scan_attempted {
-                        note_new_folders(&mut p.size_scan_new_folders, &p.index, &index);
+                        note_new_folders(&mut p.size_scan_new_folders, &p.index, &entries, &index);
                     }
                 }
                 p.rows_committing(&request, &entries, &index, &mut self.retired);
@@ -2275,14 +2275,16 @@ fn retain_listed_folder_sizes(
     }
 }
 
-/// Whether the listing has a folder without a size that the last full scan did
-/// not cover. Without a retained scope the scan finished and sized every folder
-/// it listed. `sizes` holds only listed folders, so counting the directory bits
-/// avoids a per-entry pass when every folder has a size.
 /// Folders a same-folder re-read lists for the first time since the attempted full
 /// size scan: new ones stay new while listed, and folders that the previous listing
-/// did not have become new.
-fn note_new_folders(new: &mut HashSet<PathBuf>, previous: &DirectoryIndex, index: &DirectoryIndex) {
+/// did not have become new. Only the directory rows are visited, 64 rows per bit word,
+/// so a re-read of a large folder of files costs no per-entry hash lookups here.
+fn note_new_folders(
+    new: &mut HashSet<PathBuf>,
+    previous: &DirectoryIndex,
+    entries: &[Entry],
+    index: &DirectoryIndex,
+) {
     let lists = |index: &DirectoryIndex, path: &Path| {
         index
             .by_path
@@ -2290,13 +2292,26 @@ fn note_new_folders(new: &mut HashSet<PathBuf>, previous: &DirectoryIndex, index
             .is_some_and(|id| index.is_directory(*id))
     };
     new.retain(|path| lists(index, path));
-    new.extend(
-        index
-            .by_path
-            .iter()
-            .filter(|(path, id)| index.is_directory(**id) && !lists(previous, path))
-            .map(|(path, _)| path.clone()),
-    );
+    for (word, bits) in index.directory_bits.iter().enumerate() {
+        let mut remaining = *bits;
+        while remaining != 0 {
+            let row = word * 64 + remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            let Some(entry) = entries.get(row) else {
+                continue;
+            };
+            let Some(path) = entry.native_path() else {
+                continue;
+            };
+            // A path listed twice names its later row, as in `by_path`.
+            if index.by_path.get(path) == Some(&entry.id)
+                && !lists(previous, path)
+                && !new.contains(path)
+            {
+                new.insert(path.to_owned());
+            }
+        }
+    }
 }
 
 /// Navigation uses logical parents: `link/..` goes to the link's lexical parent,
