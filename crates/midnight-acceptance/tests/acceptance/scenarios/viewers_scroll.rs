@@ -490,19 +490,22 @@ fn notch_travel(
     let at = probe::content_middle(viewing);
     let mut travel = [0; 3];
     let mut late = Vec::new();
+    let mut rest = None;
     for (slot, (notches, what)) in [(1, "one down"), (-1, "one up"), (5, "five down")]
         .into_iter()
         .enumerate()
     {
         let mut sent = Ok(());
         let what = format!("{label} {what}");
-        let (distance, before, after) = measure(app, context, viewing, &what, |app| {
+        let (distance, before, after) = measure(app, context, viewing, &what, &mut rest, |app| {
             sent = probe::native_notches(app, viewing, at, notches);
         })?;
         sent?;
         travel[slot] = distance;
         if (distance - notches * notch).abs() > 1 {
             late.push(continued(app, viewing, &what, distance, (&before, &after)));
+            // Moved on after its rest: the next measurement settles afresh.
+            rest = None;
         }
     }
     Ok(((travel[0], travel[1], travel[2]), late))
@@ -596,6 +599,7 @@ fn wheel_settings(app: &mut App, context: &mut Context, viewing: &Viewing) -> Re
             context,
             viewing,
             &format!("large log, {what}"),
+            &mut None,
             |app| {
                 sent = probe::native_notches(app, viewing, at, 1);
                 arrows_back(app, viewing, Key::UpArrow, arrows);
@@ -611,10 +615,17 @@ fn wheel_settings(app: &mut App, context: &mut Context, viewing: &Viewing) -> Re
             ));
         }
         // Back up for the next measurement.
-        let _ = moved(app, context, viewing, "large log, back up", |app| {
-            let _ = probe::native_notches(app, viewing, at, -1);
-            arrows_back(app, viewing, Key::DownArrow, arrows);
-        });
+        let _ = moved(
+            app,
+            context,
+            viewing,
+            "large log, back up",
+            &mut None,
+            |app| {
+                let _ = probe::native_notches(app, viewing, at, -1);
+                arrows_back(app, viewing, Key::DownArrow, arrows);
+            },
+        );
     }
     // Gliding and reduced motion: the positions a notch down shows on its way (a notch up
     // right after a notch down is a check of its own, in `notch_travel`).
@@ -877,7 +888,7 @@ fn sweep(
         let target = percent as f32 / 100.0;
         let started = Instant::now();
         let landed = probe::drag_vertical(app, viewing, target, 4)
-            .and_then(|()| probe::settle(app, viewing, LAND_LIMIT));
+            .and_then(|()| probe::land(app, viewing, LAND_LIMIT));
         let settled = match landed {
             Ok(settled) => settled,
             Err(error) => {
@@ -973,14 +984,18 @@ fn sweep(
 }
 
 /// Measured content movement after `act`, from a still frame to the next still frame.
+/// `rest` carries the content a measurement just settled on to the next one in a series:
+/// when nothing was sent in between and the content still shows exactly that, it is the
+/// next measurement's start without waiting for another settled frame.
 fn moved(
     app: &mut App,
     context: &mut Context,
     viewing: &Viewing,
     what: &str,
+    rest: &mut Option<Canvas>,
     act: impl FnOnce(&mut App),
 ) -> Result<i32, String> {
-    measure(app, context, viewing, what, act).map(|(distance, _, _)| distance)
+    measure(app, context, viewing, what, rest, act).map(|(distance, _, _)| distance)
 }
 
 /// [`moved`], with the content before and after the movement.
@@ -989,12 +1004,17 @@ fn measure(
     context: &mut Context,
     viewing: &Viewing,
     what: &str,
+    rest: &mut Option<Canvas>,
     act: impl FnOnce(&mut App),
 ) -> Result<(i32, Canvas, Canvas), String> {
-    let before = settled_canvas(app, viewing)?;
+    let before = match rest.take() {
+        Some(rest) if still_at_rest(app, viewing, &rest) => rest,
+        _ => settled_canvas(app, viewing)?,
+    };
     let shown = viewing.window.get_displayed_position();
     act(app);
     let after = settled_canvas(app, viewing)?;
+    *rest = Some(after.clone());
     if before.fingerprint() == after.fingerprint() {
         return Ok((0, before, after));
     }
@@ -1058,6 +1078,14 @@ fn settled_canvas(app: &mut App, viewing: &Viewing) -> Result<Canvas, String> {
     }
 }
 
+/// Whether the content still shows `rest`, a settled frame (still for [`probe::QUIET`]
+/// and unchanged 700 ms later), with no position pending: nothing has moved it since.
+fn still_at_rest(app: &mut App, viewing: &Viewing, rest: &Canvas) -> bool {
+    app.settle();
+    probe::pause(app, Duration::from_millis(30));
+    !viewing.window.get_position_pending() && viewing.canvas().fingerprint() == rest.fingerprint()
+}
+
 /// One Slint pixel delta down, one up and a burst of five down, from the middle of the
 /// content (see [`probe::SLINT_PIXEL_DELTA`]: not the product's wheel notch).
 fn wheel_travel(
@@ -1072,11 +1100,13 @@ fn wheel_travel(
     }
     let at = probe::content_middle(viewing);
     let window = viewing.slint();
+    let mut rest = None;
     let down = moved(
         app,
         context,
         viewing,
         &format!("{label} one pixel delta down"),
+        &mut rest,
         |_| probe::pixel_deltas(window, at, 1),
     )?;
     let up = moved(
@@ -1084,6 +1114,7 @@ fn wheel_travel(
         context,
         viewing,
         &format!("{label} one pixel delta up"),
+        &mut rest,
         |_| probe::pixel_deltas(window, at, -1),
     )?;
     let burst = moved(
@@ -1091,6 +1122,7 @@ fn wheel_travel(
         context,
         viewing,
         &format!("{label} five pixel deltas"),
+        &mut rest,
         |_| probe::pixel_deltas(window, at, 5),
     )?;
     Ok((down, up, burst))
@@ -1098,17 +1130,24 @@ fn wheel_travel(
 
 /// After a step of a screen: `count` arrows back. The step comes to rest before the arrows
 /// (a reverse key would drop the rest of an eased step), and the arrows go four at a
-/// time with rests between them, so a burst's own limits do not enter a measurement.
+/// time with pauses between them, so a burst's own limits do not enter a measurement.
+/// Between groups the content need only hold still for [`probe::QUIET`]: the arrows go the
+/// same way, so a group that pauses for a refill only adds to the next one (twenty in a
+/// row move twenty lines, `keys`), and the measurement's own end waits for a settled
+/// frame.
 fn arrows_back(app: &mut App, viewing: &Viewing, key: Key, count: i32) {
     if count <= 0 {
         return;
     }
     let _ = settled_canvas(app, viewing);
-    for group in 0..(count + 3) / 4 {
+    let groups = (count + 3) / 4;
+    for group in 0..groups {
         for _ in 0..(count - group * 4).min(4) {
             press(viewing, &[], key);
         }
-        let _ = settled_canvas(app, viewing);
+        if group + 1 < groups {
+            let _ = probe::still_canvas(app, viewing, STEP);
+        }
     }
 }
 
@@ -1131,12 +1170,23 @@ fn keys(
         focus_content(app, viewing);
     }
     let label = subject.label;
-    let down = moved(app, context, viewing, &format!("{label} Down"), |_| {
-        press(viewing, &[], Key::DownArrow)
-    })?;
-    let up = moved(app, context, viewing, &format!("{label} Up"), |_| {
-        press(viewing, &[], Key::UpArrow)
-    })?;
+    let mut rest = None;
+    let down = moved(
+        app,
+        context,
+        viewing,
+        &format!("{label} Down"),
+        &mut rest,
+        |_| press(viewing, &[], Key::DownArrow),
+    )?;
+    let up = moved(
+        app,
+        context,
+        viewing,
+        &format!("{label} Up"),
+        &mut rest,
+        |_| press(viewing, &[], Key::UpArrow),
+    )?;
     let mut problems = Vec::new();
     if down != ARROW || up != -ARROW {
         problems.push(format!(
@@ -1147,14 +1197,28 @@ fn keys(
     let screen =
         (viewing.window.get_content_height() * viewing.slint().scale_factor()).round() as i32;
     let back = screen / 2 / ARROW;
-    let page_down = moved(app, context, viewing, &format!("{label} PageDown"), |app| {
-        press(viewing, &[], Key::PageDown);
-        arrows_back(app, viewing, Key::UpArrow, back);
-    })? + back * ARROW;
-    let page_up = moved(app, context, viewing, &format!("{label} PageUp"), |app| {
-        press(viewing, &[], Key::PageUp);
-        arrows_back(app, viewing, Key::DownArrow, back);
-    })? - back * ARROW;
+    let page_down = moved(
+        app,
+        context,
+        viewing,
+        &format!("{label} PageDown"),
+        &mut rest,
+        |app| {
+            press(viewing, &[], Key::PageDown);
+            arrows_back(app, viewing, Key::UpArrow, back);
+        },
+    )? + back * ARROW;
+    let page_up = moved(
+        app,
+        context,
+        viewing,
+        &format!("{label} PageUp"),
+        &mut rest,
+        |app| {
+            press(viewing, &[], Key::PageUp);
+            arrows_back(app, viewing, Key::DownArrow, back);
+        },
+    )? - back * ARROW;
     if (page_down - screen).abs() > 1 || (page_up + screen).abs() > 1 {
         problems.push(format!(
             "PageDown moved {page_down} px and PageUp {page_up} px; the screen is {screen} px"
@@ -1166,6 +1230,7 @@ fn keys(
         context,
         viewing,
         &format!("{label} 20 × Down"),
+        &mut rest,
         |_| {
             for _ in 0..20 {
                 press(viewing, &[], Key::DownArrow);
@@ -1486,12 +1551,13 @@ fn focus_content(app: &mut App, viewing: &Viewing) {
 /// shows another part and Ctrl+Home the first view again, pixel for pixel.
 fn html_keys(app: &mut App, context: &mut Context, viewing: &Viewing) -> Result<(), String> {
     let first = probe::still_canvas(app, viewing, STEP)?;
-    let down = moved(app, context, viewing, "HTML Down", |_| {
+    let mut rest = None;
+    let down = moved(app, context, viewing, "HTML Down", &mut rest, |_| {
         press(viewing, &[], Key::DownArrow)
     })?;
     let screen =
         (viewing.window.get_content_height() * viewing.slint().scale_factor()).round() as i32;
-    let page = moved(app, context, viewing, "HTML PageDown", |_| {
+    let page = moved(app, context, viewing, "HTML PageDown", &mut rest, |_| {
         press(viewing, &[], Key::PageDown)
     })?;
     let mut problems = Vec::new();

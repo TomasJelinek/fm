@@ -395,6 +395,28 @@ pub const QUIET: Duration = Duration::from_millis(300);
 /// Run the viewer until it has no requested position pending, does not say it is
 /// loading one, and its positions held still for [`QUIET`].
 pub fn settle(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settled, String> {
+    settle_after(app, viewing, limit, QUIET)
+}
+
+/// How long the positions must hold still after an absolute move (a scrollbar drag) the
+/// viewer acknowledged: nothing pending, and the content shows the thumb's position. The
+/// acknowledgement already means the target's pixels are there (VIEWER_SCROLLING: a final
+/// acknowledgement needs usable pixels covering the target), so no refill pause can
+/// follow; a few frames still catch a late correction.
+pub const LANDED_QUIET: Duration = Duration::from_millis(100);
+
+/// [`settle`] after a scrollbar drag: still for [`LANDED_QUIET`] once the viewer has
+/// acknowledged the position and shows it where the thumb is, else for [`QUIET`].
+pub fn land(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settled, String> {
+    settle_after(app, viewing, limit, LANDED_QUIET)
+}
+
+fn settle_after(
+    app: &mut App,
+    viewing: &Viewing,
+    limit: Duration,
+    landed_quiet: Duration,
+) -> Result<Settled, String> {
     let _phase = crate::timing::Span::new("probe: settle");
     let started = Instant::now();
     let mut last: Option<(f32, f32, f32)> = None;
@@ -417,7 +439,13 @@ pub fn settle(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settl
             since = Some(Instant::now());
         }
         last = Some(now);
-        if since.is_some_and(|since| since.elapsed() >= QUIET) {
+        // Thumb and content agree to a ten-thousandth: the position the viewer shows.
+        let quiet = if (now.0 - now.1).abs() <= 1e-4 {
+            landed_quiet.min(QUIET)
+        } else {
+            QUIET
+        };
+        if since.is_some_and(|since| since.elapsed() >= quiet) {
             if let Some(since) = since {
                 crate::timing::add("probe: settle, until still", since - started);
             }

@@ -1591,6 +1591,7 @@ impl Viewing {
 }
 
 /// A rendered region's pixels, row by row.
+#[derive(Clone)]
 pub struct Canvas {
     pub width: usize,
     pub height: usize,
