@@ -865,3 +865,71 @@ fn slow_scan_emits_intermediate_progress_no_more_often_than_its_interval() {
     }
     assert!(events.last().unwrap().1.finished);
 }
+
+#[test]
+fn only_a_single_normal_name_below_the_directory_is_an_immediate_child() {
+    let directory = Path::new("/root/dir");
+    assert!(is_immediate_child(directory, Path::new("/root/dir/name")));
+    assert!(is_immediate_child(
+        Path::new("/root/dir/"),
+        Path::new("/root/dir/name")
+    ));
+    assert!(is_immediate_child(directory, Path::new("/root/dir//name")));
+    assert!(is_immediate_child(Path::new("dir"), Path::new("dir/name")));
+    for outside in [
+        "/root/dir",
+        "/root/dir/",
+        "/root/dir/.",
+        "/root/dir/..",
+        "/root/dir/name/inner",
+        "/root/dirname",
+        "/root/other/name",
+        "/name",
+    ] {
+        assert!(
+            !is_immediate_child(directory, Path::new(outside)),
+            "{outside}"
+        );
+    }
+}
+
+/// Windows resolves a share root to `\\?\UNC\server\share`, without a final separator
+/// (`fs::canonicalize`, as `resolve_size_directory` does), and lists its children as
+/// `\\?\UNC\server\share\name`: each of them is an immediate child, not a path outside.
+#[cfg(windows)]
+#[test]
+fn the_children_of_a_verbatim_share_or_drive_root_are_immediate_children() {
+    for (directory, child) in [
+        (r"\\?\UNC\server\share", r"\\?\UNC\server\share\name"),
+        (r"\\?\UNC\server\share\", r"\\?\UNC\server\share\name"),
+        (r"\\?\C:", r"\\?\C:\name"),
+        (r"\\?\C:\", r"\\?\C:\name"),
+        (r"\\?\C:\dir", r"\\?\C:\dir\name"),
+        (r"\\server\share", r"\\server\share\name"),
+        (r"C:\", r"C:\name"),
+    ] {
+        let directory = Path::new(directory);
+        assert!(
+            is_immediate_child(directory, &directory.join("name")),
+            "{}",
+            directory.display()
+        );
+        assert!(
+            is_immediate_child(directory, Path::new(child)),
+            "{}",
+            directory.display()
+        );
+        assert!(!is_immediate_child(
+            directory,
+            &directory.join("name").join("inner")
+        ));
+    }
+    // A drive-relative "C:" holds "C:name", not the drive root's "C:\name".
+    assert!(is_immediate_child(Path::new("C:"), Path::new("C:name")));
+    assert!(!is_immediate_child(Path::new("C:"), Path::new(r"C:\name")));
+    // In a verbatim path '/' is part of a name, not a separator.
+    assert!(!is_immediate_child(
+        Path::new(r"\\?\C:\dir"),
+        Path::new(r"\\?\C:\dir/name")
+    ));
+}
