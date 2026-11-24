@@ -10,7 +10,11 @@ use std::{
 /// pass (content no decoder accepts, a thumbnailer that cannot start), the item is not
 /// tried again while it stays in view: its tile keeps the file's icon. A new view
 /// generation, or the item leaving the view, forgets this.
+#[cfg(not(test))]
 pub const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(8)];
+/// The unit tests wait for real retries: the same backoff at a tenth of the time.
+#[cfg(test)]
+pub const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(800)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Item {
