@@ -470,13 +470,17 @@ sampled mode uses distinct ranges up to 192 KiB. Empty or unknown budgets show
 state without a fabricated percentage. Outside readback the per-file byte meter
 describes written bytes. The headline does not follow the current file; it shows
 the whole job's completion (below). Under the chart a transfer always shows the
-current file: its path (`current_path`, an archive member's path inside its archive
-file; `PathText` leaves out the middle and keeps the name when it is too long) and its
-own bar with its whole percent rounded down (`45%`, or `Verifying 30%` during
-readback; accessible label "Current file progress"). Bar and label keep a fixed place
-and size for every file, between files and when there is no current file, so nothing
-appears, disappears or moves; every file updates them at the window's refresh cadence
-(the engine's progress heartbeat), so a small file may show 100% at once and costs the
+current file on two lines: its folder (`transfer_directory`, the parent of
+`current_path`; for an archive member the archive's path and the folders inside it),
+and below it its name (`transfer_name`) with its whole percent rounded down (`45%`, or
+`Verifying 30%` during readback), then its own bar (accessible label "Current file
+progress", the bytes written or read back as its description). `PathText` leaves out
+the middle of a line that is too long, keeping the folder's last part
+(`transfer_directory_tail`) and the name's last 12 characters (`transfer_name_tail`,
+both set by `current_file_tails` from the shown text). Both lines and the bar keep a
+fixed place and size for every file, between files and when there is no current file,
+so nothing appears, disappears or moves; every file updates them at the window's
+refresh cadence (the engine's progress heartbeat), so a small file may show 100% at once and costs the
 copy nothing extra. An empty file is full at once; an unknown size, steps other than
 writing and readback (such as Move proofs) and ended jobs leave the bar empty; a pause
 keeps it. Details add the

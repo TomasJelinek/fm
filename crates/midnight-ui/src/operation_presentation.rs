@@ -114,6 +114,7 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         make_shown(&mut row.current_path);
         make_shown(&mut row.transfer_directory);
         make_shown(&mut row.transfer_name);
+        job_presentation::current_file_tails(row);
         make_shown(&mut row.transfer_outcome);
         make_shown(&mut row.file_progress_title);
     }

@@ -1613,3 +1613,37 @@ fn archive_extraction_shows_the_member_path_a_determinate_bar_and_an_estimate() 
         row.detail
     );
 }
+
+#[test]
+fn the_current_files_folder_and_name_lines_keep_the_folders_last_part_and_the_names_end() {
+    let p = Presenter::new("left".into(), "right".into());
+    let mut value = progress(71);
+    let separator = std::path::MAIN_SEPARATOR;
+    // An archive member: the archive's path, the folders inside it and the name.
+    let folder = PathBuf::from("source")
+        .join("backups")
+        .join("2026.zip")
+        .join("Raw footage")
+        .join("Camera B");
+    value.current_path = Some(folder.join("C0042 harbour sunrise wide shot.MP4"));
+    let mut row = copy(&p, &value);
+    current_file_tails(&mut row);
+    assert_eq!(row.transfer_directory, folder.to_string_lossy().as_ref());
+    assert_eq!(row.transfer_directory_tail, format!("{separator}Camera B"));
+    assert_eq!(row.transfer_name, "C0042 harbour sunrise wide shot.MP4");
+    assert_eq!(row.transfer_name_tail, "ide shot.MP4");
+    assert!(row.transfer_directory.contains("2026.zip"));
+    // A short name stays whole; a name of several scripts is cut between characters.
+    assert_eq!(name_tail("a.txt"), "");
+    assert_eq!(name_tail("twelve chars"), "");
+    assert_eq!(
+        name_tail("報告書の最終版のドラフト第三版.txt"),
+        "のドラフト第三版.txt"
+    );
+    // Without a current file both lines are empty and keep their place.
+    value.current_path = None;
+    let mut row = copy(&p, &value);
+    current_file_tails(&mut row);
+    assert!(row.transfer_directory.is_empty() && row.transfer_name.is_empty());
+    assert!(row.transfer_directory_tail.is_empty() && row.transfer_name_tail.is_empty());
+}

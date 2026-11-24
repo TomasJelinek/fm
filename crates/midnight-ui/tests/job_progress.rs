@@ -194,7 +194,8 @@ fn speed_chart_resizes_with_jobs_and_keeps_actions_visible_in_all_themes() {
     test.window.set_job(copy);
     test.draw();
     for label in [
-        "D:\\Source\\資料\\example.zip",
+        "D:\\Source\\資料",
+        "example.zip",
         "Files: 6 of 18 · Bytes: 900 B of 1.8 KiB",
         "Time remaining: About 3 min",
     ] {
@@ -364,8 +365,34 @@ fn native_rect(item: &ItemRc) -> (f32, f32, f32, f32) {
     (origin.x, origin.y, rect.size.width, rect.size.height)
 }
 
+/// Show `folder` and `name` as the current file, with the ends that the presenter
+/// keeps of them (`current_file_tails`).
+fn show_file(copy: &mut OperationRow, folder: &str, name: &str) {
+    copy.current_path = if name.is_empty() {
+        "".into()
+    } else {
+        format!("{folder}\\{name}").into()
+    };
+    copy.transfer_directory = folder.into();
+    copy.transfer_name = name.into();
+    copy.transfer_directory_tail = folder
+        .rfind(['\\', '/'])
+        .map_or("", |at| &folder[at..])
+        .into();
+    let kept: Vec<char> = name.chars().collect();
+    copy.transfer_name_tail = if kept.len() > 12 {
+        kept[kept.len() - 12..].iter().collect::<String>().into()
+    } else {
+        "".into()
+    };
+}
+
+/// Under the job's chart: the current file's folder on one line, its name with its
+/// percentage on the next, then its own bar. Nothing there moves or changes size
+/// from file to file, whatever the lengths of their folders and names, or between
+/// files; a long folder or name leaves out its middle and stays inside the window.
 #[test]
-fn every_file_shows_its_path_and_its_own_bar_under_the_chart_without_moving() {
+fn every_file_shows_its_folder_and_name_and_its_own_bar_under_the_chart_without_moving() {
     let mut test = ui::TestUi::new();
     let mut copy = job("copy-job:31", "Copy");
     copy.state = "Copying".into();
@@ -387,61 +414,79 @@ fn every_file_shows_its_path_and_its_own_bar_under_the_chart_without_moving() {
         .expect("the current file's bar is always shown")
     };
     // Each file in turn: a large one part written, a small one already through, none
-    // between two files, and a long archive member path whose middle is left out.
+    // between two files, a long archive member path, and a very long name.
     let long = format!(
-        "/source/資料/backup.zip/{}/deep/large.bin",
-        "a-folder-with-a-long-name/".repeat(8)
+        "D:\\source\\資料\\backup.zip\\{}deep",
+        "a-folder-with-a-long-name\\".repeat(8)
     );
-    let files: [(&str, &str, f32, &str); 4] = [
-        ("/source/資料/large.bin", "large.bin", 0.45, "45%"),
-        ("/source/資料/small.txt", "small.txt", 1.0, "100%"),
+    let long_name = format!("{}.MP4", "harbour sunrise wide shot ".repeat(6));
+    let files: [(&str, &str, f32, &str); 5] = [
+        ("D:\\source\\資料", "large.bin", 0.45, "45%"),
+        ("D:\\source\\資料", "small.txt", 1.0, "100%"),
         ("", "", 0.0, ""),
         (long.as_str(), "large.bin", 0.1, "Verifying 10%"),
+        ("D:\\s", long_name.as_str(), 0.7, "70%"),
     ];
-    for (width, height) in [(1000, 700), (480, 360), (320, 200)] {
-        test.resize(width, height);
-        let mut place = None;
-        for (index, (path, name, fraction, percent)) in files.iter().enumerate() {
-            copy.current_path = (*path).into();
-            copy.transfer_name = (*name).into();
-            copy.file_progress = *fraction;
-            copy.file_percent = (*percent).into();
-            test.window.set_job(copy.clone());
-            test.draw();
-            let meter = bar(&test);
-            assert_eq!(
-                meter
-                    .accessible_string_property(AccessibleStringProperty::Value)
-                    .unwrap(),
-                *percent
-            );
-            let rect = native_rect(&meter);
-            // The same place for every file: nothing appears, disappears or shifts.
-            assert_eq!(
-                *place.get_or_insert(rect),
-                rect,
-                "file {index} at {width}x{height}"
-            );
-            let fill = meter.first_child().expect("the bar has a fill");
-            assert!((fill.geometry().width() - rect.2 * fraction).abs() <= 1.0);
-            // Right under the job's chart.
-            let chart = ui::popup_item(
-                &test.window,
-                "Overall progress",
-                AccessibleRole::ProgressIndicator,
-            );
-            let (_, chart_y, _, chart_height) = native_rect(&chart);
-            assert!(rect.1 >= chart_y + chart_height, "below the chart");
-            if !path.is_empty() {
-                let label = ui::popup_item(&test.window, path, AccessibleRole::Text);
-                let (label_x, label_y, label_width, _) = native_rect(&label);
-                assert!(label_y < rect.1, "the path is above its bar");
-                assert!(
-                    label_x + label_width <= width as f32 + 1.0,
-                    "the path stays inside the window"
+    for (scheme, density, font) in APPEARANCES {
+        test.window
+            .invoke_apply_preferences(scheme, density, "".into(), font, font);
+        for (width, height) in SIZES {
+            let size = format!("theme {scheme}, density {density}, font {font}, {width}x{height}");
+            test.resize(width, height);
+            let (mut place, mut bar_place) = (None, None);
+            for (index, (folder, name, fraction, percent)) in files.iter().enumerate() {
+                show_file(&mut copy, folder, name);
+                copy.file_progress = *fraction;
+                copy.file_percent = (*percent).into();
+                test.window.set_job(copy.clone());
+                test.draw();
+                let meter = bar(&test);
+                assert_eq!(
+                    meter
+                        .accessible_string_property(AccessibleStringProperty::Value)
+                        .unwrap(),
+                    *percent
                 );
+                let rect = native_rect(&meter);
+                // The same place and size for every file, and between files.
+                assert_eq!(*bar_place.get_or_insert(rect), rect, "file {index}: {size}");
+                if name.is_empty() {
+                    continue;
+                }
+                let folder_line = ui::popup_item(&test.window, folder, AccessibleRole::Text);
+                let name_line = ui::popup_item(&test.window, name, AccessibleRole::Text);
+                let lines = (native_rect(&folder_line), native_rect(&name_line), rect);
+                assert_eq!(*place.get_or_insert(lines), lines, "file {index}: {size}");
+                let fill = meter.first_child().expect("the bar has a fill");
+                assert!((fill.geometry().width() - rect.2 * fraction).abs() <= 1.0);
+                // Right under the job's chart: the folder, the name, then the bar.
+                let chart = ui::popup_item(
+                    &test.window,
+                    "Overall progress",
+                    AccessibleRole::ProgressIndicator,
+                );
+                let (_, chart_y, _, chart_height) = native_rect(&chart);
+                let (folder_rect, name_rect, _) = lines;
+                assert!(
+                    folder_rect.1 >= chart_y + chart_height,
+                    "below the chart: {size}"
+                );
+                assert!(
+                    folder_rect.1 + folder_rect.3 <= name_rect.1 + 0.5,
+                    "the folder above the name: {size}"
+                );
+                assert!(
+                    name_rect.1 + name_rect.3 <= rect.1 + 0.5,
+                    "the name above its bar: {size}"
+                );
+                for (what, line) in [("folder", folder_rect), ("name", name_rect)] {
+                    assert!(
+                        line.0 >= 0.0 && line.0 + line.2 <= width as f32 + 1.0,
+                        "the {what} stays inside the window: {size}"
+                    );
+                }
+                test.snapshot(&format!("current-file-{index}-{scheme}-{density}-{font}"));
             }
-            test.snapshot(&format!("current-file-{index}-{width}x{height}"));
         }
     }
     // A pause keeps the estimate, marked as paused.
@@ -456,7 +501,6 @@ fn every_file_shows_its_path_and_its_own_bar_under_the_chart_without_moving() {
         AccessibleRole::Text,
     );
 }
-
 #[test]
 fn delete_shows_its_item_totals_and_a_held_estimate_while_paused() {
     let mut test = ui::TestUi::new();
@@ -738,6 +782,8 @@ fn owner_copy() -> OperationRow {
     let folder = "D:\\Projects\\Customer archive 2026\\Raw footage\\Day 03 - harbour\\Camera B";
     copy.transfer_directory = folder.into();
     copy.transfer_name = "C0042 harbour sunrise wide shot.MP4".into();
+    copy.transfer_directory_tail = "\\Camera B".into();
+    copy.transfer_name_tail = "ide shot.MP4".into();
     copy.current_path = format!("{folder}\\C0042 harbour sunrise wide shot.MP4").into();
     copy.file_determinate = true;
     copy.file_progress = 0.63;

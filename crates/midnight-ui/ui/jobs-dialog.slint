@@ -34,6 +34,9 @@ export struct OperationRow {
     file-percent: string,
     // `transfer-totals`: files and size for a Copy or Move, items for a Delete.
     transfer-directory: string, transfer-name: string, transfer-totals: string, transfer-outcome: string,
+    // What the current file's folder and name lines keep when too long: the folder's
+    // last part and the name's end.
+    transfer-directory-tail: string, transfer-name-tail: string,
     transfer-speed-chart: SpeedChartData,
     // Beside a running transfer's headline: "write 187.0 MiB/s" and, when it reads its
     // copies back in full, "verify 160.4 MiB/s" ("write —" until a rate is measured).

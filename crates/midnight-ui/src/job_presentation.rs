@@ -25,6 +25,23 @@ pub(crate) fn find(rows: ModelRc<OperationRow>, identity: SharedString) -> i32 {
         })
 }
 
+/// What a progress window's name line keeps of a long file name: the end of its name,
+/// so that the extension and the last characters before it stay in view while the
+/// middle is left out. Empty for a name short enough to keep whole anyway.
+pub(crate) fn name_tail(name: &str) -> SharedString {
+    const KEPT: usize = 12;
+    name.char_indices()
+        .rev()
+        .nth(KEPT - 1)
+        .filter(|(at, _)| *at > 0)
+        .map_or_else(SharedString::default, |(at, _)| name[at..].into())
+}
+
+/// The ends of the current file's folder and name lines keep, from their shown text.
+pub(crate) fn current_file_tails(row: &mut OperationRow) {
+    row.transfer_directory_tail = path_tail(&row.transfer_directory);
+    row.transfer_name_tail = name_tail(&row.transfer_name);
+}
 pub(crate) fn rows(p: &Presenter) -> Vec<OperationRow> {
     use crate::job_row_cache::Key;
     p.job_rows.retain(
@@ -274,6 +291,8 @@ fn mutation(p: &Presenter, progress: &OperationProgress) -> OperationRow {
         icon: p.desktop.image(&IconKey::action(icon), IconPlace::Action),
         transfer_directory: Default::default(),
         transfer_name: Default::default(),
+        transfer_directory_tail: Default::default(),
+        transfer_name_tail: Default::default(),
         // "Items deleted: 3 of 10" for a Delete; nothing for other changes.
         transfer_totals: meter.totals,
         transfer_outcome: outcome.into(),
@@ -507,6 +526,8 @@ fn copy(p: &Presenter, progress: &CopyProgress) -> OperationRow {
             IconPlace::Action,
         ),
         kind: 0,
+        transfer_directory_tail: path_tail(&transfer_directory),
+        transfer_name_tail: name_tail(&transfer_name),
         transfer_directory,
         transfer_name,
         transfer_totals: meter.totals,

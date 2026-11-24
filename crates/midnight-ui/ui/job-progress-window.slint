@@ -239,15 +239,24 @@ export component JobProgressWindow inherits DialogWindow {
                             height: max(130px, Theme.font-size * 7.5);
                         }
                         // The current file, always in the same place right under the job's
-                        // chart: its path, the middle left out when it is too long, and its
-                        // own bar, which every file updates (a quick one passes through to
-                        // 100%). Nothing here appears, disappears or moves between files.
+                        // chart: its folder on one line (an archive member's archive and the
+                        // folders inside it), its name on the next with its own percentage,
+                        // and its own bar, which every file updates (a quick one passes
+                        // through to 100%). Each line leaves out its middle when it is too
+                        // long, keeping the folder's last part and the name's end. Both
+                        // lines keep their height, so nothing appears, disappears or moves
+                        // between files.
                         if root.transfer : VerticalLayout {
-                            spacing: 4px;
+                            spacing: 2px;
+                            PathText {
+                                text: root.job.transfer-directory; tail: root.job.transfer-directory-tail;
+                                foreground: Theme.secondary-text; font-size: Theme.small-font;
+                                min-width: 0px; height: Theme.small-font * 1.5;
+                            }
                             HorizontalLayout {
                                 spacing: 8px;
                                 PathText {
-                                    text: root.job.current-path; tail: root.job.transfer-name;
+                                    text: root.job.transfer-name; tail: root.job.transfer-name-tail;
                                     foreground: Theme.strong-text; font-size: Theme.font-size;
                                     horizontal-stretch: 1; min-width: 0px;
                                     height: Theme.font-size * 1.5;
@@ -262,6 +271,7 @@ export component JobProgressWindow inherits DialogWindow {
                                 accessible-role: progress-indicator;
                                 accessible-label: "Current file progress";
                                 accessible-value: root.job.file-percent;
+                                accessible-description: root.job.file-progress-label;
                                 height: 6px; border-radius: 3px;
                                 background: Theme.frame.with-alpha(0.35);
                                 Rectangle {

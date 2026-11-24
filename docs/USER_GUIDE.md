@@ -113,10 +113,11 @@ only after the speed stayed well below it for about ten seconds, so an older pea
 be cut off at the top. The small "i" button above the chart's top right
 corner explains the chart: point at it, or click it (or Tab to it and press Enter), for
 what each line measures; the chart itself shows no tooltip. Right under the chart, a
-Copy or Move always shows the file it is working on, by its path (the middle is left
-out when it is too long), and that file's own bar and percentage, in the same place for
-every file: a small file simply passes through to 100%, a large one fills its bar as it
-goes. Discovery precedes known totals (`Files: 12 of 2,345 · Bytes: 1.5 MiB of
+Copy or Move always shows the file it is working on: its folder on one line (for a file
+in an archive, the archive and the folders inside it), its name on the next (each leaves
+out its middle when it is too long, keeping the end), and that file's own bar and
+percentage, in the same place for every file: a small file simply passes through to 100%,
+a large one fills its bar as it goes. Discovery precedes known totals (`Files: 12 of 2,345 · Bytes: 1.5 MiB of
 7.0 MiB` for Copy and Move, `Items deleted: 400 of 1,000`
 for Delete); totals that could only be estimated, because part of the source could
 not be read or a skipped file leaves part of the work undone, are marked `~`
