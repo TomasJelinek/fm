@@ -29,6 +29,17 @@ the retained results receive one automatic sort in the current header order.
 Close releases the session, and host shutdown closes the windows. Queue rejection never pretends cancellation
 or close succeeded. Large result allocations are reclaimed on backend workers.
 
+Event order of a generation: `Finished` is its last search event (no `Started`,
+`Batch`, `Progress` or `CurrentDirectory` follows it), but the session's sort task
+still answers the automatic sort after Stop and later header sorts, so `Sorted` or
+`SortFailed` can arrive after `Finished`. Every send checks the owning generation
+under the session lock, so once the engine accepts a newer `StartFind` or a
+`CloseFind` it sends nothing more for the old generation. Events sent before that
+stay queued in the bounded output channel and can reach the UI after it requested
+the new generation; consumers drop them by session and generation, as the presenter
+does. `find_actor::cancellation_under_backpressure_*` holds such an order event in
+a one-slot channel while generation 2 starts.
+
 Find remembers its physical window size and position across sessions. Restoring
 placement fits it to an available display; Wayland controls absolute position.
 Moving and resizing are saved after a short pause and closing captures the final

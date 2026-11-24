@@ -283,6 +283,24 @@ async fn cancellation_under_backpressure_finishes_and_superseding_queries_reject
             break;
         }
     }
+    // A stopped generation still answers header sorts after Finished. Its order
+    // event can wait in the full channel while generation 2 starts; consumers
+    // drop it by generation (docs/developer/FIND.md).
+    send.send(Command::SortFind(FindSortRequest {
+        session: FindSessionId(1),
+        generation: FindGeneration(1),
+        revision: 1,
+        sort: FindSortSpec::default(),
+    }))
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while receive.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("an event waits in the channel");
     send.send(Command::StartFind(Box::new(request(
         temporary.path(),
         1,
@@ -290,7 +308,21 @@ async fn cancellation_under_backpressure_finishes_and_superseding_queries_reject
     ))))
     .await
     .unwrap();
-    let first = next_find(&mut receive).await;
+    let first = loop {
+        let event = next_find(&mut receive).await;
+        if event.generation != FindGeneration(1) {
+            break event;
+        }
+        // Only order events follow Finished: never an old batch.
+        assert!(
+            matches!(
+                event.update,
+                FindUpdate::Sorted(_) | FindUpdate::SortFailed { .. }
+            ),
+            "generation 1 published {:?} after Finished",
+            event.update
+        );
+    };
     assert_eq!(first.generation, FindGeneration(2));
     let mut newer = request(temporary.path(), 1, 3);
     newer.masks = "no matching names".into();
@@ -300,6 +332,8 @@ async fn cancellation_under_backpressure_finishes_and_superseding_queries_reject
     let mut started_new = false;
     loop {
         let event = next_find(&mut receive).await;
+        // Nothing of generation 1 follows the first generation 2 event.
+        assert_ne!(event.generation, FindGeneration(1));
         if event.generation == FindGeneration(3) {
             started_new = true;
         }
