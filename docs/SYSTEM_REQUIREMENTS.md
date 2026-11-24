@@ -1,6 +1,6 @@
 # System requirements
 
-Applies to Midnight Explorer **0.5.2**. Build and run commands are in the
+Applies to Midnight Explorer **0.5.3**. Build and run commands are in the
 [user guide](USER_GUIDE.md#build-and-run).
 
 ## Operating systems and support status

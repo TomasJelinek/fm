@@ -6,7 +6,7 @@ exclude = ["api", "filesystem-api", "image-viewer-api", "thumbnail-api", "web-vi
     "vendor/image"]
 
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 rust-version = "1.99"
 publish = false

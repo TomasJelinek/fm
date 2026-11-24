@@ -8,7 +8,10 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 24 November 2026, after the [0.5.2 preview](releases/0.5.2.md), which was
+Main of 25 November 2026, prepared as the [0.5.3 preview](releases/0.5.3.md): scrolling
+glide that keeps the scrolling speed, Copy and Move keeping times and attributes by
+default, Linux SMB sign-in, the glowing Moon, the UI performance fixes of the 24 November
+review and the missing-glyph check. Before it, the [0.5.2 preview](releases/0.5.2.md) was
 published on 24 November from `1341a7ff` (tag `v0.5.2`, with a signed `SHA256SUMS`;
 [release record](verification/2026-11-24-release-0.5.2.md)) after the
 [0.5.1 preview](releases/0.5.1.md): the video helpers' library permission granted at run time,
@@ -17,8 +20,7 @@ redesigned progress window, archives in the folder history and Hot Paths through
 nested archives, Compare Directories' explained and clearable marks, Find persistence,
 the alignment polish of every window, the code review fixes of 24 November and faster
 acceptance and Rust tests ([acceptance time record](verification/2026-11-24-acceptance-time.md)).
-Since the tag, main has the Linux network sign-in and the acceptance updates that
-follow the release's Find and Compare changes. The documents describe this source.
+The documents describe this source.
 
 - **Acceptance.** The last whole-suite runs are the 0.5.2 release runs at `1341a7ff`:
   Windows 104 and Linux 104 of 117 passed; their 9 and 10 failures were scenarios not
