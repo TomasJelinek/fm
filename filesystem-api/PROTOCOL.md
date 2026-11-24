@@ -103,11 +103,7 @@ unsealed stage, including discarded solid-block siblings required for integrity.
 The host validates stage/request ownership and monotonic nonzero progress before
 acknowledging it. Only successful nonempty source/spool I/O, appends and accepted
 decoded progress renew the idle watchdog; protocol chatter does not. Progress
-does not publish bytes or replace final integrity checks. The current host also
-bounds each exchange in the bytes it serves (`SourceData` and `SpoolData`) and in
-time; a source or spool read the worker requests does not renew that time budget,
-only an acknowledged append or progress report does. A worker that exceeds either
-budget is stopped (the host's values are in docs/developer/FILESYSTEM_API.md).
+does not publish bytes or replace final integrity checks.
 
 `max_length` is the declared member length, or u64::MAX for an unknown decoded
 stream. It is a consistency guard, not an artificial content-size quota. Disk

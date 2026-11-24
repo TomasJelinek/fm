@@ -598,8 +598,9 @@ fn the_kept_list_scrolls_fully_into_view_at_the_end_of_the_general_page() {
         ..current()
     };
     let mut h = Harness::with(preferences);
-    // An ordinary window, shorter than the General page with its kept list.
-    h.ui.resize(940, 660);
+    // A short window (the polish gate's smallest), shorter than the General page with
+    // its kept list on every platform's fonts.
+    h.ui.resize(940, 420);
     h.ui.window.set_options_topic_index(0);
     h.ui.draw();
     let label = "Remove Custom command “Sestavit”";
