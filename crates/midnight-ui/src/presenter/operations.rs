@@ -777,6 +777,22 @@ impl Presenter {
                 if self.forgotten_operation(progress.id) {
                     return None;
                 }
+                // A Delete frees space on its folder's volume while it runs and as it ends.
+                if matches!(progress.kind, MutationKind::Delete(_))
+                    && !matches!(
+                        progress.state,
+                        OperationState::Preparing
+                            | OperationState::AwaitingConfirmation
+                            | OperationState::Queued
+                    )
+                {
+                    free_space::job_changed(
+                        &mut self.space_refresh,
+                        &self.volumes,
+                        &self.panes,
+                        [progress.source_directory.as_path()],
+                    );
+                }
                 let unconfirmed = self.operations.unconfirmed.contains(&progress.id);
                 if unconfirmed
                     && progress.state == OperationState::Cancelled

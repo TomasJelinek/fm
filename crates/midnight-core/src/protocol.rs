@@ -295,6 +295,19 @@ pub enum Command {
     SummarizeRectangle(Arc<crate::RectangleSummaryRequest>),
     Selection(SelectionRequest),
     ListVolumes,
+    /// Read the free space of the folder `pane` shows for `navigation` again: a job or
+    /// another program may have changed it. The backend coalesces these requests,
+    /// starts a read no sooner than a second after the pane's previous one ended,
+    /// reports only a changed value and ignores a request for another navigation.
+    RefreshSpace {
+        pane: PaneId,
+        navigation: NavigationId,
+    },
+    /// Whether the main window is visible (not minimized). While it is, the backend
+    /// also reads a fixed local disk's free space periodically for the panes.
+    SetWindowVisible {
+        visible: bool,
+    },
     ListDesktopContext,
     OpenSystemLocation {
         request: DesktopRequestId,

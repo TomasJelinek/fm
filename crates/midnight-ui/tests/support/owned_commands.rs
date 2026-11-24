@@ -243,6 +243,8 @@ impl OwnedCommandScope for FixtureScope {
             | Command::CancelSearch { .. }
             | Command::ShowHiddenEntries(_)
             | Command::ListVolumes
+            | Command::RefreshSpace { .. }
+            | Command::SetWindowVisible { .. }
             | Command::ListDesktopContext
             | Command::OpenSystemLocation { .. }
             | Command::OpenUrl { .. }

@@ -495,6 +495,11 @@ fn native_operation_transfer_keeps_captured_pane_and_edited_destination_on_resiz
                     );
                 });
                 refresh(&h.main, &h.state.borrow());
+                // A running job also asks for the panels' free space again
+                // (presenter/tests/free_space.rs); this test follows the hold.
+                h.commands
+                    .borrow_mut()
+                    .retain(|command| !matches!(command, Command::RefreshSpace { .. }));
             };
             let mut progress = CopyProgress::queued(id, destination, 1, intent);
             progress.state = CopyOperationState::Running;

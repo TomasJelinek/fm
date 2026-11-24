@@ -109,7 +109,7 @@ pub struct Volume {
     pub root: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpaceInfo {
     pub available: u64,
     pub total: u64,

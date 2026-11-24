@@ -921,6 +921,13 @@ current keys.
   attributes: attribute letters on Windows, explained in the tooltip, or permissions
   such as `-rwxr-xr-x (0755)` on Linux. Click a field to copy its value; Ctrl+click
   the name to copy the full native path. The free space at the right copies too.
+  It follows the volume while the application runs: it is read again with every
+  listing of the folder (including the automatic one after a change), while a Copy,
+  Move, extraction or Delete writes to or removes from that volume and once it ends,
+  when a tree refreshes and when the window gains the focus; and on an internal
+  SSD or hard disk every five seconds while the window is not minimized. Network,
+  removable and unclassified volumes are not read periodically. A re-read never
+  blanks the shown value.
 - Backspace, Ctrl+PageUp or the toolbar's Parent folder: parent directory.
   Shift+Backspace, Ctrl+Backspace or Ctrl+\ goes to the root: of the drive or
   filesystem, of the archive inside an archive, or of Network in a Network location.

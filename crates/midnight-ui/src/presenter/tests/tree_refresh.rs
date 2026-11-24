@@ -93,7 +93,21 @@ fn native_watch_and_manual_refresh_preserve_adopted_tree_marks_and_caret() {
             &p.panes[0].tree.publication.as_ref().unwrap().selection,
             &marks,
         ));
-        let commands = sent.into_inner();
+        let (space, commands): (Vec<_>, Vec<_>) = sent
+            .into_inner()
+            .into_iter()
+            .partition(|command| matches!(command, Command::RefreshSpace { .. }));
+        // A tree refresh may follow changes anywhere below its root.
+        assert!(
+            matches!(
+                space.as_slice(),
+                [Command::RefreshSpace {
+                    pane: PaneId::Left,
+                    ..
+                }]
+            ),
+            "{space:?}"
+        );
         assert_eq!(commands.len(), 1);
         assert!(matches!(&commands[0], Command::Tree(command)
             if matches!(command.as_ref(), TreeCommand::RefreshLoaded(request)

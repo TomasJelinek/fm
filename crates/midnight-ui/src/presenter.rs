@@ -49,6 +49,7 @@ mod find_windows_tests;
 mod folder_error_notice;
 mod folder_presence;
 mod fonts;
+mod free_space;
 mod history;
 pub(crate) mod installation_notice;
 mod job_controls;
@@ -326,6 +327,7 @@ pub struct Presenter {
     pub(crate) hidden_entries: panel_visibility::HiddenEntriesState,
     pub(crate) colors: filename_colors::ColorState,
     pub(crate) copies: copies::CopiesState,
+    space_refresh: free_space::State,
     pub(crate) finds: find::FindState,
     pub(crate) checksums: checksums::ChecksumState,
     pub(crate) file_list: file_list::FileListState,
@@ -391,6 +393,7 @@ impl Presenter {
             hidden_entries: panel_visibility::HiddenEntriesState::default(),
             colors: filename_colors::ColorState::default(),
             copies: copies::CopiesState::default(),
+            space_refresh: free_space::State::default(),
             finds: find::FindState::default(),
             checksums: checksums::ChecksumState::default(),
             file_list: file_list::FileListState::default(),
@@ -831,6 +834,9 @@ impl Presenter {
             .flatten();
         self.search_navigation_accepted(pane, !same_location, send);
         self.selection_navigation_accepted(pane, navigation, &path);
+        if !same_location {
+            self.forget_space_refresh(pane);
+        }
         let p = &mut self.panes[pane.index()];
         // A re-sort reuses the committed snapshot; a retained hint still needs
         // its re-read once the re-sort commits.
@@ -1049,6 +1055,7 @@ impl Presenter {
             self.tab_session_changed(pane, send);
         }
         self.refresh_operation_paths(send);
+        self.flush_space_refreshes(send);
         if let Some(pane) = committed {
             self.panes[pane.index()].selection_rebase_pending = true;
         }

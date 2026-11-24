@@ -102,7 +102,7 @@ application services remain separate from independently developed plugin APIs.
 | [Selection](SELECTION.md) | Rectangle selection in the panels. |
 | [Parent navigation](PARENT_NAVIGATION.md) | Returning to a parent folder with the cursor on the folder left. |
 | [Path paste](PATH_PASTE.md) | Pasting folder paths into the path editor. |
-| [Panel diagnostics](PANEL_DIAGNOSTICS.md) | The panels' diagnostic icons and their details. |
+| [Panel diagnostics](PANEL_DIAGNOSTICS.md) | The panels' diagnostic icons and their details, watch status and free-space refresh. |
 | [Metadata filters](METADATA_FILTERS.md) | Panel metadata expressions: syntax and limits. |
 | [Filename colours](FILENAME_COLOR_OPTIONS.md) | Filename colour rules and their priority editor. |
 | [Native icons](NATIVE_ICONS.md) | How icons are drawn at device-pixel sizes on Windows and Linux. |

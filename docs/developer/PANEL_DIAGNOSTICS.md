@@ -117,6 +117,55 @@ entries (only the projection leaves them out), and the root's checks keep them, 
 an expanded branch's always do: a change of a hidden entry there is found, and the
 re-listing it causes shows nothing new.
 
+## Free space
+
+A pane's free space ("N free" in its details strip) comes only from
+`Event::SpaceUpdated` for the pane's current navigation; the presenter drops an
+answer for any other one. One engine worker (`free_space::Controller`) owns every
+read of it:
+
+- **Navigation.** Each Navigate, Refresh and Resort reads the folder's storage kind
+  (`Event::StorageKindUpdated`, sent before the space query, which can block on a
+  network share) and its free space at once, under the navigation's cancellation.
+  A watch hint lists the folder again (`DirectoryChanged` → Refresh), so a change of
+  the shown folder's rows already reads its free space again this way. Archive and
+  Network navigations clear the pane's target.
+- **Requests.** `Command::RefreshSpace { pane, navigation }` asks for another read of
+  the current navigation; one for any other navigation is ignored. The presenter
+  sends it for both panes when the window gains the focus, for the pane of a tree
+  refresh, and for each panel whose folder is on the volume of a Copy or Move
+  destination, a Move's source folders or a Delete's folder, with every progress
+  event from Running on and with the terminal one. The volume is matched by text:
+  the longest listed volume root that contains the path (the Home location is a
+  folder, not a volume), else its drive, UNC share or root. A link or mount the list
+  does not name can hide another volume; a fixed disk's periodic read, the next
+  focus or the next listing then shows the change. A request for a pane that is
+  loading waits until its listing commits, because that listing's read may predate
+  the change; a request for a location the pane has left is dropped.
+- **Periodic reads.** While the window is visible (`Command::SetWindowVisible`,
+  sent when a native focus or resize event finds it minimized or restored; Wayland
+  cannot tell, so the window counts as visible there), a pane whose storage kind is
+  `LocalSsd` or `Rotational` (an internal SATA, ATA or NVMe disk) is read every 5
+  seconds. `Local` (USB disks, card readers, virtual disks), `Network` and `Unknown`
+  storage is never read periodically.
+- **Cost bounds.** Each pane has at most one read in flight. Requests that arrive
+  meanwhile, or sooner than a second after the pane's previous read ended, leave one
+  read owed, which starts once that second has passed, so the last change is always
+  read and a slow share is never read back to back. Reads run on the blocking pool
+  under the engine's auxiliary budget (two permits), never on the command loop or
+  the UI thread; a newer navigation aborts the waiting part of an older read, whose
+  native call keeps its permit until it returns. Inputs are a watch slot, so no
+  queue grows. An answer equal to the last one sent for the navigation is not sent,
+  so periodic reads of an unchanged disk send the UI nothing; the window's text
+  property also ignores an equal value.
+- **Display.** A re-read of the shown folder keeps showing the previous value until
+  its own answer arrives; another folder shows "Free space —" until its first one.
+
+The drive buttons' tooltips and the drive menu use a separate per-volume cache
+(`volumes::Controller`, `Event::VolumeDetailsUpdated`) that reads every listed
+volume's label and free space again every 45 seconds; it is never matched to a
+panel's value by path.
+
 ## Presentation and viewing
 
 Yellow size warnings mean that a total is incomplete because of actual failures.

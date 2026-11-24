@@ -410,7 +410,9 @@ fn now(window: &MainWindow) -> Duration {
 pub(crate) type NativeObserver =
     Rc<RefCell<dyn FnMut(&slint::Window, &WindowEvent) -> EventResult>>;
 
-pub(crate) fn install(window: &MainWindow) {
+/// `presence(visible, focused)` hears when the window gains the focus (`focused`)
+/// or may have been minimized or restored; `visible` is false while it is minimized.
+pub(crate) fn install(window: &MainWindow, presence: impl Fn(bool, bool) + 'static) {
     let weak = window.as_weak();
     let state = Rc::new(RefCell::new(InputState::default()));
     let timer = wheel_timer(window, &state);
@@ -454,6 +456,16 @@ pub(crate) fn install(window: &MainWindow) {
             drop(auxiliary);
             window.set_reduce_motion(reduce_motion);
             crate::scroll_glide::system_reduces_motion(&window, reduce_motion);
+        }
+        if let WindowEvent::Focused(_) | WindowEvent::Resized(_) = event {
+            // Winit tells a minimized window apart on Windows and X11; Wayland cannot,
+            // and a window it cannot tell counts as visible.
+            let minimized = window
+                .window()
+                .with_winit_window(|native| native.is_minimized() == Some(true))
+                .unwrap_or(false)
+                || matches!(event, WindowEvent::Resized(size) if size.width == 0 || size.height == 0);
+            presence(!minimized, matches!(event, WindowEvent::Focused(true)));
         }
         if crate::dialog_host::dialog_input_blocked(window.window()) {
             timer.stop();

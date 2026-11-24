@@ -6,8 +6,11 @@ use midnight_engine::Engine;
 use std::{
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex},
-    time::Duration,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 use tokio::sync::{Notify, mpsc};
 
@@ -23,6 +26,8 @@ struct ControlledFileSystem {
     released: Arc<(Mutex<bool>, Condvar)>,
     cooperative: bool,
     cancellation: Mutex<Option<Cancellation>>,
+    /// Free bytes `space_info` reports; a test changes them as a job would.
+    available: AtomicU64,
 }
 
 struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
@@ -149,10 +154,70 @@ impl StorageService for ControlledFileSystem {
     }
     fn space_info(&self, _path: &Path) -> Result<SpaceInfo, FsError> {
         Ok(SpaceInfo {
-            available: 40,
+            available: self.available.load(Ordering::SeqCst),
             total: 100,
         })
     }
+}
+
+/// The free space of the volume the pane shows, the next time the Engine reports it.
+async fn next_space(events: &mut mpsc::Receiver<Event>, expected: NavigationId) -> u64 {
+    loop {
+        if let Event::SpaceUpdated {
+            pane,
+            navigation,
+            space,
+        } = next(events).await
+        {
+            assert_eq!((pane, navigation), (PaneId::Left, expected));
+            return space.available;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn requested_free_space_follows_a_change_of_the_shown_volume() {
+    let filesystem = provider();
+    let (sender, mut events) = mpsc::channel(16);
+    let mut engine = Engine::new(
+        Engine::lifetime().expect("engine cleanup worker"),
+        filesystem.clone(),
+        sender,
+    );
+    let (commands, receiver) = engine.command_channel(8).unwrap();
+    let task = tokio::spawn(engine.run(receiver));
+    commands
+        .send(navigate(PaneId::Left, 1, "network"))
+        .await
+        .unwrap();
+    assert_eq!(next_space(&mut events, NavigationId(1)).await, 40);
+    let read = Instant::now();
+
+    // A job, or another program, wrote 15 bytes to the volume; nothing in the shown
+    // folder changed, so the panel does not list it again.
+    filesystem.available.store(25, Ordering::SeqCst);
+    for _ in 0..3 {
+        commands
+            .send(Command::RefreshSpace {
+                pane: PaneId::Left,
+                navigation: NavigationId(1),
+            })
+            .await
+            .unwrap();
+    }
+    // A request for a navigation the pane no longer shows is ignored.
+    commands
+        .send(Command::RefreshSpace {
+            pane: PaneId::Left,
+            navigation: NavigationId(0),
+        })
+        .await
+        .unwrap();
+    assert_eq!(next_space(&mut events, NavigationId(1)).await, 25);
+    // Throttled: the second read starts a second after the first one ended.
+    assert!(read.elapsed() >= Duration::from_millis(900));
+    commands.send(Command::Shutdown).await.unwrap();
+    task.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -197,6 +262,7 @@ fn provider() -> Arc<ControlledFileSystem> {
         released: Arc::new((Mutex::new(false), Condvar::new())),
         cooperative: true,
         cancellation: Mutex::new(None),
+        available: AtomicU64::new(40),
     })
 }
 
@@ -431,6 +497,7 @@ async fn uninterruptible_old_reads_cannot_exhaust_the_other_panes_workers() {
         released: Arc::new((Mutex::new(false), Condvar::new())),
         cooperative: false,
         cancellation: Mutex::new(None),
+        available: AtomicU64::new(40),
     });
     let _release = ReleaseOnDrop(filesystem.released.clone());
 

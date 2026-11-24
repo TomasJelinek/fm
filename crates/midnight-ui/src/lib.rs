@@ -1199,7 +1199,15 @@ pub fn install_with_owned(
     metadata_presentation::bind(window, &presenter, &send);
     tooltip::install(window).expect("install tooltip event observer after Slint initialization");
     directory_link_tooltip::install(window, presenter.clone(), send.clone());
-    scroll_input::install(window);
+    {
+        let (state, sender, begin) = (presenter.clone(), send.clone(), begin_owned.clone());
+        scroll_input::install(window, move |visible, focused| {
+            let _ =
+                owned_commands::with_control_commands(&state, &begin, sender.as_ref(), |p, s| {
+                    p.window_presence(visible, focused, s)
+                });
+        });
+    }
     shell_bridge::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     operation_windows::install(window, presenter.clone(), send.clone(), begin_owned.clone());
     jobs_windows::install(window, presenter.clone(), send.clone());

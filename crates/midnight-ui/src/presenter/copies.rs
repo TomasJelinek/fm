@@ -349,6 +349,25 @@ impl Presenter {
                     }
                     affected.push(progress.destination_directory.clone());
                 }
+                // Writing to its destination, and for a Move removing its sources,
+                // changes those volumes' free space while the job runs and as it ends.
+                if !matches!(
+                    progress.state,
+                    CopyOperationState::Queued | CopyOperationState::Preparing
+                ) {
+                    let sources = if copy {
+                        &[][..]
+                    } else {
+                        progress.source_directories.as_slice()
+                    };
+                    free_space::job_changed(
+                        &mut self.space_refresh,
+                        &self.volumes,
+                        &self.panes,
+                        std::iter::once(progress.destination_directory.as_path())
+                            .chain(sources.iter().map(PathBuf::as_path)),
+                    );
+                }
                 *old = progress;
                 for pane in tree_holds {
                     self.hold_tree_refresh(pane, &affected, None);

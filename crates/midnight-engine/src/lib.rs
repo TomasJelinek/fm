@@ -72,6 +72,7 @@ mod folder_presence;
 mod folder_size_totals;
 mod folder_sizes;
 mod fonts;
+mod free_space;
 mod hidden_entries;
 mod installation_notice;
 mod license_notices;
@@ -820,6 +821,13 @@ impl EngineServices {
             self.outbox.clone(),
             &mut tasks,
         );
+        let space = free_space::Controller::new(
+            scope.clone(),
+            self.filesystem.clone(),
+            self.outbox.clone(),
+            auxiliary_budget,
+            &mut tasks,
+        );
         let transfer_destination = transfer_destination::Controller::new(
             scope.clone(),
             self.filesystem.clone(),
@@ -880,6 +888,9 @@ impl EngineServices {
                         }
                         navigation_high_water[pane.index()] = Some(navigation);
                         denied_navigations.begin(pane, navigation);
+                        if matches!(&command, Some(Command::ArchiveNavigate { .. } | Command::NetworkNavigate { .. })) {
+                            space.leave(pane);
+                        }
                         folder_presence.cancel(pane);
                         // Before `trees.invalidate` clears the pane's watch scope and
                         // before a listing task can read the directory. A Resort
@@ -1327,6 +1338,8 @@ impl EngineServices {
                         Some(Command::ListVolumes) => {
                             volumes.refresh();
                         }
+                        Some(Command::RefreshSpace { pane, navigation }) => space.refresh(pane, navigation),
+                        Some(Command::SetWindowVisible { visible }) => space.set_visible(visible),
                         Some(Command::Navigate { pane, navigation, path, sort })
                         | Some(Command::Refresh { pane, navigation, path, sort, .. })
                         | Some(Command::Resort { pane, navigation, path, sort, .. }) => {
@@ -1411,31 +1424,8 @@ impl EngineServices {
                                     if !committed && !error_cancel.is_cancelled() { watch.listing_failed(pane, navigation); }
                                 }
                             }));
-                            let filesystem = self.filesystem.clone();
-                            let outbox = self.outbox.clone();
-                            let budget = auxiliary_budget.clone();
-                            let space_cancel = cancel.clone();
-                            let worker_scope = scope.clone();
-                            let space = tasks.spawn(scope.future(async move {
-                                let Ok(permit) = budget.acquire_owned().await else { return; };
-                                if space_cancel.is_cancelled() { return; }
-                                let permit = Arc::new(permit);
-                                let worker_permit = permit.clone();
-                                let _permit = permit;
-                                let storage_outbox = outbox.clone();
-                                let storage_cancel = space_cancel.clone();
-                                let result = tokio::task::spawn_blocking(worker_scope.blocking(move || {
-                                    let _permit = worker_permit;
-                                    let kind = filesystem.storage_kind(&path).unwrap_or_default();
-                                    storage_outbox.blocking_send(Event::StorageKindUpdated { pane, navigation, kind }, &storage_cancel);
-                                    filesystem.space_info(&path)
-                                })).await;
-                                if !space_cancel.is_cancelled()
-                                    && let Ok(Ok(space)) = result {
-                                    outbox.send(Event::SpaceUpdated { pane, navigation, space }).await;
-                                }
-                            }));
-                            requests[pane.index()] = Some(Request { navigation, cancel, tasks: vec![listing, space] });
+                            space.navigate(pane, navigation, path, cancel.clone());
+                            requests[pane.index()] = Some(Request { navigation, cancel, tasks: vec![listing] });
                         }
                     }
                 }
@@ -1482,6 +1472,7 @@ impl EngineServices {
         fonts.shutdown();
         license_notices.shutdown();
         drop(volume_information);
+        drop(space);
         drop(transfer_destination);
         if let Some(settings) = settings {
             settings.shutdown();
