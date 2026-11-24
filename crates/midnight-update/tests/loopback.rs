@@ -238,3 +238,42 @@ impl midnight_update::transport::Sink for Discard {
         Ok(())
     }
 }
+
+/// GitHub redirects a release download to a signed address of about a thousand
+/// characters; the system transport reports a longer one in full, here one of 3,000.
+#[test]
+fn the_system_transport_reports_a_long_redirect_location() {
+    if Endpoints::loopback_test("http://127.0.0.1:1").is_none() {
+        return; // A release build: the loopback policy is refused (see client.rs).
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let location = format!("{base}/signed?sig={}", "a".repeat(3000));
+    let answer = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 2 {
+            line.clear();
+        }
+        let mut stream = stream;
+        stream.write_all(answer.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    });
+    let head = midnight_update::transport::Transport::get(
+        &SystemTransport::new(UrlPolicy::LoopbackTest),
+        &midnight_update::transport::Request {
+            url: format!("{base}/asset"),
+            accept: "application/octet-stream",
+            range_from: 0,
+        },
+        &mut Discard,
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(head.status, 302);
+    assert_eq!(head.location.as_deref(), Some(location.as_str()));
+}

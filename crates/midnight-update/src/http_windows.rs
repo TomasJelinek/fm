@@ -7,7 +7,7 @@ use crate::transport::{
 };
 use std::{ffi::c_void, ptr};
 use windows_sys::Win32::{
-    Foundation::GetLastError,
+    Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError},
     Networking::WinHttp::{
         ERROR_WINHTTP_CANNOT_CONNECT, ERROR_WINHTTP_CONNECTION_ERROR,
         ERROR_WINHTTP_NAME_NOT_RESOLVED, ERROR_WINHTTP_SECURE_FAILURE, ERROR_WINHTTP_TIMEOUT,
@@ -113,29 +113,38 @@ fn status_code(request: &Handle) -> Result<u16, TransportError> {
     u16::try_from(status).map_err(|_| TransportError::Protocol("invalid status".into()))
 }
 
-/// A header's text, `None` when absent.
+/// A header's text, `None` when absent. A value longer than the first buffer (a signed
+/// download address can exceed a thousand characters) is read again at its reported
+/// size, which WinHTTP's response-header limit bounds.
 fn header(request: &Handle, level: u32, name: Option<&str>) -> Option<String> {
     let name = name.map(wide);
     let name_pointer = name.as_ref().map_or(ptr::null(), |name| name.as_ptr());
     let mut buffer = vec![0u16; 1024];
-    let mut length = (buffer.len() * 2) as u32;
-    // SAFETY: the buffer holds `length` bytes; WinHTTP writes at most that and reports
-    // the written size in bytes without the terminator.
-    let ok = unsafe {
-        WinHttpQueryHeaders(
-            request.0,
-            level,
-            name_pointer,
-            buffer.as_mut_ptr().cast(),
-            &mut length,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return None;
+    for _ in 0..2 {
+        let mut length = u32::try_from(buffer.len() * 2).ok()?;
+        // SAFETY: the buffer holds `length` bytes; WinHTTP writes at most that and reports
+        // the written size in bytes without the terminator, or the size it needs in bytes.
+        let ok = unsafe {
+            WinHttpQueryHeaders(
+                request.0,
+                level,
+                name_pointer,
+                buffer.as_mut_ptr().cast(),
+                &mut length,
+                ptr::null_mut(),
+            )
+        };
+        if ok != 0 {
+            buffer.truncate(length as usize / 2);
+            return String::from_utf16(&buffer).ok();
+        }
+        // SAFETY: reads the calling thread's last error.
+        if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+            return None;
+        }
+        buffer = vec![0u16; (length as usize).div_ceil(2) + 1];
     }
-    buffer.truncate(length as usize / 2);
-    String::from_utf16(&buffer).ok()
+    None
 }
 
 fn number(request: &Handle, name: &str) -> Option<u64> {
