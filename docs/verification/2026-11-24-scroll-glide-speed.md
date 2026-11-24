@@ -221,26 +221,35 @@ ahead until it turns, also when it goes on slowly: some single gestures paint a 
 strips ahead (twelve notches back up over the 100 MB text at 100 %: 13 instead of 7),
 others fewer.
 
-## Test runs (Windows, 24 November 2026)
+## Test runs (Windows, 24 November 2026, on main 8cd93bc5)
 
 - `cargo test -p midnight-ui-input`: 73 unit tests pass (1 measurement ignored) and 8
   integration tests.
-- `midnight-ui` (1,713 unit, 1,236 integration), `midnight-viewer-ui` (244 unit, 36
-  integration), `midnight-compare-ui` (42 unit, 19 integration) and `midnight-viewer-engine`
-  (657 unit) pass, run one executable at a time. One run of the viewer engine's
-  `office_real_generated_links_resolve_from_bootstrap_catalog_and_nested_sheets` failed with
-  "Source changed since capture" on its temporary workbook and passed in the other runs; it
-  does not scroll.
+- `midnight-viewer-ui` (245 unit, 36 integration), `midnight-compare-ui` (43 unit, 19
+  integration), `midnight-viewer-engine` (657 unit) and `midnight-ui`'s unit tests (1,719)
+  pass, run one executable at a time. The viewer's edge-bounce test from 47cacc19
+  (`raster_camera::tests::prepared_scroll_reaches_fractional_document_edges_without_bouncing_inward`)
+  passes with the new curve, glided and direct. `midnight-ui`'s integration tests pass
+  except three `tree_copy` tests that wait for a copy decision for 60 s
+  (`archive_nested_folders_copy_and_deselect_through_f5`,
+  `native_nested_folders_copy_and_deselect_through_f5`,
+  `captured_native_copy_passes_unchecked_directory_links_to_preparation`); they passed on
+  5eb5c126, fail the same way when run alone, and this change touches no copy code. The
+  viewer engine's `office_real_generated_links_resolve_from_bootstrap_catalog_and_nested_sheets`
+  failed in some runs with "Source changed since capture" on its temporary workbook and
+  passed in others; it does not scroll.
 - `cargo clippy --workspace --all-targets --locked --offline --features
   midnight-acceptance/acceptance -- -D warnings`, `cargo fmt --all -- --check` and
-  `scripts\check-source-size.ps1` are clean. A Linux cross-check from Windows stops at
+  `scripts\check-source-size.ps1` are clean (with the two-line fix of the viewer examples
+  that main 8cd93bc5 needs to build them). A Linux cross-check from Windows stops at
   `yeslogic-fontconfig-sys` (Slint's font backend needs `pkg-config`); the changed code has
   no platform-specific parts.
-- Acceptance with the 0.5.2 release's plugins (run `20261124-201319`): `panels_scrolling`,
-  `viewers_scroll` (with its two standing SKIPs: the HTML page's Slint pixel delta and
-  touchpad coasting) and `viewers_compare` PASS. `journeys_pointer_only` failed once at its
-  rubber band from the gutter (a pointer drag; nothing marked) and passed on its rerun
-  (`20261124-202533`).
+- Acceptance with the 0.5.2 release's plugins: on 5eb5c126 (run `20261124-201319`)
+  `panels_scrolling`, `viewers_scroll` and `viewers_compare` PASS; `journeys_pointer_only`
+  failed once at its rubber band from the gutter (a pointer drag; nothing marked) and
+  passed on its rerun (`20261124-202533`). On 8cd93bc5 with the engine fix (run
+  `20261124-210550`) `viewers_scroll` and `panels_scrolling` PASS; `viewers_scroll` keeps
+  its two standing SKIPs (the HTML page's Slint pixel delta and touchpad coasting).
 
 ## Remaining limits
 
