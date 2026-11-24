@@ -9,17 +9,52 @@ use slint::{
     ComponentHandle, SharedString,
     platform::{WindowEvent, software_renderer::MinimalSoftwareWindow},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 pub struct TestUi {
     pub window: JobProgressWindow,
     native: Rc<MinimalSoftwareWindow>,
     width: usize,
     height: usize,
+    /// The platform's time when it follows [`TestUi::wait`] alone, not real time.
+    clock: Option<Rc<Cell<Duration>>>,
+}
+/// The software windows of [`modeless::Windows`] on a clock that moves only by
+/// [`TestUi::wait`].
+struct ClockWindows(modeless::Windows, Rc<Cell<Duration>>);
+impl slint::platform::Platform for ClockWindows {
+    fn create_window_adapter(
+        &self,
+    ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+        self.0.create_window_adapter()
+    }
+    fn duration_since_start(&self) -> Duration {
+        self.1.get()
+    }
 }
 impl TestUi {
     pub fn new() -> Self {
+        Self::start(None)
+    }
+    /// A fixture whose Slint timers and animations (a tooltip's delay) move only by
+    /// [`TestUi::wait`], at once, instead of in real time.
+    #[allow(dead_code)] // Only the chart explanation tests wait for tooltips.
+    pub fn with_virtual_clock() -> Self {
+        Self::start(Some(Rc::new(Cell::new(Duration::ZERO))))
+    }
+    fn start(clock: Option<Rc<Cell<Duration>>>) -> Self {
         let adapters = Rc::new(RefCell::new(Vec::new()));
-        slint::platform::set_platform(Box::new(modeless::Windows(adapters.clone()))).unwrap();
+        let windows = modeless::Windows(adapters.clone());
+        match &clock {
+            Some(clock) => {
+                slint::platform::set_platform(Box::new(ClockWindows(windows, clock.clone())))
+            }
+            None => slint::platform::set_platform(Box::new(windows)),
+        }
+        .unwrap();
         let window = JobProgressWindow::new().unwrap();
         let weak = window.as_weak();
         window.on_request_dismiss(move || {
@@ -34,6 +69,16 @@ impl TestUi {
             native,
             width: 1340,
             height: 820,
+            clock,
+        }
+    }
+    /// Let `by` pass for Slint's timers and animations: on a virtual clock at once,
+    /// otherwise in real time.
+    #[allow(dead_code)] // Only the chart explanation tests wait for tooltips.
+    pub fn wait(&mut self, by: Duration) {
+        match &self.clock {
+            Some(clock) => clock.set(clock.get() + by),
+            None => std::thread::sleep(by),
         }
     }
     pub fn resize(&mut self, width: usize, height: usize) {

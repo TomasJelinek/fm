@@ -557,7 +557,7 @@ fn rest_pointer(test: &mut ui::TestUi, position: slint::LogicalPosition) {
         .window()
         .dispatch_event(WindowEvent::PointerMoved { position });
     test.draw();
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    test.wait(std::time::Duration::from_millis(800));
     test.draw();
 }
 
@@ -590,7 +590,7 @@ fn charted_copy() -> OperationRow {
 /// change (`MIDNIGHT_UI_RENDER_DIR`); no assertions, so that it runs on either layout.
 #[test]
 fn chart_explanation_snapshots() {
-    let mut test = ui::TestUi::new();
+    let mut test = ui::TestUi::with_virtual_clock();
     test.window.set_job(charted_copy());
     test.resize(640, 420);
     let chart = ui::popup_item(
@@ -612,7 +612,7 @@ fn chart_explanation_snapshots() {
 /// and clicking it (or Enter once focused) opens the same text without moving anything.
 #[test]
 fn only_the_info_button_above_the_chart_shows_its_explanation() {
-    let mut test = ui::TestUi::new();
+    let mut test = ui::TestUi::with_virtual_clock();
     let explanation = "Write: bytes written per second.";
     // Fonts 8, 12 and 32, Desktop (0) and Touch (1) density, light and dark themes.
     for (scheme, density, font) in [(0, 0, 8), (0, 0, 12), (1, 0, 32), (1, 1, 12), (0, 1, 32)] {

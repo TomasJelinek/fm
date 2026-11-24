@@ -390,7 +390,10 @@ fn a_streamed_selection_keeps_about_a_hundred_bytes_per_item_beside_its_paths() 
     let source = temp.path().join("source");
     let destination = temp.path().join("destination");
     fs::create_dir(&destination).unwrap();
-    let count = 20_000;
+    // Far above the prepared-root limit. The retained bytes are capacities, which grow in
+    // powers of two: an eighth of the earlier 20,000 items keeps every capacity's ratio to
+    // the item count, so the bytes per item are the same, for an eighth of the files.
+    let count = 2_500;
     let paths = files(&source, count);
     let path_bytes: usize = paths
         .iter()
