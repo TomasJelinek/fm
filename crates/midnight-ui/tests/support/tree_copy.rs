@@ -166,6 +166,16 @@ impl TransferDirectory for Directory {
             state: self.state.clone(),
         }))
     }
+    // Copy preserves times and attributes by default; like a native destination, this
+    // one keeps them (it has no times to set), so a copy finishes without the
+    // "cannot preserve" warning that only a destination without them asks.
+    fn apply_preserved_metadata(
+        &self,
+        _: &TransferPreservedMetadata,
+        _: &Cancellation,
+    ) -> Result<(), FsError> {
+        Ok(())
+    }
     fn stage_file(&self, _: &Cancellation) -> Result<Box<dyn StagedTransferFile>, FsError> {
         Ok(Box::new(Stage {
             data: Cursor::new(vec![]),
@@ -220,6 +230,13 @@ impl StagedTransferFile for Stage {
                 .is_none()
         );
         Ok(TransferPublication::Published(self.parent.join(name)))
+    }
+    fn apply_preserved_metadata(
+        &mut self,
+        _: &TransferPreservedMetadata,
+        _: &Cancellation,
+    ) -> Result<(), FsError> {
+        Ok(())
     }
     fn cleanup(&mut self) -> Result<(), FsError> {
         Ok(())
