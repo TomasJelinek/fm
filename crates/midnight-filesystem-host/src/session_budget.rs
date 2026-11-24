@@ -8,6 +8,9 @@
 //! - a wall-clock time budget (`Budget::time`) that only the worker's progress replies
 //!   renew (an acknowledged `StageAppend` or `StageProgress`), never a read it requests;
 //! - the cancellation of its caller where the caller may abandon it (`Hard`).
+//!
+//! A listing also bounds what the host retains of it (`Budget::listing_entries`,
+//! `Budget::listing_bytes`).
 use midnight_core::Cancellation;
 use midnight_filesystem_api::Protocol;
 use std::time::{Duration, Instant};
@@ -29,6 +32,10 @@ pub(super) struct Budget {
     /// How long a cancelled listing or unlock may still finish before its worker is
     /// stopped.
     pub(super) cancel_grace: Duration,
+    /// Members one listing may retain.
+    pub(super) listing_entries: usize,
+    /// Bytes one listing may retain (`retained_bytes`).
+    pub(super) listing_bytes: u64,
 }
 
 impl Budget {
@@ -44,12 +51,19 @@ impl Budget {
     /// of the listing kind; bzip2, the slowest bundled decoder, reads several MiB of
     /// compressed input per second, so a 10 GiB archive gets about 95 minutes. Staging
     /// a member renews the budget with every acknowledged append or progress report.
+    ///
+    /// Listings: the design target is a folder of 1,000,000 members, which the host
+    /// keeps in about 186 bytes per member plus its names (FILESYSTEM_API.md). Ten
+    /// million members or 2 GiB is ten times the target with long names; the worker's
+    /// own 1 GiB index holds at most about nine million TAR members.
     pub(super) const DEFAULT: Self = Self {
         served_per_byte: 4,
         served_extra: 1024 * MIB,
         time_base: Duration::from_secs(10 * 60),
         time_rate: 2 * MIB,
         cancel_grace: Duration::from_secs(2),
+        listing_entries: 10_000_000,
+        listing_bytes: 2048 * MIB,
     };
 
     /// The most bytes one exchange may be served. Protocol 1 keeps its original budget,
@@ -69,6 +83,18 @@ impl Budget {
         self.time_base
             .saturating_add(Duration::from_secs(bytes / self.time_rate.max(1)))
     }
+}
+
+/// Bytes a listing retains of one member: its row and its names.
+pub(super) fn retained_bytes(node: &midnight_core::ArchiveNode) -> u64 {
+    let reason = match &node.access.unreadable {
+        Some(midnight_core::ArchiveUnreadable::Compression(method)) => method.len(),
+        _ => 0,
+    };
+    (size_of::<midnight_core::ArchiveNode>()
+        + node.raw_name.len()
+        + node.display_name.len()
+        + reason) as u64
 }
 
 /// A duration for a message: whole minutes, seconds or milliseconds.

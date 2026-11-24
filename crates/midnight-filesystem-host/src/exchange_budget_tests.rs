@@ -1,5 +1,6 @@
 //! Hostile protocol-4 workers over a real pipe, supervised like a real worker: every
-//! exchange ends within its budgets, and cancelling a listing or an unlock ends it.
+//! exchange ends within its budgets, cancelling a listing or an unlock ends it, and a
+//! listing cannot grow without bound.
 use super::*;
 use close::{Accounting, CloseReceipt, Supervisor, SupervisorProcess};
 use midnight_plugin_host::{ContentSource, Error};
@@ -39,8 +40,26 @@ impl ContentSource for Source {
 enum Script {
     /// A `SourceRead` of `length` bytes every `pause` for request 1, never an answer.
     Reads { length: u32, pause: Duration },
+    /// Full listing pages of names of `name` bytes, each announcing more, forever.
+    Pages { name: usize },
     /// After `pause`, one empty final page for each of the requests 1 to `count`.
     LatePages { pause: Duration, count: u64 },
+}
+
+fn node(id: u64, name: usize) -> api::Node {
+    api::Node {
+        id,
+        parent: 1,
+        name: vec![b'a'; name],
+        display: "a".repeat(name),
+        kind: api::Kind::File,
+        size: Some(1),
+        readable: true,
+        modified: None,
+        encryption: api::Encryption::None,
+        contains_encrypted: false,
+        unreadable: None,
+    }
 }
 
 fn run(script: Script, mut pipe: PipeWriter, stop: &mpsc::Receiver<()>) -> io::Result<()> {
@@ -62,6 +81,23 @@ fn run(script: Script, mut pipe: PipeWriter, stop: &mpsc::Receiver<()>) -> io::R
                     request: 1,
                     offset: 0,
                     length,
+                })?;
+            }
+        }
+        Script::Pages { name } => {
+            let mut next = 2;
+            for request in 1.. {
+                if killed(Duration::ZERO) {
+                    break;
+                }
+                let entries = (next..next + api::MAX_BATCH as u64)
+                    .map(|id| node(id, name))
+                    .collect();
+                next += api::MAX_BATCH as u64;
+                send(&Message::Entries {
+                    request,
+                    entries,
+                    more: true,
                 })?;
             }
         }
@@ -122,6 +158,8 @@ fn budget() -> Budget {
         time_base: Duration::from_secs(60),
         time_rate: 1 << 40,
         cancel_grace: Duration::from_secs(60),
+        listing_entries: 10_000_000,
+        listing_bytes: 1 << 30,
     }
 }
 
@@ -396,4 +434,43 @@ fn cancelling_an_unlock_stops_a_worker_that_never_answers() {
     assert!(fixture.stopped());
     assert!(!fixture.mount().unlocked());
     fixture.later_error();
+}
+
+#[test]
+fn a_listing_beyond_its_member_cap_fails_without_retaining_more() {
+    let fixture = Fixture::new(
+        Script::Pages { name: 8 },
+        Budget {
+            listing_entries: 1000,
+            ..budget()
+        },
+    );
+    let start = Instant::now();
+    let listed = fixture.spawn(|mount| mount.list(1, &Cancellation::default()));
+    let (listing, _) = within(&listed, start, Duration::ZERO);
+    let error = listing.unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::Unsupported, "{error}");
+    assert!(
+        error
+            .message
+            .contains("too large to list: it has more than 1000 members"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_listing_beyond_its_byte_cap_fails_without_retaining_more() {
+    let fixture = Fixture::new(
+        Script::Pages { name: 2048 },
+        Budget {
+            listing_bytes: 1024 * 1024,
+            ..budget()
+        },
+    );
+    let start = Instant::now();
+    let listed = fixture.spawn(|mount| mount.list(1, &Cancellation::default()));
+    let (listing, _) = within(&listed, start, Duration::ZERO);
+    let error = listing.unwrap_err();
+    assert_eq!(error.kind, io::ErrorKind::Unsupported, "{error}");
+    assert!(error.message.contains("or 1 MiB of member data"), "{error}");
 }

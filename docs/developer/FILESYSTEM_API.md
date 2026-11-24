@@ -215,9 +215,9 @@ falls back to all folders. Space measures the focused ordinary folder while
 advancing selection. The iterative scan sums stored logical file lengths, excludes
 links and special nodes, validates parent/ID relationships and reports partial
 results for missing lengths or errors. It never requests member content, extracts
-files or uses viewer TEMP paths. A listing or scan of any size is measured: nothing
-limits how many members or folders it holds or the bytes of their names, beyond the
-protocol's 64 KiB per name. The scan keeps the identities it has met and the
+files or uses viewer TEMP paths. A scan of any size is measured: nothing limits how
+many folders it holds; each folder's listing is bounded only by the host's listing caps
+(below) and the protocol's 64 KiB per name. The scan keeps the identities it has met and the
 folders still to visit along its path, and drops each folder's listing once it has
 counted it; the results keep one size per folder. Sorting and navigation within the same live
 mount preserve cached values and running scans. The status line includes known
@@ -335,10 +335,16 @@ A worker that keeps reporting progress keeps its exchange: decoded progress is n
 checked against the source, so such a worker is bounded by the idle watchdog, the
 caller's cancellation (protocol 3 member reads, listings, unlock) and the spool volume's
 reserve, not by time. Shared tab/viewer leases count as the same mount. Source reads may
-revisit captured ranges and are bounded to 256 KiB. Nothing limits how many members
-a directory lists or how many bytes their names take: the host requests page after
-page for as long as the worker says more follow, checking cancellation between
-pages, and each page stays within the frame and batch bounds above. The worker's
+revisit captured ranges and are bounded to 256 KiB. A directory of any real archive
+lists completely: the host requests page after page for as long as the worker says
+more follow, checking cancellation between pages, and each page stays within the frame
+and batch bounds above. What one listing retains is bounded so that a worker cannot
+grow the host's memory without end: at most 10,000,000 members and 2 GiB, counting each
+member's row and its names (`Budget::listing_entries`, `listing_bytes`). The design
+target is a folder of 1,000,000 members, which the host keeps in about 186 bytes each
+plus names, so the caps leave ten times that with long names; the worker's own index
+holds at most about nine million TAR members. A longer listing fails with "This
+archive folder is too large to list" (`Unsupported`); the worker serves on. The worker's
 memory bounds an archive's index instead: measured at about 105 bytes per TAR
 member, 420 per 7z member and 690 per ZIP member at peak (a million members), 1 GiB
 holds about nine million TAR, two million 7z or one and a half million ZIP members.

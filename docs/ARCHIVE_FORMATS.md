@@ -288,7 +288,9 @@ storage limits decoded content. Nothing limits how many members an archive has: 
 archive's index lives in its worker, whose 1 GiB of memory holds about nine million
 TAR, two million 7z or one and a half million ZIP members, and panels, F5 copy-out,
 folder sizes and Find take any folder such a worker lists; F5 also copies a selection
-of any size. The host stops a worker that reads more than four times its archive plus 1 GiB, or works longer than its time budget,
+of any size. The host lists one folder up to 10,000,000 members or 2 GiB of rows and
+names (ten times the design target of a million members), and stops a worker that
+reads more than four times its archive plus 1 GiB, or works longer than its time budget,
 for one request ([filesystem API](developer/FILESYSTEM_API.md#errors-cancellation-and-resource-bounds)). A panel
 showing an archive folder holds about 640 bytes per member in the application (about
 610 MiB for a million members). An

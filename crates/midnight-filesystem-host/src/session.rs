@@ -1381,7 +1381,9 @@ impl ArchiveMount for Mount {
         })
     }
     /// Each page is one bounded exchange, and the listing pages on for as long as the
-    /// worker says more members follow: a folder of any size lists completely.
+    /// worker says more members follow, up to `Budget::listing_entries` members and
+    /// `Budget::listing_bytes` retained bytes: a folder of any real archive lists
+    /// completely, and a worker cannot grow the host's memory without bound.
     /// Cancellation ends the listing between pages and discards a conforming page that
     /// arrives within the cancellation grace; a page that does not arrive by then ends
     /// the worker (`Hard::Request`), which retires the mount. The idle-progress
@@ -1390,7 +1392,9 @@ impl ArchiveMount for Mount {
     fn list(&self, directory: u64, cancel: &Cancellation) -> Result<Vec<ArchiveNode>, FsError> {
         let fail = |error: io::Error| FsError::from_io("archive list", self.error_path(), error);
         let interrupted = || fail(io::ErrorKind::Interrupted.into());
+        let budget = self.supervision.budget;
         let mut result = Vec::new();
+        let mut retained = 0u64;
         let mut after = 0;
         loop {
             if cancel.is_cancelled() {
@@ -1454,6 +1458,17 @@ impl ArchiveMount for Mount {
                     readable: node.readable,
                     access: access(node.encryption, node.contains_encrypted, node.unreadable),
                 };
+                retained = retained.saturating_add(budget::retained_bytes(&node));
+                if result.len() >= budget.listing_entries || retained > budget.listing_bytes {
+                    return Err(fail(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!(
+                            "This archive folder is too large to list: it has more than {} members or {} of member data",
+                            budget.listing_entries,
+                            budget::describe_bytes(budget.listing_bytes)
+                        ),
+                    )));
+                }
                 result.push(node);
             }
             if !more {
