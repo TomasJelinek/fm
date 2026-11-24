@@ -66,7 +66,12 @@ sideways to the longest line. **Stop** ends the program and every process it
 started; **Copy all** copies the shown lines; **Save as…** asks for a file and, if
 it exists, whether to replace it; **Clear** removes the lines shown so far; **Find**
 (Ctrl+F, F3 and Shift+F3 or Next/Previous) finds lines containing the text,
-ignoring case, and wraps around. **Close** and the window's close button stop a
+ignoring case as Unicode lower case does (`str::to_lowercase`), and wraps around. A
+search lower-cases each line into one reused buffer (ASCII lines byte by byte), so over
+the 50,000 retained lines it allocates a fixed few times; only a line with a Greek
+capital sigma, whose lower case depends on the letters around it, is lower-cased into
+a string of its own
+([record](../verification/2026-11-24-ui-perf-fixes.md#command-output-find)). **Close** and the window's close button stop a
 program that still runs; Escape closes Find, or the window once nothing runs, and
 never stops a program. **Close when finished successfully** is the command's own
 setting, changed and saved from the window too; the window then closes by itself

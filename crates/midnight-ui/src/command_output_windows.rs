@@ -133,14 +133,18 @@ impl Rows {
     }
 
     /// The next row from `from` (exclusive) on, or before it when `backward`, whose text
-    /// contains `needle` ignoring case; wraps around.
+    /// contains `needle` ignoring case as `str::to_lowercase` does; wraps around. Each line
+    /// is lower-cased into one reused buffer (`contains_lowercased`), so a search over the
+    /// 50,000 retained lines allocates a fixed few times instead of once per line.
     pub(crate) fn find(&self, needle: &str, from: i32, backward: bool) -> Option<usize> {
         let needle = needle.to_lowercase();
         if needle.is_empty() {
             return None;
         }
-        let count = self.row_count();
+        let (lines, partial) = (self.lines.borrow(), self.partial.borrow());
+        let count = lines.len() + partial.len();
         let start = usize::try_from(from).ok();
+        let mut buffer = String::with_capacity(FIND_BUFFER);
         (1..=count)
             .map(|step| match (start, backward) {
                 (Some(start), false) => (start + step) % count,
@@ -149,10 +153,41 @@ impl Rows {
                 (None, true) => count - step,
             })
             .find(|&index| {
-                self.row_data(index)
-                    .is_some_and(|row| row.text.to_lowercase().contains(&needle))
+                let row = match lines.get(index) {
+                    Some(row) => row,
+                    None => &partial[index - lines.len()],
+                };
+                contains_lowercased(&row.text, &needle, &mut buffer)
             })
     }
+}
+
+/// The lower-cased line buffer's first size, in bytes; a longer line grows it.
+const FIND_BUFFER: usize = 1024;
+
+/// Whether `text` lower-cased as `str::to_lowercase` does contains `needle`, which is
+/// lower-cased already. The lower case goes into `buffer`, which is reused:
+/// - ASCII text: its bytes, lower-cased in place. Its lower case is ASCII, so a needle
+///   that is not cannot be in it (a Kelvin sign's lower case is an ASCII k, so a
+///   needle can become ASCII, but text cannot become anything else).
+/// - Other text: each character's full lower case (`char::to_lowercase`), which is what
+///   `str::to_lowercase` writes for every character but a capital sigma.
+/// - Text with a capital sigma: `str::to_lowercase` itself, into a string of its own, since
+///   that sigma's lower case depends on the letters around it (final sigma).
+fn contains_lowercased(text: &str, needle: &str, buffer: &mut String) -> bool {
+    buffer.clear();
+    if text.is_ascii() {
+        if !needle.is_ascii() {
+            return false;
+        }
+        buffer.push_str(text);
+        buffer.make_ascii_lowercase();
+    } else if text.contains('\u{03A3}') {
+        return text.to_lowercase().contains(needle);
+    } else {
+        buffer.extend(text.chars().flat_map(char::to_lowercase));
+    }
+    buffer.contains(needle)
 }
 
 impl Model for Rows {

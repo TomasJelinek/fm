@@ -96,6 +96,162 @@ fn find_wraps_around_in_both_directions_ignoring_case() {
     assert_eq!(rows.find("", -1, false), None);
 }
 
+/// `MAX_OUTPUT_LINES` (50,000) retained lines of build output, some of them not ASCII
+/// and one with a Greek capital sigma.
+fn full_output() -> Rows {
+    let session = session();
+    let rows = Rows::default();
+    let lines: Vec<String> = (0..MAX_OUTPUT_LINES)
+        .map(|line| match line % 1_000 {
+            _ if line == 42 => format!("{line}: ΟΔΟΣ ΣΟΦΟΣ"),
+            7 => format!("{line}: Ärger mit Straße"),
+            _ => format!("{line}: Compiling crate-{line} v0.5.2 (D:\\work\\crates\\c{line})"),
+        })
+        .collect();
+    session.append(OutputStream::Stdout, lines, None);
+    rows.apply(&session.read_since(0));
+    assert_eq!(rows.row_count(), MAX_OUTPUT_LINES);
+    rows
+}
+
+/// A Find over every retained line, also one that matches nothing, allocates a fixed
+/// few times however many lines it reads (a line with a capital sigma, whose lower case
+/// depends on its neighbours, is lower-cased into a string of its own); it used to
+/// lower-case each line into a new string, 50,000 allocations for a miss.
+#[test]
+fn find_reads_every_line_without_allocating_per_line() {
+    let rows = full_output();
+    for (needle, from, wanted) in [
+        ("NOT PRESENT", -1, None),
+        ("crate-49999 V0.5.2", -1, Some(49_999)),
+        ("compiling crate-3 ", 10, Some(3)),
+        ("STRASSE", -1, None),
+        ("straße", 8, Some(1_007)),
+        ("σοφος", -1, Some(42)),
+    ] {
+        let (found, allocations) =
+            crate::allocation_meter::count(|| rows.find(needle, from, false));
+        assert_eq!(found, wanted, "{needle:?}");
+        assert!(
+            allocations <= 4,
+            "{needle:?}: {allocations} allocations over {MAX_OUTPUT_LINES} lines"
+        );
+    }
+}
+
+/// Find ignores case exactly as lower-casing the line and the text does
+/// (`str::to_lowercase`): full Unicode mappings that change a character's length, the
+/// final sigma, characters that become ASCII, and mixed lines.
+#[test]
+fn find_ignores_case_as_unicode_lower_casing_does() {
+    let session = session();
+    let rows = Rows::default();
+    let lines = [
+        "plain ascii LINE",
+        "İstanbul",
+        "ΟΔΟΣ ΣΟΦΟΣ",
+        "Kelvin 5 K",
+        "STRASSE",
+        "Straße",
+        "ǅemal",
+        "ﬀ ligature",
+        "",
+    ];
+    session.append(
+        OutputStream::Stdout,
+        lines.iter().map(|line| (*line).to_owned()).collect(),
+        None,
+    );
+    rows.apply(&session.read_since(0));
+    let needles = [
+        "LINE",
+        "line",
+        "i̇stanbul",
+        "İSTANBUL",
+        "istanbul",
+        "οδος",
+        "οδοσ",
+        "ΣΟΦΟΣ",
+        "σοφος",
+        "\u{212A}",
+        "k",
+        "5 k",
+        "strasse",
+        "straße",
+        "STRAẞE",
+        "ǆ",
+        "ǅ",
+        "ﬀ",
+        "ff",
+        "Σ",
+        "ς",
+        " ",
+    ];
+    for needle in needles {
+        let folded = needle.to_lowercase();
+        let wanted = lines
+            .iter()
+            .position(|line| !folded.is_empty() && line.to_lowercase().contains(&folded));
+        assert_eq!(rows.find(needle, -1, false), wanted, "{needle:?}");
+    }
+}
+
+/// What a Find costs over `MAX_OUTPUT_LINES` (50,000) lines: a miss, which reads every
+/// line, and the old way (each line lower-cased into a new string) and a cache of
+/// lower-cased lines for comparison. Reports timings without thresholds; run alone, in
+/// release, with --ignored --nocapture.
+#[test]
+#[ignore = "explicit command-output Find benchmark; reports timings without pass thresholds"]
+fn find_benchmark() {
+    use std::time::Instant;
+    let rows = full_output();
+    let time = |what: &str, find: &dyn Fn() -> Option<usize>| {
+        let mut samples: Vec<f64> = (0..9)
+            .map(|_| {
+                let start = Instant::now();
+                assert_eq!(find(), None);
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        samples.sort_by(f64::total_cmp);
+        let ((), allocations) = crate::allocation_meter::count(|| {
+            find();
+        });
+        println!(
+            "{what} over {MAX_OUTPUT_LINES} lines: median {:.2} ms, worst {:.2} ms, \
+             {allocations} allocations",
+            samples[4], samples[8]
+        );
+    };
+    time("Find (miss)", &|| rows.find("NOT PRESENT", -1, false));
+    let texts: Vec<SharedString> = (0..rows.row_count())
+        .map(|index| rows.row_data(index).unwrap().text)
+        .collect();
+    time("lower-case each line (before)", &|| {
+        let needle = "NOT PRESENT".to_lowercase();
+        texts
+            .iter()
+            .position(|text| text.to_lowercase().contains(&needle))
+    });
+    let started = Instant::now();
+    let (cache, allocations) = crate::allocation_meter::count(|| {
+        texts
+            .iter()
+            .map(|text| text.to_lowercase())
+            .collect::<Vec<_>>()
+    });
+    let bytes: usize = cache.iter().map(String::capacity).sum();
+    println!(
+        "cache of lower-cased lines: built in {:.2} ms, {allocations} allocations, \
+         {bytes} bytes",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    time("search a cache of lower-cased lines", &|| {
+        let needle = "NOT PRESENT".to_lowercase();
+        cache.iter().position(|text| text.contains(&needle))
+    });
+}
+
 #[test]
 fn status_reads_how_the_runs_ended() {
     let locale = NumberLocale::default();
