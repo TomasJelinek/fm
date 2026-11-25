@@ -26,8 +26,8 @@ use midnight_core::{
 use midnight_plugin_host::{ContentResources, api::document};
 use std::{
     io::Read,
-    path::Path,
-    sync::{Mutex, PoisonError},
+    path::{Path, PathBuf},
+    sync::{Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -64,8 +64,10 @@ pub(super) struct Links {
     focused: Option<(usize, Option<u64>)>,
     /// The focus state the window was told last.
     told: Option<(u32, Option<u32>)>,
-    /// A local target being looked at on its own thread.
+    /// Where the newest look at a local target puts its answer.
     resolving: Option<Arc<Mutex<Option<LinkAction>>>>,
+    /// The window's one thread that looks at local targets.
+    lookups: Arc<Mutex<Lookups>>,
     back: Vec<Visit>,
     forward: Vec<Visit>,
     /// Whether Back and Forward had a document to go to when the window was told last.
@@ -74,6 +76,76 @@ pub(super) struct Links {
     arrival: Option<Arrival>,
     arrived: bool,
     scan: Option<Scan>,
+}
+
+/// Looks at local link targets run on one thread per window, one after another: a look at
+/// an unresponsive share can block for long, and follows meanwhile must not pile up
+/// threads. Only the newest follow waits for the thread; it replaces an older one.
+#[derive(Default)]
+struct Lookups {
+    /// Whether the thread runs.
+    busy: bool,
+    queued: Option<Lookup>,
+    /// Looks at a target in place of the file system.
+    #[cfg(test)]
+    look: Option<fn(&Path, bool) -> LocalTargetKind>,
+    /// Threads started.
+    #[cfg(test)]
+    threads: usize,
+}
+
+/// A look at a local target and where its answer goes.
+struct Lookup {
+    path: PathBuf,
+    /// Whether a viewer claims the target by its name.
+    claimed: bool,
+    fragment: Option<String>,
+    answer: Arc<Mutex<Option<LinkAction>>>,
+}
+
+fn lock(lookups: &Mutex<Lookups>) -> MutexGuard<'_, Lookups> {
+    lookups.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The lookup thread: answer `lookup`, then each look queued meanwhile. A look nobody
+/// waits for any more (the follow was replaced or the window closed) is skipped.
+fn look_up(mut lookup: Lookup, lookups: &Mutex<Lookups>, wake: &(dyn Fn() -> bool + Send + Sync)) {
+    // Should a look panic, later follows start a thread again.
+    let _idle = Idle(lookups);
+    loop {
+        if Arc::strong_count(&lookup.answer) > 1 {
+            #[cfg(test)]
+            let look = lock(lookups).look.unwrap_or(local_kind);
+            #[cfg(not(test))]
+            let look = local_kind;
+            let kind = look(&lookup.path, lookup.claimed);
+            let action = local_link_action(lookup.path, lookup.fragment, kind);
+            *lookup.answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(action);
+            wake();
+        }
+        let mut shared = lock(lookups);
+        match shared.queued.take() {
+            Some(next) => lookup = next,
+            None => {
+                // Under the lock that a follow queues under: none is left behind.
+                shared.busy = false;
+                return;
+            }
+        }
+    }
+}
+
+/// Marks the lookup thread ended should a look panic.
+struct Idle<'a>(&'a Mutex<Lookups>);
+
+impl Drop for Idle<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let mut shared = lock(self.0);
+            shared.busy = false;
+            shared.queued = None;
+        }
+    }
 }
 
 /// A document in the link history: its file order and where it was shown.
@@ -121,6 +193,7 @@ impl Links {
             focused: None,
             told: None,
             resolving: None,
+            lookups: Default::default(),
             back: Vec::new(),
             forward: Vec::new(),
             told_history: None,
@@ -524,20 +597,35 @@ impl Worker {
             return;
         };
         let path = link.resolve(&folder);
-        let by_name = self.viewer_claims(&path);
-        let slot = Arc::new(Mutex::new(None));
-        let (result, wake, fragment) = (slot.clone(), self.wake.clone(), link.fragment);
+        let claimed = self.viewer_claims(&path);
+        let answer = Arc::new(Mutex::new(None));
+        self.links.resolving = Some(answer.clone());
+        let lookup = Lookup {
+            path,
+            claimed,
+            fragment: link.fragment,
+            answer,
+        };
+        let mut lookups = lock(&self.links.lookups);
+        if lookups.busy {
+            // The thread looks at it next; an earlier answer is not followed.
+            lookups.queued = Some(lookup);
+            return;
+        }
+        lookups.busy = true;
+        #[cfg(test)]
+        {
+            lookups.threads += 1;
+        }
+        drop(lookups);
+        let (shared, wake) = (self.links.lookups.clone(), self.wake.clone());
         let started = std::thread::Builder::new()
             .name("viewer-link".into())
-            .spawn(move || {
-                let kind = local_kind(&path, by_name);
-                let action = local_link_action(path, fragment, kind);
-                *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(action);
-                wake();
-            });
-        match started {
-            Ok(_) => self.links.resolving = Some(slot),
-            Err(error) => self.link_notice(format!("Cannot follow the link: {error}"), output),
+            .spawn(move || look_up(lookup, &shared, wake.as_ref()));
+        if let Err(error) = started {
+            lock(&self.links.lookups).busy = false;
+            self.links.resolving = None;
+            self.link_notice(format!("Cannot follow the link: {error}"), output);
         }
     }
 
@@ -909,6 +997,7 @@ impl Worker {
             session.cancel(scan.request);
         }
         self.links.resolving = None;
+        lock(&self.links.lookups).queued = None;
     }
 
     /// Anything the user does other than pointing and resizing ends a heading scan and a

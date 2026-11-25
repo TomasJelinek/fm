@@ -836,3 +836,74 @@ fn inside_an_archive_only_members_a_viewer_shows_below_the_document_open() {
         assert_eq!(worker.status, message, "{target}");
     }
 }
+
+/// Targets looked at by `blocked_look`, and whether it may answer.
+static LOOKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static ANSWER: (Mutex<bool>, std::sync::Condvar) = (Mutex::new(false), std::sync::Condvar::new());
+
+/// A look at the file system that waits, as on a share that does not answer, until
+/// `ANSWER` lets it.
+fn blocked_look(path: &Path, claimed: bool) -> LocalTargetKind {
+    LOOKED.lock().unwrap().push(path.to_owned());
+    let mut open = ANSWER.0.lock().unwrap();
+    while !*open {
+        open = ANSWER.1.wait(open).unwrap();
+    }
+    drop(open);
+    local_kind(path, claimed)
+}
+
+/// Follows while a look at a local target blocks start no other thread: the newest waits
+/// for the window's one lookup thread, and it is the one followed.
+#[test]
+fn follows_during_a_blocked_look_wait_for_the_one_lookup_thread_and_the_newest_wins() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("a.md"), "# A\n").unwrap();
+    std::fs::write(folder.path().join("first.md"), "First\n").unwrap();
+    std::fs::write(folder.path().join("second.md"), "Second\n").unwrap();
+    std::fs::create_dir(folder.path().join("sub")).unwrap();
+    let (mut worker, output) = shown(folder.path(), links_page());
+    output.take();
+    worker.links.lookups.lock().unwrap().look = Some(blocked_look);
+    let before = worker.files.clone();
+    worker.follow_link("first.md", &output);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while LOOKED.lock().unwrap().is_empty() {
+        assert!(Instant::now() < deadline, "the first look starts");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    worker.follow_link("second.md", &output);
+    worker.follow_link("sub/", &output);
+    {
+        let lookups = worker.links.lookups.lock().unwrap();
+        assert_eq!(lookups.threads, 1, "one lookup thread per window");
+        assert!(lookups.busy);
+        assert_eq!(
+            lookups.queued.as_ref().map(|lookup| lookup.path.clone()),
+            Some(folder.path().join("sub")),
+            "the newest follow replaces the one queued before it"
+        );
+    }
+    *ANSWER.0.lock().unwrap() = true;
+    ANSWER.1.notify_all();
+    while worker.links.resolving.is_some() {
+        assert!(Instant::now() < deadline, "the newest look ends");
+        std::thread::sleep(Duration::from_millis(2));
+        worker.poll_links(&output);
+    }
+    assert_eq!(
+        requests(&output),
+        [ViewerLinkRequest::OpenFolder(folder.path().join("sub"))]
+    );
+    assert_eq!(worker.files, before, "the earlier answer is not followed");
+    assert_eq!(
+        *LOOKED.lock().unwrap(),
+        [folder.path().join("first.md"), folder.path().join("sub")],
+        "a replaced follow is never looked at"
+    );
+    while worker.links.lookups.lock().unwrap().busy {
+        assert!(Instant::now() < deadline, "the lookup thread ends");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(worker.links.lookups.lock().unwrap().threads, 1);
+}

@@ -129,7 +129,9 @@ by itself.
   opens in the
   same window. A folder opens, and any other file (a program, for example) is shown
   with the cursor on it, in the active panel; nothing is ever opened by its program.
-  The worker looks at the target on a thread of its own.
+  The worker looks at targets on one thread per window, one after another: a link
+  followed while a look runs (on a share that does not answer, say) waits for it,
+  replacing any follow that waited before, and only the newest answer is followed.
 - **`http`, `https` and `mailto`** open with the system's default handler through the
   desktop service, and the status line says "Opened in your browser: …" or why not.
   The address is handed over as plain ASCII, percent-encoded, and a mail link's
