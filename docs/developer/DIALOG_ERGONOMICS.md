@@ -418,11 +418,14 @@ at each edge. Filename spacing stays fixed instead of becoming negative as
 icons grow. Wheel scrolling presents intermediate pixel positions and settles
 on the nearest row only after input/inertia ends; touchpad and touchscreen
 gestures retain their continuous native motion.
-The discrete wheel impulse lasts 200 ms; rendering is requested every 8 ms and
-motion advances only on actual redraws. A delayed redraw consumes at most 16 ms
-of the curve, avoiding an invisible fast-forward. Idle snapping remains a
-separate 100 ms transition after 80 ms without motion, and real gestures or
-explicit cursor navigation cancel it.
+A wheel notch glides for 200 ms up to 120 px, falling to 100 ms from 480 px, times
+the Scrolling glide setting, and shorter when input arrives quickly
+([wheel glide](SCROLLING.md#wheel-glide)); rendering is requested every 8 ms and
+motion advances only on actual redraws. A delayed redraw consumes at most 50 ms
+of the curve, avoiding an invisible fast-forward. Idle snapping starts after a whole
+100 ms check interval without input or motion and glides to the row for
+200 ms times the glide setting (at once with reduced motion or glide Off), and real
+gestures or explicit cursor navigation cancel it.
 
 Long panel paths preserve their beginning and ending: whole middle components
 collapse into one ellipsis marker. `PathCollapse` decides which components show; the
@@ -543,7 +546,7 @@ Insert variable (action menus, which Slint's `ComboBox` cannot be) and Output ar
 ## Alignment of neighbouring controls
 
 Every window, dialog and popup lines up its controls with each other, not only with the
-window. The UI polish gate checks these rules on every surface it renders (U-K32–U-K38
+window. The UI polish gate checks these rules on every surface it renders (U-K32–U-K39
 in [acceptance/ui-polish.md](acceptance/ui-polish.md)), and the `midnight-ui` layout
 tests that use the gate's layout findings (`tests/support/window_polish.rs`) check them
 too.

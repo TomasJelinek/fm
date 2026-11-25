@@ -208,7 +208,7 @@ expanded argv elements, one per argument row, and no shell parses or splits them
 
 - **Hidden** — `launch_user_program`: no window, standard streams on the null device.
 - **Output window** — `launch_user_program_captured` returns a
-  `CapturedUserProgram`: no window, standard input the null device (`NUL`,
+  boxed `CapturedUserProgram` (a trait object): no window, standard input the null device (`NUL`,
   `/dev/null`; reading it ends at once, so a program never waits for input), standard
   output and error in two pipes, and the process tree in one group. Windows starts the
   program suspended, assigns it to its own job object (no kill-on-close) and only then
@@ -267,7 +267,7 @@ user's consent; `Event::UserCommandOutputSaved` answers.
 Tests: `user_command_output_tests.rs` in core (terminal lines, bounds, session),
 `user_command_output_tests.rs` in the engine (supervision with fake programs: streams,
 a 64 MiB flood, Stop and its forced kill, notifications) and
-`tests/user_command_output_run.rs` (a real program end to end, per-item runs, Stop,
+the engine's `tests/user_command_output_run.rs` (a real program end to end, per-item runs, Stop,
 Save as), and `user_command_output_tests.rs` in each platform crate (literal argv
 with spaces, quotes, empty and Unicode arguments in both modes, empty input, exit
 codes, interleaved streams, a 36 MiB burst, Stop ending a grandchild; on Windows
