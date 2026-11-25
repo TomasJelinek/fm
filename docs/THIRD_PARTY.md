@@ -34,8 +34,8 @@ packages that Cargo selects for Windows x64 and Linux x86-64 through normal, bui
 development edges; the native macOS filesystem package is captured for macOS x86-64
 and arm64 instead. This is broader than the code a release links. Project-owned crates
 are excluded, including released API/SDK versions from the project registry. The
-vendored FemtoVG and image-rs sources are third-party code and are listed as local path
-dependencies.
+vendored FemtoVG, Slint FemtoVG adapter and image-rs sources are third-party code and are
+listed as local path dependencies.
 
 Licenses are the upstream Cargo declarations, verbatim. `OR` lists alternatives, not a
 selection, and `AND` combines obligations; old slash syntax is kept as declared. Every
@@ -81,6 +81,11 @@ declaration, which matches the application's GPL license. The About dialog keeps
 AboutSlint attribution and release pages the Made with Slint badge. The decision is in
 the [dependency policy](DEPENDENCY_POLICY.md#current-decisions).
 
+Slint's FemtoVG renderer crate, i-slint-renderer-femtovg 1.18.1, is vendored with a
+present-mode hook that the application sets on native Wayland. The modified copy is
+conveyed under the same GPL-3.0-only branch; see the
+[vendor notes](../vendor/README.md#slints-femtovg-wgpu-adapter).
+
 ### Async runtime (Tokio)
 
 Tokio 1.54.1 (MIT) runs the backend's asynchronous work. The workspace declaration
@@ -118,12 +123,16 @@ declares CC0-1.0, whose text is in the resource 0.6.1 archive of the same upstre
 
 - FemtoVG 0.27.0 (`vendor/femtovg`, MIT OR Apache-2.0) replaces the crates.io release in
   the application through `[patch.crates-io]`; see the [vendor notes](../vendor/README.md).
+- i-slint-renderer-femtovg 1.18.1 (`vendor/i-slint-renderer-femtovg`, GPL-3.0-only OR
+  LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0; GPL-3.0-only branch
+  used) replaces the crates.io release in the application through `[patch.crates-io]`;
+  see the [vendor notes](../vendor/README.md#slints-femtovg-wgpu-adapter).
 - image-rs 0.25.10 (`vendor/image`, MIT OR Apache-2.0) replaces the crates.io release in
   the image decoder, image viewer and image thumbnail workspaces; see the
   [patch provenance](../vendor/image/MIDNIGHT_PATCH.md). The application and the PDF
   viewer use the unpatched crates.io release.
 
-Both keep their upstream license files, and the release packager copies them.
+All three keep their upstream license files, and the release packager copies them.
 
 ### Images
 

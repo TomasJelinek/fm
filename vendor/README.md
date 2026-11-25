@@ -1,4 +1,6 @@
-# Renderer source patch
+# Renderer source patches
+
+## FemtoVG
 
 `femtovg/` is the published FemtoVG 0.27.0 source, licensed **MIT OR Apache-2.0**.
 The application selects MIT and retains both upstream license files. Upstream:
@@ -207,3 +209,44 @@ checkout; they are not claimed as part of this focused GPU validation.
 Performance and native image invalidation checks are documented in
 [the scrolling investigation](../docs/verification/2026-11-11-native-wheel-scrolling.md). This patch
 is retained only with functional GPU checks and a measured native improvement.
+
+## Slint's FemtoVG-WGPU adapter
+
+**Source.** `i-slint-renderer-femtovg/` is the published i-slint-renderer-femtovg 1.18.1
+source, Slint's FemtoVG renderer crate.
+- License: **GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR
+  LicenseRef-Slint-Software-3.0**. The application uses Slint under the GPL-3.0-only branch
+  ([Slint choice](../docs/THIRD_PARTY.md#slint)), which permits a modified copy conveyed
+  under GPL version 3. The project's own license does not change.
+- Upstream: https://github.com/slint-ui/slint, package directory
+  `internal/renderers/femtovg`.
+- The published crate SHA-256 is
+  `eb0de504d57cdadf80c2abf7bcb8b7135a3716aee1f41b6ebb90ea93e3649d7c`; its recorded
+  upstream commit is `372cf0ee5577c3dfec309a45e7b778ba4e81b734`.
+
+**What is kept.**
+- The `LICENSES/` texts, which the release packager copies.
+- The published `Cargo.lock`.
+- The VCS metadata, apart from Cargo's extraction marker.
+- The workspace manifest's `[patch.crates-io]` replaces the crates.io release on every
+  platform. The local manifest marker keeps the crate in license inventories and release
+  notices; it is the only manifest change.
+
+**What changed.** The one source change is in `wgpu.rs`, marked "Midnight Explorer patch",
+with the dated modification notice in the file header that GPL-3.0 section 5 asks for.
+- Upstream configures every window surface with `AutoVsync` (FIFO). The patch adds
+  `set_present_mode_selector`, a process-wide function that chooses a surface's present
+  mode from the modes the surface offers.
+- The selector is consulted when a surface is configured or resized. A surface configured
+  before the selector was installed switches once, before its next frame.
+- Without a selector the adapter behaves as upstream.
+
+**How the application uses it.** `midnight-ui-input` installs the selector when it sees its
+first native Wayland window.
+- Such surfaces present in Mailbox mode when they offer it. Everything else keeps
+  `AutoVsync`, including XWayland/X11, Windows and Wayland surfaces without Mailbox.
+- Why: in FIFO mode the discrete GPU's driver 615.71.09 committed frames with
+  commit-timing targets that the compositor presented up to a second late
+  ([FIFO presentation](../docs/verification/2026-11-25-wayland-fifo-presentation.md)).
+- Wayland frame callbacks keep pacing rendering, so Mailbox draws no extra frames and
+  nothing while idle ([measurements](../docs/verification/2026-11-25-wayland-mailbox.md)).

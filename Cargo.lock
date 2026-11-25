@@ -2043,8 +2043,6 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb0de504d57cdadf80c2abf7bcb8b7135a3716aee1f41b6ebb90ea93e3649d7c"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -3190,6 +3188,7 @@ name = "midnight-ui-input"
 version = "0.6.0"
 dependencies = [
  "i-slint-core",
+ "i-slint-renderer-femtovg",
  "indexmap",
  "lazy_static",
  "midnight-core",

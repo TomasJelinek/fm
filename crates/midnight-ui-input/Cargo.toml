@@ -25,3 +25,7 @@ i-slint-core = { version = "=1.18.1", default-features = false, features = ["std
 tracing-core = "0.1"
 indexmap = "2"
 lazy_static = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The present-mode hook of the vendored FemtoVG-WGPU adapter (vendor/README.md).
+i-slint-renderer-femtovg = { version = "=1.18.1", default-features = false, features = ["wgpu-30"] }

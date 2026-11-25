@@ -79,13 +79,11 @@ Wheel probe on `7454289b`:
 
 ## Options
 
-None of these is implemented.
-
 - **Select Mailbox on native Wayland when the surface offers it**, and keep FIFO elsewhere.
-  This needs a patched copy of Slint's FemtoVG-WGPU adapter or an upstream Slint option.
-  The application uses Slint under its GPL-3.0-only branch, which permits a patched copy.
-- **Workarounds until then.** XWayland (`env -u WAYLAND_DISPLAY`) or the software renderer
-  (`--software`) avoid the problem.
+  This is now implemented through a patched copy of Slint's FemtoVG-WGPU adapter; see
+  [Mailbox presentation on Wayland](2026-11-25-wayland-mailbox.md).
+- **Workarounds for earlier builds.** XWayland (`env -u WAYLAND_DISPLAY`) or the software
+  renderer (`--software`) avoid the problem.
 
 ## Reproduction
 
