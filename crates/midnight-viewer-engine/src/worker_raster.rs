@@ -134,6 +134,12 @@ impl Retained {
         self.bands.clear();
     }
 
+    /// Prepared strips this worker holds.
+    #[cfg(test)]
+    pub(super) fn strip_count(&self) -> usize {
+        self.bands.count()
+    }
+
     /// The newest prepared strip's ID: strips with larger IDs were painted later.
     #[cfg(test)]
     pub(super) fn last_strip_id(&self) -> u64 {
@@ -170,6 +176,14 @@ impl Retained {
     fn camera(&self, origin: [f32; 2]) -> [f64; 2] {
         std::array::from_fn(|axis| self.base[axis] + f64::from(origin[axis]))
     }
+}
+
+/// Modes shown as retained text, whose pixels are prepared strips (`worker_bands.rs`).
+pub(super) fn prepared_text_mode(mode: u16) -> bool {
+    matches!(
+        mode,
+        viewer::MODE_TEXT | viewer::MODE_SOURCE | viewer::MODE_DOCUMENT | viewer::MODE_BINARY
+    )
 }
 
 fn inside(origin: [f64; 2], minimum: [f64; 2], maximum: [f64; 2]) -> bool {
@@ -218,13 +232,7 @@ impl Worker {
 
     pub(super) fn retained_active(&self) -> bool {
         self.raster.enabled
-            && matches!(
-                self.mode,
-                viewer::MODE_TEXT
-                    | viewer::MODE_SOURCE
-                    | viewer::MODE_DOCUMENT
-                    | viewer::MODE_BINARY
-            )
+            && prepared_text_mode(self.mode)
             && !self
                 .page
                 .as_ref()

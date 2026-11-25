@@ -802,9 +802,16 @@ impl Worker {
         let result = (|| {
             let file = captured.ok_or("File identity is not ready")??;
             let opening = self.prepare_opening(&path, file)?;
+            // Strips are reused only by a text view that paints the same rows again; an
+            // image, PDF, HTML, Office or video view would hold them until text returns.
+            if !raster::prepared_text_mode(self.mode) {
+                self.raster.clear_strips();
+            }
             self.select_opening(opening, output)
         })();
         if let Err(error) = result {
+            // A failed opening shows no text either.
+            self.raster.clear_strips();
             self.error(error, output);
         }
     }

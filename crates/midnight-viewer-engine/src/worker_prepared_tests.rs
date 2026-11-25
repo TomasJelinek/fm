@@ -1306,3 +1306,52 @@ fn a_small_source_file_stalls_no_frame_and_prepares_nothing() {
         );
     }
 }
+
+/// Opening an image after a text view gives the text's prepared strips back to the
+/// budget: an image, PDF, HTML, Office or video view never paints them again.
+#[test]
+fn opening_an_image_after_text_releases_its_prepared_strips() {
+    let (mut worker, output) = super::worker();
+    let size = geometry(1312, 720, 1.0);
+    let page = text_page(rows(600, 60), false, &worker.appearance);
+    worker.mode = viewer::MODE_TEXT;
+    worker.geometry = size;
+    worker.image_size = [size.width, size.height];
+    worker.length = page.end;
+    worker.input(ViewerInput::RetainedRaster(true), &output);
+    assert!(worker.set_page(page, &output));
+    worker.paint(&output).unwrap();
+    prepare_all(&mut worker, &output);
+    // The window's copies of the strips are dropped as it presents them.
+    output.take();
+    let budget = worker.raster_budget.clone();
+    let owner = worker.raster_owner;
+    assert!(worker.raster.strip_count() > 1, "the text prepared strips");
+    assert!(budget.strip_bytes(owner) > 0);
+
+    let directory = tempfile::tempdir().unwrap();
+    let image = directory.path().join("next.png");
+    std::fs::write(&image, b"image fixture").unwrap();
+    worker.images = Arc::from(
+        [midnight_image_viewer_host::Provider::unavailable_for_tests(
+            "test-image",
+            &["png"],
+        )],
+    );
+    worker.files = Arc::from([directory.path().join("shown.txt"), image.clone()]);
+    worker.prefetch = Some(crate::capture_prefetch::Prefetch::manual());
+    worker.input(ViewerInput::NextFile, &output);
+    serve_capture(
+        &mut worker,
+        &output,
+        Ok(midnight_plugin_host::CapturedFile::capture(&image).unwrap()),
+    );
+    assert_eq!(worker.mode, VIEWER_MODE_IMAGE);
+    output.take();
+    assert_eq!(worker.raster.strip_count(), 0);
+    assert_eq!(
+        budget.strip_bytes(owner),
+        0,
+        "the image view holds no text pixels"
+    );
+}

@@ -92,6 +92,11 @@ impl Bands {
         self.reset_travel();
     }
 
+    #[cfg(test)]
+    pub fn count(&self) -> usize {
+        self.strips.len()
+    }
+
     /// A new raster context: the travel starts again; the strips stay for revalidation.
     pub fn reset_travel(&mut self) {
         self.pending = false;

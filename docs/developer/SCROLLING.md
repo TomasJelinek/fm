@@ -754,7 +754,10 @@ their pages whole; see [Viewer scrolling](VIEWER_SCROLLING.md).
 
 Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`) and those of
 all viewers 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`), body and gutter together,
-counted until the last owner of their pixels drops them (`raster_budget.rs`). The
+counted until the last owner of their pixels drops them (`raster_budget.rs`). Opening
+an image, PDF, HTML, Office or video view, or an opening that fails, drops the worker's
+strips (`Worker::open`), so they are not held until text is shown again
+(`worker_prepared_tests::opening_an_image_after_text_releases_its_prepared_strips`). The
 window keeps one converted copy of the strips it shows. When a viewer's budget is
 full, strips beyond the window go first and the window stops growing; the strips
 under the window are painted when the budget allows. A text request asks for 12 KiB
