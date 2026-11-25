@@ -39,7 +39,7 @@ fn settings_from_before_schema_40_turn_the_startup_check_on() {
 }
 
 #[test]
-fn a_choice_that_is_off_writes_schema_39_and_round_trips() {
+fn a_choice_that_is_off_writes_schema_40_and_round_trips() {
     for (check_at_startup, previews) in [(false, true), (true, false), (false, false)] {
         let preferences = UserPreferences {
             updates: UpdatePreferences {

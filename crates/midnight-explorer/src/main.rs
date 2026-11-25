@@ -339,8 +339,9 @@ impl ContentWorkers {
         let viewer = self.viewer_owner.shutdown(runtime.handle());
         let compare = self.compare_owner.shutdown(runtime.handle());
         let (viewer, compare) = runtime.block_on(async {
-            // This content grace follows the unchanged Engine and spare waits;
-            // it does not extend the Engine's existing absolute 2500 ms deadline.
+            // This content grace follows the unchanged Engine and spare waits; it does not
+            // extend the Engine's own exit deadline (`EXIT_GRACE`, never under
+            // `ENGINE_MINIMUM_GRACE`).
             let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
             tokio::join!(
                 wait_content_workers("Viewer", viewer, deadline),
