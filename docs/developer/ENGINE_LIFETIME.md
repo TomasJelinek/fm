@@ -222,7 +222,8 @@ native session (`FileDragDropSession::wait_pending`): on Windows in
 `MsgWaitForMultipleObjectsEx` on the session's wake event and its STA's messages,
 which carry other applications' OLE calls into the drop target; on Linux in
 `poll()` on an eventfd and the X11 connection, after serving the events x11rb
-already queued. A host attach or detach, a drag start or shutdown ends that wait
+already queued, or for a native Wayland window (`WaylandSession`) on an eventfd and
+the Wayland connection. A host attach or detach, a drag start or shutdown ends that wait
 through the session's waker, so they need no five-second safety timeout. The actor
 closes the session on a detach, a new host attach or shutdown, and on Linux also
 when the host window's `DestroyNotify` cancels the host lifetime. A lifetime
@@ -230,8 +231,9 @@ cancelled without a detach ends no wait (the UI detaches after cancelling): such
 session, on Windows even one whose window was destroyed, refuses drops and closes
 within that safety timeout. While an incoming X11
 drop's destination is shown or its file list is awaited, the Linux session rechecks
-them every 10 ms, because no event marks the UI changing its drop targets. Without a
-session (a native Wayland window, or no platform drag service) the actor sleeps
+them every 10 ms, because no event marks the UI changing its drop targets; a Wayland
+session rechecks every 10 ms while an incoming drag hovers. Without a
+session (no platform drag service) the actor sleeps
 until the controller signals it. Over five idle seconds with an open session the
 session wait does not wake (`measure_idle_wakeups_of_an_open_session` of the
 platform crates), so the actor wakes only at its safety timeout, and without a
@@ -492,7 +494,9 @@ retirement domain. At shutdown the engine first stops and aborts its
 actors and drains the resident tickets, then shuts down the tree roots, and only
 then observes the resident pool's exit for at most 200 ms; expiry leaves the
 retirement unconfirmed and grants no cleanup or resource credit. That wait stays
-inside the explorer's absolute 2.5-second exit grace and cannot extend it. Viewer and
+inside the engine's exit deadline: the explorer's 2.5-second exit grace
+(`EXIT_GRACE`), which settings reconciliation shares but cannot shorten below the
+engine's 500 ms minimum (`ENGINE_MINIMUM_GRACE`). Viewer and
 comparison workers are sealed together after the engine and image-spare waits and
 get a 2.5-second grace of their own.
 
