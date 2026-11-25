@@ -1,0 +1,160 @@
+name: dependency-inventory
+
+# Captures the Cargo metadata and trees of every dependency inventory workspace, each
+# target on its own host, and regenerates docs/dependencies from them
+# (docs/THIRD_PARTY.md, "Regenerating the inventory"). It runs when a dependency input or
+# the inventory changes, and on demand. Tables that differ from the captures are a
+# warning, not a failure; the run's dependency-inventory artifact holds the regenerated
+# tables and the captures.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - "docs/dependencies/**"
+      - "scripts/capture-dependency-inventory.ps1"
+      - "scripts/dependency-inventory.py"
+      - "scripts/package-release.py"
+      - ".github/workflows/dependency-inventory.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".cargo/config.toml"
+      - "rust-toolchain.toml"
+      - "docs/dependencies/**"
+      - "scripts/capture-dependency-inventory.ps1"
+      - "scripts/dependency-inventory.py"
+      - "scripts/package-release.py"
+      - ".github/workflows/dependency-inventory.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  PYTHONUTF8: "1"
+  # As in ci.yml: Cargo reads the public registry's name before --config applies.
+  CARGO_REGISTRIES_MIDNIGHT_INDEX: https://midnight-explorer.invalid/api-index
+
+jobs:
+  # The released viewer, worker and web SDK bundles that the plugin workspaces lock, packaged
+  # as ci.yml's public-sdk and public-worker-sdk jobs package them. These jobs run rarely,
+  # so they keep no Cargo download cache.
+  sdk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # A full checkout: cargo package reads the repository's ignore files through libgit2.
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust-setup
+        with:
+          download-cache: "false"
+      - name: Package the released SDK bundles
+        shell: bash
+        run: |
+          mkdir -p _build/tmp _build/sdk
+          export TMPDIR="$GITHUB_WORKSPACE/_build/tmp" CARGO_TARGET_DIR="$GITHUB_WORKSPACE/_build/sdk-target"
+          for workspace in api worker-api thumbnail-api filesystem-api image-viewer-api web-viewer-api; do
+            cargo fetch --manifest-path "$workspace/Cargo.toml" --locked
+          done
+          output=$(bash api/scripts/package.sh)
+          viewer=$(printf '%s\n' "$output" | sed -n 's/^Public API\/SDK release bundle: //p' | tail -n 1)
+          output=$(cargo run --manifest-path api/Cargo.toml -p midnight-api-package --bin worker-packages \
+            --locked --offline -- "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/_build/releases")
+          worker=$(printf '%s\n' "$output" | sed -n 's/^Public worker API\/SDK release bundle: //p' | tail -n 1)
+          web=$(python3 -B web-viewer-api/scripts/package.py | tail -n 1)
+          test -f "$viewer/.cargo/config.toml"
+          test -f "$worker/.cargo/registry.toml"
+          test -f "$web"
+          # The viewer and worker configurations name their registries relative to the
+          # bundle; the capture script writes the web configuration for the moved registry.
+          mv "$viewer" _build/sdk/viewer
+          mv "$worker" _build/sdk/worker
+          mv "$(dirname "$web")/registry" _build/sdk/web-registry
+      - uses: actions/upload-artifact@v7
+        with:
+          name: inventory-sdk
+          include-hidden-files: true
+          if-no-files-found: error
+          path: _build/sdk/
+
+  # Build dependencies and procedural macros follow the host, so each target is captured
+  # on its own host. The Linux leg adds the macOS pairs, which no host changes while
+  # native-macos has no build or procedural-macro dependency (the script checks this).
+  capture:
+    needs: sdk
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/download-artifacts
+        with:
+          name: inventory-sdk
+          path: _build/sdk
+      - uses: ./.github/actions/rust-setup
+        with:
+          download-cache: "false"
+      - name: Capture Cargo metadata and trees
+        shell: pwsh
+        run: |
+          ./scripts/capture-dependency-inventory.ps1 -OutputDirectory _build/dependency-captures `
+            -ViewerSdkConfig _build/sdk/viewer/.cargo/config.toml `
+            -WorkerSdkConfig _build/sdk/worker/.cargo/registry.toml `
+            -WebSdkRegistry _build/sdk/web-registry -IncludeMacOS:$IsLinux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dependency-captures-${{ runner.os }}
+          if-no-files-found: error
+          path: _build/dependency-captures/
+
+  inventory:
+    needs: capture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/download-artifacts
+        with:
+          pattern: dependency-captures-*
+          path: _build/dependency-captures
+      - name: Regenerate the inventory and compare it with docs/dependencies
+        shell: bash
+        run: |
+          tables=_build/dependency-inventory/tables
+          python3 -B scripts/dependency-inventory.py --metadata-dir _build/dependency-captures --output-dir "$tables"
+          cp -R _build/dependency-captures _build/dependency-inventory/captures
+          changes=_build/dependency-inventory/tables.diff
+          for file in CARGO_LIBRARIES.md DIRECT_DEPENDENCIES.md cargo-licenses.csv; do
+            diff -u "docs/dependencies/$file" "$tables/$file" || true
+          done > "$changes"
+          if [ ! -s "$changes" ]; then
+            echo 'docs/dependencies matches the captures of this commit.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '::warning title=Dependency inventory::docs/dependencies differs from the captures of this commit; the dependency-inventory artifact holds the regenerated tables.'
+            {
+              echo '### docs/dependencies differs from the captures of this commit'
+              echo
+              echo 'Copy the `tables` files of the dependency-inventory artifact into `docs/dependencies`, then update `LOCKFILE_ONLY.md` there (docs/THIRD_PARTY.md). The first 300 lines of `tables.diff`:'
+              echo
+              echo '```diff'
+              head -n 300 "$changes"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dependency-inventory
+          if-no-files-found: error
+          path: _build/dependency-inventory/

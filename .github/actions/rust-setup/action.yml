@@ -9,6 +9,11 @@ inputs:
       (Swatinem/rust-cache; workspace crates are never cached). Pushes to main save a new
       entry when the key changes; other runs only restore.
     default: "false"
+  download-cache:
+    description: >-
+      Without build-cache, restore and save the Cargo download cache. Rarely run jobs
+      turn it off, so that their entries take no cache space from the build caches.
+    default: "true"
 runs:
   using: composite
   steps:
@@ -26,7 +31,7 @@ runs:
         rustup toolchain install $channel --profile $toolchainProfile @components
         if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
     # Registry and Git downloads only; build outputs stay job-local.
-    - if: inputs.build-cache != 'true'
+    - if: inputs.build-cache != 'true' && inputs.download-cache == 'true'
       uses: actions/cache@v6
       with:
         path: |

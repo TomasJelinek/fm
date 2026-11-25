@@ -47,7 +47,10 @@ the captured targets and features yields exactly the records, workspaces, target
 direct dependants of the three tables. Each record's license is the pinned crate's own
 declaration, and the SHA-256 of each crate archive in the local Cargo cache equals the
 lock file's checksum. A regeneration from Cargo's own captures
-([below](#regenerating-the-inventory)) remains the reference.
+([below](#regenerating-the-inventory)) remains the reference. The tables still list
+`i-slint-renderer-femtovg` 1.18.1 from crates.io: its vendored copy (25 November 2026)
+is a local path dependency with `midnight-ui-input` as a direct dependant, which the
+next regeneration records.
 
 ## License notes
 
@@ -388,8 +391,28 @@ output belong under `_build/`.
 Capture Cargo metadata and the Cargo tree for each workspace below: on Windows for
 `x86_64-pc-windows-msvc` and on Linux for `x86_64-unknown-linux-gnu`, except
 `native-macos`, which needs only `x86_64-apple-darwin` and `aarch64-apple-darwin`. Name
-the outputs `<scope>-<target>.json` and `<scope>-<target>.tree` in
-`_build/verification/dependency-inventory/`.
+the outputs `<scope>-<target>.json` and `<scope>-<target>.tree` and put all of them in
+one folder, such as `_build/verification/dependency-inventory/`.
+
+The `dependency-inventory` workflow
+([dependency-inventory.yml](../.github/workflows/dependency-inventory.yml)) does this
+when a Cargo manifest, lock file or this inventory changes, and on demand. It packages
+the SDK bundles, captures each target on its own host and regenerates the tables from
+the captures. Tables that differ from the committed ones give a warning, not a failure.
+The run's `dependency-inventory` artifact holds the regenerated tables (`tables/`),
+their differences (`tables.diff`) and the captures. Copy the tables into
+`docs/dependencies/`, then update the [lock file list](dependencies/LOCKFILE_ONLY.md)
+as described below.
+
+[capture-dependency-inventory.ps1](../scripts/capture-dependency-inventory.ps1)
+(PowerShell 7), which the workflow runs, captures every scope for the host it runs on,
+with the configurations and features described below. With `-IncludeMacOS` it also
+captures the two `native-macos` pairs, after checking that the package still has no
+build or procedural-macro dependency. It first checks that the Cargo manifests, lock
+files and configuration have no local changes. It records the commit in
+`capture-<target>.txt` and writes `_build/verification/dependency-inventory-<target>/`
+and a zip archive of it. Without SDK configurations it reuses a current bundle that
+an earlier Windows build recorded, or packages one.
 
 | Scope | Manifest |
 | --- | --- |
@@ -417,8 +440,8 @@ the outputs `<scope>-<target>.json` and `<scope>-<target>.tree` in
 | thumbnail-image | `plugins/midnight-thumbnail-image/Cargo.toml` |
 | thumbnail-video | `plugins/midnight-thumbnail-video/Cargo.toml` |
 
-Example PowerShell capture for one scope and target; repeat it for each row. The
-application, API, native and network filesystem workspaces need no `--config`. The
+By hand, the PowerShell capture of one scope and target follows; repeat it for each row.
+The application, API, native and network filesystem workspaces need no `--config`. The
 viewer plugins use the released viewer bundle; `source` and `markdown` use the
 configuration that their `scripts/prepare-sdk.ps1` or `prepare-sdk.py` derives from it,
 as their CI does. The archive, image, PDF and thumbnail plugins use the public worker

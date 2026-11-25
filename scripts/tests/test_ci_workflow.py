@@ -13,6 +13,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+INVENTORY_WORKFLOW = ROOT / ".github/workflows/dependency-inventory.yml"
+# The rules that are not about ci.yml's own jobs hold for every workflow.
+WORKFLOWS = sorted((ROOT / ".github/workflows").glob("*.yml"))
 
 
 def jobs(text):
@@ -77,6 +80,7 @@ class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text(encoding="utf-8")
         self.jobs = jobs(self.text)
+        self.workflows = {path.name: path.read_text(encoding="utf-8") for path in WORKFLOWS}
 
     def test_archive_job_opts_into_plugin_tests_and_a_release_package_on_both_platforms(self):
         job = self.jobs["archive-filesystem"]
@@ -84,16 +88,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertRegex(job, r'bash "\$plugin/scripts/build\.sh" \$sdk \$build \$package release --test')
 
     def test_every_job_is_bounded_and_installs_the_pinned_toolchain_explicitly(self):
-        self.assertNotIn("rustup show", self.text)
-        for name, job in self.jobs.items():
-            with self.subTest(job=name):
-                self.assertRegex(job, r"\n    timeout-minutes: \d+\n")
-                command = re.search(r"^\s*(?:run: )?cargo ", job, re.MULTILINE)
-                if command:
-                    self.assertIn("uses: ./.github/actions/rust-setup", job)
-                    self.assertLess(job.index("rust-setup"), command.start())
-                if "sparse-checkout:" in job and "./.github/actions/" in job:
-                    self.assertIn("/.github/actions/", job.split("sparse-checkout:", 1)[1].split("- uses:", 1)[0])
+        self.assertIn("ci.yml", self.workflows)
+        for workflow, text in self.workflows.items():
+            self.assertNotIn("rustup show", text)
+            for name, job in jobs(text).items():
+                with self.subTest(workflow=workflow, job=name):
+                    self.assertRegex(job, r"\n    timeout-minutes: \d+\n")
+                    command = re.search(r"^\s*(?:run: )?cargo ", job, re.MULTILINE)
+                    if command:
+                        self.assertIn("uses: ./.github/actions/rust-setup", job)
+                        self.assertLess(job.index("rust-setup"), command.start())
+                    if "sparse-checkout:" in job and "./.github/actions/" in job:
+                        self.assertIn("/.github/actions/", job.split("sparse-checkout:", 1)[1].split("- uses:", 1)[0])
 
     def test_rust_setup_reads_the_toolchain_file(self):
         action = (ROOT / ".github/actions/rust-setup/action.yml").read_text(encoding="utf-8")
@@ -266,7 +272,7 @@ class WorkflowTests(unittest.TestCase):
         local = {path.parent.name: path.read_text(encoding="utf-8")
                  for path in (ROOT / ".github/actions").glob("*/action.yml")}
         downloads = local.pop("download-artifacts")
-        for name, text in [("ci.yml", self.text), *local.items()]:
+        for name, text in [*self.workflows.items(), *local.items()]:
             with self.subTest(file=name):
                 self.assertNotIn("uses: actions/download-artifact@", text)
                 for entry in re.split(r"\n\s+- ", text):
@@ -284,14 +290,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue((ROOT / ".github/actions/download-artifacts/extract.py").is_file())
 
     def test_only_the_waiting_jobs_may_read_the_runs_jobs_and_artifacts(self):
-        permissions = self.text.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(permissions.strip(), "contents: read")
-        for name, job in self.jobs.items():
-            with self.subTest(job=name):
-                if "uses: ./.github/actions/plugin-packages" in job:
-                    self.assertIn("    permissions:\n      contents: read\n      actions: read\n", job)
-                else:
-                    self.assertNotIn("\n    permissions:", job)
+        for workflow, text in self.workflows.items():
+            permissions = text.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
+            self.assertEqual(permissions.strip(), "contents: read", workflow)
+            for name, job in jobs(text).items():
+                with self.subTest(workflow=workflow, job=name):
+                    if "uses: ./.github/actions/plugin-packages" in job:
+                        self.assertIn("    permissions:\n      contents: read\n      actions: read\n", job)
+                    else:
+                        self.assertNotIn("\n    permissions:", job)
 
     def test_tests_and_clippy_build_alike_on_every_cpu_with_the_default_linker(self):
         def environment(job):
@@ -314,22 +321,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("linker", (ROOT / ".cargo/config.toml").read_text(encoding="utf-8"))
 
     def test_only_root_workspace_jobs_cache_build_output_and_only_main_saves_it(self):
-        for name, job in self.jobs.items():
-            with self.subTest(job=name):
-                cached = 'build-cache: "true"' in job
-                self.assertEqual(cached, name in ("scripts-and-lint", "check", "release"))
+        for workflow, text in self.workflows.items():
+            for name, job in jobs(text).items():
+                with self.subTest(workflow=workflow, job=name):
+                    cached = 'build-cache: "true"' in job
+                    self.assertEqual(cached, workflow == "ci.yml" and name in ("scripts-and-lint", "check", "release"))
         setup = action("rust-setup")
         self.assertRegex(setup, r"uses: Swatinem/rust-cache@[0-9a-f]{40} # v\d+\.\d+\.\d+\n")
         self.assertIn('workspaces: ". -> _build"', setup)
         self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", setup)
-        self.assertIn("if: inputs.build-cache != 'true'\n      uses: actions/cache@v6", setup)
+        self.assertIn("if: inputs.build-cache != 'true' && inputs.download-cache == 'true'\n      uses: actions/cache@v6", setup)
+        self.assertRegex(setup, r'  download-cache:\n    description: >-\n(?:      .*\n)+    default: "true"\n')
 
     def test_github_actions_run_on_node_24_with_one_version_each(self):
         # Their Node 20 majors print deprecation notices and DeprecationWarnings on the
         # hosted runners; these are the first majors that run on Node 24 by default.
         node24 = {"checkout": 5, "cache": 5, "upload-artifact": 6, "download-artifact": 7}
-        texts = [self.text] + [path.read_text(encoding="utf-8")
-                               for path in sorted((ROOT / ".github/actions").glob("*/action.yml"))]
+        texts = [*self.workflows.values()] + [path.read_text(encoding="utf-8")
+                                              for path in sorted((ROOT / ".github/actions").glob("*/action.yml"))]
         used = [(name, int(major)) for text in texts
                 for name, major in re.findall(r"uses: actions/([a-z-]+)@v(\d+)\n", text)]
         self.assertEqual({name for name, _ in used}, set(node24))
@@ -342,18 +351,18 @@ class WorkflowTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is not installed")
     def test_workflow_and_local_actions_parse_with_a_consistent_structure(self):
         import yaml
-        workflow = yaml.safe_load(self.text)
-        parsed = workflow["jobs"]
-        self.assertEqual(set(parsed), set(self.jobs))
-        for name, job in parsed.items():
-            with self.subTest(job=name):
-                self.assertIsInstance(job["timeout-minutes"], int)
-                needs = job.get("needs", [])
-                self.assertLessEqual(set([needs] if isinstance(needs, str) else needs), set(parsed))
-                for entry in job["steps"]:
-                    self.assertEqual(len({"uses", "run"} & set(entry)), 1, entry)
-                    if entry.get("uses", "").startswith("./"):
-                        self.assertTrue((ROOT / entry["uses"] / "action.yml").is_file(), entry["uses"])
+        for workflow, text in self.workflows.items():
+            parsed = yaml.safe_load(text)["jobs"]
+            self.assertEqual(set(parsed), set(jobs(text)), workflow)
+            for name, job in parsed.items():
+                with self.subTest(workflow=workflow, job=name):
+                    self.assertIsInstance(job["timeout-minutes"], int)
+                    needs = job.get("needs", [])
+                    self.assertLessEqual(set([needs] if isinstance(needs, str) else needs), set(parsed))
+                    for entry in job["steps"]:
+                        self.assertEqual(len({"uses", "run"} & set(entry)), 1, entry)
+                        if entry.get("uses", "").startswith("./"):
+                            self.assertTrue((ROOT / entry["uses"] / "action.yml").is_file(), entry["uses"])
         actions = sorted((ROOT / ".github/actions").glob("*/action.yml"))
         self.assertTrue(actions)
         for action in actions:
@@ -372,9 +381,38 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(plain_scalar_faults("run: cargo test x:: --ignored\n"),
                          ["line 1: run: cargo test x:: --ignored"])
         self.assertEqual(plain_scalar_faults("run: |\n  echo a: b\nname: 'q: x'\n"), [])
-        for path in [WORKFLOW, *sorted((ROOT / ".github/actions").glob("*/action.yml"))]:
+        for path in [*WORKFLOWS, *sorted((ROOT / ".github/actions").glob("*/action.yml"))]:
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
                 self.assertEqual(plain_scalar_faults(path.read_text(encoding="utf-8")), [])
+
+    def test_the_dependency_inventory_is_captured_on_each_host_and_regenerated(self):
+        # Build dependencies and procedural macros follow the host (docs/THIRD_PARTY.md):
+        # a Windows capture taken on Linux once listed Linux-only build dependencies.
+        text = INVENTORY_WORKFLOW.read_text(encoding="utf-8")
+        inventory = jobs(text)
+        on = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertRegex(on, r"push:\n    branches: \[main\]\n    paths:\n")
+        self.assertIn("\n  workflow_dispatch:", on)
+        for path in ("**/Cargo.toml", "**/Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml",
+                     "docs/dependencies/**", "scripts/capture-dependency-inventory.ps1",
+                     "scripts/dependency-inventory.py", "scripts/package-release.py",
+                     ".github/workflows/dependency-inventory.yml"):
+            with self.subTest(path=path):
+                self.assertEqual(on.count(f'      - "{path}"\n'), 2, "for pushes and pull requests alike")
+        capture = inventory["capture"]
+        self.assertIn("os: [windows-latest, ubuntu-24.04]", capture)
+        self.assertIn("runs-on: ${{ matrix.os }}", capture)
+        self.assertIn("./scripts/capture-dependency-inventory.ps1 -OutputDirectory _build/dependency-captures", capture)
+        self.assertIn("-IncludeMacOS:$IsLinux", capture)
+        self.assertIn("name: dependency-captures-${{ runner.os }}", capture)
+        regenerate = inventory["inventory"]
+        self.assertIn("pattern: dependency-captures-*", regenerate)
+        self.assertIn("scripts/dependency-inventory.py --metadata-dir _build/dependency-captures", regenerate)
+        self.assertIn("name: dependency-inventory\n", regenerate)
+        for name, job in inventory.items():
+            if "uses: ./.github/actions/rust-setup" in job:
+                with self.subTest(job=name):
+                    self.assertIn('download-cache: "false"', uses(job, "./.github/actions/rust-setup"))
 
 
 if __name__ == "__main__":

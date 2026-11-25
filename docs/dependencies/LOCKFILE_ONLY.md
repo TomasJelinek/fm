@@ -14,9 +14,12 @@ Licenses are the declarations of the pinned versions, read from the package arch
 the Cargo cache. No build downloads the packages marked †; their licenses are from the
 crates.io record of the same version, whose checksum matches the lock file.
 
-Two lock files are not inventory inputs. `vendor/image/Cargo.lock` is the upstream
+Three lock files are not inventory inputs. `vendor/image/Cargo.lock` is the upstream
 image-rs lock file kept with the vendored source: the three image workspaces build that
-source with their own lock files. The negative plugin-host test fixture's lock file
+source with their own lock files. `vendor/i-slint-renderer-femtovg/Cargo.lock` is the
+lock file published with Slint's FemtoVG renderer crate and kept with its vendored
+source: the application builds that source with its own lock file. The negative
+plugin-host test fixture's lock file
 (`crates/midnight-plugin-host/tests/fixtures/bad-descriptor/Cargo.lock`) has no
 third-party package.
 

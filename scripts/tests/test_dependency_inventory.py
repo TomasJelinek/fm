@@ -3,6 +3,7 @@ import csv
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -197,6 +198,32 @@ class InventoryTests(unittest.TestCase):
         capture = ("app", "Linux")
         with self.assertRaisesRegex(ValueError, "Cargo tree omits workspace members"):
             self.module.inventory({capture: graph(root, [], {})}, {capture: set()})
+
+    def test_capture_script_captures_every_scope_as_documented(self):
+        root = SCRIPT.parent.parent
+        script = (SCRIPT.parent / "capture-dependency-inventory.ps1").read_text(encoding="utf-8")
+        scopes = {name: (manifest, rest) for name, manifest, rest in
+                  re.findall(r"@\{ Name = '([^']+)'; Manifest = '([^']+)'([^}]*)\}", script)}
+        self.assertEqual({name: manifest for name, (manifest, _) in scopes.items()}, self.module.SCOPES)
+
+        def listed(variable):
+            return re.findall(r"'([^']+)'", re.search(rf"\${variable} = @\(([^)]*)\)", script).group(1))
+        self.assertEqual(listed("hostTargets"), list(self.module.TARGETS))
+        self.assertEqual(listed("darwinTargets"), list(self.module.SCOPE_TARGETS["native-macos"]))
+        # A workspace that locks a released project SDK needs that SDK's configuration.
+        for name, (manifest, rest) in scopes.items():
+            with self.subTest(scope=name):
+                lock = (root / manifest).with_name("Cargo.lock").read_text(encoding="utf-8")
+                pinned = f'source = "{self.module.PROJECT_REGISTRY_SOURCE}"' in lock
+                self.assertEqual("Sdk = " in rest, pinned)
+        # The features of docs/THIRD_PARTY.md, and no others.
+        documentation = (root / "docs/THIRD_PARTY.md").read_text(encoding="utf-8")
+        options = {name: " ".join(re.findall(r"'([^']+)'", re.search(r"Options = @\(([^)]*)\)", rest).group(1)))
+                   for name, (_, rest) in scopes.items() if "Options = " in rest}
+        self.assertEqual(options, {"renderer-tests": "--no-default-features --features wgpu",
+                                   "thumbnail-video": "--features system,playback-worker"})
+        for name, flags in options.items():
+            self.assertIn(f"For `{name}`, append `{flags}`", documentation)
 
 
 if __name__ == "__main__":
