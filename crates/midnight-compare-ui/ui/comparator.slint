@@ -67,6 +67,8 @@ export component ComparatorWindow inherits Window {
     in property <string> left-name;
     in property <string> right-name;
     in property <string> status: "Preparing comparison…";
+    in property <bool> has-previous-difference;
+    in property <bool> has-next-difference;
     // UI-only mapping from the typed engine verdict; -1 has no accepted verdict.
     in property <int> identity-state: -1;
     private property <bool> result-light;
@@ -219,8 +221,18 @@ export component ComparatorWindow inherits Window {
                         clicked => { root.mode = index; root.change-mode(index); content.focus(); }
                     }
                 }
-                if !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; text: root.compact ? "‹ Difference" : "Previous difference"; clicked => { root.difference(true); content.focus(); } }
-                if !root.image-mode: ActionButton { font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact; horizontal-stretch: 0; text: root.compact ? "Difference ›" : "Next difference"; clicked => { root.difference(false); content.focus(); } }
+                if !root.image-mode: ActionButton {
+                    font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                    horizontal-stretch: 0; text: root.compact ? "‹ Difference" : "Previous difference";
+                    enabled: root.identity-state >= 0 && root.has-previous-difference;
+                    clicked => { root.difference(true); content.focus(); }
+                }
+                if !root.image-mode: ActionButton {
+                    font-size: root.effective-ui-size; control-height: root.control-height; compact: root.compact;
+                    horizontal-stretch: 0; text: root.compact ? "Difference ›" : "Next difference";
+                    enabled: root.identity-state >= 0 && root.has-next-difference;
+                    clicked => { root.difference(false); content.focus(); }
+                }
                 if !root.image-mode && !root.compact: FontChoice {
                     font-size: root.effective-ui-size; control-height: root.control-height;
                     model: root.font-families; current-index: root.font-index;
@@ -346,7 +358,8 @@ export component ComparatorWindow inherits Window {
                 Text {
                     x: 8px; width: max(0px, parent.width - 16px); height: parent.height;
                     text: root.identity-summary != ""
-                        ? root.identity-summary + (!root.compact && root.status != "" ? " · " + root.status : "")
+                        ? root.identity-summary + (root.status != "" && (!root.compact
+                            || (root.identity-state == 3 && !root.bytes-mode && !root.image-mode)) ? " · " + root.status : "")
                         : root.status;
                     color: root.positive-identity ? (root.result-light ? #14532d : #f0fdf4) : root.foreground;
                     font-weight: root.positive-identity ? 600 : 400;

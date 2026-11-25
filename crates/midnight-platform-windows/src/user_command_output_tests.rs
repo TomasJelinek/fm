@@ -344,6 +344,19 @@ fn stop_ends_the_program_and_every_process_it_started() {
 }
 
 #[test]
+fn console_launcher_runs_batch_and_reports_its_exit_code() {
+    let directory = crate::test_fixtures::build_temp("batch console ");
+    let script = directory.path().join("build example.cmd");
+    fs::write(&script, b"@exit /b 300\r\n").unwrap();
+    let mut report = Vec::new();
+    assert_eq!(
+        run_program(vec![script.into_os_string()], &mut report, false),
+        300
+    );
+    assert!(String::from_utf8(report).unwrap().contains("Exit code 300"));
+}
+
+#[test]
 fn console_window_passes_the_literal_argv_through_the_launcher() {
     let directory = crate::test_fixtures::build_temp("console-文档-");
     let arguments = literal_arguments();

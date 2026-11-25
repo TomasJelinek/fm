@@ -200,7 +200,8 @@ class LinuxBuildSetupTests(unittest.TestCase):
     def test_acceptance_script_rejects_invalid_arguments(self):
         shutil.copyfile(ROOT / "scripts/acceptance.sh", self.root / "scripts/acceptance.sh")
         for arguments in (("release", "debug"), ("--only",), ("--only", ""), ("--only", "a,-x"),
-                          ("--scale", "huge"), ("--unknown",), ("--run-dir",),
+                          ("--scale", "huge"), ("--jobs",), ("--jobs", "0"), ("--jobs", "5"),
+                          ("--jobs", "many"), ("--unknown",), ("--run-dir",),
                           ("--run-dir", "relative"), ("--run-dir", "/")):
             with self.subTest(arguments=arguments):
                 result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), *arguments],
@@ -220,13 +221,13 @@ class LinuxBuildSetupTests(unittest.TestCase):
         fat = self.root / "fat volume"
         result = subprocess.run(["bash", str(self.root / "scripts/acceptance.sh"), "--dry-run",
                                  "--only", "startup,ui_review", "--scale", "smoke", "--strict-review",
-                                 "--run-dir", str(runs), "--stress"],
+                                 "--run-dir", str(runs), "--stress", "--jobs", "4"],
                                 cwd=self.root.parent,
                                 env=dict(self.environment, MIDNIGHT_ACCEPTANCE_FAT_DIR=str(fat)),
                                 text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertIn("[--] [startup] [ui_review] [--scale] [smoke] [--strict-review] [--stress]",
+        self.assertIn("[--] [startup] [ui_review] [--scale] [smoke] [--strict-review] [--stress] [--jobs] [4]",
                       result.stdout)
         self.assertIn(f"Run folders: {runs}", lines)
         self.assertIn("Stress sizes: on (MIDNIGHT_ACCEPTANCE_STRESS=1)", lines)

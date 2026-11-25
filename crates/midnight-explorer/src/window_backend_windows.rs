@@ -15,44 +15,25 @@ pub(super) fn configure(selector: BackendSelector, default_renderer: bool) -> Ba
         // Slint 1.18's generic Direct3D requirement is rejected by its WGPU
         // adapter preflight and silently selects software. Explicit WGPU
         // settings keep the same backend policy in preflight and initialization.
-        selector.require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(
-            graphics_settings(),
-        ))
+        let share = std::env::var_os("MIDNIGHT_SHARED_WGPU").is_none_or(|value| value != "0");
+        selector.require_wgpu_30(midnight_ui::windows_gpu_configuration(share))
     } else {
         selector
     }
 }
 
-fn graphics_settings() -> slint::wgpu_30::WGPUSettings {
-    use slint::wgpu_30::wgpu::InstanceFlags;
-    let mut graphics = slint::wgpu_30::WGPUSettings::default();
-    if std::env::var_os("WGPU_BACKEND").is_none() {
-        // Pinned WGPU prefers Vulkan for equally ranked adapters. Keep DX12
-        // available when Vulkan is absent; this does not retry device failures.
-        // An explicit WGPU_BACKEND remains authoritative for driver diagnostics.
-        graphics.backends =
-            slint::wgpu_30::wgpu::Backends::VULKAN | slint::wgpu_30::wgpu::Backends::DX12;
-    }
-    // Native driver debugging layers substantially delay ordinary panel frames.
-    // Keep them explicitly available through WGPU_DEBUG/WGPU_VALIDATION, while
-    // preserving validation that prevents unsafe indirect GPU calls.
-    let mut flags = InstanceFlags::from_build_config();
-    flags.remove(InstanceFlags::DEBUG | InstanceFlags::VALIDATION);
-    flags = flags.with_env();
-    flags.insert(InstanceFlags::VALIDATION_INDIRECT_CALL);
-    graphics.instance_flags = flags;
-    graphics
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use slint::wgpu_30::wgpu::{Backends, InstanceFlags};
 
     #[test]
     fn native_debug_layers_are_explicit_and_indirect_validation_is_retained() {
         if let Ok(mode) = std::env::var("MIDNIGHT_RENDER_FLAGS_PROBE") {
-            let graphics = graphics_settings();
+            let slint::wgpu_30::WGPUConfiguration::Automatic(graphics) =
+                midnight_ui::windows_gpu_configuration(false)
+            else {
+                panic!("disabled device sharing must use automatic configuration")
+            };
             let backend = std::env::var("MIDNIGHT_RENDER_BACKEND_PROBE").unwrap();
             let expected = match backend.as_str() {
                 "default" => {
@@ -61,6 +42,13 @@ mod tests {
                 }
                 "dx12" => Backends::DX12,
                 "vulkan" => Backends::VULKAN,
+                "gl" => {
+                    assert!(matches!(
+                        midnight_ui::windows_gpu_configuration(true),
+                        slint::wgpu_30::WGPUConfiguration::Automatic(_)
+                    ));
+                    Backends::GL
+                }
                 "vulkan,dx12" => Backends::VULKAN | Backends::DX12,
                 other => panic!("unknown backend probe {other}"),
             };
@@ -84,7 +72,7 @@ mod tests {
             return;
         }
         // Environment changes are isolated to child test processes.
-        for (backend, mode) in ["default", "dx12", "vulkan", "vulkan,dx12"]
+        for (backend, mode) in ["default", "dx12", "vulkan", "vulkan,dx12", "gl"]
             .into_iter()
             .flat_map(|backend| ["default", "off", "on"].map(|mode| (backend, mode)))
         {

@@ -860,6 +860,7 @@ fn tab_follows_the_visual_order_and_wraps() {
     let control = |role, label: &str| Some((role, label.to_owned()));
     let cycle = [
         control(AccessibleRole::TextInput, "Destination folder"),
+        control(AccessibleRole::Button, "Browse for destination folder"),
         control(AccessibleRole::Combobox, "Links"),
         control(AccessibleRole::Checkbox, "Preserve times and attributes"),
         control(AccessibleRole::Checkbox, "Wait for earlier transfers"),
@@ -879,8 +880,80 @@ fn tab_follows_the_visual_order_and_wraps() {
     h.close();
 }
 
-/// Enter in the destination field confirms: the proposed folder starts the Copy at once,
-/// and a typed folder is checked first.
+/// Opening Browse only edits the live destination field in this occurrence.
+#[test]
+fn embedded_move_destination_browse_keeps_the_draft_and_ignores_late_results() {
+    let h = Harness::new(PreferenceTheme::Dark, UiDensity::Desktop, 12);
+    h.focus(PaneId::Left, "Q3 report.pdf");
+    h.open(Key::F6, local());
+    h.layout(440, 300);
+    let form = h.main.global::<OperationPresentation>();
+    let typed = documents().join("typed destination");
+    let picked = documents().join("picked destination");
+    h.chord(Key::Control, "a");
+    h.key(typed.to_string_lossy().as_ref());
+    form.set_option_checked(false);
+    form.set_wait_checked(true);
+    h.choose_links(1);
+    let editor = h.item(AccessibleRole::TextInput, "Destination folder");
+    let browse = h.item(AccessibleRole::Button, "Browse for destination folder");
+    let (field, _) = whole_and_shown(&h, &editor);
+    let (button, visible) = whole_and_shown(&h, &browse);
+    assert!(button.0 >= field.2 && button.0 - field.2 <= 10.0);
+    assert!((button.1 - field.1).abs() <= 1.0 && (button.3 - field.3).abs() <= 1.0);
+    assert_eq!(button, visible);
+    assert!(h.drawn().iter().any(|text| text == "…"));
+    h.commands.borrow_mut().clear();
+    h.tab(false);
+    h.key(Key::Return);
+    let take_picker = || {
+        let Some(Command::PickPath { request, input }) = h.commands.borrow_mut().pop() else {
+            panic!("Browse opens the folder picker")
+        };
+        assert_eq!(input.kind, PathPickerKind::Directory);
+        assert_eq!(input.initial_directory.as_ref(), Some(&typed));
+        request
+    };
+    let first = take_picker();
+    assert!(form.get_picking_destination());
+    assert!(!form.get_confirm_enabled());
+    let answer = |request, path| {
+        h.state.borrow_mut().apply(Event::PathPicked {
+            request,
+            result: Ok(path),
+        });
+        refresh(&h.main, &h.state.borrow());
+        h.layout(440, 300);
+    };
+    answer(first, None);
+    assert_eq!(form.get_field_value().as_str(), typed.to_str().unwrap());
+    form.invoke_browse_destination(form.get_token(), form.get_field_value());
+    let second = take_picker();
+    answer(first, Some(typed.clone()));
+    assert!(form.get_picking_destination());
+    answer(second, Some(picked.clone()));
+    assert_eq!(form.get_field_value().as_str(), picked.to_str().unwrap());
+    assert!(form.get_confirm_enabled());
+    assert!(form.get_wait_checked() && !form.get_option_checked());
+    assert_eq!(form.get_link_choice(), 1);
+    assert!(h.commands.borrow().is_empty());
+    form.invoke_browse_destination(form.get_token(), form.get_field_value());
+    let Some(Command::PickPath { request, input }) = h.commands.borrow_mut().pop() else {
+        panic!("Browse reopens")
+    };
+    assert_eq!(input.initial_directory, Some(picked.clone()));
+    h.close();
+    assert!(
+        matches!(h.commands.borrow().last(), Some(Command::CancelPathPicker { request: old }) if *old == request)
+    );
+    h.show(State::OneFile);
+    let original = form.get_field_value();
+    answer(request, Some(picked));
+    assert_eq!(form.get_field_value(), original);
+    h.close();
+}
+
+/// Enter uses the initial or edited destination.
 #[test]
 fn enter_in_the_destination_confirms() {
     let h = Harness::new(PreferenceTheme::Dark, UiDensity::Desktop, 12);

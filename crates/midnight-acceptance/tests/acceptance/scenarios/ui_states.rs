@@ -974,6 +974,7 @@ pub fn viewers(context: &mut Context) -> Result<(), String> {
 pub fn jobs_scenario() -> Scenario {
     Scenario {
         name: "ui_polish_jobs",
+        isolation: crate::Isolation::Parallel,
         area: "ui",
         summary: "Polish gate on job windows (paused, waiting, running, cancel question, cancelled, completed, errors, notes), decision windows (conflict, Retry/Skip failure) and Jobs, at preferred and minimum size.",
         run: jobs,
@@ -984,6 +985,7 @@ pub fn jobs_scenario() -> Scenario {
 pub fn viewers_scenario() -> Scenario {
     Scenario {
         name: "ui_polish_viewers",
+        isolation: crate::Isolation::ParallelPlugins,
         area: "ui",
         summary: "Polish gate on viewer windows (text, source with a selection, image, Markdown, hex), a comparator and the archive password dialog in a dark and a light theme (staged with the installed plugins).",
         run: viewers,

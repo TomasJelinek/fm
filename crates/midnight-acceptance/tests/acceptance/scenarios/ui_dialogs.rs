@@ -823,26 +823,7 @@ fn body(context: &mut Context) -> Result<(), String> {
     for spec in SPECS {
         let _surface = timing::Span::new(format!("surface {}", spec.name));
         restore(&mut app, &scratch);
-        // A screenshot with the static and contrast checks first.
         let shot = format!("dialogs-{}", spec.name);
-        let opened = (spec.open)(&mut app);
-        match opened {
-            Ok(target) => {
-                timing::time("dialogs: capture", || {
-                    gate::capture(&mut app, context, &target, spec.name, &shot, spec.name);
-                });
-            }
-            Err(error) => {
-                gate::record(
-                    context,
-                    &format!("shots/{}/{shot}.png", app::context_name()),
-                    spec.name,
-                    vec![gate::Issue::new("surface did not open", error)],
-                );
-                continue;
-            }
-        }
-        restore(&mut app, &scratch);
         let scratch_ref = &scratch;
         let open = spec.open;
         let is_open = spec.is_open;
@@ -879,7 +860,11 @@ fn body(context: &mut Context) -> Result<(), String> {
                  Recycle Bin cannot be made private)",
             );
         }
-        let outcome = interact::check_surface(&mut app, &mut surface);
+        let outcome = interact::check_surface_on_open(&mut app, &mut surface, |app, target| {
+            timing::time("dialogs: capture", || {
+                gate::capture(app, context, target, spec.name, &shot, spec.name);
+            });
+        });
         interact::record(
             context,
             spec.name,
@@ -907,6 +892,7 @@ pub fn dialogs(context: &mut Context) -> Result<(), String> {
 pub fn scenario() -> Scenario {
     Scenario {
         name: "ui_polish_dialogs",
+        isolation: crate::Isolation::ParallelStaged,
         area: "ui",
         summary: "Polish gate, interactive: every dialog and tool window — Tab/Shift+Tab, visible focus, Escape, Enter, every button's effect, no extra window or notice, hover feedback and tooltips.",
         run: dialogs,

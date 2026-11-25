@@ -49,6 +49,7 @@ struct Calls {
     rename_failure: Mutex<Option<FsError>>,
     /// The target whose delete fails after reporting its progress.
     failing_delete: Mutex<Option<PathBuf>>,
+    trash_unavailable: Mutex<Vec<PathBuf>>,
     /// Entries each target's discovery reports beyond the target itself, as if
     /// another program removed them before the deletion.
     discovered_extra: AtomicUsize,
@@ -191,6 +192,19 @@ impl PreparedMutation for FakeTarget {
             .lock()
             .unwrap()
             .push((self.item.path.clone(), mode));
+        if mode == DeleteMode::Trash
+            && self
+                .calls
+                .trash_unavailable
+                .lock()
+                .unwrap()
+                .contains(&self.item.path)
+        {
+            return Err(FsError::trash_unavailable(
+                &self.item.path,
+                "no trash on this volume",
+            ));
+        }
         self.calls.entered.notify_one();
         while self.calls.blocked.load(Ordering::Acquire)
             && (!cancel.is_cancelled() || self.calls.complete_after_cancel.load(Ordering::Acquire))

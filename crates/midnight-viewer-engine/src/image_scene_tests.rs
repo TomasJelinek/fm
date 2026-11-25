@@ -71,7 +71,10 @@ fn blank_tile_optimization_retains_grid_coverage_and_only_renders_image_intersec
     let mut geometry = ImageGeometry::new(607, 204, [2250, 1400]);
     for (basis, expected) in [(5000, 2), (10000, 3), (12500, 3), (15625, 3)] {
         let mut scene = Scene::new(Arc::new(AtomicU64::new(0)));
-        geometry.restore_zoom(midnight_core::ViewerZoomPreference::ScaleBasisPoints(basis));
+        geometry.zoom(
+            f64::from(basis) / 10_000.0 / geometry.scale,
+            geometry.center(),
+        );
         scene.update(0, &geometry).unwrap();
         assert_eq!(
             fill(&mut scene),
@@ -174,7 +177,10 @@ fn documents_render_at_exact_physical_resolution_and_images_keep_bounded_geometr
     for viewport in [[1200, 800], [3840, 2160], [7680, 4320]] {
         for basis in [6250, 12500, 30520, 116414] {
             let mut geometry = ImageGeometry::document(607, 204, viewport);
-            geometry.restore_zoom(midnight_core::ViewerZoomPreference::ScaleBasisPoints(basis));
+            geometry.zoom(
+                f64::from(basis) / 10_000.0 / geometry.scale,
+                geometry.center(),
+            );
             let canvas = crate::image_scene::Canvas {
                 key: 0,
                 pages: Arc::from([crate::document_view::PagePlacement {

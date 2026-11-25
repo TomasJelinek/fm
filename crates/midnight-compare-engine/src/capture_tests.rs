@@ -290,7 +290,7 @@ fn storage_hints_are_queried_on_the_worker_and_viewers_are_discovered_once_per_s
             Ok(Vec::new())
         });
     let first = open(&service, launch(&paths)).unwrap();
-    assert!(frame(&first).status.contains("1 difference group"));
+    assert!(frame(&first).status.contains("Difference 1 of 1"));
     let discovered = service
         .viewers
         .kept()
@@ -401,8 +401,14 @@ fn differences_outside_the_visible_text_page_still_produce_typed_different() {
     let (_owner, spawner) = crate::resident_test_support::workers();
     let service = Service::new(runtime.handle().clone(), spawner);
     let session = open(&service, launch(&paths)).unwrap();
+    let first = frame(&session);
+    assert!(first.accessible_text.contains("left tail"));
+    assert!(first.accessible_text.contains("right tail"));
+    session.send(Input::Seek(0.0)).unwrap();
     let result = wait_for(|_| match session.mailbox.take() {
-        Some(Output::Frame { frame, .. }) if frame.identity != crate::IdentityVerdict::Pending => {
+        Some(Output::Frame { frame, .. })
+            if frame.identity != crate::IdentityVerdict::Pending && frame.position == 0.0 =>
+        {
             Some(frame)
         }
         Some(Output::ChooseFiles(choice)) => panic!("Unexpected file choice: {choice:?}"),
@@ -455,10 +461,9 @@ fn injected_capture_compares_both_panel_sources_without_opening_native_paths() {
     };
     let session = open(&service, launch).unwrap();
     let frame = frame(&session);
-    assert!(frame.accessible_text.contains("provider český"));
+    assert_eq!(frame.status.split(" · ").next(), Some("Difference 1 of 1"));
     assert!(frame.accessible_text.contains("old"));
     assert!(frame.accessible_text.contains("new"));
-    assert!(frame.status.contains("1 difference"));
     assert!(reads.load(Ordering::Relaxed) >= 2);
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2);

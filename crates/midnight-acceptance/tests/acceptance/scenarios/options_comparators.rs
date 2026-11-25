@@ -51,11 +51,64 @@ pub fn comparators(context: &mut Context) -> Result<(), String> {
     if options::texts_with(&app, "No overrides").is_empty() {
         return Err("the Comparators page does not state that no overrides exist".into());
     }
+    // The toolbar keeps keyboard focus as adding rules reveals the priority buttons.
+    for count in 1..=2 {
+        for _ in 0..count {
+            options::press(&mut app, "Add comparator rule")?;
+        }
+        let priority_shown = count == 2;
+        for label in ["Move comparator rule up", "Move comparator rule down"] {
+            if options::find_any(&app, AccessibleRole::Button, label).is_some() != priority_shown {
+                return Err(format!(
+                    "{count} comparator rules: incorrect visibility of {label:?}"
+                ));
+            }
+        }
+        let last = if priority_shown {
+            "Move comparator rule down"
+        } else {
+            "Remove comparator rule"
+        };
+        let right_edge = |role, label| {
+            options::find_any(&app, role, label)
+                .map(|item| {
+                    let (x, _, width, _) = crate::inspect::rect(&item);
+                    x + width
+                })
+                .ok_or_else(|| format!("missing {label:?}"))
+        };
+        let edge = right_edge(AccessibleRole::Button, last)?;
+        let list_edge = right_edge(AccessibleRole::List, RULES)?;
+        if (edge - list_edge).abs() > 3.0 {
+            return Err(format!(
+                "{last:?} ends at {edge}, away from the rules list edge {list_edge}"
+            ));
+        }
+        crate::input::key(app.slint(), slint::platform::Key::Escape);
+        if !options::poll(&mut app, Duration::from_secs(2), |app| {
+            !app.window.get_options_open()
+        }) {
+            return Err(format!(
+                "Escape did not close Options directly after adding rule {count}"
+            ));
+        }
+        options::open(&mut app)?;
+        options::page(&mut app, "Comparators")?;
+        wait_ready(&mut app)?;
+        if rule_labels(&app) != ["Other regular files → Automatic (fixed)"] {
+            return Err(format!(
+                "Escape kept a draft comparator rule: {:?}",
+                rule_labels(&app)
+            ));
+        }
+    }
 
     // A built-in text override.
     options::press(&mut app, "Add comparator rule")?;
     options::fill(&mut app, "Comparator filename pattern", "*.cmp")?;
     options::choose(&mut app, "Comparator target", "Built-in text")?;
+    let up = "Move comparator rule up";
+    let down = "Move comparator rule down";
     // An external program: its arguments are literal rows with {left} and {right}.
     options::press(&mut app, "Add comparator rule")?;
     options::fill(&mut app, "Comparator filename pattern", "*.ext")?;
@@ -74,14 +127,24 @@ pub fn comparators(context: &mut Context) -> Result<(), String> {
             return Err(format!("the argument help does not show {help:?}"));
         }
     }
-    let labels = rule_labels(&app);
-    let wanted = [
+    let original = [
         "1. *.cmp → Built-in text".to_owned(),
         format!("2. *.ext → External: {tool_text}"),
         "Other regular files → Automatic (fixed)".to_owned(),
     ];
-    if labels != wanted {
-        return Err(format!("the comparator rules show {labels:?}"));
+    let wanted = [
+        format!("1. *.ext → External: {tool_text}"),
+        "2. *.cmp → Built-in text".to_owned(),
+        original[2].clone(),
+    ];
+    for (button, expected) in [(up, &wanted), (down, &original), (up, &wanted)] {
+        options::press(&mut app, button)?;
+        let labels = rule_labels(&app);
+        if labels.as_slice() != expected.as_slice() {
+            return Err(format!(
+                "{button} produced {labels:?}, expected {expected:?}"
+            ));
+        }
     }
     options::review_shot(
         &mut app,
@@ -93,8 +156,8 @@ pub fn comparators(context: &mut Context) -> Result<(), String> {
         return Err("OK did not save the comparator rules".into());
     }
     let rules = store.current().file_comparators.rules;
-    let text_rule = rules.first().ok_or("no comparator rules were saved")?;
-    let external = rules.get(1).ok_or("the external rule was not saved")?;
+    let external = rules.first().ok_or("the external rule was not saved")?;
+    let text_rule = rules.get(1).ok_or("the text rule was not saved")?;
     if rules.len() != 2
         || text_rule.expression != "*.cmp"
         || text_rule.mode != FilterMode::Masks
@@ -115,7 +178,7 @@ pub fn comparators(context: &mut Context) -> Result<(), String> {
     options::page(&mut app, "Comparators")?;
     wait_ready(&mut app)?;
     options::press(&mut app, "Add comparator rule")?;
-    options::choose(&mut app, "Comparator matching mode", "Regular expression")?;
+    options::choose(&mut app, "Comparator matching mode", "RegEx")?;
     options::fill(&mut app, "Comparator filename pattern", "([")?;
     let saves = store.saves();
     input_ok(&mut app)?;

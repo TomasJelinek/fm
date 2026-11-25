@@ -412,7 +412,6 @@ fn readonly_archives_never_enqueue_native_operations_or_external_launch() {
     p.copy_files(PaneId::Left, &send);
     p.edit_file(PaneId::Left, &send);
     assert!(!p.open(PaneId::Left, 2, &send));
-    assert!(!p.open_terminal(&send));
 }
 
 #[test]

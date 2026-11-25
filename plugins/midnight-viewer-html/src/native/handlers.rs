@@ -200,6 +200,7 @@ wrap_app! {
     impl App {
         fn on_before_command_line_processing(&self, _process_type: Option<&CefString>, command_line: Option<&mut CommandLine>) {
             if let Some(command_line) = command_line {
+                command_line.append_switch_with_value(Some(&CefString::from("lang")), Some(&CefString::from(super::BROWSER_LOCALE)));
                 for flag in ["disable-background-networking", "disable-component-update", "disable-extensions", "disable-sync", "no-first-run", "disable-default-apps", "disable-domain-reliability"] {
                     command_line.append_switch(Some(&CefString::from(flag)));
                 }

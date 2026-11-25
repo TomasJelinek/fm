@@ -472,6 +472,9 @@ impl Presenter {
         name: String,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.answer_trash_fallback(token, true, send) {
+            return;
+        }
         let Some(preview) = self.operations.preview.as_ref() else {
             return;
         };
@@ -656,6 +659,9 @@ impl Presenter {
     }
 
     pub(crate) fn cancel_operation(&mut self, token: &str, send: &dyn Fn(Command) -> bool) {
+        if self.answer_trash_fallback(token, false, send) {
+            return;
+        }
         let Ok(id) = token
             .strip_prefix("rename-job:")
             .unwrap_or(token)

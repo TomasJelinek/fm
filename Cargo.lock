@@ -2826,7 +2826,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-acceptance"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "i-slint-core",
  "midnight-compare-engine",
@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-compare-engine"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-core",
  "midnight-image-viewer-host",
@@ -2863,7 +2863,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-compare-ui"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "i-slint-compiler",
  "i-slint-core",
@@ -2880,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-core"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-web-viewer-api",
  "unicase",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-elevation"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-engine"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "crc32fast",
  "image",
@@ -2929,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-explorer"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "femtovg",
  "find-msvc-tools",
@@ -2966,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-filesystem-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-core",
  "midnight-filesystem-api",
@@ -2991,7 +2991,7 @@ version = "0.3.0"
 
 [[package]]
 name = "midnight-image-viewer-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-image-viewer-api",
  "midnight-plugin-host",
@@ -3004,7 +3004,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-media-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-plugin-host",
  "midnight-work-budget",
@@ -3016,7 +3016,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-media-output"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "libloading",
  "midnight-media-host",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-native-filesystem-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-core",
  "midnight-filesystem-plugin-api",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-office-preview"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "midnight-core",
@@ -3048,7 +3048,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-platform"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-core",
  "midnight-platform-linux",
@@ -3058,7 +3058,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-platform-common"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "icu_casemap",
  "icu_locale_core",
@@ -3075,7 +3075,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-platform-linux"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "chrono",
@@ -3099,7 +3099,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-platform-windows"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "base64",
@@ -3122,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-plugin-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "libc",
  "midnight-plugin-api",
@@ -3140,7 +3140,7 @@ version = "0.1.0"
 
 [[package]]
 name = "midnight-thumbnail-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "midnight-core",
@@ -3156,7 +3156,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-ui"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "i-slint-core",
@@ -3176,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-ui-bindings"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -3187,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-ui-input"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "i-slint-core",
  "indexmap",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-update"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "blake2",
  "ed25519-compact",
@@ -3220,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-viewer-engine"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-core",
  "midnight-elevation",
@@ -3241,7 +3241,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-viewer-render"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "parley",
  "swash",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "midnight-viewer-ui"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "i-slint-core",
  "midnight-core",
@@ -3275,7 +3275,7 @@ version = "0.4.0"
 
 [[package]]
 name = "midnight-web-viewer-host"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "midnight-plugin-host",
  "midnight-web-viewer-api",
@@ -3295,14 +3295,14 @@ dependencies = [
 
 [[package]]
 name = "midnight-work-budget"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "midnight-worker-platform"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "crc32fast",
  "midnight-worker-sdk",

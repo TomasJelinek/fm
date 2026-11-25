@@ -3,8 +3,8 @@
 //! windows, against a generated fixture tree.
 //!
 //! This target needs the `acceptance` feature and has its own `main` (`harness = false`):
-//! scenarios run one at a time, each on its own thread (Slint's platform and windows are
-//! per thread), under a watchdog. Run it with `./build.sh --acceptance` or
+//! parallel scenarios use private worker processes, and shared-desktop scenarios run
+//! exclusively, each under a watchdog. Run it with `./build.sh --acceptance` or
 //! `scripts/acceptance.sh`; see docs/developer/ACCEPTANCE.md.
 // Deny, not forbid: the slint! fixture windows of the UI polish gate's red cases are
 // generated bindings that carry their own narrow allowance (CODE_STYLE.md).
@@ -38,6 +38,8 @@ mod report;
 mod review;
 #[path = "acceptance/scenarios/mod.rs"]
 mod scenarios;
+#[path = "acceptance/schedule.rs"]
+mod schedule;
 #[path = "acceptance/timing.rs"]
 mod timing;
 #[path = "acceptance/tool.rs"]
@@ -48,6 +50,9 @@ mod tools_support;
 mod viewers_stage;
 #[path = "acceptance/viewers_support.rs"]
 mod viewers_support;
+#[cfg(target_os = "linux")]
+#[path = "acceptance/worker_display.rs"]
+mod worker_display;
 
 use report::{Outcome, Status};
 use std::{
@@ -58,6 +63,8 @@ use std::{
 
 /// What every scenario receives.
 pub struct Context {
+    /// This parent is launching a private, software-rendered parallel worker.
+    parallel: bool,
     /// The shared, read-only fixture tree. Scenarios that change files copy what they
     /// need into [`Context::work`] first.
     pub fixture: Arc<fixtures::Fixture>,
@@ -80,7 +87,45 @@ impl Context {
 
 pub type Run = fn(&mut Context) -> Result<(), String>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    Parallel,
+    /// The entire scenario already runs in a private staged process.
+    ParallelStaged,
+    /// Uses installed plugins, which can need a real X server for Chromium on Linux.
+    ParallelPlugins,
+    Exclusive,
+}
+
+impl Isolation {
+    /// These native viewer checks enforce startup or exit deadlines that
+    /// competing Windows workers can consume. Linux can use private X displays.
+    const fn timed_plugin() -> Self {
+        if cfg!(windows) {
+            Self::Exclusive
+        } else {
+            Self::ParallelPlugins
+        }
+    }
+
+    fn effective(self) -> Self {
+        #[cfg(target_os = "linux")]
+        if self == Self::ParallelPlugins && worker_display::needs_shared_desktop() {
+            return Self::Exclusive;
+        }
+        self
+    }
+
+    fn label(self) -> &'static str {
+        match self.effective() {
+            Self::Exclusive => "exclusive",
+            Self::Parallel | Self::ParallelStaged | Self::ParallelPlugins => "parallel",
+        }
+    }
+}
+
 pub struct Scenario {
+    pub isolation: Isolation,
     pub name: &'static str,
     pub area: &'static str,
     pub summary: &'static str,
@@ -89,6 +134,7 @@ pub struct Scenario {
 }
 
 pub struct Options {
+    pub jobs: usize,
     pub filters: Vec<String>,
     pub scale: fixtures::Scale,
     /// The folder in which the run creates its own folder (`<run_root>/<run id>`).
@@ -111,19 +157,27 @@ pub struct Options {
 }
 
 fn usage() -> &'static str {
-    "Usage: acceptance [FILTER...] [--list] [--scale smoke|full] [--run-dir DIR] \
+    "Usage: acceptance [FILTER...] [--list] [--jobs 1..4] [--scale smoke|full] [--run-dir DIR] \
      [--keep-fixture] [--strict-review] [--all-themes] [--stress]\n\
      FILTER selects scenarios whose name contains it. --run-dir names an absolute \
      folder in which the run creates its own new folder (default _build/acceptance). \
      --stress runs the opt-in stress sizes. Environment equivalents: \
      MIDNIGHT_ACCEPTANCE_FILTER (comma-separated), MIDNIGHT_ACCEPTANCE_SCALE, \
-     MIDNIGHT_ACCEPTANCE_RUN_DIR, MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE=1, \
+     MIDNIGHT_ACCEPTANCE_RUN_DIR, MIDNIGHT_ACCEPTANCE_JOBS (1..4), MIDNIGHT_ACCEPTANCE_KEEP_FIXTURE=1, \
      MIDNIGHT_ACCEPTANCE_STRICT_REVIEW=1, MIDNIGHT_ACCEPTANCE_ALL_THEMES=1, \
      MIDNIGHT_ACCEPTANCE_STRESS=1 (staged children read only this one)."
 }
 
 fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value == "1")
+}
+
+fn job_count(value: &std::ffi::OsStr) -> Result<usize, String> {
+    value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .filter(|n| (1..=4).contains(n))
+        .ok_or_else(|| format!("jobs must be an integer from 1 to 4, got {value:?}"))
 }
 
 /// A folder named for the run folders: absolute and not a filesystem root. A run never
@@ -157,6 +211,11 @@ fn options() -> Result<Options, String> {
         .and_then(|value| value.parse().ok())
         .map(|millis| Instant::now() + Duration::from_millis(millis));
     let mut options = Options {
+        jobs: if cfg!(any(windows, target_os = "linux")) {
+            std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+        } else {
+            1
+        },
         filters: std::env::var("MIDNIGHT_ACCEPTANCE_FILTER")
             .map(|value| {
                 value
@@ -176,6 +235,7 @@ fn options() -> Result<Options, String> {
         list: false,
         staged_deadline,
     };
+    let mut jobs = std::env::var_os("MIDNIGHT_ACCEPTANCE_JOBS");
     if let Some(value) = std::env::var_os("MIDNIGHT_ACCEPTANCE_RUN_DIR") {
         options.run_root = run_root(value, "MIDNIGHT_ACCEPTANCE_RUN_DIR")?;
         options.default_root = false;
@@ -196,6 +256,7 @@ fn options() -> Result<Options, String> {
             "--strict-review" => options.strict_review = true,
             "--all-themes" => options.all_themes = true,
             "--stress" => options.stress = true,
+            "--jobs" => jobs = Some(arguments.next().ok_or("--jobs needs a value")?),
             "--scale" => {
                 let value = arguments.next().ok_or("--scale needs a value")?;
                 scale = Some(value.to_string_lossy().into_owned());
@@ -213,6 +274,9 @@ fn options() -> Result<Options, String> {
             }
             filter => options.filters.push(filter.to_owned()),
         }
+    }
+    if let Some(value) = jobs {
+        options.jobs = job_count(&value)?;
     }
     options.scale = match scale.as_deref() {
         None | Some("full") => fixtures::Scale::Full,
@@ -261,9 +325,13 @@ fn main() -> std::process::ExitCode {
         eprintln!("two scenarios are named {}", twice.name);
         return std::process::ExitCode::from(2);
     }
+    let child_name = viewers_stage::child_scenario();
     let selected: Vec<&Scenario> = scenarios::all()
         .iter()
         .filter(|scenario| {
+            if let Some(name) = &child_name {
+                return scenario.name == name;
+            }
             options.filters.is_empty()
                 || options
                     .filters
@@ -274,8 +342,11 @@ fn main() -> std::process::ExitCode {
     if options.list {
         for scenario in &selected {
             println!(
-                "{:<28} {:<12} {}",
-                scenario.name, scenario.area, scenario.summary
+                "{:<28} {:<12} {:<10} {}",
+                scenario.name,
+                scenario.area,
+                scenario.isolation.label(),
+                scenario.summary
             );
         }
         return std::process::ExitCode::SUCCESS;
@@ -311,33 +382,7 @@ fn main() -> std::process::ExitCode {
         fixtures::SEED,
         generated.elapsed().as_secs_f64()
     );
-    let mut results: Vec<(&Scenario, Outcome)> = Vec::new();
-    let mut abandoned = false;
-    for scenario in &selected {
-        if abandoned {
-            results.push((
-                scenario,
-                Outcome::with(
-                    Status::NotRun,
-                    "an earlier scenario hung; the process stopped",
-                ),
-            ));
-            continue;
-        }
-        print!("{:<28} ", scenario.name);
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        let (outcome, hung) = run_one(scenario, &fixture, &run_dir, &options);
-        println!(
-            "{} {:>7.1} s {}",
-            outcome.status.label(),
-            outcome.duration.as_secs_f64(),
-            outcome.headline()
-        );
-        if hung {
-            abandoned = true;
-        }
-        results.push((scenario, outcome));
-    }
+    let (results, abandoned) = schedule::run(&selected, &fixture, &run_dir, &options, started);
     let mut failed = results
         .iter()
         .filter(|(_, outcome)| outcome.status.is_failure(options.strict_review))
@@ -384,10 +429,11 @@ const STAGED_GRACE: Duration = Duration::from_secs(60);
 /// Run one scenario on its own thread under its timeout; its outcome, and whether its
 /// thread hung and was abandoned (the run then stops).
 fn run_one(
-    scenario: &Scenario,
+    scenario: &'static Scenario,
     fixture: &Arc<fixtures::Fixture>,
     run_dir: &Path,
     options: &Arc<Options>,
+    parallel: bool,
 ) -> (Outcome, bool) {
     // A new folder in this run's new folder: never one that existed before.
     let work = run_dir.join("work").join(scenario.name);
@@ -405,6 +451,7 @@ fn run_one(
     let started = Instant::now();
     let work_folder = work.clone();
     let context = Context {
+        parallel,
         fixture: fixture.clone(),
         run_dir: run_dir.to_path_buf(),
         work,
@@ -413,14 +460,14 @@ fn run_one(
         outcome: Outcome::default(),
     };
     let (sender, receiver) = mpsc::channel();
-    let run = scenario.run;
     let spawned = std::thread::Builder::new()
         .name(scenario.name.to_owned())
         .stack_size(16 << 20)
         .spawn(move || {
             let mut context = context;
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut context)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                viewers_stage::run_scheduled(&mut context, scenario)
+            }));
             let mut outcome = std::mem::take(&mut context.outcome);
             outcome.notes.extend(timing::take_notes());
             match result {

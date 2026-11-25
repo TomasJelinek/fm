@@ -68,6 +68,7 @@ fn request(kind: PathPickerKind) -> PathPickerRequest {
         kind,
         title: "Artwork".into(),
         initial_directory: None,
+        initial_name: None,
         owner: PathPickerOwner::None,
     }
 }

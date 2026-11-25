@@ -277,7 +277,7 @@ fn the_hex_button_shows_the_bytes_of_a_text_pair_and_returns_to_its_text() {
     ));
     let window = open(&native, &manager, paths);
     wait_for(&window, "compare the text", || {
-        window.get_status().contains("1 difference groups")
+        window.get_status().contains("Difference 1 of 1")
     });
     assert!(!window.get_bytes_mode());
     click(&native, &window, HEX);

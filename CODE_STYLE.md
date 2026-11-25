@@ -27,6 +27,8 @@ the formatting authority; strict Clippy checks run in CI.
   `opacity` on a component's root, and inheriting from a user component
   ([measurements](docs/verification/2026-11-18-slint-compile-time.md)). Never
   hand-edit generated Rust.
+- A Browse or ellipsis button beside a path field opens its chooser at the current
+  edited path. File choosers also use its filename when the platform supports it.
 - **Public APIs:** expose the smallest useful surface, prefer private or
   `pub(crate)` internals, document public contracts/errors and use typed IDs,
   paths, enums and capabilities. Each platform implements the common service

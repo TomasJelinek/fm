@@ -230,6 +230,12 @@ pub enum Command {
     /// SkipAllErrors (skip this and every later failure of the job without asking)
     /// or Cancel. Other choices are ignored.
     DecideDelete(crate::CopyDecision),
+    /// Answers a versioned permanent-delete offer for the job's pinned, unrecycled items.
+    AnswerTrashFallback {
+        id: crate::OperationId,
+        version: u64,
+        confirm: bool,
+    },
     CancelCopy(crate::OperationId),
     CopyCancelConfirmation {
         id: crate::OperationId,

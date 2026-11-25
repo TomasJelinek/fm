@@ -66,6 +66,98 @@ impl Harness {
 }
 
 #[tokio::test]
+async fn trash_fallback_only_permanently_deletes_confirmed_pinned_remainders() {
+    for accept in [false, true] {
+        let mut h = deleting(&["unavailable-a", "recycled", "unavailable-b"]);
+        h.request.kind = MutationKind::Delete(DeleteMode::Trash);
+        let leftovers = vec![h.target(0), h.target(2)];
+        *h.calls.trash_unavailable.lock().unwrap() = leftovers.clone();
+        h.start().await;
+        let offer = h.failure().await;
+        let preview = offer.permanent_fallback.as_ref().unwrap();
+        assert_eq!(preview.kind, MutationKind::Delete(DeleteMode::Permanent));
+        assert_eq!(preview.files, 2);
+        assert_eq!(
+            preview
+                .sample
+                .iter()
+                .map(|item| item.path.clone())
+                .collect::<Vec<_>>(),
+            leftovers
+        );
+        // A stale consent or the ordinary error dialog cannot answer this offer.
+        h.controller
+            .answer_trash_fallback(offer.id, offer.version - 1, true)
+            .await;
+        h.decide(&offer, CopyChoice::Retry).await;
+        h.controller
+            .answer_trash_fallback(offer.id, offer.version, accept)
+            .await;
+        let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
+        assert!(asked.is_empty());
+        let permanent: Vec<_> = h
+            .calls
+            .deleted
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, mode)| *mode == DeleteMode::Permanent)
+            .map(|(path, _)| path.clone())
+            .collect();
+        if accept {
+            assert_eq!(permanent, leftovers);
+            assert!(
+                done.message
+                    .contains("Moved to Trash: 1\nPermanently deleted: 2")
+            );
+            assert_eq!(
+                (done.state, done.completed, done.failed),
+                (OperationState::Completed, 3, 0)
+            );
+        } else {
+            assert!(permanent.is_empty());
+            assert_eq!((done.state, done.completed), (OperationState::Cancelled, 1));
+        }
+    }
+}
+
+#[tokio::test]
+async fn trash_fallback_excludes_an_ordinary_failure_even_after_it_is_skipped() {
+    let mut h = deleting(&["unavailable", "failed"]);
+    h.request.kind = MutationKind::Delete(DeleteMode::Trash);
+    let (unavailable, failed) = (h.target(0), h.target(1));
+    *h.calls.trash_unavailable.lock().unwrap() = vec![unavailable.clone()];
+    *h.calls.failing_delete.lock().unwrap() = Some(failed.clone());
+    h.start().await;
+    let failure = h.failure().await;
+    assert_eq!(failure.error.path, failed);
+    assert!(failure.can_retry && failure.permanent_fallback.is_none());
+    h.decide(&failure, CopyChoice::Skip).await;
+    let fallback = h.failure().await;
+    let preview = fallback.permanent_fallback.as_ref().unwrap();
+    assert_eq!(
+        (preview.files, preview.sample[0].path.as_path()),
+        (1, unavailable.as_path())
+    );
+    h.controller
+        .answer_trash_fallback(fallback.id, fallback.version, true)
+        .await;
+    let (done, asked) = h.finished_deciding(CopyChoice::Cancel).await;
+    assert!(asked.is_empty());
+    assert_eq!(
+        (done.state, done.completed, done.failed),
+        (OperationState::CompletedWithErrors, 1, 1)
+    );
+    assert!(
+        !h.calls
+            .deleted
+            .lock()
+            .unwrap()
+            .contains(&(failed, DeleteMode::Permanent))
+    );
+}
+
+#[tokio::test]
 async fn retry_removes_an_entry_once_its_folder_is_writable_and_counts_no_error() {
     let mut h = deleting(&["tree", "other"]);
     let tree = h.target(0);

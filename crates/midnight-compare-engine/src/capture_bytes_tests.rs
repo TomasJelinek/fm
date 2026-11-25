@@ -127,7 +127,8 @@ fn a_text_pair_shows_its_bytes_on_request_navigates_them_and_returns_to_text() {
     assert!(moved.bytes && moved.status.contains("first difference at 0x0064 (100)"));
     session.send(Input::Bytes(false)).unwrap();
     let back = frame_where(&session, |frame| !frame.bytes);
-    assert!(back.accessible_text.contains("same"));
+    assert_eq!(back.accessible_text, text.accessible_text);
+    assert!(back.accessible_text.contains("line") && back.accessible_text.contains("LINE"));
     session.close();
 }
 

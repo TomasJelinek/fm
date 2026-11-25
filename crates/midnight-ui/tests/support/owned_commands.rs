@@ -231,6 +231,7 @@ impl OwnedCommandScope for FixtureScope {
             | Command::DecideCopy(_)
             | Command::DecideRename(_)
             | Command::DecideDelete(_)
+            | Command::AnswerTrashFallback { .. }
             | Command::CancelCopy(_)
             | Command::CopyCancelConfirmation { .. }
             | Command::SetCopyPaused { .. }

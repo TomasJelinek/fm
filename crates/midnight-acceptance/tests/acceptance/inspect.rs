@@ -408,7 +408,7 @@ fn contains(outer: &Rect, inner: &Rect) -> bool {
         && inner.1 + inner.3 <= outer.1 + outer.3 + 0.5
 }
 
-fn is_ancestor(ancestor: &ItemRc, item: &ItemRc) -> bool {
+pub fn is_ancestor(ancestor: &ItemRc, item: &ItemRc) -> bool {
     let mut current = item.parent_item(ParentItemTraversalMode::FindAllParents);
     while let Some(parent) = current {
         if parent == *ancestor {

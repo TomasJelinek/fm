@@ -5,6 +5,8 @@ use midnight_core::{CopyLinkPolicy, CopyOptionsInput, CopyOptionsRequest};
 mod items;
 #[path = "copy_dialog_links.rs"]
 mod links;
+#[path = "copy_dialog_picker.rs"]
+mod picker;
 pub(crate) use items::DraftItems;
 pub(crate) use links::{DraftLinks, LinkChoiceView};
 
@@ -584,6 +586,9 @@ impl Presenter {
         links: Option<CopyLinkPolicy>,
         send: &dyn Fn(Command) -> bool,
     ) {
+        if self.copies.destination_picker.is_some() {
+            return;
+        }
         if !self.owned_command_scope_available() {
             self.copy_dialog_reclaim_busy(token);
             return;
@@ -600,23 +605,17 @@ impl Presenter {
             draft.error = "Exact modified time requires at most 64 native regular files. Folders, links and archive members are unsupported.".into();
             return;
         }
-        // Unchanged lossy presentation must never replace the original native identity.
-        let destination = if draft.destination.to_string_lossy() == destination {
-            draft.destination.clone()
-        } else {
-            if crate::native_path_edit::ambiguous_edit(&draft.destination, destination) {
-                draft.error = concat!(
-                    "The displayed destination folder contains characters this editor cannot represent. ",
-                    "Enter another complete path without replacement characters."
-                ).into();
+        let destination = match picker::resolve_destination(
+            &draft.destination,
+            self.copies.picked_destination.as_ref(),
+            destination,
+        ) {
+            Ok(path) => path,
+            Err(message) => {
+                draft.error = message.into();
                 return;
             }
-            PathBuf::from(destination)
         };
-        if !destination.is_absolute() || destination.as_os_str().as_encoded_bytes().contains(&0) {
-            draft.error = DESTINATION_FOLDER_REQUIRED.into();
-            return;
-        }
         let intent = draft.intent;
         if let CopyDraftInput::Tree { capture, .. } = &draft.input
             && (capture.intent != intent || capture.sources.intent() != intent)
@@ -980,6 +979,8 @@ impl Presenter {
 
     /// Only the post-window drain may bypass the live callback's ownership claim.
     pub(super) fn force_retire_copy_draft(&mut self) {
+        self.copies.destination_picker = None;
+        self.copies.picked_destination = None;
         self.retire_tree_transfer(None);
         if let Some(check) = self.copies.destination_check.take() {
             check.cancel.cancel();

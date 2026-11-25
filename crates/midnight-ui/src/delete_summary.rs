@@ -81,11 +81,12 @@ fn name(path: &Path) -> std::borrow::Cow<'_, str> {
         .to_string_lossy()
 }
 
-fn warning(mode: DeleteMode, several: bool) -> &'static str {
-    match (mode, several) {
-        (DeleteMode::Permanent, _) => "Permanent deletion cannot be undone.",
-        (DeleteMode::Trash, false) => "If the Trash is unavailable, it stays in place.",
-        (DeleteMode::Trash, true) => "If the Trash is unavailable, they stay in place.",
+fn warning(mode: DeleteMode) -> &'static str {
+    match mode {
+        DeleteMode::Permanent => "Permanent deletion cannot be undone.",
+        DeleteMode::Trash => {
+            "If the Trash is unavailable, permanent deletion requires a separate confirmation."
+        }
     }
 }
 
@@ -139,7 +140,7 @@ fn one(item: &MutationItem, mode: DeleteMode, context: &Context<'_>) -> Confirma
     }
     Confirmation {
         question,
-        warning: warning(mode, false),
+        warning: warning(mode),
         details,
         path,
         folder,
@@ -205,7 +206,7 @@ fn several(preview: &OperationPreview, mode: DeleteMode, context: &Context<'_>) 
     }
     Confirmation {
         question,
-        warning: warning(mode, true),
+        warning: warning(mode),
         details,
         path,
         folder,
@@ -463,7 +464,7 @@ mod tests {
         assert_eq!(trash.question, "Move “experiments.rar” to the Trash?");
         assert_eq!(
             trash.warning,
-            "If the Trash is unavailable, it stays in place."
+            "If the Trash is unavailable, permanent deletion requires a separate confirmation."
         );
         assert_eq!(trash.details, permanent.details);
     }
@@ -616,7 +617,7 @@ mod tests {
         assert_eq!(trash.question, "Move 2 003 items to the Trash?");
         assert_eq!(
             trash.warning,
-            "If the Trash is unavailable, they stay in place."
+            "If the Trash is unavailable, permanent deletion requires a separate confirmation."
         );
         // The selection is larger than the sample: its folder is known from the panel.
         let source = folder();

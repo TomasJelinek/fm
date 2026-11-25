@@ -33,6 +33,10 @@ mod raw_picker_paths;
 mod window_position;
 pub use dialog_native::configure_dialog_window_attributes;
 pub use window_position::restore_window_position;
+#[cfg(windows)]
+mod window_gpu_windows;
+#[cfg(windows)]
+pub use window_gpu_windows::windows_gpu_configuration;
 #[cfg(test)]
 mod allocation_meter;
 #[cfg(test)]
@@ -740,9 +744,7 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     // (`DesktopState::report_background`). A directory comparison does not: its
     // progress is in its dialog and its result below the panel that was active.
     window.set_desktop_feedback_important(
-        presenter.desktop.terminal_guidance.is_some()
-            || !presenter.desktop.error.is_empty()
-            || presenter.desktop.background.is_some(),
+        !presenter.desktop.error.is_empty() || presenter.desktop.background.is_some(),
     );
     window.set_preferences_unsaved(presenter.preferences.unsaved);
     window.set_preferences_saving(presenter.preferences.saving);
@@ -948,10 +950,17 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
         |location| location.identity.clone(),
         |model| window.set_right_locations(model),
     );
+    let active = &presenter.panes[presenter.active.index()];
+    let directory = active.terminal_directory();
+    if !active.native_capabilities() {
+        window.set_archive_command_directory(directory.map_or_else(SharedString::new, |folder| {
+            shown_text(&folder.to_string_lossy())
+        }));
+    }
     window.set_terminal_ready(
         presenter.desktop.shell.is_some()
             && presenter.desktop.terminal_pending.is_none()
-            && presenter.panes[presenter.active.index()].native_capabilities(),
+            && directory.is_some(),
     );
     window.set_terminal_available(presenter.desktop.shell.is_some());
     window.set_windows_shells(matches!(
@@ -978,17 +987,13 @@ fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bo
     }
     window.set_terminal_index(presenter.terminal_index());
     window.set_command_hint(presenter.terminal_hint().into());
-    window.set_desktop_status(shown_text(
-        if let Some(guidance) = presenter.desktop.terminal_guidance {
-            guidance
-        } else if !presenter.desktop.error.is_empty() {
-            &presenter.desktop.error
-        } else if let Some(background) = &presenter.desktop.background {
-            background
-        } else {
-            &presenter.desktop.status
-        },
-    ));
+    window.set_desktop_status(shown_text(if !presenter.desktop.error.is_empty() {
+        &presenter.desktop.error
+    } else if let Some(background) = &presenter.desktop.background {
+        background
+    } else {
+        &presenter.desktop.status
+    }));
     // Notice windows copy these; Copy details reads the presenter's own text.
     if let Some((title, body)) = &presenter.desktop.notice {
         window.set_message_title(shown_text(title));

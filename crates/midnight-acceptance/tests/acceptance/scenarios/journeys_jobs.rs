@@ -31,6 +31,7 @@ const LEFT: PaneId = PaneId::Left;
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_concurrent_jobs",
+        isolation: crate::Isolation::Parallel,
         area: "journeys",
         summary: "Two copies with Wait for earlier transfers off, the first paused, and a permanent delete in a third folder meanwhile; Jobs lists all three; Resume; every result exact on disk, no notice.",
         run: concurrent_jobs,

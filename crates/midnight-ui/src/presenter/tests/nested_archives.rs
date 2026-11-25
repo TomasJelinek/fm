@@ -145,6 +145,51 @@ fn enter_inner(p: &mut Presenter, sent: &RefCell<Vec<Command>>, mount: u64) -> A
 }
 
 #[test]
+fn terminal_commands_and_interactive_shells_use_the_outer_archives_native_parent() {
+    let sent = RefCell::new(Vec::new());
+    let send = |command| {
+        sent.borrow_mut().push(command);
+        true
+    };
+    let mut p = outer_pane(&sent);
+    p.apply(Event::DesktopContext {
+        system_locations: Vec::new(),
+        network_position: 0,
+        shell: ShellFlavor::PowerShell,
+        locations: vec![],
+    });
+    enter_inner(&mut p, &sent, 43);
+    enter_inner(&mut p, &sent, 44);
+    // A saved tab can remember a different return folder, and the member path is virtual.
+    p.panes[0].archive.as_mut().unwrap().origin = test_root().join("return-elsewhere");
+    assert_eq!(p.panes[0].terminal_directory(), Some(test_root().as_path()));
+    assert!(p.open_terminal(&send));
+    let request = match sent.borrow().last().unwrap() {
+        Command::LaunchTerminal { request, terminal } => {
+            assert_eq!(terminal.working_directory, test_root());
+            assert!(terminal.command.is_empty());
+            *request
+        }
+        other => panic!("expected interactive terminal: {other:?}"),
+    };
+    p.apply(Event::DesktopActionFinished {
+        request,
+        result: Ok(DesktopActionResult::TerminalStarted {
+            process_id: 1,
+            history: CommandHistoryEntry {
+                command: String::new(),
+                shell: ShellFlavor::PowerShell,
+            },
+        }),
+    });
+    assert!(p.submit_command("echo draft", &send));
+    assert!(
+        matches!(sent.borrow().last(), Some(Command::LaunchTerminal { terminal, .. })
+        if terminal.working_directory == test_root() && terminal.command == "echo draft")
+    );
+}
+
+#[test]
 fn enter_opens_an_archive_member_inside_the_archive_and_backspace_returns_to_it() {
     let sent = RefCell::new(Vec::new());
     let send = |command| {

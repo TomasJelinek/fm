@@ -33,6 +33,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(8 * 60);
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "viewers_office",
+        isolation: crate::Isolation::timed_plugin(),
         area: "viewers",
         summary: "Office documents through the Office preview and the HTML viewer: a Word document, a PowerPoint presentation and an Excel workbook with Office's ZIP padding (0xA220) and timestamps render and after Find the status reads Office preview · Offline · JavaScript off · Match 1 of 1; a package with encrypted parts says it is password-protected, an OLE compound file names the older format, and with the HTML viewer disabled F3 says the preview requires it.",
         run: office,

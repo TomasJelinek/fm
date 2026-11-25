@@ -73,6 +73,13 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         return;
     }
     if let Some(failure) = presenter.active_delete_failure() {
+        if failure.permanent_fallback.is_some() {
+            if !window.get_copy_token().is_empty() {
+                window.set_copy_token("".into());
+                window.invoke_close_copy_conflict();
+            }
+            return;
+        }
         if presenter.operations.preview.is_none()
             && presenter
                 .copies

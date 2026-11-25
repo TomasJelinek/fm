@@ -22,6 +22,12 @@ use std::time::Duration;
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "panels_properties_several",
+        // Windows opens and inspects a native Shell property sheet on the desktop.
+        isolation: if cfg!(windows) {
+            crate::Isolation::Exclusive
+        } else {
+            crate::Isolation::Parallel
+        },
         area: "panels",
         summary: "Alt+Enter on nine files and a folder marked in one folder: Windows opens one Shell property sheet counting 9 files and 1 folder (pictured, then closed), never the \"Desktop\" box \"The properties for this item are not available.\", and no summary of the application's own; Linux shows the application's summary of 10 selected items, 9 files and 1 folder.",
         run: several,

@@ -90,7 +90,7 @@ fn prepare(
 /// Why a configured program cannot be launched. The editor and Custom Commands share the
 /// rule and word it for their own program.
 pub(crate) enum ProgramIssue {
-    /// Not an absolute .exe or .com path.
+    /// Not an absolute path with an extension supported by this caller.
     Unsupported,
     /// Not a file.
     NotFile,
@@ -98,13 +98,16 @@ pub(crate) enum ProgramIssue {
     Unavailable(io::Error),
 }
 
-pub(crate) fn check_program(executable: &Path) -> Result<(), ProgramIssue> {
+pub(crate) fn check_program(
+    executable: &Path,
+    allowed_extensions: &[&str],
+) -> Result<(), ProgramIssue> {
     let extension = executable
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("");
     if !executable.is_absolute()
-        || !["exe", "com"]
+        || !allowed_extensions
             .iter()
             .any(|allowed| extension.eq_ignore_ascii_case(allowed))
     {
@@ -120,7 +123,7 @@ pub(crate) fn check_program(executable: &Path) -> Result<(), ProgramIssue> {
 }
 
 pub(crate) fn validate_program(executable: &Path) -> Result<(), FsError> {
-    check_program(executable).map_err(|issue| {
+    check_program(executable, &["exe", "com"]).map_err(|issue| {
         error(
             executable,
             match issue {

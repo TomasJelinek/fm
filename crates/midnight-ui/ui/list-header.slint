@@ -9,28 +9,33 @@ export component ListHeader inherits HorizontalLayout {
     in property <bool> enabled: true;
     in property <bool> show-add: true;
     in property <bool> show-remove: true;
+    in property <bool> show-move: true;
     in property <bool> can-add: true;
     in property <bool> can-remove;
     in property <bool> can-move-up;
     in property <bool> can-move-down;
     in property <[string]> action-labels: ["Add", "Remove", "Move up", "Move down"];
     in property <[string]> action-hints: ["Add an item", "Remove the selected item", "Move the selected item up", "Move the selected item down"];
-    private property <[int]> action-indices: root.show-add
-        ? (root.show-remove ? [0, 1, 2, 3] : [0, 2, 3])
-        : (root.show-remove ? [1, 2, 3] : [2, 3]);
+    private property <[bool]> shown-actions: [root.show-add, root.show-remove, root.show-move, root.show-move];
     callback action(int);
-    spacing: 6px; cross-axis-alignment: center;
+    spacing: 0px; cross-axis-alignment: center;
     Text {
         text: root.title; color: Theme.strong-text; font-size: Theme.font-size;
         horizontal-stretch: 1; min-width: 0px; overflow: elide;
         Tip { text: root.hint; }
     }
-    for index in root.action-indices : HintedActionButton {
-        text: ["+", "−", "↑", "↓"][index];
-        accessible-label: root.action-labels[index]; hint: root.action-hints[index];
-        compact: true;
-        width: max(32px, Theme.control-height + 4px); height: max(32px, Theme.control-height); horizontal-stretch: 0;
-        enabled: root.enabled && (index == 0 ? root.can-add : index == 1 ? root.can-remove : index == 2 ? root.can-move-up : root.can-move-down);
-        clicked => { root.action(index); }
+    // Keep the focused button alive when adding a rule changes which actions are shown.
+    for index in 4 : HorizontalLayout {
+        horizontal-stretch: 0;
+        padding-left: root.shown-actions[index] ? 6px : 0px;
+        if root.shown-actions[index] : HintedActionButton {
+            text: ["+", "−", "↑", "↓"][index];
+            accessible-label: root.action-labels[index]; hint: root.action-hints[index];
+            accessible-description: self.hint;
+            compact: true;
+            width: max(32px, Theme.control-height + 4px); height: max(32px, Theme.control-height);
+            enabled: root.enabled && (index == 0 ? root.can-add : index == 1 ? root.can-remove : index == 2 ? root.can-move-up : root.can-move-down);
+            clicked => { root.action(index); }
+        }
     }
 }

@@ -194,7 +194,7 @@ class HtmlViewerBuildWindows(unittest.TestCase):
 
     CEF_FILES = ("libcef.dll", "chrome_elf.dll", "icudtl.dat", "resources.pak", "chrome_100_percent.pak",
                  "chrome_200_percent.pak", "v8_context_snapshot.bin", "dxcompiler.dll", "vk_swiftshader.dll",
-                 "vk_swiftshader_icd.json", "vulkan-1.dll", "locales/en-US.pak", "LICENSE.txt", "CREDITS.html",
+                 "vk_swiftshader_icd.json", "vulkan-1.dll", "locales/en-US.pak", "locales/de.pak", "LICENSE.txt", "CREDITS.html",
                  "include/cef_version.h", "archive.json")
 
     def setUp(self):
@@ -309,6 +309,7 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         inventory = json.loads((self.package / "runtime-files.json").read_text(encoding="utf-8-sig"))
         entries = {entry["path"]: entry for entry in inventory["files"]}
         self.assertIn("locales/en-US.pak", entries)
+        self.assertEqual({name for name in entries if name.startswith("locales/")}, {"locales/en-US.pak"})
         self.assertEqual(entries["LICENSE"]["sha256"], hashlib.sha256(licence).hexdigest())
 
     def test_short_target_builds_from_the_verified_sdk_and_unchanged_inputs_keep_the_package(self):
@@ -499,7 +500,7 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         layout = {"Release": ("libcef.dll", "chrome_elf.dll", "v8_context_snapshot.bin", "dxcompiler.dll",
                               "vk_swiftshader.dll", "vk_swiftshader_icd.json", "vulkan-1.dll"),
                   "Resources": ("icudtl.dat", "resources.pak", "chrome_100_percent.pak", "chrome_200_percent.pak",
-                                "locales/en-US.pak"),
+                                "locales/en-US.pak", "locales/de.pak"),
                   "": ("include/cef_version.h", "cmake/cef_variables.cmake", "libcef_dll/wrapper.cc",
                        "CMakeLists.txt", "LICENSE.txt", "CREDITS.html")}
         for directory, names in layout.items():
@@ -529,6 +530,10 @@ class HtmlViewerBuildWindows(unittest.TestCase):
         self.assertTrue(stage.with_name("cef-sdk.staged.json").is_file())
         package = self.root / "_build/standalone-package"
         self.assertEqual((package / "midnight-viewer-html.exe").read_bytes(), self.bootstrap)
+        shutil.copy2(stage / "locales/de.pak", package / "locales/de.pak")
+        code, output, _ = build()
+        self.assertEqual(code, 0, output)
+        self.assertEqual([p.name for p in (package / "locales").iterdir()], ["en-US.pak"])
         # The staged SDK is reused; a changed copy no longer matches its receipt.
         (stage / "libcef.dll").write_bytes(b"changed after staging\n")
         code, output, _ = build()

@@ -491,7 +491,7 @@ fn other_volume(here: &Path) -> Result<std::path::PathBuf, &'static str> {
     let candidate = if cfg!(windows) {
         std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGE_ROOT")
     } else {
-        std::env::var_os("XDG_RUNTIME_DIR")
+        crate::fixtures::runtime_volume()
     }
     .map(std::path::PathBuf::from)
     .filter(|path| path.is_absolute() && path.is_dir())

@@ -84,6 +84,7 @@ impl Presenter {
     pub(crate) fn request_find_root_picker(
         &mut self,
         id: FindSessionId,
+        text: &str,
         owner: PathPickerOwner,
         send: &dyn Fn(Command) -> bool,
     ) {
@@ -97,13 +98,25 @@ impl Presenter {
         if s.running || s.picker.is_some() {
             return;
         }
-        let initial_directory = s.roots.last().map(|root| root.path.clone());
+        let path = Path::new(text);
+        let initial_directory = if path.is_absolute() {
+            Some(path.to_owned())
+        } else {
+            s.roots.last().map(|root| {
+                if text.is_empty() {
+                    root.path.clone()
+                } else {
+                    root.path.join(path)
+                }
+            })
+        };
         if send(Command::PickPath {
             request,
             input: PathPickerRequest {
                 kind: PathPickerKind::Directory,
                 title: "Add search folder".into(),
                 initial_directory,
+                initial_name: None,
                 owner,
             },
         }) {

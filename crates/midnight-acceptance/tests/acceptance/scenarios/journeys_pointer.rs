@@ -63,6 +63,7 @@ const KEPT: &str = "1 file was kept in a recovery folder; Copy details shows whe
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_pointer_only",
+        isolation: crate::Isolation::ParallelStaged,
         area: "journeys",
         summary: "A session by mouse only: double clicks into and out of a folder, a rubber band, the footer's F5 and the dialog's Copy with Replace, a drag onto a folder row (Move), header sorting, Jobs and its Close, F8 to a private Trash by clicks; on the held Slint clock a drop 250 ms after the press cancelled with its note and one 450 ms after it moving the folder; a wheel of 1.5 rows drawn without a blank band and resting on a whole row; a double click on the first fully visible row.",
         run: pointer_only,

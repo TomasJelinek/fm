@@ -1181,7 +1181,7 @@ fn other_volume(source: &Path) -> Result<PathBuf, &'static str> {
     {
         use std::os::unix::fs::MetadataExt;
         let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
-        std::env::var_os("XDG_RUNTIME_DIR")
+        crate::fixtures::runtime_volume()
             .map(PathBuf::from)
             .filter(|path| path.is_absolute() && path.is_dir())
             .filter(|runtime| device(runtime) != device(source))

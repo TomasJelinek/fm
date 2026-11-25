@@ -32,6 +32,16 @@ The workspace release profile (`[profile.release]` in `Cargo.toml`):
   application crates keep level 3. Build-time host tools keep Cargo's normal build
   overrides.
 
+Each independently built viewer, thumbnailer and filesystem plugin also strips its
+release binaries. The Linux HTML packager verifies the pinned CEF SDK and runs
+GNU `strip --strip-unneeded` on staged copies of its four ELF binaries before
+writing the runtime inventory. The final ZIP and tarball check rejects debug
+sidecars, embedded debug information and full symbol tables across the application
+and its workers. Dynamic exports, unwind data, build IDs and references to external
+PDBs support loading and diagnostics and may be present in a release image.
+The [0.6.0 payload checks](verification/2026-11-25-release-payload.md) record
+the measured changes and native Chromium rendering results.
+
 A same-source Windows comparison of this profile reduced the executable from 42,425,856 to
 37,096,448 bytes (12.56%), with overlapping native resize and redraw timings across six
 alternating runs per profile ([record](verification/2026-11-07-release-optimization.md));
@@ -189,7 +199,7 @@ python -B scripts/package-release.py --binary _build/release/midnight-explorer.e
     --dependency-list _build/windows-dependencies.txt `
     --format zip --readme packaging/windows/README.txt `
     --revision (git rev-parse HEAD) --rust-docs "RUST_SYSROOT/share/doc/rust" `
-    --license-overrides packaging/licenses --output _build/releases/v0.5.4
+    --license-overrides packaging/licenses --output _build/releases/v0.6.0
 ```
 
 Replace `RUST_SYSROOT` with the output of `rustc --print sysroot`. For Linux, use the
@@ -291,12 +301,12 @@ one folder, on the owner's machine (Python 3.11 or later, standard library only)
 
 ```powershell
 python -B scripts/release-signing.py checksums `
-    _build/releases/v0.5.4/midnight-explorer-0.5.4-x86_64-pc-windows-msvc.zip `
-    _build/releases/v0.5.4/midnight-explorer-0.5.4-x86_64-unknown-linux-gnu.tar.gz
-python -B scripts/release-signing.py sign --version 0.5.4 `
+    _build/releases/v0.6.0/midnight-explorer-0.6.0-x86_64-pc-windows-msvc.zip `
+    _build/releases/v0.6.0/midnight-explorer-0.6.0-x86_64-unknown-linux-gnu.tar.gz
+python -B scripts/release-signing.py sign --version 0.6.0 `
     --secret-key <path outside every checkout>\midnight-explorer-release.key `
-    _build/releases/v0.5.4/SHA256SUMS
-python -B scripts/release-signing.py verify --version 0.5.4 _build/releases/v0.5.4/SHA256SUMS
+    _build/releases/v0.6.0/SHA256SUMS
+python -B scripts/release-signing.py verify --version 0.6.0 _build/releases/v0.6.0/SHA256SUMS
 ```
 
 `checksums` writes `SHA256SUMS` (`<sha256>  <archive name>` lines). `sign` asks for the

@@ -1014,11 +1014,13 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
     }
     tools::close_tool(&mut app, &window, "the Find window");
 
-    // The result limit: 100,050 empty files give 100,000 results and an incomplete run.
-    let limit = context.work.join("limit");
-    fs::create_dir_all(&limit).map_err(|error| error.to_string())?;
+    // Find retains each result's full path. Keep this count-limit fixture under
+    // the supervisor's work directory so private-worker nesting does not consume
+    // its 64 MiB budget before it can show the 100,000th file.
+    let limit = crate::viewers_stage::scenario_work(context).join("f");
+    fs::create_dir(&limit).map_err(|error| format!("{}: {error}", limit.display()))?;
     for index in 0..100_050 {
-        let path = limit.join(format!("f-{index:06}.txt"));
+        let path = limit.join(format!("{index:05x}.f"));
         fs::write(&path, b"").map_err(|error| format!("{}: {error}", path.display()))?;
     }
     // Cancelling: a copy of many/ plus a large sparse text file keeps a content
@@ -1033,25 +1035,52 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
     let w = window.window();
     fill(&mut app, &window, BASE)?;
     let text = run(&mut app, &window)?;
-    if !text.starts_with("Incomplete · click for details")
-        || tools::count_before(&text, " found") != Some(100_000)
-        || result_count(&window) != 100_000
-    {
+    let rows = result_count(&window);
+    let path_bytes = limit.join("00000.f").as_os_str().as_encoded_bytes().len();
+    // Require the count ceiling on the standard Windows and Linux fixtures:
+    // 160 encoded path bytes leave 511 bytes per row for its native metadata
+    // and formatted timestamp within the default 64 MiB. Longer custom roots
+    // can reach the memory ceiling first; verify the reason reported by Find.
+    let reached = if rows == 100_000 {
+        "result count"
+    } else if path_bytes > 160 && (1..100_000).contains(&rows) {
+        "retained memory"
+    } else {
         return Err(format!(
-            "100,050 files gave {text:?} with {} rows",
-            result_count(&window)
+            "100,050 files with {path_bytes}-byte paths gave {rows} rows: {text}"
         ));
+    };
+    if !text.starts_with("Incomplete · click for details")
+        || tools::count_before(&text, " found") != Some(rows as u64)
+    {
+        return Err(format!("100,050 files gave {text:?} with {rows} rows"));
     }
-    app.screenshot_window(context, &window, "limit", "The 100,000 result limit");
+    let visible = visible_rows(&window);
+    if visible.is_empty()
+        || visible
+            .values()
+            .any(|row| row.path() != limit.join(&row.name) || !row.path().is_file())
+    {
+        return Err(
+            "the bounded Find list contains no visible rows or an unexpected result".into(),
+        );
+    }
+    app.screenshot_window(
+        context,
+        &window,
+        "limit",
+        &format!("Find reached its {reached} limit at {rows} rows"),
+    );
     let line = tools::control(w, AccessibleRole::Button, &text)?;
     input::click_at(w, inspect::center(&line));
     app.settle();
+    let expected_detail = format!("Reached limits: {reached}");
     if !inspect::visible_texts(w)
         .iter()
-        .any(|text| text.contains("Reached limits: result count"))
+        .any(|text| text.lines().any(|line| line == expected_detail))
     {
         return Err(format!(
-            "the details do not name the result limit: {:?}",
+            "the details do not name the {reached} limit: {:?}",
             inspect::visible_texts(w)
         ));
     }
@@ -1099,8 +1128,11 @@ pub fn find_results(context: &mut Context) -> Result<(), String> {
     tools::close_tool(&mut app, &window, "the Find window");
     app.shutdown()?;
     let fed = feed_to_panel(context)?;
+    if !context.options.keep_fixture {
+        fs::remove_dir_all(&limit).map_err(|error| format!("{}: {error}", limit.display()))?;
+    }
     context.note(format!(
-        "many/: {} results listed and sorted; 100,050 files: 100,000 results, Incomplete; Stop: {running:?} → {stopped:?}; {fed}",
+        "many/: {} results listed and sorted; 100,050 files: {rows} results, Incomplete ({reached}; {path_bytes}-byte paths); Stop: {running:?} → {stopped:?}; {fed}",
         disk.len()
     ));
     Ok(())

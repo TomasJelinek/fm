@@ -1,5 +1,7 @@
 use crate::scroll_view::{self, HORIZONTAL_LIMIT, MAX_ROWS, Surface};
-use crate::{Frame, Palette, check_cancel, identity::DecodedText, typeface::Typeface};
+use crate::{
+    Frame, Palette, TextNavigation, check_cancel, identity::DecodedText, typeface::Typeface,
+};
 use midnight_core::{ViewerAppearance, ViewerGeometry};
 use midnight_plugin_host::CapturedFile;
 use midnight_viewer_render::{TextOptions, TextPage, TextRenderer, Viewport};
@@ -10,6 +12,8 @@ use std::sync::{Arc, atomic::AtomicBool};
 mod align;
 #[path = "text_find.rs"]
 mod find;
+#[path = "text_inline.rs"]
+mod inline;
 
 /// Larger files, and pairs that are not text, are compared as bytes. Measurements are in
 /// docs/developer/FILE_COMPARISON.md.
@@ -136,6 +140,13 @@ struct Row {
 
 const ABSENT: u32 = u32::MAX;
 
+struct DifferencePosition {
+    previous_row: Option<usize>,
+    next_row: Option<usize>,
+    /// One-based group number when the top row belongs to a difference.
+    current_group: Option<usize>,
+}
+
 impl Row {
     fn side(&self, side: usize) -> Option<usize> {
         let index = if side == 0 { self.left } else { self.right };
@@ -156,6 +167,8 @@ pub(crate) struct TextComparison {
     lines: [TextLines; 2],
     rows: Vec<Row>,
     differences: Vec<usize>,
+    /// On opening or jumping, bring the first edited column into view once its font is known.
+    reveal_difference: bool,
     renderer: TextRenderer,
     pub typeface: Typeface,
     pub top: usize,
@@ -344,14 +357,16 @@ impl TextComparison {
             check_cancel(cancel)?;
             push_rows(op, &mut rows, &mut differences);
         }
+        let top = differences.first().copied().unwrap_or(0);
         Ok(Self {
             find: find::TextFind::default(),
             lines,
             rows,
+            reveal_difference: !differences.is_empty(),
             differences,
             renderer: TextRenderer::default(),
             typeface: Typeface::default(),
-            top: 0,
+            top,
             horizontal: 0.0,
             fraction: 0.0,
             row_height: 24.0,
@@ -409,6 +424,7 @@ impl TextComparison {
     }
 
     pub fn scroll(&mut self, rows: i64) {
+        self.reveal_difference = false;
         self.top = self
             .top
             .saturating_add_signed(rows as isize)
@@ -419,6 +435,7 @@ impl TextComparison {
     }
     /// The view moves by exactly these logical pixels (negative: down), within its rows.
     pub fn scroll_pixels(&mut self, pixels: f32) {
+        self.reveal_difference = false;
         let (top, fraction) = scroll_view::scroll_rows(
             self.top as u64,
             self.fraction,
@@ -432,6 +449,7 @@ impl TextComparison {
     /// Logical pixels to the right (negative: right), as a wheel or a key moves them.
     pub fn scroll_horizontal(&mut self, pixels: f32) {
         if pixels.is_finite() {
+            self.reveal_difference = false;
             self.horizontal = (self.horizontal - pixels * self.scale).clamp(0.0, HORIZONTAL_LIMIT);
         }
     }
@@ -443,27 +461,45 @@ impl TextComparison {
     /// The position bar: that share of the rows, to the pixel.
     pub fn seek(&mut self, amount: f64) {
         if amount.is_finite() {
+            self.reveal_difference = false;
             let (top, fraction) = scroll_view::seek_rows(amount, self.last_row() as u64);
             self.top = top as usize;
             self.fraction = fraction;
         }
     }
+    fn difference_position(&self) -> DifferencePosition {
+        let after = self.differences.partition_point(|&start| start <= self.top);
+        let (through_top, below) = self.differences.split_at(after);
+        // A partly scrolled-off group start is reachable with Previous. When it is
+        // exactly at the top, Previous goes to the preceding group.
+        let previous_row = match through_top.split_last() {
+            Some((&start, earlier)) if start == self.top && self.fraction == 0.0 => {
+                earlier.last().copied()
+            }
+            _ => through_top.last().copied(),
+        };
+        DifferencePosition {
+            previous_row,
+            next_row: below.first().copied(),
+            current_group: self
+                .rows
+                .get(self.top)
+                .filter(|row| row.changed)
+                .map(|_| after),
+        }
+    }
+
     pub fn difference(&mut self, backwards: bool) {
+        let position = self.difference_position();
         let target = if backwards {
-            self.differences
-                .iter()
-                .rev()
-                .find(|row| **row < self.top)
-                .or(self.differences.first())
+            position.previous_row
         } else {
-            self.differences
-                .iter()
-                .find(|row| **row > self.top)
-                .or(self.differences.last())
+            position.next_row
         };
         if let Some(target) = target {
-            self.top = *target;
+            self.top = target;
             self.fraction = 0.0;
+            self.reveal_difference = true;
         }
     }
 
@@ -475,6 +511,7 @@ impl TextComparison {
         } {
             self.top = *target;
             self.fraction = 0.0;
+            self.reveal_difference = true;
         }
     }
 
@@ -487,6 +524,14 @@ impl TextComparison {
     ) -> Result<Frame, String> {
         let family = self.typeface.painted().to_owned();
         let family = family.as_str();
+        let options = TextOptions {
+            family,
+            literal_family: family != "monospace",
+            size: appearance.font_size,
+            scale: geometry.scale,
+            foreground: palette.foreground,
+            ..TextOptions::default()
+        };
         let (width, height) = (geometry.width, geometry.height);
         let row_height = (appearance.font_size * geometry.scale * 1.6)
             .ceil()
@@ -502,18 +547,7 @@ impl TextComparison {
                 let (value, prefix) = self.formatted_line(hit.side, hit.line, row.changed);
                 let page = self
                     .renderer
-                    .layout_with_options(
-                        &value,
-                        &TextOptions {
-                            family,
-                            literal_family: family != "monospace",
-                            size: appearance.font_size,
-                            scale: geometry.scale,
-                            foreground: palette.foreground,
-                            ..TextOptions::default()
-                        },
-                        &[],
-                    )
+                    .layout_with_options(&value, &options, &[])
                     .map_err(|error| format!("Cannot lay out Find result: {error:?}"))?;
                 let bounds =
                     shaped_hit_bounds(&page, prefix + hit.range.start..prefix + hit.range.end)?;
@@ -527,7 +561,10 @@ impl TextComparison {
                     ((bounds[0] + bounds[1] - f64::from(pane_width)) / 2.0).max(0.0) as f32;
             }
             self.find.reveal = false;
+        } else if self.reveal_difference {
+            self.reveal_changed_column(width, &options)?;
         }
+        self.reveal_difference = false;
         self.painted_width = width;
         self.top = self.top.min(self.last_row());
         if self.top == self.last_row() {
@@ -564,12 +601,15 @@ impl TextComparison {
             check_cancel(cancel)?;
             let row_value = self.rows[index];
             let shown = (y + row as i64) as u64 > view.start && (y.max(0) as u64) < view.end;
-            for side in 0..2 {
+            let formatted = self.formatted_row(row_value);
+            let changed_ranges =
+                (row_value.changed && row_value.left().is_some() && row_value.right().is_some())
+                    .then(|| {
+                        let [(left, a), (right, b)] = &formatted;
+                        inline::changed_ranges(&left[*a..], &right[*b..])
+                    });
+            for (side, (value, prefix)) in formatted.into_iter().enumerate() {
                 let (left, side_width) = surface.region(side);
-                let (value, prefix) = row_value
-                    .side(side)
-                    .map(|line| self.formatted_line(side, line, row_value.changed))
-                    .unwrap_or_default();
                 let selection = self
                     .find
                     .selected
@@ -585,21 +625,27 @@ impl TextComparison {
                 } else {
                     palette.background
                 };
-                let options = TextOptions {
-                    family,
-                    literal_family: family != "monospace",
-                    size: appearance.font_size,
-                    scale: geometry.scale,
-                    foreground: palette.foreground,
-                    ..TextOptions::default()
-                };
                 let page = self
                     .renderer
                     .layout_with_options(&value, &options, &[])
                     .map_err(|error| format!("Cannot lay out comparison: {error:?}"))?;
-                if let Some(range) = &selection {
+                let (highlight, fill, ink) = if let Some(range) = selection {
                     self.find.horizontal_bounds = Some(shaped_hit_bounds(&page, range.clone())?);
-                }
+                    (Some(range), palette.selection, palette.selection_text)
+                } else {
+                    let span = changed_ranges
+                        .as_ref()
+                        .map(|ranges| &ranges[side])
+                        .filter(|span| !span.is_empty())
+                        .map(|span| prefix + span.start..prefix + span.end);
+                    // Match the hex comparator's stronger tint. The renderer keeps the
+                    // glyph color readable on it, including for high contrast themes.
+                    (
+                        span,
+                        tinted(palette.background, side, 3, 5),
+                        palette.foreground,
+                    )
+                };
                 let raster = self
                     .renderer
                     .rasterize(
@@ -609,10 +655,10 @@ impl TextComparison {
                             height: row_height,
                             origin: [origin, 0.0],
                             background,
-                            selection_color: palette.selection,
-                            selection_text: palette.selection_text,
+                            selection_color: fill,
+                            selection_text: ink,
                         },
-                        selection,
+                        highlight,
                     )
                     .map_err(|error| format!("Cannot render comparison: {error:?}"))?;
                 copy_row(
@@ -625,12 +671,19 @@ impl TextComparison {
                 );
             }
         }
-        let mut status = format!(
-            "{} difference groups · row {} of {} · live-validated read",
-            self.differences.len(),
-            self.top + 1,
-            self.rows.len()
-        );
+        let position = self.difference_position();
+        let total = self.differences.len();
+        let mut status = match (position.current_group, total) {
+            (Some(group), _) => format!("Difference {group} of {total}"),
+            (_, 0) => "No line differences".into(),
+            (_, 1) => "1 difference group".into(),
+            _ => format!("{total} difference groups"),
+        };
+        if !self.rows.is_empty() {
+            use std::fmt::Write;
+            let _ = write!(status, " · row {} of {}", self.top + 1, self.rows.len());
+        }
+        status.push_str(" · live-validated read");
         if self.approximate {
             status.push_str(" · line matching timed out, so some unchanged lines show as changed");
         }
@@ -654,7 +707,61 @@ impl TextComparison {
             bytes_only: false,
             scanning: false,
             position: surface.position[1] as f64 / surface.extent[1].max(1) as f64,
+            text_navigation: Some(TextNavigation {
+                previous: position.previous_row.is_some(),
+                next: position.next_row.is_some(),
+            }),
             scroll: Some(Box::new(surface.view(geometry.scale))),
+        })
+    }
+
+    fn reveal_changed_column(
+        &mut self,
+        width: u32,
+        options: &TextOptions<'_>,
+    ) -> Result<(), String> {
+        let row = self.rows[self.top];
+        if row.left().is_none() || row.right().is_none() {
+            // The entire line was inserted or removed.
+            self.horizontal = 0.0;
+            return Ok(());
+        }
+        let formatted = self.formatted_row(row);
+        let [(left, a), (right, b)] = &formatted;
+        let ranges = inline::changed_ranges(&left[*a..], &right[*b..]);
+        let side = usize::from(ranges[0].is_empty());
+        let (value, prefix) = &formatted[side];
+        let start = ranges[side].start;
+        if ranges[side].is_empty() {
+            return Ok(());
+        }
+        let page = self
+            .renderer
+            .layout_with_options(value, options, &[])
+            .map_err(|error| format!("Cannot lay out changed line: {error:?}"))?;
+        let caret = page
+            .caret_geometry(prefix + start)
+            .map_err(|error| format!("Cannot position changed text: {error:?}"))?;
+        let pane_width = if side == 0 {
+            width / 2
+        } else {
+            width - width / 2
+        } as f32;
+        let column = caret.x0 as f32;
+        // Leave room to read past the beginning of the edit if it is at the right edge.
+        if column < self.horizontal
+            || column + options.size * options.scale > self.horizontal + pane_width
+        {
+            self.horizontal = (column - pane_width / 3.0).clamp(0.0, HORIZONTAL_LIMIT);
+        }
+        Ok(())
+    }
+
+    fn formatted_row(&self, row: Row) -> [(String, usize); 2] {
+        [0, 1].map(|side| {
+            row.side(side)
+                .map(|line| self.formatted_line(side, line, row.changed))
+                .unwrap_or_default()
         })
     }
 

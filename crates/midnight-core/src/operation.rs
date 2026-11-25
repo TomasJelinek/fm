@@ -97,6 +97,8 @@ pub struct DeleteFailure {
     pub id: OperationId,
     pub version: u64,
     pub mode: crate::DeleteMode,
+    /// Only the original pinned targets which the provider explicitly could not recycle.
+    pub permanent_fallback: Option<OperationPreview>,
     /// Why, naming the entry, or the folder whose entries cannot be removed.
     pub error: FsError,
     pub can_retry: bool,

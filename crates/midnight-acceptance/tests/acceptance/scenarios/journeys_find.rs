@@ -51,6 +51,7 @@ const MATCHES: [(&str, &str); 3] = [
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_find_to_checksums",
+        isolation: crate::Isolation::ParallelPlugins,
         area: "journeys",
         summary: "Find by content inside archives, Feed to panel (member counted), F3 on a result, F5 of the marked results, Ctrl+Shift+C across the panels and between two copies, Ctrl+F8 digests equal to the originals' and a saved manifest verified (installed plugins).",
         run: find_to_checksums,

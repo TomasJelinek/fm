@@ -311,9 +311,11 @@ intermediate creation is retained on failure or cancellation. Empty-file creatio
 accepts only one basename. See the [F7 path
 contract](docs/superpowers/specs/2026-11-06-create-any-path.md).
 
-Delete/F8 uses only system Trash; Shift+Delete/Shift+F8 explicitly requests permanent
-deletion after a distinct confirmation. Unavailable Trash never triggers permanent
-deletion. Windows uses the dedicated Shell recycle method, which can reject paths beyond
+Delete/F8 requests system Trash. If the provider specifically reports that Trash
+is unavailable, the engine retains those unmodified, pinned targets and offers
+the same destructive confirmation as Shift+Delete/Shift+F8. Permanent deletion
+requires an affirmative answer for the current job and offer version. Items already
+recycled stay in the Trash. Windows uses the dedicated Shell recycle method, which can reject paths beyond
 its own limit even though rename/create/permanent operations support long paths. Linux
 supports only the home Trash, and only for items on the same filesystem as that Trash;
 deletion requires Linux 5.6 or later (`openat2`). Destructive traversal never
@@ -490,9 +492,10 @@ inspected as possibly holding the item; neither is described as unneeded.
   shell syntax only when explicitly submitted. Names that cannot be represented
   exactly or contain control characters are rejected unchanged. Command text
   is not logged. Editing never launches a terminal.
-  Nonempty drafts are bound to their shell grammar: a late preference or picker
-  change cannot reinterpret an inserted PowerShell path as cmd code. Clear the
-  draft before selecting an incompatible grammar. Explicit POSIX elevation keeps
+  A late preference load preserves a nonempty draft's shell. An explicit shell
+  selection changes the interpreter and keeps the text until Run or Enter.
+  Inside archives, the working directory comes from the native container's
+  parent. Member names never enter the process working directory. Explicit POSIX elevation keeps
   the same grammar and still requires Run/Enter; passwords belong only to sudo's
   own terminal interaction. No password or elevated-mode preference is stored.
   The terminal button's Ctrl+click (Ctrl+Enter or Ctrl+Space on the focused button,

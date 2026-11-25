@@ -624,10 +624,10 @@ fn create(
     });
     {
         let weak = window.as_weak();
-        callback!(on_browse_root, |p, send| {
+        callback!(on_browse_root, |p, send, text| {
             if let Some(w) = weak.upgrade() {
                 let owner = crate::picker_window::native_path_picker_owner(w.window());
-                p.request_find_root_picker(id, owner, send);
+                p.request_find_root_picker(id, &text, owner, send);
             }
         });
     }

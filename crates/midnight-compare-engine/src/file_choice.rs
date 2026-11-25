@@ -37,10 +37,10 @@ impl Picker {
                     "Choose file {} to compare",
                     if side == 0 { "A" } else { "B" }
                 ),
+                initial_name: path.file_name().map(ToOwned::to_owned),
                 initial_directory: path
-                    .parent()
-                    .filter(|path| path.is_absolute())
-                    .map(ToOwned::to_owned),
+                    .is_absolute()
+                    .then(|| path.parent().unwrap_or(path).to_owned()),
                 owner,
             };
             request.validate().map_err(|error| error.to_string())?;

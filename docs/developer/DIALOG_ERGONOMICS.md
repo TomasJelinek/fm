@@ -117,7 +117,7 @@ measurement.
   everything in it?", "Permanently delete the link “x”?", "Move 12 items to the
   Trash?". Right under it is one short line: "Permanent deletion cannot be undone." in
   the error colour, semibold, after a round "!" glyph on its first line; for the Trash
-  "If the Trash is unavailable, it stays in place." ("they stay") in the secondary text
+  "If the Trash is unavailable, permanent deletion requires a separate confirmation." in the secondary text
   colour, without a glyph. The rest are details, after a wider gap, in a subdued block on
   the secondary surface: a label column in the muted colour, as wide as its widest label
   (at most two fifths of the block), and the values in the secondary colour, both in the
@@ -395,11 +395,10 @@ The resulting editor text is intentionally shell syntax when explicitly run.
 Names that cannot be represented exactly or contain control characters are
 rejected without modifying the draft; no lossy filename substitution is allowed.
 The command prompt's `>` is followed by only 4 logical pixels of padding in both
-mouse and touch layouts. Long working paths retain their horizontal viewport. A
-scrolled one shows the folder's start, at least two characters, and "..." over the
-strip's start, where the strip is cut, so the two never overlap; that start takes the
-strip's wheel, drag and tooltip. Without room for it and a character of the end, the
-strip shows its end alone.
+mouse and touch layouts. Long working paths initially show the end of the path
+and the prompt. Scroll or drag anywhere in the path strip to see the rest, or
+hover to read the full working folder. When space permits, three dots at either
+edge indicate more text in that direction.
 
 ## Performance requirements
 

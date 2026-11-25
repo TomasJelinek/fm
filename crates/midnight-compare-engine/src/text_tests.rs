@@ -244,6 +244,100 @@ fn difference_navigation_stops_at_each_boundary_and_refocuses_after_scrolling() 
     empty.difference_edge(true);
     assert_eq!(empty.top, 0);
 }
+
+#[test]
+fn first_difference_and_navigation_follow_the_viewport_including_partial_rows() {
+    let cancel = AtomicBool::new(false);
+    let mut diff = TextComparison::new(
+        "start\none\ntwo\nsame\nend\ntail\n",
+        "start\n1\n2\nsame\nEND\ntail\n",
+        &cancel,
+    )
+    .unwrap();
+    let position = |diff: &TextComparison| {
+        let p = diff.difference_position();
+        (p.previous_row, p.current_group, p.next_row)
+    };
+    assert_eq!((diff.top, position(&diff)), (1, (None, Some(1), Some(4))));
+    diff.scroll_pixels(-4.0);
+    assert_eq!(position(&diff), (Some(1), Some(1), Some(4)));
+    diff.difference(true);
+    assert_eq!((diff.top, diff.fraction), (1, 0.0));
+    diff.scroll(1);
+    assert_eq!(position(&diff), (Some(1), Some(1), Some(4)));
+    diff.scroll(1);
+    assert_eq!(position(&diff), (Some(1), None, Some(4)));
+    diff.difference(false);
+    assert_eq!(position(&diff), (Some(1), Some(2), None));
+    diff.scroll(1);
+    diff.difference(false);
+    assert_eq!((diff.top, position(&diff)), (5, (Some(4), None, None)));
+    diff.seek(0.0);
+    diff.difference(true);
+    assert_eq!((diff.top, position(&diff)), (0, (None, None, Some(1))));
+    for text in ["", "identical\n"] {
+        let same = TextComparison::new(text, text, &cancel).unwrap();
+        assert_eq!((same.top, position(&same)), (0, (None, None, None)));
+    }
+}
+
+#[test]
+fn jumping_reveals_a_long_lines_edited_column_and_repaints_keep_manual_scroll() {
+    let prefix = "column\t".repeat(80);
+    let left = format!("heading\n{prefix}suffix\nseparator\nbefore\n");
+    let right = format!("heading\n{prefix}新suffix\nseparator\nafter\n");
+    let cancel = AtomicBool::new(false);
+    let mut diff = TextComparison::new(left, right, &cancel).unwrap();
+    let appearance = appearance(14.0);
+    let paint = |diff: &mut TextComparison| {
+        diff.paint(
+            ViewerGeometry {
+                width: 400,
+                height: 120,
+                scale: 1.0,
+            },
+            &appearance,
+            Palette::from(&appearance),
+            &cancel,
+        )
+        .unwrap()
+    };
+    let first = paint(&mut diff);
+    assert!(first.status.starts_with("Difference 1 of 2"));
+    assert!(
+        first
+            .view_pixels()
+            .2
+            .contains(&tinted(appearance.background, 1, 3, 5)),
+        "the inserted glyph's highlight must be inside the initially visible viewport"
+    );
+    assert_eq!(
+        first.text_navigation,
+        Some(TextNavigation {
+            previous: false,
+            next: true
+        })
+    );
+    let edit_column = diff.horizontal;
+    assert!(
+        edit_column > 200.0,
+        "the inserted glyph begins beyond the first viewport"
+    );
+    diff.scroll_horizontal(f32::MAX);
+    paint(&mut diff);
+    assert_eq!(diff.horizontal, 0.0);
+    diff.difference(false);
+    assert!(paint(&mut diff).status.starts_with("Difference 2 of 2"));
+    diff.difference(true);
+    paint(&mut diff);
+    assert_eq!(diff.horizontal, edit_column);
+    diff.difference(false);
+    paint(&mut diff);
+    assert!(
+        diff.horizontal < 200.0,
+        "the short replacement starts in the first viewport"
+    );
+}
 #[test]
 fn captured_source_change_is_rejected() {
     let directory = tempfile::tempdir().unwrap();

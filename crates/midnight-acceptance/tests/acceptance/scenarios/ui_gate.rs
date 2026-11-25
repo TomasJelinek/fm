@@ -2001,7 +2001,7 @@ pub const PROFILE: &str = "MIDNIGHT_ACCEPTANCE_UI_PROFILE";
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Profile {
     pub captures: usize,
-    /// The fixed pause before each capture.
+    /// Settling the app and waiting for active visual transitions before capture.
     pub pause: Duration,
     /// Settling the item tree.
     pub settle: Duration,
@@ -2088,12 +2088,19 @@ pub fn capture(
     caption: &str,
 ) -> usize {
     let mut clock = Instant::now();
-    // Theme colours and hover states animate briefly; let them settle first.
-    app.idle(Duration::from_millis(250));
+    app.settle();
+    let software = target.software(app);
+    // The main window was painted by settle. Paint tool windows too so their
+    // animated bindings have been evaluated before asking Slint about transitions.
+    if matches!(target, Target::Tool(_)) {
+        let _ = Frame::of(&software);
+    }
+    if software.window().has_active_animations() {
+        app.wait_ui(Duration::from_millis(250));
+    }
     let pause = lap(&mut clock);
     let selected = palette_minimum(app);
     let mut checks = lap(&mut clock);
-    let software = target.software(app);
     inspect::settle_tree(software.window());
     let settle = lap(&mut clock);
     PROBE_COUNTS.with(|counts| counts.set((0, 0)));

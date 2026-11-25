@@ -52,6 +52,7 @@ const WRONG_PASSWORD: &str = "Wrong password — try again.";
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_archive_roundtrip",
+        isolation: crate::Isolation::ParallelPlugins,
         area: "journeys",
         summary: "Into a ZIP and a ZIP inside a ZIP, F5 of a member folder and an inner member out, the inline tree of the copy, F2 inside the tree, F6 back next to the archives, Ctrl+Shift+S equal to the member sizes and the disk; a password round trip (F5 of an encrypted member asks first, a wrong password refused, the right one copies it out, F3 on another member asks nothing until the archive closes, after Escape the copy goes on and skips the protected member with the reason); archives unchanged (installed plugins).",
         run: archive_roundtrip,

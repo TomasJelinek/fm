@@ -285,7 +285,7 @@ This table is a guide; the inventories above list every selected crate.
 | parley 0.11.1 / swash 0.2.10 | Viewer text layout and glyph rendering | Apache-2.0 OR MIT |
 | ICU casemap / locale core 2.4.0 | Unicode case mapping | Unicode-3.0 |
 | minicbor 2.3.0 | Viewer plugin wire messages | BlueOak-1.0.0 |
-| windows 0.62.2 / windows-sys 0.61.2 | Windows API bindings (midnight-platform-windows also names `Win32_System_JobObjects` and `Win32_System_Pipes` for Custom Command output; midnight-worker-platform already enabled both in the same build, so the compiled feature set is unchanged) | MIT OR Apache-2.0 |
+| windows 0.62.2 / windows-sys 0.61.2 | Windows API bindings. Custom Command output uses `Win32_System_JobObjects` and `Win32_System_Pipes`. The renderer and its latency probe use `Win32_Graphics_Gdi` and `Win32_System_LibraryLoader` to check display compatibility. Other workspace crates already enable these features. | MIT OR Apache-2.0 |
 | rustix 1.1.6 | Linux system calls | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | arboard 3.7.0 | Clipboard | MIT OR Apache-2.0 |
 | cbindgen 0.29.4 | Public API C header generation (tool) | MPL-2.0 |
@@ -308,6 +308,7 @@ their versions vary by installation.
 | libclang | Build-time FFmpeg binding generation; not shipped | Apache-2.0 WITH LLVM-exception; the distribution's package on Linux, the LLVM that `LIBCLANG_PATH` names on Windows |
 | GnuPG | Build-time check of FFmpeg's source signature in a temporary keyring; not shipped | GPL-3.0-or-later |
 | CMake and Ninja | Build tools of the HTML viewer's CEF wrapper; not shipped | BSD-3-Clause and Apache-2.0 |
+| GNU binutils (strip) | Linux release build tool to strip staged CEF binaries; not shipped | GPL-3.0-or-later |
 | Fontconfig | Linux font discovery | MIT/X11-style notices |
 | FreeType | Linux font stack | FreeType License OR GPL-2.0; keep the FTL credit when choosing FTL ([terms](https://freetype.org/license.html)) |
 | GNU libc (`libc`, `libm`, loader) | Linux runtime | LGPL-2.1-or-later with exceptions ([upstream](https://sourceware.org/glibc/)) |

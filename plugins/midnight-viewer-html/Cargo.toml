@@ -37,3 +37,7 @@ opt-level = 2
 # Measurements: docs/verification/2026-11-20-viewer-speed.md.
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+debug = false
+strip = "symbols"

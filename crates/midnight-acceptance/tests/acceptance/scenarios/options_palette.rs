@@ -63,6 +63,7 @@ const RULES: &str = "Filename color rules";
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "options_palette",
+        isolation: crate::Isolation::ParallelStaged,
         area: "options",
         summary: "The filename palette as rendered: .rs sky blue #23AAF2, .docx, .md and .txt blue #3B82F6, each shown as the shared readability policy makes it on its row (≥4.5:1) in Blue, Dark and Light; the shipped palettes (blue/neutral, interim all-cyan, cyan source with blue documents) move to the defaults on loading, a customised list is kept (its cyan source rule included) except its exact interim document/text rules, which turn blue (private child with the real settings store).",
         run: palette,
@@ -193,6 +194,10 @@ fn theme_check(
 }
 
 pub fn palette(context: &mut Context) -> Result<(), String> {
+    viewers_stage::run_private(context, TIMEOUT, palette_and_migration)
+}
+
+fn palette_and_migration(context: &mut Context) -> Result<(), String> {
     let folder = context.work.join("palette");
     files(&folder)?;
     let mut failures = Vec::new();
@@ -206,7 +211,7 @@ pub fn palette(context: &mut Context) -> Result<(), String> {
     if !failures.is_empty() {
         return Err(failures.join("\n"));
     }
-    viewers_stage::run_private(context, TIMEOUT, migration)
+    migration(context)
 }
 
 /// The foreground the left panel gives `name` (None: the theme's colour).

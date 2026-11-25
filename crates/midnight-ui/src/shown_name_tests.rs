@@ -148,6 +148,41 @@ fn a_rename_shows_the_escaped_path_and_edits_the_raw_name() {
 }
 
 #[test]
+fn folder_rename_shows_the_captured_parent_and_selects_the_entire_raw_name() {
+    let mut h = Harness::with_location(UserPreferences::default(), folder());
+    let parent = folder().join(SPOOF);
+    let name = "文档.release";
+    {
+        let mut p = h.presenter.borrow_mut();
+        p.operations.pending = Some(OperationId(8));
+        p.operations.preview = Some(Arc::new(OperationPreview {
+            id: OperationId(8),
+            kind: MutationKind::Rename,
+            files: 0,
+            folders: 1,
+            file_bytes: None,
+            sample: vec![MutationItem {
+                path: parent.join(name),
+                kind: EntryKind::Directory,
+                metadata: EntryMetadata::default(),
+            }],
+        }));
+    }
+    h.refresh();
+    let form = h.window.global::<OperationPresentation>();
+    assert_eq!(form.get_title_text(), "Rename folder");
+    assert_eq!(form.get_confirm_text(), "Rename");
+    let shown_parent = crate::shown_text(&parent.to_string_lossy());
+    assert_eq!(form.get_folder_location(), shown_parent);
+    let parts = form.get_path_parts();
+    let last = parts.row_data(parts.row_count() - 1).unwrap();
+    assert_eq!(last.prefix, shown_parent);
+    assert!(escaped(&last.label));
+    assert_eq!(form.get_initial_name(), name);
+    assert_eq!(form.get_selection_end(), name.len() as i32);
+}
+
+#[test]
 fn notices_show_escapes_and_copy_details_keeps_the_raw_text() {
     let mut h = Harness::new(UserPreferences::default());
     let path = folder().join(SPOOF);

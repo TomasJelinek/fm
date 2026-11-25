@@ -411,6 +411,27 @@ pub fn land(app: &mut App, viewing: &Viewing, limit: Duration) -> Result<Settled
     settle_after(app, viewing, limit, LANDED_QUIET)
 }
 
+/// Start timing at the first ready sample and discard the interval whenever a
+/// worker is pending or the observed value changes.
+fn stable_since<T: PartialEq>(
+    observation: &mut Option<(T, Instant)>,
+    value: T,
+    pending: bool,
+) -> Option<Instant> {
+    if pending {
+        *observation = None;
+        return None;
+    }
+    if let Some((previous, since)) = observation
+        && *previous == value
+    {
+        return Some(*since);
+    }
+    let since = Instant::now();
+    *observation = Some((value, since));
+    Some(since)
+}
+
 fn settle_after(
     app: &mut App,
     viewing: &Viewing,
@@ -419,10 +440,9 @@ fn settle_after(
 ) -> Result<Settled, String> {
     let _phase = crate::timing::Span::new("probe: settle");
     let started = Instant::now();
-    let mut last: Option<(f32, f32, f32)> = None;
-    let mut since: Option<Instant> = None;
+    let mut observation = None;
+    pause(app, Duration::ZERO);
     loop {
-        pause(app, Duration::from_millis(15));
         let window = &viewing.window;
         let now = (
             window.get_position(),
@@ -433,22 +453,15 @@ fn settle_after(
         let busy = window.get_position_pending()
             || status.starts_with("Opening")
             || status.contains("Loading requested position");
-        if busy || last != Some(now) {
-            since = None;
-        } else if since.is_none() {
-            since = Some(Instant::now());
-        }
-        last = Some(now);
+        let since = stable_since(&mut observation, now, busy);
         // Thumb and content agree to a ten-thousandth: the position the viewer shows.
         let quiet = if (now.0 - now.1).abs() <= 1e-4 {
             landed_quiet.min(QUIET)
         } else {
             QUIET
         };
-        if since.is_some_and(|since| since.elapsed() >= quiet) {
-            if let Some(since) = since {
-                crate::timing::add("probe: settle, until still", since - started);
-            }
+        if let Some(since) = since.filter(|since| since.elapsed() >= quiet) {
+            crate::timing::add("probe: settle, until still", since - started);
             app.settle();
             return Ok(Settled {
                 position: now.0,
@@ -466,6 +479,7 @@ fn settle_after(
                 window.get_position_pending()
             ));
         }
+        pause(app, Duration::from_millis(15));
     }
 }
 
@@ -509,18 +523,15 @@ impl StatusWatch {
         limit: Duration,
     ) -> Result<Canvas, String> {
         let started = Instant::now();
-        let mut previous = None;
-        let mut since: Option<Instant> = None;
+        let mut observation = None;
+        self.pause(app, viewing, Duration::ZERO);
         loop {
-            self.pause(app, viewing, Duration::from_millis(30));
             let canvas = viewing.canvas();
-            let print = canvas.fingerprint();
-            if viewing.window.get_position_pending() || previous != Some(print) {
-                since = None;
-            } else if since.is_none() {
-                since = Some(Instant::now());
-            }
-            previous = Some(print);
+            let since = stable_since(
+                &mut observation,
+                canvas.fingerprint(),
+                viewing.window.get_position_pending(),
+            );
             if since.is_some_and(|since| since.elapsed() >= QUIET) {
                 return Ok(canvas);
             }
@@ -530,6 +541,7 @@ impl StatusWatch {
                     viewing.status()
                 ));
             }
+            self.pause(app, viewing, Duration::from_millis(30));
         }
     }
 
@@ -549,18 +561,14 @@ pub fn still_canvas(app: &mut App, viewing: &Viewing, limit: Duration) -> Result
     let _phase = crate::timing::Span::new("probe: still canvas");
     app.settle();
     let started = Instant::now();
-    let mut previous = None;
-    let mut since: Option<Instant> = None;
+    let mut observation = None;
     loop {
-        pause(app, Duration::from_millis(30));
         let canvas = viewing.canvas();
-        let print = canvas.fingerprint();
-        if viewing.window.get_position_pending() || previous != Some(print) {
-            since = None;
-        } else if since.is_none() {
-            since = Some(Instant::now());
-        }
-        previous = Some(print);
+        let since = stable_since(
+            &mut observation,
+            canvas.fingerprint(),
+            viewing.window.get_position_pending(),
+        );
         if since.is_some_and(|since| since.elapsed() >= QUIET) {
             return Ok(canvas);
         }
@@ -570,6 +578,7 @@ pub fn still_canvas(app: &mut App, viewing: &Viewing, limit: Duration) -> Result
                 viewing.status()
             ));
         }
+        pause(app, Duration::from_millis(30));
     }
 }
 

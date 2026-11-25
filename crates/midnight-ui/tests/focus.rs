@@ -939,8 +939,8 @@ fn toolbar_and_header_callbacks_transfer_actual_keyboard_focus() {
     window.invoke_terminal_changed(0);
     assert_eq!(
         window.get_terminal_index(),
-        1,
-        "a nonempty cmd draft must keep its shell"
+        0,
+        "the explicit shell pick applies to the current draft"
     );
     assert_eq!(
         window.get_command_text().as_str(),

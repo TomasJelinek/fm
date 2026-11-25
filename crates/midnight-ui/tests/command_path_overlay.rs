@@ -1,9 +1,5 @@
-//! WIN-2 of the Windows acceptance run (docs/developer/acceptance/windows.md): the
-//! command line's long working folder, scrolled to its end, no longer lies under the
-//! folder's start drawn over the strip with its "...": the strip is cut where that start
-//! ends, so the two texts never overlap (the gate's U-K09), and neither is shown
-//! narrower than about a character while it needs more (U-K19), at the sizes and
-//! appearances the gate flagged. The strip keeps its place and its scrolling.
+//! Check the visible text in the command prompt at the sizes where a previous
+//! Windows acceptance pass found an overlapping path prefix (WIN-2).
 use crate::support::ui;
 
 use i_slint_core::{
@@ -149,7 +145,7 @@ fn prompt_texts(test: &ui::TestUi) -> Vec<(String, Rect, f32, f32, bool)> {
 }
 
 #[test]
-fn the_scrolled_working_folder_never_lies_under_its_shown_start() {
+fn the_scrolled_working_folder_has_a_single_visible_path() {
     let mut test = ui::TestUi::new();
     test.window.set_left_path(PATH.into());
     test.window
@@ -179,6 +175,11 @@ fn the_scrolled_working_folder_never_lies_under_its_shown_start() {
             "{case}: the test needs a shortened working folder"
         );
         let texts = prompt_texts(&test);
+        assert_eq!(
+            texts.len(),
+            1,
+            "{case}: exactly one path is drawn in the prompt"
+        );
         assert!(
             texts
                 .iter()
@@ -186,23 +187,13 @@ fn the_scrolled_working_folder_never_lies_under_its_shown_start() {
             "{case}: the strip shows the prompt's end: {:?}",
             texts.iter().map(|(text, ..)| text).collect::<Vec<_>>()
         );
-        for (index, (text, area, needs, font, sideways)) in texts.iter().enumerate() {
+        for (text, area, needs, font, sideways) in &texts {
             let short: String = text.chars().take(32).collect();
             if *needs > area.2 + 1.0 && area.2 < font.max(8.0) * 1.2 && !sideways {
                 findings.push(format!(
                     "{case}: {short:?} shows {:.0}px of {needs:.0}px",
                     area.2
                 ));
-            }
-            for (other, other_area, ..) in &texts[index + 1..] {
-                let overlap = intersect(*area, *other_area);
-                if overlap.2 > 2.0 && overlap.3 > 2.0 {
-                    let other: String = other.chars().take(32).collect();
-                    findings.push(format!(
-                        "{case}: {short:?} and {other:?} overlap by {:.0}×{:.0}",
-                        overlap.2, overlap.3
-                    ));
-                }
             }
         }
         // The whole folder stays available to assistive technology.

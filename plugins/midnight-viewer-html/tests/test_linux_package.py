@@ -1,4 +1,5 @@
 """Independent Linux package safety tests; no host implementation is imported."""
+import ctypes
 import json
 import importlib.util
 import os
@@ -60,6 +61,7 @@ class LinuxBuildValidation(unittest.TestCase):
             (sdk / 'LICENSE.txt').write_text('CEF license fixture')
             (sdk / 'CREDITS.html').write_text('Bundled component notices fixture')
             (sdk / 'locales/en-US.pak').write_bytes(b'locale fixture')
+            (sdk / 'locales/de.pak').write_bytes(b'unused locale')
             dependency = tmp / 'dependency'
             (dependency / 'nested').mkdir(parents=True)
             (dependency / 'LICENSE-MIT').write_text('Dependency license fixture')
@@ -84,12 +86,40 @@ class LinuxBuildValidation(unittest.TestCase):
             self.assertEqual(indexed['libcef.so']['sha256'], PACKAGER.digest(sdk / 'libcef.so'))
             self.assertIn('dependency-metadata.json', indexed)
             self.assertIn('locales/en-US.pak', indexed)
+            self.assertEqual([p.name for p in (destination / 'locales').iterdir()], ['en-US.pak'])
             # The provider's own GPL licence travels beside CEF's LICENSE.txt.
             self.assertEqual((destination / 'LICENSE').read_bytes(), (PROJECT / 'LICENSE').read_bytes())
             self.assertEqual(indexed['LICENSE']['sha256'], PACKAGER.digest(PROJECT / 'LICENSE'))
             self.assertEqual((destination / 'LICENSE.txt').read_text(), 'CEF license fixture')
             with self.assertRaises(FileExistsError):
                 PACKAGER.package(sdk, destination, launcher, metadata, pin, None)
+
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('cc') and shutil.which('strip'),
+                         'Linux native strip and load check')
+    def test_release_strips_staging_copy_and_hashes_loadable_result(self):
+        work = ROOT / '_build/qa/html-linux/tests'
+        work.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=work) as temp:
+            root = Path(temp)
+            sdk = root / 'sdk'
+            (sdk / 'locales').mkdir(parents=True)
+            (sdk / 'locales/en-US.pak').write_bytes(b'English locale')
+            library = sdk / 'libcef.so'
+            subprocess.run(['cc', '-shared', '-fPIC', '-g', '-x', 'c', '-', '-o', library],
+                           input=b'int probe(void) { return 17; }', check=True)
+            original = PACKAGER.digest(library)
+            pin = {'cef': 'fixture', 'archive_sha256': 'a' * 64, 'files': {'libcef.so': original}}
+            metadata = root / 'metadata.json'
+            metadata.write_text('{"resolve":{"nodes":[]},"packages":[]}')
+            stage = root / 'package'
+            PACKAGER.package(sdk, stage, Path(sys.executable), metadata, pin, None, 'release')
+            self.assertEqual(PACKAGER.digest(library), original)
+            stripped = stage / 'libcef.so'
+            self.assertLess(stripped.stat().st_size, library.stat().st_size)
+            self.assertEqual(ctypes.CDLL(str(stripped)).probe(), 17)
+            inventory = json.loads((stage / 'runtime-files.json').read_text())
+            entry = next(file for file in inventory['files'] if file['path'] == 'libcef.so')
+            self.assertEqual(entry['sha256'], PACKAGER.digest(stripped))
 
     @staticmethod
     def link(link, target):

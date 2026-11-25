@@ -81,11 +81,17 @@ fn row_height(app: &App) -> f32 {
 }
 
 pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
-    // This scenario's staged child (it has a deadline from its parent) runs only the
-    // part with the installed packages.
-    if std::env::var_os(viewers_stage::LIMIT).is_some() {
-        return viewers_stage::run(context, TIMEOUT, plugins_installed);
+    if let Some(reason) =
+        viewers_stage::run_with_optional_plugins(context, TIMEOUT, previews, plugins_installed)?
+    {
+        let skipped = format!("SKIP the Plugins page with the installed packages: {reason}");
+        context.note(skipped.clone());
+        context.outcome.message = skipped;
     }
+    Ok(())
+}
+
+fn previews(context: &mut Context) -> Result<(), String> {
     let folder = context.work.join("previews");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
     for name in ["one.png", "two.txt", "three.bin"] {
@@ -245,23 +251,7 @@ pub fn previews_plugins(context: &mut Context) -> Result<(), String> {
     context.note(format!(
         "Previews: 192 px grew Thumbnails rows by 96 px, previews off disabled the dependent switches, OK saved all four values, Cancel restored a 64 px preview, a restart kept them. Plugins: sections without staged plugins show their empty state ({empty:?}); Rescan finished; Archive associations… opened the Archives page"
     ));
-    app.shutdown()?;
-    drop(app);
-
-    // The same page with the installed packages, in a staged child of this scenario.
-    match viewers_stage::run(context, TIMEOUT, plugins_installed) {
-        Err(reason) if reason.starts_with("SKIP") => {
-            // A passing scenario's message says what it skipped.
-            let skipped = format!(
-                "SKIP the Plugins page with the installed packages: {}",
-                reason.trim_start_matches("SKIP:").trim()
-            );
-            context.note(skipped.clone());
-            context.outcome.message = skipped;
-            Ok(())
-        }
-        result => result,
-    }
+    app.shutdown()
 }
 
 /// Options › Plugins with the installed packages beside this executable (the staged

@@ -61,7 +61,8 @@ fn exercise(pane: PaneId, archive: bool, follow_directory_links: bool) {
             crate::support::link_option::KEEP_LINKS
         );
         if follow_directory_links {
-            // From the destination field (the metadata option is off) to the choice.
+            // From the destination field past Browse to the link choice.
+            input::key(&dialog, Key::Tab);
             input::key(&dialog, Key::Tab);
             input::key(&dialog, Key::UpArrow);
             assert_eq!(

@@ -14,6 +14,7 @@ impl Presenter {
         id: ChecksumJobId,
         verify: bool,
         algorithm: ChecksumAlgorithm,
+        field_text: &str,
         owner: PathPickerOwner,
         send: &dyn Fn(Command) -> bool,
     ) {
@@ -35,9 +36,9 @@ impl Presenter {
             s.suggested.set_extension(algorithm.extension());
         }
         let path = if verify {
-            &s.manifest_suggested
+            super::super::picker_field_path(field_text, &s.manifest_suggested)
         } else {
-            &s.suggested
+            s.suggested.clone()
         };
         if send(Command::PickPath {
             request,
@@ -53,7 +54,10 @@ impl Presenter {
                     "Save checksum file"
                 }
                 .into(),
-                initial_directory: path.parent().map(Path::to_owned),
+                initial_name: path.file_name().map(ToOwned::to_owned),
+                initial_directory: path
+                    .is_absolute()
+                    .then(|| path.parent().unwrap_or(&path).to_owned()),
                 owner,
             },
         }) {

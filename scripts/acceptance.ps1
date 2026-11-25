@@ -4,7 +4,7 @@ counterpart of scripts/acceptance.sh.
 
 Usage: pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list]
            [--scale smoke|full] [--only NAME[,NAME...]] [--strict-review]
-           [--keep-fixture] [--all-themes] [--stress] [--run-dir DIR]
+           [--keep-fixture] [--all-themes] [--jobs 1..4] [--stress] [--run-dir DIR]
            [--plugins DIR | --validation-packages] [--test-binary FILE] [--offline]
 
 Builds the `acceptance` test target of crates/midnight-acceptance (it needs the
@@ -29,13 +29,14 @@ $ProgressPreference = 'SilentlyContinue'
 $usage = @'
 Usage: pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list]
            [--scale smoke|full] [--only NAME[,NAME...]] [--strict-review]
-           [--keep-fixture] [--all-themes] [--stress] [--run-dir DIR]
+           [--keep-fixture] [--all-themes] [--jobs 1..4] [--stress] [--run-dir DIR]
            [--plugins DIR | --validation-packages] [--test-binary FILE] [--offline]
 Tests always use the debug test profile; the profile names the build whose plugin
 packages (<target>\<profile>\viewers, filesystems, thumbnailers) the viewer scenarios
 stage. --plugins names another folder with that layout; --validation-packages takes the
 packages scripts\validate.ps1 left in _build\validate. --test-binary runs an already
-built test executable instead of building one. --run-dir names an absolute folder for
+built test executable instead of building one. --jobs limits concurrent scenarios (1 for
+serial execution, or MIDNIGHT_ACCEPTANCE_JOBS). --run-dir names an absolute folder for
 the run folders (default _build\acceptance). --stress runs the opt-in stress sizes
 (MIDNIGHT_ACCEPTANCE_STRESS=1). The gated volumes' variables (MIDNIGHT_ACCEPTANCE_FAT_DIR,
 _REMOVABLE_DIR, _NETWORK_DIR, _OTHER_EXT_DIR, _NO_TMPFILE_DIR, _WIN_SYMLINKS) name
@@ -269,7 +270,7 @@ $runDirectory = $null
 $runner = New-Object Collections.Generic.List[string]
 $listOnly = $false
 $stress = $false
-$valueOptions = @('--scale', '--only', '--run-dir', '--plugins', '--test-binary')
+$valueOptions = @('--scale', '--jobs', '--only', '--run-dir', '--plugins', '--test-binary')
 for ($index = 0; $index -lt $args.Count; $index++) {
     $argument = [string]$args[$index]
     $name = $argument
@@ -294,6 +295,10 @@ for ($index = 0; $index -lt $args.Count; $index++) {
         '--scale' {
             if ($value -notin @('smoke', 'full')) { Stop-Usage "unknown scale $value" }
             $runner.Add('--scale'); $runner.Add($value)
+        }
+        '--jobs' {
+            if ($value -notmatch '\A[1-4]\z') { Stop-Usage '--jobs requires a number from 1 to 4' }
+            $runner.Add('--jobs'); $runner.Add($value)
         }
         '--only' {
             foreach ($filter in $value.Split(',')) {

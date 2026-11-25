@@ -2,6 +2,34 @@ use super::*;
 use std::cell::RefCell;
 
 #[test]
+fn command_browse_starts_at_the_edited_program() {
+    let temp = std::env::temp_dir();
+    for path in [
+        temp.join("just edited.cmd"),
+        temp.ancestors().last().unwrap().to_owned(),
+    ] {
+        let mut p = loaded();
+        p.new_user_command_setting();
+        let token = p.user_command_settings.token();
+        let mut form = p.user_command_settings_form().unwrap();
+        form.executable = path.to_string_lossy().into_owned();
+        p.remember_user_command_form(&token, form);
+        p.request_settings_picker(Target::CommandProgram, PathPickerOwner::None, &|command| {
+            let Command::PickPath { input, .. } = command else {
+                panic!("expected a picker");
+            };
+            assert_eq!(
+                input.initial_directory.as_deref(),
+                Some(path.parent().unwrap_or(&path))
+            );
+            assert_eq!(input.initial_name.as_deref(), path.file_name());
+            true
+        });
+        assert!(p.settings_picker.busy());
+    }
+}
+
+#[test]
 fn picker_pages_are_the_editors_and_custom_commands_options_topics() {
     // settings_picker_context, the comparator Browse and the Custom Commands shortcut
     // identify picker pages by these Options topic identities; they must follow

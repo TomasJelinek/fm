@@ -59,6 +59,7 @@ const LINK: &str = "https://example.com/midnight-acceptance";
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "harness_checks",
+        isolation: crate::Isolation::Parallel,
         area: "harness",
         summary: "The harness itself: a held Slint clock stands still and fires a timer exactly when advanced to it; pump settles frame by frame; a closed tool window is left alone; the Copy dialog's link question is counted; no terminal ever starts (refused without the desktop stand-in, recorded with it and for a terminal-mode Custom Command); no browser ever starts (a followed web link refused without the stand-in, recorded with it); gated volumes report SKIP when unset; a settings read slower than the 10 s startup deadline shows the defaults first; pruning keeps runs still going.",
         run: checks,

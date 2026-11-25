@@ -58,12 +58,17 @@ fn checksum_picker_returns_the_picked_path_without_starting_work_and_close_retir
         id,
         true,
         ChecksumAlgorithm::Sha256,
+        "edited.sha256",
         PathPickerOwner::None,
         &send,
     );
     let request = match commands.borrow().last().unwrap() {
         Command::PickPath { request, input } => {
             assert_eq!(input.kind, PathPickerKind::ChecksumOpen);
+            assert_eq!(
+                input.initial_name.as_deref(),
+                Some(std::ffi::OsStr::new("edited.sha256"))
+            );
             *request
         }
         _ => panic!(),
@@ -81,6 +86,7 @@ fn checksum_picker_returns_the_picked_path_without_starting_work_and_close_retir
         id,
         false,
         ChecksumAlgorithm::Crc32,
+        "",
         PathPickerOwner::None,
         &send,
     );

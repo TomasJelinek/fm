@@ -745,17 +745,11 @@ fn value<'a>(
     request: &'a UserCommandRequest,
     file: Option<&'a Path>,
 ) -> Option<&'a OsStr> {
-    match variable {
-        UserCommandVariable::ActivePath => request.context.active.as_deref().map(Path::as_os_str),
-        UserCommandVariable::OtherPath => request.context.other.as_deref().map(Path::as_os_str),
-        UserCommandVariable::FilePath => file.map(Path::as_os_str),
-        UserCommandVariable::FileName => file.and_then(Path::file_name),
-        UserCommandVariable::FileStem => file.and_then(Path::file_stem),
-        UserCommandVariable::FileExtension => {
-            file.map(|path| path.extension().unwrap_or(OsStr::new("")))
-        }
-        UserCommandVariable::SelectedPaths => None,
-    }
+    variable.value(
+        request.context.active.as_deref(),
+        request.context.other.as_deref(),
+        file,
+    )
 }
 fn process_bytes(process: &UserCommandProcess) -> usize {
     let bytes = process

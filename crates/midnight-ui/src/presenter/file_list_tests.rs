@@ -420,7 +420,12 @@ fn conflict_requires_explicit_confirmation_and_native_picker_never_exports() {
         true
     };
     let (mut p, id) = fixture(&send);
-    p.request_file_list_picker(id, PathPickerOwner::None, &send);
+    let typed = std::env::temp_dir().join("edited-list.txt");
+    p.request_file_list_picker(id, &typed.to_string_lossy(), PathPickerOwner::None, &send);
+    assert!(
+        matches!(commands.borrow().last(), Some(Command::PickPath { input, .. })
+        if input.initial_name.as_deref() == typed.file_name() && input.initial_directory.as_deref() == typed.parent())
+    );
     let request = p.file_list.session.as_ref().unwrap().picker.unwrap();
     let path = std::env::temp_dir().join("文档-list.txt");
     commands.borrow_mut().clear();

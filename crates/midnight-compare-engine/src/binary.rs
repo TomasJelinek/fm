@@ -685,6 +685,7 @@ impl BinaryComparison {
             bytes_only: false,
             scanning: false,
             position: surface.position[1] as f64 / surface.extent[1].max(1) as f64,
+            text_navigation: None,
             scroll: Some(Box::new(surface.view(geometry.scale))),
         })
     }

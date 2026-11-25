@@ -101,8 +101,19 @@ impl Presenter {
         self.capture_user_command(pane, configuration, id, true, Some(origin), send)
     }
 
+    pub(super) fn user_command_focus(&self, pane: PaneId) -> Option<&Entry> {
+        if let Some(feed) = self.feed(pane) {
+            return feed.focused();
+        }
+        let pane = &self.panes[pane.index()];
+        if pane.tree_view().is_some() || !pane.native_capabilities() || pane.parent_cursor {
+            return None;
+        }
+        pane.cursor.and_then(|id| pane.entry_by_id(id))
+    }
+
     /// A fed list has no common folder: its focused result supplies directory variables.
-    fn user_command_directory(&self, pane: PaneId) -> Option<PathBuf> {
+    pub(super) fn user_command_directory(&self, pane: PaneId) -> Option<PathBuf> {
         if let Some(feed) = self.feed(pane) {
             return feed
                 .focused()
@@ -179,13 +190,7 @@ impl Presenter {
             active: self.user_command_directory(pane),
             other: self.user_command_directory(pane.other()),
             files: None,
-            focus: if let Some(feed) = feed {
-                feed.focused().cloned()
-            } else {
-                (p.tree_view().is_none() && p.native_capabilities() && !p.parent_cursor)
-                    .then(|| p.cursor.and_then(|id| p.entry_by_id(id)).cloned())
-                    .flatten()
-            },
+            focus: self.user_command_focus(pane).cloned(),
         };
         let capture = CommandCapture {
             name: command.name.clone(),

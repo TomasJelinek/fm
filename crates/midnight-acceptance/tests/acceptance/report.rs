@@ -50,7 +50,11 @@ impl Status {
     /// statuses, anything else is a failure. Returns the status and the message without
     /// its prefix.
     pub fn of_error(message: &str) -> (Self, String) {
-        for (prefix, status) in [("SKIP:", Self::Skip), ("PENDING:", Self::Pending)] {
+        for (prefix, status) in [
+            ("SKIP:", Self::Skip),
+            ("PENDING:", Self::Pending),
+            ("TIMEOUT:", Self::Timeout),
+        ] {
             if let Some(rest) = message.strip_prefix(prefix) {
                 return (status, rest.trim().to_owned());
             }
@@ -81,6 +85,7 @@ pub struct Flag {
 
 #[derive(Default)]
 pub struct Outcome {
+    pub start_offset: Duration,
     pub status: Status,
     pub message: String,
     pub duration: Duration,
@@ -351,10 +356,11 @@ figure img{{max-width:100%;height:auto;display:block}}figcaption{{font-size:12px
         .count();
     let _ = write!(
         page,
-        "<p>{} scenario(s), {failed} failed, {:.1} s. Fixture: <code>{}</code> ({:?} scale, seed {:#x}). \
+        "<p>{} scenario(s), {failed} failed, {:.1} s. Worker limit: {}. Fixture: <code>{}</code> ({:?} scale, seed {:#x}). \
 Review strictness: {}.</p><table><tr><th>Scenario</th><th>Area</th><th>Result</th><th>Time</th><th>Details</th></tr>",
         results.len(),
         elapsed.as_secs_f64(),
+        options.jobs,
         html(&fixture.root.display().to_string()),
         fixture.scale,
         super::fixtures::SEED,
@@ -450,10 +456,12 @@ Review strictness: {}.</p><table><tr><th>Scenario</th><th>Area</th><th>Result</t
     for (position, (scenario, outcome)) in results.iter().enumerate() {
         let _ = writeln!(
             summary,
-            "    {{\"name\": {}, \"area\": {}, \"status\": {}, \"seconds\": {:.3}, \"message\": {}, \
+            "    {{\"name\": {}, \"area\": {}, \"isolation\": {}, \"start_seconds\": {:.3}, \"status\": {}, \"seconds\": {:.3}, \"message\": {}, \
 \"screenshots\": {}, \"flags\": {}}}{}",
             json(scenario.name),
             json(scenario.area),
+            json(scenario.isolation.label()),
+            outcome.start_offset.as_secs_f64(),
             json(outcome.status.label()),
             outcome.duration.as_secs_f64(),
             json(&outcome.message),
@@ -468,7 +476,8 @@ Review strictness: {}.</p><table><tr><th>Scenario</th><th>Area</th><th>Result</t
     }
     let _ = write!(
         summary,
-        "  ],\n  \"failed\": {failed},\n  \"seconds\": {:.3},\n  \"report\": {}\n}}\n",
+        "  ],\n  \"jobs\": {},\n  \"failed\": {failed},\n  \"seconds\": {:.3},\n  \"report\": {}\n}}\n",
+        options.jobs,
         elapsed.as_secs_f64(),
         json(&index.display().to_string())
     );

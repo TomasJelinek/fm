@@ -183,6 +183,7 @@ pub(super) fn frame(generation: u64, identity: IdentityVerdict) -> Output {
         // Initial opening colors are accepted at revision zero, not a fallback stamp.
         appearance_revision: 0,
         frame: Frame {
+            text_navigation: None,
             find: Arc::default(),
             fonts: None,
             geometry_revision: 3,

@@ -7,6 +7,10 @@ use crate::desktop::ComGuard;
 use midnight_core::{Cancellation, FsError};
 use std::{io, os::windows::ffi::OsStrExt, path::Path};
 use windows::{
+    Win32::Foundation::{
+        E_NOINTERFACE, E_NOTIMPL, ERROR_FILE_NOT_FOUND, ERROR_NOT_FOUND, ERROR_NOT_SUPPORTED,
+        ERROR_PATH_NOT_FOUND,
+    },
     Win32::UI::Shell::{
         BHID_Transfer, COPYENGINE_E_ACCESS_DENIED_SRC, COPYENGINE_E_RECYCLE_BIN_NOT_FOUND,
         COPYENGINE_E_RECYCLE_FORCE_NUKE, COPYENGINE_E_RECYCLE_PATH_TOO_LONG,
@@ -61,10 +65,10 @@ fn recycle_shell(
             .map_err(|e| failure("get recycle source parent", path, io::Error::other(e)))?;
         let transfer: ITransferSource = parent
             .BindToHandler(None, &BHID_Transfer)
-            .map_err(|e| failure("bind recycle transfer", path, io::Error::other(e)))?;
+            .map_err(|e| recycle_transfer_error("bind recycle transfer", path, e))?;
         let destination: IShellItem =
             SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)
-                .map_err(|e| failure("open Windows Recycle Bin", path, io::Error::other(e)))?;
+                .map_err(|e| recycle_destination_error(path, e))?;
         // Wait before the final path identity check. Pausing after revalidation
         // would extend the Shell's unavoidable path-based race for the entire pause.
         checked(cancel, path)?;
@@ -76,6 +80,43 @@ fn recycle_shell(
             .RecycleItem(&source, &destination, 0)
             .map_err(|error| recycle_error(path, error))
     }
+}
+
+// Only the destination lookup can interpret a missing path as a missing Recycle
+// Bin. A vanished source must never enter the permanent-delete offer.
+fn recycle_destination_error(path: &Path, error: windows::core::Error) -> FsError {
+    let code = error.code();
+    if code == COPYENGINE_E_RECYCLE_BIN_NOT_FOUND
+        || [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND]
+            .iter()
+            .any(|value| code == windows::core::HRESULT::from_win32(value.0))
+    {
+        FsError::trash_unavailable(
+            path,
+            format!("Windows Recycle Bin is unavailable for this location ({code})"),
+        )
+    } else {
+        recycle_transfer_error("open Windows Recycle Bin", path, error)
+    }
+}
+
+fn recycle_transfer_error(
+    operation: &'static str,
+    path: &Path,
+    error: windows::core::Error,
+) -> FsError {
+    if matches!(error.code(), E_NOINTERFACE | E_NOTIMPL)
+        || error.code() == windows::core::HRESULT::from_win32(ERROR_NOT_SUPPORTED.0)
+    {
+        return FsError::trash_unavailable(
+            path,
+            format!(
+                "Windows does not support recycling from this location ({})",
+                error.code()
+            ),
+        );
+    }
+    failure(operation, path, io::Error::other(error))
 }
 
 fn recycle_error(path: &Path, error: windows::core::Error) -> FsError {
@@ -119,6 +160,15 @@ fn recycle_error(path: &Path, error: windows::core::Error) -> FsError {
         _ => None,
     };
     let error = match reason {
+        Some((io::ErrorKind::Unsupported, reason)) => {
+            return FsError::trash_unavailable(
+                path,
+                format!(
+                    "{reason}; the item was not permanently deleted ({})",
+                    error.code()
+                ),
+            );
+        }
         Some((kind, reason)) => io::Error::new(
             kind,
             format!(
@@ -126,7 +176,7 @@ fn recycle_error(path: &Path, error: windows::core::Error) -> FsError {
                 error.code()
             ),
         ),
-        None => io::Error::other(error),
+        None => return recycle_transfer_error("recycle", path, error),
     };
     failure("recycle", path, error)
 }

@@ -41,6 +41,7 @@ const TRANSFER: Duration = Duration::from_secs(20);
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "options_settings_file",
+        isolation: crate::Isolation::Parallel,
         area: "options",
         summary: "Options › Export and Import configuration: the exported file, Replace and Keep for an existing one, the import preview, Cancel and OK (Hot Paths applied), refused files (not JSON, no version, newer), a file from the other operating system (its Hot Path and editor kept inactive, listed and removed).",
         run: settings_file,

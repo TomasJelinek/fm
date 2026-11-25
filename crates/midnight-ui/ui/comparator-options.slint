@@ -168,7 +168,7 @@ component ComparatorRuleFields inherits VerticalLayout {
         spacing: 6px;
         mode := HintedComboBox {
             row: 0; col: 0;
-            model: ["Wildcards", "Regular expression"];
+            model: ["Wildcards", "RegEx"];
             current-index <=> ComparatorOptionsView.draft.mode;
             enabled: root.enabled; accessible-label: "Comparator matching mode";
             min-width: 0px; horizontal-stretch: root.narrow ? 1 : 0;
@@ -343,11 +343,15 @@ export component ComparatorOptions inherits VerticalLayout {
         enabled: ComparatorOptionsView.ready && !ComparatorOptionsView.busy;
         can-add: ComparatorOptionsView.rule-count < 64;
         can-remove: root.rule-selected;
+        show-move: ComparatorOptionsView.rule-count > 1;
         can-move-up: root.rule-selected && ComparatorOptionsView.selected > 0;
         can-move-down: root.rule-selected && ComparatorOptionsView.selected + 1 < ComparatorOptionsView.rule-count;
         action-labels: ["Add comparator rule", "Remove comparator rule", "Move comparator rule up", "Move comparator rule down"];
         action-hints: ["Add an override (Insert)", "Remove the selected override (Delete)",
-            "Increase priority (Alt+Up)", "Decrease priority (Alt+Down)"];
+            !root.rule-selected ? "Select a custom rule to change its priority."
+                : self.can-move-up ? "Increase priority (Alt+Up)" : "This rule already has the highest priority.",
+            !root.rule-selected ? "Select a custom rule to change its priority."
+                : self.can-move-down ? "Decrease priority (Alt+Down)" : "This is the last custom rule. Automatic always runs last."];
         action(operation) => { ComparatorOptionsView.action(operation); }
     }
     priority := ComparatorPriorityList { available-height: root.available-height; }

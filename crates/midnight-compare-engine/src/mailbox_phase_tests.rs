@@ -69,6 +69,7 @@ fn frame(generation: u64) -> Output {
             bytes_only: false,
             scanning: false,
             position: 0.0,
+            text_navigation: None,
             scroll: None,
         },
     }

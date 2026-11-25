@@ -244,6 +244,7 @@ impl Presenter {
                 kind: PathPickerKind::CommandOutputSave,
                 title: "Save command output".into(),
                 initial_directory: None,
+                initial_name: None,
                 owner,
             },
         });

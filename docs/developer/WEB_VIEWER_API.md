@@ -59,7 +59,10 @@ started, which ends a write still blocked then, and 30 s until Ready), so an idl
 document causes no periodic host wakeups.
 
 The application's opt-in `Service::open_with_layout` path uses app-private
-`midnight_core::viewer` messages. `ViewerOutput::LayoutSelected` announces a
+`midnight_core::viewer` messages. The UI admits the backend session before creating
+the native window so capture can start immediately. If creating or showing the window
+fails, dropping the session cancels its worker and retires its capture.
+`ViewerOutput::LayoutSelected` announces a
 nonzero token, selected mode and `content_generation` before the backend starts
 a native plugin session or HTML browser session. An image or PDF provider starts
 decoding at selection instead, overlapping native window creation, because decoding

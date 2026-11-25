@@ -57,6 +57,7 @@ const TARGET: [(&str, &str); 4] = [
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_filtered_conflicts",
+        isolation: crate::Isolation::Parallel,
         area: "journeys",
         summary: "A *.txt panel filter, a Num + mask selection and Ctrl+H, then F5 onto existing names with Replace, Skip and Copy as: the job window's outcome, the disk, both panels (recovery folder follows Ctrl+H) and the Jobs history.",
         run: filtered_conflicts,

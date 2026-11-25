@@ -1,6 +1,6 @@
 # System requirements
 
-Applies to Midnight Explorer **0.5.4**. Build and run commands are in the
+Applies to Midnight Explorer **0.6.0**. Build and run commands are in the
 [user guide](USER_GUIDE.md#build-and-run).
 
 ## Operating systems and support status
@@ -90,9 +90,11 @@ renderer is Slint FemtoVG-WGPU:
 - On Windows it allows Vulkan and Direct3D 12 and uses Vulkan when a Vulkan driver is
   present. The application sets no power preference, so wgpu takes the first suitable
   adapter; `WGPU_POWER_PREF=high` prefers a discrete GPU for a run, as does the
-  per-application graphics preference in Windows Settings.
-- On Linux it uses Vulkan, and all windows share one GPU device;
-  `MIDNIGHT_SHARED_WGPU=0` gives each window its own device again, for comparison.
+  per-application graphics preference in Windows Settings. The application reuses one
+  hardware device when it can present on every attached display. Otherwise each window
+  selects its own device.
+- On Linux it uses Vulkan and shares one GPU device across windows.
+- Set `MIDNIGHT_SHARED_WGPU=0` on either platform to select a device per window.
 - An explicit `WGPU_BACKEND` (for example `dx12`, or `gl` for OpenGL on Linux) replaces
   the backend choice, for driver diagnosis.
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tomllib
 
@@ -93,14 +94,21 @@ def validate_native(manifest):
             raise ValueError(f'native runtime SHA-256 mismatch: {name}')
 
 
-def package(sdk, destination, launcher, metadata, pin, native):
+def package(sdk, destination, launcher, metadata, pin, native, profile='debug'):
     # A fresh package prevents stale files from surviving a previous runtime version.
     destination.mkdir()
     shutil.copy2(launcher, destination / 'midnight-viewer-html')
     for relative in pin['files']:
         if '/' not in relative and relative != 'CMakeLists.txt':
-            shutil.copy2(sdk / relative, destination / relative)
-    shutil.copytree(sdk / 'locales', destination / 'locales')
+            output = destination / relative
+            shutil.copy2(sdk / relative, output)
+            if profile == 'release' and relative in (
+                    'chrome-sandbox', 'libcef.so', 'libvk_swiftshader.so', 'libvulkan.so.1'):
+                # The pinned minimal SDK contains DWARF in these four ELF files.
+                # Preserve loadable sections and dynamic exports. Hash the staged result below.
+                subprocess.run(['strip', '--strip-unneeded', '--', output], check=True)
+    (destination / 'locales').mkdir()
+    shutil.copy2(sdk / 'locales/en-US.pak', destination / 'locales/en-US.pak')
     # LICENSE is the provider's own licence (GPL-3.0-or-later); CEF's LICENSE.txt covers only CEF.
     for name in ['LICENSE', 'README.md', 'THIRD_PARTY.md']:
         shutil.copy2(PROJECT / name, destination / name)
@@ -160,7 +168,10 @@ if __name__ == '__main__':
         if native:
             validate_native(native)
         if sys.argv[1] == 'package':
-            package(sdk, Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]), pin, native)
+            profile = sys.argv[6] if len(sys.argv) > 6 else 'debug'
+            if profile not in ('debug', 'release'):
+                raise ValueError('expected debug or release profile')
+            package(sdk, Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]), pin, native, profile)
         elif sys.argv[1] == 'validate':
             # Cargo executes cef-dll-sys in its own crate directory, not this helper's cwd.
             sys.stdout.buffer.write(str(sdk).encode('utf-8') + b'\0')

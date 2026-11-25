@@ -28,6 +28,6 @@ cargo metadata --manifest-path "$project/Cargo.toml" --config "$sdk_config" \
     --filter-platform x86_64-unknown-linux-gnu --locked --offline --format-version 1 \
     > "$target/dependency-metadata.json"
 python3 -B "$project/scripts/package-linux.py" package "$CEF_PATH" "$package" \
-    "$target/$profile/midnight-html-linux-launcher" "$target/dependency-metadata.json"
+    "$target/$profile/midnight-html-linux-launcher" "$target/dependency-metadata.json" "$profile"
 # No installation, setuid chmod, policy relaxation or sandbox disabling is performed.
 printf '%s\n' "Unqualified Linux package staged at $package; audit notices and run native qualification before distribution."

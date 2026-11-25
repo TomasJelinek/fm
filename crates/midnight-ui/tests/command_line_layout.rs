@@ -136,7 +136,10 @@ fn prompt_and_command_text_have_only_a_small_visual_gap() {
 #[test]
 fn long_working_folder_shows_a_literal_omission_marker_and_the_prompt_tail() {
     let mut test = ui::TestUi::new();
-    let path = format!("C:\\Users\\{}\\文档", "long-folder\\".repeat(40));
+    let path = format!(
+        r"D:\100\releases\{}\extension\module\文档",
+        r"source-files\".repeat(18)
+    );
     configure(&mut test, &path);
     test.draw();
     let marker = ui::root_item(
@@ -155,7 +158,58 @@ fn long_working_folder_shows_a_literal_omission_marker_and_the_prompt_tail() {
     let view_right = test.window.get_command_path_left() + test.window.get_command_path_width();
     assert!((text_right - view_right + 4.0).abs() <= 1.0);
     assert_eq!(test.window.get_command_prompt(), format!("{path}>"));
+    // The command bar frame is continuous across the prompt and both edge cues.
+    let left = test.window.get_command_path_left().ceil() as usize;
+    let right = view_right.floor() as usize;
+    let editor = test.window.get_command_input_left() + 7.;
+    let top = test.window.get_command_bar_top();
+    let bottom = top + test.window.get_command_bar_height();
+    for y in [top, bottom - 1.] {
+        assert!((left..right).all(|x| test.pixel(x as f32, y) == test.pixel(editor, y)));
+    }
     render::snapshot(&test, "command-path-literal-ellipsis");
+    // Changing only an offscreen ancestor must change no visible prompt pixel.
+    let capture = |test: &ui::TestUi| {
+        (top.ceil() as usize..bottom.floor() as usize)
+            .flat_map(|y| {
+                test.pixels[y * test.width + left..y * test.width + right]
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = capture(&test);
+    let second = path.replace("100", "900");
+    test.window.set_left_path(second.as_str().into());
+    test.draw();
+    assert_eq!(test.window.get_command_prompt(), format!("{second}>"));
+    assert!(
+        before == capture(&test),
+        "an offscreen path prefix was painted in the command bar"
+    );
+    let pan = |test: &mut ui::TestUi, x, delta_y| {
+        test.window
+            .window()
+            .dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(x, (top + bottom) / 2.),
+                delta_x: 0.,
+                delta_y,
+            });
+        test.draw();
+    };
+    pan(&mut test, left as f32 + 4., 100_000.);
+    assert!(
+        (test.window.get_command_path_text_left() - test.window.get_command_path_left() - 4.).abs()
+            < 1.
+    );
+    for y in [top, bottom - 1.] {
+        assert!((left..right).all(|x| test.pixel(x as f32, y) == test.pixel(editor, y)));
+    }
+    pan(&mut test, right as f32 - 4., -100_000.);
+    assert!(
+        before == capture(&test),
+        "the right edge cue must allow returning to the tail"
+    );
 }
 
 #[test]

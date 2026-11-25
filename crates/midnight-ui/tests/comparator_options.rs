@@ -264,21 +264,25 @@ fn rule_actions_are_bounded_and_fixed_fallback_cannot_be_removed_or_moved() {
     view.on_select(move |row| recorded.borrow_mut().push(row));
     activate(&mut test, "Add comparator rule", AccessibleRole::Button);
     activate(&mut test, "Remove comparator rule", AccessibleRole::Button);
-    activate(&mut test, "Move comparator rule up", AccessibleRole::Button);
-    activate(
-        &mut test,
-        "Move comparator rule down",
-        AccessibleRole::Button,
-    );
+    for label in ["Move comparator rule up", "Move comparator rule down"] {
+        assert!(ui::try_popup_item(&test.window, label, AccessibleRole::Button).is_none());
+    }
     assert_eq!(actions.borrow().as_slice(), &[0, 1]);
     actions.borrow_mut().clear();
+    view.set_labels(strings(&[
+        "First",
+        "Second",
+        "Other regular files → Automatic (fixed)",
+    ]));
+    view.set_rule_count(2);
+    settle(&mut test);
     activate(
         &mut test,
         "Other regular files → Automatic (fixed)",
         AccessibleRole::ListItem,
     );
-    assert_eq!(selections.borrow().as_slice(), &[1]);
-    view.set_selected(1);
+    assert_eq!(selections.borrow().as_slice(), &[2]);
+    view.set_selected(2);
     settle(&mut test);
     for label in [
         "Remove comparator rule",
@@ -294,7 +298,7 @@ fn rule_actions_are_bounded_and_fixed_fallback_cannot_be_removed_or_moved() {
     assert!(actions.borrow().is_empty());
     ui::key(&test.window, Key::Home);
     ui::key(&test.window, Key::End);
-    assert_eq!(selections.borrow().as_slice(), &[1, 0, 1]);
+    assert_eq!(selections.borrow().as_slice(), &[2, 0, 2]);
 }
 
 #[test]

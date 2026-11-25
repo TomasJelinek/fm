@@ -267,8 +267,16 @@ fn expect(
     let (text, rows) = search(app, window, inside(query))?;
     let found = relative(&rows, root);
     if !text.starts_with("Completed") || found != set(expected) {
+        let details = if text.contains("click for details") {
+            match find::details(app, window) {
+                Ok(lines) => format!("\n{}", lines.join("\n")),
+                Err(error) => format!("\nCould not read Find details: {error}"),
+            }
+        } else {
+            String::new()
+        };
         return Err(format!(
-            "{what}: {text:?}, found {found:?}, expected {expected:?}"
+            "{what}: {text:?}, found {found:?}, expected {expected:?}{details}"
         ));
     }
     Ok(rows)

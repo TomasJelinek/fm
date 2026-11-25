@@ -51,13 +51,14 @@ fn checkbox(app: &App, label: &str) -> Option<(bool, bool)> {
         .map(|item| (tools::checked(&item), tools::enabled(&item)))
 }
 
-/// Tab through the open dialog of one file from its destination field: Links, the
+/// Tab through the open dialog of one file from its destination field: Browse, Links, the
 /// preserve option, the queueing option, Cancel, the primary action (`verb`), then around
 /// to the destination field again (past the header's close button when it takes focus).
 fn tab_order(app: &mut App, verb: &str) -> Result<(), String> {
     // The preserve option is a stop wherever it is offered (every Copy and Move).
     let offered = checkbox(app, PRESERVE).is_some_and(|(_, enabled)| enabled);
     let stops: Vec<(AccessibleRole, &str)> = [
+        (AccessibleRole::Button, "Browse for destination folder"),
         (AccessibleRole::Combobox, support::LINKS_LABEL),
         (AccessibleRole::Checkbox, PRESERVE),
         (AccessibleRole::Checkbox, support::WAIT_OPTION),

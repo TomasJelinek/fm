@@ -16,6 +16,25 @@ pub enum UserCommandVariable {
     SelectedPaths,
 }
 impl UserCommandVariable {
+    /// Resolve a scalar using the same native path rules for command preparation and pickers.
+    pub fn value<'a>(
+        self,
+        active: Option<&'a std::path::Path>,
+        other: Option<&'a std::path::Path>,
+        file: Option<&'a std::path::Path>,
+    ) -> Option<&'a OsStr> {
+        use std::path::Path;
+        match self {
+            Self::ActivePath => active.map(Path::as_os_str),
+            Self::OtherPath => other.map(Path::as_os_str),
+            Self::FilePath => file.map(Path::as_os_str),
+            Self::FileName => file.and_then(Path::file_name),
+            Self::FileStem => file.and_then(Path::file_stem),
+            Self::FileExtension => file.map(|path| path.extension().unwrap_or(OsStr::new(""))),
+            Self::SelectedPaths => None,
+        }
+    }
+
     pub fn parse(name: &str) -> Result<Self, &'static str> {
         match name {
             "active.path" => Ok(Self::ActivePath),

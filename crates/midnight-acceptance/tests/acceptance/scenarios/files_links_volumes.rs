@@ -65,6 +65,8 @@ type Judge = dyn Fn(Key, &Path, &Path, &Result<support::TransferRun, String>) ->
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "files_links_volumes",
+        // Exercises host-provided FAT, removable, network and cross-volume devices.
+        isolation: crate::Isolation::Exclusive,
         area: "transfers",
         summary: "The Links choice where the destination decides it (each part gated by its MIDNIGHT_ACCEPTANCE_* folder, SKIP without): FAT/exFAT and a Windows network location propose copying the files with their reason, warn about keeping links and hold the first Enter of a Copy, which then leaves each link out without a question and names it; a Move from another drive there is refused in the dialog; a removable drive proposes copying the files unless the selection is on it, and a project moved there arrives without links or is refused; a typed folder whose default differs holds once and shows its default; a Move keeping links to another volume recreates them; a Linux folder without O_TMPFILE is refused in words; Windows symbolic links kept as links become a junction with a note or ask, without the right to create them.",
         run: links_volumes,

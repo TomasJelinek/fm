@@ -845,13 +845,18 @@ fn enter_with_an_empty_name_keeps_create_dialogs_open_and_says_why() {
         (
             3,
             "Create directory",
-            "Folder name or path",
+            "Directory name",
             "Type the folder name or path first.",
         ),
         (4, "New file", "File name", "Type the file name first."),
     ] {
         confirmed.borrow_mut().clear();
         form.set_kind(kind);
+        form.set_folder_location(if kind == 3 {
+            "/pictures".into()
+        } else {
+            "".into()
+        });
         form.set_title_text(title.into());
         form.set_confirm_text(title.into());
         form.set_has_name(true);

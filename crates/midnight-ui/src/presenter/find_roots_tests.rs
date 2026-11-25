@@ -107,21 +107,21 @@ fn browse_adds_the_exact_chosen_folder_only_to_its_own_open_window() {
         commands.borrow_mut().push(command);
         true
     };
-    p.request_find_root_picker(id, PathPickerOwner::X11(7), &send);
+    p.request_find_root_picker(id, "typed", PathPickerOwner::X11(7), &send);
     let request = match commands.borrow_mut().pop() {
         Some(Command::PickPath { request, input }) => {
             assert_eq!(input.kind, PathPickerKind::Directory);
             assert_eq!(input.owner, PathPickerOwner::X11(7));
             assert_eq!(
                 input.initial_directory.as_ref(),
-                Some(&p.finds.sessions[&id].roots[0].path)
+                Some(&p.finds.sessions[&id].roots[0].path.join("typed"))
             );
             request
         }
         _ => panic!("Browse must open the native folder chooser"),
     };
     // A second Browse while the chooser is open is ignored.
-    p.request_find_root_picker(id, PathPickerOwner::None, &send);
+    p.request_find_root_picker(id, "", PathPickerOwner::None, &send);
     assert!(commands.borrow().is_empty());
     let chosen = std::env::temp_dir().join("chosen 日本語");
     p.apply(Event::PathPicked {
@@ -141,7 +141,7 @@ fn browse_adds_the_exact_chosen_folder_only_to_its_own_open_window() {
     });
     assert_eq!(p.finds.sessions[&id].roots.len(), 2);
     // A relative answer is refused with an error, not listed.
-    p.request_find_root_picker(id, PathPickerOwner::None, &send);
+    p.request_find_root_picker(id, "", PathPickerOwner::None, &send);
     let Some(Command::PickPath { request, .. }) = commands.borrow_mut().pop() else {
         panic!("Browse must open the native folder chooser");
     };
@@ -158,7 +158,7 @@ fn closing_a_window_cancels_its_folder_chooser_first() {
     let mut p = presenter();
     let id = p.create_find(PaneId::Left).unwrap();
     let commands = RefCell::new(Vec::new());
-    p.request_find_root_picker(id, PathPickerOwner::None, &|command| {
+    p.request_find_root_picker(id, "", PathPickerOwner::None, &|command| {
         commands.borrow_mut().push(command);
         true
     });

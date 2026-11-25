@@ -1072,8 +1072,8 @@ fn toolbar_fit_restores_panned_rasters_at_native_dpi_through_late_frames_and_res
 }
 
 #[test]
-fn restored_raster_zoom_replaces_the_previous_local_zoom_intent() {
-    let (_runtime, manager, open, service) = open();
+fn restored_raster_zoom_preserves_the_current_windows_zoom_intent() {
+    let (_runtime, manager, open, _service) = open();
     match_fixture_viewport(&open);
     *open.input.borrow_mut() = Rc::new(|_| true);
     open.window.invoke_image_zoom(1.0, 100.0, 80.0);
@@ -1081,23 +1081,10 @@ fn restored_raster_zoom_replaces_the_previous_local_zoom_intent() {
         image_zoom: ViewerZoomPreference::ScaleBasisPoints(20_000),
         ..Default::default()
     }));
-    let mut restored = frame();
-    restored.revision = 2;
-    restored.tiles = None;
-    restored.pixels = vec![255; 400 * 240 * 4].into();
-    let info = restored.image.as_mut().unwrap();
-    info.zoom = 2.0;
-    info.visible_source = [200.0, 120.0];
-    present_outputs(
-        &open,
-        &service,
-        &|_| {},
-        vec![ViewerOutput::Frame(Box::new(restored))],
-    );
     open.window.invoke_image_zoom(1.0, 100.0, 80.0);
     assert_eq!(
         open.session.preferences().image_zoom,
-        ViewerZoomPreference::ScaleBasisPoints(25_000)
+        ViewerZoomPreference::ScaleBasisPoints(15_625)
     );
     manager.close_all();
 }

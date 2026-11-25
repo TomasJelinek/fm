@@ -82,7 +82,6 @@ pub(crate) struct DesktopState {
     pub(crate) draft_nonempty: bool,
     pub(crate) draft_shell: Option<ShellFlavor>,
     pub(crate) command_history_cursor: Option<String>,
-    pub(crate) terminal_guidance: Option<&'static str>,
     /// Keyed at `IconKey::DEFAULT_EDGE`; each icon's bitmaps by ascending edge.
     images: HashMap<IconKey, Vec<IconVariant>>,
     /// Icons in the order of their first delivery.
@@ -618,9 +617,13 @@ impl Presenter {
         mode: TerminalMode,
         send: &dyn Fn(Command) -> bool,
     ) -> bool {
-        if !self.native_action_allowed(self.active) {
+        let Some(directory) = self.panes[self.active.index()].terminal_directory() else {
+            self.desktop.report(
+                "Terminal unavailable",
+                "Open a filesystem folder or an archive before starting a terminal.".into(),
+            );
             return false;
-        }
+        };
         if self.desktop.terminal_pending.is_some() {
             return false;
         }
@@ -631,13 +634,13 @@ impl Presenter {
             );
             return false;
         };
-        let request = self.desktop.request();
         let terminal = TerminalRequest {
             command: text.into(),
-            working_directory: self.panes[self.active.index()].display_path().to_owned(),
+            working_directory: directory.to_owned(),
             shell,
             mode,
         };
+        let request = self.desktop.request();
         if !send(Command::LaunchTerminal { request, terminal }) {
             self.desktop.report(
                 "Terminal queue busy",

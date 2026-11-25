@@ -59,20 +59,16 @@ checkboxes, extension overrides and runtime reload are not exposed by this catal
 | Text comparator font | Consolas if installed; otherwise system monospace | Independent installed fixed-pitch family |
 | Markdown font | Sans-serif, 16 logical pixels | Family and size |
 | Markdown presentation | GitHub | GitHub, Compact or Comfortable |
-| Raster image zoom | Fit | Fit, actual pixels or manual scale; restored when opening |
-| PDF zoom | Fit on each new source | The document zoom field is read and written but not restored |
+| Image and PDF zoom | Fit on each new source | Existing profiles can contain separate image and PDF zoom values. Each file opens fitted to its window. |
 
 Manual scale uses integer basis points: 10,000 means 100%, with 0.01% stored
 precision. Font sizes are 8–48 logical pixels; family names are nonempty Unicode
 strings, at most 256 UTF-8 bytes and without control characters. These are settings
 resource bounds, not native filename/path limits. Invalid values fail atomically.
 
-Each newly opened PDF starts in Fit, including file cycling to another PDF. Saved
-document zoom values stay valid in the settings schema but do not set a new
-document's view, and a late settings load leaves the current PDF geometry unchanged.
-Explicit zoom commands control the current document, and its first zoom step starts
-from the displayed scale. Raster images still restore their separate
-saved zoom.
+Opening or cycling to an image or PDF starts it in Fit. The settings schema
+continues to accept saved zoom values from earlier sessions. Zoom commands apply
+to the current file and the first zoom step starts from its displayed scale.
 
 PDF Fit enlarges small pages and shrinks large pages to the viewport, with a
 maximum scale of 64× and a bounded raster size. Raster-image Fit keeps
@@ -211,8 +207,8 @@ Startup reveals the main window after 10 seconds without a settings answer
 viewer can be opened before the read arrives; it starts with the defaults plus its
 own edits. When the read arrives, the explorer restores the loaded choices, merged
 with those edits, into every open viewer window, so conflicting edits made in
-different windows before the read converge to the last one. Raster images adopt the
-restored zoom; PDF geometry stays as it is. Restoration saves nothing and reports
+different windows before the read converge to the last one. Each open image and PDF
+retains its own live zoom during restoration. Restoration saves nothing and reports
 no edit. Open comparators likewise adopt the loaded comparison font; one still
 waiting for its font catalog applies it when the catalog arrives, and a family the
 catalog does not offer leaves its font unchanged.

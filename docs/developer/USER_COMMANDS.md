@@ -63,9 +63,10 @@ missing required context is an error.
 
 Working directory expands to one native path and is passed via the process API.
 There is no generated `cd` source. Program arguments are separate `OsString`
-values, preserving invalid Unix UTF-8 and native Windows UTF-16. Windows direct
-launch rejects batch files; it uses an explicit executable without association or
-browsed-directory PATH lookup. Unix executable scripts retain OS exec semantics.
+values, preserving invalid Unix UTF-8 and native Windows UTF-16. On Windows, Run directly accepts absolute
+.exe, .com, .bat and .cmd paths. Rust's process API launches batch files with the
+Windows command interpreter and quotes their arguments. The captured-output
+helper inherits the command's working directory, streams and cancellation job. Unix executable scripts retain OS exec semantics.
 
 Terminal data is exported only through declared fixed keys: `ME_ACTIVE_PATH`,
 `ME_OTHER_PATH`, `ME_FILE_PATH`, `ME_FILE_NAME`, `ME_FILE_STEM` and
@@ -203,8 +204,9 @@ the default, and validation refuses anything else. Settings schema 39 stores it 
 saved before schema 39 reads as **Hidden**, its earlier behavior. New commands start
 with **Output window** (`UserCommandOutput::NEW_PROGRAM`): a program run directly
 otherwise has no visible result, and the window adds no console of its own.
-Each choice keeps the Program guarantee: the executable receives exactly the
-expanded argv elements, one per argument row, and no shell parses or splits them.
+All three choices pass one argument per expanded row to the process API. Native
+executables receive these as argv. Windows interprets explicitly selected `.bat`
+and `.cmd` files using its batch syntax.
 
 - **Hidden** — `launch_user_program`: no window, standard streams on the null device.
 - **Output window** — `launch_user_program_captured` returns a

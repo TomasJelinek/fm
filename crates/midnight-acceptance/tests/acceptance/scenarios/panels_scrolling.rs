@@ -38,6 +38,7 @@ const HEIGHT: usize = 520;
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "panels_scrolling",
+        isolation: crate::Isolation::Parallel,
         area: "panels",
         summary: "Panel scrolling: a row cut at the list's top drawn in every frame of a wheel gesture, Detailed and Brief resting on a whole row, Thumbnails keeping its offset and a click on its cut top row, a click focusing a Brief list scrolled past its cursor, Home/Up/End/Down revealing an unmoved cursor (P-7); native notches through the seam: the rows nearest the notch for 1, 3 and 6 lines and one screen, gliding, from a cut Thumbnails offset to a band boundary, and with less motion or Scrolling glide Off at once; the exact rest and glide times (H1) SKIP.",
         run: scrolling,

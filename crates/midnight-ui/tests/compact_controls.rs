@@ -153,8 +153,7 @@ fn icon_shell_picker_commits_only_on_enter_and_restores_editor_focus() {
             1,
             "Escape cancels the pending choice"
         );
-        // A host rejection, such as a cross-shell draft, must remain the
-        // selection the picker shows when opened again.
+        // A rejected callback keeps the previous selection when the picker reopens.
         allow_pick.set(false);
         ui::click_root(&window, "Command shell", AccessibleRole::Combobox);
         draw(&mut pixels);

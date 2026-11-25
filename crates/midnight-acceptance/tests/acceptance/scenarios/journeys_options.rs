@@ -48,6 +48,7 @@ const DOCUMENTS: [&str; 3] = ["readme.md", "notes.txt", "plan.docx"];
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_options_restart",
+        isolation: crate::Isolation::ParallelPlugins,
         area: "journeys",
         summary: "One Options session sets the Light theme, a *.log colour rule and Copy on Ctrl+Alt+Y; at once and after a restart: light panels and dialogs, red rows in both panels, F5 inert, Ctrl+Alt+Y copies, F3 opens a light viewer (installed plugins); a Markdown text, a plain text and a Word document share the palette's document colour and a source file has another, both kept after the restart, and Options lists its pages in their order of use.",
         run: options_restart,

@@ -941,32 +941,12 @@ pub fn write_at(path: &Path, data: &[u8], time: SystemTime) -> Result<(), String
 }
 
 /// A sparse file: `length` bytes that read as zeros and use (almost) no disk space.
-/// NTFS allocates the whole length of an ordinary file it extends, so on Windows a file
-/// of 1 MiB or more is marked sparse first (`fsutil sparse setflag`, which needs no
-/// privilege); smaller ones take their length.
+/// NTFS needs the sparse attribute on the file before extending its length.
 pub fn sparse(path: &Path, length: u64) -> Result<(), String> {
     let error = |error: std::io::Error| format!("{}: {error}", path.display());
     let file = fs::File::create(path).map_err(error)?;
     #[cfg(windows)]
-    let file = if length >= 1 << 20 {
-        drop(file);
-        let output = std::process::Command::new("fsutil")
-            .args(["sparse", "setflag"])
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|failure| format!("fsutil sparse setflag {}: {failure}", path.display()))?;
-        if !output.status.success() {
-            return Err(format!(
-                "fsutil sparse setflag {}: {}",
-                path.display(),
-                String::from_utf8_lossy(&output.stdout).trim()
-            ));
-        }
-        fs::File::options().write(true).open(path).map_err(error)?
-    } else {
-        file
-    };
+    crate::fixtures::mark_sparse(&file).map_err(error)?;
     file.set_len(length).map_err(error)
 }
 

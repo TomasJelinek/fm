@@ -18,6 +18,8 @@ midnight-filesystem-plugin-sdk = { version = "=0.2.0", path = "../../filesystem-
 zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 
 [profile.release]
+debug = false
+strip = "symbols"
 overflow-checks = true
 panic = "unwind"
 

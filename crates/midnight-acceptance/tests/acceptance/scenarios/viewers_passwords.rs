@@ -33,6 +33,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "viewers_passwords",
+        isolation: crate::Isolation::ParallelPlugins,
         area: "viewers",
         summary: "Archive passwords through the installed archive plugin: ZipCrypto and WinZip AES-128/192/256 members marked Encrypted in the listing and the details; F3 asks for the archive's password (empty and wrong refused in the dialog, Escape and Cancel close it without a notice and open nothing); the right non-ASCII password by Enter or OK opens the viewer and the other members without asking until the archive is closed; an AES archive inside a ZipCrypto archive asks for each password; unreadable members (Implode, an unsafe name, a link, strong encryption) say why; a 7-Zip archive with encrypted names asks before listing (host 7z); the password reaches no settings, clipboard, event trace or console.",
         run: passwords,

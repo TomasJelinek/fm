@@ -16,18 +16,37 @@ fn delete_confirmation(
             .iter()
             .find_map(|pane| pane.folder_sizes.get(path).cloned())
     };
-    let source = presenter
-        .operations
-        .progress
-        .iter()
-        .find(|progress| progress.id == preview.id)
-        .map(|progress| progress.source_directory.as_path());
     let context = delete_summary::Context {
         locale: &presenter.number_locale,
         folder_size: &folder_size,
-        source,
+        source: operation_source(presenter, preview.id),
     };
     delete_summary::confirmation(preview, mode, &context)
+}
+
+fn operation_source(presenter: &Presenter, id: OperationId) -> Option<&std::path::Path> {
+    presenter
+        .operations
+        .progress
+        .iter()
+        .find(|progress| progress.id == id)
+        .map(|progress| progress.source_directory.as_path())
+}
+
+/// The directory the name is relative to. A rename from an expanded tree or
+/// search result can target a child of a different directory than the pane.
+pub(super) fn folder_location(presenter: &Presenter) -> Option<&std::path::Path> {
+    let preview = presenter.operations.preview.as_ref()?;
+    match preview.kind {
+        MutationKind::CreateDirectory => operation_source(presenter, preview.id),
+        MutationKind::Rename => preview
+            .sample
+            .first()
+            .filter(|item| matches!(item.kind, EntryKind::Directory | EntryKind::DirectoryLink))?
+            .path
+            .parent(),
+        _ => None,
+    }
 }
 
 /// What the shared form draws of the pending Delete confirmation besides its warning.
@@ -42,7 +61,7 @@ pub(super) struct DeleteForm {
 }
 
 pub(super) fn delete_form(presenter: &Presenter) -> Option<DeleteForm> {
-    let preview = presenter.operations.preview.as_ref()?;
+    let (preview, _) = presenter.operation_form()?;
     let MutationKind::Delete(mode) = preview.kind else {
         return None;
     };
@@ -69,8 +88,18 @@ pub(super) fn delete_form(presenter: &Presenter) -> Option<DeleteForm> {
     let path_parts = confirmation
         .folder
         .as_deref()
-        .map(crate::presenter::path_labels)
-        .unwrap_or_default()
+        .map(path_rows)
+        .unwrap_or_default();
+    Some(DeleteForm {
+        question: shown_text(&confirmation.question),
+        details,
+        labels: confirmation.labels().into(),
+        path_parts,
+    })
+}
+
+pub(super) fn path_rows(path: &std::path::Path) -> Vec<PathPartRow> {
+    crate::presenter::path_labels(path)
         .into_iter()
         .enumerate()
         .map(|(index, (label, prefix))| PathPartRow {
@@ -78,13 +107,7 @@ pub(super) fn delete_form(presenter: &Presenter) -> Option<DeleteForm> {
             label: shown_text(&label),
             prefix: shown_text(&prefix),
         })
-        .collect();
-    Some(DeleteForm {
-        question: shown_text(&confirmation.question),
-        details,
-        labels: confirmation.labels().into(),
-        path_parts,
-    })
+        .collect()
 }
 
 pub(super) fn title(kind: MutationKind) -> &'static str {
@@ -129,11 +152,11 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
         |model| window.set_operations(model),
     );
     copy_presentation::refresh(window, presenter);
-    let Some(preview) = &state.preview else {
+    let Some((preview, token)) = presenter.operation_form() else {
         window.set_operation_token("".into());
         return;
     };
-    let token: SharedString = preview.id.0.to_string().into();
+    let token: SharedString = token.into();
     if window.get_operation_token() == token {
         // The same dialog stays open; only an existing-name question can appear in it.
         present_replace(window, state.replace_name.as_ref(), preview);
@@ -158,12 +181,8 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
     } else {
         String::new()
     };
-    let select = rename_selection_end(&name, preview.sample.first().map(|item| item.kind));
-    let location = state
-        .progress
-        .iter()
-        .find(|progress| progress.id == preview.id)
-        .map(|progress| progress.source_directory.as_path());
+    let item_kind = preview.sample.first().map(|item| item.kind);
+    let select = rename_selection_end(&name, item_kind);
     let delete = match kind {
         MutationKind::Delete(mode) => Some(delete_confirmation(presenter, preview, mode)),
         _ => None,
@@ -173,10 +192,12 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             || "Choose a new name.".into(),
             |item| format!("Current item\n{}", item.path.display()),
         ),
-        MutationKind::CreateFile | MutationKind::CreateDirectory => location.map_or_else(
-            || "Enter a name.".into(),
-            |path| format!("Location\n{}", path.display()),
-        ),
+        MutationKind::CreateFile | MutationKind::CreateDirectory => {
+            operation_source(presenter, preview.id).map_or_else(
+                || "Enter a name.".into(),
+                |path| format!("Location\n{}", path.display()),
+            )
+        }
         MutationKind::EditMetadata => String::new(),
         // The question first, then the details; the warning is the form's own line.
         MutationKind::Delete(_) => delete
@@ -184,7 +205,12 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .map(|delete| delete.text())
             .unwrap_or_default(),
     };
-    window.set_operation_title(title(kind).into());
+    let form_title = match (kind, item_kind) {
+        (MutationKind::Rename, Some(EntryKind::Directory)) => "Rename folder",
+        (MutationKind::Rename, Some(EntryKind::DirectoryLink)) => "Rename folder link",
+        _ => title(kind),
+    };
+    window.set_operation_title(form_title.into());
     let (role, kind_id, warning) = match kind {
         MutationKind::Rename => (ActionIcon::Rename, 0, ""),
         MutationKind::Delete(mode) => (
@@ -202,7 +228,19 @@ pub(super) fn refresh(window: &MainWindow, presenter: &Presenter) {
             .image(&IconKey::action(role), IconPlace::Action),
     );
     window.set_operation_kind(kind_id);
-    window.set_operation_warning(warning.into());
+    window.set_operation_warning(if presenter.trash_fallback().is_some() {
+        format!(
+            "{} is unavailable for the items shown. {warning}",
+            if cfg!(windows) {
+                "The Recycle Bin"
+            } else {
+                "Trash"
+            }
+        )
+        .into()
+    } else {
+        warning.into()
+    });
     window.set_operation_body(shown_text(&body));
     // The name field edits the raw name: what it holds is what the operation receives.
     window.set_operation_name(name.into());

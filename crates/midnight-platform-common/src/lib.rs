@@ -26,6 +26,31 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// Resolve the path field on the picker worker. A directory typed in a file field
+/// opens that directory. An unfinished folder path opens its nearest existing parent.
+pub fn picker_start(
+    request: &midnight_core::PathPickerRequest,
+    cancel: &Cancellation,
+) -> midnight_core::PathPickerRequest {
+    let mut start = request.clone();
+    if let Some(folder) = &request.initial_directory {
+        if let Some(name) = &request.initial_name {
+            let candidate = folder.join(name);
+            if !cancel.is_cancelled() && candidate.is_dir() {
+                start.initial_directory = Some(candidate);
+                start.initial_name = None;
+                return start;
+            }
+        }
+        start.initial_directory = folder
+            .ancestors()
+            .take_while(|_| !cancel.is_cancelled())
+            .find(|parent| parent.is_dir())
+            .map(Path::to_owned);
+    }
+    start
+}
+
 /// Safe local operations preserving native paths and leaving volume policy to each OS.
 /// Call service methods on background workers; cancellation cannot interrupt an OS call.
 pub struct LocalServices {

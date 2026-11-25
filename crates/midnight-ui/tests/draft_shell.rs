@@ -1,4 +1,4 @@
-//! Real editor events protect a draft from late settings and cross-shell picks.
+//! A draft uses the selected shell even when a saved default arrives later.
 use crate::support::ui;
 
 use midnight_core::*;
@@ -20,7 +20,7 @@ fn key(window: &MainWindow, text: impl Into<slint::SharedString>) {
 }
 
 #[test]
-fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_picker_changes() {
+fn explicit_shell_change_preserves_the_draft_and_caret_and_enter_uses_it() {
     let mut ui = ui::TestUi::bare();
     let window = ui.window.clone_strong();
     let presenter = Rc::new(RefCell::new(Presenter::new(
@@ -78,20 +78,24 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
     window.invoke_terminal_changed(1);
     assert_eq!(
         window.get_terminal_index(),
-        0,
-        "a draft containing shell syntax keeps its original interpreter"
+        1,
+        "the explicit shell selection applies to the current draft"
     );
     assert_eq!(window.get_command_text().as_str(), literal_draft);
     assert_eq!(window.get_command_cursor(), cursor);
     assert!(window.get_command_focused());
     assert!(
-        commands.borrow().is_empty(),
-        "rejected picks must not save or launch"
+        commands
+            .borrow()
+            .iter()
+            .all(|command| matches!(command, Command::SavePreferences { .. })),
+        "choosing the shell can only save preferences"
     );
+    commands.borrow_mut().clear();
     key(&window, Key::Return);
     let first = match &commands.borrow()[0] {
         Command::LaunchTerminal { request, terminal } => {
-            assert_eq!(terminal.shell, ShellFlavor::PowerShell);
+            assert_eq!(terminal.shell, ShellFlavor::Cmd);
             assert_eq!(terminal.command, literal_draft);
             assert_eq!(
                 terminal.working_directory,
@@ -107,7 +111,7 @@ fn nonempty_editor_and_inserted_paths_keep_their_shell_across_late_load_and_pick
             process_id: 1,
             history: CommandHistoryEntry {
                 command: literal_draft,
-                shell: ShellFlavor::PowerShell,
+                shell: ShellFlavor::Cmd,
             },
         }),
     });

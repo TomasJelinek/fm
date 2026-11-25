@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Tip, TipBody } from "controls.slint";
+import { Tip, TipBody, TooltipPlacement } from "controls.slint";
 import { FilenameColorPresentation } from "filename-colors.slint";
 import { PrefixName } from "panel-search.slint";
 import { NameText } from "path-text.slint";
@@ -110,6 +110,8 @@ export component FileEntry inherits Rectangle {
         if item.folder-link && root.link-tooltips-enabled && root.visible && !root.touch-contact : Tooltip {
             TipBody {
                 text: root.link-target-text == "" ? "Link target unavailable" : root.link-target-text;
+                // A path can use all the room on either side of the pointer.
+                width-limit: TooltipPlacement.surface-width;
                 init => {
                     if root.hover-identity != "" { root.read-directory-link-target(root.hover-identity); }
                 }

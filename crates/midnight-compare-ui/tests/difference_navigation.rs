@@ -28,7 +28,7 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
     for (side, path) in paths.iter().enumerate() {
         let text: String = (0..150)
             .map(|row| {
-                if matches!(row, 0 | 50 | 100) {
+                if matches!(row, 35 | 50 | 100) {
                     format!("{}-{row}\n", if side == 0 { "OLD" } else { "NEW" })
                 } else {
                     format!("shared-{row}\n")
@@ -91,10 +91,10 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
         renderer.render(&mut pixels, 800);
     });
     wait_for(&window, "present its first frame", || {
-        window.get_status().contains("3 difference groups")
+        window.get_status().contains("Difference 1 of 3")
     });
     window.invoke_focus_content();
-    assert_group(&window, 0);
+    assert_group(&window, 35);
     chord(&window, Some(Key::Alt), Key::DownArrow.into());
     wait_group(&window, 50);
     chord(&window, Some(Key::Alt), Key::End.into());
@@ -103,26 +103,26 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
     chord(&window, Some(Key::Alt), Key::UpArrow.into());
     wait_group(&window, 50);
     chord(&window, Some(Key::Alt), Key::Home.into());
-    wait_group(&window, 0);
+    wait_group(&window, 35);
     chord(&window, Some(Key::Alt), Key::UpArrow.into());
     chord(&window, None, Key::F7.into());
     wait_group(&window, 50);
     chord(&window, Some(Key::Alt), Key::Home.into());
-    wait_group(&window, 0);
+    wait_group(&window, 35);
     // Two actions dispatched before a timer tick must remain two actions.
     chord(&window, None, Key::F7.into());
     chord(&window, None, Key::F7.into());
     wait_group(&window, 100);
     chord(&window, Some(Key::Shift), Key::F7.into());
     chord(&window, Some(Key::Shift), Key::F7.into());
-    wait_group(&window, 0);
+    wait_group(&window, 35);
     chord(&window, None, Key::DownArrow.into());
     wait_for(&window, "scroll one row", || {
         window
             .get_accessible_text()
             .lines()
             .next()
-            .is_some_and(|line| line.contains("shared-1"))
+            .is_some_and(|line| line.contains("shared-36"))
     });
     chord(&window, Some(Key::Alt), Key::DownArrow.into());
     wait_group(&window, 50);
@@ -133,7 +133,7 @@ fn real_keys_jump_both_sides_without_wrapping_losing_repeats_or_bypassing_overri
     .unwrap();
     chord(&window, Some(Key::Alt), Key::DownArrow.into());
     chord(&window, Some(Key::Alt), Key::UpArrow.into());
-    wait_group(&window, 0);
+    wait_group(&window, 35);
     chord(&window, Some(Key::Control), "j".into());
     wait_group(&window, 50);
     native.draw_if_needed(|renderer| {
@@ -174,6 +174,8 @@ fn wait_group(window: &ComparatorWindow, row: usize) {
     assert_group(window, row);
 }
 fn assert_group(window: &ComparatorWindow, row: usize) {
+    assert_eq!(window.get_has_previous_difference(), row != 35);
+    assert_eq!(window.get_has_next_difference(), row != 100);
     let text = window.get_accessible_text();
     let line = text.lines().next().unwrap();
     let (left, right) = line.split_once('\t').unwrap();

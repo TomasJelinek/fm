@@ -685,19 +685,15 @@ fn run(context: &mut Context) -> Result<(), String> {
     support::report(&failures)
 }
 
-/// What F8 says of a file on another filesystem than the home Trash.
-const ELSEWHERE: &str =
-    "home trash is on another filesystem; cross-filesystem trash is unsupported";
-
-/// F8 of a file on another filesystem than the private Trash (tmpfs `$XDG_RUNTIME_DIR`):
-/// refused in words, and the file stays with its bytes (it is never deleted for good).
+/// A second confirmation on another filesystem. Escape preserves the original file,
+/// while explicit permanent deletion can remove it without changing the private Trash.
 fn trash_elsewhere(context: &mut Context, trash_root: &Path) -> Result<(), String> {
     #[cfg(unix)]
     let parent = {
         use std::os::unix::fs::MetadataExt;
         let device = |path: &Path| fs::metadata(path).map(|metadata| metadata.dev()).ok();
         let trash_device = device(trash_root.parent().unwrap_or(trash_root));
-        std::env::var_os("XDG_RUNTIME_DIR")
+        crate::fixtures::runtime_volume()
             .map(PathBuf::from)
             .filter(|path| path.is_absolute() && path.is_dir() && device(path) != trash_device)
     };
@@ -722,36 +718,46 @@ fn trash_elsewhere(context: &mut Context, trash_root: &Path) -> Result<(), Strin
         let before = facts(&file)?;
         let entries = trashed(trash_root).len();
         let mut app = App::start(Config::new(&folder, &context.work));
-        panel::select_row(&mut app, LEFT, "elsewhere.txt")?;
-        let start = app.operations.len();
-        input::key(app.slint(), Key::F8);
-        support::wait_operation_dialog(&mut app, "the Trash confirmation");
-        if app.window.get_operation_dangerous() {
-            return Err("F8 asked for a permanent delete".into());
+        for accept in [false, true] {
+            panel::select_row(&mut app, LEFT, "elsewhere.txt")?;
+            let start = app.operations.len();
+            input::key(app.slint(), Key::F8);
+            support::wait_operation_dialog(&mut app, "the Trash confirmation");
+            if app.window.get_operation_dangerous() {
+                return Err("F8 initially asked for a permanent delete".into());
+            }
+            input::key(app.slint(), Key::Return);
+            app.until("the separate permanent-delete confirmation", |app| {
+                app.window.get_operation_dangerous() && !app.window.get_operation_token().is_empty()
+            });
+            if !app.window.get_operation_body().contains("elsewhere.txt")
+                || !app.window.get_operation_warning().contains("unavailable")
+                || facts(&file)? != before
+            {
+                return Err("the fallback did not identify and preserve elsewhere.txt".into());
+            }
+            if !accept {
+                app.screenshot(
+                    context,
+                    "trash-unavailable",
+                    "Trash unavailable on another filesystem",
+                );
+            }
+            input::key(app.slint(), if accept { Key::Return } else { Key::Escape });
+            let ended = support::wait_operation(&mut app, start);
+            if accept {
+                support::operation_ok(&ended, "confirmed permanent deletion")?;
+                if file.exists() {
+                    return Err("the confirmed file remains".into());
+                }
+            } else if ended.state != OperationState::Cancelled || facts(&file)? != before {
+                return Err("cancelling the fallback changed the selected file".into());
+            }
+            support::dismiss_all(&mut app);
         }
-        input::key(app.slint(), Key::Return);
-        let said = match support::wait_delete(&mut app, start) {
-            DeleteEnd::Done(progress) => {
-                let notice = support::take_notice(&mut app);
-                format!(
-                    "{:?}: {} {:?}; notice {notice:?}",
-                    progress.state, progress.message, progress.errors
-                )
-            }
-            DeleteEnd::Asked(window) => {
-                let question = support::describe_window(&window);
-                let ended = support::cancel_delete(&mut app, &window, start);
-                format!("asked {question}; then {:?}", ended.map(|done| done.state))
-            }
-        };
-        support::dismiss_all(&mut app);
-        context.note(format!("F8 of a file on another filesystem: {said}"));
-        let kept = facts(&file).ok().as_ref() == Some(&before);
         app.shutdown()?;
-        if !said.contains(ELSEWHERE) || !kept || trashed(trash_root).len() != entries {
-            return Err(format!(
-                "F8 was not refused with {ELSEWHERE:?} leaving the file (kept {kept}): {said}"
-            ));
+        if trashed(trash_root).len() != entries {
+            return Err("cross-filesystem deletion changed the private Trash".into());
         }
         Ok(())
     })();

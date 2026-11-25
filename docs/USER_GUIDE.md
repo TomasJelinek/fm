@@ -3,8 +3,8 @@
 A dual-pane desktop file manager for Windows and Linux, written in Rust with Slint and
 Tokio.
 
-Version **0.5.4**; the native window title shows
-`Midnight Explorer 0.5.4 — File Manager`. The displayed version is the package
+Version **0.6.0**. The native window title shows
+`Midnight Explorer 0.6 — File Manager`. The displayed version is the package
 version without a trailing `.0`.
 
 Prebuilt Windows/Linux previews are published on the
@@ -56,7 +56,11 @@ left where it is, with the reason, only if deleting it would lose data a copy ca
 carry (on Windows, alternate data streams) or cannot be done safely (on Linux, a file
 owned by another user, or one on a network filesystem). There is no source-recovery
 mode or journal.
-Copy and Move (F5, F6) ask how to handle links, alike on Windows and Linux. **Copy the
+Copy and Move (F5, F6) open with the opposite panel's folder as the destination. Type
+a different path or use the **…** button to choose a folder. Browse opens at the folder in
+the field and keeps your transfer options. Press **Copy** or **Move** to start.
+
+Copy and Move ask how to handle links, alike on Windows and Linux. **Copy the
 files links point to** copies a link to a file as that file and a link to a folder as
 the folder with everything in it, verified like any copy; a Move then removes only the
 link itself, never the files it pointed to. **Keep links as links** copies or moves
@@ -752,9 +756,10 @@ takes the first suitable adapter the drivers list (on a laptop with two GPUs usu
 the integrated one); `WGPU_POWER_PREF=high` prefers a discrete GPU for a run, as
 does the per-application graphics preference in Windows Settings. An explicit
 `WGPU_BACKEND`, such as `dx12`, replaces the backend choice. On Linux the renderer uses
-Vulkan (`WGPU_BACKEND=gl` selects OpenGL), and all windows share one GPU device, which
-saves time when a viewer window opens; `MIDNIGHT_SHARED_WGPU=0` gives each window its
-own device again, for comparison.
+Vulkan (`WGPU_BACKEND=gl` selects OpenGL). Windows and Linux share one hardware device
+across windows to shorten viewer startup. Windows checks that the adapter can present a
+window on each attached display. If that check or device creation fails, Slint selects
+a device per window. Set `MIDNIGHT_SHARED_WGPU=0` to use per-window devices for a run.
 
 When default GPU selection or initial window/device setup fails before the first
 window is shown, the app retries once with Slint's CPU renderer. The first process
@@ -977,14 +982,15 @@ current keys.
   an archive, the volume of the archive file): its name, filesystem, capacity and
   storage type. See [drive information](DRIVE_INFORMATION.md).
 - Enter in the command editor: open the system terminal in the active directory
-  and run the submitted command. Insertion alone never executes a command.
+  and run the submitted command. Inside an archive, the prompt and terminal use
+  the folder containing the outermost archive file. Insertion alone never executes a command.
 - The full command directory ends with `>`. Its history dropdown restores the
   selected draft without running it. The latest 100 unique exact strings are
   persisted (up to 1MiB aggregate text); recalling never enables elevated mode.
 - The terminal icon opens a new interactive terminal in the active folder and
   preserves the command draft. Its adjacent arrow chooses PowerShell/cmd on Windows
-  or Terminal/Terminal (sudo) on Linux. A nonempty draft stays bound to its grammar;
-  clear it before switching PowerShell/cmd. Sudo selection is session-only.
+  or Terminal/Terminal (sudo) on Linux. Switching shells keeps the draft and caret.
+  The next Run or Enter submits the draft to the selected shell. Sudo selection is session-only.
   Linux uses the executable shell in `$SHELL`, with Bash/sh fallbacks, and reads
   its normal interactive configuration. A missing/basic prompt gets a dynamic
   user/host/current-directory default without replacing custom shell prompts.
@@ -1103,6 +1109,8 @@ current keys.
   Program mode passes native arguments separately; terminal mode runs literal
   user-authored PowerShell, POSIX shell or Command Prompt script with explicitly
   declared context variables.
+  On Windows, Run directly accepts an absolute path to an `.exe`, `.com`, `.bat`
+  or `.cmd` file, including build scripts in folders with spaces.
   A Run directly command's **Output** says where its output goes: **Hidden** (no
   window, as before; commands created in earlier versions keep it), **Output window**
   (the default for new commands) or **Console window**. The output window shows the
@@ -1173,7 +1181,8 @@ current keys.
   contents may not be on this computer is not replaced, and the notice says so. The
   new file is focused when creation finishes.
 - Delete/F8: confirm moving selected items to Trash. Shift+Delete/Shift+F8:
-  explicitly confirm permanent deletion. A Trash failure never permanently deletes.
+  explicitly confirm permanent deletion. If Trash is unavailable, Delete offers that
+  confirmation for the affected items.
   The confirmation asks its question first ("Permanently delete “report.pdf”?",
   "Move 12 items to the Trash?"), says right under it that a permanent deletion cannot
   be undone, and lists the details below: for one item its name, type, size (readable,
@@ -1252,8 +1261,12 @@ current keys.
   files; select both files explicitly to compare different names or letter case.
   When the pair is unclear, a small dialog asks for File A and File B (type a path
   or Browse).
-  Text pairs show line differences (files up to 32 MiB and 1,000,000 lines of at
-  most 16 KiB each), and **Find…** (Ctrl+F) searches both files; image pairs provide
+  Text comparison opens at the first group of changed lines. When the decoded text
+  matches, both files open at the top. On paired replacement lines, a stronger tint
+  marks the changed portion. Jumping to an edit on a long line scrolls it into
+  view horizontally. The status shows your position, such as *Difference 2 of 5*.
+  Text comparison supports files up to 32 MiB and 1,000,000 lines of at most
+  16 KiB each. **Find…** (Ctrl+F) searches both files. Image pairs provide
   **Side by side**, **Swipe** and **Onion skin** controls. Binary files, larger text
   files and other pairs are compared byte by byte in a side-by-side hex view
   (offsets, hex bytes and characters, differing bytes marked) with a summary of the
@@ -1411,7 +1424,8 @@ new location and preserve the old file. If settings take longer than 10 seconds 
 load, the window opens with defaults and the status line says so; the saved settings
 apply when they arrive, except the window's position and size for that session.
 Viewer preferences include wrapping, line numbers, search case sensitivity, fonts,
-the Markdown presentation, the image zoom mode and the PDF layout; see
+the Markdown presentation and the PDF layout. Each image and PDF opens fitted
+to its window, including when you move to the next file. See
 [viewer settings](developer/VIEWER_PREFERENCES.md).
 Source mode exposes line numbers and the current logical line/column. Markdown
 offers GitHub (default), Compact and Comfortable layouts, plus font and size
@@ -1430,8 +1444,10 @@ names are never truncated (dated [locale sorting design](superpowers/specs/2026-
 
 Platform limits of file operations: on Linux, file operations, Copy/Move and Find
 use `openat2` and need kernel 5.6 or later, and Trash uses the home Trash only for
-items on the same filesystem (elsewhere it is refused, never replaced by permanent
-deletion). The Windows Shell's Recycle Bin can refuse long paths that native Rename,
+items on the same filesystem. When the Trash or Windows Recycle Bin cannot accept
+an item, Delete offers a separate permanent-delete confirmation for the affected
+items. Cancel keeps them in place. Items already recycled stay in the Trash.
+The Windows Shell's Recycle Bin can refuse long paths that native Rename,
 F7 and permanent deletion handle. On Windows, removable FAT32/exFAT media usually
 have no Recycle Bin and have no stable file identities, so Copy and Move refuse them
 with an explicit error. Permanent deletion there uses the classic delete disposition

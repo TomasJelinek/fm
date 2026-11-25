@@ -588,6 +588,9 @@ fn comparison_actions_fit_small_window_and_do_not_expand_across_normal_window() 
     let changes = Rc::new(RefCell::new(Vec::new()));
     let capture = changes.clone();
     window.on_difference(move |backwards| capture.borrow_mut().push(backwards));
+    window.set_identity_state(3);
+    window.set_has_previous_difference(true);
+    window.set_has_next_difference(true);
     window.show().unwrap();
     for light in [false, true] {
         window.invoke_apply_palette(light);

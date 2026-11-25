@@ -45,16 +45,6 @@ impl ImageGeometry {
         }
         true
     }
-    pub fn restore_zoom(&mut self, preference: midnight_core::ViewerZoomPreference) {
-        match preference {
-            midnight_core::ViewerZoomPreference::Fit => self.fit(),
-            midnight_core::ViewerZoomPreference::ActualPixels => self.actual(),
-            midnight_core::ViewerZoomPreference::ScaleBasisPoints(value) => {
-                self.zoom(f64::from(value) / 10_000.0 / self.scale, self.center())
-            }
-        }
-    }
-
     pub fn new(width: u32, height: u32, viewport: [u32; 2]) -> Self {
         let mut state = Self {
             width: width.max(1),

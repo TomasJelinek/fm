@@ -57,18 +57,47 @@ fn actual_program_receives_native_argv_and_cwd_without_shell_execution_or_trunca
 }
 
 #[test]
-fn cancelled_missing_and_batch_programs_never_launch_a_fallback() {
+fn run_directly_accepts_bat_and_cmd_in_the_chosen_working_directory() {
+    let temp = test_fixtures::build_temp("batch-");
+    for extension in ["BaT", "CmD"] {
+        let script = temp.path().join(format!("build example.{extension}"));
+        fs::write(
+            &script,
+            b"@echo off\r\n>received.txt echo %1\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        let mut child = WindowsFileSystem::new(None)
+            .launch_user_program(
+                &script,
+                &["one & two".into()],
+                temp.path(),
+                &Cancellation::default(),
+            )
+            .unwrap();
+        probe::wait(child.as_mut());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("received.txt"))
+                .unwrap()
+                .trim(),
+            "\"one & two\""
+        );
+        fs::remove_file(temp.path().join("received.txt")).unwrap();
+    }
+}
+
+#[test]
+fn cancelled_missing_and_unsupported_programs_never_launch_a_fallback() {
     let temp = test_fixtures::build_temp("fixture-");
-    // Each refusal has its own cause: a missing program is NotFound, a batch file is
+    // Each refusal has its own cause: a missing program is NotFound, an unsupported file is
     // refused as input before any spawn (no cmd.exe fallback), and a cancelled
     // request is Interrupted. An unrelated failure no longer satisfies the test.
     for (name, kind) in [
         ("missing.exe", io::ErrorKind::NotFound),
-        ("script.cmd", io::ErrorKind::InvalidInput),
-        ("script.bat", io::ErrorKind::InvalidInput),
+        ("missing.cmd", io::ErrorKind::NotFound),
+        ("script.txt", io::ErrorKind::InvalidInput),
     ] {
         let executable = temp.path().join(name);
-        if name != "missing.exe" {
+        if name == "script.txt" {
             fs::write(&executable, b"echo unwanted").unwrap();
         }
         let process = UserCommandProcess {

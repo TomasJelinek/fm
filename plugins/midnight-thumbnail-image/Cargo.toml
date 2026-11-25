@@ -34,3 +34,7 @@ unsafe_code = "forbid"
 
 [patch.crates-io]
 image = { path = "../../vendor/image" }
+
+[profile.release]
+debug = false
+strip = "symbols"

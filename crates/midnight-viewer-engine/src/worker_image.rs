@@ -179,15 +179,10 @@ impl Worker {
                     image.pages = pages;
                     image.document = document;
                     image.document_view = document_view;
-                    // Each PDF source begins in Fit, in the layout chosen last; page turns
-                    // retain live geometry.
                     let view = if let Some(document) = &image.document_view {
                         document.geometry.clone()
                     } else {
-                        let mut view =
-                            ImageGeometry::new(metadata.width, metadata.height, self.image_size);
-                        view.restore_zoom(self.preferences.image_zoom);
-                        view
+                        ImageGeometry::new(metadata.width, metadata.height, self.image_size)
                     };
                     image.geometry = Some(view);
                     image.changed();

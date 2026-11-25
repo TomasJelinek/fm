@@ -1,16 +1,11 @@
-//! Native NTFS directory junctions for the Windows scenarios, set with
-//! `FSCTL_SET_REPARSE_POINT` as SECURITY.md requires of test fixtures: no shell or
-//! command text sees the paths, so `%`, `!`, `^` and `&` in them are only data. This is
-//! the fixture of `crates/midnight-worker-platform/tests/support/junction_windows.rs`.
-//! Its one Win32 call is declared here: the suite's `windows` dependency carries only the
-//! features of the video scenario's Media Foundation encoder. The suite's other unsafe
-//! code, each with its own allowance, is the video scenario's `FSCTL_SET_COMPRESSION`
-//! call (`scenarios/viewers_video.rs`) and its Media Foundation calls
-//! (`scenarios/viewers_video_h264.rs`).
-#![allow(unsafe_code, reason = "one audited DeviceIoControl call")]
+//! Create NTFS junctions and mark sparse fixture files using their open handles.
+#![allow(
+    unsafe_code,
+    reason = "audited synchronous DeviceIoControl calls on fixture handles"
+)]
 use std::{
     ffi::c_void,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io,
     os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
     path::Path,
@@ -22,6 +17,7 @@ use std::{
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00a4;
+const FSCTL_SET_SPARSE: u32 = 0x0009_00c4;
 /// A junction: a mount-point reparse point.
 const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xa000_0003;
 
@@ -41,7 +37,7 @@ unsafe extern "system" {
 
 /// Create `link` as a junction to `target`, which need not exist; a relative target is
 /// made absolute against the working folder, as `mklink /J` does.
-pub fn create(link: &Path, target: &Path) -> io::Result<()> {
+pub fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
     let target = std::path::absolute(target)?;
     fs::create_dir(link)?;
     let result = set_mount_point(link, &target);
@@ -49,6 +45,30 @@ pub fn create(link: &Path, target: &Path) -> io::Result<()> {
         let _ = fs::remove_dir(link);
     }
     result
+}
+
+/// Mark the newly created file sparse before extending it to its logical size.
+pub fn mark_sparse(file: &File) -> io::Result<()> {
+    let mut returned = 0;
+    // SAFETY: the caller owns a live, writable synchronous handle throughout
+    // this call. FSCTL_SET_SPARSE sets the flag with no input or output buffer.
+    // `returned` is writable until the call finishes; OVERLAPPED is null.
+    if unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+            0,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn set_mount_point(link: &Path, target: &Path) -> io::Result<()> {

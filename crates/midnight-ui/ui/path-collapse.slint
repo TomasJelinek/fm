@@ -20,15 +20,17 @@ export component PathCollapse inherits Rectangle {
     in property <length> trail-width;
     in property <length> reserve;
     out property <int> count: root.parts.length;
-    // Each component is drawn as its own caption, whose width is rounded up to a whole
-    // pixel, while the widths below measure joined captions: a pixel per component
-    // keeps the drawn components inside the room the measures allow.
-    out property <length> room: max(0px, root.trail-width - root.reserve - root.count * 1px);
+    out property <length> room: max(0px, root.trail-width - root.reserve);
     out property <length> omission-width: omission-metrics.preferred-width + 4px;
     // The shown components join into the shown path (each label is the part of its
     // prefix after the previous one), so prefixes measure suffix widths.
     out property <length> full-width: full-metrics.preferred-width;
-    out property <bool> collapsed: root.count > 1 && root.full-width > root.room;
+    // Each caption rounds its width independently. Allow a pixel per visible
+    // component when estimating their combined width from a joined path.
+    pure function joined-width(index: int, measured: length) -> length {
+        return measured + (root.count - index) * 1px;
+    }
+    out property <bool> collapsed: root.count > 1 && root.joined-width(0, root.full-width) > root.room;
     private property <length> first-width: first-metrics.preferred-width;
     private property <length> pair-width: first-metrics.preferred-width + second-metrics.preferred-width;
     private property <length> last-width: last-metrics.preferred-width;
@@ -43,7 +45,8 @@ export component PathCollapse inherits Rectangle {
     private property <bool> anchor-inside: root.anchor > 0 && root.anchor < root.count - 1;
     private property <length> anchor-width: anchor-metrics.preferred-width;
     // The anchor and every later component, as shown.
-    private property <length> anchor-suffix-width: root.full-width - anchor-parent-metrics.preferred-width;
+    private property <length> anchor-suffix-width: root.joined-width(root.anchor,
+        root.full-width - anchor-parent-metrics.preferred-width);
     // Components between the anchor and the last one, omitted behind a second marker.
     private property <bool> anchor-gap: root.anchor + 1 < root.count - 1;
     private property <bool> anchor-alone-fits: root.omission-width + root.anchor-width
@@ -73,7 +76,7 @@ export component PathCollapse inherits Rectangle {
     // Whether component `index` shows; `suffix-width` measures it and every later one.
     pure public function shown(index: int, suffix-width: length) -> bool {
         return !root.collapsed || index < root.lead-count || index == root.count - 1
-            || (root.anchored && index == root.anchor) || suffix-width <= root.suffix-room;
+            || (root.anchored && index == root.anchor) || root.joined-width(index, suffix-width) <= root.suffix-room;
     }
     // An omitted component that a shown one follows ends a run of omitted components (at
     // the start of the trail, after the leading ones, or after the anchor), and its place
@@ -82,7 +85,7 @@ export component PathCollapse inherits Rectangle {
     pure public function ends-omission(index: int, shown: bool, prefix-width: length) -> bool {
         return root.collapsed && !shown
             && (index + 1 >= root.count - 1 || (root.anchored && index + 1 == root.anchor)
-                || root.full-width - prefix-width <= root.suffix-room);
+                || root.joined-width(index + 1, root.full-width - prefix-width) <= root.suffix-room);
     }
     visible: false;
     x: 0px; y: 0px; width: 0px; height: 0px;

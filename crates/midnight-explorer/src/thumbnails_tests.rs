@@ -90,6 +90,7 @@ fn a_late_artwork_result_retires_at_binding_while_the_generic_picker_is_untouche
                     kind,
                     title: "Choose artwork".into(),
                     initial_directory: None,
+                    initial_name: None,
                     owner: Default::default(),
                 },
             },

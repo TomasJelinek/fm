@@ -405,7 +405,6 @@ impl ViewerWindows {
         };
         for open in &windows {
             let previous = open.session.preferences();
-            let raster_zoom_changed = previous.image_zoom != preferences.image_zoom;
             let layout_changed = previous.wrap != preferences.wrap
                 || previous.line_numbers != preferences.line_numbers
                 || previous.text_font != preferences.text_font
@@ -420,15 +419,6 @@ impl ViewerWindows {
                     raster_rebase::cancel_context(open);
                     raster_motion::cancel(open);
                     open.retained_raster.borrow_mut().camera.suspend();
-                }
-                if raster_zoom_changed
-                    && open
-                        .image_info
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|info| info.page == 0)
-                {
-                    open.image_zoom.borrow_mut().clear();
                 }
                 preferences::present(open);
             }
@@ -464,27 +454,38 @@ impl ViewerWindows {
             self.service.retire(launch);
             return Err("Close a viewer before opening another (maximum four windows).".into());
         }
-        // Installation discovery can overlap native/GPU construction. Content still opens only
-        // after show() below supplies the exact physical canvas and monitor scale.
         let opening_trace = pixel_preparation::OpeningTrace::new();
         self.service.prepare_catalogs();
-        let window = match ViewerWindow::new() {
-            Ok(window) => window,
-            Err(error) => {
-                self.service.retire(launch);
-                return Err(error.to_string());
-            }
-        };
-        window.set_app_icon(self.app_icon.borrow().clone());
-        window.set_case_sensitive(launch.preferences.case_sensitive);
-        window.set_wrap_enabled(launch.preferences.wrap);
-        let placement = placement.into();
-        apply_window_size(&window, placement.logical_size());
-        placement.apply(window.window());
         let app_appearance = self.appearance.borrow().clone();
         if let Some(app) = &app_appearance {
             app.merge_palette(&mut appearance);
         }
+        let preferences = launch.preferences.clone();
+        let archive = sessions_of(&launch);
+        let placement = placement.into();
+        let size = placement.logical_size();
+        // Capture and decoder startup need no window. LayoutReady supplies the actual
+        // physical canvas before the first viewport request, including image/PDF Fit.
+        let provisional = ViewerGeometry {
+            width: physical_extent(size.width, 1.0),
+            height: physical_extent(size.height, 1.0),
+            scale: 1.0,
+        };
+        let session = Rc::new(self.service.open_with_layout(
+            launch,
+            appearance.clone(),
+            provisional,
+        )?);
+        let palette = prepare_session(&session, &appearance)?;
+        // A failed native construction/show drops this session. Its Drop closes the
+        // worker, which retires its capture and any already-started decoder.
+        let window = ViewerWindow::new().map_err(|error| error.to_string())?;
+        opening_trace.mark(2, 0, 0, 0); // Slint component and renderer constructed.
+        window.set_app_icon(self.app_icon.borrow().clone());
+        window.set_case_sensitive(preferences.case_sensitive);
+        window.set_wrap_enabled(preferences.wrap);
+        apply_window_size(&window, size);
+        placement.apply(window.window());
         window.set_foreground(color(appearance.foreground));
         window.set_background_color(color(appearance.background));
         window.set_accent(color(appearance.accent));
@@ -499,31 +500,13 @@ impl ViewerWindows {
         if let Some(app) = &app_appearance {
             app.present(&window);
         }
-        // Showing supplies native size and scale for provisional geometry. The
-        // selected backend route receives its measured canvas through LayoutReady.
+        opening_trace.mark(3, 0, 0, 0); // Native placement and appearance applied.
         if let Err(error) = window.show() {
             let _ = window.hide();
-            self.service.retire(launch);
             return Err(error.to_string());
         }
+        opening_trace.mark(4, 0, 0, 0); // Native window and surface shown.
         let geometry = window_geometry(&window);
-        let opening_palette = appearance.clone();
-        let archive = sessions_of(&launch);
-        let session = match self.service.open_with_layout(launch, appearance, geometry) {
-            Ok(session) => Rc::new(session),
-            Err(error) => {
-                let _ = window.hide();
-                return Err(error);
-            }
-        };
-        let palette = match prepare_session(&session, &opening_palette) {
-            Ok(palette) => palette,
-            Err(error) => {
-                session.close();
-                let _ = window.hide();
-                return Err(error);
-            }
-        };
         let input = Rc::downgrade(&session);
         let open = Rc::new_cyclic(|weak: &std::rc::Weak<OpenWindow>| OpenWindow {
             media_controls: media_controls::MediaControls::install(

@@ -51,6 +51,7 @@ const L3: &str = "tree/l1/l2/l3";
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_links_readonly",
+        isolation: crate::Isolation::Parallel,
         area: "journeys",
         summary: "A deep tree with folder, file, dangling and enclosing links and write-protected folders copied keeping links as links and copying the files they point to, measured with Ctrl+Shift+S, and both copies deleted with Shift+F8 without a question; originals and link targets unchanged.",
         run: links_readonly,

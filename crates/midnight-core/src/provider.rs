@@ -79,6 +79,20 @@ pub struct FsError {
 }
 
 impl FsError {
+    /// The provider specifically refused to recycle this item. A caller may offer
+    /// a separate, explicit permanent-delete confirmation for the pinned item.
+    pub fn trash_unavailable(path: &Path, reason: impl Into<String>) -> Self {
+        Self::from_io(
+            "move to trash",
+            path,
+            io::Error::new(io::ErrorKind::Unsupported, reason.into()),
+        )
+    }
+
+    pub fn is_trash_unavailable(&self) -> bool {
+        self.operation == "move to trash" && self.kind == io::ErrorKind::Unsupported
+    }
+
     pub fn from_io(operation: &'static str, path: &Path, error: io::Error) -> Self {
         Self {
             operation,

@@ -11,7 +11,7 @@ on Windows and Linux).
 
 ```text
 ./build.sh --acceptance                 # build everything, then run the suite
-bash scripts/acceptance.sh [debug|release] [--dry-run] [--list] [--scale smoke|full]
+bash scripts/acceptance.sh [debug|release] [--dry-run] [--list] [--jobs 1..4] [--scale smoke|full]
      [--only NAME[,NAME...]] [--strict-review] [--keep-fixture] [--all-themes]
      [--stress] [--run-dir DIR]
 ```
@@ -44,7 +44,8 @@ product crates it drives keep their debug profiles
 
 | Option | Effect |
 | --- | --- |
-| `--list` | List the scenarios and exit. |
+| `--list` | List scenarios and their isolation class on this platform. |
+| `--jobs N` | Limit concurrent scenarios to N (1–4). Use one for serial execution. Overrides `MIDNIGHT_ACCEPTANCE_JOBS`. |
 | `--only A,B` | Run the scenarios whose names contain `A` or `B`. |
 | `--scale smoke` | Smaller bulk fixtures (400 instead of 3,000 files, 1–2 MiB instead of 8–24 MiB). |
 | `--strict-review` | UI review flags fail the run instead of warning. |
@@ -52,6 +53,25 @@ product crates it drives keep their debug profiles
 | `--keep-fixture` | Keep the fixture and scratch folders after a passing run. |
 | `--stress` | The opt-in stress sizes instead of the default ones, for the scenarios that have one (`Options::stress`); the script exports `MIDNIGHT_ACCEPTANCE_STRESS=1`, which staged children read. |
 | `--run-dir DIR` | Create the run's folder in the absolute folder `DIR` (exported as `MIDNIGHT_ACCEPTANCE_RUN_DIR`; see "Results"). |
+
+Linux and Windows use up to four workers by default, bounded by the available CPU
+count. Each parallel scenario gets a private process, software display, fixture,
+settings and run folder. Linux workers disconnect from the desktop display and
+session bus. Plugin workers can use a private Xvfb display for Chromium. On a
+desktop without `Xvfb`, `xvfb-run` or `xauth`, plugin scenarios use the exclusive
+phase so they retain the original display. The runner waits for every worker to
+exit before starting the exclusive scenarios one at a time. Other platforms
+default to serial execution.
+
+`--list` shows the isolation class for this platform. The real-volume and
+real-time video scenarios run exclusively on both platforms. Windows also runs the
+Shell property sheet, viewer first-content timing, Office preview and multi-viewer
+scenarios exclusively. The latter two exercise native worker shutdown deadlines.
+The report preserves registry order.
+`summary.json` records the worker limit and each scenario's isolation class,
+start time relative to the run and duration in seconds.
+For measured timings and isolation checks, see the
+[parallel acceptance verification](../verification/2026-11-25-acceptance-parallel.md).
 
 The runner also reads `MIDNIGHT_ACCEPTANCE_FILTER` (comma-separated),
 `MIDNIGHT_ACCEPTANCE_SCALE`, `MIDNIGHT_ACCEPTANCE_RUN_DIR` (or its own `--run-dir DIR`,
@@ -92,7 +112,7 @@ images prepared as root, for example `mkfs.vfat` or `mkfs.ext4` on an image file
 ### Windows
 
 ```text
-pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list] [--scale smoke|full]
+pwsh -File scripts\acceptance.ps1 [debug|release] [--dry-run] [--list] [--jobs 1..4] [--scale smoke|full]
      [--only NAME[,NAME...]] [--strict-review] [--keep-fixture] [--all-themes] [--stress]
      [--run-dir DIR] [--plugins DIR | --validation-packages] [--test-binary FILE] [--offline]
 ```
@@ -197,7 +217,7 @@ What differs on Windows, and why:
   relative symbolic links and permission modes, Windows symbolic links need Developer
   Mode or administrator rights and folders are protected by ACLs.
   `fixtures::junction` sets them natively with `FSCTL_SET_REPARSE_POINT`
-  (`tests/acceptance/junction_windows.rs`, one audited FFI call), as
+  (`tests/acceptance/ntfs_fixtures.rs`), as
   SECURITY.md requires of test fixtures: no shell reads the paths, so `%`, `!`, `^` and
   `&` in them are plain characters. Fixture generation first checks that on Windows: a
   junction whose link and target names hold all of them and a non-ASCII letter must read
@@ -206,9 +226,9 @@ What differs on Windows, and why:
 - Unsafe code: the suite denies it (`#![deny(unsafe_code)]` in `tests/acceptance.rs`;
   deny, not forbid, because the `slint!` fixture windows of the polish gate's red cases
   are generated bindings with their own narrow allowance). Five Windows-only places
-  allow it, each with its reason and a `SAFETY` comment per call: the junction's
-  `FSCTL_SET_REPARSE_POINT` (`junction_windows.rs`), the video scenario's
-  `FSCTL_SET_COMPRESSION` (`scenarios/viewers_video.rs`), both `DeviceIoControl` calls
+  allow it, each with its reason and a `SAFETY` comment per call: the fixture controls
+  `FSCTL_SET_REPARSE_POINT` and `FSCTL_SET_SPARSE` (`ntfs_fixtures.rs`), the video
+  scenario's `FSCTL_SET_COMPRESSION` (`scenarios/viewers_video.rs`), with `DeviceIoControl`
   declared in the file, the H.264 + AAC movie written through Media Foundation's
   Sink Writer (`scenarios/viewers_video_h264.rs`), the transfer scenarios' file
   identities (`GetFileInformationByHandle` in `files_support.rs`) and the Properties
@@ -236,10 +256,9 @@ What differs on Windows, and why:
   Hidden, System, Archive, Compression boxes) instead of permission boxes and octal
   modes, so `files_attributes` sets and clears attributes there and `panels_dialogs`
   sets Read-only where Linux types octal 600; times are checked to NTFS's 100 ns.
-- Sparse files: NTFS allocates the whole length of an extended file, so
-  `tools_support::sparse` marks files of 1 MiB or more sparse first (`fsutil sparse
-  setflag`, no privilege needed). Smaller ones take their space: `find_budgets`' 100,001
-  files of 1 to 100,001 bytes hold about 5 GB until the run folder is removed.
+- On Windows, `tools_support::sparse` sets `FSCTL_SET_SPARSE` on each newly created
+  file handle before extending it. The 100,001 distinct file lengths in `find_budgets`
+  read as zeroes and require disk space only for filesystem metadata.
 - Another volume: `files_transfer_errors` copies and moves to a folder in the private
   installation (`MIDNIGHT_ACCEPTANCE_STAGE_ROOT`) when it is on another drive than the
   run; otherwise it notes that the cross-volume checks did not run.
@@ -588,7 +607,7 @@ Help, Drive information, About, Jobs and notices), [journeys](acceptance/journey
 | `tools_compare_dirs` | compare | Ctrl+F10 on identical, asymmetric, nested and unreadable trees with every dialog option (size, time, tolerance 0/1/2, exact case, unmatched folders, Compare contents, Include subfolders): exactly the expected rows become each panel's selection (same-sized files with different bytes on both sides; folders that contain differences on the differing side), the footer counts the pairs read and the folders with differences, the dialog closes at the click while the comparison still runs, no result message or window appears, the reopened dialog shows the summary, invalid tolerances are reported in the dialog. A long content comparison (two 24 GiB sparse files) shows its progress on the status line, refuses F7 with "Directory comparison running", shows its progress and Cancel in the reopened dialog, and Cancel ends it selecting nothing; the next comparison runs normally. The toolbar's button opens the dialog; while a comparison runs, F2, Shift+F4, Delete, F5, Ctrl+V and Ctrl+H are refused like F7, and Escape in the dialog of a running comparison cancels it and selects nothing. |
 | `tools_find_criteria` | find | Alt+F7 on a generated tree with known answers: masks (case, exclusions, `?`, several, folder names), Subfolders off, Regex (with case), Expression (size, size range, kind, date, date range, name and size, Linux attributes), Containing text (case, whole words, UTF-16, regular expressions with case and whole words, the same text literal), Modified within, Identical files; an invalid content regular expression fails with its reason on the details page; every results column resized by dragging. |
 | `tools_find_folders_help` | find | Search folders: Add a typed folder, Browse… (scripted chooser, folder kind), tick boxes in the dropdown, choose and Remove, the nothing-ticked error and its details; syntax help for each mode, F1, an example fills the query without searching; an invalid expression fails with a "Click for more details" status line (tooltip) that opens the details page, no Details button. |
-| `tools_find_results` | find | Every entry of `many/` (the virtualized list scrolled through with the wheel and compared with the disk), Sort by Name/Size, column resizing, Go to file with the button; 100,050 files stop at the 100,000-result limit (Incomplete, "Reached limits: result count" in the details); Stop cancels a running content search; Search inside archives without an archive provider (none in this harness) is Incomplete with its reason in the details; Feed to panel lists the results over the left panel and closes the Find window, Insert marks, F5 copies the marked real files to the other panel, Shift+F8 deletes a result's file and removes its row, Backspace shows the folder again. |
+| `tools_find_results` | find | Every entry of `many/` (the virtualized list scrolled through with the wheel and compared with the disk), Sort by Name/Size, column resizing, Go to file with the button; 100,050 files stop at 100,000 results, or at the retained-memory limit if a deeply nested run folder makes the paths too large. The visible rows, reported count and specific limit in Details are checked; Stop cancels a running content search; Search inside archives without an archive provider (none in this harness) is Incomplete with its reason in the details; Feed to panel lists the results over the left panel and closes the Find window, Insert marks, F5 copies the marked real files to the other panel, Shift+F8 deletes a result's file and removes its row, Backspace shows the folder again. |
 | `find_query_syntax` | find | The query language with known answers: masks (`;;` literal, `*.*` with extensionless names and folders, several exclusions, an excluded folder still searched, Unicode letter case), Regex (`(?i)` against Match name case), Expression (`kB`/`KiB`/`B`, `=~`, `not (…)`, a UTC offset at an inclusive and an exclusive bound, `present`/`missing`); Containing text in UTF-8 with and without BOM and UTF-16 LE/BE with BOM (BOM-less UTF-16 not decoded), Unicode case, whole words at a combining mark and an underscore, per-line regular expressions with CRLF, malformed UTF-8 reported per file (also after a match); Modified within in minutes, hours and days (the future never, 366 days in each unit), invalid ages that disable Find, the collapsed options summary; Identical files (empty, small and binary groups, a hard-link pair counted once, groups together under Name and Size both ways, Search inside archives disabled). |
 | `find_roots_windows` | find | Search folders: Add typed with Enter and OK, a listed folder added again (ticked, not doubled), relative and parent-step paths refused with the entry open, a missing folder (others searched, Incomplete, named), Remove, 16 folders at most; Subfolders on and off over three folders; Find from the right panel (its folder; Go to file there); Ctrl+F, the toolbar button and F10 › Find files…; four windows at most; searches in several windows at once with their own results, run again with the kept draft, a third search waiting while two run; the window is modeless and keeps its draft; Escape closes the Add entry, the help, then the window; Close during a search. |
 | `find_result_actions` | find | Every column sorted both ways against known orders (folders first and missing extensions last under Extension, equal keys by path, a new search in the window's order), Name order equal to the panel's; Home/End/Up/Down/Page Down in the results; Go to file by Enter, double click and button, for files and folders, Open on a folder; View, F3 and Alt+F3 ask for a viewer of the file (recorded here; `find_viewers` opens them), Edit and F4 run a harmless configured editor, Open reaches the launcher (none here); deleted and changed results refused with the panel unmoved; Stop keeps 20 results sorted, the folder being read named only while the search runs, Feed to panel disabled before and during a search, a new search replaces the results. Several results selected: click, Ctrl+click, Shift+click and Ctrl+Shift+click ranges, Shift+Up, Ctrl+Up, Space, Insert, Ctrl+A and Ctrl+D; the status line counts the selection and sums its files; Ctrl+C copies the selection's full paths in the order shown (or the cursor's row alone), F3 views the cursor's file only, a re-sort keeps the selection and a new search clears it. The context menu (Shift+F10, the Menu key, a right click): Go to file, View, Edit, Open, Copy names, Copy full paths, Copy row details, Select all and Deselect all, the copies naming their count and the keys shown, Escape closing only the menu. Copy details and the details page's Copy put the same status, errors and counts on the in-process clipboard. With View rebound in Options the new key views the cursor's file, F3 does nothing, and the tooltip and the menu name the new key. |
@@ -789,10 +808,11 @@ put beside the shared test binary, where other runs would discover them. Instead
    <checkout>`); never run a copy your account can change, such as the checkout's
    `scripts/install-html-viewer-apparmor.sh`, with sudo (SECURITY.md,
    `packaging/linux/README.txt`). Where the acceptance runs need the profile in WSL, that
-   root step stays the machine owner's. Files that already have every owner
-   permission (executables and libraries, most of the bytes) are hard-linked, the rest
-   (about 115 MiB) copied, so deleting a stage cannot change the build's own files. Its
-   folders are mode 0700: plugin trust checks reject group- or world-writable
+   root step stays the machine owner's. Linux stages copy plugin entrypoints and
+   support files. Each plugin executable has its own inode so that creating or
+   removing another stage cannot change its revision during validation. The
+   runner and the large CEF runtime library can be hard-linked when their owner
+   permissions are complete. Stage folders use mode 0700: plugin trust checks reject group- or world-writable
    ancestors. Without packages the scenario reports `SKIP`.
 
    Two traps would fail every staged scenario for a misleading reason, so the scripts
@@ -906,7 +926,7 @@ own work folder (`work/<scenario>/`), so their expectations are exact at either 
 | --- | --- |
 | `tools_compare_dirs` | `compare/identical/{left,right}` with equal names, sizes and times; `compare/asymmetric/{left,right}` with same-named pairs differing in size, in time (100 s, 2 s, 1 s) or only in letter case, one-sided files and folders, and a shared folder whose contents differ two levels deep; `compare/unreadable/left` with mode 0444 (listable, metadata unreadable); `compare/special/{left,right}` with a dangling link opposite a file of the same name. Times are fixed (from 2023-11-14). `compare/slow/{left,right}` with a 24 GiB sparse file each (same size and time). |
 | `tools_find_criteria`, `tools_find_folders_help` | `findtree/`: 16 files and 3 folders with known names, sizes (2 KiB, three 18-byte `.dat` files of which two are identical), contents (`quick` in several cases, `quickly`, UTF-16 LE) and times (`old.txt` from 2020), a dot-file and a mode-0444 file; `second/` and `third/` as extra search folders. |
-| `tools_find_results` | `limit/` with 100,050 empty files; `many-search/`, a copy of `many/` plus a 1 GiB sparse text file; `feed/` with four small files in three folders and a placeholder `bundle.zip`, and an empty `feed-target/`. |
+| `tools_find_results` | `f/` in the scenario’s outer work folder with 100,050 empty files; `many-search/`, a copy of `many/` plus a 1 GiB sparse text file; `feed/` with four small files in three folders and a placeholder `bundle.zip`, and an empty `feed-target/`. |
 | `find_query_syntax` | `query/`: `names/` (extensionless, `;`, Unicode and case variants, excluded types and folder), `sizes/` (1000, 1010 and 1024 bytes, a 2021 file), `text/` (every supported encoding, BOM-less UTF-16, CRLF, combining mark, underscore), `bad/` (two malformed UTF-8 files), `times/` (30 minutes to 400 days old and one in the future), `dupes/` (three identical groups, a hard-link pair, a same-size different file). |
 | `find_roots_windows` | `roots/a`, `b`, `c` (a file at two levels each), `extra/r00`…`r15`, `slow/` with a 1 GiB sparse file. |
 | `find_result_actions` | `act/` (six files of known sizes and 2022 times, a folder with an extension), `collate/` (mixed-case, accented and numbered names), `stop/early` (20 matching files) and `stop/late` (two 1 GiB sparse files), `edited/` for the harmless editor. |
@@ -949,14 +969,20 @@ after a passing run like the fixture.
    name.
 5. Verify the outcome on disk and in the UI, add `app.screenshot(context, name,
    caption)` where a picture helps a reviewer, and call `app.shutdown()`.
-6. Register it in `scenarios::all()` with an area, a one-line summary and a timeout,
+6. Register it in `scenarios::all()` with an isolation class, an area, a one-line summary and a timeout,
    and add it to the table above. A module listed in `scenarios::OWNED` registers its
    own scenarios instead (`pub fn scenarios() -> Vec<Scenario>`), so its owner changes
    them without touching `scenarios/mod.rs`; names must be unique (the runner refuses
    to start otherwise, exit status 2).
 
-Scenarios run one at a time, each on its own thread (Slint platforms and windows are
-per thread). A thread cannot be stopped from outside: an in-process scenario that
+Classify native clipboard, system drag-and-drop, native focus and Shell windows
+as exclusive. Synthetic input inside a software window and the in-memory clipboard
+can run in parallel. Dedicated-volume exercises and real-time media playback also
+need exclusive access. Use `ParallelStaged` for scenarios that run their whole
+body in private child processes and `ParallelPlugins` for those that stage installed
+plugins and may need an X display.
+
+A thread cannot be stopped from outside: an in-process scenario that
 exceeds its timeout stops the run, and the remaining scenarios are reported `NOT RUN`,
 so its timeout is an honest upper bound, not a target. A staged scenario (it ran
 `viewers_stage::run` or `run_private`) stops its child at its own deadline; when its

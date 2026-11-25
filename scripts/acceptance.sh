@@ -10,9 +10,10 @@ set -euo pipefail
 usage() {
     printf '%s\n' 'Usage: scripts/acceptance.sh [debug|release] [--dry-run] [--list] [--scale smoke|full]'
     printf '%s\n' '       [--only NAME[,NAME...]] [--strict-review] [--keep-fixture] [--all-themes]'
-    printf '%s\n' '       [--stress] [--run-dir DIR]'
+    printf '%s\n' '       [--jobs 1..4] [--stress] [--run-dir DIR]'
     printf '%s\n' 'Tests always use the debug test profile; the profile names the preceding build.'
     printf '%s\n' '--run-dir names an absolute folder for the run folders (default _build/acceptance).'
+    printf '%s\n' '--jobs limits concurrent scenarios (1 for serial execution, or MIDNIGHT_ACCEPTANCE_JOBS).'
     printf '%s\n' '--stress runs the opt-in stress sizes (MIDNIGHT_ACCEPTANCE_STRESS=1).'
     printf '%s\n' 'Plugin packages outside this checkout are staged in its _build, or in the folder'
     printf '%s\n' 'that MIDNIGHT_ACCEPTANCE_STAGE_ROOT names. A run stops (exit 2) when the packages are'
@@ -52,6 +53,11 @@ while [ $# -gt 0 ]; do
             if [ $# -lt 2 ]; then usage >&2; exit 2; fi
             case "$2" in smoke|full) ;; *) usage >&2; exit 2 ;; esac
             runner+=(--scale "$2")
+            shift
+            ;;
+        --jobs)
+            case "${2:-}" in [1-4]) ;; *) usage >&2; exit 2 ;; esac
+            runner+=(--jobs "$2")
             shift
             ;;
         --only)

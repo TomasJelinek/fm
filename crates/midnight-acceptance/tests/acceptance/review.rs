@@ -1334,6 +1334,7 @@ pub fn full(context: &mut Context) -> Result<(), String> {
 pub fn themes_scenario() -> Scenario {
     Scenario {
         name: "ui_themes",
+        isolation: crate::Isolation::Parallel,
         area: "ui",
         summary: "Polish gate in every theme the default matrix leaves out: main window states, menus, popups, Copy, an error notice and Find.",
         run: themes,
@@ -1344,6 +1345,7 @@ pub fn themes_scenario() -> Scenario {
 pub fn full_scenario() -> Scenario {
     Scenario {
         name: "ui_matrix_full",
+        isolation: crate::Isolation::Parallel,
         area: "ui",
         summary: "Polish gate over the full matrix (--all-themes or MIDNIGHT_ACCEPTANCE_UI_MATRIX=full, full:K/N for shard K of N): every theme and density, every size class and scale factor of the base themes.",
         run: full,

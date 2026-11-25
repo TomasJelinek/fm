@@ -45,11 +45,24 @@ foreach ($file in $required) {
     Copy-Item -LiteralPath (Join-Path $cefStage $file) -Destination $package -Force
     $cefSources[$file] = $file
 }
-Copy-Item -LiteralPath (Join-Path $cefStage 'locales') -Destination $package -Recurse -Force
-foreach ($locale in Get-ChildItem -LiteralPath (Join-Path $cefStage 'locales') -Recurse -File) {
-    $relative = (Get-RelativePath $cefStage $locale.FullName).Replace('\', '/')
-    $cefSources[$relative] = $relative
+$localeDirectory = New-Item -ItemType Directory -Force (Join-Path $package 'locales')
+if ($localeDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unexpected linked locale directory' }
+# Direct standalone builds may reuse a package from a prior run. Remove only exact
+# copies of unused packs from this SDK. The normal build already stages a fresh tree.
+foreach ($item in Get-ChildItem -LiteralPath $localeDirectory.FullName -Force) {
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint -or $item.PSIsContainer) {
+        throw "Unexpected entry in HTML locale directory: $($item.Name)"
+    }
+    if ($item.Name -ceq 'en-US.pak') { continue }
+    $original = Join-Path (Join-Path $cefStage 'locales') $item.Name
+    if ($item.Extension -ne '.pak' -or -not (Test-Path -LiteralPath $original -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $original).Hash -ne (Get-FileHash -LiteralPath $item.FullName).Hash) {
+        throw "Unrecognized file in HTML locale directory: $($item.Name)"
+    }
+    Remove-Item -LiteralPath $item.FullName
 }
+Copy-Item -LiteralPath (Join-Path $cefStage 'locales/en-US.pak') -Destination $localeDirectory.FullName -Force
+$cefSources['locales/en-US.pak'] = 'locales/en-US.pak'
 Copy-Item -LiteralPath (Join-Path $cefStage 'bootstrap.exe') -Destination (Join-Path $package 'midnight-viewer-html.exe') -Force
 $cefSources['midnight-viewer-html.exe'] = 'bootstrap.exe'
 Copy-Item -LiteralPath (Join-Path $TargetDirectory "$configuration/midnight_viewer_html.dll") -Destination (Join-Path $package 'midnight-viewer-html.dll') -Force

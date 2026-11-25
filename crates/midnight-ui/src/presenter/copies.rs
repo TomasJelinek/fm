@@ -5,6 +5,8 @@ use super::*;
 pub(crate) struct CopiesState {
     pub(super) selection: copy_selection::CopySelections,
     pub(crate) draft: Option<copy_dialog::CopyDraft>,
+    pub(crate) destination_picker: Option<DesktopRequestId>,
+    pub(crate) picked_destination: Option<(DesktopRequestId, PathBuf)>,
     /// The draft's typed destination while the backend checks that it is a folder.
     pub(crate) destination_check: Option<copy_dialog::DestinationCheck>,
     /// What the draft's destination does with links, and the user's link choice.

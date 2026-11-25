@@ -80,6 +80,14 @@ mod selection_preview;
 pub(crate) mod selection_rectangle;
 mod selection_sizes;
 pub(crate) mod settings_picker;
+
+/// File dialogs can be reopened before the user has committed their edited text.
+fn picker_field_path(text: &str, previous: &Path) -> PathBuf {
+    if text.is_empty() || previous.to_string_lossy() == text {
+        return previous.to_owned();
+    }
+    previous.parent().unwrap_or(previous).join(text)
+}
 mod shortcuts;
 mod tabs;
 mod terminal;
@@ -1176,7 +1184,9 @@ impl Presenter {
             return;
         }
         if let Event::PathPicked { request, result } = event {
-            if self.owns_file_list_picker(request) {
+            if self.copies.destination_picker == Some(request) {
+                self.copy_destination_picked(request, result);
+            } else if self.owns_file_list_picker(request) {
                 self.file_list_path_picked(request, result);
             } else if self.owns_checksum_picker(request) {
                 self.checksum_path_picked(request, result);

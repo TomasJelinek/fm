@@ -434,19 +434,39 @@ fn hovering_a_folder_link_lazily_reads_its_native_target() {
         (pane, navigation, &path)
     );
 
+    let target = concat!(
+        r"D:\development\release-packages\samples\collision-detection\compiled-dependencies\",
+        r"windows-x86_64-release\runtime-extensions\physics-simulation\extension-resources"
+    );
     presenter
         .borrow_mut()
         .apply(Event::DirectoryLinkTargetRead {
             request,
             pane,
             navigation,
-            target: Some(PathBuf::from("../stored target")),
+            target: Some(PathBuf::from(target)),
         });
     crate::refresh(&window, &presenter.borrow());
     assert_eq!(
         window.get_directory_link_tooltip().text.as_str(),
-        "Link target\n../stored target"
+        format!("Link target\n{target}")
     );
+    draw();
+    let popups = WindowInner::from_pub(window.window()).active_popups();
+    let tooltip = popups
+        .iter()
+        .find(|p| matches!(p.window_kind, WindowKind::ToolTip))
+        .unwrap();
+    let PopupWindowLocation::ChildWindow(origin) = tooltip.location else {
+        panic!("Expected embedded folder link tooltip");
+    };
+    let popup = ItemRc::new_root(tooltip.component.clone())
+        .downcast::<WindowItem>()
+        .unwrap();
+    let width = popup.as_pin_ref().width().get();
+    assert!(width > 560., "long target is still limited to {width}px");
+    assert!(origin.x >= 0. && origin.x + width <= 1_000.1);
+    drop(popups);
 
     move_to("ordinary");
     time.set(Duration::from_millis(1_250));

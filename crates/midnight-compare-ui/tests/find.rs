@@ -145,7 +145,7 @@ fn find_keys_search_both_files_center_hits_and_clear_stale_results_without_a_clo
         renderer.render(&mut pixels, 800);
     });
     support::wait_for(&window, "show compared text", || {
-        window.get_status().contains("difference groups")
+        window.get_identity_state() == 1
     });
     window.invoke_focus_content();
     chord(&window, Some(Key::Control), "f".into());

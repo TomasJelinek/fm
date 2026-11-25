@@ -171,7 +171,7 @@ fn search_folders_add_tick_choose_and_remove_through_one_list() {
     let added = Rc::new(RefCell::new(Vec::<String>::new()));
     let toggles = Rc::new(RefCell::new(Vec::new()));
     let removed = Rc::new(RefCell::new(Vec::new()));
-    let browsed = Rc::new(Cell::new(0));
+    let browsed = Rc::new(RefCell::new(Vec::new()));
     window.on_add_root({
         let added = added.clone();
         move |text| added.borrow_mut().push(text.to_string())
@@ -192,7 +192,7 @@ fn search_folders_add_tick_choose_and_remove_through_one_list() {
     });
     window.on_browse_root({
         let browsed = browsed.clone();
-        move || browsed.set(browsed.get() + 1)
+        move |text| browsed.borrow_mut().push(text.to_string())
     });
     modeless::draw(&native, 860, 620, "find-folders-closed");
     item(&native, AccessibleRole::Text, "Search folders (1 of 2)");
@@ -257,7 +257,7 @@ fn search_folders_add_tick_choose_and_remove_through_one_list() {
         ["/srv/typed folder", "/srv/typed folder"]
     );
     modeless::click(&native, "Browse…");
-    assert_eq!(browsed.get(), 1);
+    assert_eq!(browsed.borrow().as_slice(), ["/srv/typed folder"]);
     // The host answers an accepted Add with its folder's row: that folder is chosen
     // and the entry closes, with keyboard focus still in the window.
     roots.push(row("/srv/typed folder", true));

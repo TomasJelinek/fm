@@ -1429,7 +1429,7 @@ pub fn render(window: &MinimalSoftwareWindow) -> (usize, usize, Vec<slint::Rgb8P
 /// Every one of those folders must lie below `<work>/staged`; that they are merely set
 /// proves nothing (Windows always sets `USERPROFILE`).
 fn private_settings() -> Result<(), String> {
-    if std::env::var_os("MIDNIGHT_ACCEPTANCE_STAGED").is_none() {
+    if !crate::viewers_stage::is_staged() {
         return Err("this process is not staged".to_owned());
     }
     let absolute = |variable: &str| {

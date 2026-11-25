@@ -17,6 +17,11 @@ Never substitute the Cargo Windows binary for this bootstrap. Both files must
 be unsigned or carry matching valid primary signatures. Windows builds use a
 static CRT and the exact CEF distribution's delayed-import list.
 
+The Windows provider needs `libcef.dll`. On Linux it needs `libcef.so`. These
+libraries contain the Chromium rendering engine. The provider uses English for
+Chromium's own UI and ships only `locales/en-US.pak` on both platforms. ICU data
+and text shaping remain available for documents in other languages.
+
 Set `MIDNIGHT_WEB_VIEWER_PROFILE` to an absolute, owned private session directory.
 The trusted host creates and pins it, restricts permissions, supervises the full
 Chromium process tree, and removes it only after every child exits. It is runtime

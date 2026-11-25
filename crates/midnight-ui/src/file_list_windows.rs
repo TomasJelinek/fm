@@ -374,6 +374,7 @@ fn create(
             let Some(main) = weak.upgrade() else { return };
             state.borrow_mut().request_file_list_picker(
                 id,
+                &main.global::<FileListPresentation>().get_destination_path(),
                 crate::picker_window::native_path_picker_owner(main.window()),
                 send.as_ref(),
             );

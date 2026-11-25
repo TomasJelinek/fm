@@ -785,6 +785,9 @@ impl Staged {
         let Err(residue) = self.cleanup() else {
             return failure;
         };
+        if failure.is_trash_unavailable() {
+            failure.kind = ErrorKind::Other;
+        }
         failure.kind = ErrorKind::Other;
         match staged {
             Some(Err(state)) if state.kind == ErrorKind::InvalidInput => {

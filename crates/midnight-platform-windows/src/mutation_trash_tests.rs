@@ -19,6 +19,42 @@ use windows::{
 };
 
 #[test]
+fn recycle_refusals_offer_fallback_only_for_unsupported_recycling() {
+    let path = Path::new(r"D:\test.txt");
+    for value in [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND] {
+        let code = windows::core::HRESULT::from_win32(value.0);
+        assert!(
+            recycle_destination_error(path, windows::core::Error::from_hresult(code))
+                .is_trash_unavailable()
+        );
+        assert!(
+            !recycle_error(path, windows::core::Error::from_hresult(code)).is_trash_unavailable()
+        );
+    }
+    for code in [
+        COPYENGINE_E_RECYCLE_BIN_NOT_FOUND,
+        COPYENGINE_E_RECYCLE_FORCE_NUKE,
+        COPYENGINE_E_RECYCLE_PATH_TOO_LONG,
+        COPYENGINE_E_RECYCLE_SIZE_TOO_BIG,
+        E_NOINTERFACE,
+        E_NOTIMPL,
+    ] {
+        assert!(
+            recycle_error(path, windows::core::Error::from_hresult(code)).is_trash_unavailable()
+        );
+    }
+    for code in [
+        COPYENGINE_E_ACCESS_DENIED_SRC,
+        COPYENGINE_E_SHARING_VIOLATION_SRC,
+        COPYENGINE_E_ACCESS_DENIED_DEST,
+    ] {
+        assert!(
+            !recycle_error(path, windows::core::Error::from_hresult(code)).is_trash_unavailable()
+        );
+    }
+}
+
+#[test]
 fn in_use_recycle_refusals_are_readable_retryable_and_keep_the_path() {
     let path = Path::new("D:\\work\\文档 🦀\\in use e\u{301}");
     // The Shell also reports other refused access with 0x80270021, which its message names.

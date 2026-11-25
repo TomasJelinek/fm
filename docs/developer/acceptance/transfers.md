@@ -270,7 +270,7 @@ Ctrl+V of 65 items move all of them (a drag of 65 is not covered).
 | T-R11 | A file of a mode-0555 folder asks Retry/Skip/Skip all/Cancel; Retry works once writable | `files_trash` | question; file in the Trash | PASS. The question offers Retry, Skip, Skip all errors, Cancel job and Decide later |
 | T-R12 | Two such files: Skip all keeps both and ends the job | `files_trash` | both kept | PASS in `20261121-164146`. In `20261121-144246` the check looked for "Skip all" or "Skip all this error type", not the Delete question's "Skip all errors", and stayed PENDING (harness defect, fixed by the Linux harness patch) |
 | T-R13 | Shift+F8 of a tree holding a mode-0555 folder deletes it whole | `files_trash` | tree gone | PASS |
-| T-R15 | F8 of a file on another filesystem than the Trash is refused ("home trash is on another filesystem; cross-filesystem trash is unsupported") and the file stays: a failed Trash is never a permanent delete | `files_trash` (tmpfs `$XDG_RUNTIME_DIR`) | the refusal's words; the file's bytes; the Trash unchanged | PASS on Linux (`20261122-165133`); red in `20261122-072703`. Windows SKIP (`files_trash` is Linux only) |
+| T-R15 | F8 on another filesystem offers permanent deletion in a second confirmation. Escape preserves the bytes. Confirm removes the selected file. | `files_trash` (private tmpfs folder) | original file before and after each answer, private Trash contents, `trash-unavailable.png` | PASS on Linux (`20261125-145416`) |
 | T-R14 | The account's own Trash is neither used nor read | `files_delete`, `files_trash` | private `XDG_DATA_HOME` | PASS (staged private `XDG_DATA_HOME`) |
 
 Not observed at smoke scale: in `files_trash` the permanent delete of `bulk/` completed

@@ -160,6 +160,13 @@ pub enum Input {
     Close,
 }
 
+/// Which difference-group starts can be reached from the current text viewport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextNavigation {
+    pub previous: bool,
+    pub next: bool,
+}
+
 pub struct Frame {
     /// Immutable worker snapshot shared by paints until Find state changes.
     pub find: Arc<FindState>,
@@ -178,6 +185,8 @@ pub struct Frame {
     pub layers: Option<ImageLayers>,
     pub accessible_text: String,
     pub status: String,
+    /// Text comparisons expose navigation from the same position as the painted rows.
+    pub text_navigation: Option<TextNavigation>,
     pub image: bool,
     /// The frame shows the byte comparison (hex view).
     pub bytes: bool,

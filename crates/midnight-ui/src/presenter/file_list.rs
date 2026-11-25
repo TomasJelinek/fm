@@ -785,6 +785,7 @@ impl Presenter {
     pub(crate) fn request_file_list_picker(
         &mut self,
         id: DesktopRequestId,
+        text: &str,
         owner: PathPickerOwner,
         send: &dyn Fn(Command) -> bool,
     ) {
@@ -797,12 +798,16 @@ impl Presenter {
         else {
             return;
         };
+        let path = super::picker_field_path(text, &s.path);
         if send(Command::PickPath {
             request,
             input: PathPickerRequest {
                 kind: PathPickerKind::TextSave,
                 title: "Save file list".into(),
-                initial_directory: s.path.parent().map(Path::to_owned),
+                initial_name: path.file_name().map(ToOwned::to_owned),
+                initial_directory: path
+                    .is_absolute()
+                    .then(|| path.parent().unwrap_or(&path).to_owned()),
                 owner,
             },
         }) {

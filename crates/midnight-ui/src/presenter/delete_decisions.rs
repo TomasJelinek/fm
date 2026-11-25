@@ -90,6 +90,55 @@ impl Presenter {
             .find(|f| f.id == id && f.version == version)
     }
 
+    pub(crate) fn trash_fallback(&self) -> Option<&DeleteFailure> {
+        if self.operations.pending.is_some() || self.copies.draft.is_some() {
+            return None;
+        }
+        self.active_delete_failure()
+            .map(AsRef::as_ref)
+            .filter(|failure| failure.permanent_fallback.is_some())
+    }
+
+    pub(crate) fn operation_form(&self) -> Option<(&OperationPreview, String)> {
+        if let Some(preview) = &self.operations.preview
+            && self.operations.pending == Some(preview.id)
+        {
+            return Some((preview, preview.id.0.to_string()));
+        }
+        let failure = self.trash_fallback()?;
+        Some((failure.permanent_fallback.as_ref()?, prompt_token(failure)))
+    }
+
+    /// Only the current destructive confirmation's token can authorize fallback.
+    pub(super) fn answer_trash_fallback(
+        &mut self,
+        token: &str,
+        accept: bool,
+        send: &dyn Fn(Command) -> bool,
+    ) -> bool {
+        let Some(failure) = self
+            .trash_fallback()
+            .filter(|failure| token == prompt_token(failure))
+        else {
+            return false;
+        };
+        let id = failure.id;
+        if send(Command::AnswerTrashFallback {
+            id,
+            version: failure.version,
+            confirm: accept,
+        }) {
+            self.operations
+                .delete_decisions
+                .failures
+                .retain(|failure| failure.id != id);
+            self.operations.delete_decisions.selected = None;
+        } else {
+            self.report_control_busy();
+        }
+        true
+    }
+
     pub(super) fn retire_delete_decision(&mut self, id: OperationId) {
         let decisions = &mut self.operations.delete_decisions;
         decisions.failures.retain(|f| f.id != id);
@@ -212,6 +261,7 @@ mod tests {
 
     fn failure(version: u64, can_retry: bool) -> Arc<DeleteFailure> {
         Arc::new(DeleteFailure {
+            permanent_fallback: None,
             id: OperationId(5),
             version,
             mode: DeleteMode::Permanent,

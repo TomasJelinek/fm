@@ -302,27 +302,26 @@ pub(super) fn prepare_captured_delete(
 
 impl Job {
     fn append_target(&mut self, prepared: Arc<dyn PreparedMutation>) {
-        if matches!(
-            prepared.item().kind,
-            EntryKind::Directory | EntryKind::DirectoryLink
-        ) {
-            self.preview.folders += 1;
+        Self::include_item(&mut self.preview, prepared.item());
+        self.targets.push(prepared);
+    }
+
+    fn include_item(preview: &mut OperationPreview, item: &MutationItem) {
+        if matches!(item.kind, EntryKind::Directory | EntryKind::DirectoryLink) {
+            preview.folders += 1;
         } else {
-            self.preview.files += 1;
-            let item = prepared.item();
+            preview.files += 1;
             let size = (item.kind == EntryKind::File)
                 .then_some(item.metadata.size)
                 .flatten();
-            self.preview.file_bytes = self
-                .preview
+            preview.file_bytes = preview
                 .file_bytes
                 .zip(size)
                 .and_then(|(total, size)| total.checked_add(size));
         }
-        if self.preview.sample.len() < 32 {
-            self.preview.sample.push(prepared.item().clone());
+        if preview.sample.len() < 32 {
+            preview.sample.push(item.clone());
         }
-        self.targets.push(prepared);
     }
 
     pub(super) fn progress(&self) -> OperationProgress {

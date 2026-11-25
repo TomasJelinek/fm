@@ -31,6 +31,7 @@ fn input() -> PathPickerRequest {
         kind: PathPickerKind::File,
         title: "Choose file".into(),
         initial_directory: None,
+        initial_name: None,
         owner: PathPickerOwner::None,
     }
 }

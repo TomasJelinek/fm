@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import struct
 import sys
 import tarfile
 import tomllib
@@ -297,6 +298,8 @@ def validate_web_runtime(package, files, manifest, target):
                 "dependency-metadata.json", "icudtl.dat", "resources.pak",
                 "chrome_100_percent.pak", "chrome_200_percent.pak", "v8_context_snapshot.bin",
                 "vk_swiftshader_icd.json"}
+    if manifest["id"] == "midnight.viewer.html":
+        required.add("locales/en-US.pak")
     if target.endswith("windows-msvc"):
         required.update(("libcef.dll", "chrome_elf.dll", "dxcompiler.dll", "vk_swiftshader.dll",
                          "vulkan-1.dll", str(Path(manifest["executable"]).with_suffix(".dll"))))
@@ -724,9 +727,106 @@ def check_release_readme(readme, version):
         raise ValueError(f"The release README must name its source, {SOURCE_REPOSITORY}/tree/v{version}")
 
 
+def release_debug_data(stream):
+    """Inspect PE/ELF headers without loading image contents or changing signed files."""
+    def read_at(offset, size):
+        stream.seek(offset)
+        result = stream.read(size)
+        if len(result) != size:
+            raise ValueError("Truncated executable headers")
+        return result
+
+    magic = stream.read(4)
+    if magic.startswith(b"MZ"):
+        pe, = struct.unpack("<I", read_at(60, 4))
+        if read_at(pe, 4) != b"PE\0\0":
+            raise ValueError("Invalid PE signature")
+        sections, _, symbols, count, opt_size = struct.unpack("<HIIIH", read_at(pe + 6, 16))
+        if symbols and count:
+            return "COFF symbol table"
+        optional = read_at(pe + 24, opt_size)
+        directories = {b"\x0b\x01": 96, b"\x0b\x02": 112}.get(optional[:2])
+        if directories is None:
+            raise ValueError("Invalid PE optional header")
+        debug_rva, debug_size = (0, 0)
+        if len(optional) >= directories + 56 and struct.unpack_from("<I", optional, directories - 4)[0] > 6:
+            debug_rva, debug_size = struct.unpack_from("<II", optional, directories + 48)
+        for index in range(sections):
+            section = read_at(pe + 24 + opt_size + 40 * index, 40)
+            name = section[:8].rstrip(b"\0")
+            if name.startswith((b".debug", b".zdebug", b".stab")):
+                return name.decode("ascii", errors="replace")
+            address, raw_size, raw = struct.unpack_from("<III", section, 12)
+            if debug_size and address <= debug_rva < address + raw_size:
+                if debug_size > raw_size - (debug_rva - address) or debug_size % 28:
+                    raise ValueError("Invalid PE debug directory")
+                for entry in range(0, debug_size, 28):
+                    kind, size, _, data = struct.unpack("<IIII", read_at(raw + debug_rva - address + entry + 12, 16))
+                    if kind in (1, 17):  # COFF debug info or embedded portable PDB
+                        return "embedded PE debugging data"
+                    # RSDS/NB10 records identify an external PDB. Older CodeView formats
+                    # can carry the actual symbol information inside the executable.
+                    if kind == 2 and size and (size < 4 or read_at(data, 4) not in (b"RSDS", b"NB10")):
+                        return "embedded CodeView symbols"
+    elif magic == b"\x7fELF":
+        elf_class, encoding = read_at(4, 2)
+        if elf_class not in (1, 2) or encoding not in (1, 2):
+            raise ValueError("Invalid ELF class or encoding")
+        endian = "<" if encoding == 1 else ">"
+        wide = elf_class == 2
+        word = "Q" if wide else "I"
+        table, = struct.unpack(endian + word, read_at(40 if wide else 32, 8 if wide else 4))
+        size, count, strings = struct.unpack(endian + "HHH", read_at(58 if wide else 46, 6))
+        if not table:
+            return None  # An ELF image may omit its section headers entirely.
+        layout = struct.Struct(endian + ("IIQQQQIIQQ" if wide else "IIIIIIIIII"))
+        if size < layout.size:
+            raise ValueError("Invalid ELF section header size")
+
+        def section(index):
+            return layout.unpack(read_at(table + size * index, layout.size))
+
+        count = count or section(0)[5]
+        strings = section(0)[6] if strings == 0xffff else strings
+        if strings >= count:
+            raise ValueError("Invalid ELF string table index")
+        names_offset, names_size = section(strings)[4:6]
+        for index in range(count):
+            name, kind = section(index)[:2]
+            if kind == 2:  # SHT_SYMTAB; dynamic linking still needs SHT_DYNSYM.
+                return "ELF symbol table"
+            if name < names_size:
+                label = read_at(names_offset + name, min(32, names_size - name)).split(b"\0", 1)[0]
+                if label.startswith((b".debug", b".zdebug", b".stab", b".gdb_index", b".gnu_debugdata")):
+                    return label.decode("ascii", errors="replace")
+    return None
+
+
+def check_release_payload(stage, files):
+    for path in files:
+        relative = path.relative_to(stage)
+        if (relative.suffix.lower() in {".pdb", ".ipdb", ".dbg", ".debug", ".sym", ".dwo", ".dwp", ".ilk", ".map"}
+                or any(part.lower().endswith(".dsym") for part in relative.parts)):
+            raise ValueError(f"Debug sidecar in release: {relative}")
+        if path.name == "web-viewer.json" and path.parent.parent == stage / "viewers":
+            manifest = read_worker_manifest(path, json.loads)
+            if manifest.get("id") == "midnight.viewer.html":
+                locales = path.parent / "locales"
+                if {file for file in files if file.is_relative_to(locales)} != {locales / "en-US.pak"}:
+                    raise ValueError("The bundled HTML viewer must ship exactly locales/en-US.pak")
+        with plain_file(path) as stream:
+            try:
+                debug = release_debug_data(stream)
+            except ValueError as error:
+                raise ValueError(f"{relative}: {error}") from error
+        if debug:
+            raise ValueError(f"{relative}: {debug} in release")
+
+
 def write_archive(stage, archive, binary_name, archive_format, executables=()):
     binary_path = f"{stage.name}/{binary_name}"
     files = plain_tree(stage, maximum=65536)
+    check_release_payload(stage, files)
     executable_paths = {binary_path}
     for relative in executables:
         relative = Path(relative)

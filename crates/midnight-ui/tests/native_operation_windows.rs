@@ -368,10 +368,21 @@ fn native_operation_rename_retains_exact_target_text_and_caret_across_resize_and
 fn native_operation_create_rejects_empty_then_accepts_unicode_and_parent_segments() {
     let h = Harness::new();
     for (pane, action, label, name) in [
-        (PaneId::Left, 3, "Folder name or path", "../new 文档/inside"),
+        (PaneId::Left, 3, "Directory name", "../new 文档/inside"),
         (PaneId::Right, 4, "File name", "created 文档.txt"),
     ] {
         let (id, child) = h.operation(pane, action);
+        let form = h.main.global::<OperationPresentation>();
+        if action == 3 {
+            assert_eq!(form.get_confirm_text(), "Create");
+            assert_eq!(
+                form.get_folder_location(),
+                h.paths[pane.index()].to_string_lossy().as_ref()
+            );
+        } else {
+            assert!(form.get_folder_location().is_empty());
+            assert_eq!(form.get_path_parts().row_count(), 0);
+        }
         key(&child, Key::Return);
         assert!(h.commands.borrow().is_empty(), "empty name must not submit");
         key(&child, name);

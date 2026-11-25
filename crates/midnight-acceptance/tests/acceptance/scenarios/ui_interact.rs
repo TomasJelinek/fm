@@ -808,13 +808,13 @@ fn titles(app: &App) -> Vec<String> {
 fn wait_closed(app: &mut App, surface: &Surface<'_>, target: &Target, limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
     loop {
-        app.idle(Duration::from_millis(40));
         if !(surface.is_open)(app, target) {
             return true;
         }
         if Instant::now() >= deadline {
             return false;
         }
+        app.idle(Duration::from_millis(40));
     }
 }
 
@@ -1012,6 +1012,15 @@ fn act(
 
 /// Run every interactive check on a surface.
 pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
+    check_surface_on_open(app, surface, |_, _| {})
+}
+
+/// Inspect the initial opening before exercising focus, hover and dismissal.
+pub fn check_surface_on_open(
+    app: &mut App,
+    surface: &mut Surface<'_>,
+    inspect: impl FnOnce(&mut App, &Target),
+) -> Outcome {
     let mut outcome = Outcome::default();
     let baseline = titles(app);
     // Focus, hover and tooltips on one opening; then Escape closes it.
@@ -1025,6 +1034,7 @@ pub fn check_surface(app: &mut App, surface: &mut Surface<'_>) -> Outcome {
             return outcome;
         }
         Ok(target) => {
+            inspect(app, &target);
             // Focus, hover and tooltips change only Slint's state: their waits are the
             // window's time (animations, the tooltip delay) with the clock held, not
             // real time.

@@ -84,7 +84,7 @@ export { FeedRow, FeedView, FeedPresentation }
 import { DragBadge } from "drag-feedback.slint";
 import { SharedToolbar } from "shared-toolbar.slint";
 import { NavigationFocus } from "navigation-controls.slint";
-import { OmissionText, PathText } from "path-text.slint";
+import { OmissionText } from "path-text.slint";
 import { PathPasteView } from "path-editor.slint";
 import { SelectionRectangle } from "selection-rectangle.slint";
 export { PathPasteView, SelectionRectangle }
@@ -625,7 +625,10 @@ export component MainWindow inherits Window {
     callback copy-panel-error(int, string);
     in property <int> message-generation;
     in-out property <string> command-text <=> command-input.text;
-    out property <string> command-directory: root.active-pane == 0 ? root.left-path : root.right-path;
+    in property <string> archive-command-directory;
+    out property <string> command-directory: root.active-pane == 0
+        ? (root.left-native-filesystem ? root.left-path : root.archive-command-directory)
+        : (root.right-native-filesystem ? root.right-path : root.archive-command-directory);
     out property <string> command-prompt: root.command-directory == "" ? "" : root.command-directory + ">";
     changed command-directory => { cwd-scroll.content-x = min(0px, cwd-scroll.visible-width - cwd-scroll.content-width); }
     out property <length> command-path-natural-width: full-cwd.preferred-width + 8px;
@@ -1194,104 +1197,63 @@ export component MainWindow inherits Window {
                         max(max(0px, self.width) * 0.5, min(320px, self.width - 120px)));
                     private property <length> prompt-width: root.command-directory == "" ? 0px
                         : min(root.command-path-natural-width, max(0px, self.width - self.editor-reserve));
-                    // A scrolled prompt shows the folder's start (≤ 100px or 30%, ≥ 2
-                    // characters) and an ellipsis, if a character of the end fits too.
-                    private property <length> start-room: max(Theme.small-font * 2,
-                        min(100px, cwd-scroll.width * 0.3) - 4px);
-                    private property <length> start-width: cwd-scroll.content-x < -0.5px
-                        && cwd-scroll.width >= 4px + self.start-room + prompt-omission.preferred-width + Theme.small-font
-                        ? 4px + self.start-room + prompt-omission.preferred-width : 0px;
+                    private property <length> cue-width: leading-dots.preferred-width + 4px;
+                    private property <length> leading-inset: cwd-scroll.content-x < -0.5px
+                        && self.prompt-width > self.cue-width + Theme.small-font ? self.cue-width : 0px;
+                    private property <length> trailing-inset: cwd-scroll.content-x > min(0px, cwd-scroll.visible-width - cwd-scroll.content-width) + 0.5px
+                        && self.prompt-width > self.leading-inset + self.cue-width + Theme.small-font ? self.cue-width : 0px;
                     function scroll-prompt(delta: length) -> bool {
                         if cwd-scroll.content-width <= cwd-scroll.visible-width || delta == 0px { return false; }
                         cwd-scroll.content-x = clamp(cwd-scroll.content-x + delta,
                             min(0px, cwd-scroll.visible-width - cwd-scroll.content-width), 0px);
                         return true;
                     }
-                    // The strip is cut where the start over it ends, so its scrolled text
-                    // never lies under that start. Cut outside the strip, which keeps its
-                    // place, size and scrolling.
-                    Rectangle {
-                        x: command-content.start-width; y: 0px; height: parent.height;
-                        width: max(0px, command-content.prompt-width - self.x);
-                        clip: true;
-                        cwd-scroll := ScrollStrip {
-                            x: -command-content.start-width; y: 0px;
-                            width: command-content.prompt-width; height: parent.height;
-                            mouse-drag-pan-enabled: true;
-                            content-width: max(self.visible-width, root.command-path-natural-width);
-                            content-height: self.visible-height;
-                            content-x: min(0px, self.visible-width - self.content-width);
-                            changed content-width => { self.content-x = min(0px, self.visible-width - self.content-width); }
-                            Rectangle {
-                                width: cwd-scroll.content-width; height: cwd-scroll.visible-height;
-                                full-cwd := Text {
-                                    x: 4px; width: self.preferred-width; height: parent.height;
-                                    text: root.command-prompt; wrap: no-wrap; overflow: clip;
-                                    color: Theme.secondary-text; font-size: Theme.small-font;
-                                    vertical-alignment: center;
-                                    accessible-label: "Working folder: " + root.command-directory;
-                                }
-                                TouchArea {
-                                    scroll-event(event) => {
-                                        if command-content.scroll-prompt(event.delta-x != 0px ? event.delta-x : event.delta-y) {
-                                            return accept;
-                                        }
-                                        reject
-                                    }
-                                }
-                                Tip { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; }
-                            }
-                        }
-                    }
-                    // Measures the omission marker that ends the folder's start below.
-                    prompt-omission := OmissionText {
-                        // Placed, so that it stays out of this row's layout constraints.
+                    cwd-scroll := ScrollStrip {
                         x: 0px; y: 0px;
-                        visible: false; font-size: Theme.small-font; accessible-role: none;
-                    }
-                    // The folder's start and an ellipsis over the scrolled strip. The shared
-                    // path label cuts the start right before its marker, where a clipping
-                    // container would cut the text without one. The strip below is cut off
-                    // here, so its wheel, drag and hint answer here as well.
-                    if command-content.start-width > 0px : Rectangle {
-                        x: 0px; y: 0px; height: parent.height;
-                        width: command-content.start-width;
-                        clip: true; background: Theme.secondary-surface;
-                        command-prefix := PathText {
-                            x: 4px; height: parent.height;
-                            width: command-content.start-room + prompt-omission.preferred-width;
-                            text: root.command-directory; foreground: Theme.secondary-text;
-                            font-size: Theme.small-font;
-                            accessible-label: "Working folder path shortened";
-                        }
-                        TouchArea {
-                            private property <length> pressed-at;
-                            pointer-event(event) => {
-                                if event.kind == PointerEventKind.down { self.pressed-at = cwd-scroll.content-x; }
+                        width: command-content.prompt-width; height: parent.height;
+                        mouse-drag-pan-enabled: true;
+                        content-width: max(self.visible-width, root.command-path-natural-width);
+                        content-height: self.visible-height;
+                        content-x: min(0px, self.visible-width - self.content-width);
+                        changed content-width => { self.content-x = min(0px, self.visible-width - self.content-width); }
+                        Rectangle {
+                            width: cwd-scroll.content-width; height: cwd-scroll.visible-height;
+                            full-cwd := Text {
+                                x: 4px; width: self.preferred-width; height: parent.height;
+                                text: root.command-prompt; wrap: no-wrap; overflow: clip;
+                                color: Theme.secondary-text; font-size: Theme.small-font;
+                                vertical-alignment: center;
+                                accessible-label: "Working folder: " + root.command-directory;
                             }
-                            moved => {
-                                if self.pressed {
-                                    cwd-scroll.content-x = clamp(self.pressed-at + self.mouse-x - self.pressed-x,
-                                        min(0px, cwd-scroll.visible-width - cwd-scroll.content-width), 0px);
+                            TouchArea {
+                                scroll-event(event) => {
+                                    if command-content.scroll-prompt(event.delta-x != 0px ? event.delta-x : event.delta-y) {
+                                        return accept;
+                                    }
+                                    reject
                                 }
                             }
-                            scroll-event(event) => {
-                                if command-content.scroll-prompt(event.delta-x != 0px ? event.delta-x : event.delta-y) {
-                                    return accept;
-                                }
-                                reject
-                            }
+                            Tip { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; }
                         }
-                        Tip { text: "Working folder: " + root.command-directory + "\nScroll or drag horizontally to view a long path."; }
                     }
-                    if cwd-scroll.content-x > min(0px, cwd-scroll.visible-width - cwd-scroll.content-width) + 0.5px : Rectangle {
-                        x: max(0px, cwd-scroll.width - self.width); height: parent.height;
-                        width: right-command-dots.preferred-width + 4px;
+                    // Clear only the glyphs behind each cue, inside the border. The strip
+                    // receives wheel events, drags and hover across its full width.
+                    Rectangle {
+                        x: 0px; y: 1px; width: command-content.leading-inset; height: parent.height - 2px;
+                        visible: command-content.leading-inset > 0px;
                         background: Theme.secondary-surface;
-                        right-command-dots := OmissionText {
-                            width: parent.width; height: parent.height;
-                            text: "..."; color: Theme.secondary-text;
-                            font-size: Theme.small-font; vertical-alignment: center;
+                        leading-dots := OmissionText {
+                            x: 4px; width: self.preferred-width; height: parent.height;
+                            color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center;
+                            accessible-role: text; accessible-label: "Working folder path shortened";
+                        }
+                    }
+                    if command-content.trailing-inset > 0px : Rectangle {
+                        x: cwd-scroll.width - self.width; y: 1px; width: command-content.trailing-inset; height: parent.height - 2px;
+                        background: Theme.secondary-surface;
+                        OmissionText {
+                            x: 0px; width: self.preferred-width; height: parent.height;
+                            color: Theme.secondary-text; font-size: Theme.small-font; vertical-alignment: center;
                             accessible-role: none;
                         }
                     }

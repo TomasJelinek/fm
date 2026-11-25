@@ -40,6 +40,7 @@ const TIMEOUT: Duration = Duration::from_secs(40 * 60);
 pub fn scenarios() -> Vec<Scenario> {
     vec![Scenario {
         name: "tools_checksum_unlimited",
+        isolation: crate::Isolation::Parallel,
         area: "checksums",
         summary: "Checksums without size limits: 20,000 files and a 70-level chain calculated in full with every algorithm (20,070 rows, no limit named), Ctrl+A counting every row for Copy, Ctrl+Shift+C copying all 20,070 full rows (over 4 MiB), the manifest saved (20,070 lines) and verified; the list following the row being calculated, stopped by a selection, resumed by Ctrl+D, paused by a scroll.",
         run: unlimited,

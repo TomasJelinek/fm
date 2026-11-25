@@ -188,8 +188,9 @@ A node reports `Directory`, `File`, `Link` or `Other`, optional byte size and a
 `readable` flag. These are the capabilities available in this version: directory
 listing and readable-file content. There is no mutation capability bitmap,
 extraction request, native path conversion or external application launch. The
-host disables create, rename, delete, move, paste, editing, native clipboard and
-terminal operations in archive locations. F3 uses a provider content lease through
+host disables create, rename, delete, move, paste, editing and native clipboard
+operations in archive locations. The command bar uses the outer archive's native
+parent folder as its working directory. F3 uses a provider content lease through
 the existing viewer broker, backed by a private host-owned TEMP file after complete
 member integrity verification. All viewers share this generic content service.
 F5 copy-out uses readable-member streams through the host's ordinary bounded copy

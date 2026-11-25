@@ -177,7 +177,8 @@ impl PathPickerService for WindowsFileSystem {
             return crate::icon_picker::choose(request, cancel)
                 .map_err(|cause| FsError::from_io("choose command icon", Path::new(""), cause));
         }
-        choose(request, cancel).map_err(|cause| {
+        let start = midnight_platform_common::picker_start(request, cancel);
+        choose(&start, cancel).map_err(|cause| {
             FsError::from_io(
                 "choose path",
                 Path::new(""),
@@ -259,8 +260,12 @@ fn create_dialog(request: &PathPickerRequest) -> windows::core::Result<IFileDial
             let extension: Vec<u16> = extension.encode_utf16().chain(Some(0)).collect();
             dialog.SetDefaultExtension(PCWSTR(extension.as_ptr()))?;
         }
-        if let Some(name) = request.kind.suggested_save_name() {
-            let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        if let Some(name) = request
+            .initial_name
+            .clone()
+            .or_else(|| request.kind.suggested_save_name().map(Into::into))
+        {
+            let name: Vec<u16> = name.encode_wide().chain(Some(0)).collect();
             dialog.SetFileName(PCWSTR(name.as_ptr()))?;
         }
         if let Some(folder) = &request.initial_directory {
@@ -318,7 +323,27 @@ mod tests {
             kind,
             title: "Checksum soubory 中文".into(),
             initial_directory: None,
+            initial_name: None,
             owner: PathPickerOwner::None,
+        }
+    }
+
+    #[test]
+    fn open_and_save_prefill_the_filename_from_the_field() {
+        let _com = ComGuard::initialize(COINIT_APARTMENTTHREADED.0 as u32).unwrap();
+        for kind in [PathPickerKind::File, PathPickerKind::TextSave] {
+            let mut input = request(kind);
+            input.initial_directory = Some(std::env::temp_dir());
+            input.initial_name = Some("edited example.txt".into());
+            let dialog = create_dialog(&input).unwrap();
+            // SAFETY: query the dialog on its owning STA before it is shown.
+            let name = unsafe {
+                ShellPath(dialog.GetFileName().unwrap())
+                    .0
+                    .to_string()
+                    .unwrap()
+            };
+            assert_eq!(name, "edited example.txt");
         }
     }
 

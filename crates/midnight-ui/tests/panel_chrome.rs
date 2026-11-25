@@ -53,6 +53,54 @@ fn shared_toolbar_precedes_separate_drive_and_path_rows_without_large_gaps() {
 }
 
 #[test]
+fn hidden_ancestors_leave_room_for_the_whole_last_path_component() {
+    let mut test = ui::TestUi::new();
+    test.window.invoke_apply_preferences(1, 1);
+    let mut path = String::new();
+    let mut parts = Vec::new();
+    for label in std::iter::once("D:")
+        .chain(std::iter::repeat_n(r"\long-ancestor", 96))
+        .chain(std::iter::once(r"\review"))
+    {
+        path.push_str(label);
+        parts.push(PathPartRow {
+            identity: path.as_str().into(),
+            prefix: path.as_str().into(),
+            label: label.into(),
+        });
+    }
+    test.window.set_left_path(path.as_str().into());
+    test.window
+        .set_left_path_parts(ModelRc::new(VecModel::from(parts)));
+    settle(&mut test);
+    let leaf = ui::root_item(
+        &test.window,
+        &format!("Open {path}"),
+        AccessibleRole::Button,
+    );
+    let expected = bounds(&leaf).2;
+    assert!(expected > 0.0);
+
+    test.resize(420, 240);
+    settle(&mut test);
+    let (x, _, shown, _) = bounds(&leaf);
+    let edit = ui::root_item(&test.window, "Edit folder path", AccessibleRole::Button);
+    let (edit_x, _, edit_width, _) = bounds(&edit);
+    assert!(
+        edit_x + edit_width - x >= expected + 32.0 - 0.5,
+        "the narrow path bar has room for the whole caption and its edit target"
+    );
+    assert!(
+        (expected - shown).abs() <= 0.5,
+        "last component needs {expected}px, got {shown}px"
+    );
+    assert!(
+        edit_x >= x + shown - 0.5 && edit_width >= 31.5,
+        "the edit target must follow the visible path and keep its 32px"
+    );
+}
+
+#[test]
 fn overflowing_path_keeps_suffix_actions_and_full_editor_value_after_resize() {
     let mut test = ui::TestUi::new();
     let prefix = format!("C:\\{}\\", "long ancestor 文档 ".repeat(16));

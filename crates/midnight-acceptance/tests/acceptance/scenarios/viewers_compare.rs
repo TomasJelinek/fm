@@ -272,6 +272,16 @@ fn run(context: &mut Context) -> Result<(), String> {
     failures.check(
         "identical text",
         open(&mut app, context, "same-a.txt", "same-b.txt", IDENTICAL).and_then(|comparing| {
+            comparing.wait(
+                &mut app,
+                "identical text at the beginning",
+                STEP,
+                |window| {
+                    window.get_status().contains("No line differences")
+                        && top_shows(window, "000 ", "000 ")
+                        && window.get_position() == 0.0
+                },
+            )?;
             app.screenshot_window(
                 context,
                 &comparing.software,
@@ -291,18 +301,28 @@ fn run(context: &mut Context) -> Result<(), String> {
     failures.check(
         "large logs",
         open(&mut app, context, "large-a.log", "large-b.log", DIFFERENT).and_then(|comparing| {
-            comparing.click_content(&mut app);
-            input::key(comparing.slint(), "n");
-            let first = comparing.wait(&mut app, "the first changed line", STEP, |window| {
-                window.get_accessible_text().contains("CHANGED")
-            });
+            comparing.wait(
+                &mut app,
+                "the first changed line on opening",
+                STEP,
+                |window| {
+                    window.get_status().contains("Difference 1 of 2")
+                        && top_shows(window, "00002048 ", "00002048 FIRST CHANGE")
+                },
+            )?;
             app.screenshot_window(
                 context,
                 &comparing.software,
                 "large",
-                "large-a.log and large-b.log: the first of two changed lines (N)",
+                "The opening view shows both sides of the first change after 2,048 matching lines",
             );
-            first.and_then(|()| comparing.close(&mut app, false))
+            comparing.click_content(&mut app);
+            input::key(comparing.slint(), Key::F7);
+            comparing.wait(&mut app, "F7 to reach the other change", STEP, |window| {
+                window.get_status().contains("Difference 2 of 2")
+                    && top_shows(window, "", "LAST CHANGE")
+            })?;
+            comparing.close(&mut app, false)
         }),
     );
 
@@ -819,8 +839,23 @@ fn choose_files(app: &mut App, context: &mut Context) -> Result<(), String> {
     Ok(())
 }
 
+/// The first visible aligned text row contains each side's expected text.
+fn top_shows(window: &ComparatorWindow, left: &str, right: &str) -> bool {
+    window
+        .get_accessible_text()
+        .lines()
+        .next()
+        .and_then(|row| row.split_once('\t'))
+        .is_some_and(|(a, b)| a.contains(left) && b.contains(right))
+}
+
 fn differences(app: &mut App, context: &mut Context, comparing: Comparing) -> Result<(), String> {
     let window = comparing.window.clone_strong();
+    let changed = "010 this line differs in right.txt";
+    let inserted = "inserted line only in right.txt";
+    comparing.wait(app, "the opening difference", STEP, |window| {
+        window.get_status().contains("Difference 1 of 3") && top_shows(window, "010 ", changed)
+    })?;
     let shot = app.screenshot_window(
         context,
         &comparing.software,
@@ -830,21 +865,15 @@ fn differences(app: &mut App, context: &mut Context, comparing: Comparing) -> Re
     for finding in probe::review(context, comparing.slint(), &shot) {
         context.note(format!("layout review: {finding}"));
     }
-    let changed = "010 this line differs in right.txt";
-    let inserted = "inserted line only in right.txt";
     // Click into the content so difference keys go to it.
     comparing.click_content(app);
-    input::key(comparing.slint(), "n");
-    comparing.wait(app, "N to reach the first difference", STEP, |window| {
-        window.get_accessible_text().contains(changed)
-    })?;
-    // The changed line shows while the glide is still on its way: take the position
-    // where the content comes to rest, which P and Previous difference return to.
     comparing.still(app)?;
     let first = window.get_position();
     input::key(comparing.slint(), Key::F7);
     comparing.wait(app, "F7 to reach the inserted line", STEP, |window| {
-        window.get_accessible_text().contains(inserted) && window.get_position() > first
+        window.get_status().contains("Difference 2 of 3")
+            && top_shows(window, "", inserted)
+            && window.get_position() > first
     })?;
     app.screenshot_window(
         context,
@@ -852,6 +881,23 @@ fn differences(app: &mut App, context: &mut Context, comparing: Comparing) -> Re
         "second-difference",
         "F7: the second difference (a line only in right.txt)",
     );
+    // A changed visible row count confirms the worker painted the new geometry.
+    // Each resize must keep the second difference where the user navigated.
+    let size = comparing.slint().size();
+    let mut previous_rows = window.get_accessible_text().lines().count();
+    for height in [size.height / 2, size.height] {
+        crate::app::layout_tool(&comparing.software, size.width, height);
+        comparing.wait(app, "resized second difference", STEP, |window| {
+            let text = window.get_accessible_text();
+            text.lines().count() != previous_rows
+                && text
+                    .lines()
+                    .next()
+                    .is_some_and(|row| row.contains(inserted))
+                && window.get_status().contains("Difference 2 of 3")
+        })?;
+        previous_rows = window.get_accessible_text().lines().count();
+    }
     input::key(comparing.slint(), "p");
     comparing.wait(app, "P to return to the first difference", STEP, |window| {
         window.get_position() < first + 0.0001 && window.get_accessible_text().contains(changed)
@@ -872,6 +918,14 @@ fn differences(app: &mut App, context: &mut Context, comparing: Comparing) -> Re
         STEP,
         |window| window.get_position() < last && window.get_accessible_text().contains(changed),
     )?;
+    input::key(comparing.slint(), "n");
+    comparing.wait(app, "N to reach the inserted line", STEP, |window| {
+        top_shows(window, "", inserted)
+    })?;
+    input::key(comparing.slint(), "p");
+    comparing.wait(app, "P to reach the changed line", STEP, |window| {
+        top_shows(window, "010 ", changed)
+    })?;
     input::click_button(comparing.slint(), "Next difference")?;
     comparing.wait(app, "the Next difference button", STEP, |window| {
         window.get_accessible_text().contains(inserted)
@@ -1081,11 +1135,9 @@ fn over_former_limit(
             window.get_status()
         ));
     }
-    comparing.click_content(app);
-    input::chord(comparing.slint(), &[Key::Alt], Key::End);
     comparing.wait(
         app,
-        "Alt+End to reach the lines only over-limit.log has",
+        "the opening view to show the lines only over-limit.log has",
         STEP,
         |window| {
             window
@@ -1099,7 +1151,7 @@ fn over_former_limit(
         context,
         &comparing.software,
         "over-former-limit",
-        "large-a.log and the 4.25 MiB over-limit.log as text: its appended lines (Alt+End)",
+        "large-a.log and the 4.25 MiB over-limit.log open at the first appended line",
     );
     let text_status = window.get_status();
     input::click_button(comparing.slint(), HEX)?;

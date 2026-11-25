@@ -8,7 +8,7 @@ use crate::{
     app::{self, App},
     input, inspect, panel,
 };
-use i_slint_core::items::AccessibleRole;
+use i_slint_core::items::{AccessibleRole, TextInput};
 use midnight_core::{
     CopyOperationState, CopyProgress, OperationId, OperationProgress, OperationState, PaneId,
 };
@@ -111,7 +111,7 @@ pub fn identity(path: &Path) -> Result<(u64, u64), String> {
 }
 
 /// `GetFileInformationByHandle`, which the suite's `windows` features do not include, is
-/// declared here, as `junction_windows` declares its one call.
+/// declared here, as the NTFS fixtures declare `DeviceIoControl`.
 #[cfg(windows)]
 #[allow(
     unsafe_code,
@@ -810,9 +810,18 @@ pub fn focus_inside(window: &slint::Window, role: AccessibleRole, label: &str) -
     let Some(item) = focused else {
         return false;
     };
-    let center = inspect::center(&item);
     // Any visible control of that name (the main window may show another one).
-    inspect::find_all(window, role, label).iter().any(|area| {
+    let controls = inspect::find_all(window, role, label);
+    if role == AccessibleRole::TextInput {
+        // A long destination scrolls its native editor inside the field. The
+        // center of the editor can lie outside the field while the caret is visible.
+        return item.downcast::<TextInput>().is_some()
+            && controls
+                .iter()
+                .any(|field| *field == item || inspect::is_ancestor(field, &item));
+    }
+    let center = inspect::center(&item);
+    controls.iter().any(|area| {
         let (x, y, w, h) = inspect::rect(area);
         center.x >= x && center.x <= x + w && center.y >= y && center.y <= y + h
     })

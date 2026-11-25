@@ -184,7 +184,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
         fat = self.root / "fat volume"
         result = self.run_script("--dry-run", "--validation-packages", "--scale", "smoke",
                                  "--only", "startup,files_links", "--run-dir", str(self.root),
-                                 "--stress", environment={"MIDNIGHT_ACCEPTANCE_FAT_DIR": str(fat)})
+                                 "--stress", "--jobs", "3", environment={"MIDNIGHT_ACCEPTANCE_FAT_DIR": str(fat)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         lines = result.stdout.splitlines()
         self.assertIn("Build: [cargo] [test] [--workspace] [--locked] [--features] "
@@ -198,7 +198,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
         self.assertIn("Stress sizes: on (MIDNIGHT_ACCEPTANCE_STRESS=1)", lines)
         self.assertIn(f"Gated folder: MIDNIGHT_ACCEPTANCE_FAT_DIR = {fat}", lines)
         self.assertIn("Command: [<installation>\\bin\\acceptance.exe] [--scale] [smoke] "
-                      "[startup] [files_links] [--stress]", lines)
+                      "[startup] [files_links] [--stress] [--jobs] [3]", lines)
         self.assertTrue(any(line.startswith("Private installation: " + os.environ["USERPROFILE"]
                                             + "\\MidnightAcceptance-") for line in lines), lines)
         self.assertEqual(set(Path(os.environ["USERPROFILE"]).glob("MidnightAcceptance-*")), before)
@@ -334,6 +334,7 @@ class AcceptanceRunnerTests(unittest.TestCase):
 
     def test_invalid_arguments_stop_with_usage(self):
         for arguments in (("--bogus",), ("debug", "release"), ("--scale", "huge"), ("--scale",),
+                          ("--jobs",), ("--jobs", "0"), ("--jobs", "5"), ("--jobs", "many"),
                           ("--only", "-x"), ("--only", "a,,b"), ("--run-dir", "relative"),
                           ("--plugins", "x", "--validation-packages")):
             with self.subTest(arguments=arguments):

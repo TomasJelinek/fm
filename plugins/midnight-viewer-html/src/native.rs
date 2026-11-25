@@ -17,6 +17,9 @@ mod resources;
 
 use crate::output::Output;
 
+/// The browser's own UI resources match the single locale shipped with the provider.
+const BROWSER_LOCALE: &str = "en-US";
+
 /// Longest wait between CEF message-loop pumps; a command wakes the loop at once.
 const PUMP_INTERVAL: Duration = Duration::from_millis(2);
 /// Commands handled before the next pump, so a burst of resource replies or input
@@ -389,6 +392,7 @@ pub(crate) fn run(args: &MainArgs, sandbox: *mut u8) -> i32 {
     #[cfg(feature = "diagnostic-timing")]
     crate::trace::start(std::path::Path::new(&profile));
     let settings = Settings {
+        locale: CefString::from(BROWSER_LOCALE),
         no_sandbox: 0,
         windowless_rendering_enabled: 1,
         command_line_args_disabled: 1,

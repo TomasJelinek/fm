@@ -23,10 +23,11 @@
 //! thread never ends. A child whose parent is gone (Ctrl+C) removes its stage and kills
 //! its own group.
 //!
-//! Files that already have every owner permission bit (executables and libraries,
-//! most of the bytes) are hard-linked, everything else is copied, so removing a stage
-//! cannot change the build's own package files whatever a scenario did to the stage's
-//! permissions. The stage is removed as soon as the child exits.
+//! Stages copy plugin executables and manifests onto distinct files. Linking or
+//! unlinking another stage changes a shared file's change time on Linux and NTFS
+//! and invalidates the host's captured revision. The harness and the CEF library can
+//! still be linked. Only files with complete owner permissions are linked, so
+//! removing a stage cannot change the build's file permissions.
 use super::{
     Context, fixtures,
     report::{Flag, Shot, Status},
@@ -45,6 +46,40 @@ use std::{
 
 /// Set in a staged child to the one scenario it runs.
 const STAGED: &str = "MIDNIGHT_ACCEPTANCE_STAGED";
+const WORKER: &str = "MIDNIGHT_ACCEPTANCE_WORKER";
+const WORKER_WORK: &str = "MIDNIGHT_ACCEPTANCE_WORKER_WORK";
+const PHASE: &str = "MIDNIGHT_ACCEPTANCE_STAGE_PHASE";
+
+pub fn is_staged() -> bool {
+    std::env::var_os(STAGED).is_some()
+}
+
+/// The supervisor's owned work directory for this scenario, including when
+/// this process writes its own report and work directory deeper inside it.
+pub fn scenario_work(context: &Context) -> PathBuf {
+    std::env::var_os(WORKER_WORK)
+        .map(PathBuf::from)
+        .filter(|work| {
+            work.file_name() == context.work.file_name() && context.work.starts_with(work)
+        })
+        .unwrap_or_else(|| context.work.clone())
+}
+
+pub fn child_scenario() -> Option<String> {
+    std::env::var(STAGED)
+        .ok()
+        .or_else(|| std::env::var(WORKER).ok())
+}
+
+pub fn run_scheduled(context: &mut Context, scenario: &super::Scenario) -> Result<(), String> {
+    if std::env::var(WORKER).ok().as_deref() == Some(scenario.name) {
+        child(context, scenario.timeout, scenario.run)
+    } else if context.parallel && scenario.isolation == super::Isolation::Parallel {
+        parent(context, scenario.name, scenario.timeout, Kind::Worker, None)
+    } else {
+        (scenario.run)(context)
+    }
+}
 /// Set in a staged child to the milliseconds it has, from its start, to report.
 pub const LIMIT: &str = "MIDNIGHT_ACCEPTANCE_STAGED_LIMIT_MS";
 /// Optional folder holding the `viewers/`, `filesystems/` and `thumbnailers/` packages
@@ -85,10 +120,38 @@ pub fn run_private(
     staged(context, timeout, body, Kind::Private)
 }
 
+/// Run the checks without packages first, then stage the installed packages. Each
+/// phase gets its own child and console, with one deadline from the scenario start.
+/// Only a skip from the installed phase is optional; return its reason to the caller.
+pub fn run_with_optional_plugins(
+    context: &mut Context,
+    timeout: Duration,
+    private: super::Run,
+    installed: super::Run,
+) -> Result<Option<String>, String> {
+    let name = super::app::context_name();
+    if is_staged() {
+        let body = match std::env::var(PHASE).as_deref() {
+            Ok("private") => private,
+            Ok("installed") => installed,
+            other => return Err(format!("unexpected phase for {name}: {other:?}")),
+        };
+        return child(context, timeout, body).map(|()| None);
+    }
+    parent(context, &name, timeout, Kind::Private, Some("private"))?;
+    match parent(context, &name, timeout, Kind::Plugins, Some("installed")) {
+        Err(message) if message.starts_with("SKIP:") => {
+            Ok(Some(message.trim_start_matches("SKIP:").trim().to_owned()))
+        }
+        result => result.map(|()| None),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Plugins,
     Private,
+    Worker,
 }
 
 fn staged(
@@ -103,7 +166,7 @@ fn staged(
         Ok(staged) => Err(format!(
             "SKIP: this staged process runs only {staged}, not {name}"
         )),
-        Err(_) => parent(context, &name, timeout, kind),
+        Err(_) => parent(context, &name, timeout, kind, None),
     }
 }
 
@@ -275,7 +338,7 @@ fn child(
                 let _ = fs::write(
                     &path,
                     format!(
-                        "status\tFAIL\nmessage\t{}\n",
+                        "status\tTIMEOUT\nmessage\t{}\n",
                         escape(&format!(
                             "the scenario did not finish within {limit:.1?} in its staged \
                              process"
@@ -393,7 +456,7 @@ fn stop_own_group() {
             .status();
     }
     #[cfg(not(unix))]
-    if std::env::var_os(STAGED).is_some() {
+    if child_scenario().is_some() {
         kill_group(std::process::id());
     }
 }
@@ -494,7 +557,7 @@ pub fn stress(_context: &Context) -> bool {
 
 /// Kill process group `group` (the staged child and what it started in its group).
 #[cfg(unix)]
-fn kill_group(group: u32) {
+pub(super) fn kill_group(group: u32) {
     // The standard library cannot signal a process group and the suite has no unsafe
     // code: the shell's `kill` builtin can.
     let _ = Command::new("/bin/sh")
@@ -825,11 +888,17 @@ impl Stage {
         Ok(())
     }
 
-    /// Hard-link a file that already has every owner permission bit, copy the rest.
+    /// Only share the runner and the known CEF runtime library. Executables and
+    /// manifests, including newly installed plugins, must have independent revisions.
     fn place(&mut self, from: &Path, to: &Path) -> Result<(), String> {
         let metadata =
             fs::metadata(from).map_err(|error| format!("{}: {error}", from.display()))?;
-        if owner_complete(&metadata) && fs::hard_link(from, to).is_ok() {
+        let share = to == self.executable
+            || to.strip_prefix(&self.root).is_ok_and(|relative| {
+                relative == Path::new("viewers/midnight-viewer-html/libcef.so")
+                    || relative == Path::new("viewers/midnight-viewer-html/libcef.dll")
+            });
+        if share && owner_complete(&metadata) && fs::hard_link(from, to).is_ok() {
             self.linked += 1;
             return Ok(());
         }
@@ -918,11 +987,29 @@ fn child_run(root: &Path) -> Option<PathBuf> {
     folders.next().is_none().then_some(first)
 }
 
-fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> Result<(), String> {
+fn parent(
+    context: &mut Context,
+    name: &str,
+    timeout: Duration,
+    kind: Kind,
+    phase: Option<&str>,
+) -> Result<(), String> {
     // Counted from the scenario's start, as the runner counts its timeout.
-    let deadline = context.started + timeout.saturating_sub(PARENT_MARGIN);
+    let worker = matches!(kind, Kind::Worker);
+    let budget = if worker {
+        timeout
+    } else {
+        timeout.saturating_sub(PARENT_MARGIN)
+    };
+    let deadline = context.started + budget;
     let guard = Guard::new()?;
-    let folder = context.work.join("staged");
+    let staged = context.work.join("staged");
+    let folder = if let Some(phase) = phase {
+        fs::create_dir_all(&staged).map_err(|error| io_error(&staged, error))?;
+        staged.join(phase)
+    } else {
+        staged
+    };
     let child_root = folder.join("run");
     let console = folder.join("console.log");
     for path in [&folder, &child_root] {
@@ -951,7 +1038,7 @@ fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> R
             let (executable, xdg) = (stage.executable.clone(), stage.root.join("xdg"));
             (Some(stage), executable, xdg)
         }
-        Kind::Private => {
+        Kind::Private | Kind::Worker => {
             let (executable, name) = this_executable()?;
             // A rebuild replaced this executable meanwhile: run a private copy of the
             // running one.
@@ -981,10 +1068,28 @@ fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> R
     };
     let child_limit = deadline
         .saturating_duration_since(Instant::now())
-        .saturating_sub(CHILD_MARGIN);
+        .saturating_sub(if worker { Duration::ZERO } else { CHILD_MARGIN });
     let mut command = Command::new(&executable);
     command
-        .env(STAGED, name)
+        .env_remove(WORKER)
+        .env_remove(WORKER_WORK)
+        .env_remove(STAGED)
+        .env(PHASE, phase.unwrap_or_default())
+        .env(
+            if matches!(kind, Kind::Worker) {
+                WORKER
+            } else {
+                STAGED
+            },
+            name,
+        )
+        .env("MIDNIGHT_ACCEPTANCE_JOBS", "1")
+        // The aggregate report applies review policy after adopting the child's flags.
+        .env("MIDNIGHT_ACCEPTANCE_STRICT_REVIEW", "0")
+        .env(
+            "MIDNIGHT_ACCEPTANCE_ALL_THEMES",
+            if context.options.all_themes { "1" } else { "0" },
+        )
         .env(LIMIT, child_limit.as_millis().to_string())
         .env("MIDNIGHT_ACCEPTANCE_FILTER", name)
         .env("MIDNIGHT_ACCEPTANCE_RUN_DIR", &child_root)
@@ -1006,6 +1111,45 @@ fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> R
         .stdin(Stdio::piped())
         .stdout(log)
         .stderr(errors);
+    if worker {
+        command.env(WORKER_WORK, &context.work);
+    }
+    // Software windows are private to the worker. Its Chromium plugin can also
+    // need X11; give it a private display after removing the shared desktop.
+    #[cfg(target_os = "linux")]
+    if context.parallel {
+        if let Some(volume) = fixtures::runtime_volume() {
+            command.env(fixtures::RUNTIME_VOLUME, volume);
+        }
+        for key in [
+            "DISPLAY",
+            "XAUTHORITY",
+            "WAYLAND_DISPLAY",
+            "DBUS_SESSION_BUS_ADDRESS",
+        ] {
+            command.env_remove(key);
+        }
+        for (key, leaf) in [
+            ("HOME", "home"),
+            ("TMPDIR", "tmp"),
+            ("XDG_STATE_HOME", "state"),
+            ("XDG_RUNTIME_DIR", "runtime"),
+        ] {
+            let dir = folder.join(leaf);
+            private_folder(&dir)?;
+            command.env(key, dir);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let _display = if context.parallel
+        && stage
+            .as_ref()
+            .is_some_and(|s| s.root.join("viewers/midnight-viewer-html").is_dir())
+    {
+        super::worker_display::attach(&mut command, &folder, deadline)?
+    } else {
+        None
+    };
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1050,13 +1194,15 @@ fn parent(context: &mut Context, name: &str, timeout: Duration, kind: Kind) -> R
     ));
     let result = child_run(&child_root).and_then(|run| adopt(context, name, &run));
     let result = match (result, status) {
-        (Some(result), _) => result,
-        (None, None) => Err(format!(
-            "the staged process did not finish within {:?} of the scenario's start; console \
-             tail:\n{}",
-            timeout.saturating_sub(PARENT_MARGIN),
+        (_, None) => Err(format!(
+            "TIMEOUT: the worker exceeded {budget:?}; console tail:\n{}",
             tail(&console, 24)
         )),
+        (Some(Ok(())), Some(status)) if !status.success() => Err(format!(
+            "worker reported success but exited {status}; console tail:\n{}",
+            tail(&console, 24)
+        )),
+        (Some(result), Some(_)) => result,
         (None, Some(status)) => Err(format!(
             "the staged process ended ({status}) without a result; console tail:\n{}",
             tail(&console, 24)
@@ -1073,7 +1219,8 @@ fn adopt(context: &mut Context, name: &str, child_run: &Path) -> Option<Result<(
     let text = fs::read_to_string(child_run.join(RESULT)).ok();
     let mut status = String::from("FAIL");
     let mut message = String::new();
-    let mut adopted: Vec<String> = Vec::new();
+    let mut adopted = std::collections::HashSet::new();
+    let mut missing = Vec::new();
     for line in text.as_deref().unwrap_or_default().lines() {
         let fields: Vec<String> = line.split('\t').map(unescape).collect();
         match fields.first().map(String::as_str) {
@@ -1081,13 +1228,15 @@ fn adopt(context: &mut Context, name: &str, child_run: &Path) -> Option<Result<(
             Some("message") if fields.len() > 1 => message = fields[1].clone(),
             Some("note") if fields.len() > 1 => context.note(fields[1].clone()),
             Some("shot") if fields.len() > 2 => {
-                if move_shot(context, child_run, &fields[1]) {
-                    adopted.push(fields[1].clone());
+                if adopted.contains(&fields[1]) || move_shot(context, child_run, &fields[1]) {
+                    adopted.insert(fields[1].clone());
                     context.outcome.shots.push(Shot {
                         file: fields[1].clone(),
                         caption: fields[2].clone(),
                         flags: 0,
                     });
+                } else {
+                    missing.push(fields[1].clone());
                 }
             }
             Some("flag") if fields.len() > 3 => {
@@ -1128,6 +1277,10 @@ fn adopt(context: &mut Context, name: &str, child_run: &Path) -> Option<Result<(
     }
     text.as_ref()?;
     Some(match status.as_str() {
+        "PASS" | "WARN" if !missing.is_empty() => Err(format!(
+            "could not collect worker screenshots: {}",
+            missing.join(", ")
+        )),
         "PASS" | "WARN" => {
             if !message.is_empty() {
                 context.outcome.message = message;
@@ -1136,6 +1289,7 @@ fn adopt(context: &mut Context, name: &str, child_run: &Path) -> Option<Result<(
         }
         "SKIP" => Err(format!("SKIP: {message}")),
         "PENDING" => Err(format!("PENDING: {message}")),
+        "TIMEOUT" => Err(format!("TIMEOUT: {message}")),
         _ => Err(if message.is_empty() {
             "the staged scenario failed without a message".to_owned()
         } else {

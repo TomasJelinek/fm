@@ -399,6 +399,11 @@ fn a_native_folder_of_an_archive_path_leaves_the_archive_for_it() {
     panel.test.window.set_panel_ratio(1.0);
     panel.draw();
     let location = text(&panel.folder.join("bundle.zip").join("bundle"));
+    assert_eq!(panel.test.window.get_left_path().as_str(), location);
+    assert_eq!(
+        panel.test.window.get_command_prompt(),
+        format!("{}>", panel.folder.display())
+    );
     assert_eq!(markers(&panel.test), 0, "the whole path fits");
     let shown: Vec<String> = parts(&panel.test, &location)
         .into_iter()

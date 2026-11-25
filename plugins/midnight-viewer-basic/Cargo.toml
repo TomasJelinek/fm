@@ -28,6 +28,8 @@ opt-level = 1
 opt-level = 3
 
 [profile.release]
+debug = false
+strip = "symbols"
 opt-level = 3
 lto = "fat"
 codegen-units = 1

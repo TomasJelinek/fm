@@ -144,18 +144,17 @@ fn error(path: &Path, cause: io::Error) -> FsError {
 /// The editor's program rule, reported as this Custom Command's program.
 fn validate_program(executable: &Path) -> Result<(), FsError> {
     use crate::editor::ProgramIssue;
-    crate::editor::check_program(executable).map_err(|issue| {
+    crate::editor::check_program(executable, &["exe", "com", "bat", "cmd"]).map_err(|issue| {
         error(
             executable,
             match issue {
                 ProgramIssue::Unsupported => io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "The program must be an absolute .exe or .com path; shell scripts are unsupported.",
+                    "Choose an absolute path to an .exe, .com, .bat, or .cmd file.",
                 ),
-                ProgramIssue::NotFile => io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "The program is not a file.",
-                ),
+                ProgramIssue::NotFile => {
+                    io::Error::new(io::ErrorKind::InvalidInput, "The program is not a file.")
+                }
                 ProgramIssue::Unavailable(cause) if cause.kind() == io::ErrorKind::NotFound => {
                     io::Error::new(io::ErrorKind::NotFound, "The program was not found.")
                 }

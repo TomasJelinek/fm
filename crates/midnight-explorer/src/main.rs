@@ -145,8 +145,16 @@ fn main() -> std::process::ExitCode {
     // The Console window launcher of a Run directly command: a console program, not the
     // file manager. It runs the program with exactly its arguments and waits for a key.
     let mut arguments = arguments.into_iter();
-    if arguments.next().as_deref() == Some(std::ffi::OsStr::new(RUN_AND_WAIT_ARGUMENT)) {
+    let mode = arguments.next();
+    #[cfg(windows)]
+    if mode.as_deref() == Some(std::ffi::OsStr::new(midnight_platform::RUN_BATCH_ARGUMENT)) {
+        std::process::exit(midnight_platform::run_captured_batch(arguments));
+    }
+    if mode.as_deref() == Some(std::ffi::OsStr::new(RUN_AND_WAIT_ARGUMENT)) {
         let code = midnight_platform::run_and_wait(arguments.collect());
+        #[cfg(windows)]
+        std::process::exit(code);
+        #[cfg(not(windows))]
         return std::process::ExitCode::from(u8::try_from(code).unwrap_or(1));
     }
     // First, before any thread opens files: on Linux, raise the soft open-file limit to

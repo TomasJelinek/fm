@@ -3,8 +3,8 @@
 
 #[cfg(windows)]
 pub use midnight_platform_windows::{
-    NativeClipboard, WindowsFileSystem as LocalFileSystem, home_directory, monitor_work_area,
-    run_and_wait, set_console_launcher,
+    NativeClipboard, RUN_BATCH_ARGUMENT, WindowsFileSystem as LocalFileSystem, home_directory,
+    monitor_work_area, run_and_wait, run_captured_batch, set_console_launcher,
 };
 
 #[cfg(target_os = "linux")]

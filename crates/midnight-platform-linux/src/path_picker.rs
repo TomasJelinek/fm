@@ -61,7 +61,8 @@ impl PathPickerService for LinuxFileSystem {
             return crate::icon_picker::snapshot(&path, self.home.as_deref(), cancel)
                 .map_err(error);
         }
-        runtime.block_on(choose(request, cancel))
+        let start = midnight_platform_common::picker_start(request, cancel);
+        runtime.block_on(choose(&start, cancel))
     }
 }
 
@@ -92,6 +93,23 @@ fn picker_options<'a>(
         ("modal", Value::from(modal)),
     ]);
     let method = if let Some(name) = input.kind.suggested_save_name() {
+        let name = input
+            .initial_name
+            .as_deref()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .unwrap_or(name);
+        if let Some(path) = input
+            .initial_directory
+            .as_ref()
+            .zip(input.initial_name.as_ref())
+            .map(|(folder, name)| folder.join(name))
+            .filter(|path| path.is_file())
+        {
+            let mut bytes = path.as_os_str().as_bytes().to_vec();
+            bytes.push(0);
+            options.insert("current_file", Value::from(bytes));
+        }
         options.insert("current_name", Value::from(name));
         "SaveFile"
     } else {
@@ -294,6 +312,7 @@ mod tests {
         PathPickerRequest {
             kind,
             title: "Checksum soubory 中文".into(),
+            initial_name: None,
             initial_directory: Some(PathBuf::from(OsString::from_vec(
                 b"/tmp/raw\xff folder".to_vec(),
             ))),
@@ -333,6 +352,17 @@ mod tests {
             ]
         );
         assert!(!options.contains_key("current_name"));
+    }
+
+    #[test]
+    fn portal_save_offers_the_edited_filename() {
+        let mut input = request(PathPickerKind::TextSave);
+        input.initial_name = Some("edited list.txt".into());
+        let (_, mut options) = picker_options(&input, "test", true);
+        assert_eq!(
+            String::try_from(options.remove("current_name").unwrap()).unwrap(),
+            "edited list.txt"
+        );
     }
 
     #[test]

@@ -103,7 +103,7 @@ combinations. Helpers of these scenarios are in
 | N-42 | F11/F12 network drive dialogs | not on Linux | SKIP: Windows only; the footer hides them |
 | N-43 | The Trash location opens the desktop Trash | not installed headless | SKIP: the harness installs no desktop opener |
 | N-50 | Without a desktop service the "Command shell" chooser and the terminal button ("Open … in this folder", since b2184fb2) are disabled; the command history picker lists the saved commands newest first ("<shell> · <command>") and choosing one runs nothing and leaves the command line as it was ("Command shell unavailable"); Enter in the command line reports "Terminal unavailable" | `files_navigation` › command line | PASS (Windows `20261122-164746`, Linux `20261122-200640`) |
-| N-51 | The chooser lists the platform's shells; choosing one changes the hint to "Run with <shell>"; on Windows a switch between PowerShell and cmd with a draft is refused; a recalled command fills the draft without running | `files_navigation` › command line | SKIP: the shell and the terminal come from the desktop service (DesktopContext), which the harness does not install (it also launches terminals) |
+| N-51 | The chooser lists the platform's shells. Choosing one changes the hint to "Run with <shell>" and keeps the command draft. A recalled command fills the draft without running. | `files_navigation` › command line | SKIP: the shell and the terminal come from the desktop service (DesktopContext), which the harness does not install (it also launches terminals) |
 | N-52 | The watch fallback line "Live updates are unavailable for this folder; it is checked for changes regularly instead." | `files_busy_folder` (noted) | SKIP: no seam makes a watch registration fail (decision A5) |
 
 ## Tabs

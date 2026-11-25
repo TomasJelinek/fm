@@ -111,12 +111,11 @@ impl Harness {
     }
 }
 
-/// A running permanent Delete, then its failure on a folder it cannot remove.
-fn delete_waits(h: &Harness) {
+fn running_delete(h: &Harness, mode: DeleteMode) {
     h.apply(Event::Operation(OperationEvent::Progress(Arc::new(
         OperationProgress {
             id: OperationId(41),
-            kind: MutationKind::Delete(DeleteMode::Permanent),
+            kind: MutationKind::Delete(mode),
             state: OperationState::Running,
             pause_requested: false,
             paused: false,
@@ -134,8 +133,14 @@ fn delete_waits(h: &Harness) {
         },
     ))));
     assert!(!h.marked("41"), "a running Delete needs nothing");
+}
+
+/// A running permanent Delete, then its failure on a folder it cannot remove.
+fn delete_waits(h: &Harness) {
+    running_delete(h, DeleteMode::Permanent);
     h.apply(Event::Operation(OperationEvent::DeleteFailure(Arc::new(
         DeleteFailure {
+            permanent_fallback: None,
             id: OperationId(41),
             version: 1,
             mode: DeleteMode::Permanent,
@@ -148,6 +153,59 @@ fn delete_waits(h: &Harness) {
             can_skip: true,
         },
     ))));
+}
+
+#[test]
+fn trash_fallback_uses_the_destructive_confirmation_for_the_original_item() {
+    use midnight_ui::OperationPresentation;
+    let h = Harness::new();
+    running_delete(&h, DeleteMode::Trash);
+    let path = Path::new("source/unrecycled.txt");
+    for (version, accept) in [(1, false), (2, true)] {
+        h.apply(Event::Operation(OperationEvent::DeleteFailure(Arc::new(
+            DeleteFailure {
+                id: OperationId(41),
+                version,
+                mode: DeleteMode::Trash,
+                can_retry: false,
+                can_skip: false,
+                error: FsError::trash_unavailable(path, "fixture has no recycle bin"),
+                permanent_fallback: Some(OperationPreview {
+                    id: OperationId(41),
+                    kind: MutationKind::Delete(DeleteMode::Permanent),
+                    files: 1,
+                    folders: 0,
+                    file_bytes: Some(10),
+                    sample: vec![MutationItem {
+                        path: path.into(),
+                        kind: EntryKind::File,
+                        metadata: Default::default(),
+                    }],
+                }),
+            },
+        ))));
+        let form = h.main.global::<OperationPresentation>();
+        assert!(form.get_active() && form.get_dangerous());
+        assert_eq!(form.get_confirm_text(), "Permanently delete");
+        assert!(form.get_question().contains("unrecycled.txt"));
+        assert!(h.main.get_operation_warning().contains("cannot be undone"));
+        assert!(h.main.get_copy_token().is_empty());
+        modeless::draw(
+            &h.windows.borrow()[0],
+            900,
+            650,
+            "trash-unavailable-permanent-offer",
+        );
+        h.commands.borrow_mut().clear();
+        if accept {
+            form.invoke_confirm(form.get_token(), "".into());
+        } else {
+            form.invoke_request_dismiss(form.get_token());
+        }
+        assert!(h.commands.borrow().iter().any(|command| matches!(command,
+            Command::AnswerTrashFallback { id: OperationId(41), version: v, confirm } if *v == version && *confirm == accept)));
+        assert!(!form.get_active());
+    }
 }
 
 #[test]

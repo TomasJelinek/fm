@@ -71,6 +71,17 @@ impl OpenWindow {
                 window.set_image_mode(frame.image);
                 window.set_bytes_mode(frame.bytes);
                 window.set_bytes_only(frame.bytes_only);
+                // Byte navigation can seek a region while its background scan is still running.
+                window.set_has_previous_difference(
+                    frame.bytes
+                        || frame
+                            .text_navigation
+                            .as_ref()
+                            .is_some_and(|nav| nav.previous),
+                );
+                window.set_has_next_difference(
+                    frame.bytes || frame.text_navigation.as_ref().is_some_and(|nav| nav.next),
+                );
                 window.set_position(frame.position as f32);
                 window.set_status(midnight_core::visible_name(&frame.status).as_ref().into());
                 window.set_search_summary(frame.find.message.as_str().into());

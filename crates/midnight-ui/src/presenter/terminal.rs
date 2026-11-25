@@ -5,6 +5,20 @@ use super::*;
 #[path = "tests/command_history.rs"]
 mod command_history_tests;
 
+impl Pane {
+    /// Nested archives keep the outer native file as their container. Member names
+    /// and the panel's presentation path never become a process working directory.
+    pub(crate) fn terminal_directory(&self) -> Option<&Path> {
+        if self.archive_request || self.network_request || self.network.is_some() {
+            return None;
+        }
+        match &self.archive {
+            Some(archive) => archive.location.address.container.parent(),
+            None => Some(self.display_path()),
+        }
+    }
+}
+
 impl Presenter {
     /// Rotation fills the draft using the currently selected terminal. The token
     /// is exact text, so edits and history changes cannot reuse a stale row index.
@@ -64,7 +78,6 @@ impl Presenter {
         self.desktop.draft_nonempty = true;
         self.desktop.draft_shell = Some(entry.shell);
         self.desktop.terminal_mode = TerminalMode::Standard;
-        self.desktop.terminal_guidance = None;
         Some(entry.command)
     }
 
@@ -84,14 +97,10 @@ impl Presenter {
         self.desktop.draft_shell.or_else(|| self.preferred_shell())
     }
 
-    /// Bind a nonempty draft before any settings event or terminal selection can
-    /// reinterpret it. Clearing the editor releases the saved default for reuse.
+    /// A late settings event preserves the draft's shell. The shell picker
+    /// can explicitly rebind it, and clearing the draft releases the binding.
     pub(crate) fn track_draft(&mut self, nonempty: bool) -> bool {
-        let previous = (
-            self.desktop.draft_nonempty,
-            self.desktop.draft_shell,
-            self.desktop.terminal_guidance,
-        );
+        let previous = (self.desktop.draft_nonempty, self.desktop.draft_shell);
         self.desktop.draft_nonempty = nonempty;
         if nonempty {
             if self.desktop.draft_shell.is_none() {
@@ -99,14 +108,8 @@ impl Presenter {
             }
         } else {
             self.desktop.draft_shell = None;
-            self.desktop.terminal_guidance = None;
         }
-        previous
-            != (
-                self.desktop.draft_nonempty,
-                self.desktop.draft_shell,
-                self.desktop.terminal_guidance,
-            )
+        previous != (self.desktop.draft_nonempty, self.desktop.draft_shell)
     }
 
     pub(crate) fn effective_terminal_mode(&self) -> TerminalMode {
@@ -158,27 +161,6 @@ impl Presenter {
         send: &dyn Fn(Command) -> bool,
     ) {
         self.track_draft(has_draft);
-        let requested_shell = match self.desktop.shell {
-            Some(ShellFlavor::Posix) => ShellFlavor::Posix,
-            Some(ShellFlavor::PowerShell | ShellFlavor::Cmd) => {
-                if index == 1 {
-                    ShellFlavor::Cmd
-                } else {
-                    ShellFlavor::PowerShell
-                }
-            }
-            None => return,
-        };
-        if has_draft
-            && self
-                .desktop
-                .draft_shell
-                .is_some_and(|bound| bound != requested_shell)
-        {
-            self.desktop.terminal_guidance =
-                Some("Clear the command line before changing shell type.");
-            return;
-        }
         match self.desktop.shell {
             Some(ShellFlavor::Posix) => {
                 self.desktop.terminal_mode = if index == 1 {
@@ -188,14 +170,16 @@ impl Presenter {
                 };
             }
             Some(ShellFlavor::PowerShell | ShellFlavor::Cmd) => {
+                let (shell, preference) = match index {
+                    0 => (ShellFlavor::PowerShell, WindowsShell::PowerShell),
+                    1 => (ShellFlavor::Cmd, WindowsShell::Cmd),
+                    _ => return,
+                };
+                self.desktop.draft_shell = has_draft.then_some(shell);
                 self.preferences.edited.windows_shell = true;
                 self.update_preferences(
                     UserPreferences {
-                        windows_shell: if index == 1 {
-                            WindowsShell::Cmd
-                        } else {
-                            WindowsShell::PowerShell
-                        },
+                        windows_shell: preference,
                         ..self.preferences.values.clone()
                     },
                     send,
@@ -250,7 +234,6 @@ mod tests {
             });
             p.change_terminal(index, false, &|_| panic!("a shell choice cannot launch"));
             p.track_draft(true);
-            p.desktop.terminal_guidance = Some("Keep this draft bound to its shell.");
             p.preferences
                 .values
                 .command_history
@@ -260,11 +243,7 @@ mod tests {
                 });
             let preferences = p.preferences.values.clone();
             let revision = p.preferences.revision;
-            let draft = (
-                p.desktop.draft_nonempty,
-                p.desktop.draft_shell,
-                p.desktop.terminal_guidance,
-            );
+            let draft = (p.desktop.draft_nonempty, p.desktop.draft_shell);
             let sent = RefCell::new(Vec::new());
             assert!(p.open_terminal(&|command| {
                 sent.borrow_mut().push(command);
@@ -292,14 +271,7 @@ mod tests {
                     },
                 }),
             });
-            assert_eq!(
-                (
-                    p.desktop.draft_nonempty,
-                    p.desktop.draft_shell,
-                    p.desktop.terminal_guidance,
-                ),
-                draft
-            );
+            assert_eq!((p.desktop.draft_nonempty, p.desktop.draft_shell), draft);
             assert_eq!(p.preferences.values, preferences);
             assert_eq!(p.preferences.revision, revision);
             assert!(p.desktop.terminal_pending.is_none());
@@ -361,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_draft_defers_loaded_defaults_and_rejects_cross_grammar_selection() {
+    fn late_defaults_preserve_the_draft_shell_and_an_explicit_pick_changes_it() {
         let mut p = Presenter::new("left".into(), "right".into());
         p.apply(Event::DesktopContext {
             system_locations: Vec::new(),
@@ -381,14 +353,13 @@ mod tests {
         ))));
         assert_eq!(p.preferences.values.windows_shell, WindowsShell::Cmd);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
-        p.change_terminal(1, true, &|_| {
-            panic!("a blocked switch cannot save or launch")
+        p.change_terminal(1, true, &|command| {
+            assert!(matches!(command, Command::SavePreferences { .. }));
+            true
         });
-        assert_eq!(p.effective_shell(), Some(ShellFlavor::PowerShell));
-        assert!(p.desktop.terminal_guidance.is_some());
+        assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
         p.track_draft(false);
         assert_eq!(p.effective_shell(), Some(ShellFlavor::Cmd));
-        assert!(p.desktop.terminal_guidance.is_none());
     }
 
     #[test]

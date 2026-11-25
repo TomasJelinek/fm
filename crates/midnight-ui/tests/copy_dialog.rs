@@ -453,7 +453,8 @@ fn a_drive_without_links_shows_why_it_copies_the_files_and_explains_keeping_link
         accessible_item(&child, AccessibleRole::Text, reason).is_none_or(|item| !not_hidden(&item)),
         "no paragraph repeats the reason"
     );
-    // From the destination field to the link choice, the first option.
+    // From the destination field past Browse to the link choice.
+    input::key(&child, Key::Tab);
     input::key(&child, Key::Tab);
     input::key(&child, Key::DownArrow);
     refresh(&ui.window, &state.borrow());
@@ -827,6 +828,7 @@ fn destination_editor(
             .unwrap(),
         "false"
     );
+    input::key(&child, Key::Tab); // Browse beside the destination
     if let Some(links) = &links {
         // The link choice is the first option. The arrow keys choose; Up reaches the
         // first entry, Down the second again.
@@ -913,7 +915,8 @@ fn destination_editor(
             "a new draft keeps links where its destination tells nothing else"
         );
         if follow_directory_links {
-            // From the destination field to the link choice, the first option.
+            // From the destination field past Browse to the link choice.
+            input::key(&child, Key::Tab);
             input::key(&child, Key::Tab);
             input::key(&child, Key::UpArrow);
             assert_eq!(
@@ -957,7 +960,7 @@ fn destination_editor(
     // stay within the modal form.
     let inner = i_slint_core::window::WindowInner::from_pub(child.window());
     let editor = inner.focus_item.borrow().upgrade().unwrap();
-    let focusable = if shown { 7 } else { 6 };
+    let focusable = if shown { 8 } else { 7 };
     for reverse in [false, true] {
         for _ in 0..focusable {
             if reverse {
@@ -1454,6 +1457,15 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     let caret = destination.char_indices().next_back().unwrap().0;
     compact_assert_edit(&input, &destination, caret);
     let shown = link_option::shown(moving);
+    input::key(&test.native, Key::Tab);
+    compact_settle(&mut test);
+    let browse = compact_item(
+        &test,
+        AccessibleRole::Button,
+        "Browse for destination folder",
+    );
+    compact_assert_focus(&test, &browse);
+    compact_assert_visible(&test, &browse, false, "keyboard Browse button");
     if shown {
         // The link choice is the first option.
         input::key(&test.native, Key::Tab);
@@ -1508,7 +1520,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     );
     compact_assert_focus(&test, &option);
     // Back to the destination, past the link choice.
-    for _ in 0..if shown { 2 } else { 1 } {
+    for _ in 0..if shown { 3 } else { 2 } {
         input::chord(&test.native, &[Key::Shift], Key::Tab);
         compact_settle(&mut test);
     }
@@ -1525,7 +1537,7 @@ fn compact_transfer_controls(shortcut: Key, moving: bool) {
     edited.insert(caret, 'X');
     compact_assert_edit(&input, &edited, caret + 1);
     compact_fixed_controls(&test, action);
-    for _ in 0..if shown { 5 } else { 4 } {
+    for _ in 0..if shown { 6 } else { 5 } {
         input::key(&test.native, Key::Tab);
         compact_settle(&mut test);
     }

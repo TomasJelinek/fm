@@ -1,8 +1,10 @@
 """Regression checks for the release dependency inventory."""
 import importlib.util
+import io
 import hashlib
 import json
 import os
+import struct
 import tarfile
 import tempfile
 import tomllib
@@ -77,6 +79,55 @@ class DependencyInventoryTests(unittest.TestCase):
         self.metadata["packages"].append(package("runtime", "git+https://example.invalid/fork"))
         with self.assertRaises(ValueError):
             packaging.dependency_packages(self.metadata, tree)
+
+
+class ReleaseSymbolsTests(unittest.TestCase):
+    def test_elf_dynamic_exports_survive_but_full_symbol_table_or_dwarf_is_rejected(self):
+        def elf(section_type, name):
+            header = bytearray(64)
+            header[:6] = b"\x7fELF\x02\x01"
+            struct.pack_into("<Q", header, 40, 64)
+            struct.pack_into("<HHH", header, 58, 64, 3, 1)
+            names = b"\0.shstrtab\0" + name + b"\0"
+            section = struct.Struct("<IIQQQQIIQQ")
+            return io.BytesIO(header + bytes(64) + section.pack(1, 3, 0, 0, 256, len(names), 0, 0, 1, 0)
+                              + section.pack(11, section_type, 0, 0, 0, 0, 0, 0, 1, 0) + names)
+
+        self.assertIsNone(packaging.release_debug_data(elf(11, b".dynsym")))
+        self.assertEqual(packaging.release_debug_data(elf(2, b".symtab")), "ELF symbol table")
+        self.assertEqual(packaging.release_debug_data(elf(1, b".debug_info")), ".debug_info")
+
+    def test_pe_external_pdb_reference_survives_but_embedded_pdb_is_rejected(self):
+        image = bytearray(600)
+        image[:2] = b"MZ"
+        struct.pack_into("<I", image, 60, 64)
+        image[64:68] = b"PE\0\0"
+        struct.pack_into("<HIIIH", image, 70, 1, 0, 0, 0, 240)
+        struct.pack_into("<H", image, 88, 0x20b)
+        struct.pack_into("<I", image, 196, 16)
+        struct.pack_into("<II", image, 248, 4096, 28)
+        image[328:334] = b".rdata"
+        struct.pack_into("<III", image, 340, 4096, 64, 512)
+        struct.pack_into("<IIII", image, 524, 2, 24, 0, 544)
+        image[544:548] = b"RSDS"
+        self.assertIsNone(packaging.release_debug_data(io.BytesIO(image)))
+        struct.pack_into("<I", image, 524, 17)
+        self.assertEqual(packaging.release_debug_data(io.BytesIO(image)), "embedded PE debugging data")
+
+    def test_debug_files_and_unused_browser_locales_rejected_before_archive_creation(self):
+        for relative in ("viewers/worker.PDB", "browser.dSYM/data", "viewers/renamed-html/locales/de.pak"):
+            with self.subTest(path=relative), tempfile.TemporaryDirectory() as temp:
+                stage = Path(temp) / "stage"
+                file = stage / relative
+                file.parent.mkdir(parents=True)
+                file.write_bytes(b"fixture")
+                if file.suffix == ".pak":
+                    file.with_name("en-US.pak").write_bytes(b"English fixture")
+                    (file.parent.parent / "web-viewer.json").write_text('{"id":"midnight.viewer.html"}')
+                archive = Path(temp) / "release.zip"
+                with self.assertRaises(ValueError):
+                    packaging.write_archive(stage, archive, "midnight-explorer.exe", "zip")
+                self.assertFalse(archive.exists())
 
 
 class ArchivePermissionsTests(unittest.TestCase):

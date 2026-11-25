@@ -54,6 +54,105 @@ pub(in crate::presenter) fn assert_native_destination_is_preserved(name: std::ff
         assert!(matches!(command, Command::EnqueueSelectedCopy(request) if request.destination == target));
         true
     });
+
+    // A chooser can return a second native identity with a lossy display.
+    p.request_copy_dialog(PaneId::Left, &|_| true);
+    let token = p.copies.draft.as_ref().unwrap().token.clone();
+    let picked = target.join("chosen");
+    p.browse_copy_destination(&token, &target.to_string_lossy(), PathPickerOwner::None, &|cmd| {
+        assert!(matches!(cmd, Command::PickPath { input, .. } if input.initial_directory.as_ref() == Some(&target)));
+        true
+    });
+    let request = p.copies.destination_picker.unwrap();
+    p.apply(Event::PathPicked {
+        request,
+        result: Ok(Some(picked.clone())),
+    });
+    p.confirm_copy_dialog(&token, &picked.to_string_lossy(), &|command| {
+        assert!(
+            matches!(command, Command::CheckTransferDestination(check) if check.path == picked)
+        );
+        true
+    });
+    assert!(p.copies.destination_check.is_some());
+}
+
+#[test]
+fn copy_destination_browse_preserves_choices_and_rechecks_the_chosen_folder() {
+    for moving in [false, true] {
+        let (mut p, root) = loaded();
+        if moving {
+            p.request_move_dialog(PaneId::Left, &|_| true);
+        } else {
+            p.request_copy_dialog(PaneId::Left, &|_| true);
+        }
+        let token = p.copies.draft.as_ref().unwrap().token.clone();
+        let typed = root.join("typed folder");
+        let picked = root.join("chosen folder");
+        let commands = RefCell::new(Vec::new());
+        let send = |cmd| {
+            commands.borrow_mut().push(cmd);
+            true
+        };
+        let no_send = |_: Command| -> bool { panic!("unexpected transfer or second chooser") };
+        p.confirm_copy_dialog(&token, typed.to_str().unwrap(), &send);
+        let previous = destination_check(&commands.borrow());
+        p.browse_copy_destination(
+            &token,
+            typed.to_str().unwrap(),
+            PathPickerOwner::Windows(42),
+            &send,
+        );
+        let Some(Command::PickPath { request, input }) = commands.borrow_mut().pop() else {
+            panic!("folder picker")
+        };
+        assert_eq!(input.initial_directory, Some(typed.clone()));
+        assert_eq!(input.kind, PathPickerKind::Directory);
+        assert_eq!(input.owner, PathPickerOwner::Windows(42));
+        assert!(input.initial_name.is_none());
+        p.browse_copy_destination(&token, "", PathPickerOwner::None, &no_send);
+        p.confirm_copy_dialog(&token, typed.to_str().unwrap(), &no_send);
+        answer_destination_check(&mut p, &previous, Ok(true), &no_send);
+        p.apply(Event::PathPicked {
+            request,
+            result: Ok(None),
+        });
+        assert!(p.copies.picked_destination.is_none());
+        p.browse_copy_destination(
+            &token,
+            typed.to_str().unwrap(),
+            PathPickerOwner::None,
+            &send,
+        );
+        let second = p.copies.destination_picker.unwrap();
+        p.apply(Event::PathPicked {
+            request,
+            result: Ok(Some(typed.clone())),
+        });
+        assert_eq!(p.copies.destination_picker, Some(second));
+        p.apply(Event::PathPicked {
+            request: second,
+            result: Ok(Some(picked.clone())),
+        });
+        assert_eq!(p.copies.picked_destination.as_ref().unwrap().1, picked);
+        assert!(p.copies.progress.is_empty());
+        p.confirm_copy_dialog_with_directory_links(
+            &token,
+            picked.to_str().unwrap(),
+            TransferMetadataPolicy::ContentOnly,
+            TransferStartPolicy::WaitForEarlier,
+            None,
+            &send,
+        );
+        let check = destination_check(&commands.borrow());
+        assert_eq!(check.path, picked);
+        answer_destination_check(&mut p, &check, Ok(true), &send);
+        assert!(matches!(commands.borrow().last(),
+            Some(Command::EnqueueSelectedCopy(req) | Command::EnqueueSelectedMove(req))
+            if req.start_policy == TransferStartPolicy::WaitForEarlier && req.destination == picked
+        ));
+        assert!(p.copies.picked_destination.is_none());
+    }
 }
 
 pub(in crate::presenter) fn assert_ambiguous_destination_is_refused(name: std::ffi::OsString) {

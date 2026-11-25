@@ -11,6 +11,7 @@ export global OperationPresentation {
     in-out property <string> title-text;
     in-out property <int> kind: -1;
     in-out property <string> body;
+    in-out property <string> folder-location;
     // A Delete confirmation: its question, the headline above `warning`, and its details
     // under them (a row marked "path" is a folder's path, its explanation the end that a
     // shortened path keeps), with every label, one per line. Other forms leave them empty.
@@ -31,6 +32,9 @@ export global OperationPresentation {
     in-out property <string> link-reason;
     in-out property <string> link-warning;
     in-out property <string> initial-name;
+    in-out property <string> field-value;
+    in-out property <bool> picking-destination;
+    callback browse-destination(string, string);
     in-out property <string> input-label;
     in-out property <int> selection-end;
     in-out property <bool> has-name;
@@ -90,6 +94,8 @@ export component EmbeddedOperation inherits Rectangle {
                 // Copy and Move have no mutation kind of their own.
                 transfer: OperationPresentation.kind < 0;
                 body: OperationPresentation.body;
+                folder-location: OperationPresentation.folder-location;
+                creating-folder: OperationPresentation.kind == 3;
                 question: OperationPresentation.question;
                 details: OperationPresentation.details;
                 detail-labels: OperationPresentation.detail-labels;
@@ -106,6 +112,9 @@ export component EmbeddedOperation inherits Rectangle {
                 link-warning: OperationPresentation.link-warning;
                 link-chosen(choice) => { OperationPresentation.link-chosen(self.occurrence, choice); }
                 initial-name: OperationPresentation.initial-name;
+                value <=> OperationPresentation.field-value;
+                picking-destination: OperationPresentation.picking-destination;
+                browse-destination(value) => { OperationPresentation.browse-destination(self.occurrence, value); }
                 input-label: OperationPresentation.input-label;
                 selection-end: OperationPresentation.selection-end;
                 has-name: OperationPresentation.has-name && self.current;

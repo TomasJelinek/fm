@@ -55,6 +55,7 @@ const LINKED: &str = "linked\n";
 pub fn scenario() -> crate::Scenario {
     crate::Scenario {
         name: "journeys_keyboard_only",
+        isolation: crate::Isolation::Parallel,
         area: "journeys",
         summary: "A session by keys only: F7, Enter, Shift+F4, Backspace, Ctrl+= mask, F5, conflicts answered by keys (Copy as, Escape to decide later, Jobs by F10, Up and Down to the waiting job, Resolve, Skip), Tab, F2, Shift+F8, F5 of a link with Tab to Links, Up and Enter (the files copied), Ctrl+G, Alt+Left, Alt+F7 with Tab into the results and Enter to go to the file, Ctrl+F12, Ctrl+U; every effect checked on disk and on screen.",
         run: keyboard_only,

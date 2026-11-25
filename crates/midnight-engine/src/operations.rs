@@ -61,6 +61,7 @@ enum Message {
     ResolveMetadataConflict(OperationId, u64, MetadataConflictPolicy),
     DecideRename(CopyDecision),
     DecideDelete(CopyDecision),
+    AnswerTrashFallback(OperationId, u64, bool),
     Wake,
 }
 
@@ -324,6 +325,12 @@ impl Controller {
     pub(crate) async fn decide_delete(&self, decision: CopyDecision) {
         let _ = self.sender.send(Message::DecideDelete(decision)).await;
     }
+    pub(crate) async fn answer_trash_fallback(&self, id: OperationId, version: u64, confirm: bool) {
+        let _ = self
+            .sender
+            .send(Message::AnswerTrashFallback(id, version, confirm))
+            .await;
+    }
     pub(crate) async fn set_paused(&self, id: OperationId, paused: bool) {
         let progress = {
             let registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
@@ -496,6 +503,9 @@ async fn run(
                 }
                 Some(Message::DecideDelete(decision)) => {
                     if let Some(state) = delete_states.get(&decision.id) { state.resolve(decision); }
+                }
+                Some(Message::AnswerTrashFallback(id, version, confirm)) => {
+                    if let Some(state) = delete_states.get(&id) { state.answer_fallback(version, confirm); }
                 }
                 Some(Message::Wake) => {}
                 None => { accepting = false; cancel.cancel(); }

@@ -998,34 +998,38 @@ fn check(app: &mut App, viewing: &Viewing, case: &Case) -> Result<(), String> {
     }
 }
 
-/// The licensed AVIF fixtures in `folder`: `draw_points_idat.avif` shows the pixels of
-/// its PNG reference (both at a typed 800 % zoom, which the second image opens with as
-/// the saved image zoom), and the white pixel is white. Ctrl+0 leaves Fit saved again.
+/// These small fixtures fit at 100 %. Enlarge each one to inspect individual pixels.
+fn zoom_avif_fixture(app: &mut App, viewing: &Viewing) -> Result<(), String> {
+    viewing.wait(
+        app,
+        "the image to open in Fit",
+        Duration::from_secs(10),
+        |window| window.get_image_mode() && (window.get_zoom_percent() - 100.0).abs() < 0.5,
+    )?;
+    viewing.click_content(app);
+    input::chord(viewing.slint(), &[Key::Control], "y");
+    viewing.wait(
+        app,
+        "Ctrl+Y to open the zoom field",
+        Duration::from_secs(10),
+        |window| window.get_zoom_editing(),
+    )?;
+    input::replace_text(viewing.slint(), "800");
+    input::key(viewing.slint(), Key::Return);
+    viewing.wait(app, "the 800 % zoom", Duration::from_secs(10), |window| {
+        !window.get_zoom_editing() && (window.get_zoom_percent() - 800.0).abs() < 0.5
+    })
+}
+
+/// Compare the decoded AVIF pixels with their PNG reference and check the white pixel.
 fn avif(app: &mut App, context: &mut Context) -> Result<(), String> {
     let mut renders = Vec::new();
-    for (name, zoom) in [("draw_points.png", true), ("draw_points_idat.avif", false)] {
+    for name in ["draw_points.png", "draw_points_idat.avif"] {
         panel::select_row(app, PaneId::Right, name)?;
         let viewing = support::view(app, false, OPEN_LIMIT)?;
         let result: Result<Canvas, String> = (|| {
             viewing.result.clone()?;
-            viewing.wait(app, "the image", Duration::from_secs(10), |window| {
-                window.get_image_mode()
-            })?;
-            if zoom {
-                viewing.click_content(app);
-                input::chord(viewing.slint(), &[Key::Control], "y");
-                viewing.wait(
-                    app,
-                    "Ctrl+Y to open the zoom field",
-                    Duration::from_secs(10),
-                    |window| window.get_zoom_editing(),
-                )?;
-                input::replace_text(viewing.slint(), "800");
-                input::key(viewing.slint(), Key::Return);
-            }
-            viewing.wait(app, "the 800 % zoom", Duration::from_secs(10), |window| {
-                !window.get_zoom_editing() && (window.get_zoom_percent() - 800.0).abs() < 0.5
-            })?;
+            zoom_avif_fixture(app, &viewing)?;
             let canvas = probe::still_canvas(app, &viewing, Duration::from_secs(10))?;
             app.screenshot_window(
                 context,
@@ -1081,6 +1085,7 @@ fn avif(app: &mut App, context: &mut Context) -> Result<(), String> {
     let viewing = support::view(app, false, OPEN_LIMIT)?;
     let white = (|| {
         viewing.result.clone()?;
+        zoom_avif_fixture(app, &viewing)?;
         viewing.wait(
             app,
             "the white pixel at 800 %",

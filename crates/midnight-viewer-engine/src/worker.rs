@@ -666,19 +666,8 @@ impl Worker {
         self.preference_revision = revision;
         self.wrap = self.preferences.wrap;
         self.apply_font();
-        if let Some(image) = &mut self.image {
-            // PDF geometry belongs to accepted view commands, not restored settings.
-            // In particular, a late settings load cannot replace Fit or round zoom.
-            if !image.document
-                && previous.image_zoom != self.preferences.image_zoom
-                && let Some(view) = &mut image.geometry
-            {
-                view.restore_zoom(self.preferences.image_zoom);
-                image.changed();
-                self.frames.invalidate();
-                self.dirty = true;
-            }
-        } else if self.mode != VIEWER_MODE_VIDEO
+        if self.image.is_none()
+            && self.mode != VIEWER_MODE_VIDEO
             && (previous.wrap != self.preferences.wrap
                 || previous.line_numbers != self.preferences.line_numbers
                 || previous.text_font != self.preferences.text_font

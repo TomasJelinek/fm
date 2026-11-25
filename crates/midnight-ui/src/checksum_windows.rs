@@ -548,7 +548,14 @@ fn create(
                     .and_then(|i| OUTPUT_ALGORITHMS.get(i))
             {
                 let owner = crate::picker_window::native_path_picker_owner(w.window());
-                p.request_checksum_picker(id, verify, algorithm, owner, send);
+                p.request_checksum_picker(
+                    id,
+                    verify,
+                    algorithm,
+                    &w.get_manifest_path(),
+                    owner,
+                    send,
+                );
             }
         });
     }

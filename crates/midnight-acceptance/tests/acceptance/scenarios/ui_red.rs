@@ -714,6 +714,7 @@ pub fn checks(context: &mut Context) -> Result<(), String> {
 pub fn scenario() -> Scenario {
     Scenario {
         name: "ui_polish_checks",
+        isolation: crate::Isolation::Parallel,
         area: "ui",
         summary: "Every UI polish check flags a deliberately broken window and passes its corrected twin (red cases).",
         run: checks,

@@ -295,6 +295,7 @@ fn browse_is_off_thread_preserves_other_side_and_cancelled_browse_keeps_fields()
             assert_ne!(thread, std::thread::current().id());
             assert_eq!(request.owner, owner);
             assert_eq!(request.kind, PathPickerKind::File);
+            assert_eq!(request.initial_name.as_deref(), paths[side].file_name());
             assert_eq!(request.initial_directory.as_deref(), Some(directory.path()));
             assert_eq!(chosen.paths[1 - side], paths[1 - side]);
             assert_eq!(

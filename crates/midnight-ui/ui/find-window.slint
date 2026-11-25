@@ -121,7 +121,7 @@ export component FindWindow inherits ToolWindow {
     callback search(FindDraft);
     callback stop();
     callback add-root(string);
-    callback browse-root();
+    callback browse-root(string);
     callback remove-root(int);
     callback toggle-root(int, bool);
     callback reveal(string);
@@ -340,7 +340,7 @@ export component FindWindow inherits ToolWindow {
                                     text: "Browse…"; fallback-icon: FallbackIcons.open-path;
                                     enabled: !root.running;
                                     hint: "Choose a folder with the system folder chooser.";
-                                    clicked => { root.browse-root(); }
+                                    clicked => { root.browse-root(root.new-root-text); }
                                 }
                                 FindActionButton {
                                 row-height: root.query-height;

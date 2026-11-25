@@ -9,12 +9,16 @@ import { WrappingCheckBox } from "wrapping-check-box.slint";
 import { FormNote } from "form-note.slint";
 import { Tip } from "controls.slint";
 import { ConfirmationSummary } from "confirmation-summary.slint";
+import { PathTrailText } from "path-collapse.slint";
 import { DetailRow, PathPartRow } from "navigation-models.slint";
 
 
 export component OperationDialog inherits Rectangle {
     in property <string> title;
     in property <string> body;
+    in property <string> folder-location;
+    in property <bool> creating-folder;
+    private property <bool> folder-form: root.folder-location != "";
     // A confirmation that asks a question (Delete): the question is its headline, the
     // warning the line under it, and the details follow, instead of the body.
     in property <string> question;
@@ -28,6 +32,8 @@ export component OperationDialog inherits Rectangle {
     // primary action's. The options grid follows the field, and one note at most sits
     // under the control it concerns instead of a warning above the summary.
     in property <bool> transfer;
+    in property <bool> picking-destination;
+    callback browse-destination(string);
     in property <string> body-hint;
     in property <bool> wait-visible;
     in-out property <bool> wait-checked;
@@ -79,7 +85,8 @@ export component OperationDialog inherits Rectangle {
     // A confirmation keeps its regular layout at the height it asks for, and turns compact
     // only when the window cannot give it that height.
     private property <bool> compact: root.height < 280px
-        && (!root.confirmation || root.height + 0.5px < root.confirmation-height);
+        && (!root.confirmation || root.height + 0.5px < root.confirmation-height)
+        && (!root.folder-form || root.height + 0.5px < root.folder-height);
     // The name field keeps the stock field's 32 px and the theme's control height; a
     // form without a name gives the hidden field no room.
     private property <length> name-height: !root.has-name ? 0px
@@ -88,10 +95,10 @@ export component OperationDialog inherits Rectangle {
     // under the field until a name is typed.
     private property <bool> name-requested;
     private property <bool> name-missing: root.name-requested && root.has-name && name.text == "";
-    private property <string> name-reason: "Type the "
+    private property <string> name-reason: root.creating-folder ? "Type the folder name or path first." : "Type the "
         + (root.input-label == "" ? "name" : root.input-label.to-lowercase()) + " first.";
     changed name-missing => {
-        if root.name-missing { root.reveal-middle(name.y, name.height + root.row-spacing + Theme.font-size * 3); }
+        if root.name-missing { root.reveal-middle(name-row.y, name.height + root.row-spacing + Theme.font-size * 3); }
     }
     private property <length> regular-row-spacing: 12px;
     private property <length> row-spacing: root.compact ? 4px : root.regular-row-spacing;
@@ -149,7 +156,7 @@ export component OperationDialog inherits Rectangle {
                 root.reveal-middle(options.y + links-box.y,
                     links-box.height + root.block-gap + note-measure.preferred-height + 12px);
             } else {
-                root.reveal-middle(name.y,
+                root.reveal-middle(name-row.y,
                     name.height + root.block-gap + note-measure.preferred-height + 12px);
             }
             // The keyboard stays where it was: Slint drops the focus of a control
@@ -166,7 +173,7 @@ export component OperationDialog inherits Rectangle {
             min(0px, middle.visible-height - middle.content-height), 0px);
     }
     function focus-name() {
-        root.reveal-middle(name.y, name.height);
+        root.reveal-middle(name-row.y, name.height);
         name.focus();
     }
     function focus-option() {
@@ -182,7 +189,7 @@ export component OperationDialog inherits Rectangle {
         wait-option.focus();
     }
     function reveal-focused() {
-        if name.has-focus { root.reveal-middle(name.y, name.height); }
+        if name.has-focus || browse.has-focus { root.reveal-middle(name-row.y, name.height); }
         else if follow-links.has-focus { root.reveal-middle(options.y + links-box.y + follow-links.y, follow-links.height); }
         else if option.has-focus { root.reveal-middle(options.y + option-box.y, option-box.height); }
         else if wait-option.has-focus { root.reveal-middle(options.y + wait-box.y, wait-box.height); }
@@ -194,15 +201,15 @@ export component OperationDialog inherits Rectangle {
         primary-focus.focus();
     }
     // The form's own Tab cycle, in the order the controls are shown: 0 the header's
-    // close button, 1 the name, 2 the link choice, 3 the option, 4 the wait option,
-    // 5 Cancel and 6 the primary action. Hidden and disabled stops are skipped.
+    // close button, name, Browse, link choice, option, wait option, Cancel and primary action.
     pure function stop-available(stop: int) -> bool {
         return stop == 0 ? header.close-focusable
-            : stop == 1 ? root.has-name
-            : stop == 2 ? root.links-visible
-            : stop == 3 ? root.option-visible && root.option-enabled
-            : stop == 4 ? root.wait-visible
-            : stop == 5 || (stop == 6 && confirm-button.enabled);
+            : stop == 1 ? root.has-name && !root.picking-destination
+            : stop == 2 ? root.transfer && browse.enabled
+            : stop == 3 ? root.links-visible
+            : stop == 4 ? root.option-visible && root.option-enabled
+            : stop == 5 ? root.wait-visible
+            : stop == 6 || (stop == 7 && confirm-button.enabled);
     }
     // The first stop at or after `start`, or -1. Cancel is always a stop.
     pure function stop-from(start: int) -> int {
@@ -211,13 +218,15 @@ export component OperationDialog inherits Rectangle {
             : start <= 2 && root.stop-available(2) ? 2
             : start <= 3 && root.stop-available(3) ? 3
             : start <= 4 && root.stop-available(4) ? 4
-            : start <= 5 ? 5
-            : start <= 6 && root.stop-available(6) ? 6 : -1;
+            : start <= 5 && root.stop-available(5) ? 5
+            : start <= 6 ? 6
+            : start <= 7 && root.stop-available(7) ? 7 : -1;
     }
     // The last stop at or before `end`, or -1.
     pure function stop-until(end: int) -> int {
-        return end >= 6 && root.stop-available(6) ? 6
-            : end >= 5 ? 5
+        return end >= 7 && root.stop-available(7) ? 7
+            : end >= 6 ? 6
+            : end >= 5 && root.stop-available(5) ? 5
             : end >= 4 && root.stop-available(4) ? 4
             : end >= 3 && root.stop-available(3) ? 3
             : end >= 2 && root.stop-available(2) ? 2
@@ -225,30 +234,37 @@ export component OperationDialog inherits Rectangle {
             : end >= 0 && root.stop-available(0) ? 0 : -1;
     }
     pure function focused-stop() -> int {
-        return header.close-has-focus ? 0 : name.has-focus ? 1 : follow-links.has-focus ? 2
-            : option.has-focus ? 3 : wait-option.has-focus ? 4
-            : cancel-button.has-focus ? 5 : primary-focus.has-focus ? 6 : -1;
+        return header.close-has-focus ? 0 : name.has-focus ? 1 : browse.has-focus ? 2
+            : follow-links.has-focus ? 3 : option.has-focus ? 4 : wait-option.has-focus ? 5
+            : cancel-button.has-focus ? 6 : primary-focus.has-focus ? 7 : -1;
     }
     function focus-stop(stop: int) {
         if stop == 0 { header.focus-close(); }
         else if stop == 1 { root.focus-name(); }
-        else if stop == 2 { root.focus-directory-links(); }
-        else if stop == 3 { root.focus-option(); }
-        else if stop == 4 { root.focus-wait(); }
-        else if stop == 6 { root.focus-primary(); }
+        else if stop == 2 { root.reveal-middle(name-row.y, name.height); browse.focus(); }
+        else if stop == 3 { root.focus-directory-links(); }
+        else if stop == 4 { root.focus-option(); }
+        else if stop == 5 { root.focus-wait(); }
+        else if stop == 7 { root.focus-primary(); }
         else { cancel-button.focus(); }
     }
     // Tab and Shift+Tab move to the next or previous stop and wrap around.
     function move-focus(forward: bool) {
         let current = root.focused-stop();
         let next = forward ? root.stop-from(current + 1) : root.stop-until(current - 1);
-        root.focus-stop(next >= 0 ? next : forward ? root.stop-from(0) : root.stop-until(6));
+        root.focus-stop(next >= 0 ? next : forward ? root.stop-from(0) : root.stop-until(7));
     }
     // Size the initial presentation from its actual wrapped text, measured at the
     // regular layout's width: the compact layout follows the height it decides.
     // Resizing remains independent in DialogFrame; editing never recreates the input.
     out property <length> preferred-dialog-height: root.transfer ? root.transfer-height
+        : root.folder-form ? root.folder-height
         : root.confirmation ? root.confirmation-height : root.classic-height;
+    private property <length> folder-height: 2 * root.form-padding(false) + header.regular-height
+        + 2 * root.regular-row-spacing + options-heading-measure.preferred-height + 6px
+        + root.name-height + 8px + location-measure.preferred-height
+        + (root.name-missing ? 6px + max(root.note-glyph, note-measure.preferred-height) + 12px : 0px)
+        + max(32px, Theme.control-height, cancel-button.min-height);
     // A confirmation in its regular layout: the padding, the header and the gaps around
     // the middle, the question, warning and details at the regular width, and the actions
     // (as tall as Cancel: the primary action's size follows `compact`, which follows this).
@@ -312,6 +328,10 @@ export component OperationDialog inherits Rectangle {
     options-heading-measure := Text {
         visible: false; accessible-role: none;
         text: "Options"; font-size: Theme.font-size; font-weight: 600;
+    }
+    location-measure := Text {
+        visible: false; accessible-role: none;
+        text: "Location"; font-size: Theme.small-font;
     }
     first-choice-measure := Text {
         visible: false; accessible-role: none;
@@ -378,6 +398,8 @@ export component OperationDialog inherits Rectangle {
             }
             middle := VScrollView {
                 min-height: 0px; min-width: 0px; vertical-stretch: 1;
+                vertical-scrollbar-policy: root.folder-form && root.height >= root.folder-height
+                    ? always-off : as-needed;
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, form.min-height);
                 changed height => { root.reveal-focused(); }
@@ -385,7 +407,7 @@ export component OperationDialog inherits Rectangle {
                 form := VerticalLayout {
                     height: middle.content-height;
                     // The Copy/Move form spaces its blocks itself; a confirmation has one block.
-                    spacing: root.transfer || root.confirmation ? 0px : root.row-spacing; alignment: start;
+                    spacing: root.transfer || root.confirmation || root.folder-form ? 0px : root.row-spacing; alignment: start;
                     if !root.transfer && !root.confirmation && root.warning != "" && !root.compact : Text {
                         text: root.warning; color: Theme.error-text; font-weight: 600;
                         font-size: Theme.font-size; wrap: word-wrap;
@@ -395,7 +417,7 @@ export component OperationDialog inherits Rectangle {
                         details: root.details; labels: root.detail-labels; compact: root.compact;
                         path-parts: root.path-parts;
                     }
-                    if !root.transfer && !root.confirmation : Rectangle {
+                    if !root.transfer && !root.confirmation && !root.folder-form : Rectangle {
                         height: min(280px, drawn-summary.preferred-height);
                         background: transparent; clip: true;
                         DialogText {
@@ -418,28 +440,61 @@ export component OperationDialog inherits Rectangle {
                             Tip { text: root.body-hint; }
                         }
                     }
-                    if !root.transfer && root.has-name && root.input-label != "" && !root.compact : Text {
+                    if !root.transfer && !root.folder-form && root.has-name && root.input-label != "" && !root.compact : Text {
                         text: root.input-label; color: Theme.text; font-size: Theme.font-size;
+                    }
+                    if root.folder-form : VerticalLayout {
+                        padding-bottom: root.block-gap;
+                        Text {
+                            text: root.input-label; color: Theme.strong-text;
+                            font-size: Theme.font-size; font-weight: 600;
+                        }
                     }
                     // The themed field: its selected text uses the theme's selection
                     // colours, which the stock LineEdit does not let a host set.
-                    name := ThemedLineEdit {
-                        min-height: root.name-height; preferred-height: root.name-height;
-                        max-height: root.name-height;
-                        visible: root.has-name; clear-button: true;
-                        accessible-label: root.input-label == "" ? root.title : root.input-label;
-                        accessible-description: root.name-missing ? root.name-reason
-                            : root.field-note && !root.links-note ? root.note-text : "";
-                        changed has-focus => { if self.has-focus { root.reveal-middle(self.y, self.height); } }
-                        accepted => { if root.confirm-enabled && self.text != "" { root.confirm(self.text); } }
+                    name-row := HorizontalLayout {
+                        visible: root.has-name; spacing: root.transfer ? 6px : 0px;
+                        min-height: root.name-height; max-height: root.name-height;
+                        name := ThemedLineEdit {
+                            horizontal-stretch: 1; min-width: 0px;
+                            min-height: root.name-height; max-height: root.name-height;
+                            clear-button: true; enabled: !root.picking-destination;
+                            placeholder-text: root.creating-folder ? "Name or nested path" : "";
+                            accessible-label: root.input-label == "" ? root.title : root.input-label;
+                            accessible-description: root.name-missing ? root.name-reason
+                                : root.field-note && !root.links-note ? root.note-text : "";
+                            changed has-focus => { if self.has-focus { root.reveal-middle(name-row.y, self.height); } }
+                            accepted => { if root.confirm-enabled && self.text != "" { root.confirm(self.text); } }
+                        }
+                        browse := HintedActionButton {
+                            visible: root.transfer; enabled: root.transfer && !root.picking-destination;
+                            text: "…"; hint: "Browse for the destination folder.";
+                            compact: true; vertical-padding: 0px;
+                            width: root.name-height; height: root.name-height;
+                            accessible-label: "Browse for destination folder";
+                            clicked => { root.browse-destination(name.text); }
+                        }
                     }
-                    if !root.transfer && root.name-missing : Text {
+                    if !root.transfer && !root.folder-form && root.name-missing : Text {
                         text: root.name-reason; color: Theme.error-text;
                         font-size: Theme.font-size; wrap: word-wrap;
                     }
-                    if root.field-note : VerticalLayout {
+                    if root.field-note || (root.folder-form && root.name-missing) : VerticalLayout {
                         padding-top: root.block-gap;
                         FormNote { text: root.note-text; error: root.note-error; }
+                    }
+                    if root.folder-form : HorizontalLayout {
+                        padding-top: root.compact ? 4px : 8px;
+                        spacing: 8px; alignment: start;
+                        Text {
+                            text: "Location"; color: Theme.muted-text; font-size: Theme.small-font;
+                        }
+                        PathTrailText {
+                            horizontal-stretch: 1;
+                            parts: root.path-parts; text: root.folder-location;
+                            foreground: Theme.secondary-text; font-size: Theme.small-font;
+                            Tip { text: root.folder-location; }
+                        }
                     }
                     // Copy/Move: the options, one group in one column under its heading,
                     // every control at the form's left edge. The link box has no caption:
@@ -507,10 +562,12 @@ export component OperationDialog inherits Rectangle {
             // the resize grip in the corner: the actions keep 16 px from the right edge.
             HorizontalLayout {
                 spacing: 8px;
+                alignment: root.folder-form ? end : stretch;
                 padding-right: root.compact ? 16px - root.form-padding(true) : 0px;
                 cancel-button := HintedActionButton { text: "Cancel"; hint: "Leave files unchanged (Escape)."; clicked => { root.cancel(); } }
                 Rectangle {
-                    horizontal-stretch: 1; min-width: 0px;
+                    horizontal-stretch: root.folder-form ? 0 : 1; min-width: 0px;
+                    preferred-width: root.folder-form ? confirm-button.min-width : 0px;
                     height: max(32px, Theme.control-height + (root.compact ? 12px : 0px), confirm-button.preferred-height);
                     primary-scroll := HScrollView {
                         // Positioned, so that its minimum size stays out of the parent's layout info.

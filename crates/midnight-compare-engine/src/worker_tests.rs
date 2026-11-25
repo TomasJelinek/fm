@@ -250,8 +250,8 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
     for path in &paths {
         std::fs::create_dir(path.parent().unwrap()).unwrap();
     }
-    std::fs::write(&paths[0], "český 🐈\nold\n").unwrap();
-    std::fs::write(&paths[1], "český 🐈\nnew\n").unwrap();
+    std::fs::write(&paths[0], "shared\nčeský 🐈 old\n").unwrap();
+    std::fs::write(&paths[1], "shared\nčeský 🐈 new\n").unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (_owner, spawner) = crate::resident_test_support::workers();
     let service = crate::Service::new(runtime.handle().clone(), spawner);
@@ -291,7 +291,7 @@ fn service_reads_and_renders_real_unicode_sources_off_thread() {
                 assert!(
                     frame.accessible_text.contains("old") && frame.accessible_text.contains("new")
                 );
-                assert!(frame.status.contains("1 difference"));
+                assert!(frame.status.contains("Difference 1 of 1"));
                 assert_eq!(
                     frame.pixels.len(),
                     (frame.width * frame.height * 4) as usize

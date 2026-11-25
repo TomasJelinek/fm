@@ -102,7 +102,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(!body.contains("0 folders"));
     assert_eq!(
         ui.window.get_operation_warning(),
-        "If the Trash is unavailable, they stay in place."
+        "If the Trash is unavailable, permanent deletion requires a separate confirmation."
     );
     assert!(!ui.window.get_operation_dangerous());
     snapshot(&windows, "delete-multiple-files");
@@ -130,7 +130,7 @@ fn delete_confirmation_shows_bounded_localized_metadata_and_preserves_safety() {
     assert!(!body.contains(sample[0].path.to_string_lossy().as_ref()));
     assert_eq!(
         ui.window.get_operation_warning(),
-        "If the Trash is unavailable, it stays in place."
+        "If the Trash is unavailable, permanent deletion requires a separate confirmation."
     );
     snapshot(&windows, "delete-single-file");
 

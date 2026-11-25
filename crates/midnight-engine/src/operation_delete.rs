@@ -11,36 +11,55 @@ use std::{cell::RefCell, sync::mpsc};
 #[derive(Default)]
 pub(crate) struct DecisionState {
     next: AtomicU64,
-    pending: Mutex<Option<(u64, mpsc::SyncSender<CopyChoice>)>>,
+    pending: Mutex<Option<Pending>>,
+}
+
+struct Pending {
+    version: u64,
+    fallback: bool,
+    sender: mpsc::SyncSender<Answer>,
+}
+
+enum Answer {
+    Error(CopyChoice),
+    Fallback(bool),
 }
 
 impl DecisionState {
     pub(crate) fn resolve(&self, decision: CopyDecision) {
+        self.deliver(decision.version, Answer::Error(decision.choice));
+    }
+
+    pub(crate) fn answer_fallback(&self, version: u64, confirm: bool) {
+        self.deliver(version, Answer::Fallback(confirm));
+    }
+
+    fn deliver(&self, version: u64, answer: Answer) {
         let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((version, sender)) = pending.as_ref()
-            && *version == decision.version
+        if let Some(pending) = pending.as_ref()
+            && pending.version == version
+            && pending.fallback == matches!(answer, Answer::Fallback(_))
         {
-            let _ = sender.try_send(decision.choice);
+            let _ = pending.sender.try_send(answer);
         }
     }
 
     /// Publishes `failure` and waits for its decision: Cancel once the job is cancelled
     /// or the failure cannot be published.
-    fn ask(
-        &self,
-        mut failure: DeleteFailure,
-        outbox: &Outbox,
-        cancel: &Cancellation,
-    ) -> CopyChoice {
+    fn ask(&self, mut failure: DeleteFailure, outbox: &Outbox, cancel: &Cancellation) -> Answer {
         let Ok(previous) = self
             .next
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
         else {
-            return CopyChoice::Cancel;
+            return Answer::Error(CopyChoice::Cancel);
         };
         failure.version = previous + 1;
         let (sender, receiver) = mpsc::sync_channel(1);
-        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((failure.version, sender));
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending {
+            version: failure.version,
+            fallback: failure.permanent_fallback.is_some(),
+            sender,
+        });
         let sent = outbox.blocking_send(
             Event::Operation(OperationEvent::DeleteFailure(Arc::new(failure))),
             cancel,
@@ -48,16 +67,16 @@ impl DecisionState {
         let choice = if sent {
             loop {
                 if cancel.is_cancelled() {
-                    break CopyChoice::Cancel;
+                    break Answer::Error(CopyChoice::Cancel);
                 }
                 match receiver.recv_timeout(Duration::from_millis(25)) {
                     Ok(choice) => break choice,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(_) => break CopyChoice::Cancel,
+                    Err(_) => break Answer::Error(CopyChoice::Cancel),
                 }
             }
         } else {
-            CopyChoice::Cancel
+            Answer::Error(CopyChoice::Cancel)
         };
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
         choice
@@ -116,6 +135,7 @@ impl Decider<'_> {
                     id,
                     version: 0,
                     mode: self.mode,
+                    permanent_fallback: None,
                     error: error.clone(),
                     can_retry,
                     can_skip: true,
@@ -124,7 +144,10 @@ impl Decider<'_> {
                 &self.job.cancel,
             );
             progress.borrow_mut().message.clear();
-            choice
+            match choice {
+                Answer::Error(choice) => choice,
+                Answer::Fallback(_) => CopyChoice::Cancel,
+            }
         };
         let decided = match choice {
             CopyChoice::Retry if can_retry => return Decided::Retry,
@@ -167,11 +190,63 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
         skip_all: false,
         skipped_inside: false,
     };
-    'targets: for (index, target) in job.targets.iter().enumerate() {
+    let mut original = 0..job.targets.len();
+    let mut unavailable: Vec<usize> = Vec::new();
+    let mut confirmed = Vec::new().into_iter();
+    let mut first_refusal = None;
+    let mut recycled_before_fallback = None;
+    'targets: loop {
         if !job.cancel.wait_if_paused() {
             break;
         }
-        let last = index + 1 == job.targets.len();
+        let Some(index) = original.next().or_else(|| confirmed.next()) else {
+            let Some(error) = first_refusal.take() else {
+                break;
+            };
+            let mut preview = OperationPreview {
+                id: progress.id,
+                kind: MutationKind::Delete(DeleteMode::Permanent),
+                files: 0,
+                folders: 0,
+                file_bytes: Some(0),
+                sample: Vec::new(),
+            };
+            for &index in &unavailable {
+                Job::include_item(&mut preview, job.targets[index].item());
+            }
+            let has_folders = preview.folders > 0;
+            let choice = job.delete_decisions.ask(
+                DeleteFailure {
+                    id: progress.id,
+                    version: 0,
+                    mode: DeleteMode::Trash,
+                    error,
+                    can_retry: false,
+                    can_skip: false,
+                    permanent_fallback: Some(preview),
+                },
+                &outbox,
+                &job.cancel,
+            );
+            if !matches!(choice, Answer::Fallback(true)) {
+                job.cancel.cancel();
+                break;
+            }
+            if has_folders {
+                progress.discovery.unavailable("Trash discovery counted selected items only; permanent folder deletion visits their contents.");
+            }
+            decider.mode = DeleteMode::Permanent;
+            decider.skip_all = false;
+            recycled_before_fallback = Some(progress.completed);
+            progress.kind = MutationKind::Delete(DeleteMode::Permanent);
+            job.store_progress(&mut progress);
+            confirmed = std::mem::take(&mut unavailable).into_iter();
+            continue;
+        };
+        let last = original.len() == 0 && confirmed.len() == 0;
+        let mode = decider.mode;
+        let target = &job.targets[index];
+        let processed_before = progress.processed_entries;
         let path = target.item().path.clone();
         progress.current_path = Some(path.clone());
         job.store_progress(&mut progress);
@@ -248,6 +323,19 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
                 {
                     break 'targets;
                 }
+                // Keep the prepared identity. A partial removal or a nested error
+                // cannot enter the permanent-delete confirmation.
+                Err(error)
+                    if mode == DeleteMode::Trash
+                        && error.is_trash_unavailable()
+                        && error.path == path
+                        && progress.processed_entries == processed_before
+                        && !decider.skipped_inside =>
+                {
+                    unavailable.push(index);
+                    first_refusal.get_or_insert(error);
+                    break;
+                }
                 // Nothing to retry and nothing left after it: no decision to make.
                 Err(error) if last && !retryable(&error) => {
                     progress.failed += 1;
@@ -296,7 +384,21 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
     };
     progress.pause_requested = false;
     progress.paused = false;
-    let mut lines: Vec<String> = progress.errors.iter().map(ToString::to_string).collect();
+    let mut lines = Vec::new();
+    if let Some(recycled) = recycled_before_fallback {
+        lines.push(format!("Moved to Trash: {recycled}"));
+        lines.push(format!(
+            "Permanently deleted: {}",
+            progress.completed - recycled
+        ));
+        if progress.completed < progress.total {
+            lines.push(format!(
+                "Remaining selected items: {}",
+                progress.total - progress.completed
+            ));
+        }
+    }
+    lines.extend(progress.errors.iter().map(ToString::to_string));
     lines.extend(kept);
     // A residue undoes nothing; an incomplete target can leave partial work.
     if progress.processed_entries > 0

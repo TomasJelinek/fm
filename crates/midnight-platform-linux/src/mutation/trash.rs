@@ -25,20 +25,15 @@ pub(super) fn move_entry(
     progress: &mut dyn FnMut(&Path),
 ) -> Result<DeleteCompletion, FsError> {
     let root = prepared.trash_root.as_ref().ok_or_else(|| {
-        error(
-            &prepared.item.path,
-            ErrorKind::Unsupported,
-            "home trash is unavailable",
-        )
+        FsError::trash_unavailable(&prepared.item.path, "home trash is unavailable")
     })?;
     check_cancel(cancel, &prepared.item.path)?;
     let trash = Trash::open(root, prepared.identity)?;
     // Directories report their filesystem's device; a non-directory may report an
     // overlayfs layer's device instead (see `filesystem_root`).
     if Identity::of(&trash.files, root)?.device != prepared.parent_identity.device {
-        return Err(error(
+        return Err(FsError::trash_unavailable(
             &prepared.item.path,
-            ErrorKind::Unsupported,
             "home trash is on another filesystem; cross-filesystem trash is unsupported",
         ));
     }
@@ -65,9 +60,8 @@ pub(super) fn move_entry(
         )
         .map_err(|e| {
             if e == rustix::io::Errno::XDEV {
-                error(
+                FsError::trash_unavailable(
                     &prepared.item.path,
-                    ErrorKind::Unsupported,
                     "trash crosses a mount boundary; cross-filesystem trash is unsupported",
                 )
             } else {
@@ -208,6 +202,9 @@ impl Reservation {
                     .map_err(|e| native_error(&self.info_path, e))
             });
         if let Err(cleanup) = removed {
+            if failure.is_trash_unavailable() {
+                failure.kind = ErrorKind::Other;
+            }
             failure
                 .message
                 .push_str(&format!("; unused trash metadata remains: {cleanup}"));

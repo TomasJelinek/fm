@@ -66,6 +66,14 @@ impl State {
 #[path = "settings_picker_tests.rs"]
 mod tests;
 
+/// Preserve a picked path's native spelling while the displayed field still matches.
+fn field_path(text: &str, native: Option<&Path>) -> Option<PathBuf> {
+    let path = native
+        .filter(|path| path.to_string_lossy() == text)
+        .unwrap_or_else(|| Path::new(text));
+    path.is_absolute().then(|| path.to_owned())
+}
+
 impl Presenter {
     pub(crate) fn request_settings_picker(
         &mut self,
@@ -115,22 +123,12 @@ impl Presenter {
                 let directory = target == Target::ComparatorWorkingDirectory;
                 let external = &rule.external;
                 let initial = if directory {
-                    external.native_working_directory.clone().or_else(|| {
-                        let path = PathBuf::from(&external.working_directory);
-                        path.is_absolute().then_some(path)
-                    })
+                    field_path(
+                        &external.working_directory,
+                        external.native_working_directory.as_deref(),
+                    )
                 } else {
-                    external
-                        .native_executable
-                        .as_deref()
-                        .and_then(Path::parent)
-                        .map(Path::to_path_buf)
-                        .or_else(|| {
-                            let path = PathBuf::from(&external.executable);
-                            path.is_absolute()
-                                .then(|| path.parent().map(Path::to_path_buf))
-                                .flatten()
-                        })
+                    field_path(&external.executable, external.native_executable.as_deref())
                 };
                 (
                     if directory {
@@ -155,15 +153,12 @@ impl Presenter {
                     return;
                 }
                 let initial = if target == Target::EditorWorkingDirectory {
-                    form.native_working_directory.clone().or_else(|| {
-                        let path = PathBuf::from(&form.working_directory);
-                        path.is_absolute().then_some(path)
-                    })
+                    field_path(
+                        &form.working_directory,
+                        form.native_working_directory.as_deref(),
+                    )
                 } else {
-                    form.native
-                        .as_deref()
-                        .and_then(Path::parent)
-                        .map(Path::to_path_buf)
+                    field_path(&form.executable, form.native.as_deref())
                 };
                 self.editor.draft = Some(draft);
                 (
@@ -212,7 +207,7 @@ impl Presenter {
                         (
                             PathPickerKind::Program,
                             "Choose command",
-                            path.and_then(Path::parent).map(Path::to_path_buf),
+                            field_path(&draft.executable, path),
                         )
                     }
                     Target::CommandIcon => {
@@ -224,7 +219,7 @@ impl Presenter {
                         (
                             PathPickerKind::CommandIconImage,
                             "Choose toolbar image",
-                            path.and_then(Path::parent).map(Path::to_path_buf),
+                            field_path(&draft.icon, path),
                         )
                     }
                     Target::CommandIconResource => (
@@ -235,7 +230,21 @@ impl Presenter {
                     Target::WorkingDirectory => (
                         PathPickerKind::Directory,
                         "Choose initial directory",
-                        Some(PathBuf::from(&draft.working_directory)),
+                        UserCommandTemplate::parse(&draft.working_directory)
+                            .ok()
+                            .and_then(|template| {
+                                let active = self.user_command_directory(self.active);
+                                let other = self.user_command_directory(self.active.other());
+                                let file = self
+                                    .user_command_focus(self.active)
+                                    .map(|entry| entry.path.as_path());
+                                template
+                                    .expand(|var| {
+                                        var.value(active.as_deref(), other.as_deref(), file)
+                                    })
+                                    .ok()
+                                    .map(PathBuf::from)
+                            }),
                     ),
                     Target::Editor
                     | Target::EditorWorkingDirectory
@@ -253,13 +262,28 @@ impl Presenter {
                 )
             }
         };
+        let (initial_directory, initial_name) =
+            if target.settings_file() || kind == PathPickerKind::Directory {
+                (initial, None)
+            } else {
+                (
+                    initial
+                        .as_deref()
+                        .map(|path| path.parent().unwrap_or(path).to_owned()),
+                    initial
+                        .as_deref()
+                        .and_then(Path::file_name)
+                        .map(ToOwned::to_owned),
+                )
+            };
         let id = self.desktop.request();
         if send(Command::PickPath {
             request: id,
             input: PathPickerRequest {
                 kind,
                 title: title.into(),
-                initial_directory: initial,
+                initial_directory,
+                initial_name,
                 owner,
             },
         }) {

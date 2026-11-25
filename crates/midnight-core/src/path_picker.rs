@@ -70,6 +70,8 @@ pub struct PathPickerRequest {
     pub kind: PathPickerKind,
     pub title: String,
     pub initial_directory: Option<PathBuf>,
+    /// Current filename in the associated path field, preserved in native encoding.
+    pub initial_name: Option<std::ffi::OsString>,
     pub owner: PathPickerOwner,
 }
 
@@ -82,6 +84,14 @@ impl PathPickerRequest {
         }
         if let Some(path) = &self.initial_directory {
             validate_picked_path(path)?;
+        }
+        if let Some(name) = &self.initial_name {
+            if Path::new(name).file_name() != Some(name.as_os_str())
+                || name.as_encoded_bytes().contains(&0)
+                || name.as_encoded_bytes().len() > 4 * 1024 * 1024
+            {
+                return Err(invalid("The initial filename must be one native filename."));
+            }
         }
         Ok(())
     }

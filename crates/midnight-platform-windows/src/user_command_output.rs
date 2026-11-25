@@ -207,6 +207,28 @@ pub(crate) fn spawn_captured(
     arguments: &[OsString],
     directory: &Path,
 ) -> io::Result<Box<dyn CapturedUserProgram>> {
+    // CreateProcessW cannot load a batch file. Start our helper inside the capture
+    // job, so Stop reaches the script and its children and the pipes stay connected.
+    let batch = is_batch(executable);
+    let forwarded;
+    let (executable, arguments) = if batch {
+        let helper = LAUNCHER.get().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "The captured batch launcher is not configured.",
+            )
+        })?;
+        forwarded = [
+            OsString::from(RUN_BATCH_ARGUMENT),
+            executable.as_os_str().to_owned(),
+        ]
+        .into_iter()
+        .chain(arguments.iter().cloned())
+        .collect::<Vec<_>>();
+        (helper.executable.as_path(), forwarded.as_slice())
+    } else {
+        (executable, arguments)
+    };
     let spec = LaunchSpec {
         application: executable.to_owned(),
         arguments: arguments.to_owned(),
@@ -237,6 +259,9 @@ pub(crate) fn spawn_captured(
     startup.lpAttributeList = attributes.0.as_mut_ptr().cast();
     // SAFETY: a new unnamed job; ownership only after success.
     let job = unsafe { CreateJobObjectW(null(), null()) };
+    if batch && job.is_null() {
+        return Err(io::Error::last_os_error());
+    }
     // SAFETY: CreateJobObjectW returned a new owned handle.
     let job = (!job.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(job) });
     let mut information = PROCESS_INFORMATION::default();
@@ -282,10 +307,23 @@ pub(crate) fn spawn_captured(
     // SAFETY: CreateProcessW succeeded and transferred both handles to this scope.
     let process = unsafe { OwnedHandle::from_raw_handle(information.hProcess) };
     let thread = unsafe { OwnedHandle::from_raw_handle(information.hThread) };
-    // SAFETY: live job and still-suspended process handles.
-    let job = job.filter(|job| unsafe {
-        AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle()) != 0
-    });
+    let job = match job {
+        // SAFETY: both handles are owned and the helper has not resumed.
+        Some(job)
+            if unsafe {
+                AssignProcessToJobObject(job.as_raw_handle(), process.as_raw_handle())
+            } != 0 =>
+        {
+            Some(job)
+        }
+        Some(_) if batch => {
+            let error = io::Error::last_os_error();
+            // SAFETY: Stop must reach the interpreter. End the suspended helper before it can start it.
+            unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+            return Err(error);
+        }
+        _ => None,
+    };
     // SAFETY: the owned primary thread of the suspended process.
     if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
         let error = io::Error::last_os_error();
@@ -338,6 +376,36 @@ pub(crate) fn spawn_console_with(
         },
         hidden,
     )
+}
+
+pub const RUN_BATCH_ARGUMENT: &str = "--run-captured-batch";
+
+fn is_batch(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd"))
+}
+
+/// Use Rust's batch argument escaping and inherit the capture pipes.
+pub fn run_captured_batch(mut arguments: impl Iterator<Item = OsString>) -> i32 {
+    use std::os::windows::process::CommandExt;
+    let Some(path) = arguments.next().map(PathBuf::from) else {
+        return 2;
+    };
+    if !path.is_absolute() || !is_batch(&path) {
+        return 2;
+    }
+    match std::process::Command::new(path)
+        .args(arguments)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+    {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!("The batch file could not start: {error}");
+            1
+        }
+    }
 }
 
 /// The Console window launcher (`midnight-explorer --run-and-wait <program> [argument…]`): runs the

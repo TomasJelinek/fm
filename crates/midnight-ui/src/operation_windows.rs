@@ -5,7 +5,7 @@ use crate::{
     dialog_host::{DialogSession, DialogSessions},
     tool_window_failure::Failures,
 };
-use midnight_core::{Command, MutationKind, OperationId};
+use midnight_core::{Command, DesktopRequestId, MutationKind, OperationId};
 use slint::{ComponentHandle, PlatformError, SharedString};
 use std::{
     cell::{Cell, RefCell},
@@ -15,7 +15,7 @@ use std::{
 
 #[derive(Clone, PartialEq, Eq)]
 enum Key {
-    Operation(OperationId),
+    Operation(OperationId, String),
     Copy(String),
 }
 impl Key {
@@ -24,12 +24,9 @@ impl Key {
             return false;
         }
         match self {
-            Self::Operation(id) => {
-                p.operations.pending == Some(*id)
-                    && p.operations.preview.as_ref().is_some_and(|preview| {
-                        preview.id == *id && preview.kind != MutationKind::EditMetadata
-                    })
-            }
+            Self::Operation(id, token) => p.operation_form().is_some_and(|(preview, current)| {
+                preview.id == *id && preview.kind != MutationKind::EditMetadata && current == *token
+            }),
             Self::Copy(token) => p
                 .copies
                 .draft
@@ -46,6 +43,7 @@ struct Record {
     focus: FocusReturn,
     error: RefCell<String>,
     cancelling: Cell<bool>,
+    displayed_pick: Cell<Option<DesktopRequestId>>,
     retry: slint::Timer,
 }
 #[derive(Default)]
@@ -64,11 +62,11 @@ struct Context {
     failures: Failures<OperationId>,
 }
 fn cancel_prepared(p: &mut Presenter, id: OperationId, send: &dyn Fn(Command) -> bool) -> bool {
-    if !Key::Operation(id).current(p) {
+    let Some((_, token)) = p.operation_form().filter(|(preview, _)| preview.id == id) else {
         return true;
-    }
-    p.cancel_operation(&id.0.to_string(), send);
-    !Key::Operation(id).current(p)
+    };
+    p.cancel_operation(&token, send);
+    !Key::Operation(id, token).current(p)
 }
 
 pub(crate) fn install(
@@ -109,6 +107,7 @@ pub(crate) fn install(
         if let Some(state) = context.state.upgrade()
             && crate::with_owned_commands(&state, &context.begin_owned, |p, _| {
                 if let Some(token) = p.copies.draft.as_ref().map(|draft| draft.token.clone()) {
+                    p.cancel_copy_destination_picker(context.send.as_ref());
                     p.cancel_copy_dialog(&token);
                 }
             })
@@ -116,6 +115,7 @@ pub(crate) fn install(
             && let Ok(mut p) = state.try_borrow_mut()
             && let Some(token) = p.copies.draft.as_ref().map(|draft| draft.token.clone())
         {
+            p.cancel_copy_destination_picker(context.send.as_ref());
             p.defer_cancel_copy_dialog(&token);
         }
     });
@@ -138,20 +138,31 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         return;
     }
     if let Some(record) = ctx.windows.borrow().record.clone() {
-        if matches!(record.key, Key::Operation(_)) {
-            // An open confirmation can change its question (New empty file over an
-            // existing name becomes Replace file); show the current one.
+        if matches!(record.key, Key::Operation(..))
+            && p.operations
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.kind == MutationKind::CreateFile)
+        {
+            // New empty file can become Replace file while its form is open.
             let window = main.global::<OperationPresentation>();
             window.set_title_text(main.get_operation_title());
             window.set_confirm_text(main.get_operation_title());
             window.set_dangerous(main.get_operation_dangerous());
         }
         if matches!(record.key, Key::Copy(_)) {
+            let form = main.global::<OperationPresentation>();
+            let picking = p.copies.destination_picker.is_some();
+            form.set_picking_destination(picking);
+            form.set_confirm_enabled(!picking && !record.cancelling.get());
+            if let Some((id, path)) = &p.copies.picked_destination
+                && record.displayed_pick.replace(Some(*id)) != Some(*id)
+                && !record.cancelling.get()
+            {
+                form.set_field_value(path.to_string_lossy().as_ref().into());
+            }
             // The destination's link facts can arrive while the dialog is open.
-            copy_draft_windows::refresh_links(
-                &main.global::<OperationPresentation>(),
-                p.copy_draft_links_view().as_ref(),
-            );
+            copy_draft_windows::refresh_links(&form, p.copy_draft_links_view().as_ref());
         }
         update_warning(&record, main);
         return;
@@ -160,11 +171,9 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         return;
     }
     let key = p
-        .operations
-        .preview
-        .as_ref()
-        .filter(|preview| preview.kind != MutationKind::EditMetadata)
-        .map(|preview| Key::Operation(preview.id))
+        .operation_form()
+        .filter(|(preview, _)| preview.kind != MutationKind::EditMetadata)
+        .map(|(preview, token)| Key::Operation(preview.id, token))
         .or_else(|| {
             p.copies
                 .draft
@@ -175,7 +184,7 @@ fn synchronize(ctx: &Rc<Context>, main: &MainWindow, p: &Presenter) {
         return;
     };
     match &key {
-        Key::Operation(id) if ctx.failures.contains(*id) => return,
+        Key::Operation(id, _) if ctx.failures.contains(*id) => return,
         Key::Copy(token) if ctx.windows.borrow().failed_copy.as_ref() == Some(token) => return,
         _ => {}
     }
@@ -199,6 +208,7 @@ fn open(
     // Unlike a new native component, this shared form must clear optional state.
     window.set_kind(-1);
     window.set_confirm_enabled(true);
+    window.set_picking_destination(false);
     window.set_option_visible(false);
     window.set_body_hint("".into());
     window.set_policy("".into());
@@ -208,10 +218,12 @@ fn open(
     window.set_option_enabled(true);
     window.set_option_checked(false);
     window.set_dangerous(false);
-    // A Delete confirmation's question and details; other forms draw their body.
-    let delete = match &key {
-        Key::Operation(_) => crate::operation_presentation::delete_form(p),
-        Key::Copy(_) => None,
+    let (delete, folder) = match &key {
+        Key::Operation(..) => (
+            crate::operation_presentation::delete_form(p),
+            crate::operation_presentation::folder_location(p),
+        ),
+        Key::Copy(_) => (None, None),
     };
     window.set_question(
         delete
@@ -227,9 +239,18 @@ fn open(
     );
     // A path's tooltip may still show from an earlier confirmation's rows.
     crate::tooltip::dismiss(main.window());
-    let (details, path_parts) = delete
-        .map(|form| (form.details, form.path_parts))
-        .unwrap_or_default();
+    window.set_folder_location(
+        folder
+            .map(|path| crate::shown_text(&path.to_string_lossy()))
+            .unwrap_or_default(),
+    );
+    let (details, path_parts) = if let Some(folder) = folder {
+        (Vec::new(), crate::operation_presentation::path_rows(folder))
+    } else {
+        delete
+            .map(|form| (form.details, form.path_parts))
+            .unwrap_or_default()
+    };
     window.set_details(slint::ModelRc::new(slint::VecModel::from(details)));
     window.set_path_parts(slint::ModelRc::new(slint::VecModel::from(path_parts)));
     match &key {
@@ -239,23 +260,21 @@ fn open(
             p.copy_draft_links_view(),
             p.copy_preserve_metadata(),
         ),
-        Key::Operation(_) => {
+        Key::Operation(..) => {
+            let (label, action) = match main.get_operation_kind() {
+                0 => ("New name", "Rename".into()),
+                3 => ("Directory name", "Create".into()),
+                4 => ("File name", main.get_operation_title()),
+                _ => ("", main.get_operation_title()),
+            };
             window.set_title_text(main.get_operation_title());
             window.set_kind(main.get_operation_kind());
-            window.set_confirm_text(main.get_operation_title());
+            window.set_confirm_text(action);
             window.set_body(main.get_operation_body());
             window.set_initial_name(main.get_operation_name());
             window.set_selection_end(main.get_operation_selection_end());
             window.set_has_name(main.get_operation_has_name());
-            window.set_input_label(
-                match main.get_operation_kind() {
-                    0 => "New name",
-                    3 => "Folder name or path",
-                    4 => "File name",
-                    _ => "",
-                }
-                .into(),
-            );
+            window.set_input_label(label.into());
             window.set_dangerous(main.get_operation_dangerous());
             window.set_native_icon(main.get_operation_icon());
         }
@@ -290,6 +309,41 @@ fn open(
             link_chosen(&ctx, session, choice);
         }
     });
+    let weak = Rc::downgrade(ctx);
+    let expected = token.clone();
+    window.on_browse_destination(move |token, value| {
+        if token != expected {
+            return;
+        }
+        let Some(ctx) = weak.upgrade() else { return };
+        let (Some(record), Some(state), Some(main)) = (
+            current(&ctx, session),
+            ctx.state.upgrade(),
+            ctx.main.upgrade(),
+        ) else {
+            return;
+        };
+        let Key::Copy(token) = &record.key else {
+            return;
+        };
+        if record.cancelling.get() {
+            return;
+        }
+        {
+            let mut p = state.borrow_mut();
+            if !record.key.current(&p) {
+                return;
+            }
+            record.error.borrow_mut().clear();
+            p.browse_copy_destination(
+                token,
+                &value,
+                crate::picker_window::owner(&main),
+                ctx.send.as_ref(),
+            );
+        }
+        crate::refresh(&main, &state.borrow());
+    });
     let record = Record {
         key,
         session,
@@ -298,6 +352,7 @@ fn open(
         focus,
         error: RefCell::new(String::new()),
         cancelling: Cell::new(false),
+        displayed_pick: Cell::new(None),
         retry: slint::Timer::default(),
     };
     update_warning(&record, main);
@@ -309,7 +364,7 @@ fn open(
 /// its link choice is shown under that choice.
 fn update_warning(record: &Record, main: &MainWindow) {
     let (base, about_links) = match record.key {
-        Key::Operation(_) => (main.get_operation_warning(), false),
+        Key::Operation(..) => (main.get_operation_warning(), false),
         Key::Copy(_) => (
             main.get_copy_draft_error(),
             main.get_copy_draft_error_links(),
@@ -369,7 +424,7 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
         return;
     }
     let accepted = match &record.key {
-        Key::Operation(id) => {
+        Key::Operation(_, token) => {
             let mut p = state.borrow_mut();
             if !record.key.current(&p) {
                 return;
@@ -382,7 +437,7 @@ fn confirm(ctx: &Rc<Context>, session: DialogSession, value: SharedString) {
                 refused.set(refused.get() || !sent);
                 sent
             };
-            p.confirm_operation(&id.0.to_string(), value.to_string(), &send);
+            p.confirm_operation(token, value.to_string(), &send);
             *record.error.borrow_mut() = if refused.get() {
                 "The operation queue is busy. Try again.".into()
             } else {
@@ -437,6 +492,14 @@ fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
     };
     let accepted = match &record.key {
         Key::Copy(token) => {
+            if !state
+                .try_borrow_mut()
+                .is_ok_and(|mut p| p.cancel_copy_destination_picker(ctx.send.as_ref()))
+            {
+                wait_to_cancel(ctx, &record);
+                update_warning(&record, &main);
+                return;
+            }
             match crate::with_owned_commands(&state, &ctx.begin_owned, |p, _| {
                 p.cancel_copy_dialog(token);
                 true
@@ -453,7 +516,7 @@ fn dismiss(ctx: &Rc<Context>, session: DialogSession) {
                 }
             }
         }
-        Key::Operation(id) => {
+        Key::Operation(id, _) => {
             let Ok(mut p) = state.try_borrow_mut() else {
                 wait_to_cancel(ctx, &record);
                 update_warning(&record, &main);
@@ -530,7 +593,7 @@ fn close_record(record: Option<Rc<Record>>) {
 }
 fn failed(ctx: &Rc<Context>, key: Key, message: String) {
     match key {
-        Key::Operation(id) => ctx.failures.record(id, message),
+        Key::Operation(id, _) => ctx.failures.record(id, message),
         Key::Copy(token) => {
             ctx.windows.borrow_mut().failed_copy = Some(token.clone());
             retry_failed_copy(ctx, token, message, Duration::ZERO);

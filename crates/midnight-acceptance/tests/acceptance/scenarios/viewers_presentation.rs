@@ -25,8 +25,8 @@
 //! - HTML: the zoom buttons, Ctrl+Plus, Ctrl+Minus and Ctrl+0, and the Online and
 //!   JavaScript boxes (unchecked; JavaScript needs Online).
 //! - A restart: the viewer choices made before it (Wrap, Lines, the Markdown preset, the
-//!   text font and size, Aa, the image's 1:1 zoom, the PDF's Continuous layout and the
-//!   comparator's font) are what the next start shows. Both starts share one profile
+//!   text font and size, Aa, the PDF's Continuous layout and the comparator's font)
+//!   survive. The image opened at 1:1 before restart opens in Fit. Both starts share one profile
 //!   (`options_support::SettingsStore`, which keeps the saved preferences without the
 //!   settings file's encoding).
 use crate::{
@@ -106,8 +106,6 @@ fn run(context: &mut Context) -> Result<(), String> {
     support::use_number_locale(&mut app, NumberLocale::default())?;
     let failures = Failures::default();
     type Section = fn(&mut App, &mut Context, &Viewing) -> Result<(), String>;
-    // The typed zoom comes after the image section: every zoom is saved and the next
-    // image opens with it, while the image section starts from Fit.
     let sections: [(&str, &str, Section); 9] = [
         ("Find bar", "words.txt", find_bar),
         ("Source and Text modes, Lines", "sample.rs", source_modes),
@@ -1494,7 +1492,7 @@ fn saved(store: &SettingsStore, chosen: &Chosen) -> Result<(), String> {
     }
 }
 
-/// After the restart, each viewer opens with what was chosen before it.
+/// Check the persisted choices and the fresh Fit view after restarting.
 fn restored(app: &mut App, context: &mut Context, chosen: &Chosen) -> Result<(), String> {
     let mut problems = Vec::new();
     let mut check = |what: &str, result: Result<(), String>| {
@@ -1538,9 +1536,20 @@ fn restored(app: &mut App, context: &mut Context, chosen: &Chosen) -> Result<(),
     check(
         "tall.png",
         with_viewer(app, "tall.png", |app, viewing| {
-            viewing.wait(app, "the 1:1 zoom", STEP, |window| {
-                window.get_image_mode() && (window.get_zoom_percent() - 100.0).abs() < 0.5
-            })
+            viewing.wait(
+                app,
+                "the full image fitted after a restart",
+                STEP,
+                |window| {
+                    let fit = (window.get_content_width() / 800.0)
+                        .min(window.get_content_height() / 3000.0)
+                        .min(1.0)
+                        * 100.0;
+                    window.get_image_mode()
+                        && fit < 99.0
+                        && (window.get_zoom_percent() - fit).abs() < 0.5
+                },
+            )
         }),
     );
     check(

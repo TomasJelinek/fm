@@ -413,7 +413,7 @@ fn pdf_fit_enlarges_small_pages_with_bounded_raster_while_image_fit_does_not() {
 }
 
 #[test]
-fn newly_opened_raster_image_still_restores_its_saved_zoom() {
+fn newly_opened_raster_image_fits_even_with_saved_or_late_zoom_preferences() {
     let (mut worker, output) = worker();
     worker.preferences = Arc::new(ViewerPreferences {
         image_zoom: ViewerZoomPreference::ScaleBasisPoints(23_456),
@@ -431,8 +431,20 @@ fn newly_opened_raster_image_still_restores_its_saved_zoom() {
     ));
     worker.poll_image(&output);
     let view = worker.image.as_ref().unwrap().geometry.as_ref().unwrap();
-    assert!(!view.fitted);
-    assert!((view.scale - 2.3456).abs() < 1e-12);
+    assert!(view.fitted);
+    assert!((view.scale - 1.0 / 6.0).abs() < 1e-12);
+
+    worker
+        .preference_state
+        .restore(Arc::new(ViewerPreferences {
+            image_zoom: ViewerZoomPreference::ActualPixels,
+            ..Default::default()
+        }))
+        .unwrap();
+    worker.sync_preferences(&output);
+    let view = worker.image.as_ref().unwrap().geometry.as_ref().unwrap();
+    assert!(view.fitted);
+    assert!((view.scale - 1.0 / 6.0).abs() < 1e-12);
 }
 
 #[test]

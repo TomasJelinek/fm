@@ -3,14 +3,23 @@
 //! Deploy the executable beside a `viewers` directory. Set MIDNIGHT_VIEWER_OPEN_TRACE=1 in
 //! debug builds for the per-phase opening timestamps. Results and method:
 //! docs/verification/2026-11-20-viewer-speed.md.
+//! With `--together FILE FILE [FILE...]`, leave up to four viewer surfaces open,
+//! placing successive windows on successive monitors when more than one is available.
+//! Set `MIDNIGHT_PROBE_PARENT=1` to keep a native parent visible as in the file manager.
 #[cfg(target_os = "linux")]
 #[path = "support/native_html_linux.rs"]
 mod native_linux;
+#[path = "performance_probe/native_parent.rs"]
+mod native_parent;
+#[cfg(windows)]
+#[path = "../../midnight-ui/src/window_gpu_windows.rs"]
+mod native_windows;
 #[path = "support/resident.rs"]
 mod resident;
 
 use midnight_core::*;
 use midnight_viewer_ui::ViewerWindows;
+use slint::{ComponentHandle, winit_030::WinitWindowAccessor};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -47,7 +56,24 @@ fn select_renderer() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("MIDNIGHT_PROBE_RENDERER").unwrap_or_else(|_| "femtovg-wgpu".into());
     let mut selector = slint::BackendSelector::new()
         .backend_name("winit".into())
-        .renderer_name(renderer);
+        .renderer_name(renderer.clone());
+    #[cfg(windows)]
+    if renderer == "femtovg-wgpu" {
+        let share = std::env::var_os("MIDNIGHT_SHARED_WGPU").is_none_or(|value| value != "0");
+        let started = Instant::now();
+        let config = native_windows::windows_gpu_configuration(share);
+        let mode = if matches!(config, slint::wgpu_30::WGPUConfiguration::Manual { .. }) {
+            "shared"
+        } else {
+            "automatic"
+        };
+        eprintln!(
+            "Windows wgpu configuration: {mode} ({:?})",
+            started.elapsed()
+        );
+        selector = selector.require_wgpu_30(config);
+    }
+    #[cfg(target_os = "linux")]
     if std::env::var_os("MIDNIGHT_PROBE_SHARED_WGPU").is_some_and(|value| value == "1") {
         let started = Instant::now();
         let configuration = shared_wgpu()?;
@@ -58,6 +84,7 @@ fn select_renderer() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn shared_wgpu() -> Result<slint::wgpu_30::WGPUConfiguration, Box<dyn std::error::Error>> {
     use slint::wgpu_30::wgpu;
     fn ready<F: std::future::Future>(future: F) -> F::Output {
@@ -99,10 +126,13 @@ fn shared_wgpu() -> Result<slint::wgpu_30::WGPUConfiguration, Box<dyn std::error
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let process = Instant::now();
-    let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    if paths.is_empty() {
-        return Err("usage: open_latency FILE...".into());
+    let mut args = std::env::args_os().skip(1).peekable();
+    let together = args.next_if(|arg| arg == "--together").is_some();
+    let paths: Vec<PathBuf> = args.map(PathBuf::from).collect();
+    if paths.is_empty() || together && !(2..=4).contains(&paths.len()) {
+        return Err("usage: open_latency FILE... | --together FILE FILE [FILE [FILE]]".into());
     }
+    let repeat = if together { 1 } else { REPEAT };
     select_renderer()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -137,9 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let next = Rc::new(Cell::new(0usize));
     let started = Rc::new(Cell::new(None::<Instant>));
     let done = Rc::new(Cell::new(None::<Result<Duration, String>>));
-    let current = Rc::new(RefCell::new(
-        None::<slint::Weak<midnight_viewer_ui::ViewerWindow>>,
-    ));
+    let windows = RefCell::new(Vec::<slint::Weak<midnight_viewer_ui::ViewerWindow>>::new());
     let timer = slint::Timer::default();
     let tick = {
         let manager = manager.clone();
@@ -155,12 +183,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 };
                 let index = next.get() - 1;
-                let path = &paths[index / REPEAT];
+                let path = &paths[index / repeat];
                 // The status line shows errors that follow the first frame, such as a
                 // failed resource release; ticks are 250 ms apart, so this is after one.
-                let status = current
+                let status = windows
                     .borrow()
-                    .as_ref()
+                    .last()
                     .and_then(|window| window.upgrade())
                     .map(|window| window.get_status().to_string())
                     .unwrap_or_default();
@@ -168,18 +196,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(elapsed) => println!(
                         "open file={} attempt={} first_content_ms={:.1} process_ms={} status={status:?}",
                         path.display(),
-                        index % REPEAT,
+                        index % repeat,
                         elapsed.as_secs_f64() * 1000.0,
                         process.elapsed().as_millis()
                     ),
-                    Err(error) => println!("open file={} error={error}", path.display()),
+                    Err(error) => {
+                        *failure.borrow_mut() = Some(format!("{}: {error}", path.display()));
+                        let _ = slint::quit_event_loop();
+                        return;
+                    }
                 }
-                manager.close_all();
+                if !together {
+                    manager.close_all();
+                    windows.borrow_mut().clear();
+                }
                 started.set(None);
                 return;
             }
             let index = next.get();
-            if index >= paths.len() * REPEAT {
+            if index >= paths.len() * repeat {
+                if together {
+                    let visible = windows
+                        .borrow()
+                        .iter()
+                        .filter_map(slint::Weak::upgrade)
+                        .filter(|window| window.window().is_visible())
+                        .count();
+                    if visible != paths.len() {
+                        *failure.borrow_mut() =
+                            Some(format!("only {visible} windows still visible"));
+                    } else {
+                        println!("concurrent native windows with first content: {visible}");
+                    }
+                }
                 let _ = slint::quit_event_loop();
                 return;
             }
@@ -191,7 +240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 finished.set(Some(result.map(|()| start.elapsed())));
             });
             let opened = manager.open_with_ready(
-                launch(&paths[index / REPEAT]),
+                launch(&paths[index / repeat]),
                 ViewerAppearance {
                     family: "sans-serif".into(),
                     font_size: 13.0,
@@ -207,15 +256,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ready,
             );
             match opened {
-                Ok(window) => *current.borrow_mut() = Some(window),
+                Ok(window) => {
+                    if together && let Some(component) = window.upgrade() {
+                        component.window().with_winit_window(|native| {
+                            let monitors: Vec<_> = native.available_monitors().collect();
+                            if !monitors.is_empty() {
+                                let monitor = &monitors[index % monitors.len()];
+                                native.set_outer_position(monitor.position());
+                            }
+                        });
+                    }
+                    windows.borrow_mut().push(window);
+                }
                 Err(error) => done.set(Some(Err(error))),
             }
         }
     };
     // Settle between openings like a user would; timing excludes this pause.
-    timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);
-    // Closing each viewer must not end the loop between openings.
-    slint::run_event_loop_until_quit()?;
+    let timer = if std::env::var_os("MIDNIGHT_PROBE_PARENT").is_some_and(|value| value == "1") {
+        native_parent::run(true, move |_| {
+            timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);
+            Ok(timer)
+        })?
+    } else {
+        timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), tick);
+        // Closing each viewer must not end the loop between openings.
+        slint::run_event_loop_until_quit()?;
+        timer
+    };
     timer.stop();
     manager.close_all();
     if let Some(message) = failure.borrow_mut().take() {
