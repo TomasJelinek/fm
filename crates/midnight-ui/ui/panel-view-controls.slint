@@ -68,19 +68,22 @@ export component PanelViewControls inherits Rectangle {
             icon-only: root.compact;
             icon: root.view-mode == 1 ? FallbackIcons.view-brief
                 : root.view-mode == 2 ? FallbackIcons.view-thumbnails : FallbackIcons.view-detailed;
-            model: ["Detailed", "Brief", "Thumbnails",
+            // Listed in shortcut order (Alt+2, Alt+3, Alt+5). Positions 0 and 1 swap with the
+            // view modes (0 Detailed, 1 Brief), which stay as stored.
+            model: ["Brief", "Detailed", "Thumbnails",
                 PanelChoices.show-hidden-files ? "Hide hidden files" : "Show hidden files"];
-            current-index: root.view-mode;
-            shortcuts: [ShortcutHints.keys("view.detailed"), ShortcutHints.keys("view.brief"),
+            current-index: root.view-mode < 2 ? 1 - root.view-mode : root.view-mode;
+            shortcuts: [ShortcutHints.keys("view.brief"), ShortcutHints.keys("view.detailed"),
                 ShortcutHints.keys("view.thumbnails"), ShortcutHints.keys("panel.hidden-files")];
             separator-before-index: 3;
-            label: self.model[root.view-mode]; accessible-name: root.view-label;
-            hint: "View: " + self.model[root.view-mode]
+            label: self.model[self.current-index]; accessible-name: root.view-label;
+            hint: "View: " + self.model[self.current-index]
                 + (PanelChoices.show-hidden-files ? "" : " · hidden files are not shown");
             opening => { root.activate(); }
             selected(index) => {
                 root.activate();
-                if index == 3 { root.hidden-files-toggled(); } else { root.view-selected(index); }
+                if index == 3 { root.hidden-files-toggled(); }
+                else { root.view-selected(index < 2 ? 1 - index : index); }
             }
             dismissed => { root.dismissed(); }
         }

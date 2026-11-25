@@ -726,9 +726,10 @@ actions. See the [Find contract](developer/FIND.md).
 
 ### Panel view and sort menus
 
-Both panels show the current configured bindings beside Detailed, Brief,
+Both panels show the current configured bindings beside Brief, Detailed,
 Thumbnails, Show (or Hide) hidden files, Name, Size, Modified and Extension in their
-View and Sort menus. Reverse order shows the binding of the current sort column,
+View and Sort menus; the View menu lists the views in shortcut order (Alt+2, Alt+3,
+Alt+5). Reverse order shows the binding of the current sort column,
 which toggles its direction. Rebinding or disabling a shortcut updates these hints
 immediately, including an already open menu. In a compact layout the closed buttons
 show only their icons.

@@ -474,3 +474,33 @@ fn control_h_menus_and_options_switch_hidden_files_and_the_status_counts_them() 
         "Cancel keeps the saved choice"
     );
 }
+
+/// The View menu lists the views in shortcut order (Alt+2 Brief, Alt+3 Detailed, Alt+5
+/// Thumbnails), and each still selects its own view.
+#[test]
+fn the_view_menu_lists_brief_detailed_thumbnails_and_each_selects_its_view() {
+    let mut h = Harness::new();
+    let window = h.ui.window.clone_strong();
+    let open_menu = |h: &mut Harness| {
+        ui::click_root(&window, "Left panel view mode", AccessibleRole::Combobox);
+        h.ui.draw();
+    };
+    open_menu(&mut h);
+    let top = |label: &str| {
+        let item = ui::popup_item(&window, label, AccessibleRole::Button);
+        item.map_to_native_window(item.geometry().origin).y
+    };
+    let (brief, detailed, thumbnails) = (top("Brief"), top("Detailed"), top("Thumbnails"));
+    assert!(
+        brief < detailed && detailed < thumbnails,
+        "Brief {brief}, Detailed {detailed}, Thumbnails {thumbnails}"
+    );
+    ui::key(&window, Key::Escape);
+    h.ui.draw();
+    for (label, mode) in [("Brief", 1), ("Thumbnails", 2), ("Detailed", 0)] {
+        open_menu(&mut h);
+        ui::click_popup(&window, label, AccessibleRole::Button);
+        h.ui.draw();
+        assert_eq!(window.get_left_view_mode(), mode, "{label}");
+    }
+}
