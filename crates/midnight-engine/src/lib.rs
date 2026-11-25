@@ -1009,10 +1009,12 @@ impl EngineServices {
                             };
                             let outbox = self.outbox.clone();
                             tasks.spawn(async move {
-                                let _permit = permit;
                                 let source = view.clone();
                                 let result = tokio::task::spawn_blocking(move || archive_selection::apply(&entries, &source, selected, totals, action))
                                     .await.unwrap_or_else(|error| Err(archive_selection::error(error.to_string())));
+                                // Released before the result is sent: a selection the UI asks for
+                                // after seeing this result must not find the queue still busy.
+                                drop(permit);
                                 outbox.send(Event::ArchiveSelection { pane, navigation, revision, view, result }).await;
                             });
                         }
