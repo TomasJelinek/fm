@@ -39,7 +39,7 @@ How to read it:
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).
 - **Verified:** the last hosted CI runs recorded as passing every job on Windows and
-  Linux are at `1341a7ff`, the `v0.5.2` tag, and `a7b12855`
+  Linux are at `1341a7ff` (the `v0.5.2` tag) and `a7b12855`
   ([release record](verification/2026-11-24-release-0.5.2.md#ci));
   CI times are in the [CI time record](verification/2026-11-21-ci-time.md).
   Acceptance runs on Windows are listed in the
@@ -134,7 +134,7 @@ How to read it:
   file is copied and verified as Copy does before its source is removed. Copy and Move
   take up to 1,000,000 selected items: a large selection starts copying its first item at once, totals the rest while it copies and opens each
   item only when it reaches it. I/O errors pause for Retry, Skip, Skip all or Cancel.
-  "Preserve times and attributes" (off unless Options turns it on) gives copied files and
+  "Preserve times and attributes" (on unless Options turns it off) gives copied files and
   folders their sources' times (Windows: created, modified, accessed; Linux: modified,
   accessed) and attributes (Windows: Read-only, Hidden, System, Archive, Not content
   indexed; Linux: permission bits without set-ID bits), folders after their contents
@@ -230,8 +230,8 @@ How to read it:
   once. It finds names by masks, regular expressions or metadata expressions, text
   (literal, or a regular expression within each line), files modified within a period
   and identical files, in several search folders and inside archives through the
-  installed archive plugins. Results sort by column and offer Go to file, View, Edit,
-  Open and Feed to panel.
+  installed archive plugins. A search keeps at most 100,000 results. Results sort by
+  column and offer Go to file, View, Edit, Open and Feed to panel.
 - **Open:** Find cannot start in a panel that shows an archive, and an archive inside
   an archive is matched by name but not searched (FIND-01).
 - **Documents:** [Find contract](developer/FIND.md).
@@ -306,8 +306,9 @@ How to read it:
   comparator for each file type. Compare directories selects the differences as
   Open Salamander does (size, time with tolerance and daylight saving, attributes,
   contents, subfolders, ignore masks), with progress and Cancel in its dialog, the
-  result below the active panel and per-row match badges in the panels' inline
-  subfolders (0.5.1).
+  result below the active panel and per-row match badges on the compared rows and,
+  with subfolders, in the panels' inline subfolders (0.5.1); the result line's ×,
+  Escape outside filename search, Ctrl+Shift+F11 and Clear comparison marks remove them.
 - **Open:** the time to the first frame is not measured on Linux (COMPARE-01); image
   and hex comparisons report a change of the change time alone as a change
   (COMPARE-02).
@@ -426,7 +427,8 @@ How to read it:
   Very long, and the Scrolling speed slider: Very slow, Slow, Medium, Fast or Very fast
   wheel notches, both applied at once to panels, lists, dialogs and every viewer),
   filename colours, previews, archives, editors, comparators,
-  Custom Commands, Hot Paths, keyboard shortcuts and plugins; export and import of the
+  Custom Commands, keyboard shortcuts and plugins, and the Manage Hot Paths window;
+  export and import of the
   settings file; F1 keyboard help and the F10 menu; windows down to 320×200.
 - **Open:** at 320×200 with touch density and a 32 px font the colour picker scrolls
   (OPTIONS-02); with the installed plugins, Hot Paths inside archives are checked only four
@@ -459,7 +461,7 @@ How to read it:
 ## Plugin interfaces
 
 - **Implemented:** the viewer C ABI 1.0 with plugin API and SDK 0.2.0; the archive
-  worker API 0.5.0; the native filesystem plugin ABI 1.4 with API and SDK 0.2.0; the
+  worker API 0.5.0; the native filesystem plugin ABI 1.5 with API and SDK 0.2.0; the
   image viewer API 0.3.0 with SDK 0.4.0; the web viewer API and SDK 0.4.0; the
   thumbnail API 0.1.0 with SDK 0.2.0; the worker SDK 0.2.0. The text, source and
   Markdown viewers and the native and Network Neighborhood filesystems load as native
