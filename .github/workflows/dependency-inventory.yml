@@ -3,9 +3,8 @@ name: dependency-inventory
 # Captures the Cargo metadata and trees of every dependency inventory workspace, each
 # target on its own host, and regenerates docs/dependencies from them
 # (docs/THIRD_PARTY.md, "Regenerating the inventory"). It runs when a dependency input or
-# the inventory changes, and on demand. Tables that differ from the captures are a
-# warning, not a failure; the run's dependency-inventory artifact holds the regenerated
-# tables and the captures.
+# the inventory changes, and on demand. Tables that differ from the captures fail the
+# run; its dependency-inventory artifact holds the regenerated tables and the captures.
 on:
   push:
     branches: [main]
@@ -141,19 +140,22 @@ jobs:
           done > "$changes"
           if [ ! -s "$changes" ]; then
             echo 'docs/dependencies matches the captures of this commit.' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '::warning title=Dependency inventory::docs/dependencies differs from the captures of this commit; the dependency-inventory artifact holds the regenerated tables.'
-            {
-              echo '### docs/dependencies differs from the captures of this commit'
-              echo
-              echo 'Copy the `tables` files of the dependency-inventory artifact into `docs/dependencies`, then update `LOCKFILE_ONLY.md` there (docs/THIRD_PARTY.md). The first 300 lines of `tables.diff`:'
-              echo
-              echo '```diff'
-              head -n 300 "$changes"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
-      - uses: actions/upload-artifact@v7
+          echo '::error title=Dependency inventory::docs/dependencies differs from the captures of this commit; the dependency-inventory artifact holds the regenerated tables.'
+          {
+            echo '### docs/dependencies differs from the captures of this commit'
+            echo
+            echo 'Copy the `tables` files of the dependency-inventory artifact into `docs/dependencies`, then update `LOCKFILE_ONLY.md` there (docs/THIRD_PARTY.md). The first 300 lines of `tables.diff`:'
+            echo
+            echo '```diff'
+            head -n 300 "$changes"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+      # The regenerated tables are needed most when the comparison fails.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-inventory
           if-no-files-found: error

@@ -408,7 +408,13 @@ class WorkflowTests(unittest.TestCase):
         regenerate = inventory["inventory"]
         self.assertIn("pattern: dependency-captures-*", regenerate)
         self.assertIn("scripts/dependency-inventory.py --metadata-dir _build/dependency-captures", regenerate)
-        self.assertIn("name: dependency-inventory\n", regenerate)
+        # Stale tables fail the run, and the regenerated ones are still uploaded.
+        compare = step(regenerate, "Regenerate the inventory and compare it with docs/dependencies")
+        self.assertIn("::error title=Dependency inventory::", compare)
+        commands = [line.strip() for line in compare.splitlines() if line.strip() and not line.strip().startswith("#")]
+        self.assertEqual(commands[-1], "exit 1")
+        self.assertIn("if: ${{ !cancelled() }}\n        uses: actions/upload-artifact@v7", regenerate)
+        self.assertIn("name: dependency-inventory\n", uses(regenerate, "actions/upload-artifact@v7"))
         for name, job in inventory.items():
             if "uses: ./.github/actions/rust-setup" in job:
                 with self.subTest(job=name):

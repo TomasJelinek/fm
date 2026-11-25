@@ -12,7 +12,7 @@ here is distributed under its own license.
 
 ## Inventories
 
-- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **80** package/version
+- [Direct dependencies](dependencies/DIRECT_DEPENDENCIES.md): **81** package/version
   records declared by project crates, including build and test tools.
 - [Complete Cargo inventory](dependencies/CARGO_LIBRARIES.md): **673**
   package/version/source records with **551** distinct crate names, including
@@ -50,7 +50,8 @@ lock file's checksum. A regeneration from Cargo's own captures
 ([below](#regenerating-the-inventory)) remains the reference. The tables were last
 regenerated from the dependency-inventory workflow's Windows and Linux captures of
 `0ccc198d` (25 November 2026): they record the vendored `i-slint-renderer-femtovg`
-1.18.1 as a local path dependency with `midnight-ui-input` as a direct dependant.
+1.18.1 as a local path dependency with `midnight-ui-input` as a direct dependant
+([record](verification/2026-11-25-dependency-inventory-workflow.md)).
 
 ## License notes
 
@@ -398,8 +399,8 @@ The `dependency-inventory` workflow
 ([dependency-inventory.yml](../.github/workflows/dependency-inventory.yml)) does this
 when a Cargo manifest, lock file or this inventory changes, and on demand. It packages
 the SDK bundles, captures each target on its own host and regenerates the tables from
-the captures. Tables that differ from the committed ones give a warning, not a failure.
-The run's `dependency-inventory` artifact holds the regenerated tables (`tables/`),
+the captures. Tables that differ from the committed ones fail the run, whose
+`dependency-inventory` artifact holds the regenerated tables (`tables/`),
 their differences (`tables.diff`) and the captures. Copy the tables into
 `docs/dependencies/`, then update the [lock file list](dependencies/LOCKFILE_ONLY.md)
 as described below.
