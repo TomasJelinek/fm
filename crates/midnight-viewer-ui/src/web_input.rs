@@ -18,10 +18,21 @@ const LINE: f32 = midnight_ui_input::LINE_PIXELS;
 /// 40 px line, so Ctrl+wheel zooms as fast as before.
 const ACTING_LINE: f64 = 40.0;
 /// Chromium reports no scroll position: a newly presented page frame is the only sign
-/// that the page moved. Once its position is known (see [`Began`]), a page that paints
-/// nothing new for this long while deltas arrive is at an edge. The shared kinetic
-/// scroller stops momentum after the same time.
+/// that the page moved. A notch glide whose deltas the page has painted none of for this
+/// long pauses ([`Glide::paused`]), so that no more of it piles up in a page that is busy
+/// or at an edge. The shared kinetic scroller stops momentum after the same time
+/// ([`content_position`]).
 const STALL: Duration = Duration::from_millis(120);
+/// A paused glide ends, dropping its remainder, once the page has painted none of its
+/// deltas for this long and its position is known: deltas into a page's edge never paint.
+/// With the real provider on Linux a moving page always painted a newer frame within
+/// 47 ms, also with every core busy, but Windows acceptance runs under load stalled
+/// mid-scroll for longer than [`STALL`]; a stall up to this long only pauses the glide.
+pub(super) const EDGE: Duration = Duration::from_millis(600);
+/// The most one late frame of the glide adds to the page's quiet time, as a late frame
+/// advances the glide itself (`WheelMotion`): a stall of this window's own thread, while
+/// a page frame may be waiting to be presented, does not count as the page's.
+const QUIET_FRAME: Duration = Duration::from_millis(50);
 /// Chromium took up to 650 ms to paint the first scroll of a freshly loaded page (4 of
 /// 96 measured gestures), so an unpainted scroll is not taken to be at an edge sooner.
 const FIRST_PAINT: Duration = Duration::from_secs(1);
@@ -113,10 +124,39 @@ struct Glide {
     /// Content generation the glide scrolls.
     generation: u64,
     began: Began,
-    /// Newest presented page frame the glide has seen, and when the first delta after
-    /// it went out.
+    /// Newest presented page frame the glide has seen.
     painted: u64,
-    quiet: Option<Duration>,
+    /// How long the page has painted none of the deltas sent since `painted`.
+    quiet: Option<Quiet>,
+    /// The page has painted nothing for [`STALL`]: the glide keeps its remaining distance,
+    /// sends nothing, and goes on when the page paints again ([`resume`]).
+    paused: bool,
+    /// The rest went to a page that had painted nothing since the glide began ([`flush`]),
+    /// which happens once per glide.
+    flushed: bool,
+}
+
+/// Time without a newer page frame since the first delta after the newest one went out,
+/// counted on the glide's frames, each up to [`QUIET_FRAME`].
+#[derive(Clone, Copy)]
+struct Quiet {
+    counted: Duration,
+    elapsed: Duration,
+}
+
+impl Quiet {
+    fn new(now: Duration) -> Self {
+        Self {
+            counted: now,
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    fn count(&mut self, now: Duration) -> Duration {
+        self.elapsed += now.saturating_sub(self.counted).min(QUIET_FRAME);
+        self.counted = self.counted.max(now);
+        self.elapsed
+    }
 }
 
 impl Glide {
@@ -129,7 +169,74 @@ impl Glide {
         self.target = None;
         self.unsent = None;
         self.quiet = None;
+        self.paused = false;
+        self.flushed = false;
     }
+
+    /// Whether a notch goes where the remaining distance does not: along another axis,
+    /// or the other way. The page may well move there (away from the edge it stopped at).
+    fn turns(&self, notch: [f32; 2]) -> bool {
+        let pending = self.motion.pending();
+        let unsent = self.unsent.unwrap_or_default();
+        (0..2).any(|axis| {
+            let old = if pending[axis] != 0.0 {
+                pending[axis]
+            } else {
+                unsent[axis]
+            };
+            notch[axis] != 0.0 && (old == 0.0 || (old > 0.0) != (notch[axis] > 0.0))
+        })
+    }
+}
+
+/// The page painted again after a stall, or a notch turned a paused glide: the rest of
+/// the glide goes on from here as a new glide, so neither the pause nor the deltas it
+/// held back reach the page in one step (`WheelMotion::restart_remaining`). It keeps at
+/// most one page along each axis, so that notches piling up during a long stall never
+/// send the page running away.
+fn resume(open: &OpenWindow, glide: &mut Glide, now: Duration) {
+    let pending = glide.motion.pending();
+    let rest = one_page(open, pending);
+    let direct = image_motion::reduce_motion(open);
+    if rest == pending && !direct {
+        glide.motion.restart_remaining();
+    } else {
+        // A new glide of the kept distance; with less motion, all of it on the next frame.
+        glide.motion.cancel();
+        let [x, y] = rest.map(|value| value as f32);
+        if direct {
+            glide.motion.push_direct(x, y, now);
+        } else {
+            glide.motion.push(x, y, now);
+        }
+    }
+    glide.paused = false;
+    glide.quiet = None;
+}
+
+/// `pending` logical pixels, at most one page of the content along each axis.
+fn one_page(open: &OpenWindow, pending: [f64; 2]) -> [f64; 2] {
+    let page = [
+        open.window.get_content_width(),
+        open.window.get_content_height(),
+    ];
+    std::array::from_fn(|axis| {
+        let page = f64::from(page[axis].max(0.0));
+        pending[axis].clamp(-page, page)
+    })
+}
+
+/// A page that has painted nothing for a second since the glide began may be slow to
+/// paint its first scroll (a loaded machine took seconds), not at an edge: instead of
+/// dropping the rest, the page gets it at once, at most one page of it, as with less
+/// motion. Deltas into an edge do nothing. The glide then finishes; this happens once.
+fn flush(open: &OpenWindow, glide: &mut Glide, now: Duration) {
+    let [x, y] = one_page(open, glide.motion.pending()).map(|value| value as f32);
+    glide.motion.cancel();
+    glide.motion.push_direct(x, y, now);
+    glide.flushed = true;
+    glide.paused = false;
+    glide.quiet = None;
 }
 
 /// Physical scale and the surface pixels per drawn pixel on each axis. The surface is
@@ -210,14 +317,29 @@ fn step(open: &OpenWindow) {
         if painted != glide.painted {
             glide.painted = painted;
             glide.quiet = None;
+            if glide.paused {
+                resume(open, glide, now);
+            }
         }
-        if glide.began.known(painted, now)
-            && glide
-                .quiet
-                .is_some_and(|since| now.saturating_sub(since) >= STALL)
-        {
-            glide.cancel();
-            native.redraw.stop();
+        // A page that paints none of the deltas is busy or at an edge: after `STALL` the
+        // glide pauses, after `EDGE` it ends, once the page's position is known (a first
+        // scroll can take Chromium long to paint). A page that has not painted since the
+        // glide began gets the rest at once instead, once.
+        let quiet = glide
+            .quiet
+            .as_mut()
+            .map_or(Duration::ZERO, |quiet| quiet.count(now));
+        if quiet >= EDGE && glide.began.known(painted, now) {
+            if painted != glide.began.frame || glide.flushed {
+                glide.cancel();
+                native.redraw.stop();
+                return;
+            }
+            flush(open, glide, now);
+        } else {
+            glide.paused |= quiet >= STALL;
+        }
+        if glide.paused {
             return;
         }
         let delta = glide.unsent.take().or_else(|| {
@@ -252,7 +374,7 @@ fn step(open: &OpenWindow) {
     );
     let glide = &mut open.web_native.borrow_mut().glide;
     if sent {
-        glide.quiet.get_or_insert(now);
+        glide.quiet.get_or_insert(Quiet::new(now));
     } else {
         glide.unsent = Some([delta_x, delta_y]);
     }
@@ -273,8 +395,13 @@ fn glide(open: &OpenWindow, native: &mut Native, target: [f64; 2], lines: (f32, 
         lines.0 * image_motion::notch_pixels(open, true),
         lines.1 * image_motion::notch_pixels(open, false),
     );
-    // With less motion, the notch goes to the page whole on the next frame.
     let now = image_motion::now(open);
+    // A notch the same way adds to a paused glide; one that turns it goes out at once,
+    // with a fresh wait for the page to paint it.
+    if glide.paused && glide.turns([x, y]) {
+        resume(open, glide, now);
+    }
+    // With less motion, the notch goes to the page whole on the next frame.
     let pushed = if image_motion::reduce_motion(open) {
         glide.motion.push_direct(x, y, now)
     } else {
@@ -879,7 +1006,8 @@ pub(super) fn bind(open: &Rc<OpenWindow>) {
         }
     });
     // Like the text viewer's wheel clock: wake the native redraw that steps the glide,
-    // or step it directly when no native events arrive.
+    // or step it directly when no native events arrive. A paused glide sends nothing and
+    // only watches for the page's next frame, so it does not redraw the window meanwhile.
     let weak = Rc::downgrade(open);
     let native = open.web_native.borrow();
     native.redraw.start(
@@ -887,9 +1015,13 @@ pub(super) fn bind(open: &Rc<OpenWindow>) {
         midnight_ui_input::WHEEL_FRAME,
         move || {
             let Some(open) = weak.upgrade() else { return };
-            if open.closed.get() || !open.web_native.borrow().glide.active() {
+            let (active, paused) = {
+                let native = open.web_native.borrow();
+                (native.glide.active(), native.glide.paused)
+            };
+            if open.closed.get() || !active {
                 cancel_glide(&open);
-            } else if open.image_native.borrow().active {
+            } else if open.image_native.borrow().active && !paused {
                 open.window.window().request_redraw();
             } else {
                 step(&open);

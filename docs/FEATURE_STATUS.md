@@ -276,7 +276,8 @@ How to read it:
   a document is open (VIEW-04); some readers still treat a change of the change time
   alone as a change (VIEW-05); image decode notes and failure kinds need image viewer
   API 0.4.0 (VIEW-06); each HTML document starts its own browser, about 0.9 s
-  (VIEW-08); HTML wheel glides can end early on a loaded machine (VIEW-09); the HTML
+  (VIEW-08); on a loaded machine HTML touchpad momentum can end early, and a wheel glide
+  after a stall of over 600 ms (VIEW-09); the HTML
   JavaScript choice lasts for one viewer window, with no Options setting yet, and an
   offline page's scripts cannot use local storage, cookies, workers or `fetch` of its
   own files (the sandbox that keeps them from reading files); text

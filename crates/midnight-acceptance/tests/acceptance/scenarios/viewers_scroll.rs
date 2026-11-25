@@ -411,9 +411,10 @@ fn exercise(
 
 /// A native wheel notch at three lines per notch (the system's default), through the
 /// viewers' acceptance seam: one down, one up and five in a burst move the content
-/// [`probe::NOTCH_PIXELS`] pixels each. The HTML viewer's glide stops 120 ms after the page
-/// stops painting (WEB_VIEWER_API), which a loaded machine can bring about: a shorter move
-/// the right way there is flagged for review (backlog VIEW-09), not failed.
+/// [`probe::NOTCH_PIXELS`] pixels each. The HTML viewer's glide pauses 120 ms after the page
+/// stops painting and ends after 600 ms without a frame (WEB_VIEWER_API), which a loaded
+/// machine can bring about: a shorter move the right way there is flagged for review
+/// (backlog VIEW-09), not failed.
 fn native_notch(
     app: &mut App,
     context: &mut Context,
@@ -460,7 +461,7 @@ fn native_notch(
                 &shot,
                 "short HTML wheel glide",
                 format!(
-                    "{label}: {found} (backlog VIEW-09: the glide stops 120 ms after the page stops painting)"
+                    "{label}: {found} (backlog VIEW-09: the glide ends after the page paints nothing for 600 ms)"
                 ),
             );
             return Ok(());

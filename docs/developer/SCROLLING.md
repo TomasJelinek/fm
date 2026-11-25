@@ -455,17 +455,38 @@ the page one frame at a time:
 - A wheel with Ctrl, Alt or Super acts once: unglided, with a 40 px line (`ACTING_LINE`),
   so Chromium's own Ctrl+wheel zoom (120 units per step) keeps its rate. Shift+wheel
   glides and Chromium scrolls it horizontally.
-- Edges: the page paints a frame only when it moves. Once it has painted since a
-  glide or touchpad stream began, 120 ms without a newer presented frame ends the
-  glide and stops momentum, instead of sending the rest of the deltas into the edge
-  (`STALL` in `web_input.rs`). Before that first frame the position is unknown for up
-  to a second (`FIRST_PAINT`): the first scroll of a freshly loaded page can take
-  Chromium several hundred milliseconds to paint, and a glide or momentum is not cut
-  short meanwhile. A page that has not painted a second after the scroll began is
-  taken to be at its edge already. A
-  press, key, touch, pinch, focus loss, touchpad motion, an acting wheel, a wheel
+- Stalls and edges: the page paints a frame only when it moves, and a busy Chromium
+  can take a while to paint a delta. A glide whose deltas the page has painted none of
+  for 120 ms pauses (`STALL` in `web_input.rs`): it sends nothing more, keeps its
+  remaining distance and stops redrawing the window, so no more of it piles up in a
+  page that is busy or at an edge. The page's next frame resumes it: the rest glides
+  on as a new glide from there (`WheelMotion::restart_remaining`, so no step makes up
+  for the pause), and no more than one page of it along each axis, so notches that
+  piled up during a long stall never send the page running away. A notch the other way, or along the other axis,
+  goes out at once instead of waiting, a reversal dropping the old remainder as always.
+  The glide ends, dropping its remainder, only once the page has painted none of its
+  deltas for 600 ms (`EDGE`): deltas into the page's edge never paint. Both times count
+  the glide's frames, a late one up to 50 ms (`QUIET_FRAME`), so a stall of the
+  window's own thread, while a page frame waits to be shown, is not taken for the
+  page's. Before the page has painted since the glide began, its position is unknown
+  for up to a second (`FIRST_PAINT`): the first scroll of a freshly loaded page can
+  take Chromium several hundred milliseconds to paint (seconds on a loaded machine), so
+  the glide pauses but does not end meanwhile. A page that has painted nothing a second
+  after the glide began gets the rest at once, at most one page of it, as with less
+  motion, and the glide ends: a slow page still moves the whole notch when it paints,
+  and at an edge the deltas do nothing. This happens once per glide.
+- Touchpad momentum still stops 120 ms after the page stops painting (the shared
+  kinetic scroller's edge stall; once the page has painted since the touchpad stream
+  began, or a second after it began), so a stall can cut a coast short (backlog VIEW-09).
+- A press, key, touch, pinch, focus loss, touchpad motion, an acting wheel, a wheel
   outside the page or an open popup stops the glide at once, as do a new document,
   mode or layout.
+- Keys keep Chromium's own distances, a product decision: an arrow moves 40 px and Page
+  Up or Page Down 87.5 % of the view (measured 40 and 612 px in a 700 px view), not
+  the text viewer's 28 px row and whole view (`scroll_keys.rs`), because pages, and
+  their own key handlers, expect a browser's keyboard behaviour. The acceptance check
+  `html_keys` keeps its bounds (Down 10–100 px, Page Down between half and all of the
+  view).
 
 Chromium keeps up with one delta per frame: measured on Linux X11 with the provider's
 `diagnostic-timing` feature, its wheel trace (`wheel_paint_elapsed_us` in the provider's
@@ -474,11 +495,31 @@ sends one delta per redraw without further coalescing, and the page follows the 
 viewer's travel frame by frame. On Windows CEF reads `WHEEL_DELTA` units scaled by the
 system's wheel lines; the provider's Windows adapter converts them (plugin README).
 
+The stall times come from the provider driven over its stdio as the host glides (one
+`Wheel` per 8 ms over a ruler page of 1000 × 700 px, Linux on 32 cores, Chromium
+rendering in software without the GPU; 25 November 2026). All 70 glides of 100 and
+500 px arrived whole. A frame showing a delta followed it after 13 ms at the median
+(99th percentile 31 ms) beside other builds (load average about 16) and after 24 ms
+(99th percentile 66 ms, longest 84 ms) with 64 more busy processes (load average 58);
+the longest time without a newer frame while deltas went out was 47 ms, so `STALL` does
+not pause a page that keeps up.
+Deltas into the page's top edge brought no frame at all. The Windows acceptance runs
+whose glides fell short under the former rule, which ended a glide after 120 ms (87,
+−72 and 364 px, and 53, −53 and 434 px, instead of 100, −100 and 500), stalled for
+longer than that; how much longer was not recorded, and no such stall occurred on
+Linux. `EDGE` lets a stall last 600 ms, just under the 650 ms that Chromium took for a
+fresh page's first scroll. The Windows timing is not yet verified.
+
 Tests: `midnight-viewer-ui` `web_wheel_tests` (one, three and ten notches, a reversal
 and a horizontal notch sent frame by frame exactly as the text viewer scrolls, at 1x
-and 2x; the glide and momentum stop once the page stops painting, are not cut short
-before its first frame, and stop a second after a scroll that never paints began; X11
-lines; Ctrl+wheel acting once); the provider's `native::input` tests (sub-DIP
+and 2x; a glide through a 300 ms stall still arrives whole without a larger step; a
+reversal after and during a stall; notches piling up during a stall resume one page;
+a glide into the edge pauses after 120 ms and ends `EDGE` after the first unpainted
+delta; a glide waits for a page's first scroll frame, and a page that paints only
+after 1.5 s still moves the whole notch, its rest sent at once after a second; a burst
+into a page that never paints sends one page at once and ends; momentum stops once the
+page stops painting; X11 lines;
+Ctrl+wheel acting once); the provider's `native::input` tests (sub-DIP
 accumulation, a glide's last DIP despite float rounding, a gesture's rest carried and
 dropped at its end, a notch within one wheel unit's scroll at 1–20 lines on Windows)
 and the opt-in

@@ -234,13 +234,25 @@ logical px at Windows' default three lines, over 200 ms) and sends one physical-
 per line) and Linux momentum go through at once, one `Wheel` per report or frame. The provider starts Chromium with `disable-smooth-scrolling`, so it applies
 each wheel event at once instead of animating it again (CEF's windowless wheel events
 are not precise deltas, which Chromium otherwise eases over about 170 ms); keyboard
-scrolling jumps at once too. Chromium reports no scroll position: once the page has
-painted since a glide or touchpad stream began (or a second has passed), the glide or
-momentum stops 120 ms after the page stops painting new frames, at its top or bottom
-edge. A wheel with
+scrolling jumps at once too. Chromium reports no scroll position, so a newly painted
+frame is the host's only sign that the page moved. A glide whose deltas the page has
+painted none of for 120 ms pauses with the rest of its distance and goes on as a new
+glide when the page paints again, keeping at most one page of it; it ends only once the
+page has painted none of its deltas for 600 ms, at its top or bottom edge; a page that
+has painted nothing a second after the glide began gets the rest at once instead (at
+most one page), in case its first scroll is only slow to paint. Momentum still stops
+120 ms after the page stops painting, once the page has painted since the touchpad
+stream began (or a second has passed); a
+[proposal](#proposal-scroll-offsets-or-wheel-acknowledgements)
+would let the provider report the page's motion instead. A wheel with
 Ctrl, Alt or Super acts once, unglided, with a 40 px line, so Chromium's Ctrl+wheel
 zoom keeps its rate. See [HTML pages](SCROLLING.md#html-pages); the timing was measured
 on Linux only.
+
+Keys scroll a page by Chromium's own distances, a product decision: an arrow moves 40 px
+and Page Up or Page Down 87.5 % of the view, as in Chrome or an Electron application,
+not the text viewer's 28 px row and whole view, because pages and their own key handlers
+expect a browser's keyboard behaviour.
 
 The provider's own dev package uses `opt-level = 2` for its image conversion and
 composition loops. Native test measurements and platform limitations are recorded in
@@ -254,6 +266,37 @@ The provider permits up to 60 painted frames per second while the host still kee
 only the newest pending frame. This does not require a GPU or guarantee 60 fps.
 Measured Windows native and software latency and remaining limitations are in the
 [frame-pacing report](../verification/2026-11-12-html-frame-pacing.md).
+
+## Proposal: scroll offsets or wheel acknowledgements
+
+Not implemented; a follow-up to backlog VIEW-09 that needs the Architect's review. The
+host infers the page's motion from painted frames, so it can only wait: a stall shorter
+than 600 ms costs no distance but shows a jump when Chromium catches up with the deltas
+it got before the pause, a longer one ends the glide, and a page that paints for another
+reason (an animation, a blinking caret) is taken to be moving. With the provider saying
+what the page did, the host would know:
+
+- **Scroll offsets.** A new event, for example `Scroll { x, y }` in CSS pixels, would
+  report the page's scroll position whenever it changes, from CEF's
+  `on_scroll_offset_changed` render handler callback (the root scroller; a page that
+  scrolls an inner element, such as a `div` with `overflow: auto`, would still be
+  judged by its frames). A glide would end where an offset no longer changes after its
+  deltas were applied, and momentum's content position (`content_position` in
+  `web_input.rs`) would be the real offset rather than a frame count.
+- **Wheel acknowledgements.** `Frame::acknowledged_input` already names the newest
+  command a frame shows, but the CEF provider sends zero, because `OnPaint` does not
+  say which input it reflects. An event acknowledging each `Wheel` command with the
+  distance it scrolled (derived from the offset change, as CEF exposes no input
+  acknowledgement for windowless browsers) would let the host keep a bounded number of
+  unacknowledged deltas in flight: the glide's clock would wait for a busy page instead
+  of pausing on a timer, no jump would follow a stall, and a delta acknowledged with no
+  motion would mark the edge at once.
+
+Either one would replace `STALL`, `EDGE` and `FIRST_PAINT` for the root scroller and let a
+reloaded page return to its position (today it starts at its top). It would be API/SDK
+0.5: a new event tag sent only after its own launch opt-in, as in 0.2–0.4, with the wire
+staying MWV1 version 1; a host would keep the frame rule for older providers and inner
+scrollers. Both the Linux and the Windows provider would implement it.
 
 ## Versions and compatibility
 

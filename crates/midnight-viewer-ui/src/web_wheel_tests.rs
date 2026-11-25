@@ -1,6 +1,7 @@
 //! HTML wheel input travels like the text viewer's: notches glide through the shared
 //! wheel motion and reach the page as one pixel delta per frame, touchpad motion and
-//! its momentum go straight through, and both stop where the page stops painting.
+//! its momentum go straight through, and both stop where the page stops painting. A
+//! glide waits while the page stalls and ends only once it stays still at its edge.
 use super::image_presentation_tests::{
     self, TestRuntime, TestWindows, advance_time, present as present_outputs,
 };
@@ -341,8 +342,18 @@ fn html_wheel_notches_match_the_text_viewer_at_twice_the_scale() {
     same_travel_as_the_text_viewer(2.0);
 }
 
+/// The frames, counted from 1, that sent the page a delta.
+fn sending(frames: &[Vec<[f64; 2]>]) -> Vec<usize> {
+    frames
+        .iter()
+        .enumerate()
+        .filter(|(_, sent)| !sent.is_empty())
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
 #[test]
-fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
+fn a_notch_glide_waits_for_the_pages_first_scroll_frame() {
     let (_runtime, manager, mut fixture) = Fixture::new(1.0);
     fixture.web();
     let scale = fixture.scale();
@@ -353,48 +364,51 @@ fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
         moving.extend(fixture.frame(true));
     }
     assert_eq!(moving.len(), 25, "200 ms of 8 ms frames");
-    let notch_y = notch_distance(&fixture.open)[1];
-    assert!((sum(&moving)[1] - notch_y * scale).abs() < 1e-3);
-    // The page moves for four frames and reaches its bottom while more notches arrive
-    // 40 ms apart: the glide ends 120 ms after its last new frame instead of sending the
-    // rest of its deltas until 80 ms (twice the notches' interval) after the last notch
-    // (25 frames).
+    let notch_y = notch_distance(&fixture.open)[1] * scale;
+    assert!((sum(&moving)[1] - notch_y).abs() < 1e-3);
+    // A page that has not painted since the glide began may still be preparing its first
+    // scroll frame, which took Chromium up to 650 ms: the glide pauses 120 ms after its
+    // first delta and goes on once that frame is shown, here 504 ms after the notch.
     fixture.native(notch(-1.0));
-    let mut edge = Vec::new();
-    for frame in 1..=40 {
-        edge.extend(fixture.frame(frame <= 4));
-        if matches!(frame, 5 | 10 | 15) {
-            fixture.native(notch(-1.0));
-        }
-    }
-    assert_eq!(edge.len(), 19, "one delta per frame until the 120 ms stall");
+    let waiting: Vec<_> = (1..=100).map(|frame| fixture.frame(frame >= 63)).collect();
+    let sent = sending(&waiting);
+    assert_eq!(sent[..15], (1..=15).collect::<Vec<_>>(), "{sent:?}");
+    assert!(
+        sent[15] > 63,
+        "nothing goes out before the page paints: {sent:?}"
+    );
+    assert!((sum(&waiting.concat())[1] - notch_y).abs() < 1e-3);
     assert!(!web_input::gliding(&fixture.open));
-    // A page that has not painted since the glide began may still be preparing its
-    // first scroll frame: the glide is not cut short.
-    fixture.native(notch(-1.0));
-    let mut waiting = Vec::new();
-    for _ in 0..40 {
-        waiting.extend(fixture.frame(false));
-    }
-    assert_eq!(waiting.len(), 25);
-    assert!((sum(&waiting)[1] - notch_y * scale).abs() < 1e-3);
-    // A page already at its edge never paints: a burst of 42 notches ends one second
-    // after it began instead of 50 ms (twice the notches' 24 ms interval) after its last
-    // notch (129 frames).
+    // A page already at its edge never paints: the glide pauses 120 ms after its first
+    // delta, whatever notches follow. A second after it began, with no frame since, the
+    // page gets the rest at once, here one page of a burst of 42 notches, which does
+    // nothing at an edge, and the glide ends, instead of sending deltas into the edge
+    // until 50 ms (twice the notches' 24 ms interval) after its last notch (129 frames).
+    let page = f64::from(fixture.open.window.get_content_height()) * scale;
     fixture.native(notch(-1.0));
     let mut idle = Vec::new();
+    let mut ended = None;
     for frame in 1..=160 {
-        idle.extend(fixture.frame(false));
+        idle.push(fixture.frame(false));
         if frame % 3 == 0 && frame < 124 {
             fixture.native(notch(-1.0));
         }
+        if ended.is_none() && !web_input::gliding(&fixture.open) {
+            ended = Some(frame);
+        }
     }
+    let sent = sending(&idle);
     assert_eq!(
-        idle.len(),
-        124,
-        "deltas until one second without a painted frame"
+        sent,
+        [(1..=15).collect::<Vec<usize>>(), vec![125]].concat(),
+        "{sent:?}"
     );
-    assert!(!web_input::gliding(&fixture.open));
+    assert!(
+        (idle[124][0][1] - page).abs() < 1.0,
+        "{:?} of {page}",
+        idle[124]
+    );
+    assert_eq!(ended, Some(126), "one second without a painted frame");
     // Focus loss stops a glide at once, as in the text viewer.
     fixture.native(notch(1.0));
     assert_eq!(fixture.frame(true).len(), 1);
@@ -402,6 +416,178 @@ fn a_notch_glide_stops_once_the_page_stops_painting_at_its_edge() {
     for _ in 0..30 {
         assert!(fixture.frame(true).is_empty(), "focus loss stops the glide");
     }
+    manager.close_all();
+}
+
+/// A page whose first scroll paints only after 1.5 s (on a loaded Windows machine first
+/// content took seconds): the glide pauses 120 ms after its first delta and, a second after
+/// it began without a frame since, hands the page the rest at once instead of dropping it,
+/// so the notch moves its whole distance once the page paints.
+#[test]
+fn a_notch_moves_whole_on_a_page_whose_first_scroll_paints_after_a_second() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    fixture.web();
+    let notch_y = notch_distance(&fixture.open)[1] * fixture.scale();
+    fixture.native(notch(-1.0));
+    // No frame for 1.5 s (187 frames of 8 ms), then one on every frame.
+    let frames: Vec<_> = (1..=240).map(|frame| fixture.frame(frame >= 188)).collect();
+    let sent = sending(&frames);
+    assert_eq!(
+        sent,
+        [(1..=15).collect::<Vec<usize>>(), vec![125]].concat(),
+        "{sent:?}"
+    );
+    let total = sum(&frames.concat())[1];
+    assert!((total - notch_y).abs() < 1e-3, "{total} of {notch_y}");
+    assert!(!web_input::gliding(&fixture.open));
+    manager.close_all();
+}
+
+/// The page moves for four frames and reaches its bottom while more notches arrive 40 ms
+/// apart: the deltas stop 120 ms after its last new frame instead of going on until 80 ms
+/// (twice the notches' interval) after the last notch (25 frames), and the glide ends,
+/// having sent nothing more, [`web_input::EDGE`] after the first delta the page did not
+/// paint (old rule: it ended after 120 ms).
+#[test]
+fn a_glide_into_the_page_edge_pauses_then_ends_within_the_bound() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    fixture.web();
+    fixture.native(notch(-1.0));
+    let mut edge = Vec::new();
+    let mut ended = None;
+    for frame in 1..=200 {
+        edge.push(fixture.frame(frame <= 4));
+        if matches!(frame, 5 | 10 | 15) {
+            fixture.native(notch(-1.0));
+        }
+        if !web_input::gliding(&fixture.open) {
+            ended = Some(frame);
+            break;
+        }
+    }
+    let sent = sending(&edge);
+    assert_eq!(sent, (1..=19).collect::<Vec<_>>(), "until the 120 ms stall");
+    // The first delta the page did not paint went out on frame 5.
+    let bound = (web_input::EDGE.as_nanos() / FRAME.as_nanos()) as usize;
+    assert_eq!(ended, Some(5 + bound), "{} ms of frames", 8 * (5 + bound));
+    manager.close_all();
+}
+
+/// One notch down whose first delta the page paints; then `stall` frames without a newer
+/// page frame, during which the glide waits, and 40 frames that each paint again. What each
+/// frame sent.
+fn through_stall(fixture: &mut Fixture, stall: usize) -> Vec<Vec<[f64; 2]>> {
+    fixture.native(notch(-1.0));
+    let mut frames = vec![fixture.frame(true)];
+    frames.extend((0..stall).map(|_| fixture.frame(false)));
+    assert!(web_input::gliding(&fixture.open), "the stalled glide waits");
+    frames.extend((0..40).map(|_| fixture.frame(true)));
+    frames
+}
+
+/// Chromium paints nothing mid-scroll for 300 ms (a loaded machine): the glide's deltas stop
+/// 120 ms after its last new frame, it keeps the rest, and once the page paints again the
+/// rest glides on, so the notch arrives whole (old rule: about nine tenths of it), without
+/// a jump.
+#[test]
+fn a_glide_through_a_300_ms_page_stall_still_arrives_whole() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    fixture.web();
+    let notch_y = notch_distance(&fixture.open)[1] * fixture.scale();
+    // 38 frames, 304 ms, without a newer frame after the one with the first delta.
+    let frames = through_stall(&mut fixture, 38);
+    let sent = sending(&frames);
+    // The delta of frame 2 went out after the last new frame.
+    assert_eq!(sent[..16], (1..=16).collect::<Vec<_>>(), "{sent:?}");
+    assert!(sent[16] > 40, "nothing goes out during the stall: {sent:?}");
+    let deltas = frames.concat();
+    let total = sum(&deltas)[1];
+    assert!((total - notch_y).abs() < 1e-3, "{total} of {notch_y}");
+    // The rest glides on from where it waited: no step is larger than the glide's first.
+    let first = deltas[0][1];
+    assert!(
+        deltas[16..]
+            .iter()
+            .all(|delta| delta[1] > 0.0 && delta[1] <= first),
+        "{deltas:?}"
+    );
+    assert!(!web_input::gliding(&fixture.open));
+    manager.close_all();
+}
+
+/// A stall followed by a reversal: after a stall the glide still finishes its notch, and
+/// a notch up brings the page all the way back. A notch up during the stall goes out on
+/// the next frame, before the page paints again, and the waiting rest of the notch down
+/// never does.
+#[test]
+fn a_reversal_after_or_during_a_page_stall_goes_back_at_once() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    fixture.web();
+    let notch_y = notch_distance(&fixture.open)[1] * fixture.scale();
+    let down = sum(&through_stall(&mut fixture, 38).concat())[1];
+    assert!((down - notch_y).abs() < 1e-3, "{down} of {notch_y}");
+    fixture.native(notch(1.0));
+    let mut up = Vec::new();
+    for _ in 0..40 {
+        up.extend(fixture.frame(true));
+    }
+    assert!((sum(&up)[1] + notch_y).abs() < 1e-3, "{up:?}");
+    // 200 ms into a stall, the glide waiting for the page, a notch up.
+    fixture.native(notch(-1.0));
+    let mut before = vec![fixture.frame(true)];
+    before.extend((0..25).map(|_| fixture.frame(false)));
+    assert_eq!(sending(&before), (1..=16).collect::<Vec<_>>());
+    let held = notch_y - sum(&before.concat())[1];
+    assert!(held > 1.0, "{held} px wait");
+    fixture.native(notch(1.0));
+    let first = fixture.frame(false);
+    assert!(first.len() == 1 && first[0][1] < 0.0, "{first:?}");
+    let mut after = first;
+    for _ in 0..40 {
+        after.extend(fixture.frame(true));
+    }
+    assert!(after.iter().all(|delta| delta[1] < 0.0), "{after:?}");
+    assert!((sum(&after)[1] + notch_y).abs() < 1e-3, "{after:?}");
+    assert!(!web_input::gliding(&fixture.open));
+    manager.close_all();
+}
+
+/// Notches that pile up while the page is stalled do not reach it until it paints again,
+/// and then no more than one page of them glides on, over several frames: a long stall
+/// never ends in a runaway scroll (old rule: the piled notches went out at once).
+#[test]
+fn notches_piling_up_during_a_page_stall_resume_at_most_one_page() {
+    let (_runtime, manager, mut fixture) = Fixture::new(1.0);
+    fixture.web();
+    let scale = fixture.scale();
+    let notch_y = notch_distance(&fixture.open)[1] * scale;
+    let page = f64::from(fixture.open.window.get_content_height()) * scale;
+    // 448 ms without a newer frame after the first delta, a notch every 24 ms.
+    fixture.native(notch(-1.0));
+    let mut stalled = vec![fixture.frame(true)];
+    for frame in 1..=56 {
+        stalled.push(fixture.frame(false));
+        if frame % 3 == 0 {
+            fixture.native(notch(-1.0));
+        }
+    }
+    assert_eq!(sending(&stalled), (1..=16).collect::<Vec<_>>());
+    let held = 19.0 * notch_y - sum(&stalled.concat())[1];
+    assert!(held > page, "{held} px wait, a page is {page} px");
+    fixture.paint();
+    let resumed: Vec<_> = (0..60).map(|_| fixture.frame(true)).collect();
+    let travel = sum(&resumed.concat())[1];
+    assert!(
+        (travel - page).abs() < 1.0,
+        "{travel} px after the stall, a page is {page} px"
+    );
+    let steps = sending(&resumed).len();
+    assert!(steps >= 8, "one page glides over {steps} frames");
+    assert!(
+        resumed.concat().iter().all(|delta| delta[1] < page / 2.0),
+        "{resumed:?}"
+    );
+    assert!(!web_input::gliding(&fixture.open));
     manager.close_all();
 }
 
