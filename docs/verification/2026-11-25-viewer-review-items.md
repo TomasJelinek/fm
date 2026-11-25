@@ -27,7 +27,7 @@ software rendering.
 | 8. Text viewer opening under 200 ms | Met on Linux without a window pool; see [Text viewer opening](#text-viewer-opening). Windows took 1.1 s ([record](2026-11-25-windows-viewer-opening.md)), so the planned pool remains for Windows | `open_latency` |
 | 9a. Steps deferred under a seam request | Fixed (`d6465f32`): they wait for the page past the edge instead of being dropped | `worker_seam_tests` |
 | 9b–9e. Semicolon CSV, PDF thumbnail retry, video thumbnailer build, AVIF thumbnails | Done before this pass | Earlier records |
-| 10. About animation | Drawing is cheap, so no layer cache is needed. On native Wayland with the GPU, the driver's FIFO presentation stalls frames ([record](2026-11-25-wayland-fifo-presentation.md)), see [About animation](#about-animation). The About box shows the application icon as set, without a halo (`2ebb1aff`) | `native_about` |
+| 10. About animation | Drawing is cheap, so no layer cache is needed. On native Wayland with the GPU, the driver's FIFO presentation stalled frames ([record](2026-11-25-wayland-fifo-presentation.md)); with Mailbox presentation (`6f37db8c`) it holds 60 fps, see [About animation](#about-animation). The About box shows the application icon as set, without a halo (`2ebb1aff`) | `native_about` |
 
 ## Text viewer opening
 
@@ -65,6 +65,15 @@ measured with this probe before it landed: 60.0 fps in both rounds, with XWaylan
 unchanged. The idle window still drew 2 frames in 1 s, so Mailbox draws only when
 something changes, as FIFO does ([record](2026-11-25-wayland-fifo-presentation.md)).
 
+Measured again on main once Mailbox had landed (`6f37db8c`), two rounds each:
+
+| Setup | Frames per second | Redraw span median / p95 | Gap median / p95 / max |
+| --- | ---: | --- | --- |
+| Native Wayland, GPU, Mailbox | 60.0, 60.0 | 3.8 / 4.5–4.7 ms | 16.7 / 16.7–16.8 / 17.0 ms |
+| XWayland, GPU | 60.4, 60.4 | 16.6 / 17.1–17.2 ms | 16.6 / 17.2 / 18.3 ms |
+
+The idle window before About drew 2 frames in 1 s on native Wayland, as before.
+
 To repeat the measurements:
 - `cargo build --locked -p midnight-ui --example native_about`, then run it:
   - as built;
@@ -91,4 +100,3 @@ Builds of another task ran on the host meanwhile. Windows (WIN-8) has not run.
 - **SCROLL-02:** fast spins over wide rows under load.
 - **2c, 7c and 8:** the designs are not yet implemented (the window pool is for Windows only).
 - **WIN-8:** the archive stress check on Windows.
-- **Mailbox presentation on native Wayland:** measured; it lands separately.
