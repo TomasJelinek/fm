@@ -3,11 +3,35 @@
 //! Only permission entries change. Entries that let accounts other than the user, SYSTEM,
 //! Administrators and TrustedInstaller change an object are removed; every other explicit
 //! entry stays, such as the restricted workers' read and execute grants on their libraries.
-use super::{Access, Identity, Local, MODIFY_RIGHTS, SddlAcl, inspect_one, private_sddl};
+//!
+//! Objects below the folder are changed through handles opened without following links, and
+//! only when the handle's final path is the expected one: another account that can still
+//! write there could otherwise swap a folder on the way for a junction during the repair and
+//! redirect the change to an object outside the installation.
+use super::{
+    Access, Identity, Local, MODIFY_RIGHTS, SddlAcl, inspect_descriptor, inspect_one, private_sddl,
+};
 use crate::Error;
-use std::{io, os::windows::ffi::OsStrExt, path::Path, ptr};
+use std::{
+    ffi::OsString,
+    fs::{File, OpenOptions},
+    io,
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::{MetadataExt, OpenOptionsExt},
+        io::{AsRawHandle, FromRawHandle},
+    },
+    path::Path,
+    ptr,
+};
 use windows_sys::Win32::{
+    Foundation::INVALID_HANDLE_VALUE,
     Security::{Authorization::*, *},
+    Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFinalPathNameByHandleW, READ_CONTROL, ReOpenFile, VOLUME_NAME_DOS, WRITE_DAC,
+    },
     System::SystemServices::ACCESS_ALLOWED_ACE_TYPE,
 };
 
@@ -31,6 +55,35 @@ fn read(path: &Path) -> Result<Dacl, Error> {
     let status = unsafe {
         GetNamedSecurityInfoW(
             name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            &mut acl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32).into());
+    }
+    Ok(Dacl {
+        _descriptor: Local(descriptor),
+        owner,
+        acl,
+    })
+}
+
+/// The owner and DACL of the object `file` refers to.
+fn read_handle(file: &File) -> Result<Dacl, Error> {
+    let mut owner = ptr::null_mut();
+    let mut acl = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    // SAFETY: a live handle with READ_CONTROL and writable outputs; the descriptor owns owner
+    // and ACL.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
@@ -230,16 +283,99 @@ pub(crate) fn secure_folder(folder: &Path) -> Result<(), Error> {
     tree_reset(folder, private.acl, PROTECTED_DACL_SECURITY_INFORMATION)
 }
 
+/// The final path of the object `file` refers to (`\\?\D:\...`), as `fs::canonicalize`
+/// spells it.
+fn final_path(file: &File) -> Result<OsString, Error> {
+    let mut buffer = vec![0_u16; 512];
+    loop {
+        let capacity = u32::try_from(buffer.len()).map_err(|_| Error("Path too long".into()))?;
+        // SAFETY: a live handle and a writable buffer of `capacity` units.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                capacity,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        if length < capacity {
+            buffer.truncate(length as usize);
+            return Ok(OsString::from_wide(&buffer));
+        }
+        buffer.resize(length as usize + 1, 0);
+    }
+}
+
+/// Open the object at `path` itself (never a link's target) for reading its permissions, and
+/// only when it is no link or other reparse point and its final path is `expected`: no folder
+/// on the way was swapped for a junction or link that leads out of the installation.
+fn open_entry(path: &Path, expected: &Path) -> Result<File, Error> {
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(Error(format!("{} is a link", path.display())));
+    }
+    if final_path(&file)? != expected.as_os_str() {
+        return Err(Error(format!(
+            "{} leads out of the installation; a folder on its way was replaced",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
 /// Remove the entries that let other accounts change one object below the secured folder and
 /// let it inherit again. Objects that are already private stay unchanged.
-pub(crate) fn secure_entry(path: &Path) -> Result<(), Error> {
+///
+/// `expected` is the object's final path: the installation's canonical path joined with the
+/// object's path inside it. The object is inspected and changed through one handle opened
+/// without following links (see [`open_entry`]), never by name again.
+pub(crate) fn secure_entry(path: &Path, expected: &Path) -> Result<(), Error> {
     let identity = Identity::current()?;
-    if inspect_one(path, &identity, MODIFY_RIGHTS)? == Access::Private {
+    let file = open_entry(path, expected)?;
+    let dacl = read_handle(&file)?;
+    if inspect_descriptor(path, dacl.owner, dacl.acl, &identity, MODIFY_RIGHTS)? == Access::Private
+    {
         return Ok(());
     }
-    let dacl = read(path)?;
     let acl = build_acl(&kept_explicit(&dacl, &identity)?)?;
-    set_unprotected(path, acl.as_ptr().cast())
+    // The same object again, now also allowed to change its permissions.
+    // SAFETY: a live handle; ReOpenFile returns a new handle to the same object or fails.
+    let raw = unsafe {
+        ReOpenFile(
+            file.as_raw_handle(),
+            READ_CONTROL | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE || raw.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: a new handle this function owns from here on.
+    let writable = unsafe { File::from_raw_handle(raw) };
+    // SAFETY: a live handle with WRITE_DAC and a valid ACL for the duration of the call.
+    let status = unsafe {
+        SetSecurityInfo(
+            writable.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            acl.as_ptr().cast(),
+            ptr::null(),
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32).into());
+    }
+    Ok(())
 }
 
 /// Give a copied file the explicit entries of its source that let no other account change

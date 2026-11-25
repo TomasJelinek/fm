@@ -253,6 +253,17 @@ fn inspect_one(path: &Path, identity: &Identity, mutable: u32) -> Result<Access,
         )));
     }
     let _descriptor = Local(descriptor);
+    inspect_descriptor(path, owner, acl, identity, mutable)
+}
+
+/// [`inspect_one`] for an owner and DACL already read from `path`'s security descriptor.
+fn inspect_descriptor(
+    path: &Path,
+    owner: PSID,
+    acl: *const ACL,
+    identity: &Identity,
+    mutable: u32,
+) -> Result<Access, Error> {
     // Another account's object is not repaired by the user's ACL changes: its owner can
     // always grant itself access again.
     if !identity.trusted(owner) {
@@ -266,7 +277,7 @@ fn inspect_one(path: &Path, identity: &Identity, mutable: u32) -> Result<Access,
         return Ok(Access::Shared);
     }
     let mut access = Access::Private;
-    // SAFETY: GetNamedSecurityInfo returned a valid OS-owned ACL until descriptor is freed.
+    // SAFETY: the caller's descriptor keeps the ACL valid for this call.
     for index in 0..unsafe { (*acl).AceCount } {
         let mut raw = ptr::null_mut();
         if unsafe { GetAce(acl, u32::from(index), &mut raw) } == 0 || raw.is_null() {

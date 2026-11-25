@@ -329,6 +329,99 @@ mod windows {
         );
     }
 
+    /// A folder of the user's outside the installation whose parent passes on Modify for
+    /// Authenticated Users, with a protected subfolder that only the user and one other account
+    /// (Backup Operators stands in for a colleague) may change.
+    fn victim(base: &Path) -> (PathBuf, PathBuf, String) {
+        let projects = base.join("projects");
+        shared_folder(&projects);
+        let secret = projects.join("secret");
+        fs::create_dir(&secret).unwrap();
+        let user = user_sid_string().unwrap();
+        fixture_acl(
+            &secret,
+            &format!("D:P(A;OICI;FA;;;{user})(A;OICI;{MODIFY};;;BO)"),
+        )
+        .unwrap();
+        fs::write(secret.join("notes.txt"), b"notes").unwrap();
+        let before = dacl_sddl(&secret).unwrap();
+        (projects, secret, before)
+    }
+
+    #[test]
+    fn securing_never_changes_a_junction_target_outside_the_installation() {
+        let base = base();
+        let parent = base.path().join("drive-root");
+        drive_root_like(&parent);
+        let folder = parent.join("me");
+        install(&folder);
+        let (projects, secret, before) = victim(base.path());
+        // Planted before the repair: the junction itself is reported, its target untouched.
+        crate::tests_windows::junction(&folder.join("link"), &projects);
+        let secured = secure_installation(&folder).unwrap();
+        assert!(!secured.sharing.is_private(), "{secured:?}");
+        assert!(
+            secured
+                .sharing
+                .refused
+                .iter()
+                .any(|reason| reason.contains("link")),
+            "{secured:?}"
+        );
+        assert_eq!(dacl_sddl(&secret).unwrap(), before);
+        assert!(grants_authenticated_users(&projects));
+        // Swapped in during the repair: a folder the walk has already listed becomes a
+        // junction, so the next path below it leads out of the installation. Securing that
+        // path must refuse, not unprotect the target (which would then inherit Modify for
+        // Authenticated Users from its parent).
+        let canonical = folder.canonicalize().unwrap();
+        let error = crate::trust::repair::secure_entry(
+            &folder.join("link").join("secret"),
+            &canonical.join("link").join("secret"),
+        )
+        .unwrap_err();
+        assert!(error.0.contains("leads out of the installation"), "{error}");
+        assert_eq!(dacl_sddl(&secret).unwrap(), before);
+        assert!(!grants_authenticated_users(&secret.join("notes.txt")));
+        // The junction itself is refused as well, never changed through its target.
+        let error =
+            crate::trust::repair::secure_entry(&folder.join("link"), &canonical.join("link"))
+                .unwrap_err();
+        assert!(error.0.contains("is a link"), "{error}");
+        fs::remove_dir(folder.join("link")).unwrap();
+        assert_eq!(dacl_sddl(&secret).unwrap(), before);
+    }
+
+    #[test]
+    fn securing_an_entry_by_handle_keeps_explicit_grants_and_reinherits() {
+        let base = base();
+        let parent = base.path().join("drive-root");
+        drive_root_like(&parent);
+        let folder = parent.join("me");
+        install(&folder);
+        // A protected library granting other accounts Modify and the workers read and execute.
+        let user = user_sid_string().unwrap();
+        let library = folder.join("viewers/basic/fixture.dll");
+        fixture_acl(
+            &library,
+            &format!("D:P(A;;FA;;;{user})(A;;{MODIFY};;;AU)(A;;0x1200a9;;;{WORKER})"),
+        )
+        .unwrap();
+        let canonical = folder.canonicalize().unwrap();
+        crate::trust::repair::secure_entry(
+            &library,
+            &canonical.join("viewers").join("basic").join("fixture.dll"),
+        )
+        .unwrap();
+        let dacl = dacl_sddl(&library).unwrap();
+        assert!(!dacl.starts_with("D:P"), "{dacl}");
+        assert!(dacl.contains(WORKER), "{dacl}");
+        assert!(!dacl.contains(&format!("(A;;{MODIFY};;;AU)")), "{dacl}");
+        // It inherits its folder's entries again (here still Modify for Authenticated Users,
+        // which the folder-wide change removes).
+        assert!(dacl.contains(";ID;"), "{dacl}");
+    }
+
     /// The workers' read and execute entry, as the hosts and the build scripts add it.
     fn worker_entry() -> String {
         format!("(A;;0x1200a9;;;{WORKER})")

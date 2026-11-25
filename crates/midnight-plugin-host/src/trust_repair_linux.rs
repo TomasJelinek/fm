@@ -46,7 +46,8 @@ pub(crate) fn secure_folder(folder: &Path) -> Result<(), Error> {
     remove_shared_writes(folder)
 }
 
-pub(crate) fn secure_entry(path: &Path) -> Result<(), Error> {
+/// `_expected` (the canonical path) is not checked here yet; see SECURITY.md.
+pub(crate) fn secure_entry(path: &Path, _expected: &Path) -> Result<(), Error> {
     remove_shared_writes(path)
 }
 

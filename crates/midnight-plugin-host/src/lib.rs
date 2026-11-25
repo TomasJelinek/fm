@@ -161,7 +161,7 @@ mod trust {
         pub fn secure_folder(_: &Path) -> Result<(), Error> {
             Err(super::unsupported())
         }
-        pub fn secure_entry(_: &Path) -> Result<(), Error> {
+        pub fn secure_entry(_: &Path, _: &Path) -> Result<(), Error> {
             Err(super::unsupported())
         }
         pub fn copy_permissions(_: &Path, _: &Path) -> Result<(), Error> {

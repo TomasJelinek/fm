@@ -126,6 +126,9 @@ fn walk(
 /// accounts can still rename or replace, and objects that could not be changed.
 pub fn secure_installation(folder: &Path) -> Result<SecuredInstallation, Error> {
     trust::repair::require_owner(folder)?;
+    // Each object is changed only at its final path below this one, so that a folder swapped
+    // for a junction or link meanwhile cannot redirect the change out of the installation.
+    let canonical = folder.canonicalize()?;
     let mut failures = Vec::new();
     // Objects the folder-wide change could not reach are repaired one by one below.
     if let Err(error) = trust::repair::secure_folder(folder) {
@@ -135,8 +138,14 @@ pub fn secure_installation(folder: &Path) -> Result<SecuredInstallation, Error> 
         if kind.is_symlink() {
             return Ok(false);
         }
-        if let Err(error) = trust::repair::secure_entry(path) {
+        let expected = canonical.join(
+            path.strip_prefix(folder)
+                .map_err(|_| Error("Installation entry outside its folder".into()))?,
+        );
+        if let Err(error) = trust::repair::secure_entry(path, &expected) {
             note(&mut failures, format!("{}: {}", path.display(), error.0));
+            // Nothing below an object that could not be secured is visited.
+            return Ok(false);
         }
         Ok(true)
     })?;

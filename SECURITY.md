@@ -1439,8 +1439,27 @@ classifications.
   each file verified by size and SHA-256, the copy's permissions checked again, a restart
   offered only from a private copy, the original never deleted). Folders above the
   installation are never changed; securing reports one that other accounts can still
-  rename or replace. On Windows, securing takes a folder's owner as the user's when it
-  is the user or a group that the process token holds enabled (`CheckTokenMembership`):
+  rename or replace. Securing never follows a link or junction below the folder, and one
+  that remains keeps the folder reported as not private. Other accounts can still write
+  there while securing runs and could swap a folder for a junction meanwhile, so on
+  Windows each object below the folder is inspected and changed through a handle opened
+  without following links (`FILE_FLAG_OPEN_REPARSE_POINT`, then `GetSecurityInfo` and
+  `SetSecurityInfo`), and only when it is no reparse point and the handle's final path is
+  its path in the canonical installation folder; otherwise it is reported and nothing
+  below it is visited. Up to 0.5.3 the change was made by name, and a folder swapped for
+  a junction redirected it to an object outside the installation that the user owns and
+  another account could change: its own entries for that account were removed and it
+  inherited its parent's entries again, which could grant Modify to every account. The
+  folder-wide `TreeResetNamedSecurityInfoW` changes a junction's own permissions, never
+  its target's, also for a folder swapped for a junction while it runs (tested with
+  junctions; symbolic links, which need Developer Mode or a privilege, were not tested).
+  Linux still changes each object's mode by path after `lstat`. An account that can
+  still write in a folder below (one it owns) could swap an entry, or a folder on the
+  way, for a symbolic link in between; a file of the user's outside the installation
+  then loses its group and other write bits or gets the swapped entry's mode without
+  them, which can make a private file readable by others. On Windows, securing takes a
+  folder's owner as the user's when it is the user or a group that the process token
+  holds enabled (`CheckTokenMembership`):
   an elevated administrator can secure a folder that Administrators owns, as one
   created from an elevated prompt is, while a standard token, whose Administrators group
   is deny-only, cannot. A file that another non-administrative account owns stays a
