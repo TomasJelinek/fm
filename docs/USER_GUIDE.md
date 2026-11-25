@@ -1015,7 +1015,8 @@ current keys.
   mount path: `/` for the root, its volume label or its mount folder, and for a
   location opened through GVfs its location ("data on nas"), with folders of the path
   added where two names would be the same; the tooltip and the accessible description
-  give the whole path ([drive names](DRIVE_INFORMATION.md#drive-names)). The location
+  give the whole path, and a shortened name is spelled out in the tooltip and the
+  dropdown ([drive names](DRIVE_INFORMATION.md#drive-names)). The location
   menu button shows a neutral icon instead of repeating the current drive letter;
   its tooltip names the current drive (for a special folder, the drive that holds
   it; for a detected native network path, Network). Its dropdown uses the available

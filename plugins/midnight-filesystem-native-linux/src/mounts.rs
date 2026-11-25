@@ -225,7 +225,7 @@ fn device_number(field: &[u8]) -> (u32, u32) {
 }
 
 /// The path of GVfs's FUSE bridge: `/run/user/<numeric user ID>/gvfs`.
-fn gvfs_bridge(path: &[u8]) -> bool {
+pub(crate) fn gvfs_bridge(path: &[u8]) -> bool {
     path.strip_prefix(b"/run/user/")
         .and_then(|rest| rest.strip_suffix(b"/gvfs"))
         .is_some_and(|uid| !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))

@@ -85,6 +85,21 @@ fn labeled(found: Vec<(Vec<u8>, OsString)>) -> Vec<Location> {
         .collect()
 }
 
+/// The full name of the GVfs location whose folder in a bridge is `path`, from the
+/// folder's name alone: its label with the user, domain and port the name has (see
+/// `detailed`). `None` for any other path and for a name that does not parse. The drive
+/// list may show the name shortened; this is the volume name that spells it out,
+/// without asking the location's backend.
+pub fn location_name(path: &Path) -> Option<String> {
+    let bridge = path.parent()?;
+    if !crate::mounts::gvfs_bridge(bridge.as_os_str().as_bytes()) {
+        return None;
+    }
+    let name = path.file_name()?;
+    let label = readable(name.to_str()?)?;
+    Some(detailed(name, &label).unwrap_or(label))
+}
+
 /// The entry names of the directory `path` and nothing else about its entries: the
 /// bridge reports no entry types, so `DirEntry::file_type` or `metadata` would examine
 /// the location behind each name. A read error ends the names.

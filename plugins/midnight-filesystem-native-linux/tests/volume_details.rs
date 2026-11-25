@@ -121,6 +121,47 @@ fn listed_volumes_show_names_of_their_own_and_keep_whole_roots() {
     }
 }
 
+/// A GVfs location's volume name is its location's full name, read from its folder's
+/// name in the bridge alone: nothing is opened, so a slow or offline location is never
+/// asked. The bridge below does not exist; a path the rule does not cover is opened as
+/// before and fails.
+#[test]
+fn a_gvfs_location_is_named_by_its_location_without_opening_it() {
+    let client = Client::new();
+    let label = |path: &str| {
+        client.call(Request::VolumeLabel {
+            address: address(std::path::Path::new(path)),
+        })
+    };
+    let named = |name: &[u8]| {
+        Response::VolumeLabel(Some(NativeText {
+            encoding: NameEncoding::UnixBytes,
+            bytes: name.to_vec(),
+        }))
+    };
+    assert_eq!(
+        label("/run/user/4294967294/gvfs/smb-share:server=fileserver,share=Documents"),
+        named(b"Documents on fileserver")
+    );
+    // The full name has the user, domain and port that tell locations of one host apart.
+    assert_eq!(
+        label("/run/user/4294967294/gvfs/sftp:host=example.com,port=2222,user=alice"),
+        named(b"example.com (alice, port 2222)")
+    );
+    for path in [
+        "/run/user/4294967294/gvfs/not-a-location",
+        "/run/user/4294967294/other/smb-share:server=a,share=b",
+        "/run/user/4294967294/gvfs/smb-share:server=a,share=b/inner",
+        "/run/user/not-a-uid/gvfs/smb-share:server=a,share=b",
+    ] {
+        assert!(
+            matches!(label(path), Response::Failed(_)),
+            "{path}: {:?}",
+            label(path)
+        );
+    }
+}
+
 fn raw_name() -> std::ffi::OsString {
     use std::os::unix::ffi::OsStringExt;
     std::ffi::OsString::from_vec(b"raw_\xff".to_vec())

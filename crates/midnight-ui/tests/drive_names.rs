@@ -274,3 +274,63 @@ fn drive_letters_keep_their_root_in_the_menu_and_tooltip() {
         ])
     );
 }
+
+#[test]
+fn a_shortened_name_is_spelled_out_in_the_tooltip_and_menu_once_its_volume_name_arrives() {
+    let documents = "/run/user/1000/gvfs/smb-share:server=fileserver,share=Documents";
+    let (mut test, presenter, _time) = window_with(
+        vec![
+            volume("mount:documents", "Document…eserver", documents),
+            volume("mount:usb1", "USB1", "/media/alice/USB1"),
+        ],
+        &[],
+    );
+    let window = test.window.clone_strong();
+    // Until the details arrive, only the short name is known.
+    assert_eq!(
+        menu(&window),
+        pairs(&[
+            (
+                "Document…eserver — Loading free space…",
+                &format!("Document…eserver\n{documents}\nLoading free space…")
+            ),
+            (
+                "USB1 — Loading free space…",
+                "USB1\n/media/alice/USB1\nLoading free space…"
+            ),
+        ])
+    );
+    // The volume names: the location's full name, which the short name shortens, and a
+    // stick's label, which its folder name does not.
+    for (id, root, name) in [
+        ("mount:documents", documents, "Documents on fileserver"),
+        ("mount:usb1", "/media/alice/USB1", "USB"),
+    ] {
+        presenter.borrow_mut().apply(Event::VolumeDetailsUpdated {
+            volume_id: id.into(),
+            root: root.into(),
+            details: details(Some(name)),
+        });
+    }
+    refresh(&window, &presenter.borrow());
+    test.draw();
+    let spelled = format!("Documents on fileserver\n{documents}\n1.0 GiB free");
+    // The bar keeps the short name; its tooltip and the menu say the whole name.
+    assert_eq!(
+        bar(&window),
+        pairs(&[
+            ("Document…eserver", &spelled),
+            ("USB1", "USB1\n/media/alice/USB1\nUSB\n1.0 GiB free"),
+        ])
+    );
+    assert_eq!(
+        menu(&window),
+        pairs(&[
+            ("Documents on fileserver — 1.0 GiB free", &spelled),
+            (
+                "USB1 — USB — 1.0 GiB free",
+                "USB1\n/media/alice/USB1\nUSB\n1.0 GiB free"
+            ),
+        ])
+    );
+}

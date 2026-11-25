@@ -102,9 +102,37 @@ The screenshots of `20261125-213455`, inspected:
   list GVfs locations. The package's copy, which the installed application uses, is
   covered by its unit and integration tests; no staged run with the installed package
   and no run with a real GVfs location was made for the names.
-- A GVfs location's name longer than 16 columns is shortened in the dropdown too
-  (`Documents on fileserver` shows `Document…eserver`); its tooltip then shows the
-  location's folder in the bridge, not the full name.
+- The full name of a shortened drive name arrives with the drive's details, after its
+  free space was read: for an offline location the dropdown and tooltip keep the short
+  name (see "Full names" below).
 - Windows was not run. Its presentation is unchanged by construction (its labels are
   drive letters that their roots start with), and the platform-neutral UI test above
   guards it; CI runs it on Windows.
+
+## Full names
+
+A drive name shortened beyond 16 columns (`Documents on fileserver` shows
+`Document…eserver`) was shortened in the dropdown too, and the tooltip did not give the
+full name. Now:
+
+- The package's volume name of a GVfs location is the location's full name, from its
+  folder's name in the bridge alone (`gvfs::location_name`): its label with the user,
+  domain and port the name has, as the drive list adds them to locations that would
+  share a name (`3249dea2`). Nothing is opened, so the location's backend is not asked.
+  Other drives keep their udev label.
+- When a drive's name is its volume name shortened (its start and end around `…`), the
+  tooltip and the dropdown row give the volume name instead; the bar keeps the short
+  name. A volume name the drive's name does not shorten keeps its own line
+  (`USB1 — USB — 1.0 GiB free`).
+
+| Command | Result |
+| --- | --- |
+| `cargo test --manifest-path plugins/midnight-filesystem-native-linux/Cargo.toml` | 98 unit and 27 integration tests passed; `a_gvfs_location_is_named_by_its_location_without_opening_it` asks for the volume names of locations in a bridge that does not exist and gets `Documents on fileserver` and `example.com (alice, port 2222)`; four other paths are opened as before and fail |
+| `cargo test -p midnight-ui --lib --test integration` | 1733 and 1242 passed (11 ignored each), on top of `3249dea2`; `drive_names::a_shortened_name_is_spelled_out_in_the_tooltip_and_menu_once_its_volume_name_arrives` and `volume_presentation::tests::a_name_is_spelled_out_only_from_the_name_it_shortens` are new |
+| `cargo clippy --features midnight-acceptance/acceptance -p midnight-ui -p midnight-acceptance --all-targets -- -D warnings`, and the package's clippy and `cargo fmt --check` | clean |
+
+Both behaviour tests failed first: the package opened the location (`NotFound`), and
+then named the SFTP location without its details (`example.com`); the UI's tooltip
+began with `Document…eserver` and gave `Documents on fileserver` on a line of its own.
+The unit test of the match failed with its end check removed.
+

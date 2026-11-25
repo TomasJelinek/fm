@@ -104,7 +104,10 @@ only; the drive is its folder's path. Locations that would share a name add what
 folder names tell apart, the user, the domain and the port: two SFTP mounts of
 `example.com` as different users show **example.com (alice)** and **example.com
 (bob)**. Like every drive name it is shortened beyond 16 columns, and names that are
-still equal take folders of their paths ([drive names](#drive-names)).
+still equal take folders of their paths ([drive names](#drive-names)). The location's
+full name, with the user, domain and port its folder name has, is also its volume
+name, read from the same folder name without asking the location: a shortened name is
+spelled out in the tooltip and the drive dropdown.
 
 A location of a network protocol (SMB, SFTP, FTP, WebDAV, NFS, AFP or an online
 account) shows the network icon; phones, cameras, archives and discs show the drive
@@ -117,14 +120,15 @@ same backend worker; it never opens or examines a location, whose details come f
 its backend and may be slow or offline. The GVfs FUSE daemon answers that read from
 memory, without its backends. Should the daemon itself stop answering, for example
 when every one of its threads waits for an offline location, the drive list is not
-refreshed until it answers again. Free space and the volume name of each location
-are read later, like those of every drive, on the separately bounded workers for
-drive details; for a location these reads reach its backend. A bridge that cannot be
-read, such as another user's, adds no drives, and a filesystem mounted at the bridge's
-path makes that path an ordinary drive. GVfs mounts do not change the mount table, so
-a location that appears or disappears shows in the list when the list is read again:
-at start, every 45 seconds and right after a share opens from Network Neighborhood. Locations are ordered among the other drives by their
-names ([drive names](#drive-names)).
+refreshed until it answers again. The free space of each location is read later, like
+that of every drive, on the separately bounded workers for drive details, and that
+read reaches its backend; its volume name comes from its folder name. A bridge that
+cannot be read, such as another user's, adds no drives, and a filesystem mounted at
+the bridge's path makes that path an ordinary drive. GVfs mounts do not change the
+mount table, so a location that appears or disappears shows in the list when the list
+is read again: at start, every 45 seconds and right after a share opens from Network
+Neighborhood. Locations are ordered among the other drives by their names
+([drive names](#drive-names)).
 
 ### Drive names
 
@@ -153,9 +157,12 @@ GVfs locations included:
 - Control characters and bytes that are not UTF-8 show escaped (`\t`, `\xFF`).
 
 The root comes first; the other drives follow in the order of their names. Hovering a
-drive shows its name, its whole mount path and its free space (and the volume's label
-when the name is not that label); the dropdown row's accessible description and the
-drive button's accessible name carry the same text, so the keyboard and screen readers
+drive shows its name, its whole mount path and its free space. When the name is the
+volume's label shortened (or a GVfs location's name), the tooltip and the drive
+dropdown give the whole label instead, once the drive's details are read with its free
+space; the drive bar keeps the short name. A volume label that the name does not show
+gets a line of its own. The dropdown row's accessible description and the drive
+button's accessible name carry the tooltip's text, so the keyboard and screen readers
 get the path too. Choosing a drive, the path bar and every other navigation use the
 whole path; Windows keeps its drive letters.
 

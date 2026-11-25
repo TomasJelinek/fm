@@ -59,8 +59,33 @@ pub(super) fn is_drive_name(label: &str, root: &Path) -> bool {
     !root.to_string_lossy().starts_with(label)
 }
 
+/// A drive's name spelled out: its volume name when `label` is that name shortened (its
+/// start and end around `…`, as the backend shortens long names), else `label` itself.
+/// The drive bar keeps the short name; tooltips and the drive menu have the room.
+fn spelled_out(label: &str, details: Option<&VolumeDetails>) -> String {
+    if let Some(Ok(Some(name))) = details.map(|details| &details.label) {
+        let name = name.to_string_lossy();
+        if shortens(label, &name) {
+            return name.into_owned();
+        }
+    }
+    label.to_owned()
+}
+
+/// Whether `short` is `full` with its middle replaced by one `…`.
+fn shortens(short: &str, full: &str) -> bool {
+    short.split_once('…').is_some_and(|(head, tail)| {
+        !tail.contains('…')
+            && full != short
+            && full.len() >= head.len() + tail.len()
+            && full.starts_with(head)
+            && full.ends_with(tail)
+    })
+}
+
 /// A drive's tooltip on the drive bar and in the drive menu: its whole path and details,
-/// after its name when that is a name of its own ([`is_drive_name`]).
+/// after its name, spelled out ([`spelled_out`]), when that is a name of its own
+/// ([`is_drive_name`]).
 pub(super) fn drive_tooltip(
     label: &str,
     root: &Path,
@@ -68,19 +93,20 @@ pub(super) fn drive_tooltip(
     locale: &NumberLocale,
 ) -> String {
     if is_drive_name(label, root) {
+        let name = spelled_out(label, details);
         format!(
-            "{label}\n{}\n{}",
+            "{name}\n{}\n{}",
             root.display(),
-            details_text(details, locale, Some(label))
+            details_text(details, locale, Some(&name))
         )
     } else {
         format!("{}\n{}", root.display(), tooltip(details, locale))
     }
 }
 
-/// A drive's row in the drive menu. A name of its own ([`is_drive_name`]) stands for the
-/// path, which the row's tooltip and accessible description spell out; a root's own
-/// name is followed by the root.
+/// A drive's row in the drive menu. A name of its own ([`is_drive_name`]), spelled out
+/// ([`spelled_out`]), stands for the path, which the row's tooltip and accessible
+/// description give; a root's own name is followed by the root.
 pub(super) fn drive_menu_label(
     label: &str,
     root: &Path,
@@ -88,9 +114,10 @@ pub(super) fn drive_menu_label(
     locale: &NumberLocale,
 ) -> String {
     if is_drive_name(label, root) {
+        let name = spelled_out(label, details);
         format!(
-            "{label} — {}",
-            details_text(details, locale, Some(label)).replace('\n', " — ")
+            "{name} — {}",
+            details_text(details, locale, Some(&name)).replace('\n', " — ")
         )
     } else {
         root_menu_label(label, root, details, locale)
@@ -254,6 +281,22 @@ mod tests {
             tooltip(Some(&info), &NumberLocale::default()),
             "Volume name unavailable\nFree space unavailable"
         );
+    }
+
+    #[test]
+    fn a_name_is_spelled_out_only_from_the_name_it_shortens() {
+        assert!(shortens("Document…eserver", "Documents on fileserver"));
+        assert!(shortens("文档文档…档文档", "文档文档文档文档文档"));
+        for (short, full) in [
+            ("Document…eserver", "Documents on nas"),
+            ("Document…eserver", "My Documents on fileserver"),
+            ("USB1", "USB"),
+            ("a…b", "a…b"),
+            ("ab…ba", "aba"),
+            ("a…b…c", "a-x-b-y-c"),
+        ] {
+            assert!(!shortens(short, full), "{short} / {full}");
+        }
     }
 
     #[test]

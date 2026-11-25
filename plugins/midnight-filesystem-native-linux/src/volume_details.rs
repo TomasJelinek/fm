@@ -19,6 +19,11 @@ pub fn text(value: &OsStr) -> NativeText {
     }
 }
 pub fn label(path: &Path, context: &CallContext<'_>) -> Result<Option<NativeText>, Failure> {
+    // A GVfs location is named by its folder in the bridge; opening it would ask its
+    // backend, which may be slow or offline.
+    if let Some(name) = crate::gvfs::location_name(path) {
+        return Ok(Some(text(OsStr::new(&name))));
+    }
     let file = crate::system::open_path(path, libc::O_PATH, context)?;
     let identity = crate::volume_information::identity(&file)?;
     crate::system::cancel(context)?;
