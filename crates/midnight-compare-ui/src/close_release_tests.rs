@@ -78,6 +78,19 @@ fn a_closed_comparator_is_released_on_the_next_loop_turn() {
     drop(first);
     slint::platform::update_timers_and_animations();
     assert_eq!(manager.windows.borrow().len(), 1);
-    let _third = open(&manager, &service).unwrap();
+    // The engine counts a session until its worker has finished tearing down, a moment
+    // after the window is released (backlog COMPARE-03): the slot comes back, not at once.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let _third = loop {
+        match open(&manager, &service) {
+            Ok(third) => break third,
+            Err(error) => assert!(
+                std::time::Instant::now() < deadline,
+                "the closed comparator's session slot never came back: {error}"
+            ),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        slint::platform::update_timers_and_animations();
+    };
     manager.close_all();
 }
