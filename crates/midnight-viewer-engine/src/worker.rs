@@ -1945,8 +1945,14 @@ impl Worker {
                 if (self.wrap && self.wrap_available()) || self.mode == viewer::MODE_DOCUMENT {
                     self.origin[0] = 0.0;
                 }
-                self.scroll_map =
-                    scroll_map::build(&page, &shaped, self.length, true, self.geometry.height);
+                self.scroll_map = scroll_map::build(
+                    &page,
+                    &shaped,
+                    self.length,
+                    true,
+                    self.geometry.height,
+                    self.rows_go_on(&page, &shaped),
+                );
                 self.shaped = Some(shaped);
                 self.frames.invalidate();
                 self.clamp_origin();
@@ -2056,6 +2062,7 @@ impl Worker {
                 self.length,
                 !continuing_layout,
                 self.geometry.height,
+                self.rows_go_on(&page, &shaped),
             )
         };
         self.shaped = Some(shaped);

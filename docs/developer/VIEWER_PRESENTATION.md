@@ -241,20 +241,29 @@ unless it is shorter than the window. A refill that would read no new row is not
 a camera outside its page asks for a page holding it without a guard when a guarded one
 cannot advance. Pages that fill the window and a guard below it, and pages of shorter
 rows, keep their range: a small fragment of short rows still takes the viewport path when
-its camera cannot pass a row. Known limit: at rest after an opening or a scrollbar
-position, an unwrapped page of very long rows holds only what one request reads. With
-8000-byte rows that is fifteen rows, 261 of a 720-pixel window, and the rest stays blank
-until a gesture. Each refill of a gesture grows such a page (row groups, above), so every
-gesture fills the window (`rows_of_8000_bytes_fill_the_window_at_rest`, ignored while
-the limit stands). Tests: `worker_long_row_tests.rs` (rows of 1200, 2400 and 8000 bytes
-and a mixed file, in Text and Source, wrapped and unwrapped: every gesture moves its whole
-distance; rows of 2400 bytes fill the window at rest) and `worker_chain_tests.rs`.
+its camera cannot pass a row. An unwrapped page of such rows also grows while no camera
+request asks for anything (after an opening or a scrollbar position), by one request's
+bytes per refill (row groups, above), until its rows fill the window below the camera, as
+far as a page of row groups holds (1 MiB; `Worker::rows_end_in_window`): one request reads
+fifteen rows of 8000 bytes, 261 of a 720-pixel window, and three or four refills fill it. Until then the page's scroll
+map continues its rows a window below its last row's start, at the density of its whole
+rows (from its second row's start, as its first row may be cut, to its last's;
+`scroll_map::build`): the thumb shows the window as the rows the file goes on with fill it,
+and with rows of one width it does not move while the page grows. Tests:
+`worker_long_row_tests.rs` (rows of 1200, 2400 and 8000 bytes and a mixed file, in Text
+and Source, wrapped and unwrapped: every gesture moves its whole distance; rows of 2400 and
+8000 bytes fill the window at rest; a scrollbar position after a PageDown over 8000-byte
+rows keeps its thumb while its page grows) and `worker_chain_tests.rs`.
 
 A scrollbar position's first read estimates the target from the shown page's density,
 and one correction read is allowed (`refine_position`); Source places its camera on a
 whole row (`viewport::source_minimum_origin`). A position over long rows can therefore
-land slightly away from the released thumb. A piece of a row longer than one layout,
-without a row break, keeps the viewport path: such a row shows as pieces, one per line.
+land slightly away from the released thumb. Over rows so long that the window holds more
+of them than one read (120 KiB), the read starts a quarter of its bytes ahead of the named
+row, and the camera lands on its page, shorter than the window, within the camera's span
+there (`landing_maximum`), where the page's continued scroll map shows the released thumb.
+A piece of a row longer than one layout, without a row break, keeps the viewport path:
+such a row shows as pieces, one per line.
 
 **Layouts longer than one shaping run.** The renderer bounds the shaping runs of every
 layout itself (`midnight-viewer-render`, `runs.rs`), so every layout it accepts, up to

@@ -89,8 +89,7 @@ impl Worker {
     fn nearest_loaded_edge(&self, position: f64) -> Option<f32> {
         let page = self.page.as_ref()?;
         let shaped = self.shaped.as_ref()?;
-        let height = self.geometry.height as f32;
-        let maximum = (crate::viewport::available_height(page, shaped, height) - height).max(0.0);
+        let maximum = self.landing_maximum(page, shaped);
         let minimum = if self.mode == viewer::MODE_SOURCE {
             crate::viewport::source_minimum_origin(page, shaped)?
         } else {
@@ -136,10 +135,7 @@ impl Worker {
             return None;
         }
         let shaped = self.shaped.as_ref()?;
-        let maximum =
-            (crate::viewport::available_height(page, shaped, self.geometry.height as f32)
-                - self.geometry.height as f32)
-                .max(0.0);
+        let maximum = self.landing_maximum(page, shaped);
         if self.scroll_map.is_none()
             && self.mode == viewer::MODE_SOURCE
             && shaped.height() < self.geometry.height as f32
@@ -171,6 +167,34 @@ impl Worker {
 
     fn has_source_edge(page: &Page, position: f64) -> bool {
         (position > 0.0 || !page.before) && (position < 1.0 || !page.after)
+    }
+
+    /// The camera furthest down that a scrollbar position lands on over `page`: the one that
+    /// shows the page's end at the window's bottom or, over unwrapped rows that end inside
+    /// the window while the file goes on, the camera's span (`viewport::camera_span`). A
+    /// refill then grows such a page at rest until its rows fill the window
+    /// (`Worker::rows_end_in_window`), and its scroll map takes the rows it lacks at its own
+    /// density meanwhile (`scroll_map::build`), so that the thumb stays where it landed.
+    fn landing_maximum(&self, page: &Page, shaped: &TextPage) -> f32 {
+        let height = self.geometry.height as f32;
+        let maximum = (crate::viewport::available_height(page, shaped, height) - height).max(0.0);
+        if shaped.height() < height && self.rows_go_on(page, shaped) {
+            maximum.max(self.camera_span(page, shaped).span)
+        } else {
+            maximum
+        }
+    }
+
+    /// Whether the camera may pass the rows with which `page` covers the window while the file
+    /// goes on: unwrapped rows too long for a page to hold the window and a guard
+    /// (`viewport::camera_span`). The window takes the rows the page lacks at the page's own
+    /// density (`scroll_map::build`) until a refill has grown it with them.
+    pub(super) fn rows_go_on(&self, page: &Page, shaped: &TextPage) -> bool {
+        let height = self.geometry.height as f32;
+        self.row_pages()
+            && page.after
+            && self.camera_span(page, shaped).span
+                > (crate::viewport::available_height(page, shaped, height) - height).max(0.0)
     }
 
     fn byte_position(
@@ -464,8 +488,15 @@ impl Worker {
             return SourcePosition::Unavailable;
         };
         let height = self.geometry.height as f32;
-        let maximum = (crate::viewport::available_height(&page, &shaped, height) - height).max(0.0);
-        let map = scroll_map::build(&page, &shaped, self.length, true, self.geometry.height);
+        let maximum = self.landing_maximum(&page, &shaped);
+        let map = scroll_map::build(
+            &page,
+            &shaped,
+            self.length,
+            true,
+            self.geometry.height,
+            self.rows_go_on(&page, &shaped),
+        );
         let minimum = crate::viewport::source_minimum_origin(&page, &shaped);
         let coverage = minimum
             .filter(|minimum| *minimum <= maximum)
@@ -582,6 +613,15 @@ impl Worker {
         self.position_metrics().map_or(0.0, |(_, extent)| extent)
     }
 
+    /// Whether the window holds more of the shown page's unwrapped rows than a position read
+    /// joins (`viewport::PAGE_BYTES`), so that the read's page is shorter than the window.
+    fn position_reads_short(&self) -> bool {
+        self.row_pages()
+            && self.position_metrics().is_some_and(|(_, extent)| {
+                extent * self.length as f64 > crate::viewport::PAGE_BYTES as f64
+            })
+    }
+
     /// The window a scrollbar `position` names on the loaded page's scale: its first byte
     /// (or its last, backwards), without the context `position_page_request` adds.
     fn scrollbar_viewport(&self, position: f64) -> (u64, bool) {
@@ -653,6 +693,13 @@ impl Worker {
             .as_ref()
             .zip(self.shaped.as_ref())
             .map_or(0, |(page, shaped)| {
+                // Over rows so long that a read's page is shorter than the window, the read
+                // starts a quarter of its bytes ahead of the named row, whatever the shown
+                // page's height: the camera lands on a whole row below them, within its span
+                // (`landing_maximum`), and a refill grows the page below it at rest.
+                if self.position_reads_short() {
+                    return (crate::viewport::PAGE_BYTES / 4) as u64;
+                }
                 if shaped.height() <= self.geometry.height as f32 {
                     return 0;
                 }
@@ -718,6 +765,11 @@ impl Worker {
         let page = self.page.as_ref()?;
         let shaped = self.shaped.as_ref()?;
         let height = self.geometry.height as f32;
+        // Twice the lines read no more of a byte-limited page shorter than the viewport: its
+        // position is estimated again from the rows it shows (`position_page_request`).
+        if shaped.height() < height {
+            return None;
+        }
         let maximum = (crate::viewport::available_height(page, shaped, height) - height).max(0.0);
         let map = self.scroll_map.as_ref()?;
         let low = map.metrics(0.0, f64::from(height))?.0;

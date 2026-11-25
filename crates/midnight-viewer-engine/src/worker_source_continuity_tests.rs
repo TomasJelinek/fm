@@ -846,6 +846,7 @@ fn source_wrapped_tabbed_partial_first_logical_line_needs_prefix_after_first_vis
         worker.length,
         true,
         worker.geometry.height,
+        worker.rows_go_on(&candidate, &shaped),
     )
     .unwrap();
     let target = map
@@ -874,6 +875,7 @@ fn source_bof_with_a_partial_trailing_line_can_acknowledge_its_complete_first_ro
         worker.length,
         true,
         worker.geometry.height,
+        worker.rows_go_on(&candidate, &shaped),
     )
     .unwrap();
     let target = map

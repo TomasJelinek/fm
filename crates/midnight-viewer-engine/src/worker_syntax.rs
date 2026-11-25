@@ -1086,8 +1086,14 @@ impl Worker {
         selection: Option<(usize, usize)>,
     ) {
         let previous_origin = self.origin;
-        self.scroll_map =
-            scroll_map::build(&page, &shaped, self.length, true, self.geometry.height);
+        self.scroll_map = scroll_map::build(
+            &page,
+            &shaped,
+            self.length,
+            true,
+            self.geometry.height,
+            self.rows_go_on(&page, &shaped),
+        );
         self.anchor = page.start;
         self.page = Some(page);
         self.shaped = Some(shaped);

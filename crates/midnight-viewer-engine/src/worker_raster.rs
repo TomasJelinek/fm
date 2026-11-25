@@ -577,7 +577,32 @@ impl Worker {
         if self.raster.sequence != 0 {
             let reads_on = self.long_rows();
             self.apply_raster_target_with(output, reads_on);
+        } else if self.raster.continuing.is_none()
+            && !self.positions.has_pending()
+            && self.search_cursor.waiting.is_none()
+            && self.rows_end_in_window(self.origin[1])
+        {
+            // No camera request yet (an opening, a scrollbar position once acknowledged):
+            // the shown camera is the target, as `retained_pixels` takes it, and the page
+            // grows below it.
+            self.raster.target = self.raster.camera(self.origin);
+            self.apply_raster_target_with(output, true);
         }
+    }
+
+    /// Whether the window at page-local `y` shows blank space below the rows of a page of
+    /// rows too long for one request to read the window (`long_rows`) while the file goes
+    /// on. Its refills grow it at rest too, one request's bytes each, until it fills the
+    /// window: no camera request asks for the rows the window lacks.
+    fn rows_end_in_window(&self, y: f32) -> bool {
+        let view = self.geometry.height as f32;
+        self.page
+            .as_ref()
+            .zip(self.shaped.as_ref())
+            .is_some_and(|(page, shaped)| {
+                page.after && crate::viewport::available_height(page, shaped, view) < y + view
+            })
+            && self.long_rows()
     }
 
     /// Whether the shown page is a page of row groups whose rows are so long that a request
@@ -684,8 +709,10 @@ impl Worker {
         // A camera at rest (a key, the end of a glide) starts the next page along its travel
         // too: the strips stay as long as the new page paints them the same way. A document
         // page ends at whole blocks, which a reply may not pass (`Continuation::seam`): it
-        // reads on only while the camera glides or once the camera leaves it.
-        let along = self.mode != viewer::MODE_DOCUMENT && self.raster.bands.along(backwards);
+        // reads on only while the camera glides or once the camera leaves it. A page whose
+        // rows end inside the window grows whatever the travel (`rows_end_in_window`).
+        let along = (self.mode != viewer::MODE_DOCUMENT && self.raster.bands.along(backwards))
+            || (long_rows && self.rows_end_in_window(local[1]));
         let refill = ((backwards || forwards)
             && (!covered || (prefetch && (!self.raster.exact || along))))
             .then(|| {

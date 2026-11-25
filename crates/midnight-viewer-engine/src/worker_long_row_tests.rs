@@ -6,7 +6,7 @@
 //! (76 with its guards). Every gesture must still move its whole distance, wrapped or not.
 //! A check whose fault needs only a window taller than some pages runs in a lower window,
 //! which still exceeds them and costs fewer page reads per gesture.
-use super::frontier::{Engine, NOTCH, Window, rest, rows, settle, try_gesture};
+use super::frontier::{Engine, NOTCH, Window, frame, rest, rows, settle, try_gesture};
 use super::*;
 use std::fmt::Write as _;
 
@@ -206,21 +206,20 @@ mod rows_of_2400_bytes_fill_the_window_at_rest {
     }
 }
 
-/// Known limit. One request reads fifteen rows of 8000 bytes (`viewport::PAGE_BYTES`), a
-/// third of the window's 44: after an opening or a scrollbar position they cover 261 of its
-/// 720 pixels, and 459 stay blank until a gesture grows the page (row groups take a
-/// request's bytes per refill, `worker_chain::Budget`). Every gesture fills the window.
+/// One request reads fifteen rows of 8000 bytes (`viewport::PAGE_BYTES`), a third of the
+/// window's 44: after an opening or a scrollbar position they covered 261 of its 720 pixels,
+/// and 459 stayed blank until a gesture grew the page (row groups take a request's bytes per
+/// refill, `worker_chain::Budget`). Such a page grows at rest too, until its rows fill the
+/// window (`Worker::rows_end_in_window`).
 mod rows_of_8000_bytes_fill_the_window_at_rest {
     use super::*;
 
     #[test]
-    #[ignore = "known limit: a page of 8000-byte rows fills the window only after a gesture"]
     fn text() {
         fills_the_window_at_rest(viewer::MODE_TEXT, rows(8_000_000 / 8000, 8000));
     }
 
     #[test]
-    #[ignore = "known limit: a page of 8000-byte rows fills the window only after a gesture"]
     fn source() {
         fills_the_window_at_rest(viewer::MODE_SOURCE, rows(8_000_000 / 8000, 8000));
     }
@@ -280,6 +279,69 @@ mod rows_of_8000_bytes_keep_every_gesture_s_travel {
         ROWS_22,
         Some(0.004)
     );
+}
+
+/// One PageDown grows a page of 8000-byte rows past the 720-pixel window (row groups). In
+/// Source every scrollbar position after it then failed with "The requested viewport was not
+/// completed.": its read was estimated from the grown page's extent (44 rows) and started a
+/// whole read's bytes ahead of the named row, while a page of one read, shorter than the
+/// window, landed only where it showed the thumb by its own bytes (`byte_position`). Two rows
+/// are 0.2 % of this file. The position's page then grows at rest until it fills the window,
+/// and the thumb stays where the position left it: a growth that moved it by 0.007 to 0.015
+/// was not adopted.
+mod rows_of_8000_bytes_take_scrollbar_positions_after_page_down {
+    use super::*;
+
+    #[test]
+    fn text() {
+        positions_after_page_down(viewer::MODE_TEXT, 0.002);
+    }
+
+    #[test]
+    fn source() {
+        positions_after_page_down(viewer::MODE_SOURCE, 0.002);
+    }
+}
+
+/// Every scrollbar position after one PageDown over 8000-byte rows is acknowledged with the
+/// thumb within `landing` of where it was released, and the thumb stays there at rest, within
+/// a fifth of a row (rounding to a whole pixel moves the camera half a pixel at most).
+fn positions_after_page_down(mode: u16, landing: f64) {
+    const STAYS: f64 = 0.0002;
+    let screen = f64::from(SIZE.height);
+    let mut engine = Engine::open(rows(8_000_000 / 8000, 8000), mode, SIZE, 1);
+    let mut window = Window::default();
+    rest(&mut engine, &mut window);
+    let moved = try_gesture(&mut engine, &mut window, &[(screen, true)], false);
+    assert!(
+        moved.is_some_and(|moved| (moved - screen).abs() <= 1.0),
+        "mode {mode}: PageDown moved {moved:?}"
+    );
+    for position in [0.5, 0.75, 0.25] {
+        window.seek(&mut engine, position);
+        let mut acknowledged = None;
+        for _ in 0..2000 {
+            frame(&mut engine, &mut window);
+            if window.acknowledged == window.position_sequence() {
+                acknowledged = Some(window.position);
+                break;
+            }
+        }
+        let rested = settle(&mut engine, &mut window);
+        assert!(
+            rested
+                && window.acknowledged == window.position_sequence()
+                && acknowledged.is_some_and(|shown| {
+                    (shown - position).abs() <= landing && (window.position - shown).abs() < STAYS
+                }),
+            "mode {mode}: the scrollbar at {position} showed {acknowledged:?} when acknowledged \
+             and {} at rest (request {} of {}, at rest: {rested}), status {:?}",
+            window.position,
+            window.acknowledged,
+            window.position_sequence(),
+            engine.worker.status
+        );
+    }
 }
 
 /// Short rows whose pages end by their line budget meet rows that no page holds a window

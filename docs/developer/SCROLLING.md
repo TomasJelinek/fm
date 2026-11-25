@@ -776,7 +776,10 @@ page holds and the refill's page takes the camera where it is. A page of rows so
 that one request cannot read every screen it asks for (`Worker::long_rows`) refills until
 it holds the two screens beyond the strips too, reads on after each refill until it does,
 and grows at its edge from where it starts when it already keeps the screen against the
-travel. In the Text, Source and hex
+travel. Without a camera request (after an opening or a scrollbar position) such a page
+grows too while its rows end inside the window, until they fill it
+(`Worker::rows_end_in_window`; [presentation](VIEWER_PRESENTATION.md#refill-reads-and-the-retained-frontier)).
+In the Text, Source and hex
 views a camera request at rest (a key, the end of a glide) starts it too, so PageDown
 finds the next page read; a Markdown page ends at whole blocks, which a reply may not
 pass (`Continuation::seam`), so it reads on only while the camera glides or once the
@@ -800,9 +803,10 @@ names, so the page starts inside a row as often as not. It drops that row, as a 
 chain drops its cut row, when the row after it ends at or before the named byte
 (`Worker::trim_position_start` in `worker_position.rs`): the page then starts at a row,
 and the first page read above it keeps its context, so the first notch up after a
-scrollbar drag needs no corrected surface (`RasterRebase`, above). A page whose context
-holds fewer than two rows (very long rows) keeps its cut row, and correction reads keep
-their pages whole; see [Viewer scrolling](VIEWER_SCROLLING.md).
+scrollbar drag needs no corrected surface (`RasterRebase`, above). Over rows so long that
+the window holds more of them than one read (120 KiB), the context is a quarter of the read.
+A page whose context holds fewer than two rows (very long rows) keeps its cut row, and
+correction reads keep their pages whole; see [Viewer scrolling](VIEWER_SCROLLING.md).
 
 Strips of one viewer hold at most 64 MiB (`VIEWER_PREPARED_TEXT_BYTES`) and those of
 all viewers 256 MiB (`VIEWER_PREPARED_TEXT_TOTAL_BYTES`), body and gutter together,
