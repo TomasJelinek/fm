@@ -13,8 +13,8 @@ about a second at a time. XWayland and the software renderer were smooth on the 
 desktop, with the same window placement.
 
 - **About sky.** The About box's animated sky ran at 0–40 frames per second.
-  - The About probe (`native_about`) shows MainWindow with 10,000 rows per pane, opens the
-    About box and measures its redraws for 5.5 s.
+  - The About probe, `crates/midnight-ui/examples/native_about.rs`, shows MainWindow with
+    10,000 rows per pane, opens the About box and measures its redraws for 5.5 s.
   - In one run not a single frame was drawn while the box was open.
 - **Wheel scrolling.** `performance_probe --observer-wheel --sustained --wheel-trace`
   scrolled the long and short files of the pipeline record.
@@ -86,6 +86,21 @@ None of these is implemented.
   The application uses Slint under its GPL-3.0-only branch, which permits a patched copy.
 - **Workarounds until then.** XWayland (`env -u WAYLAND_DISPLAY`) or the software renderer
   (`--software`) avoid the problem.
+
+## Reproduction
+
+On a native Wayland desktop with the discrete GPU, run the About probe from the
+repository root, preferably with throwaway XDG folders:
+
+```sh
+cargo run -p midnight-ui --example native_about
+```
+
+For the controls, add `MIDNIGHT_PROBE_RENDERER=software` for the software renderer, or
+prefix `env -u WAYLAND_DISPLAY` for XWayland. To see the timed commits, add
+`WAYLAND_DEBUG=client` and pair each `wp_commit_timer_v1.set_timestamp` with its
+`wp_presentation_feedback.presented` event. The Mailbox runs need the uncommitted adapter
+patch described above.
 
 ## Limits
 
