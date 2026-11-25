@@ -366,39 +366,6 @@ fn dropping_plain_ticket_detaches_queued_work() {
 }
 
 #[test]
-fn dropping_unpolled_waiter_aborts_the_queued_body() {
-    let (owner, spawner) = Owner::start("abort-drop", 1).unwrap();
-    let runtime = runtime();
-    let (active, worker, release) = start_blocked(&spawner, &runtime);
-    let (capture, observed_drop) = drop_probe();
-    let (ran, observed_run) = mpsc::channel();
-    let adapter = spawner
-        .spawn(
-            runtime.handle(),
-            Box::new(move || {
-                ran.send(()).unwrap();
-                drop(capture);
-            }),
-        )
-        .unwrap()
-        .abort_on_drop();
-    let waiter = adapter;
-    drop(waiter);
-    drop(release);
-
-    assert_eq!(wait(&runtime, active), Ok(()));
-    assert_eq!(
-        observed_drop.recv_timeout(LIMIT),
-        Ok((worker, Some(runtime.handle().id())))
-    );
-    assert!(wait(&runtime, owner.shutdown(runtime.handle())).is_ok());
-    assert!(matches!(
-        observed_run.try_recv(),
-        Err(mpsc::TryRecvError::Disconnected)
-    ));
-}
-
-#[test]
 fn invocation_and_nested_async_blocking_and_timer_work_use_the_supplied_runtime() {
     let (owner, spawner) = Owner::start("nested", 1).unwrap();
     let original = runtime();

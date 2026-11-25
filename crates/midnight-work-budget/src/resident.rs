@@ -43,9 +43,6 @@ pub struct Ticket {
     done: oneshot::Receiver<Result<(), TaskError>>,
 }
 
-/// A ticket that requests cancellation when dropped, including before its first poll.
-pub struct AbortOnDrop(Ticket);
-
 /// Waits for checked thread retirement. Dropping the waiter detaches the workers.
 #[must_use = "await checked worker retirement or explicitly detach it"]
 pub struct Shutdown {
@@ -281,11 +278,6 @@ impl Ticket {
     pub fn is_finished(&self) -> bool {
         self.task.finished.load(Ordering::Acquire)
     }
-
-    /// Transfers the ticket into a waiter that aborts on drop.
-    pub fn abort_on_drop(self) -> AbortOnDrop {
-        AbortOnDrop(self)
-    }
 }
 
 impl Future for Ticket {
@@ -295,20 +287,6 @@ impl Future for Ticket {
         Pin::new(&mut self.done)
             .poll(cx)
             .map(|result| result.unwrap_or(Err(TaskError::WorkerFailed)))
-    }
-}
-
-impl Future for AbortOnDrop {
-    type Output = Result<(), TaskError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx)
-    }
-}
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
     }
 }
 
