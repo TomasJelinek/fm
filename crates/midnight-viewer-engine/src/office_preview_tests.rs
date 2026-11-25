@@ -282,6 +282,13 @@ fn release(prepared: Prepared) {
     prepared.resources.release_on_worker().unwrap();
 }
 
+/// Captures a document file as a viewer does (`capture::native`, VIEW-05), not exactly:
+/// endpoint protection can tag a freshly written Office file with an alternate data
+/// stream while `prepare` reads it, which moves its change time alone.
+fn viewer_capture(path: &Path) -> CapturedFile {
+    crate::capture::native()(path, &Arc::new(AtomicBool::new(false))).unwrap()
+}
+
 #[test]
 fn office_generated_capture_has_own_bytes_and_no_original_directory_resources() {
     let fixture = Fixture::new();
@@ -934,7 +941,7 @@ fn office_xlsx_prepares_first_real_cell_before_any_resource_navigation() {
         include_bytes!("office_native_fixture/two-sheet-windows.xlsx"),
     )
     .unwrap();
-    let parent = CapturedFile::capture(&path).unwrap();
+    let parent = viewer_capture(&path);
     let prepared = prepare(parent, OfficeFormat::Xlsx, Cancellation::default()).unwrap();
     let bytes = prepared.main.read_at(0, RESOURCE_READ).unwrap();
     let html = std::str::from_utf8(&bytes).unwrap();
@@ -961,6 +968,56 @@ fn office_xlsx_prepares_first_real_cell_before_any_resource_navigation() {
     assert!(!html.contains("NATIVE_ALPHA_A1_V1"));
     catalog.release_on_worker().unwrap();
     release(prepared);
+}
+
+/// VIEW-05 through the Office path: a workbook whose change time alone moved after its
+/// viewer capture (the read-only attribute set and cleared, as endpoint protection's
+/// alternate data stream would) still prepares; an exact capture of it is refused as
+/// changed, and a content rewrite of the same length is refused under the viewer's policy.
+#[test]
+fn office_prepares_a_workbook_whose_change_time_alone_moved_after_capture() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tagged.xlsx");
+    let workbook = include_bytes!("office_native_fixture/two-sheet-windows.xlsx");
+    std::fs::write(&path, workbook).unwrap();
+    let viewer = viewer_capture(&path);
+    let exact = CapturedFile::capture(&path).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let writable = std::fs::metadata(&path).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&path, read_only).unwrap();
+    std::fs::set_permissions(&path, writable).unwrap();
+    match prepare(exact, OfficeFormat::Xlsx, Cancellation::default()) {
+        Err(error) => assert!(
+            error.message.starts_with("Source changed since capture"),
+            "{error:?}"
+        ),
+        Ok(prepared) => {
+            release(prepared);
+            panic!("an exact capture prepared after its change time moved");
+        }
+    }
+    let prepared = prepare(viewer, OfficeFormat::Xlsx, Cancellation::default()).unwrap();
+    let html = String::from_utf8(prepared.main.read_at(0, RESOURCE_READ).unwrap()).unwrap();
+    assert!(html.contains("NATIVE_ALPHA_A1_V1"));
+    release(prepared);
+
+    let viewer = viewer_capture(&path);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let mut rewritten = workbook.to_vec();
+    *rewritten.last_mut().unwrap() ^= 1;
+    std::fs::write(&path, rewritten).unwrap();
+    match prepare(viewer, OfficeFormat::Xlsx, Cancellation::default()) {
+        Err(error) => assert!(
+            error.message.starts_with("Source changed since capture"),
+            "{error:?}"
+        ),
+        Ok(prepared) => {
+            release(prepared);
+            panic!("a rewritten workbook prepared");
+        }
+    }
 }
 
 #[test]
@@ -996,7 +1053,7 @@ fn refusal(name: &str, bytes: &[u8]) -> PreviewError {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join(name);
     std::fs::write(&path, bytes).unwrap();
-    let parent = CapturedFile::capture(&path).unwrap();
+    let parent = viewer_capture(&path);
     match prepare(parent, format(&path), Cancellation::default()) {
         Err(error) => error,
         Ok(prepared) => {

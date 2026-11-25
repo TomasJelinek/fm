@@ -57,7 +57,7 @@ fn office_real_generated_links_resolve_from_bootstrap_catalog_and_nested_sheets(
     )
     .unwrap();
     let prepared = prepare(
-        CapturedFile::capture(&path).unwrap(),
+        super::viewer_capture(&path),
         OfficeFormat::Xlsx,
         Cancellation::default(),
     )
