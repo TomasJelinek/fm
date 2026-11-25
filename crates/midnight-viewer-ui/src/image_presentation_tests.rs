@@ -1402,6 +1402,8 @@ fn rejected_open_does_not_leave_a_visible_native_window() {
     let entries: Arc<[Entry]> = vec![Entry::new(EntryId(1), path.clone(), EntryKind::File)].into();
     let mut preferences = ViewerPreferences::default();
     preferences.text_font.size = 0;
+    // The window `open()` showed above; a rejected opening must not add a visible one.
+    let shown = TEST_WINDOW.with(|slot| slot.borrow().clone());
     let result = manager.open(
         ViewerLaunch {
             find: None,
@@ -1430,10 +1432,13 @@ fn rejected_open_does_not_leave_a_visible_native_window() {
         Rc::new(|_| {}),
     );
     assert!(result.is_err());
+    // Refused before any native window exists, or with its new window never shown.
     assert!(TEST_WINDOW.with(|slot| {
-        slot.borrow()
-            .upgrade()
-            .is_none_or(|adapter| !adapter.window().is_visible())
+        let latest = slot.borrow();
+        latest.ptr_eq(&shown)
+            || latest
+                .upgrade()
+                .is_none_or(|adapter| !adapter.window().is_visible())
     }));
     assert_eq!(manager.windows.borrow().len(), 1);
     manager.close_all();

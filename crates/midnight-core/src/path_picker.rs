@@ -85,13 +85,12 @@ impl PathPickerRequest {
         if let Some(path) = &self.initial_directory {
             validate_picked_path(path)?;
         }
-        if let Some(name) = &self.initial_name {
-            if Path::new(name).file_name() != Some(name.as_os_str())
+        if let Some(name) = &self.initial_name
+            && (Path::new(name).file_name() != Some(name.as_os_str())
                 || name.as_encoded_bytes().contains(&0)
-                || name.as_encoded_bytes().len() > 4 * 1024 * 1024
-            {
-                return Err(invalid("The initial filename must be one native filename."));
-            }
+                || name.as_encoded_bytes().len() > 4 * 1024 * 1024)
+        {
+            return Err(invalid("The initial filename must be one native filename."));
         }
         Ok(())
     }
