@@ -64,7 +64,7 @@ folder) and the Engine's own settings-file workers.
 | ID | Behavior | Scenario | Check | Status |
 | --- | --- | --- | --- | --- |
 | O-A01 | The active appearance previews immediately and Cancel restores it | `options_appearance`, `options_themes` | active palette, panel luminance and saved choices | PASS |
-| O-A02 | The dark and light menus offer every palette of their appearance. Host changes apply the matching choice during preview and after restart | `options_themes` | accessible popup lists, rendered panel colors, inactive edits, OK, Cancel and restart | PASS |
+| O-A02 | The dark and light menus offer every palette of their appearance. The last pick, dark or light, is previewed whatever the host appearance; OK, Cancel and a restart show the choice matching the host | `options_themes` | accessible popup lists, rendered panel colors, previews on the other appearance, OK, Cancel and restart | Not run since the preview change (passed in its earlier form, where an inactive pick waited for its host appearance) |
 | O-A03 | Spacing (desktop, touch) | `options_appearance` | row height, density | PASS |
 | O-A04 | Font family | `options_appearance` | rendered panel text changes | PASS |
 | O-A05 | Desktop and touch font sizes | `options_appearance` | row height, rendered text | PASS |

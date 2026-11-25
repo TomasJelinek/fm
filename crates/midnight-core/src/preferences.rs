@@ -187,7 +187,7 @@ impl PreferenceTheme {
         Self::PlumSmoke,
     ];
 
-    pub const DEFAULT_DARK: Self = Self::PencilLead;
+    pub const DEFAULT_DARK: Self = Self::Blue;
     pub const DEFAULT_LIGHT: Self = Self::Letterhead;
 
     pub const fn is_light(self) -> bool {

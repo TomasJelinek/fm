@@ -32,7 +32,8 @@ acceptance and Rust tests ([acceptance time record](verification/2026-11-24-acce
 The documents describe this source.
 
 - **Themes.** Options → Appearance remembers separate dark and light palettes and follows
-  the host appearance. The defaults are Pencil Lead and Letterhead. The [palette catalog](THEME_PROVENANCE.md)
+  the host appearance. The defaults are Blue and Letterhead; the theme picked last is previewed while
+  Options is open and OK shows the choice matching the system. The [palette catalog](THEME_PROVENANCE.md)
   lists the designs and the [settings format](SETTINGS_FILES.md) describes how choices are saved.
 - **Application icons.** Options → Appearance previews [three designs](../assets/branding/README.md#icon-shortlist).
   Harvest Navigator replaced the Moon as the default application icon after the 0.6.0

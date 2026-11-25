@@ -228,8 +228,10 @@ saves to the current location; it never changes the old file.
     is still read. The retired Moon icon's identifier, `moon`, reads as Harvest
     Navigator and is not written back.
   - 45: choosing a custom dark or light palette saves both `dark_theme` and
-    `light_theme`. Earlier profiles open with Pencil Lead for dark appearance and
-    Letterhead for light appearance and retain their other settings.
+    `light_theme`. Earlier profiles, and files that keep both defaults, open with Blue
+    for dark appearance and Letterhead for light appearance and retain their other
+    settings. Pencil Lead, the dark default of the first 0.6.0 builds, is a choice
+    like any other: a file that names it keeps it.
 
   Historical schemas 34 through 44 require at least one of the fields each introduced.
   Schema 45 requires both theme choices. The reader also checks that fields belong to

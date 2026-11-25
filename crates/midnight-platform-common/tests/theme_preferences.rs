@@ -132,3 +132,27 @@ fn separate_theme_keys_require_both_recognized_names_in_the_correct_mode() {
     legacy["dark_theme"] = "blue".into();
     assert!(decode_preferences(&serde_json::to_vec(&legacy).unwrap()).is_err());
 }
+
+#[test]
+fn blue_is_the_default_dark_theme_and_a_stored_choice_is_kept() {
+    assert_eq!(PreferenceTheme::DEFAULT_DARK, PreferenceTheme::Blue);
+    assert_eq!(PreferenceTheme::DEFAULT_LIGHT, PreferenceTheme::Letterhead);
+    // A file without a dark theme, of this or an earlier schema, opens with Blue.
+    let old = document(UserPreferences::default());
+    assert!(old.get("dark_theme").is_none());
+    let loaded = decode_preferences(&serde_json::to_vec(&old).unwrap()).unwrap();
+    assert_eq!(loaded.dark_theme, PreferenceTheme::Blue);
+    assert_eq!(loaded.light_theme, PreferenceTheme::Letterhead);
+    // Pencil Lead, the earlier default, is now a choice: it is stored and kept.
+    let pencil = UserPreferences {
+        dark_theme: PreferenceTheme::PencilLead,
+        ..Default::default()
+    };
+    let saved = document(pencil.clone());
+    assert_eq!(saved["dark_theme"], "pencil-lead");
+    assert_eq!(saved["light_theme"], "letterhead");
+    assert_eq!(
+        decode_preferences(&serde_json::to_vec(&saved).unwrap()).unwrap(),
+        pencil
+    );
+}

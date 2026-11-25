@@ -98,8 +98,14 @@ pub(super) struct EditedFields {
 }
 
 impl PreferencesState {
+    /// The theme shown: the one previewed in an open Options dialog, otherwise the
+    /// choice that matches the system appearance.
     pub(crate) fn theme_index(&self) -> i32 {
-        if self.host_is_light {
+        let light = match self.options.previewed_light {
+            Some(light) if self.options.open => light,
+            _ => self.host_is_light,
+        };
+        if light {
             self.values.light_theme.index()
         } else {
             self.values.dark_theme.index()
@@ -650,6 +656,9 @@ impl Presenter {
             let Some(theme) = PreferenceTheme::from_index(theme) else {
                 return;
             };
+            if field == 0 && self.preferences.options.open {
+                self.preferences.options.previewed_light = Some(theme.is_light());
+            }
             if theme.is_light() {
                 self.preferences.edited.light_theme |= field == 0;
                 preferences.light_theme = theme;

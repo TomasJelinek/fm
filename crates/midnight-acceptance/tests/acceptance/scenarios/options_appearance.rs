@@ -34,7 +34,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     let mut app = App::start(config(&folder, &store));
     if app.window.get_theme_index() != DEFAULT_DARK {
         return Err(format!(
-            "the default dark theme is {} instead of Pencil Lead",
+            "the default dark theme is {} instead of Blue",
             app.window.get_theme_index()
         ));
     }
@@ -65,7 +65,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         "Options › Appearance previewing Carbon Black",
     );
     options::cancel(&mut app)?;
-    app.until("Cancel to restore Pencil Lead", |app| {
+    app.until("Cancel to restore Blue", |app| {
         app.window.get_theme_index() == DEFAULT_DARK
     });
     if app.window.get_current_app_icon() != harvest {
@@ -75,24 +75,23 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     let restored = Frame::of(&mut app).mean_luma();
     if (restored - initial_luma).abs() > 2.0 || store.saves() != 0 {
         return Err(format!(
-            "Cancel did not restore Pencil Lead: mean luma {initial_luma:.1} before, {restored:.1} after; {} saves",
+            "Cancel did not restore Blue: mean luma {initial_luma:.1} before, {restored:.1} after; {} saves",
             store.saves()
         ));
     }
 
     // Theme: the panels follow the previewed theme (the right list is mostly outside
-    // the dialog); Light is much brighter than Dark.
+    // the dialog), the light pick too while the host stays dark; Light is much brighter
+    // than Dark.
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
     options::choose(&mut app, "Light theme", "Light")?;
-    app.set_host_dark(false);
-    app.until("the Light theme", |app| {
+    app.until("the Light theme preview on a dark host", |app| {
         app.window.get_theme_index() == LIGHT
     });
     app.idle(std::time::Duration::from_millis(300));
     let light_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
     options::choose(&mut app, "Dark theme", "Dark")?;
-    app.set_host_dark(true);
     app.until("the Dark theme", |app| app.window.get_theme_index() == DARK);
     app.idle(std::time::Duration::from_millis(300));
     let dark_list = Frame::of(&mut app).luma(options::list_area(&app, PaneId::Right));
@@ -249,11 +248,11 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
 
     // Reset to defaults restores the default appearance.
     options::press(&mut app, "Reset to defaults")?;
-    app.until("Pencil Lead after Reset to defaults", |app| {
+    app.until("Blue after Reset to defaults", |app| {
         app.window.get_theme_index() == DEFAULT_DARK && app.window.get_density_index() == 0
     });
     for (label, wanted) in [
-        ("Dark theme", "Pencil Lead"),
+        ("Dark theme", "Blue"),
         ("Light theme", "Letterhead"),
         (ICON_PICKER, "Harvest Navigator"),
         ("Spacing", SPACING_DESKTOP),
@@ -311,6 +310,6 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     context.note("All three icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Harvest Navigator.");
-    context.note("Appearance: Cancel restored the previewed theme. The Light and Dark selections followed the host appearance. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Pencil Lead and Letterhead with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
+    context.note("Appearance: Cancel restored the previewed theme. The Light pick was previewed on a dark host, then the Dark pick. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Blue and Letterhead with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
     app.shutdown()
 }

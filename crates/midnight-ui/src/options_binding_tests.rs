@@ -231,8 +231,11 @@ fn reset_to_defaults_updates_controls_the_user_already_changed() {
         h.value("Light theme", AccessibleRole::Combobox),
         original_light
     );
-    assert_eq!(h.window.get_theme_index(), dark_index);
+    // The light pick is previewed whatever the host appearance.
+    let light_index = h.window.get_theme_index();
+    assert_ne!(light_index, dark_index);
     h.activate("Reset to defaults", AccessibleRole::Button);
+    assert_ne!(h.window.get_theme_index(), light_index);
     assert_eq!(
         h.value("Dark theme", AccessibleRole::Combobox),
         original_dark

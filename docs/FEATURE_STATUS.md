@@ -425,7 +425,8 @@ How to read it:
 ## Options, keyboard and appearance
 
 - **Windows and Linux:** Options pages for general settings, appearance (three application icons with
-  Harvest Navigator by default, independent dark and light theme choices that follow the OS, with 30 dark and 16 light palettes,
+  Harvest Navigator by default, independent dark and light theme choices that follow the OS (Blue and Letterhead by default;
+  the last picked is previewed while Options is open), with 30 dark and 16 light palettes,
   density, fonts, the Scrolling glide slider: Off, Very short, Short, Default, Long or
   Very long, and the Scrolling speed slider: Very slow, Slow, Medium, Fast or Very fast
   wheel notches, both applied at once to panels, lists, dialogs and every viewer),

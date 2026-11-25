@@ -26,6 +26,10 @@ pub(crate) struct State {
     plugin_extension_panel: Option<PluginExtensionPanel>,
     pub(super) baseline: Option<Box<UserPreferences>>,
     commit_revision: Option<PreferencesRevision>,
+    /// Whether the theme picker changed last in this session was the light one. While
+    /// Options is open its theme is shown whatever the system appearance; OK and Cancel
+    /// return to the theme that matches the system.
+    pub(super) previewed_light: Option<bool>,
 }
 
 /// Options-owned fields only. Geometry, navigation, viewer settings and terminal
@@ -188,6 +192,7 @@ impl Presenter {
             return;
         }
         self.preferences.options.open = true;
+        self.preferences.options.previewed_light = None;
         self.preferences.options.error_topic = None;
         self.preferences.options.reset_status.clear();
         self.preferences
@@ -287,6 +292,8 @@ impl Presenter {
         self.keyboard.error.clear();
         self.keyboard.reset_editor();
         self.preferences.options.error_topic = None;
+        // The defaults are shown for the system appearance, as after OK.
+        self.preferences.options.previewed_light = None;
         // Preserve the custom-command draft too. It is user content, even before
         // OK, and resetting application preferences must not silently delete it.
         self.update_preferences(values.clone(), send);

@@ -94,25 +94,91 @@ fn invalid_theme_callback_indices_keep_both_slots() {
 }
 
 #[test]
-fn changing_host_appearance_during_options_applies_the_matching_draft_and_cancel_restores_it() {
+fn options_previews_the_last_picked_theme_whatever_the_host_and_cancel_restores_it() {
     let mut p = Presenter::new("left".into(), "right".into());
+    p.set_host_dark(true);
     let saved = UserPreferences {
         dark_theme: PreferenceTheme::Dark,
         light_theme: PreferenceTheme::Light,
         ..Default::default()
     };
     p.preferences_loaded(Ok(saved.clone()));
+    assert_eq!(p.preferences.theme_index(), saved.dark_theme.index());
     p.begin_options();
     let no_save = |_| panic!("Options previews must not save");
+    // A light pick is previewed while the host is dark.
     p.change_preferences(PreferenceTheme::Iris.index(), 0, 0, &no_save);
-    assert_eq!(p.preferences.theme_index(), saved.dark_theme.index());
+    assert_eq!(p.preferences.theme_index(), PreferenceTheme::Iris.index());
     assert!(p.set_host_dark(false));
     assert!(!p.set_host_dark(false));
     assert_eq!(p.preferences.theme_index(), PreferenceTheme::Iris.index());
+    // A dark pick is previewed while the host is light.
     p.change_preferences(PreferenceTheme::PlumSmoke.index(), 0, 0, &no_save);
-    assert_eq!(p.preferences.theme_index(), PreferenceTheme::Iris.index());
+    assert_eq!(
+        p.preferences.theme_index(),
+        PreferenceTheme::PlumSmoke.index()
+    );
+    // Density keeps the previewed theme.
+    p.change_preferences(PreferenceTheme::Iris.index(), 1, 1, &no_save);
+    assert_eq!(
+        p.preferences.theme_index(),
+        PreferenceTheme::PlumSmoke.index()
+    );
     p.cancel_options(&no_save);
     assert_eq!(p.preferences.theme_index(), saved.light_theme.index());
     assert!(p.set_host_dark(true));
     assert_eq!(p.preferences.theme_index(), saved.dark_theme.index());
+}
+
+#[test]
+fn ok_shows_the_theme_that_matches_the_host_and_reset_ends_the_preview() {
+    let mut p = Presenter::new("left".into(), "right".into());
+    p.set_host_dark(true);
+    p.preferences_loaded(Ok(UserPreferences::default()));
+    assert_eq!(
+        p.preferences.theme_index(),
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
+    let no_save = |_| panic!("Options previews must not save");
+    p.begin_options();
+    p.change_preferences(PreferenceTheme::Iris.index(), 0, 0, &no_save);
+    p.reset_options(&no_save);
+    assert_eq!(
+        p.preferences.theme_index(),
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
+    p.change_preferences(PreferenceTheme::Iris.index(), 0, 0, &no_save);
+    assert_eq!(p.preferences.theme_index(), PreferenceTheme::Iris.index());
+    let saves = RefCell::new(Vec::new());
+    p.accept_options(&|command| {
+        if let Command::SavePreferences {
+            revision,
+            preferences,
+        } = command
+        {
+            saves.borrow_mut().push((revision, *preferences));
+        }
+        true
+    });
+    let (revision, saved) = saves.borrow()[0].clone();
+    assert_eq!(saved.light_theme, PreferenceTheme::Iris);
+    assert_eq!(saved.dark_theme, PreferenceTheme::DEFAULT_DARK);
+    // Still the preview until the save completes Options.
+    assert_eq!(p.preferences.theme_index(), PreferenceTheme::Iris.index());
+    p.preferences_saved(revision, Ok(()));
+    assert!(!p.preferences.options.open);
+    // The host is dark, so the saved dark choice is shown, not the last preview.
+    assert_eq!(
+        p.preferences.theme_index(),
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
+    assert!(p.set_host_dark(false));
+    assert_eq!(p.preferences.theme_index(), PreferenceTheme::Iris.index());
+    // A new session starts without a preview.
+    p.begin_options();
+    assert!(p.set_host_dark(true));
+    assert_eq!(
+        p.preferences.theme_index(),
+        PreferenceTheme::DEFAULT_DARK.index()
+    );
 }

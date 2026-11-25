@@ -120,17 +120,19 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
         }
     }
 
-    // Stage both slots while the light host is active, then switch before saving.
+    // On a light host each pick is previewed, the dark one too; OK then shows the
+    // choice that matches the host, not the last preview.
+    app.set_host_dark(false);
     options::choose(&mut app, "Light theme", "Iris")?;
-    options::choose(&mut app, "Dark theme", "Plum Smoke")?;
-    if app.window.get_theme_index() != PreferenceTheme::Iris.index() || store.saves() != 0 {
-        return Err(
-            "editing an inactive dark theme changed the active palette or wrote settings".into(),
-        );
+    if app.window.get_theme_index() != PreferenceTheme::Iris.index() {
+        return Err("the Iris pick was not previewed".into());
     }
-    app.set_host_dark(true);
-    if app.window.get_theme_index() != PreferenceTheme::PlumSmoke.index() {
-        return Err("the dark host did not pick the staged Plum Smoke palette".into());
+    options::choose(&mut app, "Dark theme", "Plum Smoke")?;
+    if app.window.get_theme_index() != PreferenceTheme::PlumSmoke.index() || store.saves() != 0 {
+        return Err(
+            "the Plum Smoke pick on a light host was not previewed, or settings were written"
+                .into(),
+        );
     }
     options::review_shot(
         &mut app,
@@ -140,6 +142,13 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
     );
     if !options::ok(&mut app, &store)? {
         return Err("OK did not save both theme choices".into());
+    }
+    if app.window.get_theme_index() != PreferenceTheme::Iris.index() {
+        return Err("OK on a light host did not show the light choice, Iris".into());
+    }
+    app.set_host_dark(true);
+    if app.window.get_theme_index() != PreferenceTheme::PlumSmoke.index() {
+        return Err("the dark host did not pick the saved Plum Smoke palette".into());
     }
     let saved = store.current();
     if (saved.dark_theme, saved.light_theme) != (PreferenceTheme::PlumSmoke, PreferenceTheme::Iris)
@@ -169,8 +178,8 @@ pub fn themes(context: &mut Context) -> Result<(), String> {
     options::choose(&mut app, "Dark theme", "Warm Ash")?;
     options::choose(&mut app, "Light theme", "Faience")?;
     app.set_host_dark(true);
-    if app.window.get_theme_index() != PreferenceTheme::WarmAsh.index() {
-        return Err("the dark host did not use the changed dark choice".into());
+    if app.window.get_theme_index() != PreferenceTheme::Faience.index() {
+        return Err("a host change replaced the preview of the last pick, Faience".into());
     }
     options::cancel(&mut app)?;
     if app.window.get_theme_index() != PreferenceTheme::PlumSmoke.index() {
