@@ -2,9 +2,8 @@ export global AppBranding {
     in-out property <int> icon-index;
 
     pure public function image-for(index: int) -> image {
-        index == 1 ? @image-url("../../../assets/branding/variants/harvest-navigator/midnight-explorer.png")
-            : index == 2 ? @image-url("../../../assets/branding/variants/origami-trail/midnight-explorer.png")
-            : index == 3 ? @image-url("../../../assets/branding/variants/interleave/midnight-explorer.png")
+        index == 1 ? @image-url("../../../assets/branding/variants/origami-trail/midnight-explorer.png")
+            : index == 2 ? @image-url("../../../assets/branding/variants/interleave/midnight-explorer.png")
             : @image-url("../../../assets/branding/midnight-explorer.png")
     }
 }

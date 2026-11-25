@@ -250,7 +250,7 @@ fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
 
     let mut h = Harness::options(
         UserPreferences {
-            app_icon: AppIcon::HarvestNavigator,
+            app_icon: AppIcon::OrigamiTrail,
             ..Default::default()
         },
         1,
@@ -261,23 +261,25 @@ fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
     let label = "Application icon";
     let chooser = AccessibleRole::Combobox;
     let saved = icon();
-    assert_eq!(h.value(label, chooser), "Harvest Navigator");
-    h.choose(label, 1);
     assert_eq!(h.value(label, chooser), "Origami Trail");
-    let origami = icon();
-    assert_ne!(origami, saved);
-    let preview = h.item("Origami Trail icon preview", AccessibleRole::Image);
+    // Picker steps are relative: one down from Origami Trail.
+    h.choose(label, 1);
+    assert_eq!(h.value(label, chooser), "Interleave");
+    let interleave = icon();
+    assert_ne!(interleave, saved);
+    let preview = h.item("Interleave icon preview", AccessibleRole::Image);
     assert_eq!(
         preview
             .downcast::<i_slint_core::items::ImageItem>()
             .unwrap()
             .as_pin_ref()
             .source(),
-        origami
+        interleave
     );
     h.activate("Reset to defaults", AccessibleRole::Button);
-    assert_eq!(h.value(label, chooser), "Midnight Moon");
-    assert_ne!(icon(), origami);
+    assert_eq!(h.value(label, chooser), "Harvest Navigator");
+    assert_ne!(icon(), interleave);
+    assert_ne!(icon(), saved);
     h.activate("Cancel", AccessibleRole::Button);
     assert_eq!(icon(), saved);
     assert!(
@@ -290,9 +292,9 @@ fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
     h.window.invoke_show_options();
     h.window.set_options_topic_index(1);
     h.settle();
+    assert_eq!(h.value(label, chooser), "Origami Trail");
+    h.choose(label, -1);
     assert_eq!(h.value(label, chooser), "Harvest Navigator");
-    h.choose(label, 2);
-    assert_eq!(h.value(label, chooser), "Interleave");
     assert_ne!(icon(), saved);
     h.activate("OK", AccessibleRole::Button);
     let commands = h.sent.borrow();
@@ -300,7 +302,7 @@ fn application_icon_picker_previews_restores_and_saves_the_selected_artwork() {
         Command::SavePreferences { preferences, .. } => Some(preferences.app_icon),
         _ => None,
     });
-    assert_eq!(writes.next(), Some(AppIcon::Interleave));
+    assert_eq!(writes.next(), Some(AppIcon::HarvestNavigator));
     assert_eq!(writes.next(), None);
 }
 

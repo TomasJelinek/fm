@@ -34,7 +34,10 @@ The documents describe this source.
 - **Themes.** Options → Appearance remembers separate dark and light palettes and follows
   the host appearance. The defaults are Pencil Lead and Letterhead. The [palette catalog](THEME_PROVENANCE.md)
   lists the designs and the [settings format](SETTINGS_FILES.md) describes how choices are saved.
-- **Application icons.** Options → Appearance previews [four designs](../assets/branding/README.md#icon-shortlist).
+- **Application icons.** Options → Appearance previews [three designs](../assets/branding/README.md#icon-shortlist).
+  Harvest Navigator replaced the Moon as the default application icon after the 0.6.0
+  release commit; settings that named the Moon open with Harvest Navigator. The evidence
+  below predates that change, when the picker offered four designs.
   Windows acceptance run `20261125-092639` passed selection, Cancel, save, restart
   and Reset. A native Windows test checked the selected artwork for both title-bar
   and taskbar icons on first display and after switching. All 103 settings tests passed.

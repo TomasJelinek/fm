@@ -222,9 +222,11 @@ saves to the current location; it never changes the old file.
     nothing else migrates
     ([transfer options](developer/TRANSFER_OPTIONS.md)).
   - 44: `app_icon`, the design chosen in **Options → Appearance → Application icon**.
-    Choosing Harvest Navigator, Origami Trail or Interleave stores `harvest-navigator`,
-    `origami-trail` or `interleave`. Older profiles use Midnight Moon. Schema 44 also
-    accepts its identifier, `moon`.
+    Choosing Origami Trail or Interleave stores `origami-trail` or `interleave`. The
+    default, Harvest Navigator, is not written; a file without `app_icon`, including
+    every file of an earlier schema, reads as Harvest Navigator. `harvest-navigator`
+    is still read. The retired Moon icon's identifier, `moon`, reads as Harvest
+    Navigator and is not written back.
   - 45: choosing a custom dark or light palette saves both `dark_theme` and
     `light_theme`. Earlier profiles open with Pencil Lead for dark appearance and
     Letterhead for light appearance and retain their other settings.

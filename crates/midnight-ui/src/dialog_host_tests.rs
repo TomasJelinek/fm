@@ -80,7 +80,7 @@ fn exhausted_sessions_never_reuse_an_identity() {
 fn tool_windows_follow_the_owner_icon_at_creation_and_while_open() {
     ui(|_| {
         let main = crate::MainWindow::new().unwrap();
-        main.set_app_icon_index(2);
+        main.set_app_icon_index(1);
         main.show().unwrap();
         let mut sessions = DialogSessions::default();
         let (find, host) = DialogHost::create_tool(
@@ -99,10 +99,10 @@ fn tool_windows_follow_the_owner_icon_at_creation_and_while_open() {
         let opening_icon = main.get_current_app_icon();
         assert_eq!(icon(), opening_icon);
         host.show(find.window()).unwrap();
-        main.set_app_icon_index(3);
+        main.set_app_icon_index(2);
         assert_ne!(main.get_current_app_icon(), opening_icon);
         assert_eq!(icon(), main.get_current_app_icon());
-        main.set_app_icon_index(2);
+        main.set_app_icon_index(1);
         assert_eq!(icon(), opening_icon);
         host.close(find.window());
     });

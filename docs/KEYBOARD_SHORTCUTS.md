@@ -426,7 +426,7 @@ It does not wait for the entire batch or retain sources in recovery folders.
 Source directories are removed postorder only when their contents were moved;
 skips and failures preserve unfinished sources. Platform and metadata limits
 remain explicit in the transfer contract.
-Options is the gear next to the right end of the top toolbar. The application moon
+Options is the gear next to the right end of the top toolbar. The application
 icon to its right, at the end, opens About, with the application version,
 copyright and license; its View license shows the GNU GPL text, and Escape or Back
 returns from it. Escape or Close dismisses About. Both controls stay in place when the panel

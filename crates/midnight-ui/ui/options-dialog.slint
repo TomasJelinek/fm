@@ -588,7 +588,7 @@ export component OptionsBody inherits Rectangle {
                     icon-picker := OptionPicker {
                         narrow: root.narrow; horizontal-stretch: 1;
                         label: "Application icon";
-                        model: ["Midnight Moon", "Harvest Navigator", "Origami Trail", "Interleave"];
+                        model: ["Harvest Navigator", "Origami Trail", "Interleave"];
                         current-index: AppBranding.icon-index;
                         hint: "Preview the icon used by Midnight Explorer windows. Choose OK to save it.";
                         selected(index) => { root.app-icon-changed(index); }

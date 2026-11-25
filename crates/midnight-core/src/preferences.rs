@@ -288,21 +288,15 @@ impl PreferenceTheme {
 #[repr(u8)]
 pub enum AppIcon {
     #[default]
-    Moon = 0,
-    HarvestNavigator = 1,
-    OrigamiTrail = 2,
-    Interleave = 3,
+    HarvestNavigator = 0,
+    OrigamiTrail = 1,
+    Interleave = 2,
 }
 
 impl AppIcon {
-    const ALL: [Self; 4] = [
-        Self::Moon,
-        Self::HarvestNavigator,
-        Self::OrigamiTrail,
-        Self::Interleave,
-    ];
+    const ALL: [Self; 3] = [Self::HarvestNavigator, Self::OrigamiTrail, Self::Interleave];
 
-    /// Stable position in the Options picker.
+    /// Position in the Options picker.
     pub const fn index(self) -> i32 {
         self as i32
     }
@@ -315,7 +309,6 @@ impl AppIcon {
     /// Portable identifier used in saved and exported preferences.
     pub const fn storage_name(self) -> &'static str {
         match self {
-            Self::Moon => "moon",
             Self::HarvestNavigator => "harvest-navigator",
             Self::OrigamiTrail => "origami-trail",
             Self::Interleave => "interleave",

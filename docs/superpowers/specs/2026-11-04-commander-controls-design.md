@@ -170,7 +170,7 @@ No shell is parsed or invoked by this editing action.
   shortcut hints and shared availability rules; see the
   [expanded main menu](2026-11-08-main-menu.md).
 - Remove the entire top Midnight Explorer/About branding row. About stays in F10
-  Menu and is also available from the moon icon at the top toolbar's right end.
+  Menu and is also available from the application icon at the top toolbar's right end.
   The Options gear sits immediately to its left; both remain visible when the
   panel tools scroll. No replacement full-width branding header is added.
 - Themes: Blue(default), neutral Dark, Light. One Slint Theme global owns semantic

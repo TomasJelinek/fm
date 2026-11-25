@@ -22,7 +22,7 @@ border in desktop and touch layouts, without changing the outer control size or
 combining the primary action with opening its menu.
 
 The latest follow-up moves Options from the footer to a fixed gear button at the
-right end of this toolbar. An application moon icon immediately to its right
+right end of this toolbar. An application icon immediately to its right
 opens About with the application version. These two application-wide controls
 stay visible while the panel-action strip scrolls. The footer now contains only
 the twelve function keys and Jobs, reclaiming the removed Options button's width.

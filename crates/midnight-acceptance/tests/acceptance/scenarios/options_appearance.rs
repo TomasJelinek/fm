@@ -7,7 +7,7 @@ use crate::{
     options_support::{self as options, Frame, SettingsStore},
 };
 use i_slint_core::items::AccessibleRole;
-use midnight_core::{GlyphFitting, PaneId, PreferenceTheme, UiDensity};
+use midnight_core::{AppIcon, GlyphFitting, PaneId, PreferenceTheme, UiDensity};
 use std::{path::Path, sync::Arc};
 
 const SPACING_DESKTOP: &str = "Desktop / mouse · compact";
@@ -39,20 +39,20 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
     let initial_luma = Frame::of(&mut app).mean_luma();
-    let moon = app.window.get_current_app_icon();
+    let harvest = app.window.get_current_app_icon();
 
     // Preview a theme and icon, then Cancel to restore the previous appearance.
     options::open(&mut app)?;
     options::page(&mut app, "Appearance")?;
     if options::value(&app, AccessibleRole::Combobox, ICON_PICKER).as_deref()
-        != Some("Midnight Moon")
+        != Some("Harvest Navigator")
     {
-        return Err("the default application icon is not Midnight Moon".into());
+        return Err("the default application icon is not Harvest Navigator".into());
     }
-    options::choose(&mut app, ICON_PICKER, "Harvest Navigator")?;
-    let harvest = app.window.get_current_app_icon();
-    if harvest == moon {
-        return Err("Harvest Navigator did not replace the window artwork".into());
+    options::choose(&mut app, ICON_PICKER, "Origami Trail")?;
+    let origami = app.window.get_current_app_icon();
+    if origami == harvest {
+        return Err("Origami Trail did not replace the window artwork".into());
     }
     options::choose(&mut app, "Dark theme", "Carbon Black")?;
     app.until("the Carbon Black theme preview", |app| {
@@ -68,8 +68,8 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     app.until("Cancel to restore Pencil Lead", |app| {
         app.window.get_theme_index() == DEFAULT_DARK
     });
-    if app.window.get_current_app_icon() != moon {
-        return Err("Cancel did not restore the Midnight Moon artwork".into());
+    if app.window.get_current_app_icon() != harvest {
+        return Err("Cancel did not restore the Harvest Navigator artwork".into());
     }
     app.idle(std::time::Duration::from_millis(300));
     let restored = Frame::of(&mut app).mean_luma();
@@ -102,14 +102,9 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         ));
     }
 
-    options::choose(&mut app, ICON_PICKER, "Origami Trail")?;
-    let origami = app.window.get_current_app_icon();
-    if origami == moon || origami == harvest {
-        return Err("Origami Trail repeated a previous window icon".into());
-    }
     options::choose(&mut app, ICON_PICKER, "Interleave")?;
     let interleave = app.window.get_current_app_icon();
-    if interleave == moon || interleave == harvest || interleave == origami {
+    if interleave == harvest || interleave == origami {
         return Err("Interleave repeated a previous window icon".into());
     }
 
@@ -260,7 +255,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
     for (label, wanted) in [
         ("Dark theme", "Pencil Lead"),
         ("Light theme", "Letterhead"),
-        (ICON_PICKER, "Midnight Moon"),
+        (ICON_PICKER, "Harvest Navigator"),
         ("Spacing", SPACING_DESKTOP),
         ("Font family", "Application default"),
         ("Desktop font", "12"),
@@ -274,8 +269,8 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
             ));
         }
     }
-    if app.window.get_current_app_icon() != moon {
-        return Err("Reset to defaults did not preview the Midnight Moon artwork".into());
+    if app.window.get_current_app_icon() != harvest {
+        return Err("Reset to defaults did not preview the Harvest Navigator artwork".into());
     }
     let before_cancel = store.saves();
     options::cancel(&mut app)?;
@@ -290,7 +285,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
         return Err("OK after Reset to defaults saved nothing".into());
     }
     let saved = store.current();
-    if saved.app_icon.storage_name() != "moon" {
+    if saved.app_icon != AppIcon::HarvestNavigator {
         return Err(format!(
             "Reset to defaults saved application icon {:?}",
             saved.app_icon
@@ -315,7 +310,7 @@ pub fn appearance(context: &mut Context) -> Result<(), String> {
             saved.glyph_fitting
         ));
     }
-    context.note("All four icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Midnight Moon.");
+    context.note("All three icon choices displayed distinct window artwork. OK saved Interleave, restart restored it, cancelling Reset kept it, and accepting Reset saved Harvest Navigator.");
     context.note("Appearance: Cancel restored the previewed theme. The Light and Dark selections followed the host appearance. The 16 px desktop and 18 px touch fonts, touch spacing and font face changed the panels. OK saved them with smooth text rendering and a restart restored them. Reset selected Pencil Lead and Letterhead with desktop spacing, 12/15 px fonts and sharp text. Text rendering configures FemtoVG at startup and is verified here through persistence.");
     app.shutdown()
 }

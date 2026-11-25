@@ -686,7 +686,7 @@ When Windows and WSL use the same checkout, give Linux its own output folder:
 
 ### Linux desktop launcher
 
-Ubuntu GNOME resolves the running application's moon icon through an installed
+Ubuntu GNOME resolves the running application's icon through an installed
 desktop entry, including in X11 sessions. Native Wayland also uses the matching
 application ID and desktop entry. Register a debug build directly from the
 repository root:
@@ -1035,11 +1035,11 @@ current keys.
   uses the matching choice at startup and when your operating system switches appearance.
   The 30 dark choices default to **Pencil Lead** and the 16 light choices to **Letterhead**.
   The same page offers Desktop/Touch spacing, an installed font family and independent Desktop/Touch
-  base sizes (8–32px). In **Appearance → Application icon**, choose Midnight Moon
-  (the default), Harvest Navigator, Origami Trail, or Interleave. The toolbar and
+  base sizes (8–32px). In **Appearance → Application icon**, choose Harvest Navigator
+  (the default), Origami Trail, or Interleave. The toolbar and
   supported window icons preview your selection immediately. **OK** saves it for
   the next launch and **Cancel** restores your previous icon.
-  [Preview the alternate designs](../assets/branding/README.md#icon-shortlist).
+  [Preview the designs](../assets/branding/README.md#icon-shortlist).
   Appearance → **Text rendering**
   chooses how glyphs meet the pixel grid: Sharp (fitted, the default), Balanced
   (snapped) or Smooth (subpixel). It applies after a restart; the
@@ -1105,8 +1105,8 @@ current keys.
   Attributes, Find, Compare files, Compare directories, Checksums, Make File List,
   Folder sizes, Properties and Hot Paths. Drives, the filter, view and sort choices,
   tabs and paths remain per panel. Narrow windows scroll the shared toolbar.
-  The Options gear and, at the right end, the moon button stay fixed; the moon
-  opens About with the application version and copyright. Its night sky shows
+  The Options gear and, at the right end, the application icon button stay fixed;
+  the icon opens About with the application version and copyright. Its night sky shows
   the application icon you chose and holds still while Windows animation effects
   are off. The bottom bar keeps F1–F12
   and Jobs.

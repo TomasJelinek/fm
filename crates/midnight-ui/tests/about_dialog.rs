@@ -737,10 +737,10 @@ fn the_sky_scenes_stay_clear_of_the_title_icon_and_saturn() {
     let mut about = About::open(1000, 800);
     let image =
         |about: &About, label: &str| ui::popup_item(about.window(), label, AccessibleRole::Image);
-    // The icon is the Moon: the sky shows no second one.
+    // The sky shows no crescent moon beside the application icon.
     assert!(
         ui::try_popup_item(about.window(), "Crescent moon", AccessibleRole::Image).is_none(),
-        "a crescent moon beside the Moon icon"
+        "a crescent moon beside the application icon"
     );
     let mut satellite = Vec::new();
     // Eight moments across the sky's 72 s loop, every 9 s from 3 s.
@@ -1041,10 +1041,10 @@ fn saturn_keeps_clear_of_the_title_and_the_shooting_stars_at_every_size() {
 }
 
 #[test]
-fn shooting_stars_pass_in_front_of_the_moon() {
+fn shooting_stars_pass_in_front_of_the_application_icon() {
     let about = About::open(1000, 800);
     let sky = about_sky(about.window());
-    let moon = ui::popup_item(
+    let artwork = ui::popup_item(
         about.window(),
         "Midnight Explorer icon",
         AccessibleRole::Image,
@@ -1054,7 +1054,7 @@ fn shooting_stars_pass_in_front_of_the_moon() {
     visit(&sky, &mut |item| order.push(item.clone()));
     let icon = order
         .iter()
-        .position(|item| *item == moon)
+        .position(|item| *item == artwork)
         .expect("the icon is in the sky");
     let meteors: Vec<usize> = order
         .iter()
@@ -1065,16 +1065,19 @@ fn shooting_stars_pass_in_front_of_the_moon() {
     assert_eq!(meteors.len(), 3, "the shooting stars");
     assert!(
         meteors.iter().all(|&at| at > icon),
-        "shooting stars {meteors:?} are drawn behind the Moon, item {icon}"
+        "shooting stars {meteors:?} are drawn behind the application icon, item {icon}"
     );
-    // At the default size the right one's path does cross the Moon.
-    let disc = bounds(&moon);
+    // At the default size the right one's path does cross the icon.
+    let disc = bounds(&artwork);
     let mut crossed = false;
     for _ in 0..48 {
         ui::advance(&about.clock, Duration::from_millis(500));
         crossed |= streaks(&sky).iter().any(|streak| streak.intersects(&disc));
     }
-    assert!(crossed, "no shooting star crosses the Moon {disc:?}");
+    assert!(
+        crossed,
+        "no shooting star crosses the application icon {disc:?}"
+    );
 }
 
 #[test]

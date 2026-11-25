@@ -72,7 +72,7 @@ const CURRENT_PREFERENCES_VERSION: u32 = 45;
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
-    /// Schema 44: application icon, omitted for the original Moon artwork.
+    /// Schema 44: application icon, omitted for the default Harvest Navigator artwork.
     #[serde(
         default,
         deserialize_with = "present",
@@ -769,6 +769,8 @@ fn decode_preferences_impl(
     let app_icon = match (stored.version, stored.app_icon.as_deref()) {
         (44, None) => return Err(invalid("missing schema 44 app icon")),
         (_, None) => AppIcon::default(),
+        // The retired Moon artwork, the default before Harvest Navigator replaced it.
+        (44.., Some("moon")) => AppIcon::HarvestNavigator,
         (44.., Some(name)) => {
             AppIcon::from_storage_name(name).ok_or_else(|| invalid("unknown app icon"))?
         }
