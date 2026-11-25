@@ -42,18 +42,6 @@ pub const TOUCHING: &str = "controls touching";
 pub const ELIDED_WITH_ROOM: &str = "text elided although there is room";
 pub const OPTION_ROWS: &str = "uneven gaps between option rows";
 
-/// Every check of this module, for the gate's summaries and red cases.
-pub const KINDS: [&str; 8] = [
-    ROW_ALIGNMENT,
-    CAPTION_CENTRE,
-    EDGE_ALIGNMENT,
-    COMPANION_SIZE,
-    ROW_GAPS,
-    TOUCHING,
-    ELIDED_WITH_ROOM,
-    OPTION_ROWS,
-];
-
 /// What an element is, as far as alignment goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {

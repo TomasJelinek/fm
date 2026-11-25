@@ -459,15 +459,6 @@ impl Editor {
         );
         patch
     }
-
-    /// Review, then go back to editing with the worker's answer shown.
-    pub fn review_and_return(&mut self) -> MetadataPatch {
-        let (revision, patch) = self.review();
-        self.preview(revision, patch.clone());
-        self.click("Back to editing", AccessibleRole::Button);
-        self.click("Times", AccessibleRole::Button);
-        patch
-    }
 }
 
 /// The control with this accessible label and role at or below `item`.
