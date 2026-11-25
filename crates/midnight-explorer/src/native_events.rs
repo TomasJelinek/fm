@@ -1,6 +1,6 @@
 //! The explorer's winit application handler. It sees every event before Slint and never
-//! changes its dispatch: geometry events and visibility changes of the main window wake
-//! the work that depends on them, and the opt-in idle probe counts wakeups.
+//! changes its dispatch. It observes main-window geometry and visibility, applies the first
+//! Windows taskbar icon and counts wakeups when the idle probe is enabled.
 use crate::idle_probe::Probe;
 use midnight_ui::MainWindow;
 use slint::{
@@ -20,6 +20,10 @@ use std::{
 };
 
 type Wake = RefCell<Option<Box<dyn Fn()>>>;
+
+#[cfg(windows)]
+#[path = "taskbar_icons_windows.rs"]
+mod taskbar_icons;
 
 /// Main-window hooks bound once the window exists; events before that wake nothing.
 #[derive(Default)]
@@ -76,6 +80,8 @@ pub(crate) struct Observer {
     probe: Option<Probe>,
     main: Rc<MainWindowEvents>,
     presentation: midnight_ui_input::NativePresentation,
+    #[cfg(windows)]
+    taskbar_icons: taskbar_icons::TaskbarIcons,
 }
 
 impl Observer {
@@ -84,6 +90,8 @@ impl Observer {
             probe,
             main,
             presentation: Default::default(),
+            #[cfg(windows)]
+            taskbar_icons: Default::default(),
         }
     }
 }
@@ -105,6 +113,9 @@ impl CustomApplicationHandler for Observer {
         event: &WindowEvent,
     ) -> EventResult {
         self.presentation.observe(id, native, window, event);
+        #[cfg(windows)]
+        self.taskbar_icons
+            .observe(&self.main, id, native, window, event);
         if matches!(
             event,
             WindowEvent::Resized(_)

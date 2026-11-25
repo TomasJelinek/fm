@@ -96,7 +96,7 @@ described in [Settings from another operating system](#settings-from-another-ope
 An accepted file is previewed like other Options edits:
 
 - Every Options page shows the imported settings at once, including the theme,
-  fonts and keyboard remaps. Unfinished page edits are discarded.
+  application icon, fonts and keyboard remaps. Unfinished page edits are discarded.
 - **OK** saves the whole file. Only after that save succeeds are the settings
   outside Options applied: the panels open the imported tabs, as at startup; the
   hot paths, panel split, view modes, filters, viewer settings, terminal choice,
@@ -175,8 +175,8 @@ saves to the current location; it never changes the old file.
   when indentation would pass the limit) and end with a newline. The whole file is
   at most 4 MiB.
 - `version` is the number of the settings schema. This version reads schema
-  versions 1 to 43. When saving or exporting, it writes the lowest version that can
-  hold the settings, at most 43. The latest schemas added:
+  versions 1 to 44. When saving or exporting, it writes the lowest version that can
+  hold the settings, at most 44. The latest schemas added:
   - 33: `file_comparators`, the external comparison rules;
   - 34: `glyph_fitting` (Text rendering) and `thumbnailer_associations`;
   - 35: `show_hidden_files` and `mask_selection` (the last Select or Deselect by mask
@@ -221,9 +221,13 @@ saves to the current location; it never changes the old file.
     The former per-dialog "Preserve exact modified time" choice was never saved, so
     nothing else migrates
     ([transfer options](developer/TRANSFER_OPTIONS.md)).
+  - 44: `app_icon`, the design chosen in **Options → Appearance → Application icon**.
+    Choosing Harvest Navigator, Origami Trail or Interleave stores `harvest-navigator`,
+    `origami-trail` or `interleave`. Older profiles use Midnight Moon. Schema 44 also
+    accepts its identifier, `moon`.
 
   A version is written only for a setting that needs it, so a schema 34, 35, 36, 37, 38,
-  39, 40, 41, 42 or 43 file without any of that version's new fields is refused, and so is a field in a
+  39, 40, 41, 42, 43 or 44 file without any of that version's new fields is refused, and so is a field in a
   schema older than the one that added it. The update check's own state (the last check,
   GitHub's retry time and a skipped version) is not a setting: it is kept in
   `update-state.json` in the private update folder

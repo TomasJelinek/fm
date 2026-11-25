@@ -422,7 +422,7 @@ How to read it:
 
 ## Options, keyboard and appearance
 
-- **Windows and Linux:** Options pages for general settings, appearance (26 themes,
+- **Windows and Linux:** Options pages for general settings, appearance (four application icons, 26 themes,
   density, fonts, the Scrolling glide slider: Off, Very short, Short, Default, Long or
   Very long, and the Scrolling speed slider: Very slow, Slow, Medium, Fast or Very fast
   wheel notches, both applied at once to panels, lists, dialogs and every viewer),

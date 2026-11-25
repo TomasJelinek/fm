@@ -8,10 +8,8 @@ import { InstallationNotice, InstallationNoticePresentation } from "installation
 import { EmbeddedUpdate, UpdateState } from "update-controls.slint";
 export { PanelFilterPresentation, PanelChoices, ArchivePasswords, HotPathsPresentation, OperationPresentation, FileListPresentation, NoticePresentation, InstallationNoticePresentation, PopupFocus, UpdateState }
 export { NetworkSignIn }
-import { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths } from "find-window.slint";
-export { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths }
-import { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft, ChecksumColumnWidths } from "checksum-window.slint";
-export { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft, ChecksumColumnWidths }
+export { FindWindow, FindRow, FindDraft, FindRootRow, FindColumnWidths } from "find-window.slint";
+export { ChecksumWindow, ChecksumDisplayRow, ChecksumDraft, ChecksumColumnWidths } from "checksum-window.slint";
 import { UserCommandToolbar, UserCommandRow } from "user-command-toolbar.slint";
 export { UserCommandRow }
 import { ShortcutHints } from "shortcut-hints.slint";
@@ -32,6 +30,8 @@ import { ScrollStrip } from "scroll-strip.slint";
 import { UserMenuBody } from "command-menu.slint";
 import { MainMenuBody } from "main-menu.slint";
 import { Theme } from "theme.slint";
+import { AppBranding } from "app-branding.slint";
+export { AppBranding }
 import { Tip, CompactPicker, TooltipPlacement } from "controls.slint";
 import { FileActionMenu } from "file-menu.slint";
 import { DirectoryLinkTooltip, FileRow } from "file-models.slint";
@@ -67,10 +67,8 @@ import { SpeedChartData } from "operation-speed-chart.slint";
 export { SpeedChartData, JobsView, JobIssue }
 import { MetadataDialog, MetadataDraft } from "metadata-controls.slint";
 export { MetadataDraft }
-import { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView, MetadataEditFormat } from "metadata-time-field.slint";
-export { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView, MetadataEditFormat }
-import { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "unix-permissions.slint";
-export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView }
+export { MetadataTimeCodec, MetadataTimeDraft, MetadataTimeValue, MetadataTimeStep, MetadataMonthView, MetadataEditFormat } from "metadata-time-field.slint";
+export { UnixPermissionsCodec, UnixPermissionBits, UnixPermissionView } from "unix-permissions.slint";
 import { ComparisonView, ComparisonChoices, CompareDirectoriesDialog } from "comparison-dialog.slint";
 import { PanelFilterHistoryItem, PanelFilterView } from "panel-filter-dialog.slint";
 export { ComparisonView, PanelFilterView, PanelFilterHistoryItem, OperationRow }
@@ -353,7 +351,11 @@ export component MainWindow inherits Window {
         root.drag-invalidate-targets(); root.panels-swapped = !root.panels-swapped; root.focus-files();
     }
     title: "Midnight Explorer" + (root.application-version == "" ? "" : " " + root.application-version) + " — File Manager";
-    icon: @image-url("../../../assets/branding/midnight-explorer.png");
+    in-out property <int> app-icon-index <=> AppBranding.icon-index;
+    icon: AppBranding.image-for(AppBranding.icon-index);
+    out property <image> current-app-icon: root.icon;
+    callback content-icon-changed(image);
+    changed app-icon-index => { root.content-icon-changed(root.icon); }
     preferred-width: 1340px; preferred-height: 820px;
     min-width: 320px; min-height: 200px;
     // Switch presentation before fixed chrome consumes the usable file area.
@@ -717,6 +719,7 @@ export component MainWindow inherits Window {
     callback command-history-clear();
     callback exit();
     callback preferences-changed(int, int, int);
+    callback app-icon-changed(int);
     callback font-options-changed(int, int, int, int);
     callback options-opened();
     callback options-accepted();
@@ -1543,6 +1546,7 @@ export component MainWindow inherits Window {
                 thumbnail-options-changed(enabled, network, archives, field) => { root.thumbnail-options-changed(enabled, network, archives, field); }
                 thumbnail-clear-cache => { root.thumbnail-clear-cache(); }
                 preferences-changed(theme, density, field) => { root.preferences-changed(theme, density, field); }
+                app-icon-changed(index) => { root.app-icon-changed(index); }
                 font-options-changed(family, desktop, touch, field) => { root.font-options-changed(family, desktop, touch, field); }
                 search-filter-changed(value) => { root.search-filter-changed(value); }
                 sizes-format-changed(value) => { root.sizes-format-changed(value); }

@@ -22,7 +22,6 @@ export global CommandOutputHub {
 // ended. The program cannot read from it; its input is empty.
 export component CommandOutputWindow inherits ToolWindow {
     title: root.heading + " — output";
-    icon: FallbackIcons.run;
     preferred-width: max(760px, Theme.font-size * 52);
     preferred-height: max(520px, Theme.font-size * 34);
     in property <string> heading;

@@ -10,6 +10,7 @@ fn native(name: &str) -> PathBuf {
 fn rich() -> UserPreferences {
     UserPreferences {
         theme: PreferenceTheme::Nord,
+        app_icon: AppIcon::OrigamiTrail,
         density: UiDensity::Touch,
         windows_shell: WindowsShell::Cmd,
         font_family: "Noto Sans 文档 e\u{301}".into(),

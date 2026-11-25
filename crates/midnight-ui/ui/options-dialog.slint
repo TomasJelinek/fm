@@ -4,6 +4,7 @@ import { HintedComboBox, HintedActionButton } from "hinted-inputs.slint";
 import { CompactPicker, Tip } from "controls.slint";
 import { ThemedSlider } from "content-controls.slint";
 import { Theme } from "theme.slint";
+import { AppBranding } from "app-branding.slint";
 import { ActionIcons, FallbackIcons } from "action-icons.slint";
 import { KeyboardEditor, KeyboardEditorView } from "keyboard-editor.slint";
 import { OptionsNavigation, OptionsTopics } from "options-navigation.slint";
@@ -166,6 +167,7 @@ export component OptionsBody inherits Rectangle {
     in property <int> thumbnail-size: 96;
     in property <string> thumbnail-cache-location;
     callback preferences-changed(int, int, int);
+    callback app-icon-changed(int);
     callback font-options-changed(int, int, int, int);
     callback search-filter-changed(bool);
     callback sizes-format-changed(bool);
@@ -565,6 +567,23 @@ export component OptionsBody inherits Rectangle {
                     label: "Theme"; model: ThemePalettes.names; current-index: ThemePalettes.positions[root.theme-index];
                     hint: "Preview a color theme. OK saves it; Cancel restores the previous theme.";
                     selected(index) => { root.preferences-changed(ThemePalettes.ids[index], root.density-index, 0); }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    icon-picker := OptionPicker {
+                        narrow: root.narrow; horizontal-stretch: 1;
+                        label: "Application icon";
+                        model: ["Midnight Moon", "Harvest Navigator", "Origami Trail", "Interleave"];
+                        current-index: AppBranding.icon-index;
+                        hint: "Preview the icon used by Midnight Explorer windows. Choose OK to save it.";
+                        selected(index) => { root.app-icon-changed(index); }
+                    }
+                    Image {
+                        width: max(32px, Theme.control-height); height: self.width; image-fit: contain;
+                        source: AppBranding.image-for(AppBranding.icon-index);
+                        accessible-role: image;
+                        accessible-label: icon-picker.model[AppBranding.icon-index] + " icon preview";
+                    }
                 }
                 density := OptionPicker {
                     narrow: root.narrow;

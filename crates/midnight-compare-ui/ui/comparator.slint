@@ -40,6 +40,8 @@ component AmountBar inherits Rectangle {
 
 export component ComparatorWindow inherits Window {
     title: root.caption;
+    in property <image> app-icon;
+    icon: root.app-icon;
     preferred-width: 1100px; preferred-height: 740px;
     min-width: 320px; min-height: 200px;
     in property <bool> compact;

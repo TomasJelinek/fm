@@ -32,6 +32,16 @@ pub(crate) fn install(
 ) {
     let viewers = Rc::downgrade(viewers);
     let comparators = Rc::downgrade(comparators);
+    let icon_viewers = viewers.clone();
+    let icon_comparators = comparators.clone();
+    install_icon_to(window, move |icon| {
+        if let Some(viewers) = icon_viewers.upgrade() {
+            viewers.set_app_icon(icon.clone());
+        }
+        if let Some(comparators) = icon_comparators.upgrade() {
+            comparators.set_app_icon(icon);
+        }
+    });
     install_to(window, move |appearance, theme, density, desktop, touch| {
         if let Some(viewers) = viewers.upgrade() {
             viewers.apply_appearance(appearance, theme, density, desktop, touch);
@@ -40,6 +50,11 @@ pub(crate) fn install(
             comparators.apply_appearance(appearance, theme, density, desktop, touch);
         }
     });
+}
+
+fn install_icon_to(window: &MainWindow, apply: impl Fn(slint::Image) + 'static) {
+    apply(window.get_current_app_icon());
+    window.on_content_icon_changed(apply);
 }
 
 fn install_to(

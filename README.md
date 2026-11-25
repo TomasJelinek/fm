@@ -33,7 +33,7 @@ Current version: **0.5.4** (preview).
   (SHA-256, SHA-512, SHA-1, MD5, CRC32) with a Verify page; Make File List; Network
   Neighborhood; drive information; Custom Commands, the command line and a terminal
   button.
-- **Options:** 26 themes, density and fonts, filename colours, configurable keyboard
+- **Options:** four application icons, 26 themes, density and fonts, filename colours, configurable keyboard
   shortcuts, file-type assignments and settings export and import.
 
 [Feature status](docs/FEATURE_STATUS.md) lists what is implemented on each platform and

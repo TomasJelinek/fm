@@ -32,6 +32,7 @@ pub(crate) struct State {
 /// choice belong to independent session actions and survive cancellation.
 pub(super) fn restore_fields(to: &mut UserPreferences, from: &UserPreferences) {
     to.theme = from.theme;
+    to.app_icon = from.app_icon;
     to.density = from.density;
     to.font_family.clone_from(&from.font_family);
     to.desktop_font_size = from.desktop_font_size;
@@ -85,6 +86,7 @@ pub(super) fn restore_session_fields(to: &mut UserPreferences, from: &UserPrefer
         editor: _,
         file_comparators: _,
         theme: _,
+        app_icon: _,
         density: _,
         font_family: _,
         desktop_font_size: _,
@@ -201,6 +203,23 @@ impl Presenter {
         {
             self.preferences.options.baseline = Some(Box::new(self.preferences.values.clone()));
         }
+    }
+
+    pub(crate) fn preview_app_icon(&mut self, index: i32, send: &dyn Fn(Command) -> bool) {
+        let options = &self.preferences.options;
+        if options.baseline.is_none() || options.accepting || options.saving {
+            return;
+        }
+        let Some(app_icon) = midnight_core::AppIcon::from_index(index) else {
+            return;
+        };
+        self.update_preferences(
+            UserPreferences {
+                app_icon,
+                ..self.preferences.values.clone()
+            },
+            send,
+        );
     }
 
     pub(super) fn discard_options_forms(&mut self) {

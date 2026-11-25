@@ -31,6 +31,10 @@ the alignment polish of every window, the code review fixes of 24 November and f
 acceptance and Rust tests ([acceptance time record](verification/2026-11-24-acceptance-time.md)).
 The documents describe this source.
 
+- **Application icons.** Options → Appearance previews [four designs](../assets/branding/README.md#icon-shortlist).
+  Windows acceptance run `20261125-092639` passed selection, Cancel, save, restart
+  and Reset. A native Windows test checked the selected artwork for both title-bar
+  and taskbar icons on first display and after switching. All 103 settings tests passed.
 - **Acceptance.** The last whole-suite runs are the 0.5.4 release runs at `510d9abc`:
   Linux 114 of 117 passed with no failure; Windows 113 passed, and its one failure was the
   first-content time budget of one HTML page in `viewers_files`

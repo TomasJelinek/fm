@@ -1,9 +1,10 @@
 import { Palette } from "std-widgets.slint";
+import { AppBranding } from "app-branding.slint";
 import { Theme } from "theme.slint";
 
 // Shared native modeless tool-window theme, minimum size and Escape routing.
 export component ToolWindow inherits Window {
-    icon: @image-url("../../../assets/branding/midnight-explorer.png");
+    icon: AppBranding.image-for(AppBranding.icon-index);
     preferred-width: 860px; preferred-height: 620px;
     min-width: 320px; min-height: 200px;
     background: Theme.window-background;

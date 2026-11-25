@@ -1,5 +1,6 @@
 //! Native dialog presentation lifetime; backend identities remain in typed adapters.
 use crate::{dialog_focus::FocusReturn, dialog_native};
+use i_slint_core::window::WindowInner;
 use slint::{ComponentHandle, PlatformError, winit_030::WinitWindowAccessor};
 use std::{
     cell::{Cell, RefCell},
@@ -261,6 +262,18 @@ impl DialogHost {
         // Slint snapshots the attributes during adapter construction, before later realization.
         let _scope = dialog_native::CreationScope::enter(owner.clone(), role);
         let component = create()?;
+        if let Some(child) = WindowInner::from_pub(component.window()).window_item() {
+            // The owner's Slint icon already tracks startup, preview and rollback. Read it
+            // through the weak component access so Slint invalidates this binding on change.
+            let owner = owner.clone();
+            child.icon.set_binding(move || {
+                owner
+                    .with_window(|window| WindowInner::from_pub(window).window_item())
+                    .flatten()
+                    .map(|item| item.as_pin_ref().icon())
+                    .unwrap_or_default()
+            });
+        }
         midnight_ui_input::install_native_scroll(&component, dialog_input_blocked);
         let host = Self {
             session,

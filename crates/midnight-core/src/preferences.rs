@@ -198,6 +198,52 @@ impl PreferenceTheme {
     }
 }
 
+/// Artwork selected for the application's window icon.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AppIcon {
+    #[default]
+    Moon = 0,
+    HarvestNavigator = 1,
+    OrigamiTrail = 2,
+    Interleave = 3,
+}
+
+impl AppIcon {
+    const ALL: [Self; 4] = [
+        Self::Moon,
+        Self::HarvestNavigator,
+        Self::OrigamiTrail,
+        Self::Interleave,
+    ];
+
+    /// Stable position in the Options picker.
+    pub const fn index(self) -> i32 {
+        self as i32
+    }
+
+    /// Resolve a picker position, rejecting values outside its choices.
+    pub fn from_index(index: i32) -> Option<Self> {
+        Self::ALL.get(usize::try_from(index).ok()?).copied()
+    }
+
+    /// Portable identifier used in saved and exported preferences.
+    pub const fn storage_name(self) -> &'static str {
+        match self {
+            Self::Moon => "moon",
+            Self::HarvestNavigator => "harvest-navigator",
+            Self::OrigamiTrail => "origami-trail",
+            Self::Interleave => "interleave",
+        }
+    }
+
+    pub fn from_storage_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|icon| icon.storage_name() == name)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UiDensity {
     #[default]
@@ -448,6 +494,7 @@ pub struct UserPreferences {
     /// Accepted filename routing; Options drafts are isolated until successful persistence.
     pub file_comparators: crate::FileComparatorPreferences,
     pub theme: PreferenceTheme,
+    pub app_icon: AppIcon,
     pub density: UiDensity,
     pub windows_shell: WindowsShell,
     /// Empty selects the system default. This is a Unicode name, never a path.
@@ -558,6 +605,7 @@ impl Default for UserPreferences {
             editor: crate::EditorPreferences::default(),
             file_comparators: crate::FileComparatorPreferences::default(),
             theme: PreferenceTheme::default(),
+            app_icon: AppIcon::default(),
             density: UiDensity::default(),
             windows_shell: WindowsShell::default(),
             font_family: String::new(),

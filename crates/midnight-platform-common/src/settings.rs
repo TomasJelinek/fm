@@ -1,6 +1,6 @@
 //! Portable preferences codec and atomic publication; native adapters own path/security policy.
 use midnight_core::{
-    Bookmark, BookmarkId, CommandHistoryEntry, DiskIoConcurrency, PaneTabPreferences,
+    AppIcon, Bookmark, BookmarkId, CommandHistoryEntry, DiskIoConcurrency, PaneTabPreferences,
     PanelViewMode, PreferenceTheme, ShellFlavor, ShortcutBinding, SizeDisplay, UiDensity,
     UserPreferences, WindowsShell,
 };
@@ -38,6 +38,8 @@ use window_geometry::StoredWindowGeometry;
 mod native_path;
 use native_path::NativePath;
 #[cfg(test)]
+mod app_icon_tests;
+#[cfg(test)]
 mod archives_tests;
 #[cfg(test)]
 mod copy_metadata_tests;
@@ -64,12 +66,19 @@ mod wheel_speed_tests;
 
 /// An aggregate storage bound, never a native path length restriction.
 pub const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
-const CURRENT_PREFERENCES_VERSION: u32 = 43;
+const CURRENT_PREFERENCES_VERSION: u32 = 44;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredPreferences {
     version: u32,
+    /// Schema 44: application icon, omitted for the original Moon artwork.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    app_icon: Option<String>,
     /// Schema 37: the scrolling glide in percent of the default glide.
     #[serde(
         default,
@@ -720,6 +729,14 @@ fn decode_preferences_impl(
         };
     let theme = PreferenceTheme::from_storage_name(&stored.theme)
         .ok_or_else(|| invalid("unknown preferences theme"))?;
+    let app_icon = match (stored.version, stored.app_icon.as_deref()) {
+        (44, None) => return Err(invalid("missing schema 44 app icon")),
+        (_, None) => AppIcon::default(),
+        (44.., Some(name)) => {
+            AppIcon::from_storage_name(name).ok_or_else(|| invalid("unknown app icon"))?
+        }
+        _ => return Err(invalid("unexpected app icon")),
+    };
     let density = match stored.density.as_str() {
         "desktop" => UiDensity::Desktop,
         "touch" => UiDensity::Touch,
@@ -1072,6 +1089,7 @@ fn decode_preferences_impl(
         file_comparators,
         editor,
         theme,
+        app_icon,
         density,
         windows_shell,
         font_family,
@@ -1223,7 +1241,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
             .any(StoredArchiveAddress::nested);
     // Schema 43: preserve times and attributes (written only when off).
     let preserve_choices = !preferences.copy_preserve_metadata;
-    // Schemas 35 to 43 keep every field that versions 33 and 34 require.
+    let icon_choice = preferences.app_icon != AppIcon::default();
+    // Later schemas keep the required comparator fields introduced in version 33.
     let comparator_fields = comparator_choices
         || thumbnailer_choices
         || glyph_choices
@@ -1235,7 +1254,8 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         || update_choices
         || find_choices
         || nested_archive_choices
-        || preserve_choices;
+        || preserve_choices
+        || icon_choice;
     // Newer schemas still include the required rule/history fields introduced in version 30.
     let rule_choices = disk_choices
         || archive_preview_choices
@@ -1311,6 +1331,7 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         &foreign_settings,
     )?;
     let stored = StoredPreferences {
+        app_icon: icon_choice.then(|| preferences.app_icon.storage_name().to_owned()),
         scroll_glide: glide_choices.then_some(preferences.scroll_glide.percent()),
         wheel_speed: speed_choices.then_some(preferences.wheel_speed.percent()),
         updates: update_choices.then(|| updates::StoredUpdates::from(preferences.updates)),
@@ -1375,7 +1396,9 @@ fn encode_preferences_impl(preferences: UserPreferences) -> io::Result<Vec<u8>> 
         viewer: viewer_choices
             .then(|| viewers::StoredViewerPreferences::try_from(&preferences.viewer))
             .transpose()?,
-        version: if preserve_choices {
+        version: if icon_choice {
+            44
+        } else if preserve_choices {
             43
         } else if nested_archive_choices {
             42

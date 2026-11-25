@@ -203,6 +203,9 @@ fn application_fonts_and_palette_updates_preserve_document_font_and_prime_later_
     let window = open();
     assert_eq!(window.get_ui_font_family(), "Segoe UI");
     assert_eq!(window.get_ui_font_size(), 32.0);
+    let icon = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
+    manager.set_app_icon(icon.clone());
+    assert_eq!(window.get_app_icon(), icon);
     wait_for(&window, "update comparison appearance", || {
         window.get_fonts_ready() && recolored(&window, a.background)
     });
@@ -223,6 +226,7 @@ fn application_fonts_and_palette_updates_preserve_document_font_and_prime_later_
 
     // A window opened during the preview is primed before show and also rolls back.
     let window = open();
+    assert_eq!(window.get_app_icon(), icon);
     assert_eq!(window.get_ui_font_family(), "Arial");
     assert_eq!(window.get_ui_font_size(), 18.0);
     wait_for(&window, "update comparison appearance", || {

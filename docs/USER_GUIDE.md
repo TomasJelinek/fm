@@ -1013,7 +1013,12 @@ current keys.
   the Updates choices (check at startup, include preview releases).
   Appearance offers 26 themes including Slate Blue, Slate Teal and Slate Violet,
   Desktop/Touch spacing, an installed font family and independent Desktop/Touch
-  base sizes (8–32px). Appearance → **Text rendering**
+  base sizes (8–32px). In **Appearance → Application icon**, choose Midnight Moon
+  (the default), Harvest Navigator, Origami Trail, or Interleave. The toolbar and
+  supported window icons preview your selection immediately. **OK** saves it for
+  the next launch and **Cancel** restores your previous icon.
+  [Preview the alternate designs](../assets/branding/README.md#icon-shortlist).
+  Appearance → **Text rendering**
   chooses how glyphs meet the pixel grid: Sharp (fitted, the default), Balanced
   (snapped) or Smooth (subpixel). It applies after a restart; the
   `MIDNIGHT_GLYPH_FITTING` environment variable (`fitted`, `snapped` or `subpixel`)

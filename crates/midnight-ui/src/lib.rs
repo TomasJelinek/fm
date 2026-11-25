@@ -532,6 +532,9 @@ pub fn refresh(window: &MainWindow, presenter: &Presenter) {
 
 fn refresh_properties(window: &MainWindow, presenter: &Presenter, reset_rows: bool) {
     // Native tools copy the owner appearance below; publish this revision first.
+    if presenter.window_geometry_ready() {
+        window.set_app_icon_index(presenter.preferences.values.app_icon.index());
+    }
     window.invoke_apply_fonts(
         presenter.preferences.values.font_family.as_str().into(),
         i32::from(presenter.preferences.values.desktop_font_size),
@@ -1712,6 +1715,9 @@ pub fn install_with_owned(
     callback!(on_preferences_changed, |w, p, s, theme, density, field| {
         p.change_preferences(theme, density, field, s);
         let _ = w;
+    });
+    callback!(on_app_icon_changed, false, |_w, p, s, index| {
+        p.preview_app_icon(index, s);
     });
     callback!(on_terminal_changed, |w, p, s, index| {
         p.change_terminal(index, !w.get_command_text().is_empty(), s);

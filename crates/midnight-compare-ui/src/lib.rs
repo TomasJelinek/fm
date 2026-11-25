@@ -75,6 +75,7 @@ type OpenWindows = RefCell<Vec<Rc<OpenWindow>>>;
 pub struct ComparatorWindows {
     service: Service,
     windows: Rc<OpenWindows>,
+    app_icon: RefCell<slint::Image>,
     picker_owner: file_choice::PickerOwner,
     font_listener: Rc<RefCell<Option<FontListener>>>,
     appearance: RefCell<Option<appearance::Presentation>>,
@@ -403,6 +404,7 @@ impl ComparatorWindows {
         Self {
             service,
             windows: Rc::default(),
+            app_icon: RefCell::default(),
             picker_owner: |_| midnight_core::PathPickerOwner::None,
             font_listener: Rc::new(RefCell::new(None)),
             appearance: RefCell::new(None),
@@ -437,6 +439,18 @@ impl ComparatorWindows {
     pub fn set_font_listener(&self, listener: FontListener) {
         *self.font_listener.borrow_mut() = Some(listener);
     }
+    /// Set the host's icon on current comparators and those opened later.
+    pub fn set_app_icon(&self, icon: slint::Image) {
+        self.app_icon.replace(icon.clone());
+        for open in self
+            .windows
+            .borrow()
+            .iter()
+            .filter(|open| !open.closed.get())
+        {
+            open.window.set_app_icon(icon.clone());
+        }
+    }
     /// Reuse the host's platform-specific window identity without performing native I/O here.
     pub fn with_picker_owner(
         mut self,
@@ -467,6 +481,7 @@ impl ComparatorWindows {
             return Err("Close a comparator before opening another (maximum two).".into());
         }
         let window = ComparatorWindow::new().map_err(|error| error.to_string())?;
+        window.set_app_icon(self.app_icon.borrow().clone());
         let placement = placement.into();
         let size = placement.logical_size();
         window.set_compact(size.width < 500.0);
