@@ -85,6 +85,7 @@ fn font_options_keep_family_and_density_bases_independent() {
     ui::click_popup(&window, "Theme", AccessibleRole::Combobox);
     draw(&mut pixels);
     key(&window, Key::Escape);
+    key(&window, Key::Tab); // Application icon.
     key(&window, Key::Tab); // Density.
     key(&window, Key::Tab); // Family is disabled while loading; desktop remains usable.
     key(&window, Key::DownArrow);

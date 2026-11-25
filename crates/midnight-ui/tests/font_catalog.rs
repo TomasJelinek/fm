@@ -48,9 +48,11 @@ fn installed_fonts_virtualize_and_keep_the_host_selection_authoritative() {
     draw(&mut pixels);
     window.set_options_topic_index(1);
     draw(&mut pixels);
-    // Theme establishes focus; Tab follows the Appearance form.
+    // Theme establishes focus; Tab follows the Appearance form: Application icon,
+    // Spacing, then the font family.
     ui::click_popup(&window, "Theme", AccessibleRole::Combobox);
     key(&window, Key::Escape);
+    key(&window, Key::Tab);
     key(&window, Key::Tab);
     key(&window, Key::Tab);
     key(&window, Key::Return);
