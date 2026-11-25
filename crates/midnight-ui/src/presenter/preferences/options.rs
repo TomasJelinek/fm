@@ -337,8 +337,11 @@ impl Presenter {
             self.preferences.options.feedback_revision.saturating_add(1);
     }
 
-    /// Runtime routing uses the accepted map while Options has a pending draft or save.
-    pub fn accepted_thumbnailer_associations(&self) -> Option<Arc<ThumbnailerAssociations>> {
+    /// The thumbnailer associations of the accepted preferences: the baseline while Options
+    /// has a pending draft or save. Runtime routing reads the accepted preferences in the
+    /// application (`thumbnails.rs`); tests use this to see what is accepted.
+    #[cfg(test)]
+    pub(crate) fn accepted_thumbnailer_associations(&self) -> Option<Arc<ThumbnailerAssociations>> {
         if !self.editor_preferences_ready() {
             return None;
         }
