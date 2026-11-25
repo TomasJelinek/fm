@@ -204,6 +204,35 @@ fn a_probe_reports_a_branch_with_more_folders_than_a_listing_can_hold() {
     assert_eq!(row(&tree, 1).error, Some(ProviderError::ResourceLimited));
 }
 
+/// A folder dropped into a folder that a probe found without subfolders changes
+/// that folder's modification time. When its parent is listed again (a transfer's
+/// refresh), the folder is asked again instead of keeping "no subfolders", so it
+/// gains its expand icon; a folder whose metadata did not change keeps its answer.
+#[test]
+fn a_refresh_probes_again_a_folder_whose_metadata_changed() {
+    let (_registry, graph, mut tree) = fixture(TreeLimits::default());
+    graph.set(2, vec![entry(8, EntryKind::File)]);
+    let branch = row(&tree, 2).id;
+    run(&mut tree, Some(branch), TreeRequest::Probe);
+    assert_eq!(row(&tree, 2).disclosure, Disclosure::Empty);
+    run(&mut tree, None, TreeRequest::Refresh);
+    assert_eq!(row(&tree, 2).disclosure, Disclosure::Empty, "unchanged");
+    // The drop: a subfolder in folder 2, which now lists with a new time.
+    graph.set(2, vec![entry(8, EntryKind::File), directory(9)]);
+    let mut dropped_into = directory(2);
+    dropped_into.metadata.modified =
+        Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1));
+    graph.set(
+        0,
+        vec![directory(1), dropped_into, entry(3, EntryKind::File)],
+    );
+    run(&mut tree, None, TreeRequest::Refresh);
+    assert_eq!(row(&tree, 2).id, branch, "the same occurrence");
+    assert_eq!(row(&tree, 2).disclosure, Disclosure::Unknown);
+    run(&mut tree, Some(branch), TreeRequest::Probe);
+    assert_eq!(row(&tree, 2).disclosure, Disclosure::Collapsed);
+}
+
 #[test]
 fn only_an_expansion_in_a_watched_tree_keeps_the_provider_observation() {
     let (_registry, provider, mut tree) = emitting_tree(vec![directory(4)]);

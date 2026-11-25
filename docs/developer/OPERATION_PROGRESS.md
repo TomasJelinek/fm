@@ -211,8 +211,12 @@ or retained diagnostics. It does not mix an active transfer with previous jobs.
   soon as its terminal progress is applied, without waiting for a watch notification.
   A flat panel re-reads the folder, superseding an in-flight same-folder background
   re-read (a watch refresh, which may predate the change); any other load, a directory
-  comparison or a drag from the panel still defers it. A tree panel whose root
-  contains an affected folder refreshes its loaded branches.
+  comparison or a drag from the panel still defers it. A Copy or Move also re-reads
+  a flat panel that shows its destination folder, or a Move's source folder, as one
+  of its rows (a drop onto a folder row), without holding that panel's input. The
+  row's modification time and whether it has subfolders (its expand icon) changed,
+  and no watch of the shown folder reports a change inside that folder. A tree panel
+  whose root contains an affected folder refreshes its loaded branches.
 - When the user waited for the job (it ended within 5 seconds of first reporting
   that it runs, or sooner; `WAITED_JOB` in `presenter/operations.rs`), the input of each panel showing its change then waits
   until those re-reads and tree refreshes complete, fail or are superseded: a Copy's

@@ -551,6 +551,59 @@ fn refresh_visits_collapsed_cached_branches_but_not_probes_or_unopened_branches(
     );
 }
 
+/// A folder dropped into an unopened folder that a probe found without subfolders:
+/// the transfer's sweep lists only the root, which shows the folder with a new
+/// modification time. The folder is unknown again, and the next viewport probes it,
+/// so it shows that it can be expanded now.
+#[test]
+fn refresh_has_the_next_viewport_probe_again_a_changed_unopened_folder() {
+    let mut fixture = fixture();
+    let shown = |fixture: &Fixture| {
+        fixture
+            .session
+            .projection()
+            .rows
+            .iter()
+            .find(|row| row.entry.display_name == "a-parent")
+            .unwrap()
+            .disclosure
+    };
+    branch(&mut fixture, "a-parent", BranchAction::Probe);
+    assert_eq!(shown(&fixture), midnight_core::TreeDisclosure::Empty);
+    {
+        let mut rows = fixture.graph.rows.lock().unwrap();
+        rows.insert(2, vec![directory(8, "dropped")]);
+        let folder = rows
+            .get_mut(&0)
+            .unwrap()
+            .iter_mut()
+            .find(|row| row.display_name == "a-parent")
+            .unwrap();
+        folder.metadata.modified =
+            Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1));
+    }
+    fixture.graph.listed.lock().unwrap().clear();
+    refresh(&mut fixture);
+    assert!(matches!(
+        finish(&mut fixture),
+        TreeEvent::Refreshed { result: Ok(()), .. }
+    ));
+    assert_eq!(*fixture.graph.listed.lock().unwrap(), [0], "never opened");
+    assert_eq!(shown(&fixture), midnight_core::TreeDisclosure::Unknown);
+    // The presenter sends the published view's visible rows.
+    let view = fixture.session.projection().clone();
+    fixture.session.commit(&view);
+    let visible = view.rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    fixture.session.viewport(&view, &visible).unwrap();
+    while let Some(job) = fixture.session.take_work().unwrap() {
+        fixture
+            .session
+            .apply(job.run(), &Cancellation::default())
+            .unwrap();
+    }
+    assert_eq!(shown(&fixture), midnight_core::TreeDisclosure::Collapsed);
+}
+
 #[test]
 fn refresh_skips_removed_descendants_without_failing_session() {
     let mut fixture = fixture();

@@ -319,18 +319,26 @@ impl Presenter {
                         let shown = &self.panes[pane.index()];
                         let directory = shown.display_path();
                         let destination = directory == progress.destination_directory;
-                        if destination
-                            || progress
-                                .source_directories
-                                .iter()
-                                .any(|path| path == directory)
-                        {
+                        let source = progress
+                            .source_directories
+                            .iter()
+                            .any(|path| path == directory);
+                        // A folder the job wrote into (a drop onto its row), or a Move
+                        // took from, shown as a row: its time and whether it has
+                        // subfolders changed, which no watch of this folder reports.
+                        let row = progress.destination_directory.parent() == Some(directory)
+                            || (!copy
+                                && progress
+                                    .source_directories
+                                    .iter()
+                                    .any(|path| path.parent() == Some(directory)));
+                        if destination || source || row {
                             self.operations.queue_refresh(
                                 pane,
                                 shown,
                                 directory,
                                 None,
-                                hold && (destination || !copy),
+                                hold && (destination || (source && !copy)),
                                 &mut self.retired,
                             );
                         }

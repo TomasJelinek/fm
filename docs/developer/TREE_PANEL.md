@@ -103,7 +103,12 @@ rows and issues no child references, so a folder with more subfolders than a
 listing may hold still shows its disclosure; that limit and a child that repeats
 an ancestor are reported when the folder is listed (expanded or refreshed). A
 probe whose row was meanwhile expanded, refreshed or listed by a recursive walk is
-dropped. Branch work that cannot start, for example at the 64-level depth limit
+dropped. A refresh that lists a folder's parent again keeps a probe's answer only
+while the folder's modification time, mode and attributes stay the same. Putting
+something into the folder or taking it out (a drop onto its row, a Move out of it)
+changes its modification time, so the folder is unknown again and the next visible
+range probes it; an unopened folder is never listed by a refresh
+(`DirectoryTree::install`). Branch work that cannot start, for example at the 64-level depth limit
 (`TreeProjection::MAX_DEPTH`), never
 ends the session: a probe is skipped silently and an explicit expansion or
 refresh reports a row diagnostic. An explicit expansion whose display projection

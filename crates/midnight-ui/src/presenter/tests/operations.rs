@@ -983,6 +983,38 @@ fn a_copy_holds_only_its_destination_panel_and_a_move_both() {
     }
 }
 
+/// A drop onto a folder row writes into that folder: the panel shows it as a row
+/// of its own folder and re-reads it, so the row shows its new time and its expand
+/// icon once it has a subfolder. A Move's source folder shown as a row re-reads
+/// its panel too; a Copy leaves its sources as they were. Neither panel holds
+/// input, as a panel showing the destination itself does.
+#[test]
+fn a_transfer_into_a_folder_rereads_the_panel_showing_that_folder_as_a_row() {
+    for (intent, left_reads) in [(TransferIntent::Copy, 0), (TransferIntent::Move, 1)] {
+        let (mut p, left, right) = two_folders();
+        let source = left.join("dragged-from");
+        let destination = right.join("dropped-onto");
+        let running = transfer(intent, CopyOperationState::Running, &source, &destination);
+        p.copies.progress.push(Arc::new(running));
+        let sent = RefCell::new(Vec::new());
+        let done = transfer(intent, CopyOperationState::Completed, &source, &destination);
+        p.apply_with_sender(
+            Event::Copy(CopyEvent::Progress(Arc::new(done))),
+            &|command| {
+                sent.borrow_mut().push(command);
+                true
+            },
+        );
+        assert_eq!(reads_of(&sent, PaneId::Right).len(), 1, "{intent:?}");
+        assert_eq!(
+            reads_of(&sent, PaneId::Left).len(),
+            left_reads,
+            "{intent:?}"
+        );
+        assert_eq!(p.mutation_settling_panes(), [false, false], "{intent:?}");
+    }
+}
+
 /// A job that ran longer than the user waits for (a long copy finishing while
 /// they work elsewhere) re-reads its panels in place without holding them.
 #[test]

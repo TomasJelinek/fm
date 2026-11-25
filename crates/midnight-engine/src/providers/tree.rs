@@ -157,6 +157,19 @@ impl ListingState {
     }
 }
 
+/// Whether a listed entry's modification time, mode or attributes changed, the
+/// metadata that the flat rows' folder hints compare too (`carry_folder_presence`).
+fn metadata_changed(before: &ProviderEntry, after: &ProviderEntry) -> bool {
+    let key = |entry: &ProviderEntry| {
+        (
+            entry.metadata.modified,
+            entry.metadata.unix_mode,
+            entry.metadata.native_attributes,
+        )
+    };
+    key(before) != key(after)
+}
+
 fn same_entry(left: &ProviderEntry, right: &ProviderEntry) -> bool {
     left.token.as_bytes() == right.token.as_bytes()
         && left.raw_name == right.raw_name
@@ -1039,10 +1052,18 @@ impl DirectoryTree {
         let mut children = Vec::with_capacity(rows.len());
         for row in rows {
             let id = if let Some(id) = existing.get(&row.node) {
-                self.nodes
+                let node = self
+                    .nodes
                     .get_mut(id)
-                    .ok_or(ProviderError::StaleReference)?
-                    .entry = Arc::new(row.entry);
+                    .ok_or(ProviderError::StaleReference)?;
+                // A probe's answer stands only while the folder's own metadata does:
+                // an entry put into it or taken out (a drop onto its row) changes its
+                // modification time. Unknown again, the next visible range probes it.
+                // A listed folder is listed again by its own refresh.
+                if !node.listed && !node.expanded && metadata_changed(&node.entry, &row.entry) {
+                    node.known = None;
+                }
+                node.entry = Arc::new(row.entry);
                 *id
             } else {
                 let id = BranchId {
