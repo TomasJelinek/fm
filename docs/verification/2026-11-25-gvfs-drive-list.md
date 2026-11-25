@@ -85,3 +85,37 @@ raised two limits, kept as they are here:
   45 seconds, as for every drive, and these reads reach the location's backend. Two
   offline locations can hold both details workers, delaying the free space of other
   drives, as other offline network mounts already can.
+
+## Follow-ups
+
+Three follow-ups of the first change, after the drive names of
+[the Linux drive names record](2026-11-25-linux-drive-names.md) had landed:
+
+- **The drive list right after opening a share.** When a Network Neighborhood
+  activation hands a share's native folder to a panel, the panel asks for the drive
+  list again (`Command::ListVolumes`, coalesced by the engine), so the new GVfs
+  location shows without waiting for the 45-second refresh. A handoff for an older
+  navigation asks for nothing.
+- **Network icon.** A drive root that is a folder directly in the GVfs FUSE bridge
+  (the `fuse.gvfsd-fuse` mount holding it, with root `/`, read from the mount table)
+  and names a network protocol (SMB, SFTP, FTP, WebDAV, NFS, AFP or an online account)
+  gets the network icon. Phones, cameras, archives, discs, folders inside a location,
+  stacked mounts and bind views of the bridge keep the drive icon. The storage class is
+  unchanged, so the panel keeps the location's own drive selected and Drive
+  information reports its storage as Unavailable.
+- **Locations of one name.** GVfs locations that would share a name add the user,
+  domain and port from their folder names (`example.com (alice, port 2222)`);
+  locations whose names hold nothing more keep the name, and the drive toolbar then
+  takes folders from their paths.
+
+| Command | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| `cargo test -p midnight-ui --lib -- presenter:: volume_presentation` | 1283 | 0 | 4 |
+| `cargo test -p midnight-platform-linux --lib` | 463 | 37 | 36 |
+| `cargo test --manifest-path plugins/midnight-filesystem-native-linux/Cargo.toml` | 124 | 0 | 1 |
+
+Of the six new tests, the presenter test, the network-protocol icon test and the
+naming test failed before their changes; the other three guard what must stay as it
+was (other locations and paths keep the drive icon, names without details keep them). The 37 platform failures are the transfer fixtures described
+above. `cargo fmt -- --check` and Clippy with `-D warnings` passed for the three
+packages (`midnight-ui` for its library and tests).

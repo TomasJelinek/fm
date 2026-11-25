@@ -478,6 +478,45 @@ fn native_handoff_keeps_network_context_until_native_listing_commits() {
     assert!(calls.borrow().iter().any(|command| matches!(command, Command::Navigate { path, .. } if *path == test_root().join("share"))));
 }
 
+#[test]
+fn opening_a_share_lists_the_drives_again_at_once() {
+    // An opened share is mounted now (on Linux a GVfs location the drive list names);
+    // the drive list need not wait for its next periodic refresh to show it.
+    let mut p = network_pane();
+    p.network_navigate(PaneId::Left, NetworkAction::Activate(address(2)), &|_| true);
+    let navigation = NavigationId(p.panes[0].generation);
+    let calls = RefCell::new(vec![]);
+    let record = |command| {
+        calls.borrow_mut().push(command);
+        true
+    };
+    p.apply_with_sender(
+        Event::NetworkUpdated {
+            pane: PaneId::Left,
+            navigation,
+            update: Box::new(NetworkUpdate::Native(test_root().join("share"))),
+        },
+        &record,
+    );
+    assert!(
+        calls
+            .borrow()
+            .iter()
+            .any(|command| matches!(command, Command::ListVolumes))
+    );
+    // A handoff for an older navigation opens nothing and lists nothing.
+    calls.borrow_mut().clear();
+    p.apply_with_sender(
+        Event::NetworkUpdated {
+            pane: PaneId::Left,
+            navigation,
+            update: Box::new(NetworkUpdate::Native(test_root().join("other"))),
+        },
+        &record,
+    );
+    assert!(calls.borrow().is_empty());
+}
+
 fn handoff(p: &mut Presenter) -> NavigationId {
     p.network_navigate(PaneId::Left, NetworkAction::Activate(address(2)), &|_| true);
     p.apply_with_sender(

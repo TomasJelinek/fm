@@ -9,7 +9,7 @@
 mod tests;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     fs,
     os::unix::ffi::OsStrExt,
@@ -48,18 +48,41 @@ pub fn locations(
         };
         for name in names {
             if found.len() == MAX_LOCATIONS || cancelled() {
-                return found;
+                return labeled(found);
             }
             let root = [bridge.as_slice(), b"/", name.as_bytes()].concat();
             if !listed.contains(root.as_slice()) {
-                found.push(Location {
-                    root,
-                    label: label(&name),
-                });
+                found.push((root, name));
             }
         }
     }
+    labeled(found)
+}
+
+/// The locations with their labels. Locations that would share a label add what tells
+/// them apart, when their folder names have it (see `detailed`).
+fn labeled(found: Vec<(Vec<u8>, OsString)>) -> Vec<Location> {
+    let labels: Vec<String> = found.iter().map(|(_, name)| label(name)).collect();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for label in &labels {
+        *counts.entry(label).or_default() += 1;
+    }
+    let repeated: Vec<bool> = labels
+        .iter()
+        .map(|label| counts[label.as_str()] > 1)
+        .collect();
     found
+        .into_iter()
+        .zip(labels)
+        .zip(repeated)
+        .map(|(((root, name), label), repeated)| Location {
+            root,
+            label: repeated
+                .then(|| detailed(&name, &label))
+                .flatten()
+                .unwrap_or(label),
+        })
+        .collect()
 }
 
 /// The entry names of the directory `path` and nothing else about its entries: the
@@ -79,20 +102,46 @@ fn label(name: &OsStr) -> String {
         .unwrap_or_else(|| name.to_string_lossy().into_owned())
 }
 
-fn readable(name: &str) -> Option<String> {
+/// `label` followed by what tells locations of one name apart: the user, the domain and
+/// the port in the folder `name`, such as `example.com (alice, port 2222)`. `None` when
+/// the name has none of them.
+fn detailed(name: &OsStr, label: &str) -> Option<String> {
+    let (_, values) = specification(name.to_str()?)?;
+    let details: Vec<String> = [("user", ""), ("domain", ""), ("port", "port ")]
+        .into_iter()
+        .filter_map(|(key, prefix)| item(&values, key).map(|value| format!("{prefix}{value}")))
+        .collect();
+    (!details.is_empty()
+        && !details
+            .iter()
+            .any(|detail| detail.contains(char::is_control)))
+    .then(|| format!("{label} ({})", details.join(", ")))
+}
+
+/// The type and the decoded `key=value` items of the GVfs folder `name`; `None` when
+/// it is not a mount specification.
+fn specification(name: &str) -> Option<(&str, Vec<(&str, String)>)> {
     let (kind, items) = name.split_once(':').filter(|(kind, _)| !kind.is_empty())?;
     let mut values = Vec::new();
     for item in items.split(',').filter(|item| !item.is_empty()) {
         let (key, value) = item.split_once('=')?;
         values.push((key, unescape(value)?));
     }
-    let value = |key: &str| {
-        values
-            .iter()
-            .find(|(name, _)| *name == key)
-            .map(|(_, value)| value.as_str())
-            .filter(|value| !value.is_empty())
-    };
+    Some((kind, values))
+}
+
+/// The value of `key` among `values`, if it is not empty.
+fn item<'a>(values: &'a [(&str, String)], key: &str) -> Option<&'a str> {
+    values
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, value)| value.as_str())
+        .filter(|value| !value.is_empty())
+}
+
+fn readable(name: &str) -> Option<String> {
+    let (kind, values) = specification(name)?;
+    let value = |key: &str| item(&values, key);
     let label = match kind {
         "smb-share" => format!("{} on {}", value("share")?, value("server")?),
         "afp-volume" => format!("{} on {}", value("volume")?, value("host")?),

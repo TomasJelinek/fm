@@ -239,7 +239,18 @@ fn find_icon(
 }
 
 fn icon_names(key: &IconKey) -> Vec<&'static str> {
-    icon_names_with_storage(key, crate::storage_kind::detect)
+    icon_names_with_storage(key, drive_icon_storage)
+}
+
+/// The storage a drive's icon shows: the detected class, or network for a GVfs
+/// location of a network protocol, whose class stays unknown.
+fn drive_icon_storage(root: &Path) -> StorageKind {
+    match crate::storage_kind::detect(root) {
+        StorageKind::Unknown if crate::storage_kind::gvfs_network_location(root) => {
+            StorageKind::Network
+        }
+        kind => kind,
+    }
 }
 
 fn icon_names_with_storage(

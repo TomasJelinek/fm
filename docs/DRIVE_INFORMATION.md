@@ -100,8 +100,17 @@ is listed as a drive instead, named after its location:
 | Archive | `archive:host=` and the archive's escaped address | the archive's file name |
 
 A folder name without this form keeps its raw text. A drive name is display text
-only; the drive is its folder's path. Like every drive name it is shortened beyond 16
-columns, and equal names take folders of their paths ([drive names](#drive-names)).
+only; the drive is its folder's path. Locations that would share a name add what their
+folder names tell apart, the user, the domain and the port: two SFTP mounts of
+`example.com` as different users show **example.com (alice)** and **example.com
+(bob)**. Like every drive name it is shortened beyond 16 columns, and names that are
+still equal take folders of their paths ([drive names](#drive-names)).
+
+A location of a network protocol (SMB, SFTP, FTP, WebDAV, NFS, AFP or an online
+account) shows the network icon; phones, cameras, archives and discs show the drive
+icon. The icon is chosen from the folder's name and the mount table only. It does not
+change the storage class: Drive information still reports a location's storage as
+Unavailable, and the panel keeps the location's own drive selected.
 
 Building the list reads only the names of the bridge's folders, at most 256, on the
 same backend worker; it never opens or examines a location, whose details come from
@@ -114,7 +123,7 @@ drive details; for a location these reads reach its backend. A bridge that canno
 read, such as another user's, adds no drives, and a filesystem mounted at the bridge's
 path makes that path an ordinary drive. GVfs mounts do not change the mount table, so
 a location that appears or disappears shows in the list when the list is read again:
-at start and every 45 seconds. Locations are ordered among the other drives by their
+at start, every 45 seconds and right after a share opens from Network Neighborhood. Locations are ordered among the other drives by their
 names ([drive names](#drive-names)).
 
 ### Drive names

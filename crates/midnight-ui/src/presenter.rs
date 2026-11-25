@@ -993,6 +993,10 @@ impl Presenter {
                         // silently recover to another share or the OS drive.
                         request.fallback_remaining = Some(0);
                     }
+                    // The share is mounted now (on Linux a GVfs location, which the
+                    // drive list names); list the drives without waiting for the
+                    // periodic refresh. A full queue leaves that refresh to do it.
+                    let _ = send(Command::ListVolumes);
                 } else {
                     // Activation has completed; a refused native enqueue will
                     // not produce a later listing event to settle this request.

@@ -42,6 +42,72 @@ pub(crate) fn detect(path: &Path) -> StorageKind {
     physical_kind(major, minor).unwrap_or(StorageKind::Unknown)
 }
 
+/// Whether `path` is the folder of a GVfs location of a network protocol, such as
+/// `smb-share:server=nas,share=data`, directly in GVfs's FUSE bridge. Only the mount
+/// table and the folder's name are read; the storage class stays unknown, since the
+/// bridge's own filesystem says nothing of the location's storage.
+pub(crate) fn gvfs_network_location(path: &Path) -> bool {
+    path.is_absolute()
+        && read_bounded(Path::new("/proc/self/mountinfo"), 1024 * 1024)
+            .is_some_and(|input| gvfs_network_location_in(&input, path))
+}
+
+fn gvfs_network_location_in(input: &[u8], path: &Path) -> bool {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    // The mount that holds `path`: the longest mount point it is in, the later of
+    // two at one path (stacked over the earlier).
+    let mut holder: Option<(PathBuf, bool)> = None;
+    for line in input.split(|byte| *byte == b'\n').take(8192) {
+        let Some(separator) = line.windows(3).position(|bytes| bytes == b" - ") else {
+            continue;
+        };
+        let mut fields = line[..separator].split(|byte| *byte == b' ');
+        let (Some(root), Some(Some(mount))) = (fields.nth(3), fields.next().map(decoded_path))
+        else {
+            continue;
+        };
+        let filesystem = line[separator + 3..].split(|byte| *byte == b' ').next();
+        if path.starts_with(&mount)
+            && holder
+                .as_ref()
+                .is_none_or(|(held, _)| mount.as_os_str().len() >= held.as_os_str().len())
+        {
+            let bridge = root == b"/" && filesystem == Some(b"fuse.gvfsd-fuse".as_slice());
+            holder = Some((mount, bridge));
+        }
+    }
+    let Some((mount, true)) = holder else {
+        return false;
+    };
+    let name = name.as_bytes();
+    mount == parent
+        && name
+            .iter()
+            .position(|byte| *byte == b':')
+            .is_some_and(|colon| {
+                matches!(
+                    &name[..colon],
+                    b"smb-share"
+                        | b"smb-server"
+                        | b"sftp"
+                        | b"ftp"
+                        | b"ftps"
+                        | b"ftpis"
+                        | b"dav"
+                        | b"davs"
+                        | b"dav+sd"
+                        | b"davs+sd"
+                        | b"nfs"
+                        | b"afp-volume"
+                        | b"afp-server"
+                        | b"google-drive"
+                        | b"onedrive"
+                )
+            })
+}
+
 fn decoded_path(input: &[u8]) -> Option<PathBuf> {
     let mut output = Vec::with_capacity(input.len());
     let mut index = 0;
@@ -625,3 +691,7 @@ mod tests {
 #[cfg(test)]
 #[path = "storage_graph_tests.rs"]
 mod graph_tests;
+
+#[cfg(test)]
+#[path = "storage_kind_gvfs_tests.rs"]
+mod gvfs_tests;

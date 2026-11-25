@@ -210,3 +210,72 @@ fn cancellation_stops_reading_the_bridges() {
     fs::create_dir(bridge.path.join("sftp:host=example.com")).unwrap();
     assert!(locations(&[bytes(&bridge.path)], &[], &|| true).is_empty());
 }
+
+#[test]
+fn locations_of_one_name_add_what_tells_them_apart() {
+    let bridge = Temp::new();
+    for name in [
+        "sftp:host=example.com,user=alice",
+        "sftp:host=example.com,user=bob",
+        "sftp:host=example.com,port=2222,user=alice",
+        "smb-share:server=nas,share=data,user=alice",
+        "smb-share:domain=OFFICE,server=nas,share=data,user=alice",
+        "smb-share:server=nas,share=public",
+    ] {
+        fs::create_dir(bridge.path.join(name)).unwrap();
+    }
+    let found = locations(&[bytes(&bridge.path)], &[], &|| false);
+    assert_eq!(
+        sorted(found),
+        [
+            location(
+                &bridge.path,
+                "sftp:host=example.com,port=2222,user=alice",
+                "example.com (alice, port 2222)"
+            ),
+            location(
+                &bridge.path,
+                "sftp:host=example.com,user=alice",
+                "example.com (alice)"
+            ),
+            location(
+                &bridge.path,
+                "sftp:host=example.com,user=bob",
+                "example.com (bob)"
+            ),
+            location(
+                &bridge.path,
+                "smb-share:domain=OFFICE,server=nas,share=data,user=alice",
+                "data on nas (alice, OFFICE)"
+            ),
+            location(
+                &bridge.path,
+                "smb-share:server=nas,share=data,user=alice",
+                "data on nas (alice)"
+            ),
+            location(
+                &bridge.path,
+                "smb-share:server=nas,share=public",
+                "public on nas"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn locations_of_one_name_without_details_keep_it() {
+    // Nothing tells these apart in their names; the drive toolbar then takes folders
+    // from their paths.
+    let bridge = Temp::new();
+    for name in ["ftp:host=example.com", "sftp:host=example.com"] {
+        fs::create_dir(bridge.path.join(name)).unwrap();
+    }
+    let found = locations(&[bytes(&bridge.path)], &[], &|| false);
+    assert_eq!(
+        sorted(found),
+        [
+            location(&bridge.path, "ftp:host=example.com", "example.com"),
+            location(&bridge.path, "sftp:host=example.com", "example.com"),
+        ]
+    );
+}
