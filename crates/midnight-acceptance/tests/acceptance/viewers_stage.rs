@@ -13,6 +13,13 @@
 //! `scripts/install-html-viewer-apparmor.sh`) covers that path as it covers a build.
 //! `files_delete` runs in a child of this executable itself, without a stage.
 //!
+//! [`run_with_unprofiled`] then runs a second child from a stage outside every AppArmor
+//! profile of the HTML viewer: a new private folder in the account's runtime folder, whose
+//! path such a profile can name. That child leaves the AppArmor profile this process may
+//! inherit (an IDE's or an agent's, which can grant user namespaces) and runs unconfined,
+//! as a program started from a desktop session does; AppArmor then refuses the HTML
+//! viewer's browser its sandbox, and the viewer offers to install the profile.
+//!
 //! The child runs only that scenario on its own fixture and writes a result file; the
 //! parent adopts its status, notes, screenshots and flags. A plugin crash or hang then
 //! fails one scenario instead of the whole run. Every child gets private XDG cache,
@@ -90,6 +97,14 @@ const PACKAGES: &str = "MIDNIGHT_ACCEPTANCE_PLUGINS";
 /// or any folder above it (every ancestor's owner and DACL are checked): an owner-only
 /// folder below the user profile, as `scripts/acceptance.ps1` creates.
 const STAGE_ROOT: &str = "MIDNIGHT_ACCEPTANCE_STAGE_ROOT";
+/// The folder in which [`run_with_unprofiled`] makes its stage outside the HTML viewer's
+/// AppArmor profiles; by default the account's runtime folder (`$XDG_RUNTIME_DIR`).
+#[cfg(target_os = "linux")]
+const UNPROFILED_ROOT: &str = "MIDNIGHT_ACCEPTANCE_UNPROFILED_ROOT";
+/// The phase of the child that [`run_with_unprofiled`] starts from that stage.
+const UNPROFILED: &str = "unprofiled";
+/// The HTML viewer's package folder, the one viewer a stage outside its profiles holds.
+const HTML_VIEWER: &str = "midnight-viewer-html";
 const RESULT: &str = "staged-result.tsv";
 /// Stage folders are `<build>/acceptance-stage-<run>-<scenario>`.
 const STAGE_PREFIX: &str = "acceptance-stage-";
@@ -147,9 +162,182 @@ pub fn run_with_optional_plugins(
     }
 }
 
+/// Run `body` with the installed plugin packages as [`run`] does; then, unless `skip` says
+/// why not, `unprofiled` in a second staged child whose stage holds only the HTML viewer and
+/// the native filesystem, in a new private folder outside every AppArmor profile of the HTML
+/// viewer ([`unprofiled_root`]), and which leaves the AppArmor profile this process may run
+/// under ([`LEAVE_PROFILE`]). Both children count from the scenario's start, each with its
+/// own console. Returns why `unprofiled` did not run: `skip`'s reason, why no such stage can
+/// be made here, or its child's own `SKIP`. The first child's message stays the scenario's.
+pub fn run_with_unprofiled(
+    context: &mut Context,
+    timeout: Duration,
+    body: super::Run,
+    unprofiled: super::Run,
+    skip: fn() -> Option<String>,
+) -> Result<Option<String>, String> {
+    let name = super::app::context_name();
+    if is_staged() {
+        let body = if std::env::var(PHASE).is_ok_and(|phase| phase == UNPROFILED) {
+            unprofiled
+        } else {
+            body
+        };
+        return staged(context, timeout, body, Kind::Plugins).map(|()| None);
+    }
+    parent(context, &name, timeout, Kind::Plugins, None)?;
+    if let Some(reason) = skip() {
+        return Ok(Some(reason));
+    }
+    let root = match unprofiled_root() {
+        Ok(root) => root,
+        Err(reason) => return Ok(Some(reason)),
+    };
+    let message = std::mem::take(&mut context.outcome.message);
+    let result = parent(
+        context,
+        &name,
+        timeout,
+        Kind::Unprofiled(&root),
+        Some(UNPROFILED),
+    );
+    context.outcome.message = message;
+    match result {
+        Err(message) if message.starts_with("SKIP:") => {
+            Ok(Some(message.trim_start_matches("SKIP:").trim().to_owned()))
+        }
+        result => result.map(|()| None),
+    }
+}
+
+/// The folder in which [`run_with_unprofiled`] makes its stage: the one that
+/// `MIDNIGHT_ACCEPTANCE_UNPROFILED_ROOT` names, else the account's runtime folder
+/// (`$XDG_RUNTIME_DIR`, the original one for a worker, which has its own). The HTML viewer
+/// offers Install… only for an installation whose canonical path holds ASCII letters,
+/// digits, spaces and `._+-@:` alone (a checkout's `_build` has an underscore) and on whose
+/// way from `/` users other than its owner can write to nothing, not even a sticky folder
+/// such as `/tmp` (SECURITY.md). This asks more: no folder on the way may be group- or
+/// other-writable. `Err` says why no stage can be made there.
+#[cfg(target_os = "linux")]
+fn unprofiled_root() -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let (variable, named) = match std::env::var_os(UNPROFILED_ROOT).filter(|root| !root.is_empty())
+    {
+        Some(root) => (UNPROFILED_ROOT, PathBuf::from(root)),
+        None => match fixtures::runtime_volume().filter(|root| !root.is_empty()) {
+            Some(root) => ("XDG_RUNTIME_DIR", PathBuf::from(root)),
+            None => {
+                return Err(format!(
+                    "no folder for a stage outside the HTML viewer's AppArmor profiles: neither \
+                     XDG_RUNTIME_DIR nor {UNPROFILED_ROOT} is set"
+                ));
+            }
+        },
+    };
+    let root = fs::canonicalize(&named)
+        .ok()
+        .filter(|root| named.is_absolute() && root.is_dir())
+        .ok_or_else(|| format!("{variable} {} is not an absolute folder", named.display()))?;
+    if !root.to_str().is_some_and(nameable) {
+        return Err(format!(
+            "{variable} {} holds characters that an AppArmor profile cannot name (ASCII letters, \
+             digits, spaces and ._+-@: only), so the viewer would offer no Install… there",
+            root.display()
+        ));
+    }
+    for folder in root.ancestors() {
+        let mode = fs::metadata(folder)
+            .map_err(|error| io_error(folder, error))?
+            .permissions()
+            .mode();
+        if mode & 0o022 != 0 {
+            return Err(format!(
+                "{variable} {}: {} can be written by others than its owner (mode {:o}), so the \
+                 viewer would offer no Install… below it",
+                root.display(),
+                folder.display(),
+                mode & 0o7777
+            ));
+        }
+    }
+    Ok(root)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unprofiled_root() -> Result<PathBuf, String> {
+    Err("the HTML viewer's AppArmor profiles exist on Linux only".into())
+}
+
+/// A path that the HTML viewer's AppArmor profile can name: ASCII letters, digits, spaces and
+/// `._+-@:` between slashes (`nameable` in `midnight-elevation`'s `sandbox_profile_linux.rs`).
+#[cfg(target_os = "linux")]
+fn nameable(path: &str) -> bool {
+    path.bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"._+/@: -".contains(&byte))
+}
+
+/// `text` with `-` for every character but ASCII letters, digits and `.+@:-`, for a name
+/// that an AppArmor profile can name.
+fn nameable_part(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || ".+@:-".contains(character) {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Sixteen hex digits that differ between runs, for a folder name nobody can foresee.
+fn random_suffix() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    hasher.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos()),
+    );
+    format!("{:016x}", hasher.finish())
+}
+
+/// This process's AppArmor label, such as `unconfined` or `name (unconfined)`; None where
+/// AppArmor tells none.
+pub fn apparmor_label() -> Option<String> {
+    [
+        "/proc/self/attr/apparmor/current",
+        "/proc/self/attr/current",
+    ]
+    .iter()
+    .find_map(|file| fs::read_to_string(file).ok())
+    .map(|label| label.trim_end_matches(['\n', '\0']).to_owned())
+    .filter(|label| !label.is_empty())
+}
+
+/// What the child of [`run_with_unprofiled`] runs first, as `/bin/sh -c LEAVE_PROFILE
+/// <executable>`: the shell asks AppArmor to run the next program it executes unconfined,
+/// as libapparmor's `aa_change_onexec("unconfined")` does (`exec unconfined` written to its
+/// own `attr/apparmor/exec`, or `attr/exec` before Linux 5.8), then executes the staged
+/// child in its place, which keeps its process ID, group and standard input. A program
+/// started from a desktop session runs unconfined; this process may inherit a profile that
+/// grants user namespaces, under which AppArmor never refuses the browser its sandbox.
+/// Unconfined is stricter there. Only that child and what it starts leave the profile, and
+/// no system profile changes. A refusal leaves the child the inherited profile, which it
+/// reports ([`apparmor_label`]).
+#[cfg(target_os = "linux")]
+const LEAVE_PROFILE: &str = "{ printf 'exec unconfined' >/proc/self/attr/apparmor/exec; } \
+                             2>/dev/null || printf 'exec unconfined' >/proc/self/attr/exec; \
+                             exec \"$0\"";
+
 #[derive(Clone, Copy)]
-enum Kind {
+enum Kind<'a> {
     Plugins,
+    /// The HTML viewer and the native filesystem staged in a new folder in this folder,
+    /// outside every AppArmor profile of the HTML viewer, for a child that leaves the
+    /// AppArmor profile of this process ([`run_with_unprofiled`]).
+    Unprofiled(&'a Path),
     Private,
     Worker,
 }
@@ -158,7 +346,7 @@ fn staged(
     context: &mut Context,
     timeout: Duration,
     body: fn(&mut Context) -> Result<(), String>,
-    kind: Kind,
+    kind: Kind<'_>,
 ) -> Result<(), String> {
     let name = super::app::context_name();
     match std::env::var(STAGED) {
@@ -771,6 +959,9 @@ struct Stage {
     linked: usize,
     copied: usize,
     copied_bytes: u64,
+    /// Outside the HTML viewer's AppArmor profiles ([`Kind::Unprofiled`]), where a folder
+    /// too small for the stage is a limit of the machine.
+    unprofiled: bool,
 }
 
 impl Drop for Stage {
@@ -805,33 +996,34 @@ impl Stage {
     /// registered with `guard` before anything is copied into it. `<build>` is the
     /// `_build` folder holding the packages' installation (`_build/try-1221`), so the
     /// stage sits beside it where the same AppArmor profile pattern covers it, or else
-    /// this executable's build folder.
-    fn create(guard: &Guard, source: &Path, run: &str, scenario: &str) -> Result<Self, String> {
-        let build = match std::env::var_os(STAGE_ROOT) {
-            Some(root) => {
-                let root = PathBuf::from(root);
-                if !root.is_absolute() || !root.is_dir() {
-                    return Err(format!(
-                        "{STAGE_ROOT} {} is not an absolute, existing folder",
-                        root.display()
-                    ));
-                }
-                root
-            }
-            None if cfg!(windows) => {
-                return Err(format!(
-                    "SKIP: Windows loads plugins only from a folder that no other account can \
-                     change, up to the drive's root; name such a folder (owner, SYSTEM and \
-                     Administrators only, below the user profile) in {STAGE_ROOT}, as \
-                     scripts/acceptance.ps1 does"
-                ));
-            }
-            None => source
-                .parent()
-                .filter(|parent| parent.file_name().is_some_and(|name| name == "_build"))
-                .map_or_else(build_folder, |parent| Ok(parent.to_path_buf()))?,
+    /// this executable's build folder. For [`Kind::Unprofiled`] it is a new folder
+    /// `acceptance-stage-<run>-<scenario>-<random>` in that kind's folder, named with
+    /// characters an AppArmor profile can name, with only the HTML viewer and the native
+    /// filesystem beside the executable: the least that opens an HTML file.
+    fn create(
+        guard: &Guard,
+        source: &Path,
+        kind: Kind<'_>,
+        run: &str,
+        scenario: &str,
+    ) -> Result<Self, String> {
+        let (build, name) = match kind {
+            Kind::Unprofiled(folder) => (
+                folder.to_path_buf(),
+                format!(
+                    "{STAGE_PREFIX}{}-{}-{}",
+                    nameable_part(run),
+                    nameable_part(scenario),
+                    random_suffix()
+                ),
+            ),
+            _ => (
+                stage_folder(source)?,
+                format!("{STAGE_PREFIX}{run}-{scenario}"),
+            ),
         };
-        let root = fixtures::create_fresh(&build, &format!("{STAGE_PREFIX}{run}-{scenario}"))?;
+        let unprofiled = matches!(kind, Kind::Unprofiled(_));
+        let root = fixtures::create_fresh(&build, &name)?;
         guard.stage(&root)?;
         private(&root)?;
         let mut stage = Self {
@@ -840,17 +1032,28 @@ impl Stage {
             linked: 0,
             copied: 0,
             copied_bytes: 0,
+            unprofiled,
         };
         let (executable, name) = this_executable()?;
         stage.executable = root.join(name);
         stage.place(&executable, &stage.executable.clone())?;
         for package in ["viewers", "thumbnailers"] {
             let from = source.join(package);
-            if from.is_dir() {
+            if !from.is_dir() {
+                continue;
+            }
+            if !unprofiled {
                 stage.tree(&from, &root.join(package))?;
+            } else if package == "viewers" && from.join(HTML_VIEWER).is_dir() {
+                private_folder(&root.join(package))?;
+                stage.tree(
+                    &from.join(HTML_VIEWER),
+                    &root.join(package).join(HTML_VIEWER),
+                )?;
             }
         }
-        // The native and archive filesystem plugins; network providers are not needed.
+        // The native and archive filesystem plugins (outside the profiles, the native one
+        // only); network providers are not needed.
         let filesystems = root.join("filesystems");
         private_folder(&filesystems)?;
         for entry in fs::read_dir(source.join("filesystems"))
@@ -858,7 +1061,10 @@ impl Stage {
         {
             let entry = entry.map_err(|error| error.to_string())?;
             let name = entry.file_name();
-            if name.to_string_lossy().starts_with("network.") {
+            let name_text = name.to_string_lossy();
+            if name_text.starts_with("network.")
+                || (unprofiled && !name_text.starts_with("native."))
+            {
                 continue;
             }
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -902,12 +1108,51 @@ impl Stage {
             self.linked += 1;
             return Ok(());
         }
-        let bytes = fs::copy(from, to)
-            .map_err(|error| format!("cannot copy {} to the stage: {error}", from.display()))?;
+        let bytes = fs::copy(from, to).map_err(|error| {
+            let message = format!("cannot copy {} to the stage: {error}", from.display());
+            if self.unprofiled && error.kind() == io::ErrorKind::StorageFull {
+                format!(
+                    "SKIP: the stage outside the HTML viewer's AppArmor profiles does not fit \
+                     there: {message}"
+                )
+            } else {
+                message
+            }
+        })?;
         self.copied += 1;
         self.copied_bytes += bytes;
         Ok(())
     }
+}
+
+/// The folder in which a stage of the installed packages is made: the one
+/// `MIDNIGHT_ACCEPTANCE_STAGE_ROOT` names (required on Windows), else the `_build` folder
+/// holding the packages' installation `source`, else this executable's build folder.
+fn stage_folder(source: &Path) -> Result<PathBuf, String> {
+    Ok(match std::env::var_os(STAGE_ROOT) {
+        Some(root) => {
+            let root = PathBuf::from(root);
+            if !root.is_absolute() || !root.is_dir() {
+                return Err(format!(
+                    "{STAGE_ROOT} {} is not an absolute, existing folder",
+                    root.display()
+                ));
+            }
+            root
+        }
+        None if cfg!(windows) => {
+            return Err(format!(
+                "SKIP: Windows loads plugins only from a folder that no other account can \
+                 change, up to the drive's root; name such a folder (owner, SYSTEM and \
+                 Administrators only, below the user profile) in {STAGE_ROOT}, as \
+                 scripts/acceptance.ps1 does"
+            ));
+        }
+        None => source
+            .parent()
+            .filter(|parent| parent.file_name().is_some_and(|name| name == "_build"))
+            .map_or_else(build_folder, |parent| Ok(parent.to_path_buf()))?,
+    })
 }
 
 #[cfg(unix)]
@@ -991,7 +1236,7 @@ fn parent(
     context: &mut Context,
     name: &str,
     timeout: Duration,
-    kind: Kind,
+    kind: Kind<'_>,
     phase: Option<&str>,
 ) -> Result<(), String> {
     // Counted from the scenario's start, as the runner counts its timeout.
@@ -1016,7 +1261,7 @@ fn parent(
         fs::create_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
     }
     let (stage, executable, xdg) = match kind {
-        Kind::Plugins => {
+        Kind::Plugins | Kind::Unprofiled(_) => {
             let source = package_source()?;
             let prepared = Instant::now();
             let run = context
@@ -1024,16 +1269,22 @@ fn parent(
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let stage = Stage::create(&guard, &source, &run, name)?;
+            let stage = Stage::create(&guard, &source, kind, &run, name)?;
             context.note(format!(
                 "Staged installation {} from {}: {} file(s) linked, {} copied ({:.1} MiB) in \
-                 {:.2} s.",
+                 {:.2} s{}.",
                 stage.root.display(),
                 source.display(),
                 stage.linked,
                 stage.copied,
                 stage.copied_bytes as f64 / 1_048_576.0,
-                prepared.elapsed().as_secs_f64()
+                prepared.elapsed().as_secs_f64(),
+                if stage.unprofiled {
+                    "; outside the HTML viewer's AppArmor profiles, for a child that leaves the \
+                     AppArmor profile of this process"
+                } else {
+                    ""
+                }
             ));
             let (executable, xdg) = (stage.executable.clone(), stage.root.join("xdg"));
             (Some(stage), executable, xdg)
@@ -1069,6 +1320,15 @@ fn parent(
     let child_limit = deadline
         .saturating_duration_since(Instant::now())
         .saturating_sub(if worker { Duration::ZERO } else { CHILD_MARGIN });
+    #[cfg(target_os = "linux")]
+    let mut command = if matches!(kind, Kind::Unprofiled(_)) {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", LEAVE_PROFILE]).arg(&executable);
+        command
+    } else {
+        Command::new(&executable)
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut command = Command::new(&executable);
     command
         .env_remove(WORKER)

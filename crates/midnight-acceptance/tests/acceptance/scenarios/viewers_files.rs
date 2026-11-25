@@ -29,17 +29,23 @@
 //! refuses its browser: AppArmor denies Chromium's sandbox to this installation (no
 //! profile covers the stage), or there is no writable cgroup-v2 delegation (a
 //! container). Any other viewer error fails.
+//!
+//! Where AppArmor restricts unprivileged user namespaces, a second staged child checks the
+//! HTML viewer's AppArmor Install… offer from a stage outside every profile of the HTML
+//! viewer, unconfined as a program started from a desktop session ([`apparmor_offer`]).
+//! Install… is never pressed.
 use crate::{
     Context,
     app::{App, Config},
-    input, panel, viewers_stage,
+    input, inspect, panel, tools_support as tools, viewers_stage,
     viewers_support::{
         self as support, Canvas, Failures, SLOW_OPEN, Viewing, clip, generated, millis, probe,
     },
 };
+use i_slint_core::items::AccessibleRole;
 use midnight_core::PaneId;
 use slint::{Model, platform::Key};
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 pub const TIMEOUT: Duration = Duration::from_secs(25 * 60);
 /// Longer than this without content is a hang, not a slow open.
@@ -376,7 +382,23 @@ fn generated_cases(root: &std::path::Path) -> Result<Vec<Case>, String> {
 }
 
 pub fn every_kind(context: &mut Context) -> Result<(), String> {
-    viewers_stage::run(context, TIMEOUT, run)
+    let skipped = viewers_stage::run_with_unprofiled(
+        context,
+        TIMEOUT,
+        run,
+        apparmor_offer,
+        offer_unavailable,
+    )?;
+    if let Some(reason) = skipped {
+        let text = format!("SKIP the HTML viewer's AppArmor Install… offer (O20): {reason}");
+        context.note(text.clone());
+        context.outcome.message = if context.outcome.message.is_empty() {
+            text
+        } else {
+            format!("{}; {text}", context.outcome.message)
+        };
+    }
+    Ok(())
 }
 
 fn run(context: &mut Context) -> Result<(), String> {
@@ -466,10 +488,6 @@ fn run(context: &mut Context) -> Result<(), String> {
         "AVIF fixtures (draw_points_idat.avif against draw_points.png, white_1x1.avif)",
         avif(&mut app, context),
     );
-    skipped.push(format!(
-        "the HTML viewer's AppArmor Install… offer (O20): {}",
-        apparmor_offer()
-    ));
     if !skipped.is_empty() {
         let text = format!("SKIP {} case(s): {}", skipped.len(), skipped.join("; "));
         context.note(text.clone());
@@ -498,19 +516,205 @@ fn run(context: &mut Context) -> Result<(), String> {
     failures.into_result()
 }
 
-/// Why the HTML viewer's AppArmor Install… offer (shown when AppArmor refuses
-/// Chromium's sandbox to an installation no profile covers) is not checked here.
-fn apparmor_offer() -> &'static str {
-    if cfg!(windows) {
-        "Windows has no AppArmor; the offer exists on Linux only"
-    } else if std::fs::read_to_string("/sys/module/apparmor/parameters/enabled")
-        .is_ok_and(|enabled| enabled.trim() == "Y")
-    {
-        "needs Ubuntu outside WSL that restricts unprivileged user namespaces and a stage \
-         outside the profile's pattern; no such machine in this run"
-    } else {
-        "AppArmor is not enabled on this machine (WSL); the offer needs Ubuntu outside WSL"
+/// What AppArmor's refusal of Chromium's sandbox to an installation without a profile
+/// says first (`SandboxRefusal::cause` in `midnight-worker-platform`'s `browser.rs`).
+const SANDBOX_CAUSE: &str = "The HTML viewer needs permission for Chromium's sandbox on this \
+                             system (Ubuntu restricts unprivileged user namespaces).";
+/// How long the notice may take after the viewer reported the refusal.
+const NOTICE_LIMIT: Duration = Duration::from_secs(10);
+
+/// Why this machine cannot show the HTML viewer's AppArmor Install… offer (O20), if it
+/// cannot: the offer exists where AppArmor restricts unprivileged user namespaces
+/// (Ubuntu 23.10 and later, not WSL) while the kernel itself allows them, and it asks for
+/// the authorization through polkit's pkexec (docs/SYSTEM_REQUIREMENTS.md). Whether a
+/// stage outside the profiles can be made here is `viewers_stage`'s to say.
+fn offer_unavailable() -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return Some("AppArmor and the offer exist on Linux only".into());
     }
+    let read = |path: &str| {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|value| value.trim().to_owned())
+    };
+    if read("/sys/module/apparmor/parameters/enabled").as_deref() != Some("Y") {
+        return Some("AppArmor is not enabled on this machine (as in WSL)".into());
+    }
+    if read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref() != Some("1") {
+        return Some(
+            "AppArmor does not restrict unprivileged user namespaces here \
+             (kernel.apparmor_restrict_unprivileged_userns is not 1), so the HTML viewer needs \
+             no profile"
+                .into(),
+        );
+    }
+    for (setting, path) in [
+        (
+            "kernel.unprivileged_userns_clone",
+            "/proc/sys/kernel/unprivileged_userns_clone",
+        ),
+        (
+            "user.max_user_namespaces",
+            "/proc/sys/user/max_user_namespaces",
+        ),
+    ] {
+        if read(path).as_deref() == Some("0") {
+            return Some(format!(
+                "{setting} is 0: the kernel denies user namespaces to every program without \
+                 administrator rights, and the viewer then names that setting and offers no \
+                 profile"
+            ));
+        }
+    }
+    if !Path::new("/usr/bin/pkexec").is_file() {
+        return Some(
+            "there is no /usr/bin/pkexec (polkit), without which the viewer offers no Install…"
+                .into(),
+        );
+    }
+    None
+}
+
+/// The HTML viewer's AppArmor Install… offer (O20), in the child that
+/// `viewers_stage::run_with_unprofiled` starts from a stage outside every AppArmor profile
+/// of the HTML viewer, unconfined as programs started from a desktop session run. F3 on an
+/// HTML file: AppArmor refuses the browser its sandbox, and the notice in the page's place
+/// says so, names the viewer executable the permission would be for and that one
+/// installation at a time can have it, warns that programs running as the user can change
+/// that folder (the account owns the stage), and offers Install…, enabled. Install… is
+/// never pressed, nor Enter or Space sent to the viewer: it would ask for administrator
+/// authorization through pkexec and install a system profile. Escape, which activates no
+/// button, closes the viewer.
+fn apparmor_offer(context: &mut Context) -> Result<(), String> {
+    if let Some(reason) = probe::html_unavailable() {
+        return Err(format!("SKIP: {reason}"));
+    }
+    let label = viewers_stage::apparmor_label();
+    if label.as_deref() != Some("unconfined") {
+        return Err(format!(
+            "SKIP: AppArmor refused to let the staged process leave the profile it inherits \
+             ({}); its HTML viewer would run with that profile's permissions",
+            label.as_deref().unwrap_or("its label cannot be read")
+        ));
+    }
+    let stage = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+        .and_then(|folder| std::fs::canonicalize(folder).ok())
+        .ok_or("cannot locate this staged process's stage")?;
+    let viewer = stage.join("viewers/midnight-viewer-html/midnight-viewer-html");
+    let folder = context.work.join("offer");
+    generated::write(
+        &folder,
+        "page.html",
+        "<!doctype html>\n<html><head><title>Offer</title></head>\
+         <body><h1>A page for the sandbox notice</h1></body></html>\n",
+    )?;
+    let mut config = Config::new(&folder, &folder);
+    config.plugins = Some(context.work.join("plugins"));
+    let mut app = App::start(config);
+    let checked = offer(&mut app, context, &viewer);
+    let shutdown = app.shutdown();
+    checked?;
+    shutdown
+}
+
+/// F3 on `page.html` and the notice in its place; then Escape.
+fn offer(app: &mut App, context: &mut Context, viewer: &Path) -> Result<(), String> {
+    panel::select_row(app, PaneId::Left, "page.html")?;
+    let viewing = support::view(app, false, OPEN_LIMIT)?;
+    let checked = offer_notice(app, context, &viewing, viewer);
+    let closed = viewing.close(app);
+    checked?;
+    closed
+}
+
+fn offer_notice(
+    app: &mut App,
+    context: &mut Context,
+    viewing: &Viewing,
+    viewer: &Path,
+) -> Result<(), String> {
+    let refusal = match &viewing.result {
+        Ok(()) => {
+            return Err(format!(
+                "the HTML viewer at {} showed the page: AppArmor did not refuse its browser the \
+                 sandbox outside every profile (does an installed profile or a setuid-root \
+                 chrome-sandbox cover that stage?)",
+                viewer.display()
+            ));
+        }
+        Err(error) => error.clone(),
+    };
+    if !refusal.contains(SANDBOX_CAUSE) {
+        return match support::browser_refused(&refusal) {
+            Some(reason) => Err(format!("SKIP: {reason}: {refusal:?}")),
+            None => Err(format!(
+                "the viewer reported {refusal:?}, not AppArmor's refusal of the sandbox"
+            )),
+        };
+    }
+    viewing.wait(app, "the sandbox notice", NOTICE_LIMIT, |window| {
+        window.get_sandbox_notice_visible()
+    })?;
+    let window = &viewing.window;
+    let notice = window.get_sandbox_notice().to_string();
+    let shot = app.screenshot_window(
+        context,
+        &viewing.software,
+        "apparmor-offer",
+        &format!(
+            "F3 on an HTML file outside the AppArmor profiles: {}",
+            clip(&notice, 160)
+        ),
+    );
+    let findings = probe::review(context, viewing.slint(), &shot);
+    if !findings.is_empty() {
+        context.note(format!(
+            "AppArmor offer: layout review: {}",
+            findings.join("; ")
+        ));
+    }
+    context.note(format!(
+        "AppArmor offer: the viewer reported {refusal:?}; notice {notice:?}; Install… offered \
+         {}, installing {}; status {:?}",
+        window.get_sandbox_installable(),
+        window.get_sandbox_installing(),
+        viewing.status()
+    ));
+    if !window.get_sandbox_installable() {
+        return Err(format!(
+            "the notice offers no Install…: {notice:?}. It is offered only where \
+             /usr/bin/pkexec and every folder above it belong to root, for a stage whose \
+             canonical path holds only ASCII letters, digits, spaces and ._+-@: with no folder \
+             on its way that others than its owner can write to"
+        ));
+    }
+    if window.get_sandbox_installing() {
+        return Err("an installation is pending, though Install… was never pressed".into());
+    }
+    // The account, not root, owns the stage: hence the last sentence.
+    let expected = format!(
+        "{SANDBOX_CAUSE} Install… asks an administrator to let the HTML viewer at {} use user \
+         namespaces, with the AppArmor profile midnight-explorer-html-viewer, which one \
+         installation at a time can have. Programs running as you can change that folder, so \
+         a program put at that path could use user namespaces too.",
+        viewer.display()
+    );
+    if notice != expected {
+        return Err(format!(
+            "the notice reads {notice:?}, expected {expected:?}"
+        ));
+    }
+    let button = inspect::find(viewing.slint(), AccessibleRole::Button, "Install…")
+        .ok_or("the notice shows no Install… button")?;
+    if !tools::enabled(&button) {
+        return Err("Install… is disabled".into());
+    }
+    if inspect::placed_rect(&button).is_none() {
+        return Err("Install… lies outside the viewer window".into());
+    }
+    Ok(())
 }
 
 /// Open and close one file `REPEATS` times; note the distribution and flag slow opens.

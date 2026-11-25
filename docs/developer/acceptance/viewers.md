@@ -47,9 +47,29 @@ next gains the focus, as it reads the system's. The comparator has a seam of its
 notches (F15). Checks with Slint's own wheel event
 measure that a Slint pixel delta moves the content exactly its pixels.
 
-Latest recorded run: the Linux run `20261121-144246` of commit 3f6fff8a (WSL 2,
-Ubuntu 24.04 on ext4, debug test build, software rendering, smoke scale, every plugin
-package built from that commit by `./build.sh`; every scenario of the suite; report in
+Latest recorded runs, 25 November: a desktop host with Ubuntu 26.04 (not WSL; AppArmor
+on, restricting unprivileged user namespaces), smoke scale, software rendering, debug test
+builds of main ad9557bd, every plugin package built from it in a private target directory.
+The run `20261125-173616` passed `viewers_scroll` (two checks skipped: R6 and R10) and
+`viewers_presentation`, the HTML viewer's checks included. The run `20261125-180528`
+passed `viewers_files` with the AppArmor offer (O20) as WARN: five review flags, HTML and
+one source file opening in 805 to 1,366 ms against the 500 ms review threshold. Its test
+build also held uncommitted changes of that day, this record's check among them. The
+runner there inherited, from the application that started it, an AppArmor profile that
+grants user namespaces. The HTML viewer therefore ran in the usual stages without a
+profile of its own; O20 explains how its check leaves that profile. On the committed
+tree with the HTML glide pause (backlog VIEW-09) and this record's checks, the run
+`20261125-183655` passed `viewers_files` as WARN with four review flags, whose details
+were lost when the machine restarted before the report was written; O20 passed, and
+its screenshot shows the notice and Install…. The run `20261125-184840` passed
+`viewers_scroll` with no review flags (R6 and R10 skipped as before). The day's
+whole-suite
+runs are in the records of [release 0.5.4](../../verification/2026-11-25-release-0.5.4.md)
+and [parallel acceptance](../../verification/2026-11-25-acceptance-parallel.md).
+
+Base run: the Linux run `20261121-144246` of commit 3f6fff8a (WSL 2, Ubuntu 24.04 on
+ext4, debug test build, software rendering, smoke scale, every plugin package built from
+that commit by `./build.sh`; every scenario of the suite; report in
 `_build/acceptance-linux/20261121-144246/`, staged children's own reports under its
 `staged/`). Statuses are from that run unless another is named. Two environment limits
 of that machine, not product results:
@@ -136,7 +156,7 @@ Settled since then:
 | O3 | Every extension the Source viewer claims (58, including `makefile`/`gnumakefile` whole names) opens in Source mode with syntax colours | `viewers_files` › generated Source extensions | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
 | O4 | CSV and TSV show rainbow columns (text colour and four column hues) | `viewers_files` › `table.csv`, `table.tsv` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
 | O5 | Markdown extensions `md`, `markdown`, `mdown`, `mkd` render | `viewers_files` › Markdown extensions | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
-| O6 | HTML extensions `html`, `htm`, `xhtml` open in the HTML viewer (Chromium) with local stylesheet and image | `viewers_files` › `docs/page.html`, `plain.htm`, `page.xhtml` | PASS on Windows (`20261122-104409`); SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| O6 | HTML extensions `html`, `htm`, `xhtml` open in the HTML viewer (Chromium) with local stylesheet and image | `viewers_files` › `docs/page.html`, `plain.htm`, `page.xhtml` | PASS on Windows (`20261122-104409`); PASS on Linux in `20261125-180528` (Ubuntu 26.04 desktop host): `page.html`, `plain.htm` and `page.xhtml` in 805, 836 and 1,366 ms, flagged over the 500 ms review threshold. The WSL 2 run `20261122-110817` skipped them (no writable cgroup-v2 delegation for the browser there) |
 | O7 | Image extensions PNG, JPEG (`.jpg`, `.jpeg`), GIF, WebP, SVG, BMP, ICO, TIFF (`.tif`, `.tiff`) show their pixels | `viewers_files` › image cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
 | O8 | AVIF images: the image decoder's licensed fixtures (libavif 1.3.0 test data, BSD-2-Clause, `plugins/image-decoder/tests/fixtures`): the quality-100 `draw_points_idat.avif` with its alpha item shows the pixels of its reference `draw_points.png` (both at a typed 800 % zoom, within 6 per channel for 99.5 % of the image's pixels); `white_1x1.avif` is white | `viewers_files` › AVIF fixtures | PASS (Windows `20261122-104409`, Linux `20261122-110817`): all 23,232 picture pixels within 6 of the PNG's (largest deviation 1); the 1×1 picture white |
 | O9 | PDF opens with its page counter | `viewers_files` › `docs/report.pdf` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
@@ -147,13 +167,39 @@ Settled since then:
 | O14 | NUL bytes are never shown raw (hex view or `\x00`) | `viewers_files` › `nul.txt` | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
 | O15 | Damaged images: truncated PNG, GIF, WebP, BMP, TIFF, zero-byte PNG, broken SVG are refused with "This image is damaged or incomplete" and the decoder's reason | `viewers_files` › damaged cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
 | O16 | Damaged PDFs: garbage after the signature and empty files are refused; a truncated PDF or JPEG shows what can be decoded or is refused, never an error or hang | `viewers_files` › damaged cases | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
-| O17 | Broken Markdown, HTML and JSON show as far as they go | `viewers_files` › `broken.*` | PASS (Windows `20261122-104409`, Linux `20261122-110817`); `broken.html` SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| O17 | Broken Markdown, HTML and JSON show as far as they go | `viewers_files` › `broken.*` | PASS (Windows `20261122-104409`, Linux `20261122-110817`); `broken.html` PASS on Linux in `20261125-180528` (Ubuntu 26.04 desktop host, 833 ms), skipped in `20261122-110817` (no writable cgroup-v2 delegation for the browser there) |
 | O18 | Open latency recorded per file (flagged over 500 ms, failing over 10 s) and its spread over 15 repeated opens | `viewers_files` › latency notes, repeated opens | PASS (Windows `20261122-104409`, Linux `20261122-110817`): no open near the 10 s limit. Flagged for review on Windows (debug build on a shared machine): 33 opens over 500 ms, the first one 2.5 s, the HTML page 6.2 s |
 | O19 | Every viewer kind's window passes the UI review's layout checks | `viewers_files` › layout review; `viewers_scroll` › layout review | PASS (Windows `20261122-104409`, Linux `20261122-110817`) |
-| O20 | The HTML viewer's AppArmor Install… offer when the sandbox is refused | `viewers_files` › the AppArmor offer | SKIP, with the reason in the scenario's message: Windows has no AppArmor; WSL has AppArmor off. It needs Ubuntu outside WSL that restricts unprivileged user namespaces and a stage outside the profile's `_build/*/viewers/...` pattern (a `viewers_stage` change) |
+| O20 | The HTML viewer's AppArmor Install… offer when the sandbox is refused: in the page's place AppArmor's refusal, the viewer executable the permission would be for, that one installation at a time can have it, the warning for a folder that programs running as the user can change, and Install… enabled | `viewers_files` › the AppArmor offer (a second staged child from a stage outside every profile, unconfined; see below) | PASS on Linux in `20261125-180528` (Ubuntu 26.04 desktop host): the stage in the account's runtime folder (2,624 MiB copied in 1.44 s), the notice exactly as expected with the stage's viewer path, Install… enabled inside the window, screenshot `apparmor-offer`; Install… never pressed. SKIP with the exact reason on Windows (no AppArmor) and in WSL (AppArmor off) |
 | O21 | SVG features drawn: a marker, a pattern, a mask, a clip path, a blur filter, a `data:` PNG and a `switch` fallback for `foreignObject` (each proven by the pixel count of its own colour on a 200 × 120 page at 1:1); a script and images linked to a local file (`linked.png`, magenta) and a URL neither run nor show (the page's colour covers all of it, no magenta) | `viewers_files` › `svg-*.svg` | PASS (Windows `20261122-104409`, Linux `20261122-110817`): every feature's colour in its pixel range; no magenta of the linked image |
 | O22 | Hostile SVGs refused before drawing with the decoder's own sentence: no SVG namespace, XML entities (a DOCTYPE internal subset), nesting past 64 levels, a `use` that refers to itself | `viewers_files` › `svg-no-namespace.svg`, `svg-entities.svg`, `svg-deep.svg`, `svg-cycle.svg` | PASS (Windows `20261122-104409`, Linux `20261122-110817`): each refused with its sentence ("This SVG does not declare the SVG namespace …", "… declares XML entities …", "… more than 64 levels deep (line 1) …", "This SVG is invalid: the reference on line 2 leads back to itself.") |
 | O23 | Two-frame GIF and WebP (100 ms frames, looping) show their first frame and hold still | `viewers_files` › `two-frames.gif`, `two-frames.webp` | PASS (Windows `20261122-104409`, Linux `20261122-110817`): the first frame's colour only, unchanged while still |
+
+How O20 is checked: `viewers_files` runs it in a second staged child (phase `unprofiled`,
+`viewers_stage::run_with_unprofiled`), only where AppArmor restricts unprivileged user
+namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`), the kernel itself allows
+them, and `/usr/bin/pkexec` exists.
+
+- The child's stage holds only the test executable, the HTML viewer and the native
+  filesystem. It is a new folder `acceptance-stage-<run>-viewers-files-<random>` (mode
+  0700) in the account's runtime folder (`$XDG_RUNTIME_DIR`), or in
+  `MIDNIGHT_ACCEPTANCE_UNPROFILED_ROOT` if set. That lies outside every installed profile,
+  on a path for which the viewer can offer Install…: only ASCII letters, digits, spaces
+  and `._+-@:`, so not below a checkout's `_build`, and no folder on the way that others
+  can write to, so not below `/tmp`.
+- The child starts through `/bin/sh`, which writes `exec unconfined` to its own
+  `/proc/self/attr/apparmor/exec`, as `aa_change_onexec` does, and then executes the
+  child. The child and its HTML viewer then run unconfined, as programs started from a
+  desktop session do. This holds even when the runner inherited an application's profile
+  that grants user namespaces, under which the browser would never be refused (as on the
+  host of 25 November).
+- Only that child changes its profile, to the stricter state; no system profile is
+  touched. The check never presses Install… and never sends Enter or Space to the viewer,
+  so pkexec never runs. It reads the notice and the button's state and place, takes the
+  screenshot `apparmor-offer` and closes the viewer with Escape.
+- Each unmet condition is reported `SKIP` with its exact reason in the scenario's message.
+  So are a stage that cannot be made or does not fit there, and a refused change of
+  profile.
 
 ## Viewer controls
 
@@ -166,7 +212,7 @@ Settled since then:
 | C5 | Clear find text empties the query and removes the highlight | `viewers_presentation` › Find bar | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
 | C6 | Escape closes the viewer while the search field has the focus | `viewers_presentation` › Find bar | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
 | C7 | Find in the hex view matches source bytes; Whole words is not offered there | `viewers_presentation` › Find in the hex view | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
-| C8 | Find in the HTML viewer (Chromium's search; the whole status "Long page · Offline · JavaScript on · Match 1 of 1", then "… · No matches": the page's title, then its policy); no Whole words; Reload reads the page again and the status returns to "Long page · Offline · JavaScript on" | `viewers_presentation` › HTML zoom, typed zoom, policy and Find | PASS on Windows (html-browser branch run `20261123-172442`, 0.5.1); SKIP on Linux (no cgroup-v2 delegation for the browser) |
+| C8 | Find in the HTML viewer (Chromium's search; the whole status "Long page · Offline · JavaScript on · Match 1 of 1", then "… · No matches": the page's title, then its policy); no Whole words; Reload reads the page again and the status returns to "Long page · Offline · JavaScript on" | `viewers_presentation` › HTML zoom, typed zoom, policy and Find | PASS on Windows (html-browser branch run `20261123-172442`, 0.5.1); PASS on Linux in `20261125-173616` (Ubuntu 26.04 desktop host, smoke; see "Latest recorded runs"): "Long page · Offline · JavaScript on · Match 1 of 1". The WSL 2 run `20261122-110817` skipped it (no writable cgroup-v2 delegation for the browser there) |
 | C9 | Wrap: Ctrl+W and the Wrap box; the horizontal scrollbar goes | `viewers_controls` › wrap | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | C10 | Font and presentation (Aa) row | `viewers_controls` › presentation row | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | C11 | Font size + button (taller rows) and font family picker (other glyphs) | `viewers_presentation` › font size and family | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
@@ -179,11 +225,11 @@ Settled since then:
 | C18 | Image 1:1 button, Ctrl+0 (Fit), dragging the picture | `viewers_presentation` › image 1:1, Fit and dragging | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
 | C19 | PDF Paged and Continuous layouts | `viewers_controls` › PDF layout; `viewers_scroll` › PDF | PASS (Windows `20261122-135339`, `20261122-104409`; Linux `20261122-110817`) |
 | C26 | The layout chosen last is the next PDF's: Continuous in one PDF opens the next Continuous, Paged there opens the first Paged again | `viewers_presentation` › the PDF layout kept for the next PDF | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
-| C27 | Typed zoom: Ctrl+Y and a click on the percentage open a field with the shown zoom; "150", "62.5" and "150%" apply; "0" and "7000" apply 0.01 % and 6400 % with "The smallest zoom is 0.01%" and "The largest zoom is 6400%"; "abc" keeps the field open with "Type a zoom percentage from 0.01% to 6400%, for example 150.5" and changes nothing; Escape closes only the field and keeps the zoom; HTML takes 10 % to 1000 % the same way; a PDF at a typed 400 % | `viewers_presentation` › typed zoom, HTML zoom, typed zoom, policy and Find; `viewers_scroll` › PDF sharp text | PASS (Windows `20261122-152615`, Linux `20261122-110817`; the HTML part SKIP on Linux). The scenario makes the invariant number format the user's first: the machine's own may use a decimal comma |
+| C27 | Typed zoom: Ctrl+Y and a click on the percentage open a field with the shown zoom; "150", "62.5" and "150%" apply; "0" and "7000" apply 0.01 % and 6400 % with "The smallest zoom is 0.01%" and "The largest zoom is 6400%"; "abc" keeps the field open with "Type a zoom percentage from 0.01% to 6400%, for example 150.5" and changes nothing; Escape closes only the field and keeps the zoom; HTML takes 10 % to 1000 % the same way; a PDF at a typed 400 % | `viewers_presentation` › typed zoom, HTML zoom, typed zoom, policy and Find; `viewers_scroll` › PDF sharp text | PASS (Windows `20261122-152615`, Linux `20261122-110817`; the HTML part, skipped in that Linux run, PASS on Linux in `20261125-173616` (Ubuntu 26.04 desktop host, smoke; see "Latest recorded runs")). The scenario makes the invariant number format the user's first: the machine's own may use a decimal comma |
 | C28 | The typed zoom in a decimal-comma number format with space-grouped thousands (made the user's format as the Engine's read of the regional settings delivers it, `viewers_support::use_number_locale`): the field opens with the shown zoom in that format ("62,5" again after "62,5"); "62,5", a dot ("75.5") and grouped thousands ("1 000,5") apply; "0" gives "The smallest zoom is 0,01%" and "abc" "Type a zoom percentage from 0,01% to 6400%, for example 150,5" | `viewers_presentation` › the typed zoom in a decimal-comma number format | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
 | C29 | Restart on one profile. Wrap, Lines, the Markdown preset, the text font and size, Aa, the PDF's Continuous layout and the comparator's font survive. An image previously closed at 1:1 reopens in Fit. | `viewers_presentation` › viewer preferences saved in the profile, after a restart | PASS (Windows `20261125-141741`) |
 | C20 | PDF pages: Ctrl+PageDown, Ctrl+PageUp, the page buttons, the counter, nothing before the first or after the last page | `viewers_presentation` › PDF pages | PASS (Windows `20261122-152615`, Linux `20261122-110817`) |
-| C21 | HTML zoom: buttons, Ctrl+Plus, Ctrl+0; Online unchecked and JavaScript checked and available offline (web viewer API 0.4); Back and Forward disabled without a page to go to, Reload enabled | `viewers_presentation` › HTML zoom, policy and Find | PASS on Windows (html-browser branch run `20261123-172442`); SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| C21 | HTML zoom: buttons, Ctrl+Plus, Ctrl+0; Online unchecked and JavaScript checked and available offline (web viewer API 0.4); Back and Forward disabled without a page to go to, Reload enabled | `viewers_presentation` › HTML zoom, policy and Find | PASS on Windows (html-browser branch run `20261123-172442`); PASS on Linux in `20261125-173616` (Ubuntu 26.04 desktop host, smoke; see "Latest recorded runs"): zoom 100 % → 125 % → back, Ctrl+0 100 %, Online enabled and the policy change allowed. The WSL 2 run `20261122-110817` skipped it (no writable cgroup-v2 delegation for the browser there) |
 | C22 | Space and Backspace show the next and previous file; Alt+Right and Alt+Left too; wrapping at the ends | `viewers_controls` › next and previous file | PASS (Windows `20261122-135339`, Linux `20261122-110817`), Alt+Right/Alt+Left and the wrap from the first file to the last included |
 | C30 | Space and Backspace load the file they open as it is at that moment: a file changed after the viewer opened shows its new content | `viewers_controls` › Space and Backspace load a file changed after the viewer opened | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | C31 | A folder whose order exceeds 8 MiB of paths (long names, 1.5 times the budget): from the first file Backspace shows the last file of the window the viewer keeps around it, not the folder's last file; from the last file Space shows the window's first file (README: navigation cycles within that window) | `viewers_controls` › Space and Backspace in a folder over 8 MiB of paths | PASS (Windows `20261122-135339`, Linux `20261122-110817`): 42,225 files with 120-character names, 12.0 MiB of order; the window from either end holds 28,149 files |
@@ -230,7 +276,7 @@ Settled since then:
 | R12 | A PDF shows new frames while its scrollbar is dragged (at least two distinct frames that differ from the page before the drag, over 20 moves 33 ms apart), not only at the release | `viewers_scroll` › PDF, new frames while the scrollbar is dragged | PASS (Windows `20261122-104409`, `20261122-182535`; Linux `20261122-110817`, `20261122-185841`): 20 distinct frames during 20 moves 33 ms apart |
 | R13 | PDF text is sharp at a typed 400 %: three quarters of its edges between the white page and solid ink are at most 2 px wide (rendered at the zoom, not an enlarged raster) | `viewers_scroll` › PDF, sharp text at a typed 400 % zoom | PASS (Windows `20261122-104409`, `20261122-182535`; Linux `20261122-110817`, `20261122-185841`): 19,486 text edges, three quarters at most 1 px wide |
 | R7 | Down and Up move 28 px; PageDown and PageUp exactly one screen; Ctrl+End and Ctrl+Home reach the ends | `viewers_scroll` › keys | PASS in every viewer kind (Windows `20261122-104409`, `20261122-182535`; Linux `20261122-110817`, `20261122-185841`): Down 28 px, Up −28 px, PageDown and PageUp 712 or 748 px (one screen), twenty Down presses in a row 560 px, Ctrl+End 1.0, Ctrl+Home 0.0. The moves are measured on the pixels, also where a refill drew the text again at another sub-pixel phase (the large log's Slint pixel delta up −60.22 px, its notch up −100.63 px) |
-| R8 | HTML keys: Down, PageDown, Ctrl+End, Ctrl+Home (back to the first view, pixel for pixel) | `viewers_scroll` › HTML keys | PASS on Windows (`20261122-104409`: Chromium Down 40 px, PageDown 623 of 712 px); SKIP on Linux: no writable cgroup-v2 delegation for the browser there |
+| R8 | HTML keys: Down, PageDown, Ctrl+End, Ctrl+Home (back to the first view, pixel for pixel) | `viewers_scroll` › HTML keys | PASS on Windows (`20261122-104409`: Chromium Down 40 px, PageDown 623 of 712 px); PASS on Linux in `20261125-173616` (Ubuntu 26.04 desktop host, smoke; see "Latest recorded runs"): Down 40 px, PageDown 623 of 712 px; also in the WSL 2 run of 25 November, which ran all 64 `viewers_scroll` subchecks, HTML included ([parallel acceptance](../../verification/2026-11-25-acceptance-parallel.md)). The WSL 2 run `20261122-110817` skipped it (no writable cgroup-v2 delegation for the browser there) |
 | R9 | Large log: Ctrl+End to the last line, Ctrl+Home, PageDown, the wheel down and back to the first view (followed by the shown position and the pixels: the content's accessible text is the whole prepared page) | `viewers_controls` › keyboard and wheel scrolling | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | R10 | Kinetic (touchpad) coasting | none | SKIP: not written yet; the acceptance seam's touchpad reports (`NativeWheel::Pixels` with their phases) can drive it now |
 
@@ -350,7 +396,7 @@ and the window test `storage_reasons_and_preview_failures_are_status_rows_that_l
 | A10 | 100,100 entries; 8.9 MB of names | `viewers_archives` › many.tar, long-names.tar | PASS |
 | A11 | One folder of 100,001 files: its listing and Ctrl+Shift+S inside it | `viewers_archives` › flat.tar | PASS on Windows (runs `20261122-053621` and `20261122-114734`, smoke): listed in 805 and 674 ms, Ctrl+Shift+S 5,151 bytes in 1,056 and 1,168 ms; PASS in the Linux runs `20261121-144246` (647 ms, 995 ms) and `20261122-140702` (776 ms, 1,564 ms) |
 | A12 | F5 copies a folder of 10,001 files out of a tar, then a Ctrl+A selection of all of them (more than the 4,096 entries a selection once stopped at), byte for byte within 360 s each | `viewers_archives` › F5 of the folder / of a selection of 10,001 … out of copy.tar | PASS on Windows (runs `20261122-053621` and `20261122-114734`, smoke): the folder in 108 and 117 s, the selection in 132 and 131 s; PASS in the Linux run `20261122-140702` (WSL 2, smoke): the folder in 120 s, the selection in 130 s |
-| A13 | The same with the 100,001 files of `flat.tar`, within 40 minutes each, with the runner's opt-in stress sizes (`--stress`, `MIDNIGHT_ACCEPTANCE_STRESS=1`) | `viewers_archives` (stress sizes) | NOT RUN YET. Earlier runs at 600 s ran out of time: 59,456 files on Windows (21 November, WIN-8), about 48,470 in the Linux run `20261121-144246` (about 81 files/s) |
+| A13 | The same with the 100,001 files of `flat.tar`, within 40 minutes each, with the runner's opt-in stress sizes (`--stress`, `MIDNIGHT_ACCEPTANCE_STRESS=1`) | `viewers_archives` (stress sizes) | PENDING: the Linux stress run follows a reboot of the desktop host; its run of 25 November was stopped for that reboot before the copy-outs. The 40-minute budget for the stress sizes was decided in 26c18895. Windows' stress run (WIN-8 in [windows.md](windows.md)) has not run either. Earlier runs at 600 s ran out of time: 59,456 files on Windows (21 November, WIN-8), about 48,470 in the Linux run `20261121-144246` (about 81 files/s) |
 | A14 | A quick search, then F3: the search closes and the focused match opens, in a native folder and inside an archive | `viewers_archives` › quick search, then F3 | PASS on Windows (runs `20261122-053621` and `20261122-114734`, smoke); PASS in the Linux run `20261122-140702` (WSL 2, smoke) |
 
 ## Archive passwords
@@ -422,12 +468,11 @@ delegated systemd user scope.
 | X6 | A viewer moved to a display of twice the scale shows the same lines twice as tall | `viewers_combinations` › a viewer at twice the scale | PASS (Windows `20261122-135339`, Linux `20261122-110817`) |
 | X7 | Viewers on archive members (and inner archives' members) | `viewers_archives` | PASS |
 | X8 | Every theme's selection colours | `viewers_selection` | See S4–S8 |
+| X9 | Make File List (Ctrl+M) to the Internal viewer: the basic text viewer shows exactly the list | `panels_root_keys` › Ctrl+M with the Internal viewer output (staged with the viewers) | PASS: L-08 in the [panels record](panels.md) (Windows `20261122-153059`, Linux `20261122-152841`) |
+| X10 | A viewer for archive members reached from a Find feed | `find_archives` › View, Edit and Open disabled for a member result, F3 refused with "An archive member opens from its archive", Feed to panel leaving members out and refusing only-member results (F-A10, F-A11 in the [Find record](find.md)) | Not applicable by design (FIND-01): a feed leaves archive members out, and View and F3 of a member result are refused; members are viewed from the archive panel ([Find](../FIND.md#search-inside-archives)) |
 
 ## Not yet written
 
-- The AppArmor Install… offer (O20: reported `SKIP` with the machine's reason), the Make
-  File List viewer opened from Ctrl+M (P's area, hooked here), a viewer for every file
-  reached from a Find feed of archive members.
 - Alt+Left/Right cycling files after link history; the links section on Linux (no Linux
   packages with the Markdown plugin's link targets yet); the address a followed web or mail
   link hands to the desktop service (`Launch::OpenUrl`) in a viewer scenario: the desktop
