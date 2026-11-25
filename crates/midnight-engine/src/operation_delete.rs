@@ -243,7 +243,7 @@ pub(super) fn execute(job: Job, outbox: Outbox) -> OperationProgress {
             confirmed = std::mem::take(&mut unavailable).into_iter();
             continue;
         };
-        let last = original.len() == 0 && confirmed.len() == 0;
+        let last = original.is_empty() && confirmed.as_slice().is_empty();
         let mode = decider.mode;
         let target = &job.targets[index];
         let processed_before = progress.processed_entries;
