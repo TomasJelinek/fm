@@ -151,7 +151,7 @@ nothing behind when it is refused.
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, plus a
 `SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
 ([signing](#signing-the-release)): the [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
-[0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md) and [0.5.4](releases/0.5.4.md) previews. Linux archives
+[0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md), [0.5.4](releases/0.5.4.md) and [0.6.0](releases/0.6.0.md) previews. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable is unsigned: the archive checksums establish download
 integrity, not code signing.

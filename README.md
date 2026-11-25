@@ -64,7 +64,7 @@ Windows executable is unsigned and there is no installer; from 0.5.1 on the appl
 checks for, verifies and installs signed updates itself. The archives include every
 plugin, the dependency notices and the license; the release notes say what each
 preview contains ([0.5.0](docs/releases/0.5.0.md), [0.5.1](docs/releases/0.5.1.md),
-[0.5.2](docs/releases/0.5.2.md), [0.5.3](docs/releases/0.5.3.md), [0.5.4](docs/releases/0.5.4.md)).
+[0.5.2](docs/releases/0.5.2.md), [0.5.3](docs/releases/0.5.3.md), [0.5.4](docs/releases/0.5.4.md), [0.6.0](docs/releases/0.6.0.md)).
 
 ## Build from source
 
