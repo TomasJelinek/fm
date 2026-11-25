@@ -1097,8 +1097,9 @@ current keys.
   Folder sizes, Properties and Hot Paths. Drives, the filter, view and sort choices,
   tabs and paths remain per panel. Narrow windows scroll the shared toolbar.
   The Options gear and, at the right end, the moon button stay fixed; the moon
-  opens About with the application version and copyright. Its night sky
-  holds still while Windows animation effects are off. The bottom bar keeps F1–F12
+  opens About with the application version and copyright. Its night sky shows
+  the application icon you chose and holds still while Windows animation effects
+  are off. The bottom bar keeps F1–F12
   and Jobs.
   Switching panels or locations invalidates an open context-dependent popup.
 - Custom Commands has a dedicated toolbar above the command editor whenever at

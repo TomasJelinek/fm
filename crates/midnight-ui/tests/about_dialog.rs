@@ -754,7 +754,7 @@ fn the_sky_scenes_stay_clear_of_the_title_icon_and_saturn() {
         let pill = ui::popup_item(about.window(), "Version 1.2.3", AccessibleRole::Text)
             .parent_item(ParentItemTraversalMode::StopAtPopups)
             .expect("the version pill");
-        // The halo glows a few pixels beyond the icon.
+        // Keep a few pixels clear around the icon.
         let keep_clear = [
             ("title", bounds(&title)),
             ("version", bounds(&pill)),
@@ -988,7 +988,7 @@ fn saturn_keeps_clear_of_the_title_and_the_shooting_stars_at_every_size() {
         let pill = ui::popup_item(about.window(), "Version 1.2.3", AccessibleRole::Text)
             .parent_item(ParentItemTraversalMode::StopAtPopups)
             .expect("the version pill");
-        // The halo glows a few pixels beyond the icon.
+        // Keep a few pixels clear around the icon.
         for (name, rect) in [
             ("the title", bounds(&title)),
             ("the version", bounds(&pill)),

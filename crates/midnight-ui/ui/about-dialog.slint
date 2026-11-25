@@ -267,8 +267,8 @@ component SlintBadge inherits Rectangle {
     TouchArea {}
 }
 
-// The hero is the same midnight sky in every theme, with the application icon as
-// its Moon. One looping phase (three cycles per loop, so every sine below repeats
+// The hero is the same midnight sky in every theme, with the application icon high
+// in it. One looping phase (three cycles per loop, so every sine below repeats
 // seamlessly) drives the aurora, twinkling and glinting stars, three shooting
 // stars, drifting clouds, Saturn's glow and the fireflies over the hills. A roomy
 // dialog also shows Cassiopeia drawing itself, a satellite crossing once per loop
@@ -343,16 +343,9 @@ component Sky inherits Rectangle {
         Rectangle { x: 0px; y: -6px * (0.4 + parent.glint); width: 1px; height: 12px * (0.4 + parent.glint); background: #ffffff; opacity: 0.3 + 0.7 * parent.glint; }
         Rectangle { x: -2px; y: -2px; width: 5px; height: 5px; border-radius: 2.5px; background: #ffffff; opacity: 0.4 + 0.6 * parent.glint; }
     }
-    // Pulsing halo and the application icon, the Moon: in front of the stars, behind
-    // the clouds and the shooting stars, which are nearer. A short dialog keeps only
-    // the title.
-    Rectangle {
-        x: (parent.width - self.width) / 2; y: 14px; width: 112px; height: 112px; border-radius: 56px;
-        // A warm yellow glow, as the application icon's own glow around the Moon.
-        background: @radial-gradient(circle, #ffd65c88 0%, #ffd65c00 70%);
-        opacity: 0.65 + 0.35 * Math.sin(root.phase * 3rad);
-        visible: !root.compact;
-    }
+    // The application icon chosen in Options, shown as it is, with no glow of the sky's
+    // own: in front of the stars, behind the clouds and the shooting stars, which are
+    // nearer. A short dialog keeps only the title.
     Image {
         source: root.logo; image-fit: contain; visible: !root.compact;
         x: (parent.width - self.width) / 2; y: 28px + 2px * Math.sin(root.phase * 3rad); width: 72px; height: 72px;
@@ -424,7 +417,7 @@ component Sky inherits Rectangle {
             opacity: 0.7 + 0.3 * Math.sin((root.phase * 2 + n * 1.3) * 1rad);
         }
     }
-    // A satellite crosses once per loop, high above Cassiopeia and the halo, its
+    // A satellite crosses once per loop, high above Cassiopeia and the icon, its
     // light blinking, and fades into the Earth's shadow well before Saturn.
     satellite := Rectangle {
         // 0..1 while it crosses, from 40 % to 85 % of the loop: 32.4 s.
@@ -452,7 +445,7 @@ component Sky inherits Rectangle {
         private property <float> t: Math.clamp((Math.mod(root.phase / 6.2832 + k / 3, 1) - 0.1) / 0.15, 0, 1);
         // The head (the left end) travels down and left along the streak's own slope,
         // 30 down for every 64 across, always left of Saturn. Drawn after the icon, they
-        // pass in front of the Moon: in a dialog narrower than about 680 px the right
+        // pass in front of it: in a dialog narrower than about 680 px the right
         // one at the end of its flight, narrower than 400 px the left one at its start.
         x: (k == 0 ? parent.width - 180px : k == 1 ? parent.width / 2 - 130px : parent.width * 0.25)
             - self.t * parent.width * 0.18;
