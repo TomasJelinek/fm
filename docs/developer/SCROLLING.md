@@ -503,6 +503,12 @@ waiting for a commit that never happens. The notifier keeps only a weak window
 reference; X11 and other platforms need no workaround.
 The [Wayland source-wheel verification](../verification/2026-11-24-source-wheel-wayland.md)
 records the reproduced GPU stalls, repeated native trials and observer-input command.
+Any rendering notifier also makes Slint flush a window's clear separately before its
+content. Upstream FemtoVG then dropped every render pipeline the clear did not use,
+so each Wayland frame rebuilt its pipelines and wheel scrolling ran at 30 frames per
+second. The vendored FemtoVG keeps pipelines across flushes, up to a cap
+([vendor notes](../../vendor/README.md),
+[verification](../verification/2026-11-25-wayland-pipeline-retention.md)).
 
 File lists remain virtualized. Scrolling must not regenerate or format every
 entry in a directory. Rendering caches, if enabled, belong to the visible

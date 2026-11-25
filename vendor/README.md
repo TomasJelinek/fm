@@ -62,7 +62,7 @@ caller-owned unsubmitted command buffers and their one-shot sources. Those
 sources remain alive until their GPU commands finish or are discarded. The
 application submits frames promptly; the renderer does not add submissions,
 block for completion, or change GPU/driver workarounds. Texture allocation reuse
-and pipeline retention are not part of this change. GPU device loss remains fatal
+is not part of this change; pipeline retention is the fifth change below. GPU device loss remains fatal
 as upstream: mapping a staging range after loss panics in `render`.
 
 A third change retains at most 32 immutable viewport bind groups per renderer,
@@ -141,8 +141,25 @@ check the fitted rasterizer; the third lays About dialog text out at 11 to 14 px
 from every tenth-pixel start and checks that each blank keeps at least its layout
 width less half a pixel.
 
+A fifth change retains render pipelines across flushes (`wgpu/pipelines.rs`).
+Upstream kept only the pipelines that the latest flush used. Slint 1.18.1 flushes a
+window's clear separately whenever a rendering notifier is installed, and the
+application installs one on native Wayland windows to request frame callbacks, so
+the second flush of every frame rebuilt each pipeline it drew with. With an NVIDIA
+Vulkan driver that was 16 pipelines and about 25 ms per frame, which held wheel
+scrolling at 30 frames per second with occasional longer freezes
+([measurements](../docs/verification/2026-11-25-wayland-pipeline-retention.md)).
+The cache now keeps every pipeline until it holds more than 64, then drops those
+least recently used by earlier flushes; the pipelines of the current flush always
+stay. The viewer's scrolling probe draws with 22 distinct pipeline states. A
+least-recently-used cap was chosen over expiring pipelines unused for some number
+of flushes: expiry would still rebuild the pipelines of rarely shown elements each
+time they reappear, while the cap bounds memory like the binding and viewport
+caches above. WGPU keeps a dropped pipeline alive while recorded commands
+reference it.
+
 The WGPU source patch is in `src/renderer/wgpu.rs`, `wgpu/bindings.rs`,
-`wgpu/uploads.rs` and `wgpu/viewports.rs`, with its tests in `wgpu/*_tests.rs` and
+`wgpu/pipelines.rs`, `wgpu/uploads.rs` and `wgpu/viewports.rs`, with its tests in `wgpu/*_tests.rs` and
 their shared validated test device in `wgpu/test_gpu.rs`. The added code remains under the upstream
 MIT OR Apache-2.0
 license choice; application packaging continues to select MIT.
@@ -179,7 +196,11 @@ own nonblocking poll, unsubmitted-buffer isolation, discarded submissions,
 renderer drop, growth, cache bounds, ordered mixed cached/uncached deferred
 commands, and oversized uploads. Viewport cases verify repeat reuse, exact-bit key
 separation, bounded eviction, and correct GPU reads after eviction/cache drop with
-deferred command submission.
+deferred command submission. The pipeline case draws frames as Slint does with a
+rendering notifier, a clear-only flush before the content, and checks that the
+content's pipelines survive the clear, that later frames rebuild none, and the
+output pixels. The pipeline cache's bound and eviction order are also tested
+without a GPU; those tests run without `--ignored`.
 Upstream font tests requiring the excluded example assets need the upstream
 checkout; they are not claimed as part of this focused GPU validation.
 

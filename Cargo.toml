@@ -74,8 +74,9 @@ opt-level = 2
 [profile.dev.package.wgpu-hal]
 opt-level = 2
 
-# Fractional scrolling can materialize a WGPU pipeline after idle frames evict
-# it. Keep shader translation inside the frame budget in development builds.
+# Scrolling can materialize a WGPU pipeline the first time a state is drawn (FemtoVG
+# keeps up to 64, vendor/README.md). Keep shader translation inside the frame budget
+# in development builds.
 [profile.dev.package.naga]
 opt-level = 2
 

@@ -3,11 +3,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod bindings;
+mod pipelines;
 #[cfg(test)]
 mod test_gpu;
 mod uploads;
 mod viewports;
 use bindings::BindGroupCache;
+use pipelines::PipelineCache;
 use uploads::{Upload, UploadPool};
 use viewports::ViewportCache;
 
@@ -260,11 +262,7 @@ const SAMPLER_FLAGS: crate::ImageFlags = crate::ImageFlags::REPEAT_X
 
 type SamplerCache = Rc<RefCell<HashMap<crate::ImageFlags, wgpu::Sampler>>>;
 
-#[derive(Debug)]
-struct CachedPipeline {
-    pipeline: wgpu::RenderPipeline,
-    accessed: bool,
-}
+type Pipelines = Rc<RefCell<PipelineCache<PipelineState, wgpu::RenderPipeline>>>;
 
 /// WGPU renderer.
 #[derive(Debug)]
@@ -288,7 +286,7 @@ pub struct WGPURenderer {
     bind_group_layout: wgpu::BindGroupLayout,
     viewport_bindings: ViewportCache,
     pipeline_layout: wgpu::PipelineLayout,
-    pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
+    pipeline_cache: Pipelines,
     bind_group_cache: Rc<RefCell<BindGroupCache>>,
 }
 
@@ -778,9 +776,7 @@ impl Renderer for WGPURenderer {
 
         let command_buffer = encoder.finish();
 
-        self.pipeline_cache
-            .borrow_mut()
-            .retain(|_, cached_pipeline| std::mem::replace(&mut cached_pipeline.accessed, false));
+        self.pipeline_cache.borrow_mut().end_flush();
 
         Some(command_buffer)
     }
@@ -1957,7 +1953,7 @@ struct CommandToPipelineAndBindGroupMapper {
     current_bind_group_state: Option<BindGroupState>,
     current_bind_group: Option<wgpu::BindGroup>,
     bind_group_layout: wgpu::BindGroupLayout,
-    pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
+    pipeline_cache: Pipelines,
     bind_group_cache: Rc<RefCell<BindGroupCache>>,
     pipeline_layout: wgpu::PipelineLayout,
 }
@@ -1972,7 +1968,7 @@ impl CommandToPipelineAndBindGroupMapper {
         shader_module: Rc<wgpu::ShaderModule>,
         bind_group_layout: wgpu::BindGroupLayout,
         pipeline_layout: wgpu::PipelineLayout,
-        pipeline_cache: Rc<RefCell<HashMap<PipelineState, CachedPipeline>>>,
+        pipeline_cache: Pipelines,
         bind_group_cache: Rc<RefCell<BindGroupCache>>,
     ) -> Self {
         Self {
@@ -2051,18 +2047,13 @@ impl CommandToPipelineAndBindGroupMapper {
             render_pass_builder.stencil_buffer.is_some(),
         );
 
-        // An unchanged pipeline was looked up, and marked accessed, when it was bound.
+        // An unchanged pipeline was looked up, and marked used, when it was bound.
         if render_pass_builder.current_pipeline_state.as_ref() != Some(&pipeline_state) {
             let mut pipeline_cache = self.pipeline_cache.borrow_mut();
-            let render_pipeline = pipeline_cache.entry(pipeline_state.clone()).or_insert_with(|| {
-                let pipeline = pipeline_state.materialize(&self.device, &self.pipeline_layout, &self.shader_module);
-                CachedPipeline {
-                    pipeline,
-                    accessed: false,
-                }
+            let render_pipeline = pipeline_cache.get_or_insert_with(pipeline_state.clone(), || {
+                pipeline_state.materialize(&self.device, &self.pipeline_layout, &self.shader_module)
             });
-            render_pipeline.accessed = true;
-            render_pass.set_pipeline(&render_pipeline.pipeline);
+            render_pass.set_pipeline(render_pipeline);
             render_pass_builder.current_pipeline_state = Some(pipeline_state);
         }
     }
