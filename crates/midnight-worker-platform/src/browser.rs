@@ -117,18 +117,6 @@ pub fn spawn(executable: &Path) -> io::Result<Browser> {
     spawn_with_extensions(executable, Extensions::default())
 }
 
-/// Launch a host that accepts the negotiated physical-v1 web shortcut event extension.
-/// The fixed capability is added explicitly; ambient process values are never forwarded.
-pub fn spawn_with_host_shortcuts(executable: &Path) -> io::Result<Browser> {
-    spawn_with_extensions(
-        executable,
-        Extensions {
-            host_shortcuts: true,
-            ..Extensions::default()
-        },
-    )
-}
-
 /// Launch a browser for a host that accepts the given negotiated web-viewer API
 /// extensions. Each adds its one fixed value to the cleared environment; ambient
 /// process values are never forwarded.
