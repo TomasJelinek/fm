@@ -876,14 +876,71 @@ fn files_and_folders_of_one_name_are_one_sided_and_ignore_masks_apply_inside() {
         ..options(false, true)
     };
     let (result, _) = deep(&fake, request(&fake, ignoring), &cancel);
+    let result = result.unwrap();
     assert_eq!(
-        selected(&result.unwrap()),
+        selected(&result),
         [vec!["name".to_owned()], vec!["name".to_owned()]],
         "ignored names are left out on both sides, inside compared folders too"
+    );
+    let marks = result.marks.as_ref().unwrap();
+    for excluded in ["/left/f/build.tmp", "/left/f/.git", "/left/f/.git/HEAD"] {
+        assert_eq!(marks.mark(0, Path::new(excluded)), None, "{excluded}");
+    }
+    assert_eq!(
+        marks.mark(0, Path::new("/left/f/kept")),
+        Some(CompareMark::Same)
     );
     // Without subfolders, folders are left out entirely; the file still is one-sided.
     let flat = compute(request(&fake, CompareOptions::default()), &|| false).unwrap();
     assert_eq!(selected(&flat), [vec!["name".to_owned()], vec![]]);
+}
+
+#[test]
+fn ignored_descendants_never_inherit_badges_from_compared_or_one_sided_folders() {
+    let fake = twins();
+    fake.dir("/left/both")
+        .dir("/right/both")
+        .file("/left/both/diff", b"long", 1)
+        .file("/right/both/diff", b"x", 1)
+        .dir("/left/both/build.tmp")
+        .dir("/right/both/build.tmp")
+        .file("/left/both/.git", b"file", 1)
+        .file("/right/both/.git", b"file", 1)
+        .file("/left/both/omit.TMP", b"x", 1)
+        .dir("/left/only")
+        .dir("/left/only/.GIT")
+        .file("/left/only/.GIT/HEAD", b"ref", 1)
+        .file("/left/only/skip.tmp", b"x", 1)
+        .file("/left/only/keep", b"x", 1);
+    let masks = CompareOptions {
+        case_sensitive: false,
+        ignore_files: Some("*.tmp".into()),
+        ignore_folders: Some(".git".into()),
+        ..options(false, true)
+    };
+    let (result, _) = deep(&fake, request(&fake, masks), &Cancellation::default());
+    let result = result.unwrap();
+    let marks = result.marks.as_ref().unwrap();
+    let outcome = |path: &str, folder: bool| {
+        marks
+            .entry_outcome(0, Path::new(path), folder)
+            .map(|(mark, _)| mark)
+    };
+    assert_eq!(outcome("/left/both", true), Some(CompareMark::Differs));
+    assert_eq!(outcome("/left/both/omit.TMP", false), None);
+    assert_eq!(
+        outcome("/left/both/build.tmp", true),
+        Some(CompareMark::Same)
+    );
+    assert_eq!(outcome("/left/both/.git", false), Some(CompareMark::Same));
+    assert_eq!(outcome("/left/only", true), Some(CompareMark::OnlyHere));
+    assert_eq!(outcome("/left/only/.GIT", true), None);
+    assert_eq!(outcome("/left/only/.GIT/HEAD", false), None);
+    assert_eq!(outcome("/left/only/skip.tmp", false), None);
+    assert_eq!(
+        outcome("/left/only/keep", false),
+        Some(CompareMark::OnlyHere)
+    );
 }
 
 #[test]

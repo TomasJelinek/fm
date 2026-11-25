@@ -1015,6 +1015,22 @@ impl App {
         }
     }
 
+    /// Deliver an automatic watch hint for this flat pane and wait until its new
+    /// backend listing commits. The directory itself may be unchanged.
+    pub fn reread_unchanged_pane(&mut self, pane: PaneId) -> Result<(), String> {
+        let old = self.committed[pane.index()].ok_or("pane has no committed listing")?;
+        let sent = with_owned_commands(&self.presenter, &self.begin_owned, |presenter, send| {
+            presenter.refresh_if_changed(pane, old, send)
+        });
+        if sent != Some(true) {
+            return Err(format!("could not send a watch reread for {pane:?}"));
+        }
+        self.until("the watch reread to commit a new listing", |app| {
+            app.committed[pane.index()].is_some_and(|current| current != old)
+        });
+        Ok(())
+    }
+
     /// Hand `url` to the system's handler as a viewer hands a link the user followed
     /// (`Presenter::open_external_url`, `Command::OpenUrl`); settle until the backend
     /// answered (30 s at most) and return the status text the viewer would show: `Ok`

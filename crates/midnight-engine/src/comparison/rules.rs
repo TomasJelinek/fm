@@ -2,7 +2,8 @@
 //! docs/developer/COMPARE_DIRECTORIES.md): names, size, time with tolerance and
 //! daylight saving shifts, attributes, and when contents must be read.
 use midnight_core::{
-    CompareDetail, CompareFlags, CompareOptions, EntryMetadata, FilterMode, PanelFilter,
+    CompareDetail, CompareFlags, CompareIgnoreMasks, CompareOptions, EntryMetadata, FilterMode,
+    PanelFilter,
 };
 use midnight_platform_common::filter::CompiledFilter;
 use std::{
@@ -34,10 +35,26 @@ impl Name {
 }
 
 /// The options of one comparison with its ignore masks compiled.
+#[derive(Debug)]
 pub(super) struct Criteria {
     pub(super) options: CompareOptions,
     ignore_files: Option<CompiledFilter>,
     ignore_folders: Option<CompiledFilter>,
+}
+
+impl CompareIgnoreMasks for Criteria {
+    fn ignored(&self, name: &OsStr, directory: bool) -> bool {
+        let masks = if directory {
+            &self.ignore_folders
+        } else {
+            &self.ignore_files
+        };
+        // CompiledFilter keeps undecodable native names visible in a panel filter.
+        // An ignore mask must likewise leave those names available to compare.
+        masks
+            .as_ref()
+            .is_some_and(|masks| name.to_str().is_some() && masks.matches(name))
+    }
 }
 
 impl Criteria {
@@ -62,15 +79,8 @@ impl Criteria {
         })
     }
 
-    /// Whether an ignore mask leaves this entry out on both sides. Folder masks
-    /// apply only where folders are compared at all.
-    pub(super) fn ignored(&self, name: &OsStr, directory: bool) -> bool {
-        let masks = if directory {
-            &self.ignore_folders
-        } else {
-            &self.ignore_files
-        };
-        masks.as_ref().is_some_and(|masks| masks.matches(name))
+    pub(super) fn has_ignore_masks(&self) -> bool {
+        self.ignore_files.is_some() || self.ignore_folders.is_some()
     }
 
     pub(super) fn name(&self, name: &OsStr) -> Name {

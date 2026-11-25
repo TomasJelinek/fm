@@ -18,7 +18,6 @@ use crate::{
     panel, tools_support as tools,
 };
 use i_slint_core::{
-    accessibility::AccessibleStringProperty,
     item_tree::ItemRc,
     items::AccessibleRole,
     window::{WindowInner, WindowKind},
@@ -325,6 +324,87 @@ fn tooltips(app: &App) -> Vec<String> {
     texts
 }
 
+/// The visible inequality badge on the named row in this pane.
+fn inequality_badge(app: &App, pane: PaneId, name: &str) -> Result<ItemRc, String> {
+    let row = panel::row_center(app, pane, name).ok_or_else(|| format!("{name} is off screen"))?;
+    let (left, width) = match pane {
+        PaneId::Left => (
+            app.window.get_left_list_left(),
+            app.window.get_left_list_width(),
+        ),
+        PaneId::Right => (
+            app.window.get_right_list_left(),
+            app.window.get_right_list_width(),
+        ),
+    };
+    for (_, item) in inspect::controls(app.slint(), AccessibleRole::Text) {
+        let Some((x, y, _, h)) = inspect::visible_rect(&item) else {
+            continue;
+        };
+        if x >= left
+            && x < left + width
+            && y <= row.y
+            && row.y < y + h
+            && inspect::label(&item).is_some_and(|label| label.starts_with("Compared:"))
+            && tools::item_texts(&item).iter().any(|text| text == "≠")
+        {
+            return Ok(item);
+        }
+    }
+    Err(format!("no visible ≠ glyph on {pane:?} row {name:?}"))
+}
+
+/// Hover the real badge while the watch service asks for a no-change reread of the
+/// same folder. Verify every row mark, and the painted interiors of both badges.
+fn hover_through_reread(app: &mut App, name: &str) -> Result<(), String> {
+    use super::ui_gate::Frame;
+    let panes = [PaneId::Left, PaneId::Right];
+    let main = app.main.clone();
+    let previous = panes.map(|pane| marks(app, pane));
+    let selections = panes.map(|pane| selected(app, pane));
+    let frame = Frame::of(&main);
+    let mut targets = Vec::new();
+    for pane in panes {
+        let badge = inequality_badge(app, pane, name)?;
+        let (x, y, w, h) = inspect::rect(&badge);
+        let interior = (x + 3.0, y + 3.0, w - 6.0, h - 6.0);
+        targets.push((
+            inspect::center(&badge),
+            tools::description(&badge),
+            interior,
+            frame.digest(interior, &[]),
+        ));
+    }
+    for (pane, (point, detail, _, _)) in panes.into_iter().zip(&targets) {
+        input::move_to(main.window(), *point);
+        app.until("the comparison badge tooltip", |app| {
+            tooltips(app).contains(detail)
+        });
+        app.reread_unchanged_pane(pane)?;
+        app.pump(Duration::from_millis(900));
+        if panes.map(|pane| marks(app, pane)) != previous
+            || panes.map(|pane| selected(app, pane)) != selections
+            || result_line(app).is_empty()
+        {
+            return Err(format!(
+                "hover and watch reread on {pane:?} changed the comparison"
+            ));
+        }
+        let after = Frame::of(&main);
+        for (side, (_, _, interior, digest)) in panes.into_iter().zip(&targets) {
+            inequality_badge(app, side, name)?;
+            if after.digest(*interior, &[]) != *digest {
+                return Err(format!(
+                    "the painted ≠ glyph changed on {side:?} while hovering {pane:?}"
+                ));
+            }
+        }
+    }
+    input::move_to(main.window(), LogicalPosition::new(2.0, 2.0));
+    app.wait_ui(Duration::from_millis(300));
+    Ok(())
+}
+
 /// The owner's two questions after a subfolder comparison: pointing at a badge says
 /// what differs for that row, and Clear comparison (the × at the end of the result
 /// line, Escape in the panel, Ctrl+Shift+F11) removes both panels' badges and the
@@ -379,21 +459,13 @@ fn badges_explain_and_clear(app: &mut App, context: &mut Context) -> Result<(), 
     }
     let main = app.main.clone();
     let wanted = "Larger here: 20 vs 10 bytes";
-    let mut badge = None;
-    for root in inspect::roots(main.window()) {
-        inspect::walk(&root, &mut |item| {
-            if badge.is_none()
-                && item.accessible_role() == AccessibleRole::Text
-                && inspect::label(item).as_deref() == Some("Compared: differs")
-                && item
-                    .accessible_string_property(AccessibleStringProperty::Description)
-                    .is_some_and(|text| text.as_str() == wanted)
-            {
-                badge = Some(item.clone());
-            }
-        });
+    let badge = inequality_badge(app, PaneId::Left, "bigger-left.dat")?;
+    if tools::description(&badge) != wanted {
+        return Err(format!(
+            "the difference badge is described as {:?}",
+            tools::description(&badge)
+        ));
     }
-    let badge = badge.ok_or("no badge is described as Larger here: 20 vs 10 bytes")?;
     input::move_to(main.window(), inspect::center(&badge));
     app.wait_ui(Duration::from_millis(900));
     if !tooltips(app).iter().any(|text| text == wanted) {
@@ -411,7 +483,11 @@ fn badges_explain_and_clear(app: &mut App, context: &mut Context) -> Result<(), 
     app.wait_ui(Duration::from_millis(300));
 
     let line = result_line(app);
-    if !line.contains("clears the marks") {
+    // An automatic reread or expanded tree can replace the selection counts
+    // with the badge legend. Both lines must still identify the clear action.
+    if !(line.contains("clears the marks")
+        || (line.starts_with("Comparison marks:") && line.ends_with("× clears them")))
+    {
         return Err(format!(
             "the result line does not say how to clear: {line:?}"
         ));
@@ -475,11 +551,79 @@ fn badges_explain_and_clear(app: &mut App, context: &mut Context) -> Result<(), 
 }
 
 pub fn compare_directories(context: &mut Context) -> Result<(), String> {
+    supplied_directories(context)?;
     let root = context.work.join("compare");
     let outcome = compare_all(context, &root);
     // Leave nothing large behind in the work folder.
     let _ = fs::remove_dir_all(root.join("slow"));
     outcome
+}
+
+/// Optional read-only run on a supplied pair. Each independent UTF-8 TSV lists
+/// pane (left/right), root entry name, numeric mark and selected flag (0/1).
+fn supplied_directories(context: &mut Context) -> Result<(), String> {
+    let inputs = ["LEFT", "RIGHT", "ORACLE"]
+        .map(|suffix| std::env::var_os(format!("MIDNIGHT_ACCEPTANCE_DIR_COMPARE_{suffix}")));
+    let [Some(left), Some(right), Some(oracle)] = &inputs else {
+        return if inputs.iter().all(Option::is_none) {
+            Ok(())
+        } else {
+            Err("Supply all three directory comparison inputs: LEFT, RIGHT and ORACLE".into())
+        };
+    };
+    let content = Path::new(oracle);
+    let default = content.with_file_name("default.tsv");
+    let mut app = App::start(Config::new(Path::new(left), Path::new(right)));
+    for (mode, options, path) in [
+        ("default metadata", DEFAULTS, default.as_path()),
+        (
+            "recursive contents",
+            Options {
+                time: false,
+                contents: true,
+                subfolders: true,
+                ..DEFAULTS
+            },
+            content,
+        ),
+    ] {
+        compare(&mut app, options)?;
+        let expected: BTreeSet<String> = fs::read_to_string(path)
+            .map_err(|error| format!("reading comparison expectations: {error}"))?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let mut actual = BTreeSet::new();
+        for (pane, side) in [(PaneId::Left, "left"), (PaneId::Right, "right")] {
+            for row in app.rows(pane).into_iter().filter(|row| !row.parent_entry) {
+                actual.insert(format!(
+                    "{side}\t{}\t{}\t{}",
+                    row.name,
+                    row.compare_mark,
+                    u8::from(row.selected)
+                ));
+            }
+        }
+        if actual != expected {
+            return Err(format!(
+                "{mode}: unexpected rows {:?}, missing rows {:?}",
+                actual.difference(&expected).collect::<Vec<_>>(),
+                expected.difference(&actual).collect::<Vec<_>>()
+            ));
+        }
+        let (target, _) = marks(&app, PaneId::Left)
+            .into_iter()
+            .find(|(name, mark)| {
+                *mark == 2
+                    && [PaneId::Left, PaneId::Right]
+                        .into_iter()
+                        .all(|pane| inequality_badge(&app, pane, name).is_ok())
+            })
+            .ok_or_else(|| format!("{mode}: no shared visible inequality badge"))?;
+        hover_through_reread(&mut app, &target)?;
+        context.note(format!("Supplied folders, {mode}: all {} root verdicts and selections matched the independent expectation, and ≠ stayed painted after hover and watch reread in either pane.", actual.len()));
+    }
+    app.shutdown()
 }
 
 fn compare_all(context: &mut Context, root: &Path) -> Result<(), String> {
@@ -860,6 +1004,8 @@ fn compare_all(context: &mut Context, root: &Path) -> Result<(), String> {
     panel::enter(&mut app, PaneId::Right, "dir-both")?;
     let both = compare(&mut app, DEFAULTS)?;
     expect("inside dir-both", &both, &[], &["inner.txt"])?;
+    hover_through_reread(&mut app, "inner.txt")?;
+    context.note("The inequality badges, selections and comparison legend survived hovering and a completed no-change watch reread in each pane.");
     let both = compare(
         &mut app,
         Options {
@@ -882,6 +1028,22 @@ fn compare_all(context: &mut Context, root: &Path) -> Result<(), String> {
         &["left.txt"],
         &["right.txt"],
     )?;
+    // A real change to the displayed directory invalidates its comparison.
+    // Only this generated fixture is written; supplied release folders stay read-only.
+    fs::write(left.join("dir-both/deeper/added.txt"), b"added")
+        .map_err(|error| error.to_string())?;
+    app.until("the new entry after the native watch hint", |app| {
+        app.names(PaneId::Left)
+            .iter()
+            .any(|name| name == "added.txt")
+    });
+    for pane in [PaneId::Left, PaneId::Right] {
+        if marks(&app, pane).iter().any(|(_, mark)| *mark != 0) {
+            return Err(format!(
+                "a changed listing retained stale comparison badges on {pane:?}"
+            ));
+        }
+    }
     app.shutdown()?;
 
     appearance(context, root)?;

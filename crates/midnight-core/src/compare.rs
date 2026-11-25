@@ -205,6 +205,11 @@ impl CompareMark {
     }
 }
 
+/// The name masks used by the worker, retained for rows expanded after comparison.
+pub trait CompareIgnoreMasks: std::fmt::Debug + Send + Sync {
+    fn ignored(&self, name: &OsStr, directory: bool) -> bool;
+}
+
 /// The outcome of each compared entry, including top-level-only comparisons, for both
 /// panels. Entries are keyed by their path relative to the compared folder, with
 /// names folded when names match without regard to case. Matching files inside a
@@ -219,6 +224,7 @@ impl CompareMark {
 pub struct CompareMarks {
     roots: [PathBuf; 2],
     case_sensitive: bool,
+    ignore_masks: Option<Arc<dyn CompareIgnoreMasks>>,
     entries: HashMap<OsString, Stored>,
     /// The stored entries' numbers (`CompareDetail::pack`).
     words: Vec<u64>,
@@ -248,6 +254,7 @@ impl CompareMarks {
         Self {
             roots,
             case_sensitive,
+            ignore_masks: None,
             entries: HashMap::new(),
             words: Vec::new(),
             bytes: 0,
@@ -281,6 +288,11 @@ impl CompareMarks {
 
     pub fn roots(&self) -> &[PathBuf; 2] {
         &self.roots
+    }
+
+    /// Reuse the worker's compiled masks without retaining each excluded descendant.
+    pub fn set_ignore_masks(&mut self, masks: Arc<dyn CompareIgnoreMasks>) {
+        self.ignore_masks = Some(masks);
     }
 
     /// The key of the child `name` of the entry keyed `parent` (empty: the root).
@@ -419,30 +431,71 @@ impl CompareMarks {
     }
 
     /// `mark` with why: the stored detail of `path`, or an empty one when its mark
-    /// is inferred from a folder above it.
+    /// is inferred from a folder above it. If ignore masks could exclude a file
+    /// or folder of this name, only a stored verdict is returned. Call
+    /// [`Self::entry_outcome`] when the row's kind is available.
     pub fn outcome(&self, side: usize, path: &Path) -> Option<(CompareMark, CompareDetail)> {
-        let relative = path.strip_prefix(&self.roots[side]).ok()?;
-        // The keys of the entry and of each of its ancestors, the entry's last.
-        let mut prefixes = Vec::new();
+        self.lookup(side, path, None)
+    }
+
+    /// Looks up a displayed row with its known kind. An inferred mark requires its
+    /// name and all parent folders to pass the same masks as the comparison.
+    pub fn entry_outcome(
+        &self,
+        side: usize,
+        path: &Path,
+        directory: bool,
+    ) -> Option<(CompareMark, CompareDetail)> {
+        self.lookup(side, path, Some(directory))
+    }
+
+    fn lookup(
+        &self,
+        side: usize,
+        path: &Path,
+        directory: Option<bool>,
+    ) -> Option<(CompareMark, CompareDetail)> {
+        let relative = path.strip_prefix(self.roots.get(side)?).ok()?;
+        let mut components = relative.components().peekable();
         let mut key = OsString::new();
-        for component in relative.components() {
+        let mut may_infer = true;
+        while let Some(component) = components.next() {
             let Component::Normal(name) = component else {
                 return None;
             };
+            if let Some(masks) = &self.ignore_masks {
+                let kind = if components.peek().is_some() {
+                    Some(true)
+                } else {
+                    directory
+                };
+                match kind {
+                    Some(folder) if masks.ignored(name, folder) => return None,
+                    // A path alone does not describe its last component. Its stored
+                    // verdict is authoritative; infer only if both kinds are included.
+                    None => may_infer = !masks.ignored(name, true) && !masks.ignored(name, false),
+                    _ => (),
+                }
+            }
             if !key.is_empty() {
                 key.push("/");
             }
             push_name(&mut key, name, self.case_sensitive);
-            prefixes.push(key.clone());
         }
-        let own = prefixes.pop()?;
-        if let Some(stored) = self.entries.get(own.as_os_str())
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(stored) = self.entries.get(key.as_os_str())
             && let Some(mark) = CompareMark::decode(stored.marks[side])
         {
             return Some((mark, self.detail_of(stored)));
         }
+        if !may_infer {
+            return None;
+        }
         // The nearest stored ancestor tells about entries that were not stored.
-        for ancestor in prefixes.iter().rev() {
+        for parent in Path::new(&key).ancestors().skip(1) {
+            let ancestor = parent.as_os_str();
             match self.stored(ancestor, side) {
                 Some(CompareMark::OnlyHere) => {
                     return Some((CompareMark::OnlyHere, CompareDetail::default()));

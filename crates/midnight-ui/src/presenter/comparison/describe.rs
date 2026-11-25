@@ -31,10 +31,13 @@ impl Presenter {
             return (0, String::new());
         };
         let side = pane.index();
-        if self.panes[side].generation != shown.generations[side] || entry.virtual_node.is_some() {
+        if self.panes[side].comparison_listing_generation() != shown.generations[side]
+            || entry.virtual_node.is_some()
+        {
             return (0, String::new());
         }
-        let Some((mark, detail)) = shown.marks.outcome(side, &entry.path) else {
+        let directory = matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink);
+        let Some((mark, detail)) = shown.marks.entry_outcome(side, &entry.path, directory) else {
             return (0, String::new());
         };
         let there = (detail.times.is_some())
@@ -42,7 +45,7 @@ impl Presenter {
             .flatten();
         let row = Row {
             side,
-            directory: matches!(entry.kind, EntryKind::Directory | EntryKind::DirectoryLink),
+            directory,
             options: &shown.options,
             here: shown_time(metadata),
             there,

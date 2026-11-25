@@ -36,6 +36,7 @@ pub fn validate_selection_mask(pattern: &str) -> Result<(), String> {
     }
 }
 
+#[derive(Debug)]
 pub struct CompiledFilter {
     include: Option<Regex>,
     exclude: Option<Regex>,

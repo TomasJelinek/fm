@@ -366,6 +366,11 @@ pub(super) fn compare(
         }
     }
     let counts = counts.unwrap_or_default();
+    if criteria.has_ignore_masks()
+        && let Some(marks) = &mut marks
+    {
+        marks.set_ignore_masks(Arc::new(criteria));
+    }
     Ok(CompareResult {
         request: request.clone(),
         selections,

@@ -64,6 +64,21 @@ pub(crate) struct ComparisonState {
 }
 
 impl ComparisonState {
+    /// The backend reuses the entry snapshot only when every displayed row is
+    /// unchanged. Carry the badges to its new navigation after a silent re-read.
+    pub(super) fn carry_unchanged_marks(
+        &mut self,
+        pane: PaneId,
+        previous: Option<NavigationId>,
+        next: NavigationId,
+    ) {
+        if let Some(shown) = &mut self.marks
+            && previous == Some(NavigationId(shown.generations[pane.index()]))
+        {
+            shown.generations[pane.index()] = next.0;
+        }
+    }
+
     /// A comparison waits for, or runs against, the exact displayed rows of both
     /// panes. Automatic re-reads wait for it instead of cancelling it.
     pub(crate) fn in_progress(&self) -> bool {
@@ -81,6 +96,22 @@ impl ComparisonState {
         retired.push(Box::new(self.pending.take()));
         retired.push(Box::new(mem::take(&mut self.seeds)));
         retired.push(Box::new(self.marks.take()));
+    }
+}
+
+impl Pane {
+    /// A watch hint starts a new navigation while the user is still looking at
+    /// the last committed listing. Its badges describe those visible rows.
+    fn comparison_listing_generation(&self) -> u64 {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|request| request.background)
+        {
+            self.displayed_generation().0
+        } else {
+            self.generation
+        }
     }
 }
 
@@ -168,7 +199,7 @@ impl Presenter {
             format!(", {keys}")
         };
         format!(
-            "The × at the right end of this line{keys} closes it and clears the marks in both panels; the selection stays. Listing a panel again or a new comparison also clears them."
+            "The × at the right end of this line{keys} closes it and clears the marks in both panels. The selection stays. A changed listing, manual reload or new comparison also clears the marks."
         )
     }
 
@@ -186,7 +217,7 @@ impl Presenter {
             self.panes
                 .iter()
                 .zip(shown.generations)
-                .any(|(pane, generation)| pane.generation != generation)
+                .any(|(pane, generation)| pane.comparison_listing_generation() != generation)
         }) {
             self.retired.push(Box::new(self.comparison.marks.take()));
         }

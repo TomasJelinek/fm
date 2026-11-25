@@ -438,6 +438,44 @@ fn a_row_badge_uses_both_panels_shown_times_and_follows_the_listing() {
 }
 
 #[test]
+fn silent_rereads_keep_both_badges_until_a_changed_listing_commits() {
+    let mut p = listed(&[("f", EntryKind::File, 200_000)]);
+    compared(&mut p, 1, marks_with_newer_left());
+    let assert_badges = |p: &Presenter, expected| {
+        for pane in [PaneId::Left, PaneId::Right] {
+            assert_eq!(
+                p.comparison_mark(pane, &p.panes[pane.index()].entries[0]),
+                expected
+            );
+        }
+    };
+    for (pane, changed) in [
+        (PaneId::Right, false),
+        (PaneId::Left, false),
+        (PaneId::Right, true),
+    ] {
+        let shown = &p.panes[pane.index()];
+        let previous = shown.successful_generation.unwrap();
+        let mut entries = shown.entries.clone();
+        assert!(p.refresh_if_changed(pane, previous, &|_| true));
+        p.flush_comparison(&|_| true);
+        assert_badges(&p, 2);
+        if changed {
+            Arc::make_mut(&mut entries)[0].metadata.size = Some(17);
+        }
+        let navigation = NavigationId(p.panes[pane.index()].generation);
+        p.apply(Event::ListingFinished {
+            pane,
+            navigation,
+            index: Arc::new(DirectoryIndex::from_entries(&entries)),
+            entries,
+        });
+        p.flush_comparison(&|_| true);
+        assert_badges(&p, if changed { 0 } else { 2 });
+    }
+}
+
+#[test]
 fn clear_comparison_removes_both_panels_marks_and_the_line_but_keeps_the_selection() {
     let mut p = listed(&[("f", EntryKind::File, 200_000)]);
     compared(&mut p, 1, marks_with_newer_left());

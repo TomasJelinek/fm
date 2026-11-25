@@ -1568,6 +1568,13 @@ impl Presenter {
                         note_new_folders(&mut p.size_scan_new_folders, &p.index, &entries, &index);
                     }
                 }
+                if request.background && Arc::ptr_eq(&p.entries, &entries) {
+                    self.comparison.carry_unchanged_marks(
+                        pane,
+                        p.successful_generation,
+                        navigation,
+                    );
+                }
                 p.rows_committing(&request, &entries, &index, &mut self.retired);
                 self.retired
                     .push(Box::new(mem::replace(&mut p.entries, entries)));
