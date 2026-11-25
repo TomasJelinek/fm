@@ -102,8 +102,9 @@ measurement.
   default link handling was chosen starts the Links box's tooltip (and is its
   accessible description), and what the job verifies (the draft's policy) is the Copy or
   Move button's tooltip; neither is a paragraph of the dialog. Tab goes through the
-  destination, the options top to bottom, Cancel, the primary action and the header's
-  close button, and wraps; Enter in the destination field, an option or the Links box
+  destination, its Browse button, the options top to bottom, Cancel, the primary action
+  and the header's close button, and wraps (Enter or Space on Browse opens the folder
+  chooser); Enter in the destination field, an option or the Links box
   confirms. `tests/copy_dialog_polish.rs` (software-window tests) checks every state at
   320 × 200 and 1340 × 820 in both densities, with the density's default font and
   32 px, against the UI polish gate's layout checks, plus the options' edges, the Tab

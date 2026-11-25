@@ -678,7 +678,9 @@ fn every_state_fits_touch_density_with_32_px() {
 fn link_choice_without_caption(density: UiDensity, font: u16) {
     let h = Harness::new(PreferenceTheme::Light, density, font);
     h.show(State::OneFile);
-    // The keyboard in the box, so that a small window's scrolled middle shows it.
+    // The keyboard in the box, so that a small window's scrolled middle shows it: from
+    // the destination past Browse beside it.
+    h.tab(false);
     h.tab(false);
     for (width, height) in [(1340, 820), (320, 200)] {
         let case = format!("{density:?} {font} px {width}x{height}");
@@ -818,9 +820,12 @@ fn controls_start_at_one_edge(density: UiDensity, font: u16) {
                 links.0
             );
         }
+        // The destination row (the field and Browse beside it) spans the form's width.
+        let browse =
+            modeless::edges(&h.item(AccessibleRole::Button, "Browse for destination folder"));
         assert!(
-            links.2 <= field.2 + 0.5,
-            "{case}: the link choice ends within the form: {links:?} {field:?}"
+            links.2 <= browse.2 + 0.5,
+            "{case}: the link choice ends within the form: {links:?} {field:?} {browse:?}"
         );
         if width == 1340 && font < 16 {
             assert!(

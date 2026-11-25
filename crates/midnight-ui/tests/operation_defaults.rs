@@ -64,9 +64,11 @@ fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
         );
         assert_eq!(*cancellations.borrow(), 0);
 
-        // Space toggles the option; Enter retains the same default action.
+        // Space toggles the option; Enter retains the same default action. Tab leads
+        // from the destination past Browse beside it to the option.
         confirmations.borrow_mut().clear();
         begin(&host);
+        input::key(&child, Key::Tab);
         input::key(&child, Key::Tab);
         input::key(&child, Key::Space);
         assert!(confirmations.borrow().is_empty());
@@ -79,7 +81,9 @@ fn transfer_enter_proceeds_and_explicit_cancel_and_escape_remain_available() {
         assert_eq!(*cancellations.borrow(), 1);
         assert!(confirmations.borrow().is_empty());
 
+        // Browse, the option, then Cancel.
         begin(&host);
+        input::key(&child, Key::Tab);
         input::key(&child, Key::Tab);
         input::key(&child, Key::Tab);
         input::key(&child, Key::Return);
@@ -121,6 +125,8 @@ fn transfer_wait_option_toggles_without_submitting_and_preserves_default_enter()
             form.set_wait_checked(false);
             begin(&host);
             confirmed.borrow_mut().clear();
+            // From the destination past Browse beside it (and the enabled option).
+            input::key(&child, Key::Tab);
             input::key(&child, Key::Tab);
             if metadata {
                 input::key(&child, Key::Tab);

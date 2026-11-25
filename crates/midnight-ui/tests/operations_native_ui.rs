@@ -134,7 +134,9 @@ fn copy_junction(copy_files: bool) {
     // A fixed local drive keeps links as links.
     assert_eq!(shown().as_deref(), Some(link_option::KEEP_LINKS));
     if copy_files {
-        // A folder has no metadata option: Tab leads from the destination to the choice.
+        // A folder has no metadata option: Tab leads from the destination past Browse
+        // beside it to the choice.
+        input::key(&dialog, Key::Tab);
         input::key(&dialog, Key::Tab);
         input::key(&dialog, Key::UpArrow);
         assert_eq!(shown().as_deref(), Some(link_option::COPY_FILES));
