@@ -524,7 +524,8 @@ Neither, nor their combined throughput, is a whole-job logical verification
 percentage. Do not use advisory remaining-work estimates as an unconditional
 denominator.
 
-Below the headline a Copy or Move shows its totals as they change, once discovery
+Right under the headline a Copy or Move shows its time remaining (the ETA below), and
+under that its totals as they change, once discovery
 has them: `Files: 12 of 2,345 · Bytes: 1.5 MiB of 7.0 MiB` (a Move counts a file
 once its source is removed), `Files: 12 of ~2,400 · Bytes: 1.5 MiB of ~7.2 MiB` when
 the totals are approximate (part of the tree could not be counted, the work grew

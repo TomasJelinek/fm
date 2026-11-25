@@ -188,12 +188,8 @@ export component JobProgressWindow inherits DialogWindow {
                             }
                             Rectangle { min-width: 0px; horizontal-stretch: 1; }
                         }
-                        // Files and size of a Copy or Move, items of a Delete, once counted.
-                        if root.job.transfer-totals != "" : Text {
-                            text: root.job.transfer-totals; color: Theme.strong-text;
-                            font-size: Theme.font-size; wrap: word-wrap;
-                        }
-                        // A paused estimate holds still and says so: "About 3 min (paused)".
+                        // A Copy or Move's time remaining, right under its percentage. A
+                        // paused estimate holds still and says so: "About 3 min (paused)".
                         if root.transfer : Text {
                             text: "Time remaining: " + (root.job.eta != "" ? root.job.eta
                                 : root.job.paused ? "Paused"
@@ -201,6 +197,11 @@ export component JobProgressWindow inherits DialogWindow {
                                 : root.job.determinate && !root.job.waiting && !root.job.pause-requested
                                     && root.job.cancellable && !root.job.attention ? "Calculating..." : "Unavailable");
                             color: Theme.text; font-size: Theme.font-size; wrap: word-wrap;
+                        }
+                        // Files and size of a Copy or Move, items of a Delete, once counted.
+                        if root.job.transfer-totals != "" : Text {
+                            text: root.job.transfer-totals; color: Theme.strong-text;
+                            font-size: Theme.font-size; wrap: word-wrap;
                         }
                         if !root.job.determinate : ProgressIndicator {
                             accessible-label: root.cancelling-delete ? "Deletion progress"

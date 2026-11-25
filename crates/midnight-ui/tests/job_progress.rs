@@ -932,3 +932,37 @@ fn the_speeds_beside_the_headline_hold_still_while_their_values_change() {
         ui::find_popup_item(&test.window, " · write 187.0 MiB/s", AccessibleRole::Text).is_none()
     );
 }
+
+/// A Copy or Move shows its time remaining right under its percentage, with nothing
+/// between them, and its files and bytes totals under that.
+#[test]
+fn time_remaining_sits_right_under_the_percentage_and_above_the_totals() {
+    let mut test = ui::TestUi::new();
+    let copy = owner_copy();
+    let totals_text = copy.transfer_totals.to_string();
+    test.window.set_job(copy);
+    for (scheme, density, font) in APPEARANCES {
+        test.window
+            .invoke_apply_preferences(scheme, density, "".into(), font, font);
+        for (width, height) in SIZES {
+            let size = format!("theme {scheme}, density {density}, font {font}, {width}x{height}");
+            test.resize(width, height);
+            let line = |label: &str| {
+                native_rect(&ui::popup_item(&test.window, label, AccessibleRole::Text))
+            };
+            let headline = line("42% complete");
+            let eta = line("Time remaining: About 3 min");
+            let totals = line(&totals_text);
+            // Under the headline, with no room for another line between them.
+            let gap = eta.1 - (headline.1 + headline.3);
+            assert!(
+                gap >= -0.5 && gap < eta.3,
+                "right under the percentage (gap {gap}): {size}"
+            );
+            assert!(
+                eta.1 + eta.3 <= totals.1 + 0.5,
+                "the totals under it: {size}"
+            );
+        }
+    }
+}
