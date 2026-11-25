@@ -141,7 +141,7 @@ nothing behind when it is refused.
 A release consists of a Windows x64 ZIP and a Linux x86-64 GNU/glibc tar.gz, plus a
 `SHA256SUMS` file and, from 0.5.1 on, its signature `SHA256SUMS.minisig`
 ([signing](#signing-the-release)): the [0.1.0](releases/0.1.0.md), [0.5.0](releases/0.5.0.md),
-[0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md) and [0.5.3](releases/0.5.3.md) previews. Linux archives
+[0.5.1](releases/0.5.1.md), [0.5.2](releases/0.5.2.md), [0.5.3](releases/0.5.3.md) and [0.5.4](releases/0.5.4.md) previews. Linux archives
 are built on Ubuntu 24.04; native Fedora, openSUSE and other desktop tests are pending
 (PLAT-02). The Windows executable is unsigned: the archive checksums establish download
 integrity, not code signing.
@@ -189,7 +189,7 @@ python -B scripts/package-release.py --binary _build/release/midnight-explorer.e
     --dependency-list _build/windows-dependencies.txt `
     --format zip --readme packaging/windows/README.txt `
     --revision (git rev-parse HEAD) --rust-docs "RUST_SYSROOT/share/doc/rust" `
-    --license-overrides packaging/licenses --output _build/releases/v0.5.3
+    --license-overrides packaging/licenses --output _build/releases/v0.5.4
 ```
 
 Replace `RUST_SYSROOT` with the output of `rustc --print sysroot`. For Linux, use the
@@ -291,12 +291,12 @@ one folder, on the owner's machine (Python 3.11 or later, standard library only)
 
 ```powershell
 python -B scripts/release-signing.py checksums `
-    _build/releases/v0.5.3/midnight-explorer-0.5.3-x86_64-pc-windows-msvc.zip `
-    _build/releases/v0.5.3/midnight-explorer-0.5.3-x86_64-unknown-linux-gnu.tar.gz
-python -B scripts/release-signing.py sign --version 0.5.3 `
+    _build/releases/v0.5.4/midnight-explorer-0.5.4-x86_64-pc-windows-msvc.zip `
+    _build/releases/v0.5.4/midnight-explorer-0.5.4-x86_64-unknown-linux-gnu.tar.gz
+python -B scripts/release-signing.py sign --version 0.5.4 `
     --secret-key <path outside every checkout>\midnight-explorer-release.key `
-    _build/releases/v0.5.3/SHA256SUMS
-python -B scripts/release-signing.py verify --version 0.5.3 _build/releases/v0.5.3/SHA256SUMS
+    _build/releases/v0.5.4/SHA256SUMS
+python -B scripts/release-signing.py verify --version 0.5.4 _build/releases/v0.5.4/SHA256SUMS
 ```
 
 `checksums` writes `SHA256SUMS` (`<sha256>  <archive name>` lines). `sign` asks for the

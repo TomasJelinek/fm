@@ -8,12 +8,14 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 25 November 2026, after the [0.5.3 preview](releases/0.5.3.md), published that day
+Main of 25 November 2026, prepared as the [0.5.4 preview](releases/0.5.4.md): the
+installation-securing fix for junctions and symbolic links, the ordering fixes and the
+faster Find sorting below. The [0.5.3 preview](releases/0.5.3.md) was published that day
 from `c7ef1e5c` (tag `v0.5.3`, with a signed `SHA256SUMS`;
 [release record](verification/2026-11-25-release-0.5.3.md)): scrolling glide that keeps the
 scrolling speed, Copy and Move keeping times and attributes by default, Linux SMB sign-in,
 the glowing Moon, the UI performance fixes of the 24 November review and the missing-glyph
-check. Since the tag, main has three ordering fixes (an HTML viewer's last events, a closed
+check. Since that tag, main has three ordering fixes (an HTML viewer's last events, a closed
 viewer window's slot, an archive selection's queue slot), faster tests
 ([test speed pass](verification/2026-11-25-test-speed-pass.md)), removed unused code and the
 user documents checked against the source. The [0.5.2 preview](releases/0.5.2.md) was
