@@ -1,6 +1,6 @@
 # Source wheel scrolling on Wayland
 
-Linux, NVIDIA GPU, native Wayland, Slint 1.18.1 / FemtoVG-WGPU. The read-only
+Linux, discrete workstation GPU, native Wayland, Slint 1.18.1 / FemtoVG-WGPU. The read-only
 reported Python file was 13,098 bytes, 355 CRLF lines, with tabs and syntax
 highlighting. Its contents are not included in the repository. The running
 installation used the same viewer sources as the initial `ff6880b4` checkout.

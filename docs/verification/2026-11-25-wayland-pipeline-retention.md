@@ -1,7 +1,7 @@
 # Pipeline retention for Wayland frames
 
 Linux, native Wayland (GNOME Shell 50.1), Slint 1.18.1 with FemtoVG-WGPU on WGPU 30,
-vendored FemtoVG 0.27.0. The report was mouse-wheel stalls on an NVIDIA Quadro RTX 8000
+vendored FemtoVG 0.27.0. The report was mouse-wheel stalls on a discrete workstation GPU
 that did not occur on Windows.
 
 ## Cause
@@ -14,13 +14,13 @@ dropped all but one of them. The next content flush therefore rebuilt every pipe
 drew with, 15 per frame in the viewer.
 
 A temporary counter in the probe below showed the pattern exactly: 15 pipelines created
-in each content flush and 1 in each clear flush. With the NVIDIA driver, stencil and
+in each content flush and 1 in each clear flush. With the discrete GPU's driver, stencil and
 concave fills spent about 5.3 ms each in pipeline creation, so a redraw took about 28 ms
 and wheel scrolling settled at 30 frames per second.
 
 Windows and X11 install no notifier and flush once per frame. There, pipelines were only
 rebuilt when a frame stopped using them, for example 586 creations in 321 XWayland frames
-on NVIDIA.
+on the discrete GPU.
 
 ## Change
 
@@ -53,7 +53,7 @@ WGPU_BACKEND=vulkan <test executable> renderer::wgpu:: --ignored --test-threads=
 - Four new cache tests (bound, eviction order, reuse, current-flush protection) need no
   GPU. The library's non-ignored tests: 74 passed, 0 failed, 15 ignored.
 - Adapter: Mesa lavapipe, Vulkan on the CPU, selected with
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. The NVIDIA GPU could not be used
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. The discrete GPU could not be used
   for these runs (see Not verified).
 
 ## Probe: pipelines created
@@ -75,7 +75,7 @@ unchanged and the changed code:
 
 The changed code created its 22 pipelines while opening and none while scrolling.
 
-Lavapipe timings stand for neither the NVIDIA driver nor its presentation:
+Lavapipe timings stand for neither the discrete GPU's driver nor its presentation:
 - On Wayland after the change, 300–575 ms gaps remained between moving frames. The UI
   thread was idle in them, waiting for the compositor's frame callbacks, and redraws took
   5–10 ms.
@@ -83,7 +83,7 @@ Lavapipe timings stand for neither the NVIDIA driver nor its presentation:
   after the change. Median redraw rose from 9.2 ms to 14.6 ms while 35% more frames moved,
   on a CPU rasterizer.
 
-## Earlier NVIDIA experiment
+## Earlier discrete-GPU experiment
 
 Earlier the same day, before this change, the driver was 595.99.02 and main was `4e3e64c6`.
 An experimental switch then kept every pipeline, which matches this cache below its cap:
@@ -100,10 +100,10 @@ in two runs. That needs a Slint change and is not part of this one.
 
 ## Not verified
 
-- **NVIDIA timings for this change.** At 17:44 the NVIDIA libraries were upgraded to
+- **Discrete-GPU timings for this change.** At 17:44 the GPU driver's libraries were upgraded to
   615.71.09 while the 595.99.02 kernel module stayed loaded. Until a reboot, new processes
   could not use the GPU, and Slint fell back to its software renderer. Before/after timings
-  on NVIDIA, native Wayland and XWayland, are pending on driver 615.
+  on the discrete GPU, native Wayland and XWayland, are pending on driver 615.
 - **Builds and platforms.** Not checked: a release (fat-LTO) build, the installed
   application, and Windows/DX12, where the single flush per frame now also keeps pipelines
   a frame did not use.

@@ -145,8 +145,8 @@ A fifth change retains render pipelines across flushes (`wgpu/pipelines.rs`).
 Upstream kept only the pipelines that the latest flush used. Slint 1.18.1 flushes a
 window's clear separately whenever a rendering notifier is installed, and the
 application installs one on native Wayland windows to request frame callbacks, so
-the second flush of every frame rebuilt each pipeline it drew with. With an NVIDIA
-Vulkan driver that was 16 pipelines and about 25 ms per frame, which held wheel
+the second flush of every frame rebuilt each pipeline it drew with. With a discrete
+GPU's Vulkan driver that was 16 pipelines and about 25 ms per frame, which held wheel
 scrolling at 30 frames per second with occasional longer freezes
 ([measurements](../docs/verification/2026-11-25-wayland-pipeline-retention.md)).
 The cache now keeps every pipeline until it holds more than 64, then drops those
