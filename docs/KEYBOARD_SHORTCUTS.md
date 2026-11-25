@@ -126,7 +126,7 @@ switching panels shows the other panel in its place.
 | F8 | Trash | Checksums | Permanent delete | — | — |
 | F9 | User menu | Refresh | — | — | — |
 | F10 | Main menu | Compare directories | — | — | Directory sizes |
-| F11 | Connect | Zoom panel | — | — | — |
+| F11 | Connect | Zoom panel | — | — | Clear comparison marks |
 | F12 | Disconnect | Panel filter | — | — | — |
 
 This matrix shows main file-pane defaults, including filename search; viewers and
@@ -394,7 +394,7 @@ command directory ends with `>`.
 Command history recalls a draft without
 running it; only the configured Execute command shortcut or Run submits it.
 Options → General groups its settings under Panels, File operations, Disk
-operations, Command line and Settings file, including readable or exact-byte sizes,
+operations, Command line, Updates and Settings file, including readable or exact-byte sizes,
 history persistence and Clear. Appearance and Keyboard are separate pages.
 History keeps the latest 100 distinct exact command strings across shells,
 newest first, with a 1MiB aggregate text budget. Elevation is never recalled.
