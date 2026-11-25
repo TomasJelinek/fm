@@ -548,15 +548,17 @@ inspected as possibly holding the item; neither is described as unneeded.
   the sysfs walk. Any missing, remote, virtual, removable or unknown leaf keeps
   the result unknown; network preview opt-in is unchanged.
 - Preferences use bounded strict versioned decoding and opened-file validation.
-  Supported schemas through version 40 include window geometry, monitor identity and a
+  Supported schemas through version 43 include window geometry, monitor identity and a
   validated integer panel split ratio, typed Network tabs, panel modes, native and
   archive bookmarks, fonts, command history, shortcuts, filters, editor, viewer,
   archive, preview size, archive-preview and filename-color choices, file comparator
   rules (version 33), the text rendering choice (version 34), the hidden-files and
   selection-by-mask choices (version 35), the document layout chosen last in the
   viewer, Paged or Continuous (version 36), the scrolling glide and speed (versions 37
-  and 38), a Run directly command's output mode (version 39) and the two update choices
-  (version 40). Earlier schemas migrate with explicit
+  and 38), a Run directly command's output mode (version 39), the two update choices
+  (version 40), Find's mask history and window placement (version 41), saved
+  locations inside archives inside an archive (version 42) and Preserve times and
+  attributes (version 43). Earlier schemas migrate with explicit
   defaults; unsupported fields and versions fail atomically. Viewer options store
   presentation choices, never query text, document contents or per-file reading
   positions. Archive previews have a separate default-on preference, while their network
@@ -652,14 +654,16 @@ inspected as possibly holding the item; neither is described as unneeded.
 - Unsafe Rust is forbidden (`forbid(unsafe_code)`) in core, engine, the application
   crate, the platform facade and common platform code, the viewer, rendering, comparison
   and Office-preview crates and the web, archive, media, image and thumbnail hosts. The
-  UI, viewer UI, comparator UI, media output and Linux platform crates deny it and allow
-  it only in named modules: the generated Slint bindings, the native dialog, drag-input
-  and window-position adapters, the Windows motion and wheel settings, audio output, and
-  Linux calls that rustix does not wrap (locale, sort keys, `setrlimit` before `exec`,
-  `fchmodat2`, the XFS geometry query and the Move's read lease), and the Linux Wayland
+  UI, viewer UI, comparator UI, media output, update check and Linux platform crates deny
+  it and allow it only in named modules: the generated Slint bindings, the native dialog,
+  drag-input and window-position adapters, the Windows motion and wheel settings, audio
+  output, the update check's WinHTTP transport, and Linux calls that rustix does not
+  wrap (locale, sort keys, `setrlimit` before `exec`, `fchmodat2`, the XFS geometry
+  query, the Move's read lease, and a Run directly command's process-group signals and
+  terminal mode), and the Linux Wayland
   drag-and-drop adapter's two handle conversions of winit's display and surface. FFI lives in the
-  Windows platform adapter, the plugin host, the native filesystem host, the worker
-  platform and the elevation helper. By the [code style](CODE_STYLE.md) every unsafe
+  Windows platform adapter, the update check's WinHTTP transport, the plugin host, the
+  native filesystem host, the worker platform and the elevation helper. By the [code style](CODE_STYLE.md) every unsafe
   block carries a `SAFETY` explanation; review enforces this, not the compiler.
 - Potentially blocking calls are bounded and run on workers. Navigation results
   are generation-tagged, command/result queues are bounded, and cancellation does
@@ -853,8 +857,8 @@ mount's root: a mount point or `..` above the mount's root ends the walk, at mos
 links are read, and the mount's lineage is checked first); a text that leaves the mount
 is resolved by the kernel across mount points without magic links, and the folders
 below that link are revalidated by resolving the link again from its held folder to the
-same device and inode. Copy has no fixed depth limit for ordinary folders
-(Move stops at 128); instead every folder a transfer (or its metadata discovery) works
+same device and inode. Copy and Move have no fixed depth limit for ordinary folders;
+instead every folder a transfer (or its metadata discovery) works
 inside is one level of a budget shared by all transfers of the process: a quarter of the
 open-file limit at three descriptors per level, between 32 and 4,096 levels. A folder
 past it is refused with a clear error long before the process could run out of
@@ -1370,12 +1374,11 @@ A native Wayland window exchanges files through the core `wl_data_device` protoc
 winit's own connection (`crates/midnight-platform-linux/src/file_drag_drop_wayland.rs`):
 a second connection would see no input serials and could not start a drag. The UI
 lends winit's `wl_display` and the window's `wl_surface` to the backend actor for the
-window's lifetime; that module is the Linux crate's only other unsafe code (two FFI
-handle conversions). The actor binds its own `wl_seat` and `wl_pointer` (for the
+window's lifetime; that module's only unsafe code is two FFI handle conversions. The actor binds its own `wl_seat` and `wl_pointer` (for the
 press serial that starts a drag) and a data device on a private event queue that
 only it dispatches; it never holds a prepared read longer than one bounded poll, so
 winit's reads never wait on it. Incoming offers are taken only as `text/uri-list` from
-sources that permit Copy; the list is read through a pipe of at most 4 MiB within 5
+sources that permit Copy; the list is read through a pipe of at most 256 MiB within 5
 seconds and decoded and admitted exactly like an X11 drop, against the destination
 still published at the drop position. Outgoing drags offer `text/uri-list` with the
 Copy action and write the list within 5 seconds; a target that never finishes leaves
@@ -1730,8 +1733,8 @@ network code; it lives in `crates/midnight-update` and runs on its own thread.
 - **What it sends:** HTTPS `GET` requests to `api.github.com` for the release list,
   and to `github.com` and GitHub's download hosts (`objects.githubusercontent.com`,
   `release-assets.githubusercontent.com`) for the release files. The headers are
-  `User-Agent: Midnight-Explorer/<version>`, `Accept` and a range for a resumed
-  download; no credentials, cookies, identifiers, paths or settings. GitHub sees the
+  `User-Agent: Midnight-Explorer/<version>`, `Accept`, `X-GitHub-Api-Version` for the
+  release list and a range for a resumed download; no credentials, cookies, identifiers, paths or settings. GitHub sees the
   user's IP address and the requests.
 - **Transport:** HTTPS with certificate validation by the system's stack (WinHTTP on
   Windows) or rustls with the distribution's certificate store (Linux), TLS 1.2 or
