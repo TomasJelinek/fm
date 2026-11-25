@@ -7,7 +7,6 @@ use std::{
     ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void},
     fs, io,
     ptr::{self, NonNull},
-    time::{Duration, Instant},
 };
 
 pub(super) fn open_default() -> io::Result<Box<dyn AudioSink>> {
@@ -27,8 +26,6 @@ const STATE_PAUSED: c_int = 6;
 const STATE_SUSPENDED: c_int = 7;
 const STATE_DISCONNECTED: c_int = 8;
 const LATENCY_MICROS: c_uint = 100_000;
-const TAIL_OBSERVATION: Duration =
-    Duration::from_millis(MAX_DEVICE_FRAMES as u64 * 1_000 / PCM_RATE as u64);
 
 const SYSTEM_LIBASOUND: &[&str] = &[
     #[cfg(target_arch = "x86_64")]
@@ -150,6 +147,17 @@ struct PcmStatus {
     available: c_ulong,
 }
 
+/// The PCM calls the sink's state machine makes: libasound on a device, a recorded
+/// device model in tests. Results are the native status codes.
+trait Pcm {
+    fn status(&mut self) -> io::Result<PcmStatus>;
+    fn prepare(&mut self) -> c_int;
+    fn drop_stream(&mut self) -> c_int;
+    fn pause(&mut self, enable: bool) -> c_int;
+    /// Accepted frames of `interleaved`, or a negative error.
+    fn write(&mut self, interleaved: &[i16]) -> c_long;
+}
+
 #[derive(Default)]
 enum DelayEvidence {
     #[default]
@@ -176,17 +184,20 @@ impl DelayEvidence {
     }
 }
 
+/// Media frames since the last reset: accepted by the device, confirmed played, and
+/// retired from the device queue by an underrun.
 #[derive(Default)]
 struct Playout {
     submitted: u64,
     played: u64,
+    retired: u64,
 }
 
 impl Playout {
     fn clock(&self) -> DeviceClock {
         DeviceClock {
             played_frames: self.played,
-            queued_frames: (self.submitted - self.played) as usize,
+            queued_frames: (self.submitted - self.played.max(self.retired)) as usize,
         }
     }
 
@@ -205,12 +216,17 @@ impl Playout {
         Ok(self.clock())
     }
 
-    fn drain_underrun(&mut self, confirmed_empty: bool) -> io::Result<()> {
-        if self.played != self.submitted && !confirmed_empty {
-            return Err(invalid("ALSA underrun left unconfirmed downstream media"));
+    /// An underrun ends the device queue. Each submitted frame has played, is still
+    /// downstream, or stays in the ring until prepare discards it: PipeWire stops with
+    /// up to a graph quantum there and repeats a stale delay. Only proof of an empty
+    /// output path counts these frames as played. Otherwise the clock keeps its last
+    /// observation, and the running delay after the restart passes the lost frames only
+    /// when later media plays.
+    fn underrun(&mut self, confirmed_empty: bool) {
+        if confirmed_empty {
+            self.played = self.submitted;
         }
-        self.played = self.submitted;
-        Ok(())
+        self.retired = self.submitted;
     }
 }
 
@@ -219,21 +235,19 @@ enum Output {
     Stopped,
     Armed,
     Paused,
-    ObservingTail(Instant),
 }
 
-struct AlsaSink {
+/// A libasound playback handle with its status buffer. It owns both until Drop.
+struct NativePcm {
     api: Alsa,
     pcm: NonNull<c_void>,
     status: NonNull<c_void>,
-    buffer_frames: c_ulong,
-    output: Output,
-    playout: Playout,
-    delay: DelayEvidence,
 }
 
-impl AlsaSink {
-    fn open(device: &CStr) -> io::Result<Self> {
+impl NativePcm {
+    /// Open `device` for nonblocking 48 kHz stereo playback; return it with its ring
+    /// buffer size in frames.
+    fn open(device: &CStr) -> io::Result<(Self, c_ulong)> {
         let api = Alsa::load()?;
         let status = allocate(api.status_malloc, "allocate PCM status")?;
         let mut handle = ptr::null_mut();
@@ -249,21 +263,9 @@ impl AlsaSink {
                 return Err(failure);
             }
         };
-        let mut sink = Self {
-            api,
-            pcm,
-            status,
-            buffer_frames: 0,
-            output: Output::Stopped,
-            playout: Playout::default(),
-            delay: DelayEvidence::default(),
-        };
-        sink.buffer_frames = sink.configure()?;
-        let state = sink.status()?.state;
-        if state != STATE_PREPARED {
-            return Err(state_error("prepare default playback", state));
-        }
-        Ok(sink)
+        let mut native = Self { api, pcm, status };
+        let buffer_frames = native.configure()?;
+        Ok((native, buffer_frames))
     }
 
     fn configure(&mut self) -> io::Result<c_ulong> {
@@ -325,7 +327,9 @@ impl AlsaSink {
         configure?;
         Ok(buffer_frames)
     }
+}
 
+impl Pcm for NativePcm {
     fn status(&mut self) -> io::Result<PcmStatus> {
         let status = self.status.as_ptr();
         // SAFETY: The live worker owns the PCM and its status buffer through this call.
@@ -339,6 +343,77 @@ impl AlsaSink {
                 delay: (self.api.status_delay)(status),
                 available: (self.api.status_available)(status),
             })
+        }
+    }
+
+    fn prepare(&mut self) -> c_int {
+        // SAFETY: This value owns the live PCM handle; prepare restores its configured state.
+        unsafe { (self.api.prepare)(self.pcm.as_ptr()) }
+    }
+
+    fn drop_stream(&mut self) -> c_int {
+        // SAFETY: Drop stops the owned live PCM and discards its buffer immediately.
+        unsafe { (self.api.drop_stream)(self.pcm.as_ptr()) }
+    }
+
+    fn pause(&mut self, enable: bool) -> c_int {
+        // SAFETY: This value owns the live PCM handle; ALSA refuses a pause in a wrong state.
+        unsafe { (self.api.pause)(self.pcm.as_ptr(), c_int::from(enable)) }
+    }
+
+    fn write(&mut self, interleaved: &[i16]) -> c_long {
+        // SAFETY: The live device is nonblocking, and the input holds every requested frame.
+        // snd_pcm_writei copies only the reported accepted frames during the call.
+        unsafe {
+            (self.api.write_interleaved)(
+                self.pcm.as_ptr(),
+                interleaved.as_ptr().cast(),
+                (interleaved.len() / PCM_CHANNELS) as c_ulong,
+            )
+        }
+    }
+}
+
+impl Drop for NativePcm {
+    fn drop(&mut self) {
+        // SAFETY: Retire the live PCM and its independent status allocation before
+        // the library field is unloaded. Every native resource has one Rust owner.
+        unsafe {
+            (self.api.drop_stream)(self.pcm.as_ptr());
+            (self.api.close)(self.pcm.as_ptr());
+            (self.api.status_free)(self.status.as_ptr());
+        }
+    }
+}
+
+struct AlsaSink<P = NativePcm> {
+    pcm: P,
+    buffer_frames: c_ulong,
+    output: Output,
+    playout: Playout,
+    delay: DelayEvidence,
+}
+
+impl AlsaSink {
+    fn open(device: &CStr) -> io::Result<Self> {
+        let (pcm, buffer_frames) = NativePcm::open(device)?;
+        let mut sink = Self::new(pcm, buffer_frames);
+        let state = sink.pcm.status()?.state;
+        if state != STATE_PREPARED {
+            return Err(state_error("prepare default playback", state));
+        }
+        Ok(sink)
+    }
+}
+
+impl<P: Pcm> AlsaSink<P> {
+    fn new(pcm: P, buffer_frames: c_ulong) -> Self {
+        Self {
+            pcm,
+            buffer_frames,
+            output: Output::Stopped,
+            playout: Playout::default(),
+            delay: DelayEvidence::default(),
         }
     }
 
@@ -360,57 +435,43 @@ impl AlsaSink {
                 self.delay.observe(ring_queued, delay);
                 self.playout.observe_delay(status.delay)
             }
-            (Output::Armed | Output::ObservingTail(_), STATE_XRUN) => self.recover(status),
+            (Output::Armed, STATE_XRUN) => self.recover(status),
             _ => Err(state_error("sample playback clock", status.state)),
         }
     }
 
+    /// Retire the queue an underrun ended and re-arm at once: waiting cannot prove more,
+    /// since the stopped device's status no longer changes.
     fn recover(&mut self, status: PcmStatus) -> io::Result<DeviceClock> {
         let empty = self.delay.exhausted(status, self.buffer_frames);
-        if let Err(failure) = self.playout.drain_underrun(empty) {
-            let since = match self.output {
-                Output::ObservingTail(since) => since,
-                _ => Instant::now(),
-            };
-            if since.elapsed() >= TAIL_OBSERVATION {
-                return Err(failure);
-            }
-            self.output = Output::ObservingTail(since);
-            return Ok(self.playout.clock());
-        }
-        // SAFETY: One checked prepare on the live PCM re-arms a verified underrun.
-        checked("recover playback underrun", unsafe {
-            (self.api.prepare)(self.pcm.as_ptr())
-        })?;
-        self.output = Output::Armed;
+        self.playout.underrun(empty);
         self.delay = DelayEvidence::default();
+        checked("recover playback underrun", self.pcm.prepare())?;
+        self.output = Output::Armed;
         Ok(self.playout.clock())
     }
 }
 
-impl AudioSink for AlsaSink {
+impl<P: Pcm> AudioSink for AlsaSink<P> {
     fn start(&mut self) -> io::Result<()> {
         let expected = match self.output {
-            Output::Armed | Output::ObservingTail(_) => return Ok(()),
+            Output::Armed => return Ok(()),
             Output::Stopped => STATE_PREPARED,
             Output::Paused => STATE_PAUSED,
         };
-        let actual = self.status()?.state;
+        let actual = self.pcm.status()?.state;
         if actual != expected {
             return Err(state_error("start playback", actual));
         }
         if expected == STATE_PAUSED {
-            // SAFETY: The worker owns the live PCM and its pause was confirmed.
-            checked("resume playback", unsafe {
-                (self.api.pause)(self.pcm.as_ptr(), 0)
-            })?;
+            checked("resume playback", self.pcm.pause(false))?;
         }
         self.output = Output::Armed;
         Ok(())
     }
 
     fn pause(&mut self) -> io::Result<AudioPause> {
-        let status = self.status()?;
+        let status = self.pcm.status()?;
         let last = self.observe(status)?;
         if status.state == STATE_PAUSED {
             return Ok(AudioPause::Retained(last));
@@ -420,9 +481,8 @@ impl AudioSink for AlsaSink {
             return Ok(AudioPause::Retained(last));
         }
         if status.state == STATE_RUNNING {
-            // SAFETY: The worker owns this running PCM.
-            let native = unsafe { (self.api.pause)(self.pcm.as_ptr(), 1) };
-            if native >= 0 && self.status()?.state == STATE_PAUSED {
+            let native = self.pcm.pause(true);
+            if native >= 0 && self.pcm.status()?.state == STATE_PAUSED {
                 // Linux status can report zero delay for a paused PCM. Freeze the
                 // last running observation until fresh progress is sampled on resume.
                 self.output = Output::Paused;
@@ -439,21 +499,16 @@ impl AudioSink for AlsaSink {
     fn reset(&mut self) -> io::Result<()> {
         // A prior reset may already have discarded the stream before prepare failed.
         let discarded = self
+            .pcm
             .status()
             .is_ok_and(|status| status.state == STATE_SETUP);
         if !discarded {
-            // SAFETY: Drop stops the live PCM and discards its buffer immediately.
-            checked("discard playback buffer", unsafe {
-                (self.api.drop_stream)(self.pcm.as_ptr())
-            })?;
+            checked("discard playback buffer", self.pcm.drop_stream())?;
         }
         self.output = Output::Stopped;
         self.playout = Playout::default();
         self.delay = DelayEvidence::default();
-        // SAFETY: The owned PCM is stopped, and prepare restores its configured state.
-        checked("prepare playback after flush", unsafe {
-            (self.api.prepare)(self.pcm.as_ptr())
-        })
+        checked("prepare playback after flush", self.pcm.prepare())
     }
 
     fn write(&mut self, interleaved: &[i16]) -> io::Result<usize> {
@@ -472,15 +527,7 @@ impl AudioSink for AlsaSink {
         if frames == 0 {
             return Ok(0);
         }
-        // SAFETY: The live device is nonblocking, and the input holds every requested frame.
-        // snd_pcm_writei copies only the reported accepted frames during the call.
-        let accepted = unsafe {
-            (self.api.write_interleaved)(
-                self.pcm.as_ptr(),
-                interleaved.as_ptr().cast(),
-                frames as c_ulong,
-            )
-        };
+        let accepted = self.pcm.write(&interleaved[..frames * PCM_CHANNELS]);
         if accepted < 0 {
             let failure = native_error(
                 "write PCM",
@@ -491,7 +538,7 @@ impl AudioSink for AlsaSink {
                 return Ok(0);
             }
             if failure.kind() == io::ErrorKind::BrokenPipe {
-                let status = self.status()?;
+                let status = self.pcm.status()?;
                 if status.state == STATE_XRUN {
                     self.recover(status)?;
                     return Ok(0);
@@ -509,22 +556,10 @@ impl AudioSink for AlsaSink {
     }
 
     fn sample_clock(&mut self) -> io::Result<DeviceClock> {
-        match self.status() {
+        match self.pcm.status() {
             Ok(status) => self.observe(status),
             Err(failure) if temporary(&failure) => Ok(self.playout.clock()),
             Err(failure) => Err(failure),
-        }
-    }
-}
-
-impl Drop for AlsaSink {
-    fn drop(&mut self) {
-        // SAFETY: Retire the live PCM and its independent status allocation before
-        // the library field is unloaded. Every native resource has one Rust owner.
-        unsafe {
-            (self.api.drop_stream)(self.pcm.as_ptr());
-            (self.api.close)(self.pcm.as_ptr());
-            (self.api.status_free)(self.status.as_ptr());
         }
     }
 }

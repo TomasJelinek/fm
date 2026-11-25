@@ -320,7 +320,9 @@ Playback has dedicated, session-bound Play/Pause controls, a seek timeline and
 position/duration text in a one-row media bar. Pending feedback ("Starting playback…",
 "Pausing…", "Seeking…", "Buffering…") and errors lead the viewer's status line below
 it (errors in the error colour), so a press never adds or removes a row and the video
-above keeps its size. The active media layout hides
+above keeps its size. The viewer reports a failed video both as the media error and as
+its own status; the status line shows that sentence once, and a playback status with no
+other status shows alone, with no separator after it. The active media layout hides
 text Find, typography and scrollbars. Timeline seeks use media controls rather
 than text scroll positions; seek and replay frames retain their media-session and
 applied-control fences.
@@ -363,9 +365,32 @@ sentences from the codec number (`midnight-media-host` `system_decoders`), helpe
 no text. No helper shows a system dialog: each starts with critical-error and crash
 dialogs off.
 
+### Audio clock and underruns
+
+A video with audio takes its position from the audio output (`midnight-media-output`):
+the frames the device has played, never frames that are only queued, so a frame is not
+shown before its sound. On Linux the output is ALSA's default device, opened directly,
+and the clock is the submitted frames minus the delay the running device reports.
+
+When the decoder falls behind, for example with a slow first decode of a large H.264
+movie, the device runs out of sound and stops (an ALSA underrun). Playback continues:
+the output prepares the device again at once and takes the next block. What was still
+in the device when it stopped either plays or never does. PipeWire's ALSA plugin, for
+one, stops with up to one graph quantum (1024 frames, about 21 ms) left in its ring,
+which never plays, and keeps reporting a stale delay until it is prepared again.
+Neither kind counts as played: the clock keeps its last position until the running
+device's delay shows the next block playing, and passes the lost frames only then. Only
+a device whose status proves its ring and the path after it empty counts its last frames
+as played at once. The end of the audio is such an underrun too, so a
+movie whose audio has drained finishes its last frames on the monotonic clock. A failure
+that remains, such as a device that cannot be prepared again, ends playback with
+ALSA's sentence.
+
 Evidence: [media record](../verification/2026-11-19-media-follow-up.md) (a silent
-synthetic AVI: Play/Pause, paused resize, seek, end of file and replay). Audio, full codec
-coverage and performance are not verified.
+synthetic AVI: Play/Pause, paused resize, seek, end of file and replay) and
+[Linux audio underruns](../verification/2026-11-26-linux-audio-underrun.md) (PipeWire's
+ALSA plugin: the output, a playback session and the viewer). Full codec coverage and
+performance are not verified.
 
 ## Find
 

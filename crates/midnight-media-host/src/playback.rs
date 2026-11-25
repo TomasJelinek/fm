@@ -13,7 +13,9 @@ pub const MAX_DEVICE_FRAMES: usize = 9_600;
 
 /// Frames played and frames still queued on the device since its last reset.
 /// A frame is one sample per channel. A hardware counter that continues during
-/// underrun must report only played media frames.
+/// underrun must report only played media frames. Frames an underrun took off the
+/// device without proof that they played are neither played nor queued; the played
+/// count passes them only when later media plays.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DeviceClock {
     pub played_frames: u64,

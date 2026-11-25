@@ -281,12 +281,15 @@ export component ViewerWindow inherits Window {
     in property <bool> link-hover;
     in property <string> link-status;
     // A video's playback status and errors take the status line's front, so the media bar
-    // stays one row and nothing above it moves while a command is in flight.
+    // stays one row and nothing above it moves while a command is in flight. The viewer
+    // also reports a failed video as its own status; that sentence shows once.
     private property <bool> media-error: root.media-visible && root.media-controls.error != "";
     private property <string> media-message: !root.media-visible ? ""
         : root.media-error ? root.media-controls.error : root.media-controls.status;
+    private property <string> media-line: root.status == "" || root.status == root.media-message
+        ? root.media-message : root.media-message + " · " + root.status;
     private property <string> shown-status: root.link-status != "" ? root.link-status
-        : root.media-message != "" ? root.media-message + " · " + root.status
+        : root.media-message != "" ? root.media-line
         : root.position-pending ? "Loading requested position… · " + root.status : root.status;
     callback find();
     callback search(bool);

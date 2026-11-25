@@ -45,28 +45,28 @@ fn find(item: ItemRc, label: &str) -> Option<ItemRc> {
     None
 }
 
-/// Whether some text on the window starts with `prefix` (a Text's label is its text).
-fn shows(item: ItemRc, prefix: &str) -> bool {
+/// Whether some text on the window reads exactly `text` (a Text's label is its text).
+fn shows(item: ItemRc, text: &str) -> bool {
     if item
         .accessible_string_property(AccessibleStringProperty::Label)
-        .is_some_and(|value| value.starts_with(prefix))
+        .is_some_and(|value| value == text)
     {
         return true;
     }
     let mut child = item.first_child();
     while let Some(item) = child {
         child = item.next_sibling();
-        if shows(item, prefix) {
+        if shows(item, text) {
             return true;
         }
     }
     false
 }
 
-fn shows_status(window: &ViewerWindow, prefix: &str) -> bool {
+fn shows_status(window: &ViewerWindow, text: &str) -> bool {
     shows(
         ItemRc::new_root(WindowInner::from_pub(window.window()).component()),
-        prefix,
+        text,
     )
 }
 
@@ -211,6 +211,8 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
         ],
     ];
     assert!(media.apply(snapshot(0, 1, 30, MediaPhase::Paused)));
+    // The worker clears "Opening…" with the first frame.
+    window.set_status("".into());
     let base = layout(&native, &window);
     assert!(base.video[3] > 0.0 && base.content[3] > 0.0, "{base:?}");
     // One row: the bar is the button and its 6 px inset above and below, no empty status row.
@@ -259,9 +261,16 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
     assert_eq!(sent.borrow().len(), control_id as usize, "seek sent");
     assert_eq!(window.get_media_controls().status.as_str(), "Seeking…");
     assert!(
-        shows_status(&window, "Seeking… · "),
+        shows_status(&window, "Seeking…"),
+        "the status line shows the playback status, with no separator after it"
+    );
+    let notice = "This video’s audio codec is unavailable.";
+    window.set_status(notice.into());
+    assert!(
+        shows_status(&window, &format!("Seeking… · {notice}")),
         "the status line leads with the playback status"
     );
+    window.set_status("".into());
     check("seek in flight");
     revision += 1;
     assert!(media.apply(snapshot(control_id, revision, 84, MediaPhase::Paused)));
@@ -295,8 +304,8 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
     assert_ne!(window.get_media_controls().error.as_str(), "");
     let error = window.get_media_controls().error.to_string();
     assert!(
-        shows_status(&window, &format!("{error} · ")),
-        "the status line leads with the error"
+        shows_status(&window, &error),
+        "the status line shows the error"
     );
     check("refused command");
     accepts.set(true);
@@ -311,6 +320,18 @@ fn pressing_video_controls_keeps_the_video_area_and_controls_in_place() {
         [base.video, base.content],
         opening,
         "Opening video… and a ready video differ"
+    );
+
+    // The worker reports a failed video as the media error and as the viewer's status.
+    let failure = "ALSA could not recover playback underrun. Input/output error (os error 5)";
+    revision += 1;
+    let failed = MediaPhase::Failed(failure.into());
+    assert!(media.apply(snapshot(control_id, revision, 120, failed)));
+    window.set_status(failure.into());
+    assert_eq!(window.get_media_controls().error.as_str(), failure);
+    assert!(
+        shows_status(&window, failure),
+        "the status line shows the failure once"
     );
     window.hide().unwrap();
 }
