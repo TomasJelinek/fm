@@ -410,6 +410,12 @@ one, and keep the monitor on: presentation blocks while it is off.
     (`cargo build --locked -p midnight-web-viewer-host --example html_idle`);
   - the wakeups and CPU of a provider started without a document.
 
+Results after the reboot (25 November) for decision 3: on Linux a text file reached first
+content in 120–123 ms the first time and 101–105 ms on later openings with the GPU, on
+native Wayland and XWayland alike, so Linux meets the target without a pool; the pool
+remains planned for Windows, where an opening took 1.1 s
+([record](../../verification/2026-11-25-viewer-review-items.md#text-viewer-opening)).
+
 Windows, by the owner of the desktop lease: `open_latency` with
 `MIDNIGHT_VIEWER_OPEN_TRACE=1` for the phase split of the 1.1 s opening, and the
 `viewers_files` HTML page with the provider's `diagnostic-timing` build to explain the
