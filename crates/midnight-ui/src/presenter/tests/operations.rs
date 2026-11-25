@@ -1015,6 +1015,50 @@ fn a_transfer_into_a_folder_rereads_the_panel_showing_that_folder_as_a_row() {
     }
 }
 
+/// A Delete in a folder that a panel shows as one of its rows re-reads that panel,
+/// without holding its input, so the row loses its expand icon with the folder's
+/// last subfolder; a new folder created in it (F7) gives the row one. A Rename
+/// there adds or removes no subfolder and leaves the panel as it is.
+#[test]
+fn a_delete_in_a_folder_rereads_the_panel_showing_that_folder_as_a_row() {
+    for (kind, reads) in [
+        (MutationKind::Delete(DeleteMode::Trash), 1),
+        (MutationKind::Delete(DeleteMode::Permanent), 1),
+        (MutationKind::CreateDirectory, 1),
+        (MutationKind::Rename, 0),
+    ] {
+        let (mut p, _, right) = two_folders();
+        let sent = RefCell::new(Vec::new());
+        p.apply_with_sender(
+            Event::Operation(OperationEvent::Progress(Arc::new(OperationProgress {
+                pause_requested: false,
+                paused: false,
+                discovery: Default::default(),
+                id: OperationId(1),
+                throughput: Arc::default(),
+                kind,
+                state: OperationState::Completed,
+                total: 1,
+                completed: 1,
+                failed: 0,
+                processed_entries: 1,
+                current_path: None,
+                message: String::new(),
+                errors: vec![],
+                source_directory: right.join("emptied"),
+                renamed_to: None,
+            }))),
+            &|command| {
+                sent.borrow_mut().push(command);
+                true
+            },
+        );
+        assert_eq!(reads_of(&sent, PaneId::Right).len(), reads, "{kind:?}");
+        assert_eq!(reads_of(&sent, PaneId::Left).len(), 0, "{kind:?}");
+        assert_eq!(p.mutation_settling_panes(), [false, false], "{kind:?}");
+    }
+}
+
 /// A job that ran longer than the user waits for (a long copy finishing while
 /// they work elsewhere) re-reads its panels in place without holding them.
 #[test]

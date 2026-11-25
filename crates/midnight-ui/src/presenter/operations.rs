@@ -873,6 +873,15 @@ impl Presenter {
                             progress.state,
                             OperationState::Completed | OperationState::CompletedWithErrors
                         );
+                    // A Delete or a new folder in a folder that a panel shows as a
+                    // row changes whether that folder has subfolders (its expand
+                    // icon), which no watch of the panel's folder reports.
+                    let row_folder = matches!(
+                        progress.kind,
+                        MutationKind::Delete(_) | MutationKind::CreateDirectory
+                    )
+                    .then(|| progress.source_directory.parent())
+                    .flatten();
                     for pane in [PaneId::Left, PaneId::Right] {
                         if self.panes[pane.index()].queue_native_tree_refresh(&mut self.retired) {
                             if hold {
@@ -891,6 +900,10 @@ impl Presenter {
                             reveal.clone(),
                             hold,
                         );
+                        // Only a panel showing that parent folder takes it, never held.
+                        if let Some(parent) = row_folder {
+                            self.queue_operation_refresh(pane, parent, None, false);
+                        }
                     }
                     // The job's own open window shows how it ended, errors included;
                     // a notice would repeat it. Only a job without one gets a notice.
