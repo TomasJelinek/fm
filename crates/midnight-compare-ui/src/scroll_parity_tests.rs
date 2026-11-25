@@ -705,45 +705,54 @@ fn assert_parity(name: &str, samples: &[Sample]) {
     );
 }
 
-fn check(names: &[&str]) {
+/// Run one schedule from the top of the text on a harness of its own.
+fn check(name: &str) {
+    let (_, glide, speed, steps) = schedules()
+        .into_iter()
+        .find(|(schedule, ..)| *schedule == name)
+        .unwrap_or_else(|| panic!("no schedule {name:?}"));
     let mut harness = Harness::new();
-    for (name, glide, speed, steps) in schedules() {
-        if !names.contains(&name) {
-            continue;
-        }
-        let samples = with_settings(glide, speed, || harness.run(&steps));
-        assert_parity(name, &samples);
+    let samples = with_settings(glide, speed, || harness.run(&steps));
+    assert_parity(name, &samples);
+}
+
+/// Each schedule of a check is a test of its own (`check::schedule`): a schedule waits for
+/// the worker in real time, frame by frame, and libtest runs the tests side by side. A
+/// filter by the check's name still selects all of its schedules.
+macro_rules! parity_checks {
+    ($($check:ident { $($test:ident: $schedule:literal),+ $(,)? })+) => {
+        $(mod $check {
+            $(#[test]
+            fn $test() {
+                super::check($schedule);
+            })+
+        })+
+    };
+}
+
+parity_checks! {
+    wheel_notches_move_the_text_as_far_and_as_smoothly_as_in_the_text_viewer {
+        one_notch: "one notch",
+        five_quick_notches: "five quick notches",
+        reverse_mid_glide: "reverse mid-glide",
+    }
+    the_scrolling_glide_and_speed_settings_apply_as_in_the_text_viewer {
+        glide_off: "glide Off",
+        glide_very_long: "glide Very long",
+        speed_very_slow: "speed Very slow",
+        speed_very_fast: "speed Very fast",
+    }
+    scroll_keys_and_horizontal_scrolling_move_the_text_as_in_the_text_viewer {
+        arrow_down_x3: "arrow down x3",
+        page_down_x2: "PageDown x2",
+        horizontal_notch: "horizontal notch",
+        arrow_right_x2: "arrow right x2",
     }
 }
 
 #[test]
-fn wheel_notches_move_the_text_as_far_and_as_smoothly_as_in_the_text_viewer() {
-    check(&["one notch", "five quick notches", "reverse mid-glide"]);
-}
-
-#[test]
-fn the_scrolling_glide_and_speed_settings_apply_as_in_the_text_viewer() {
-    check(&[
-        "glide Off",
-        "glide Very long",
-        "speed Very slow",
-        "speed Very fast",
-    ]);
-}
-
-#[test]
 fn touchpad_motion_and_its_momentum_move_the_text_as_in_the_text_viewer() {
-    check(&["touchpad flick"]);
-}
-
-#[test]
-fn scroll_keys_and_horizontal_scrolling_move_the_text_as_in_the_text_viewer() {
-    check(&[
-        "arrow down x3",
-        "PageDown x2",
-        "horizontal notch",
-        "arrow right x2",
-    ]);
+    check("touchpad flick");
 }
 
 /// The position bar lands where the text viewer's does (to the pixel, not the row); like
