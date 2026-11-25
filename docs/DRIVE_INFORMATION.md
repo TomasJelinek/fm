@@ -60,24 +60,66 @@ exact native form and are never rebuilt from display text.
 ## The drive list on Linux
 
 The drive dropdown and the drive bar show `/`, Home and useful mounted storage: local
-volumes, removable media, network shares and FUSE mounts of the user. The list comes
-from `/proc/self/mountinfo` on a backend worker; the native filesystem package and the
-application apply the same filter:
+volumes, removable media, network shares, FUSE mounts of the user and the locations
+opened through GVfs. The list comes from `/proc/self/mountinfo` on a backend worker;
+the native filesystem package and the application apply the same filter:
 
 - Left out: snap images, namespaces, portals, kernel and tracing filesystems,
   container layers, and mounts under `/dev`, `/proc`, `/sys`, `/boot`, `/efi`,
   `/snap`, `/var/lib/snapd`, `/var/lib/docker`, `/var/lib/containers`, `/tmp`,
   `/var/tmp` and `/run`.
-- Kept below `/run`: `/run/media` and `/run/user/<numeric user ID>/gvfs`.
+- Kept below `/run`: `/run/media`, and mounts at or below
+  `/run/user/<numeric user ID>/gvfs` other than the GVfs FUSE bridge itself.
+- The GVfs FUSE bridge is left out; the native filesystem package lists the
+  locations it holds instead (see below). The application's own list, which the
+  window uses only until the package's list arrives, does not read the bridge.
 - A mount of a subfolder of a block device is a second view of a drive already
   listed and is left out, which also hides deliberate bind mounts of local folders;
   Btrfs and bcachefs subvolumes stay listed. A bind mount of a whole filesystem may
   appear twice, because the mount table does not distinguish it.
 
-The filter changes only the choices offered: a folder left out can still be typed in
-the path bar, browsed and described with Ctrl+F1.
+The filter changes only the choices offered: a folder left out, the bridge included,
+can still be typed in the path bar, browsed and described with Ctrl+F1.
+
+### Locations opened through GVfs
+
+GVfs, the desktop's virtual filesystem, mounts each location it opens (from the file
+manager, with `gio mount` or from Network Neighborhood) as a folder of one FUSE mount,
+the GVfs FUSE bridge at `/run/user/<numeric user ID>/gvfs`. The bridge holds nothing
+else and is empty while nothing is mounted, so it is not listed. Each of its folders
+is listed as a drive instead, named after its location:
+
+| Location | Folder in the bridge, for example | Drive name |
+| --- | --- | --- |
+| SMB share | `smb-share:server=nas,share=data` | data on nas |
+| SFTP, FTP, WebDAV or another host | `sftp:host=example.com,port=2222` | example.com |
+| NFS export | `nfs:host=server,prefix=%2Fexport%2Fdata` | data on server |
+| AFP volume | `afp-volume:host=server,volume=Shared` | Shared on server |
+| Phone or camera (MTP, PTP) | `mtp:host=Vendor_Phone_1A2B3C` | Vendor Phone 1A2B3C |
+| Online account drive | its type, then `host=example.com,user=name` | name@example.com |
+| Archive | `archive:host=` and the archive's escaped address | the archive's file name |
+
+A folder name without this form keeps its raw text. A drive name is display text
+only; the drive is its folder's path.
+
+Building the list reads only the names of the bridge's folders, at most 256, on the
+same backend worker; it never opens or examines a location, whose details come from
+its backend and may be slow or offline. The GVfs FUSE daemon answers that read from
+memory, without its backends. Should the daemon itself stop answering, for example
+when every one of its threads waits for an offline location, the drive list is not
+refreshed until it answers again. Free space and the volume name of each location
+are read later, like those of every drive, on the separately bounded workers for
+drive details; for a location these reads reach its backend. A bridge that cannot be
+read, such as another user's, adds no drives, and a filesystem mounted at the bridge's
+path makes that path an ordinary drive. GVfs mounts do not change
+the mount table, so a location that appears or disappears shows in the list when the
+list is read again: at start and every 45 seconds. Drives named after their location
+come before drives named by their path.
+
+## Dated records
 
 Salamander's drive information dialog (`CDriveInfo` in `src/dialogs3.cpp`) was a
 reference for the kinds of information only; no source or assets were copied. The
 dated [verification record](verification/2026-11-08-drive-information.md) lists the
-tests and fixtures.
+tests and fixtures. The [GVfs drive list record](verification/2026-11-25-gvfs-drive-list.md)
+covers the drives of locations opened through GVfs.

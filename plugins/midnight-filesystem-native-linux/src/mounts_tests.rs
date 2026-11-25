@@ -1,4 +1,11 @@
-use super::paths;
+use super::{Mounts, drives, paths as mount_paths};
+use crate::rename_test_support::Temp;
+use std::{fs, os::unix::ffi::OsStrExt};
+
+/// The mount points that the drive list offers as they are.
+fn paths(input: &[u8]) -> Vec<Vec<u8>> {
+    mount_paths(input).roots
+}
 
 #[test]
 fn drive_list_hides_efi_partition_without_hiding_prefix_siblings() {
@@ -52,9 +59,8 @@ fn drive_list_preserves_local_removable_network_and_userspace_storage() {
 5 1 0:2 / /mnt/share rw - cifs //server/share rw\n\
 6 1 0:3 /export /srv/team rw - nfs4 server:/export rw\n\
 7 1 0:4 / /home/alice/remote rw - fuse.sshfs alice@server:/ rw\n\
-8 1 0:5 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
-9 1 0:6 /@home /home rw - btrfs /dev/sda1 rw\n\
-10 1 11:0 / /media/DVD ro - iso9660 /dev/sr0 ro\n";
+8 1 0:6 /@home /home rw - btrfs /dev/sda1 rw\n\
+9 1 11:0 / /media/DVD ro - iso9660 /dev/sr0 ro\n";
     assert_eq!(
         paths(input),
         [
@@ -65,11 +71,56 @@ fn drive_list_preserves_local_removable_network_and_userspace_storage() {
             b"/mnt/share".to_vec(),
             b"/srv/team".to_vec(),
             b"/home/alice/remote".to_vec(),
-            b"/run/user/1000/gvfs".to_vec(),
             b"/home".to_vec(),
             b"/media/DVD".to_vec(),
         ]
     );
+}
+
+#[test]
+fn drive_list_offers_gvfs_locations_in_place_of_the_gvfs_bridge() {
+    let input = b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+2 1 0:50 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000\n\
+3 1 0:51 / /run/user/1001/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1001\n\
+4 1 0:50 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000\n";
+    let mounts = mount_paths(input);
+    assert_eq!(mounts.roots, [b"/".to_vec()]);
+    assert_eq!(
+        mounts.gvfs,
+        [
+            b"/run/user/1000/gvfs".to_vec(),
+            b"/run/user/1001/gvfs".to_vec()
+        ]
+    );
+}
+
+#[test]
+fn drive_list_without_gvfs_offers_no_gvfs_bridge() {
+    let input = b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+2 1 8:2 / /media/USB rw - vfat /dev/sdb1 rw\n\
+3 1 0:5 / /run/user/1000/doc rw - fuse.portal portal rw\n";
+    let mounts = mount_paths(input);
+    assert_eq!(mounts.roots, [b"/".to_vec(), b"/media/USB".to_vec()]);
+    assert!(mounts.gvfs.is_empty());
+}
+
+#[test]
+fn drive_list_keeps_other_mounts_at_or_below_the_gvfs_path_as_they_are() {
+    // Only GVfs's own FUSE root is a bridge. Reading the folders of a view of one
+    // location inside it would read inside that location.
+    let input = b"1 0 8:1 / /run/user/1000/gvfs rw - ext4 /dev/sda1 rw\n\
+2 0 0:50 /smb-share:server=nas,share=data /run/user/1001/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
+3 0 0:51 / /run/user/1002/gvfs/share rw - fuse.sshfs remote rw\n";
+    let mounts = mount_paths(input);
+    assert_eq!(
+        mounts.roots,
+        [
+            b"/run/user/1000/gvfs".to_vec(),
+            b"/run/user/1001/gvfs".to_vec(),
+            b"/run/user/1002/gvfs/share".to_vec(),
+        ]
+    );
+    assert!(mounts.gvfs.is_empty());
 }
 
 #[test]
@@ -113,4 +164,59 @@ fn drive_list_omits_local_subdirectory_views_without_hiding_subvolumes() {
         paths(input),
         [b"/".to_vec(), b"/data".to_vec(), b"/mnt/subvolume".to_vec()]
     );
+}
+
+#[test]
+fn drive_list_without_gvfs_names_its_mount_points_by_path() {
+    let mounts = Mounts {
+        roots: vec![b"/data".to_vec(), b"/mnt/raw\xff".to_vec()],
+        gvfs: Vec::new(),
+    };
+    assert_eq!(
+        drives(mounts, &|| false),
+        [
+            (b"/".to_vec(), "/".to_owned()),
+            (b"/data".to_vec(), "/data".to_owned()),
+            (b"/mnt/raw\xff".to_vec(), "/mnt/raw\u{fffd}".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn drive_list_names_gvfs_locations_by_location_after_the_mount_points() {
+    let bridge = Temp::new();
+    let share = bridge.path.join("smb-share:server=nas,share=data");
+    fs::create_dir(&share).unwrap();
+    let mounts = Mounts {
+        roots: vec![b"/".to_vec(), b"/media/USB".to_vec()],
+        gvfs: vec![bridge.path.as_os_str().as_bytes().to_vec()],
+    };
+    assert_eq!(
+        drives(mounts, &|| false),
+        [
+            (b"/".to_vec(), "/".to_owned()),
+            (b"/media/USB".to_vec(), "/media/USB".to_owned()),
+            (
+                share.as_os_str().as_bytes().to_vec(),
+                "data on nas".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn drive_list_reads_no_gvfs_path_that_another_filesystem_shares() {
+    // A filesystem stacked on the bridge's path, or under it, makes that path an
+    // ordinary drive: its folders are not GVfs locations.
+    for input in [
+        b"1 0 0:50 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
+2 1 8:1 / /run/user/1000/gvfs rw - ext4 /dev/sda1 rw\n"
+            .as_slice(),
+        b"1 0 8:1 / /run/user/1000/gvfs rw - ext4 /dev/sda1 rw\n\
+2 1 0:50 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n",
+    ] {
+        let mounts = mount_paths(input);
+        assert_eq!(mounts.roots, [b"/run/user/1000/gvfs".to_vec()]);
+        assert!(mounts.gvfs.is_empty());
+    }
 }

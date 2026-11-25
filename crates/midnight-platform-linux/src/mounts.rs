@@ -46,6 +46,12 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         if !decoded.starts_with(b"/") {
             continue;
         }
+        // GVfs serves each location it mounts as a folder of one FUSE mount that holds
+        // nothing else. The native filesystem package lists those folders; this list
+        // leaves the bridge out without reading it.
+        if root == b"/" && filesystem == b"fuse.gvfsd-fuse" && gvfs_bridge(&decoded) {
+            continue;
+        }
         // This is a navigation list, not an inventory of the mount namespace.
         // Keep the root even in containers/live systems. A block-device subtree
         // is a bind view rather than another drive; native subvolumes are useful.
@@ -64,6 +70,13 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         }
     }
     roots
+}
+
+/// The path of GVfs's FUSE bridge: `/run/user/<numeric user ID>/gvfs`.
+fn gvfs_bridge(path: &[u8]) -> bool {
+    path.strip_prefix(b"/run/user/")
+        .and_then(|rest| rest.strip_suffix(b"/gvfs"))
+        .is_some_and(|uid| !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
 }
 
 fn internal_filesystem(filesystem: &[u8]) -> bool {

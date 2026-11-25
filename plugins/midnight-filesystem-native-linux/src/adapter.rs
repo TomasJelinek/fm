@@ -82,18 +82,17 @@ impl NativeAdapter for Linux {
                 "Mount information budget exceeded.",
             ));
         }
-        let mut roots = crate::mounts::paths(&input);
-        if !roots.iter().any(|root| root == b"/") {
-            roots.insert(0, b"/".to_vec());
-        }
-        if roots.len() > 4096 {
+        let drives =
+            crate::mounts::drives(crate::mounts::paths(&input), &|| context.is_cancelled());
+        system::cancel(context)?;
+        if drives.len() > 4096 {
             return Err(Failure::new(
                 ErrorCode::ResourceLimit,
                 "Volume count budget exceeded.",
             ));
         }
         let mut volumes = Vec::new();
-        for bytes in roots {
+        for (bytes, display) in drives {
             system::cancel(context)?;
             let id = format!(
                 "mount:{}",
@@ -105,7 +104,7 @@ impl NativeAdapter for Linux {
             let root = PathBuf::from(OsString::from_vec(bytes));
             volumes.push(Volume {
                 id,
-                display: root.to_string_lossy().into_owned(),
+                display,
                 root: Self::encode(&root),
             });
         }

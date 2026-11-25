@@ -65,7 +65,6 @@ fn drive_list_preserves_local_removable_network_and_userspace_storage() {
             b"/mnt/share".to_vec(),
             b"/srv/team".to_vec(),
             b"/home/alice/remote".to_vec(),
-            b"/run/user/1000/gvfs".to_vec(),
             b"/home".to_vec(),
             b"/media/DVD".to_vec(),
         ]
@@ -112,5 +111,33 @@ fn drive_list_omits_local_subdirectory_views_without_hiding_subvolumes() {
     assert_eq!(
         paths(input),
         [b"/".to_vec(), b"/data".to_vec(), b"/mnt/subvolume".to_vec()]
+    );
+}
+
+#[test]
+fn drive_list_leaves_out_the_gvfs_bridge() {
+    // The native filesystem package lists the locations in the bridge; this list
+    // leaves the bridge out without reading it.
+    let input = b"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+2 1 0:50 / /run/user/1000/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000\n\
+3 1 0:51 / /run/user/1001/gvfs rw,nosuid,nodev - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1001\n";
+    assert_eq!(paths(input), [b"/".to_vec()]);
+}
+
+#[test]
+fn drive_list_keeps_other_mounts_at_or_below_the_gvfs_path_as_they_are() {
+    // Only GVfs's own FUSE root is the bridge: another filesystem at its path, a view
+    // of one location inside it and a mount below it are ordinary drives.
+    let input = b"1 0 8:1 / /run/user/1000/gvfs rw - ext4 /dev/sda1 rw\n\
+2 1 0:50 / /run/user/1000/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
+3 0 0:51 /smb-share:server=nas,share=data /run/user/1001/gvfs rw - fuse.gvfsd-fuse gvfsd-fuse rw\n\
+4 0 0:52 / /run/user/1002/gvfs/share rw - fuse.sshfs remote rw\n";
+    assert_eq!(
+        paths(input),
+        [
+            b"/run/user/1000/gvfs".to_vec(),
+            b"/run/user/1001/gvfs".to_vec(),
+            b"/run/user/1002/gvfs/share".to_vec(),
+        ]
     );
 }
