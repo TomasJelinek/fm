@@ -74,10 +74,12 @@ impl Row {
     }
 }
 
+/// The toolbar with `count` drive buttons, laid out as a frame lays it out but not
+/// rendered: every check here reads geometry only.
 fn row(ui: &mut ui::TestUi, count: usize) -> Row {
     ui.window
         .set_left_locations(Rc::new(VecModel::from(drives(count))).into());
-    ui.draw();
+    ui.layout();
     let menu = ui::root_item(&ui.window, "Drive or volume", AccessibleRole::Combobox);
     let mut buttons: Vec<_> = (0..count)
         .map(|index| {
@@ -115,7 +117,7 @@ fn pickers_turn_compact_only_when_the_drive_buttons_need_their_room() {
         ui.window.set_desktop_font_size(font);
         ui.window.set_touch_font_size(font);
         for width in [1600, 1340, 1100, 900, 700] {
-            ui.resize(width, 700);
+            ui.set_size(width, 700);
             let case = format!("density {density}, font {font}, window {width}");
             // The full pickers' room: what the strip has beside them with no buttons.
             let empty = row(&mut ui, 0);
@@ -153,9 +155,9 @@ fn pickers_turn_compact_only_when_the_drive_buttons_need_their_room() {
                 }
                 // Buttons are never squeezed: each as wide as in a window wide enough
                 // for all of them.
-                ui.resize(4000, 700);
+                ui.set_size(4000, 700);
                 let natural = row(&mut ui, count);
-                ui.resize(width, 700);
+                ui.set_size(width, 700);
                 let shown = row(&mut ui, count);
                 for (button, wide) in shown.buttons.iter().zip(&natural.buttons) {
                     if (button.2 - button.0) + 0.5 < wide.2 - wide.0 {
@@ -200,6 +202,8 @@ fn compact_pickers_keep_their_names_menus_and_keys() {
         .on_sort(move |pane, column| capture.borrow_mut().push((pane, column)));
     ui.resize(1100, 700);
     let shown = row(&mut ui, 14);
+    // A rendered frame before the clicks, as a user sees one.
+    ui.draw();
     assert!(
         shown.compact(),
         "14 drives in a 1100 px window need the room"
