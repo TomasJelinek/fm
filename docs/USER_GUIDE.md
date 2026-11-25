@@ -162,7 +162,10 @@ and [error recovery](verification/2026-11-08-transfer-errors.md).
 
 Mouse file dragging uses the same verified copy queue for drops into either panel's
 displayed directory. In flat panels, ordinary file rows and image tiles target the
-panel's current folder; folder rows target that folder. Dragging a selected row keeps
+panel's current folder; folder rows target that folder. The empty space under the rows
+and the strip beside them at the list's right edge, where the scrollbar runs, also
+target the current folder, so a folder full of subfolders still takes a drop into
+itself; the parent row `..` takes none. Dragging a selected row keeps
 the selected group; dragging an unselected row targets that item. Native exchange
 with other applications uses Windows OLE or Linux X11/XWayland XDND; a native Wayland
 window uses the Wayland data device only when started with `MIDNIGHT_WAYLAND_DND=1`

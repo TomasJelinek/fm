@@ -137,8 +137,10 @@ fn available(window: &MainWindow) -> bool {
             .any(|popup| !matches!(popup.window_kind, WindowKind::ToolTip))
 }
 
-/// Reuse selection geometry for drag targets. None rejects gutters/outside points;
-/// Some(None) represents empty content inside the receiving panel.
+/// Reuse selection geometry for drag targets. None rejects points outside the list;
+/// Some(None) is the receiving panel's own folder: empty content, and the gutters
+/// beside the rows (the scrollbar's strip at the right edge), so that a folder full
+/// of subfolders still takes a drop into itself.
 pub(crate) fn drop_row_at(
     window: &MainWindow,
     presenter: &Presenter,
@@ -146,15 +148,19 @@ pub(crate) fn drop_row_at(
     point: (f32, f32),
 ) -> Option<Option<usize>> {
     let (layout, offset) = layout(window, presenter, pane);
-    let x = point.0 - layout.left - layout.content_x;
+    let shown = point.0 - layout.left;
+    let x = shown - layout.content_x;
     let y = point.1 - layout.top;
     if ![x, y, offset].into_iter().all(f32::is_finite)
-        || x < 0.0
-        || x >= layout.grid.width
+        || shown < 0.0
+        || shown >= layout.viewport_width
         || y < 0.0
         || y >= layout.height
     {
         return None;
+    }
+    if x < 0.0 || x >= layout.grid.width {
+        return Some(None);
     }
     layout.row_at(window, pane, (x, y), offset)
 }

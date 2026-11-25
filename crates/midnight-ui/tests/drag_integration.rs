@@ -872,22 +872,18 @@ fn rejected_self_directory_and_late_preview_cannot_highlight_or_submit_a_drop() 
     );
 }
 
+/// The parent row ".." takes no drop, a second gesture neither. The strip beside the
+/// rows is the panel (`the_strip_beside_folder_rows_takes_a_drop_into_the_panel`).
 #[test]
-fn parent_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
+fn parent_rows_cannot_receive_internal_drops() {
     let mut h = Harness::new();
-    for kind in 0..3 {
+    for _ in 0..2 {
         let id = h.start();
         h.prepared(id);
-        let position = match kind {
-            0 => slint::LogicalPosition::new(
-                h.ui.window.get_right_list_left() + 70.0,
-                h.ui.window.get_right_list_top() + h.ui.window.get_right_view_row_height() / 2.0,
-            ),
-            _ => slint::LogicalPosition::new(
-                h.ui.window.get_right_list_left() + h.ui.window.get_right_list_width() - 2.0,
-                h.ui.window.get_right_list_top() + 20.0,
-            ),
-        };
+        let position = slint::LogicalPosition::new(
+            h.ui.window.get_right_list_left() + 70.0,
+            h.ui.window.get_right_list_top() + h.ui.window.get_right_view_row_height() / 2.0,
+        );
         h.ui.window
             .window()
             .dispatch_event(WindowEvent::PointerMoved { position });
@@ -905,6 +901,53 @@ fn parent_rows_and_scrollbar_gutters_cannot_receive_internal_drops() {
             )
         );
     }
+}
+
+/// A panel full of folders still takes a drop into its own folder: the strip beside
+/// its rows at the list's right edge, where the scrollbar runs, is the panel, as the
+/// empty space under its rows is, not the folder on that row.
+#[test]
+fn the_strip_beside_folder_rows_takes_a_drop_into_the_panel() {
+    let mut h = Harness::with_targets(60);
+    let id = h.start();
+    h.prepared(id);
+    let window = &h.ui.window;
+    // Beside the first folder row, under the parent row "..".
+    let position = slint::LogicalPosition::new(
+        window.get_right_list_left() + window.get_right_list_width() - 2.0,
+        window.get_right_list_top() + window.get_right_view_row_height() * 1.5,
+    );
+    assert!(
+        position.x - window.get_right_list_left() >= window.get_right_list_grid_width(),
+        "the strip is beside the rows, not on them"
+    );
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    h.ui.draw();
+    let preview = h.root_preview_request(id, PaneId::Right);
+    h.preview_result(&preview, position, Some(TransferIntent::Move));
+    assert_eq!(h.ui.window.get_drag_feedback_state(), 4);
+    assert_eq!(h.ui.window.get_drag_hover_pane(), 1);
+    assert_eq!(
+        h.ui.window.get_drag_hover_row(),
+        -1,
+        "highlight the receiving panel, not a folder"
+    );
+    assert_eq!(
+        h.ui.window.get_drag_label(),
+        "Move 1 item(s) into this panel"
+    );
+    h.ui.window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+    assert!(h.commands.borrow().iter().any(|command| matches!(command,
+        Command::InternalDrop(request) if request.id == id
+            && matches!(request.destination, InternalDropDestination::PaneRoot { pane: PaneId::Right, .. })
+    )));
 }
 
 #[test]
