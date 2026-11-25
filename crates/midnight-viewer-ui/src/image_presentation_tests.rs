@@ -1650,3 +1650,24 @@ fn fixture_runtime_closes_a_retained_session_without_replacing_the_primary_panic
         Err("Viewer is closed.".into())
     );
 }
+
+/// A closed viewer releases its window, renderer, session and timers once the callback
+/// that closed it has returned, not when the next viewer opens.
+#[test]
+fn a_closed_viewer_is_released_once_its_callbacks_have_returned() {
+    let (_runtime, manager, open, _service) = open();
+    let released = Rc::downgrade(&open);
+    close(&open);
+    assert_eq!(
+        manager.windows.borrow().len(),
+        1,
+        "the closing callback may still use the window"
+    );
+    drop(open);
+    slint::platform::update_timers_and_animations();
+    assert!(manager.windows.borrow().is_empty());
+    assert!(
+        released.upgrade().is_none(),
+        "nothing else keeps the closed window"
+    );
+}

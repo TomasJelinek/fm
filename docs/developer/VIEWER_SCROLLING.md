@@ -170,7 +170,10 @@ leave control/status delivery available. Accepted replacement buffers keep the
 previous display alive through image replacement, then retire its lease away from
 the event loop. Closing signals cancellation without joining the preparation
 thread. The worker reclaims its pending batch/cache, and late UI deliveries use
-backend retirement rather than updating a closed window.
+backend retirement rather than updating a closed window. The window manager lets go of a
+closed window (its native window, renderer, session and timers) in a zero-delay timer, once
+the callback that closed it has returned, not at the next viewer's opening
+(`image_presentation_tests::a_closed_viewer_is_released_once_its_callbacks_have_returned`).
 
 ## Images
 

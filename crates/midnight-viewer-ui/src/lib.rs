@@ -132,9 +132,12 @@ struct DocumentLayoutIntent {
     submitted_frame: Option<u64>,
 }
 
+/// The open viewer windows; a closed one stays until its callbacks have returned.
+type WindowList = RefCell<Vec<Rc<OpenWindow>>>;
+
 pub struct ViewerWindows {
     service: Service,
-    windows: RefCell<Vec<Rc<OpenWindow>>>,
+    windows: Rc<WindowList>,
     app_icon: RefCell<slint::Image>,
     preferences_listener: PreferencesRelay,
     appearance: RefCell<Option<appearance::AppAppearance>>,
@@ -144,6 +147,8 @@ pub struct ViewerWindows {
 
 struct OpenWindow {
     window: ViewerWindow,
+    /// The manager's list, which releases this window once it is closed.
+    windows: std::rc::Weak<WindowList>,
     /// The archive sessions that this viewer of an archive member holds (`sessions_of`).
     archive: Vec<u64>,
     media_controls: media_controls::MediaControls,
@@ -311,7 +316,7 @@ impl ViewerWindows {
     pub fn new(service: Service) -> Self {
         Self {
             service,
-            windows: RefCell::new(Vec::new()),
+            windows: Rc::default(),
             app_icon: RefCell::default(),
             preferences_listener: Rc::new(RefCell::new(Rc::new(|_| {}))),
             appearance: RefCell::new(None),
@@ -509,6 +514,7 @@ impl ViewerWindows {
         let geometry = window_geometry(&window);
         let input = Rc::downgrade(&session);
         let open = Rc::new_cyclic(|weak: &std::rc::Weak<OpenWindow>| OpenWindow {
+            windows: Rc::downgrade(&self.windows),
             media_controls: media_controls::MediaControls::install(
                 &window,
                 Rc::new({
@@ -2351,7 +2357,26 @@ fn close(open: &OpenWindow) {
         raster_presentation::clear(open);
         open.window.set_accessible_text("".into());
         open.opened(Err("Viewer closed before displaying content.".into()));
+        // The manager would keep the window, its native window, renderer, session and
+        // timers until the next viewer opens. Release it once the callback that closed
+        // it has returned.
+        let windows = open.windows.clone();
+        slint::Timer::single_shot(Duration::ZERO, move || release_closed(&windows));
     }
+}
+
+/// Drop the closed windows of the manager's list, after its borrow has ended: dropping a
+/// window must not find the list borrowed.
+fn release_closed(windows: &std::rc::Weak<WindowList>) {
+    let Some(windows) = windows.upgrade() else {
+        return;
+    };
+    // A list in use releases them at the next opening or preference restore.
+    let closed: Vec<_> = match windows.try_borrow_mut() {
+        Ok(mut windows) => windows.extract_if(.., |open| open.closed.get()).collect(),
+        Err(_) => return,
+    };
+    drop(closed);
 }
 
 fn mode_label(mode: u16) -> &'static str {
