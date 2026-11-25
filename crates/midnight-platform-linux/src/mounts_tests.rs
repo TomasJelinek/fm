@@ -141,3 +141,88 @@ fn drive_list_keeps_other_mounts_at_or_below_the_gvfs_path_as_they_are() {
         ]
     );
 }
+
+/// Each drive's name and raw root, in order.
+type Shown = Vec<(String, Vec<u8>)>;
+/// Devices as `(major, minor)`.
+type Devices = Vec<(u32, u32)>;
+
+/// The names and roots of the drive list built from `input` with filesystem labels
+/// from `labels`, and the devices whose labels it looked up, in order.
+fn named(input: &[u8], labels: &[((u32, u32), &str)]) -> (Shown, Devices) {
+    use std::os::unix::ffi::OsStrExt;
+    let mut asked = Vec::new();
+    let volumes = super::volumes(input, &mut |major, minor| {
+        asked.push((major, minor));
+        labels
+            .iter()
+            .find(|(device, _)| *device == (major, minor))
+            .map(|(_, label)| std::ffi::OsString::from(label))
+    });
+    let shown = volumes
+        .into_iter()
+        .map(|volume| (volume.label, volume.root.as_os_str().as_bytes().to_vec()))
+        .collect();
+    (shown, asked)
+}
+
+#[test]
+fn drive_list_names_drives_by_udev_label_or_mount_folder_reading_each_device_once() {
+    let input = b"1 0 0:21 / / rw - overlay overlay rw\n\
+2 1 8:17 / /media/alice/USB rw - vfat /dev/sdb1 rw\n\
+3 1 8:33 / /media/alice/USB1 rw - vfat /dev/sdc1 rw\n\
+4 1 8:17 / /mnt/stick rw - vfat /dev/sdb1 rw\n\
+6 1 8:49 / /mnt/data rw - xfs /dev/sdd1 rw\n\
+7 1 0:50 / /mnt/camera rw - tmpfs tmpfs rw\n\
+8 7 8:65 / /mnt/camera rw - vfat /dev/sde1 rw\n";
+    let (shown, asked) = named(
+        input,
+        &[((8, 17), "USB"), ((8, 33), "USB"), ((8, 65), "CAMERA")],
+    );
+    assert_eq!(
+        shown,
+        [
+            ("/".to_owned(), b"/".to_vec()),
+            ("USB".to_owned(), b"/media/alice/USB".to_vec()),
+            ("USB1".to_owned(), b"/media/alice/USB1".to_vec()),
+            ("stick".to_owned(), b"/mnt/stick".to_vec()),
+            ("data".to_owned(), b"/mnt/data".to_vec()),
+            // Mounted over a tmpfs: the filesystem on top is the one shown there.
+            ("CAMERA".to_owned(), b"/mnt/camera".to_vec()),
+        ]
+    );
+    // Anonymous devices (major 0) have no udev record; a shared device is read once.
+    assert_eq!(asked, [(8, 17), (8, 33), (8, 49), (8, 65)]);
+}
+
+#[test]
+fn drive_list_adds_the_root_and_keeps_hex_identities_of_raw_paths() {
+    let input = b"1 0 8:1 / /mnt/raw\\377 rw - ext4 /dev/sda1 rw\n\
+2 0 8:1 / /media/My\\040USB rw - ext4 /dev/sda1 rw\n\
+3 0 x:y / /mnt/odd rw - ext4 /dev/sdb1 rw\n";
+    let (shown, asked) = named(input, &[((8, 1), "Data")]);
+    assert_eq!(
+        shown,
+        [
+            ("/".to_owned(), b"/".to_vec()),
+            ("raw\\xFF".to_owned(), b"/mnt/raw\xff".to_vec()),
+            ("My USB".to_owned(), b"/media/My USB".to_vec()),
+            ("odd".to_owned(), b"/mnt/odd".to_vec()),
+        ]
+    );
+    // One device at two paths gives one label twice: the folders tell them apart.
+    assert_eq!(asked, [(8, 1)]);
+    let ids: Vec<String> = super::volumes(input, &mut |_, _| None)
+        .into_iter()
+        .map(|volume| volume.id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "mount:2f",
+            "mount:2f6d6e742f726177ff",
+            "mount:2f6d656469612f4d7920555342",
+            "mount:2f6d6e742f6f6464",
+        ]
+    );
+}

@@ -100,7 +100,8 @@ is listed as a drive instead, named after its location:
 | Archive | `archive:host=` and the archive's escaped address | the archive's file name |
 
 A folder name without this form keeps its raw text. A drive name is display text
-only; the drive is its folder's path.
+only; the drive is its folder's path. Like every drive name it is shortened beyond 16
+columns, and equal names take folders of their paths ([drive names](#drive-names)).
 
 Building the list reads only the names of the bridge's folders, at most 256, on the
 same backend worker; it never opens or examines a location, whose details come from
@@ -111,10 +112,43 @@ refreshed until it answers again. Free space and the volume name of each locatio
 are read later, like those of every drive, on the separately bounded workers for
 drive details; for a location these reads reach its backend. A bridge that cannot be
 read, such as another user's, adds no drives, and a filesystem mounted at the bridge's
-path makes that path an ordinary drive. GVfs mounts do not change
-the mount table, so a location that appears or disappears shows in the list when the
-list is read again: at start and every 45 seconds. Drives named after their location
-come before drives named by their path.
+path makes that path an ordinary drive. GVfs mounts do not change the mount table, so
+a location that appears or disappears shows in the list when the list is read again:
+at start and every 45 seconds. Locations are ordered among the other drives by their
+names ([drive names](#drive-names)).
+
+### Drive names
+
+The drive bar and the drive dropdown name each drive instead of showing its whole mount
+path. The name is chosen on the same backend worker that lists the drives, by the
+native filesystem package and the application alike, the same way for every drive,
+GVfs locations included:
+
+- `/` stays `/`, and Home stays Home.
+- A location opened through GVfs shows its location's name, as listed above
+  (**data on nas**).
+- A filesystem with a label shows the label (`/media/<user>/USB` labelled `Backup` is
+  **Backup**). The label comes from the device's udev record, found by the device
+  number in `/proc/self/mountinfo`; neither the mounted filesystem nor a stalled
+  network share is touched for it. A label of only spaces counts as none.
+- Any other mount shows its own folder: `/mnt/data` is **data**.
+- A name longer than 16 columns keeps its first 8 and last 7 columns around `…`
+  (`3f2a9c1e…e4f5a6b` for a folder named by a UUID); East Asian wide characters take
+  two columns, and a letter keeps its accents.
+- Drives that would show the same name take folders from the end of their paths, one
+  at a time, until every name differs: two sticks labelled `USB` at
+  `/media/<user>/USB` and `/media/<user>/USB1` show **USB** and **USB1**;
+  `/mnt/backup/data` and `/srv/data` show **backup/data** and **srv/data**. Only when
+  every shorter form is taken does a name show the whole path, without its leading
+  `/`.
+- Control characters and bytes that are not UTF-8 show escaped (`\t`, `\xFF`).
+
+The root comes first; the other drives follow in the order of their names. Hovering a
+drive shows its name, its whole mount path and its free space (and the volume's label
+when the name is not that label); the dropdown row's accessible description and the
+drive button's accessible name carry the same text, so the keyboard and screen readers
+get the path too. Choosing a drive, the path bar and every other navigation use the
+whole path; Windows keeps its drive letters.
 
 ## Dated records
 
@@ -122,4 +156,5 @@ Salamander's drive information dialog (`CDriveInfo` in `src/dialogs3.cpp`) was a
 reference for the kinds of information only; no source or assets were copied. The
 dated [verification record](verification/2026-11-08-drive-information.md) lists the
 tests and fixtures. The [GVfs drive list record](verification/2026-11-25-gvfs-drive-list.md)
-covers the drives of locations opened through GVfs.
+covers the drives of locations opened through GVfs, and the
+[drive names record](verification/2026-11-25-linux-drive-names.md) the names.

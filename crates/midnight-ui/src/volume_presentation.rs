@@ -1,5 +1,6 @@
 //! Pure presentation of cached native metadata; hover never triggers I/O.
 use super::*;
+use std::path::Path;
 
 pub(super) fn panel_space(presenter: &Presenter, pane: PaneId) -> String {
     if let Some(space) = presenter.panes[pane.index()].visible_space() {
@@ -22,6 +23,16 @@ pub(super) fn details<'a>(presenter: &'a Presenter, volume: &Volume) -> Option<&
 }
 
 pub(super) fn tooltip(details: Option<&VolumeDetails>, locale: &NumberLocale) -> String {
+    details_text(details, locale, None)
+}
+
+/// Free space, after the volume's name when it has one, line by line. A name equal to
+/// `shown`, which the control already shows, is left out.
+fn details_text(
+    details: Option<&VolumeDetails>,
+    locale: &NumberLocale,
+    shown: Option<&str>,
+) -> String {
     let Some(details) = details else {
         return "Loading free space…".into();
     };
@@ -30,9 +41,59 @@ pub(super) fn tooltip(details: Option<&VolumeDetails>, locale: &NumberLocale) ->
         Err(_) => "Free space unavailable".into(),
     };
     match &details.label {
-        Ok(Some(label)) if !label.is_empty() => format!("{}\n{capacity}", label.to_string_lossy()),
+        Ok(Some(label))
+            if !label.is_empty() && shown.is_none_or(|shown| label.to_string_lossy() != shown) =>
+        {
+            format!("{}\n{capacity}", label.to_string_lossy())
+        }
         Err(_) => format!("Volume name unavailable\n{capacity}"),
         _ => capacity,
+    }
+}
+
+/// Whether a drive's `label` is a name of its own rather than its root's: Linux names a
+/// mount by its volume label or its folder (`USB` for `/media/<user>/USB`). A label that
+/// the root's text starts with names the root itself: a Windows drive letter (`C:` for
+/// `C:\`) or the Linux root `/`.
+pub(super) fn is_drive_name(label: &str, root: &Path) -> bool {
+    !root.to_string_lossy().starts_with(label)
+}
+
+/// A drive's tooltip on the drive bar and in the drive menu: its whole path and details,
+/// after its name when that is a name of its own ([`is_drive_name`]).
+pub(super) fn drive_tooltip(
+    label: &str,
+    root: &Path,
+    details: Option<&VolumeDetails>,
+    locale: &NumberLocale,
+) -> String {
+    if is_drive_name(label, root) {
+        format!(
+            "{label}\n{}\n{}",
+            root.display(),
+            details_text(details, locale, Some(label))
+        )
+    } else {
+        format!("{}\n{}", root.display(), tooltip(details, locale))
+    }
+}
+
+/// A drive's row in the drive menu. A name of its own ([`is_drive_name`]) stands for the
+/// path, which the row's tooltip and accessible description spell out; a root's own
+/// name is followed by the root.
+pub(super) fn drive_menu_label(
+    label: &str,
+    root: &Path,
+    details: Option<&VolumeDetails>,
+    locale: &NumberLocale,
+) -> String {
+    if is_drive_name(label, root) {
+        format!(
+            "{label} — {}",
+            details_text(details, locale, Some(label)).replace('\n', " — ")
+        )
+    } else {
+        root_menu_label(label, root, details, locale)
     }
 }
 
@@ -41,11 +102,20 @@ pub(super) fn menu_label(
     details: Option<&VolumeDetails>,
     locale: &NumberLocale,
 ) -> String {
-    let root = volume.root.to_string_lossy();
-    let title = if volume.label == root {
-        volume.label.clone()
+    root_menu_label(&volume.label, &volume.root, details, locale)
+}
+
+fn root_menu_label(
+    label: &str,
+    root: &Path,
+    details: Option<&VolumeDetails>,
+    locale: &NumberLocale,
+) -> String {
+    let root = root.to_string_lossy();
+    let title = if label == root {
+        label.to_owned()
     } else {
-        format!("{} ({root})", volume.label)
+        format!("{label} ({root})")
     };
     format!(
         "{title} — {}",

@@ -45,21 +45,22 @@ pub(super) fn choices(presenter: &Presenter) -> Vec<NavigationChoiceRow> {
                 .find(|volume| volume.id == location.id && volume.root == location.path);
             let details = volume.and_then(|volume| volume_presentation::details(presenter, volume));
             let is_drive = location.kind == LocationKind::Volume;
-            let label = if is_drive {
-                volume
-                    .map(|volume| {
-                        volume_presentation::menu_label(volume, details, &presenter.number_locale)
-                    })
-                    .unwrap_or_else(|| format!("{} — {}", location.label, location.path.display()))
+            let locale = &presenter.number_locale;
+            let label = if is_drive
+                && (volume.is_some()
+                    || volume_presentation::is_drive_name(&location.label, &location.path))
+            {
+                volume_presentation::drive_menu_label(
+                    &location.label,
+                    &location.path,
+                    details,
+                    locale,
+                )
             } else {
                 format!("{} — {}", location.label, location.path.display())
             };
             let tooltip = if is_drive {
-                format!(
-                    "{}\n{}",
-                    location.path.display(),
-                    volume_presentation::tooltip(details, &presenter.number_locale)
-                )
+                volume_presentation::drive_tooltip(&location.label, &location.path, details, locale)
             } else {
                 format!("{}\n{}", location.label, location.path.display())
             };

@@ -82,29 +82,30 @@ impl NativeAdapter for Linux {
                 "Mount information budget exceeded.",
             ));
         }
-        let drives =
-            crate::mounts::drives(crate::mounts::paths(&input), &|| context.is_cancelled());
+        // Names come from udev's local records and the GVfs bridges' folder names,
+        // never from the mounted filesystems.
+        let named = crate::mounts::volumes(
+            &input,
+            &mut |major, minor| {
+                crate::volume_information::device_label(major, minor, context)
+                    .map(|text| text.bytes)
+            },
+            &|| context.is_cancelled(),
+        );
         system::cancel(context)?;
-        if drives.len() > 4096 {
+        if named.len() > 4096 {
             return Err(Failure::new(
                 ErrorCode::ResourceLimit,
                 "Volume count budget exceeded.",
             ));
         }
         let mut volumes = Vec::new();
-        for (bytes, display) in drives {
+        for volume in named {
             system::cancel(context)?;
-            let id = format!(
-                "mount:{}",
-                bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
-            let root = PathBuf::from(OsString::from_vec(bytes));
+            let root = PathBuf::from(OsString::from_vec(volume.path));
             volumes.push(Volume {
-                id,
-                display,
+                id: volume.id,
+                display: volume.name,
                 root: Self::encode(&root),
             });
         }

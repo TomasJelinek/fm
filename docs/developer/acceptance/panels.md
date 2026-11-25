@@ -82,6 +82,7 @@ combinations. Helpers of these scenarios are in
 | N-24 | `.` in the drive menu opens the other panel's folder (As Other Panel) | `panels_paths` › drives | PASS |
 | N-25 | The drive menu's filesystem root by pointer | `panels_paths` › drives | PASS |
 | N-26 | The drive bar's quick location buttons | none | SKIP: the acceptance machine shows a single volume and no special location, whose button keeps the current folder (each volume remembers its folder) |
+| N-26a | Linux drive names: the drive bar and the drive menu show each drive by its name (`/`, a volume label or the mount folder, folders of the path added where names repeat, at most 16 columns); the bar button's accessible name and hover tooltip and the menu row's accessible description give the whole path; a drive chosen in the menu opens its path | `panels_drive_names` | PASS with the drive fixture (Linux `20261125-213455`), without it (`20261125-213516`, only `/`) and on a GNOME workstation (`20261125-213518`, only `/`); in process only: the application's names, GVfs locations included, come from the native filesystem package's copy of the rules, covered by its unit and integration tests ([record](../../verification/2026-11-25-linux-drive-names.md)) |
 | N-27 | Ctrl+U swaps the panels and back, folders kept | `files_navigation` | PASS |
 | N-28 | Ctrl+U moves each panel's tabs with it | `panels_tabs` › swap | PASS |
 | N-29 | Alt+Enter Properties of a folder: type, permissions, time and its contents counted as on disk | `files_navigation` › Properties | PASS |

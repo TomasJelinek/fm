@@ -78,13 +78,7 @@ pub(crate) fn query(path: &Path, cancel: &Cancellation) -> Result<VolumeInformat
             .unavailable
             .push("Mount and filesystem identity unavailable from kernel metadata".into());
     }
-    if identity.stx_dev_major != 0 {
-        let database = PathBuf::from(format!(
-            "/run/udev/data/b{}:{}",
-            identity.stx_dev_major, identity.stx_dev_minor
-        ));
-        information.label = read_bounded(&database, 64 * 1024).and_then(|bytes| label(&bytes));
-    }
+    information.label = device_label(identity.stx_dev_major, identity.stx_dev_minor);
     cancelled(cancel).map_err(fail)?;
     let storage = storage_kind::detect(path);
     // Classification uses native path queries. Reject it if that path no longer
@@ -99,6 +93,17 @@ pub(crate) fn query(path: &Path, cancel: &Cancellation) -> Result<VolumeInformat
     }
     cancelled(cancel).map_err(fail)?;
     Ok(information)
+}
+
+/// The filesystem label udev recorded for block device `major:minor`, if any. Anonymous
+/// devices (major 0) have no record. Reads only udev's bounded local database, never the
+/// mounted filesystem, so a stalled network mount cannot block it.
+pub(crate) fn device_label(major: u32, minor: u32) -> Option<OsString> {
+    if major == 0 {
+        return None;
+    }
+    let database = PathBuf::from(format!("/run/udev/data/b{major}:{minor}"));
+    read_bounded(&database, 64 * 1024).and_then(|bytes| label(&bytes))
 }
 
 fn capacity(total: u64, free: u64, available: u64, unit: u64) -> VolumeCapacity {

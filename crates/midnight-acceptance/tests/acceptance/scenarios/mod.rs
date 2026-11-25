@@ -63,6 +63,7 @@ pub mod options_themes;
 pub mod options_visual;
 pub mod panels_busy_ops;
 pub mod panels_dialogs;
+pub mod panels_drive_names;
 pub mod panels_file_list;
 pub mod panels_hot_digits;
 pub mod panels_notices;
@@ -120,7 +121,7 @@ fn minutes(minutes: u64) -> Duration {
 
 /// Modules that register their own scenarios; they run after those listed in [`all`], in
 /// this order.
-const OWNED: [fn() -> Vec<Scenario>; 8] = [
+const OWNED: [fn() -> Vec<Scenario>; 9] = [
     panels_scrolling::scenarios,
     files_links_volumes::scenarios,
     tools_checksum_unlimited::scenarios,
@@ -129,6 +130,7 @@ const OWNED: [fn() -> Vec<Scenario>; 8] = [
     options_settings_file::scenarios,
     options_palette::scenarios,
     panels_properties::scenarios,
+    panels_drive_names::scenarios,
 ];
 
 pub fn all() -> &'static [Scenario] {

@@ -72,6 +72,7 @@ mod draft_shell;
 mod drag_drop;
 mod drag_integration;
 mod drag_ordering;
+mod drive_names;
 mod drive_toolbar_scroll;
 mod editor_options;
 mod error_notice;

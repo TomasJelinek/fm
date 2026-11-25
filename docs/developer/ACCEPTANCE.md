@@ -598,6 +598,7 @@ Help, Drive information, About, Jobs and notices), [journeys](acceptance/journey
 | `panels_times` | panels | Ctrl+F2 Times: Up/Down per date, time and offset part; the calendar (Alt+Down, arrows, Page Up/Down, Enter, Previous/Next month, a day, Today) and time picker (Alt+Down, arrows, Page Up/Down, Enter keeping the picked time, Escape restoring the time it opened with, ▲/▼); Now; the picked moment read back from disk to the second, Accessed untouched; Escape closes a picker only, the next Escape the editor without applying; Ctrl+F7 lowercase on the Case page; Include subfolders on a folder (every descendant gets the time) and Back to editing keeping the draft. |
 | `panels_view_sort` | panels | Ctrl+F3–F6, every column header (both directions, its accessible state) and the sort menu (each column, Reverse order) give the exact order with folders first and extensionless files last, marks and cursor kept and in view; the right panel sorts on its own; View menu and Alt+2/3/5 keep cursor and marks, arrows move by column (Brief) and cell/row (Thumbnails); the splitter dragged, clamped at its minimum with names readable, double-clicked, moved with its keys, restored after a restart; Ctrl+F11 and Tab; a 600×480 window's rail; touch density. |
 | `panels_properties_several` | panels | Alt+Enter on nine files and a folder marked in one folder (`Config::native_properties`): Windows opens one Shell property sheet whose summary counts 9 files and 1 folder (numbers only, so any display language passes), pictured and closed, never the "Desktop" box "The properties for this item are not available." and no summary of the application's own; Linux shows the application's summary "10 selected items" with "9 files, 1 folder". |
+| `panels_drive_names` | panels | The drive bar and the drive menu name drives briefly. For every drive the backend lists: the left bar button's caption is the drive's name (unique among the drives, at most 16 columns unless only the whole path tells two apart, on Linux never a mount path other than `/`); the button's accessible name and its hover tooltip give the whole path; the drive menu's row starts with the name, shows no Linux mount path and its accessible description gives the whole path; choosing a drive other than the root opens its path. With the Linux drive fixture (see "Drive names" below) the exact names: `alice/USB`, `mnt/USB`, `backup/data`, `srv/data`, `a-very-l…er-name`. The bar, a tooltip and the open menu are pictured. Its registration is in `panels_drive_names.rs`. |
 | `panels_paths` | panels | Toolbar Back/Forward (disabled without history), Parent, Folder sizes and Refresh; the Back and Forward history menus; Ctrl+PageUp, Ctrl+PageDown (a file is not opened), Shift+Backspace, Ctrl+Backslash; double clicks on a folder and `..`; Tab and Shift+Tab; path segments (hover highlight, right-click copy, paste with a separator), a long path's middle marker, the blank space after the path, Escape; Alt+F1, Alt+F2, `.` As Other Panel and the root by pointer; the details strip copying name, path and size; empty folders and everything hidden or filtered say so below `..`; a quick filter without matches. |
 | `panels_tabs` | panels | Middle click (not on the last tab), a double click after the tabs, Ctrl+Shift+digit (a missing number does nothing), scroll arrows consistent with the strip and the active tab in view, the 32-tab limit, right-panel tabs, Ctrl+U moving tabs with their panel, F7/Shift+F4/F2 in second tabs of both panels. The tabs, their folders and the active tab come back after a restart on the saved settings (`Config::restore_tabs`, as a plain start without folders). |
 | `panels_search_filter` | panels | Filename search: Up/Down without wrapping, Home/End and Page Up/Down in match order, Backspace and an empty query, Space, Insert, Unicode without case, kept through sorting and Ctrl+R, ended by opening a folder. Panel filter: the funnel, Regex, Case sensitive, the indicator and its ×, the history menu, Help and F1 (Escape closes only the help), Cancel, an invalid regular expression; Ctrl+A, Ctrl+Shift+A, sorting and search in a filtered list, hidden files with a filter, each panel's own filter. |
@@ -678,6 +679,28 @@ record, item by item with its status, is [acceptance/find.md](acceptance/find.md
 Options and keyboard record is [acceptance/options-tools.md](acceptance/options-tools.md),
 and the tools record (menus, Checksums, Help, Drive information, About, Jobs and
 notices) is [acceptance/tools.md](acceptance/tools.md).
+
+### Drive names
+
+`panels_drive_names` checks the rules on whatever drives the machine lists; a run in
+the plain Docker build image lists only `/`. Its drive fixture gives it the cases that
+matter on Linux: start the image's `docker run` (`scripts/build-docker.sh`) with these
+tmpfs mounts added (each owned by the account, for example
+`--tmpfs /mnt/USB:uid=$(id -u),gid=$(id -g),mode=0755`):
+
+| Mount | Name | Why |
+| --- | --- | --- |
+| `/media/alice/USB` | `alice/USB` | the same folder name as `/mnt/USB` |
+| `/mnt/USB` | `mnt/USB` | |
+| `/mnt/backup/data` | `backup/data` | the same folder name as `/srv/data` |
+| `/srv/data` | `srv/data` | |
+| `/mnt/a-very-long-mount-folder-name` | `a-very-l…er-name` | longer than 16 columns |
+
+tmpfs has no udev label, so these names come from the folders; volume labels are
+covered by the unit tests of both Linux adapters
+(`crates/midnight-platform-linux/src/drive_names_tests.rs`, `mounts_tests.rs` and the
+package's copies). With only some of the mounts the scenario fails as an incomplete
+fixture.
 
 ### UI review checks
 

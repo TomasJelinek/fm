@@ -1005,9 +1005,14 @@ current keys.
   a folder on a network or `subst` drive of your own sign-in, which programs run as
   administrator do not see. This command has no default key and is in F10 → Tools.
 - The compact terminal icon and navigation controls explain themselves through
-  tooltips. Drive tooltips show free space and Windows volume names; expanded
+  tooltips. Drive tooltips show free space and volume names; expanded
   drive choices include those details. Quick buttons and their dropdown share
-  discovered drives and special locations, with full-path tooltips. The location
+  discovered drives and special locations, with full-path tooltips. Windows shows
+  drives by their letters. Linux shows each drive by a short name instead of its
+  mount path: `/` for the root, its volume label or its mount folder, and for a
+  location opened through GVfs its location ("data on nas"), with folders of the path
+  added where two names would be the same; the tooltip and the accessible description
+  give the whole path ([drive names](DRIVE_INFORMATION.md#drive-names)). The location
   menu button shows a neutral icon instead of repeating the current drive letter;
   its tooltip names the current drive (for a special folder, the drive that holds
   it; for a detected native network path, Network). Its dropdown uses the available

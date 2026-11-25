@@ -61,7 +61,7 @@ fn same_path_aliases_remain_distinct() {
 }
 
 #[test]
-fn named_volumes_precede_raw_mount_paths_without_mutating_paths() {
+fn the_root_leads_then_named_volumes_precede_raw_mount_paths_without_mutating_paths() {
     let labels = ["/media/usb/", "Zulu", "/", "Alpha", "/home/"];
     let input = labels
         .iter()
@@ -73,12 +73,39 @@ fn named_volumes_precede_raw_mount_paths_without_mutating_paths() {
             .iter()
             .map(|item| item.label.as_str())
             .collect::<Vec<_>>(),
-        ["Alpha", "Zulu", "/", "/home/", "/media/usb/"]
+        ["/", "Alpha", "Zulu", "/home/", "/media/usb/"]
     );
     assert!(
         ordered
             .iter()
             .all(|item| item.path == Path::new("raw/../same 文档"))
+    );
+}
+
+#[test]
+fn linux_drives_list_the_filesystem_root_first_then_their_names() {
+    let volume = |id: &str, label: &str, root: &str| Volume {
+        id: id.into(),
+        label: label.into(),
+        root: root.into(),
+    };
+    let ordered = volumes(
+        vec![
+            volume("mount:usb", "USB", "/media/alice/USB"),
+            volume("mount:data", "data", "/mnt/data"),
+            volume("mount:root", "/", "/"),
+            volume("mount:gvfs", "GVfs", "/run/user/1000/gvfs"),
+        ],
+        None,
+    )
+    .unwrap();
+    // Without a locale, names compare by their raw bytes.
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|volume| volume.label.as_str())
+            .collect::<Vec<_>>(),
+        ["/", "GVfs", "USB", "data"]
     );
 }
 

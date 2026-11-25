@@ -3,6 +3,7 @@
 //! Independent native Linux provider. No application/private platform crate dependencies.
 mod adapter;
 mod content;
+mod drive_names;
 mod gvfs;
 mod mounts;
 mod ownership;

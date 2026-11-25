@@ -1,16 +1,106 @@
+use crate::drive_names;
+use midnight_core::Volume;
+use std::{
+    collections::HashMap,
+    ffi::OsString,
+    os::unix::ffi::{OsStrExt, OsStringExt},
+    path::PathBuf,
+};
+
 #[cfg(test)]
 #[path = "mounts_tests.rs"]
 mod drive_list_tests;
 
+/// The drive list from `input` (`/proc/self/mountinfo`), the root first if missing:
+/// each mount named for the drive toolbar ([`drive_names`]) from the filesystem label
+/// `device_label` finds for its device, asked once per device.
+pub(crate) fn volumes(
+    input: &[u8],
+    device_label: &mut dyn FnMut(u32, u32) -> Option<OsString>,
+) -> Vec<Volume> {
+    let mut mounts = mount_points(input);
+    if !mounts.iter().any(|mount| mount.path == b"/") {
+        mounts.insert(
+            0,
+            MountPoint {
+                path: b"/".to_vec(),
+                device: (0, 0),
+            },
+        );
+    }
+    let mut known = HashMap::new();
+    let labels: Vec<Option<OsString>> = mounts
+        .iter()
+        .map(|mount| {
+            // Anonymous devices (major 0: tmpfs, FUSE, network) have no udev record.
+            let (major, minor) = mount.device;
+            (major != 0)
+                .then(|| {
+                    known
+                        .entry(mount.device)
+                        .or_insert_with(|| device_label(major, minor))
+                        .clone()
+                })
+                .flatten()
+        })
+        .collect();
+    let names = drive_names::names(
+        &mounts
+            .iter()
+            .zip(&labels)
+            .map(|(mount, label)| drive_names::Mount {
+                path: &mount.path,
+                label: label.as_ref().map(|label| label.as_bytes()),
+            })
+            .collect::<Vec<_>>(),
+    );
+    mounts
+        .into_iter()
+        .zip(names)
+        .map(|(mount, label)| {
+            // Hex identity avoids collisions between distinct non-UTF-8 mount paths.
+            let id = format!(
+                "mount:{}",
+                mount
+                    .path
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            );
+            let root = PathBuf::from(OsString::from_vec(mount.path));
+            Volume { id, label, root }
+        })
+        .collect()
+}
+
+/// One mount the drive list keeps: its decoded path and its device (`major:minor`).
+struct MountPoint {
+    path: Vec<u8>,
+    device: (u32, u32),
+}
+
+#[cfg(test)]
 pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
-    let mut roots = Vec::new();
-    let mut seen = std::collections::HashSet::<Vec<u8>>::new();
+    mount_points(input)
+        .into_iter()
+        .map(|mount| mount.path)
+        .collect()
+}
+
+/// The mounts of `input` that the drive list keeps, each path once, where it first
+/// appears; its device is that of the last mount there, the one on top.
+fn mount_points(input: &[u8]) -> Vec<MountPoint> {
+    let mut roots: Vec<MountPoint> = Vec::new();
+    let mut seen = HashMap::<Vec<u8>, usize>::new();
     for line in input.split(|byte| *byte == b'\n') {
         let Some(separator) = line.windows(3).position(|bytes| bytes == b" - ") else {
             continue;
         };
         let mut fields = line[..separator].split(|byte| *byte == b' ');
-        let Some(root) = fields.nth(3) else {
+        let Some(device) = fields.nth(2) else {
+            continue;
+        };
+        let Some(root) = fields.next() else {
             continue;
         };
         let Some(mount) = fields.next() else {
@@ -64,12 +154,28 @@ pub(crate) fn mount_paths(input: &[u8]) -> Vec<Vec<u8>> {
         {
             continue;
         }
-        if !seen.contains(decoded.as_slice()) {
-            seen.insert(decoded.clone());
-            roots.push(decoded);
+        let device = device_number(device);
+        match seen.get(&decoded) {
+            Some(&index) => roots[index].device = device,
+            None => {
+                seen.insert(decoded.clone(), roots.len());
+                roots.push(MountPoint {
+                    path: decoded,
+                    device,
+                });
+            }
         }
     }
     roots
+}
+
+/// `major:minor` as numbers; `(0, 0)`, an anonymous device, when malformed.
+fn device_number(field: &[u8]) -> (u32, u32) {
+    std::str::from_utf8(field)
+        .ok()
+        .and_then(|field| field.split_once(':'))
+        .and_then(|(major, minor)| Some((major.parse().ok()?, minor.parse().ok()?)))
+        .unwrap_or((0, 0))
 }
 
 /// The path of GVfs's FUSE bridge: `/run/user/<numeric user ID>/gvfs`.

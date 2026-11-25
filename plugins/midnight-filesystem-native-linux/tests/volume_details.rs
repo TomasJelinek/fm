@@ -69,6 +69,58 @@ fn native_volume_details_accept_raw_and_long_directory_identities() {
         ));
     }
 }
+/// The drive list through the provider's request: every drive named for the drive
+/// toolbar, never by its mount path, with its whole root kept as its address. Without
+/// extra mounts (a plain container) only `/` is checked; tmpfs mounts such as
+/// `/mnt/USB` and `/media/alice/USB` show `mnt/USB` and `alice/USB`.
+#[test]
+fn listed_volumes_show_names_of_their_own_and_keep_whole_roots() {
+    let client = Client::new();
+    let Response::Volumes(volumes) = client.call(Request::Volumes) else {
+        panic!("Missing native volume list")
+    };
+    let root = volumes
+        .iter()
+        .find(|volume| volume.root.bytes == b"/")
+        .expect("the root is always listed");
+    assert_eq!((root.id.as_str(), root.display.as_str()), ("mount:2f", "/"));
+    let mut names = std::collections::HashSet::new();
+    for volume in &volumes {
+        let path = String::from_utf8_lossy(&volume.root.bytes);
+        assert!(
+            names.insert(volume.display.as_str()),
+            "two drives show {:?}",
+            volume.display
+        );
+        assert!(
+            volume.root.bytes == b"/" || !volume.display.starts_with('/'),
+            "{path} shows {:?}, not a name of its own",
+            volume.display
+        );
+        assert_eq!(
+            volume.id,
+            format!(
+                "mount:{}",
+                volume
+                    .root
+                    .bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ),
+            "{path}"
+        );
+    }
+    for (path, name) in [("/mnt/USB", "mnt/USB"), ("/media/alice/USB", "alice/USB")] {
+        if let Some(volume) = volumes
+            .iter()
+            .find(|volume| volume.root.bytes == path.as_bytes())
+        {
+            assert_eq!(volume.display, name);
+        }
+    }
+}
+
 fn raw_name() -> std::ffi::OsString {
     use std::os::unix::ffi::OsStringExt;
     std::ffi::OsString::from_vec(b"raw_\xff".to_vec())

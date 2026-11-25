@@ -204,6 +204,12 @@ export component CompactPicker inherits Rectangle {
         return root.choices.length > 0 ? root.choices[index].tooltip
             : root.row-label(index) + (root.row-shortcut(index) == "" ? "" : " (" + root.row-shortcut(index) + ")");
     }
+    // What a choice's tooltip adds to its label (a drive's whole path), for the keyboard
+    // and screen readers: a tooltip follows only the pointer.
+    pure function row-description(index: int) -> string {
+        if index < 0 || index >= root.choices.length { return ""; }
+        return root.choices[index].tooltip == root.choices[index].label ? "" : root.choices[index].tooltip;
+    }
     pure function row-icon(index: int) -> image {
         return root.choices.length > 0 ? root.choices[index].icon : root.icons[index];
     }
@@ -423,6 +429,7 @@ export component CompactPicker inherits Rectangle {
                             ? Theme.hover : transparent;
                         accessible-role: button;
                         accessible-label: root.row-label(index);
+                        accessible-description: root.row-description(index);
                         accessible-enabled: root.row-enabled(index);
                         accessible-action-default => { root.commit(index); }
                         // Hidden instead of conditional: an `if` is one more generated component.

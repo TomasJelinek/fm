@@ -108,9 +108,15 @@ fn label_order(
     right: &str,
     right_key: Option<&[u8]>,
 ) -> std::cmp::Ordering {
-    // Named labels precede raw mount-path labels within their section.
-    left.starts_with('/')
-        .cmp(&right.starts_with('/'))
+    // The filesystem root `/` leads its section (Linux names every other drive), and
+    // named labels precede raw mount-path labels.
+    let rank = |label: &str| match label {
+        "/" => 0,
+        label if label.starts_with('/') => 2,
+        _ => 1,
+    };
+    rank(left)
+        .cmp(&rank(right))
         .then_with(|| {
             compare_collated_text(
                 left_key,

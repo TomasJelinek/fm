@@ -662,8 +662,9 @@ them to stable saved IDs.
 Archive preset filenames use a yellow base, with existing contrast derivation for
 every theme and selection state. Only an exact previous preset migrates; custom
 or reordered color rules are retained. Find places Whole words beside Containing
-text. Native mount-path labels sort after named volumes within their section;
-paths themselves are never rewritten by sorting.
+text. The filesystem root `/` leads the drives; other native mount-path labels sort
+after named volumes within their section; paths themselves are never rewritten by
+sorting.
 
 Ctrl+Shift+P appends the focused native item's full path to the command draft,
 without quoting or added spacing. Virtual providers never expose backing temp

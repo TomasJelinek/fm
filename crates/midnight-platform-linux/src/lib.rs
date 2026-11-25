@@ -23,6 +23,7 @@ mod user_commands;
 pub use clipboard::NativeClipboard;
 #[cfg(test)]
 mod discovery_tests;
+mod drive_names;
 mod find;
 mod fonts;
 mod icon_picker;
@@ -49,7 +50,6 @@ mod test_support;
 mod transfer;
 mod volume_information;
 mod watch;
-use mounts::mount_paths;
 
 /// Native linux volume discovery combined with safe portable directory operations.
 pub struct LinuxFileSystem {
@@ -141,28 +141,11 @@ pub fn home_directory() -> Option<PathBuf> {
 }
 
 fn platform_volumes() -> Result<Vec<Volume>, FsError> {
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let mountinfo = Path::new("/proc/self/mountinfo");
     let input = fs::read(mountinfo)
         .map_err(|error| FsError::from_io("read mountinfo", mountinfo, error))?;
-    let mut roots = mount_paths(&input);
-    if !roots.iter().any(|root| root == b"/") {
-        roots.insert(0, b"/".to_vec());
-    }
-    Ok(roots
-        .into_iter()
-        .map(|bytes| {
-            // Hex identity avoids collisions between distinct non-UTF-8 mount paths.
-            let id = format!(
-                "mount:{}",
-                bytes
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
-            let root = PathBuf::from(OsString::from_vec(bytes));
-            let label = root.display().to_string();
-            Volume { id, label, root }
-        })
-        .collect())
+    Ok(mounts::volumes(
+        &input,
+        &mut volume_information::device_label,
+    ))
 }
