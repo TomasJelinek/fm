@@ -852,8 +852,8 @@ Recursive Move evidence: [recursive Move record](../verification/2026-11-08-recu
 ## Required modified time
 
 Requests and constructors default to `ContentOnly`. An explicit
-`Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` selects
-`TransferMetadataPolicy::RequireModifiedTime` for native paths, captured panel
+`Command::EnqueueTransferWithMetadata(Box<MetadataTransferRequest>)` whose `metadata` is
+`TransferMetadataPolicy::RequireModifiedTime` selects it for native paths, captured panel
 selection or shared clipboard input, with an explicit Copy/Move intent. The dialog no
 longer offers it: its option is the unbounded, best-effort
 [preserved times and attributes](#preserved-times-and-attributes).

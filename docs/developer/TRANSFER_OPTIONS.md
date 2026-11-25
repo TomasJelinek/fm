@@ -23,7 +23,8 @@ or `ArchiveCopyRequest::metadata`). The backend carries it as the job's frozen
 bound and no preflight, so a selection of up to 1,000,000 items streams as without it
 ([selection sizes](TRANSFERS.md#selection-sizes)). What it preserves, in which order and
 with which limits is in [preserved times and attributes](TRANSFERS.md#preserved-times-and-attributes).
-Paste and drag and drop, which have no dialog, copy content only.
+Pasting copied files and drag and drop, which have no dialog, copy content only;
+pasting cut files opens the Move dialog, which offers the option.
 
 The option starts checked unless Options saves a different starting choice. Clearing
 it in one dialog copies that job without preserving times and attributes.
