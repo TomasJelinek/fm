@@ -161,8 +161,8 @@ there.
 - **Curve:** cubic-bezier(0.42, 1, 0.58, 1), Chromium's time axis without its ease-in. A
   glide leaves at once at 1/0.42 (about 2.4) times its average speed, so a 100 px notch
   moves 19 px on its first 60 Hz frame, and eases out to rest; half the time covers seven
-  eighths of the way. Chromium's cubic-bezier(0.42, 0, 0.58, 1) moved under 1 px of it on
-  the first frame and half of it only after half the glide, so every notch from rest and
+  eighths of the way. Chromium's cubic-bezier(0.42, 0, 0.58, 1) moved about 1.4 px (about 1 %) of
+  it on the first frame and half of it only after half the glide, so every notch from rest and
   the start of every spin trailed Off by most of a glide (a deliberate difference).
 - **Duration:** 200 ms for a glide of up to 120 px, falling linearly to 100 ms at 480 px
   and beyond: a single notch at the defaults glides for 200 ms.
@@ -667,8 +667,9 @@ bounce back into the document. Old replies cannot pull a newer gesture backward.
 
 Absolute camera requests coalesce without crossing selection or context changes.
 The frontend prefetches ahead, pauses at actual retained coverage, and preserves
-remaining displacement. Discrete-wheel motion resumes in small steps after a
-late refill; precise touchpad deltas accumulate without another inertia curve.
+remaining displacement. Discrete-wheel motion resumes after a late refill as a
+fresh glide of the remaining distance whose first frame counts at most one 60 Hz
+frame (`restart_remaining`); precise touchpad deltas accumulate without another inertia curve.
 An interruption requests an exact final repaint outside callback borrows.
 Selection carries the displayed pixel identity and camera, and only the current
 layout can interpret it. Ordinary overlapping page refills preserve bounded
