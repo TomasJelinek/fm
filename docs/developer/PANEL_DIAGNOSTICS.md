@@ -132,10 +132,13 @@ read of it:
   Network navigations clear the pane's target.
 - **Requests.** `Command::RefreshSpace { pane, navigation }` asks for another read of
   the current navigation; one for any other navigation is ignored. The presenter
-  sends it for both panes when the window gains the focus, for the pane of a tree
-  refresh, and for each panel whose folder is on the volume of a Copy or Move
-  destination, a Move's source folders or a Delete's folder, with every progress
-  event from Running on and with the terminal one. The volume is matched by text:
+  sends it for both panes when the window gains the focus; for each panel whose
+  folder is on the volume of a folder whose watch reported a change (a flat watch
+  hint's re-read or a tree refresh; `Presenter::folder_changed_space`), so that
+  another program's deletion also shows in the other panel on that volume; and for
+  each panel whose folder is on the volume of a Copy or Move destination, a Move's
+  source folders or a Delete's folder, with every progress event from Running on
+  and with the terminal one. The volume is matched by text:
   the longest listed volume root that contains the path (the Home location is a
   folder, not a volume), else its drive, UNC share or root. A link or mount the list
   does not name can hide another volume; a fixed disk's periodic read, the next
@@ -148,10 +151,22 @@ read of it:
   `LocalSsd` or `Rotational` (an internal SATA, ATA or NVMe disk) is read every 5
   seconds. `Local` (USB disks, card readers, virtual disks), `Network` and `Unknown`
   storage is never read periodically.
+- **Following a request.** While the window is visible, a request keeps a pane on a
+  local disk (`LocalSsd`, `Rotational` or `Local`) followed for four seconds: its free
+  space is read again 0.2, 0.6, 1.4 and 3 seconds after the request (each gap twice
+  the previous one). A filesystem can report the space a deletion frees only after
+  the deletion returned: on ext4 (Linux), `statvfs` right after `unlink` of a large
+  file can still report the old value, and reports the freed space about 50 ms per
+  GiB later, longer while the disk is busy. The read that a Delete's completion or a
+  watch hint's re-read makes at once can therefore miss it; the following reads show
+  it. A later request starts the sequence again, so a folder whose watch hints keep
+  coming costs a few reads a second.
 - **Cost bounds.** Each pane has at most one read in flight. Requests that arrive
-  meanwhile, or sooner than a second after the pane's previous read ended, leave one
-  read owed, which starts once that second has passed, so the last change is always
-  read and a slow share is never read back to back. Reads run on the blocking pool
+  meanwhile, or sooner than the pane's spacing after its previous read ended (a fifth
+  of a second on a local disk, whose free space the kernel answers from its counters
+  in microseconds; a second on network and unclassified storage), leave one read
+  owed, which starts once that spacing has passed, so the last change is always read
+  and a slow share is never read back to back. Reads run on the blocking pool
   under the engine's auxiliary budget (two permits), never on the command loop or
   the UI thread; a newer navigation aborts the waiting part of an older read, whose
   native call keeps its permit until it returns. Inputs are a watch slot, so no

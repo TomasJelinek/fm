@@ -417,6 +417,16 @@ fn timing(poll: Duration) -> Timing {
     }
 }
 
+/// Like `timing`, with a settling time that a writer firing every few
+/// milliseconds never reaches by accident on a busy machine.
+fn settling(poll: Duration) -> Timing {
+    Timing {
+        quiet: Duration::from_millis(60),
+        maximum: Duration::from_millis(120),
+        ..timing(poll)
+    }
+}
+
 fn controller(
     files: Arc<Files>,
     native: Option<Arc<Native>>,
@@ -545,15 +555,12 @@ async fn a_folder_that_keeps_changing_is_hinted_at_most_once_per_cooldown() {
     let files = Arc::new(Files::default());
     let native = Arc::new(Native::default());
     let cooldown = Duration::from_millis(300);
-    let (_owner, controller, mut tasks, mut events) = controller_with(
-        files.clone(),
-        Some(native.clone()),
-        Timing {
-            cooldown,
-            ..timing(Duration::from_secs(60))
-        },
-        8,
-    );
+    let timing = Timing {
+        cooldown,
+        ..settling(Duration::from_secs(60))
+    };
+    let (_owner, controller, mut tasks, mut events) =
+        controller_with(files.clone(), Some(native.clone()), timing, 8);
     controller.set_visible(files.visible(PaneId::Left, 4, "left"));
     native.registrations(1).await;
     // An isolated change is hinted once its burst settled.
@@ -567,12 +574,14 @@ async fn a_folder_that_keeps_changing_is_hinted_at_most_once_per_cooldown() {
         tokio::spawn(async move {
             let end = Instant::now() + Duration::from_millis(1_200);
             let mut last = Instant::now();
+            let mut pause = Duration::ZERO;
             while Instant::now() < end {
+                pause = pause.max(last.elapsed());
                 last = Instant::now();
                 native.fire(0);
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            last
+            (last, pause)
         })
     };
     let mut hinted = vec![Instant::now()];
@@ -589,12 +598,37 @@ async fn a_folder_that_keeps_changing_is_hinted_at_most_once_per_cooldown() {
             hinted.push(Instant::now());
         }
     }
-    let last_change = writer.await.unwrap();
+    let (last_change, pause) = writer.await.unwrap();
     assert!(
         *hinted.last().unwrap() > last_change,
         "the last changes must still be hinted"
     );
-    for pair in hinted.windows(2).skip(1) {
+    // The hint of the last changes comes as soon as they settled, which can be
+    // sooner than a cooldown after the previous one.
+    let hinted_while_changing: Vec<_> = hinted
+        .iter()
+        .copied()
+        .filter(|hint| *hint <= last_change)
+        .collect();
+    assert_spaced(&hinted_while_changing[1..], cooldown, pause, timing.quiet);
+    assert!(
+        (3..=7).contains(&hinted.len()),
+        "{} hints in 1.2 s",
+        hinted.len()
+    );
+    stop(&controller, &mut tasks).await;
+}
+
+/// Asserts that consecutive `hints` came at least `cooldown` apart, as hints of a
+/// folder that keeps changing must. A writer that the machine stalled for
+/// `quiet` (`pause`) made a quiet moment, after which a hint is due at once, so
+/// the spacing is then not checked.
+fn assert_spaced(hints: &[Instant], cooldown: Duration, pause: Duration, quiet: Duration) {
+    if pause >= quiet {
+        eprintln!("the writer paused for {pause:?}: hint spacing not checked");
+        return;
+    }
+    for pair in hints.windows(2) {
         // Wakes are not exact: allow a few milliseconds early.
         assert!(
             pair[1] - pair[0] >= cooldown - Duration::from_millis(10),
@@ -602,11 +636,95 @@ async fn a_folder_that_keeps_changing_is_hinted_at_most_once_per_cooldown() {
             pair[1] - pair[0]
         );
     }
-    assert!(
-        (3..=7).contains(&hinted.len()),
-        "{} hints in 1.2 s",
-        hinted.len()
+}
+
+/// Someone removes a file a moment after another change of the folder: the
+/// second change is hinted as soon as it settles, not a cooldown after the
+/// first hint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_after_a_quiet_moment_is_hinted_once_it_settles_despite_the_cooldown() {
+    let files = Arc::new(Files::default());
+    let native = Arc::new(Native::default());
+    let cooldown = Duration::from_secs(1);
+    let (_owner, controller, mut tasks, mut events) = controller_with(
+        files.clone(),
+        Some(native.clone()),
+        Timing {
+            cooldown,
+            ..settling(Duration::from_secs(60))
+        },
+        8,
     );
+    controller.set_visible(files.visible(PaneId::Left, 4, "left"));
+    native.registrations(1).await;
+    native.fire(0);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(4)));
+    // Quiet for longer than a burst's settling time, well within the cooldown.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let start = Instant::now();
+    native.fire(0);
+    assert_eq!(changed(&mut events).await, (PaneId::Left, NavigationId(4)));
+    let waited = start.elapsed();
+    assert!(waited < cooldown / 2, "hinted {waited:?} after the change");
+    stop(&controller, &mut tasks).await;
+}
+
+/// A folder that keeps changing (a long deletion by another program) is hinted
+/// at most once per cooldown while it changes, but its last changes are hinted
+/// as soon as they settle, not a cooldown after the previous hint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_last_changes_of_a_folder_that_kept_changing_are_hinted_once_they_settle() {
+    let files = Arc::new(Files::default());
+    let native = Arc::new(Native::default());
+    let cooldown = Duration::from_secs(1);
+    let timing = Timing {
+        cooldown,
+        ..settling(Duration::from_secs(60))
+    };
+    let (_owner, controller, mut tasks, mut events) =
+        controller_with(files.clone(), Some(native.clone()), timing, 8);
+    controller.set_visible(files.visible(PaneId::Left, 4, "left"));
+    native.registrations(1).await;
+    let writer = {
+        let native = native.clone();
+        std::thread::spawn(move || {
+            let end = Instant::now() + Duration::from_millis(1_300);
+            let mut last = Instant::now();
+            let mut pause = Duration::ZERO;
+            while Instant::now() < end {
+                pause = pause.max(last.elapsed());
+                last = Instant::now();
+                native.fire(0);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            (last, pause)
+        })
+    };
+    let mut hinted = Vec::new();
+    let end = Instant::now() + Duration::from_millis(2_600);
+    while let Ok(Some(event)) =
+        tokio::time::timeout(end.saturating_duration_since(Instant::now()), events.recv()).await
+    {
+        assert!(matches!(event, Event::DirectoryChanged { .. }), "{event:?}");
+        hinted.push(Instant::now());
+    }
+    let (last_change, pause) = tokio::task::spawn_blocking(move || writer.join().unwrap())
+        .await
+        .unwrap();
+    let last_hint = *hinted.last().expect("the changes were hinted");
+    assert!(last_hint > last_change, "the last changes must be hinted");
+    assert!(
+        last_hint - last_change < Duration::from_millis(300),
+        "hinted {:?} after the last change",
+        last_hint - last_change
+    );
+    // While the changes went on, hints were a cooldown apart.
+    let hinted_while_changing: Vec<_> = hinted
+        .iter()
+        .copied()
+        .filter(|hint| *hint < last_change)
+        .collect();
+    assert_spaced(&hinted_while_changing, cooldown, pause, timing.quiet);
     stop(&controller, &mut tasks).await;
 }
 

@@ -91,7 +91,7 @@ impl Presenter {
             return false;
         }
         self.flush_selection(send);
-        self.tree_changed_space(pane, send);
+        self.folder_changed_space(pane, send);
         true
     }
 

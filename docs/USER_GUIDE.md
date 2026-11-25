@@ -1506,7 +1506,9 @@ Each pane remembers its last visited directory for each volume during this run.
 Visible directories are watched on the backend. Changes are batched after
 150 ms of quiet, with a 500 ms cap during continuous activity, and a flat folder
 that keeps changing is listed again at most once a second (less often when its
-listing takes longer). A 15-second check
+listing takes longer); a change after a quiet moment, and the last changes of a
+busy folder, are listed as soon as they settle. A watched change also reads the
+free space again of each panel on the same volume. A 15-second check
 re-lists each watched directory (in tree mode every eligible loaded branch) to
 catch missing native/network notifications. It compares the same enumeration
 metadata the listing shows and reads metadata separately only for entries whose

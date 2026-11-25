@@ -60,6 +60,7 @@ mod copy_errors;
 mod delete_confirmation;
 mod delete_dialog_polish;
 mod delete_job_resolve;
+mod delete_latency_native;
 mod detail_font;
 mod dialog_drag;
 mod dialog_focus_return;

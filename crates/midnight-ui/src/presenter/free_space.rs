@@ -1,9 +1,11 @@
 //! When the panels' free space is read again (`Command::RefreshSpace`). A listing
 //! reads it with each navigation and re-read; besides, a job that writes to or
-//! removes from a panel's volume asks for it while it runs and once it ends, and so
-//! do a tree refresh and the main window gaining the focus. The backend coalesces and
-//! throttles the reads, and reads a fixed local disk periodically while the window is
-//! visible (`Command::SetWindowVisible`).
+//! removes from a panel's volume asks for it while it runs and once it ends, a watch
+//! hint or a tree refresh asks for every panel on the changed folder's volume, and
+//! the main window gaining the focus asks for both. The backend coalesces and
+//! throttles the reads, follows a local disk for a moment after each request, and
+//! reads a fixed local disk periodically while the window is visible
+//! (`Command::SetWindowVisible`).
 use super::*;
 
 pub(crate) struct State {
@@ -84,8 +86,21 @@ impl Presenter {
         }
     }
 
-    /// A tree refresh may follow changes anywhere below the tree's root.
-    pub(super) fn tree_changed_space(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+    /// `pane`'s folder is read again because it may have changed: a flat re-read
+    /// (`refresh_if_changed`, mostly for a watch hint) or a tree refresh, which may
+    /// follow changes anywhere below the tree's root, is under way. Another program
+    /// may have written to or removed from its volume, so every panel on that volume
+    /// reads its free space again: the others at once, `pane` once its re-read
+    /// commits, because that re-read's own read can precede the filesystem's release
+    /// of a deleted file's space.
+    pub(super) fn folder_changed_space(&mut self, pane: PaneId, send: &dyn Fn(Command) -> bool) {
+        let path = self.panes[pane.index()].path.clone();
+        job_changed(
+            &mut self.space_refresh,
+            &self.volumes,
+            &self.panes,
+            [path.as_path()],
+        );
         self.space_refresh.owed[pane.index()] = true;
         self.flush_space_refreshes(send);
     }

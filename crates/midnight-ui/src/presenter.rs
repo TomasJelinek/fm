@@ -463,7 +463,9 @@ impl Presenter {
     /// The re-read keeps location-scoped state (computed folder sizes, the Panel
     /// Filter dialog, the viewport). It waits while a drag from this pane or a
     /// directory comparison still needs the committed rows, or while the bounded
-    /// sender is full; `flush_selection` retries the retained hint.
+    /// sender is full; `flush_selection` retries the retained hint. Once it is sent,
+    /// every panel on the folder's volume reads its free space again
+    /// (`folder_changed_space`).
     pub fn refresh_if_changed(
         &mut self,
         pane: PaneId,
@@ -489,6 +491,7 @@ impl Presenter {
             self.panes[pane.index()].refresh_hint = true;
             return false;
         }
+        self.folder_changed_space(pane, send);
         true
     }
 

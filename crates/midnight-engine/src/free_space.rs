@@ -3,12 +3,15 @@
 //! periodically for a fixed local disk.
 //!
 //! One worker serves both panes. Each pane has at most one read in flight; requests
-//! that arrive meanwhile, or sooner than `Timing::throttle` after the last read
-//! ended, leave one read owed, which starts once that time has passed, so the last
-//! change is always read. A read answers only its own navigation, whose cancellation
-//! drops it, as the read that accompanies a listing always did. Native reads share
-//! the engine's auxiliary budget and run on the blocking pool, never on the command
-//! loop; inputs are a watch slot, so no request queue can grow.
+//! that arrive meanwhile, or sooner than the pane's spacing after the last read ended
+//! (`Timing::local_throttle` on a local disk, `Timing::throttle` on other storage),
+//! leave one read owed, which starts once that time has passed, so the last change is
+//! always read. While the window is visible, a request also keeps a local disk
+//! followed for `Timing::follow`: a filesystem can report the space a deletion frees
+//! only after the deletion returned. A read answers only its own navigation, whose
+//! cancellation drops it, as the read that accompanies a listing always did. Native
+//! reads share the engine's auxiliary budget and run on the blocking pool, never on
+//! the command loop; inputs are a watch slot, so no request queue can grow.
 
 use crate::{Outbox, task_lifetime::TaskLifetime};
 use midnight_core::{
@@ -24,18 +27,36 @@ use tokio::{
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Timing {
     /// The least time from the end of one read of a pane's free space to the start
-    /// of its next requested one.
+    /// of its next requested one, on storage that is not a local disk (a share may
+    /// answer slowly) or that is not classified yet.
     pub(crate) throttle: Duration,
+    /// The same on a local disk (`StorageKind::LocalSsd`, `Rotational` or `Local`),
+    /// whose free space the kernel answers from its counters at once.
+    pub(crate) local_throttle: Duration,
+    /// How long a request keeps a local disk followed while the window is visible:
+    /// its free space is read again `local_throttle` after the request, then after
+    /// twice the previous gap each time, until then.
+    pub(crate) follow: Duration,
     /// How often a fixed local disk's free space is read while the window is visible.
     pub(crate) periodic: Duration,
 }
 
 /// A second between reads keeps a share answering slowly from being read back to
-/// back while a job writes to it. Five seconds shows another program's writes to a
-/// fixed local disk promptly; such a read takes microseconds and sends nothing when
-/// the value did not change (see the free-space notes in the panel diagnostics).
+/// back while a job writes to it. A local disk answers in microseconds: a fifth of a
+/// second keeps its free space with a job's progress, about as often as the job
+/// reports it, and answers the terminal request of a Delete at once although its
+/// Running progress asked moments before. ext4 reports the space of a deleted large
+/// file only after the deletion returned (tens of milliseconds per GiB later, longer
+/// while the disk is busy): the reads 0.2, 0.6, 1.4 and 3 seconds after a request
+/// show that release without waiting for the periodic read, and a folder whose
+/// watch hints keep coming (each asks again) costs a few reads a second. Five
+/// seconds shows another program's writes to a fixed local disk promptly. A read
+/// sends nothing when the value did not change (see the free-space notes in the
+/// panel diagnostics).
 pub(crate) const PRODUCTION_TIMING: Timing = Timing {
     throttle: Duration::from_secs(1),
+    local_throttle: Duration::from_millis(200),
+    follow: Duration::from_secs(4),
     periodic: Duration::from_secs(5),
 };
 
@@ -159,7 +180,7 @@ struct Pane {
     refreshes: u64,
     /// The first read of `target` has not started.
     first: bool,
-    /// A requested read waits for the running one or for the throttle.
+    /// A requested read waits for the running one or for the pane's spacing.
     owed: bool,
     /// The running read of `target`; an older target's read is aborted.
     reading: Option<AbortHandle>,
@@ -168,10 +189,13 @@ struct Pane {
     kind: Option<StorageKind>,
     /// The value last sent for `target`; an equal one is not sent again.
     sent: Option<SpaceInfo>,
+    /// When the latest request for `target` arrived; a local disk is followed for
+    /// `Timing::follow` after it.
+    requested: Option<Instant>,
 }
 
 impl Pane {
-    fn update(&mut self, input: &PaneInput) {
+    fn update(&mut self, input: &PaneInput, now: Instant) {
         let same = match (&self.target, &input.target) {
             (Some(old), Some(new)) => old.navigation == new.navigation,
             (None, None) => true,
@@ -190,7 +214,10 @@ impl Pane {
             };
         } else if self.refreshes != input.refreshes {
             self.refreshes = input.refreshes;
-            self.owed = self.target.is_some();
+            if self.target.is_some() {
+                self.owed = true;
+                self.requested = Some(now);
+            }
         }
     }
 
@@ -204,6 +231,44 @@ impl Pane {
             )
     }
 
+    /// A disk of this machine (also a removable or a virtual machine's one): the
+    /// kernel answers its free space from its counters at once.
+    fn local(&self) -> bool {
+        matches!(
+            self.kind,
+            Some(StorageKind::LocalSsd | StorageKind::Rotational | StorageKind::Local)
+        )
+    }
+
+    /// The least time from the end of one read to the start of the next.
+    fn spacing(&self, timing: Timing) -> Duration {
+        if self.local() {
+            timing.local_throttle
+        } else {
+            timing.throttle
+        }
+    }
+
+    /// When a local disk is read again after the latest request, while the window is
+    /// visible and the request is not `Timing::follow` old: `local_throttle` after
+    /// the request, then after twice the previous gap each time. A follow-up that
+    /// the last read already came after is done.
+    fn follow_up(&self, now: Instant, visible: bool, timing: Timing) -> Option<Instant> {
+        let requested = self.requested.filter(|_| visible && self.local())?;
+        let end = requested + timing.follow;
+        let last = self.last?;
+        if now >= end || timing.local_throttle.is_zero() {
+            return None;
+        }
+        let mut gap = timing.local_throttle;
+        let mut at = requested + gap;
+        while at <= last {
+            gap *= 2;
+            at += gap;
+        }
+        (at < end).then_some(at)
+    }
+
     fn due(&mut self, now: Instant, visible: bool, timing: Timing) -> Option<Read> {
         let target = self.target.as_ref()?;
         if self.reading.is_some() || target.cancel.is_cancelled() {
@@ -213,23 +278,30 @@ impl Pane {
             return Some(Read::First);
         }
         let last = self.last?;
-        if !self.owed && self.periodic(visible) && now >= last + timing.periodic {
+        let follow_up = self
+            .follow_up(now, visible, timing)
+            .is_some_and(|at| now >= at);
+        let periodic = self.periodic(visible) && now >= last + timing.periodic;
+        if !self.owed && (follow_up || periodic) {
             self.owed = true;
         }
-        (self.owed && now >= last + timing.throttle).then_some(Read::Again)
+        (self.owed && now >= last + self.spacing(timing)).then_some(Read::Again)
     }
 
-    fn deadline(&self, visible: bool, timing: Timing) -> Option<Instant> {
+    fn deadline(&self, now: Instant, visible: bool, timing: Timing) -> Option<Instant> {
         let target = self.target.as_ref()?;
         if self.reading.is_some() || target.cancel.is_cancelled() {
             return None;
         }
         let last = self.last?;
         if self.owed {
-            Some(last + timing.throttle)
-        } else {
-            self.periodic(visible).then(|| last + timing.periodic)
+            return Some(last + self.spacing(timing));
         }
+        let periodic = self.periodic(visible).then(|| last + timing.periodic);
+        [self.follow_up(now, visible, timing), periodic]
+            .into_iter()
+            .flatten()
+            .min()
     }
 }
 
@@ -266,7 +338,7 @@ impl Worker {
             }
             let deadline = panes
                 .iter()
-                .filter_map(|pane| pane.deadline(visible, self.timing))
+                .filter_map(|pane| pane.deadline(now, visible, self.timing))
                 .min();
             tokio::select! {
                 changed = input.changed() => {
@@ -275,8 +347,9 @@ impl Worker {
                     }
                     let input = input.borrow_and_update();
                     visible = input.visible;
+                    let now = Instant::now();
                     for (pane, input) in panes.iter_mut().zip(&input.panes) {
-                        pane.update(input);
+                        pane.update(input, now);
                     }
                 }
                 done = reads.join_next(), if !reads.is_empty() => {

@@ -89,11 +89,13 @@ struct Timing {
     /// changes meanwhile.
     report: Duration,
     /// The least time between two hints of a flat target whose folder keeps
-    /// changing; twice its last check when that took longer, up to four
-    /// times this.
+    /// changing, without `quiet` between its changes; twice its last check
+    /// when that took longer, up to four times this.
     /// Each hint makes the UI list the folder again; a folder a build keeps
     /// writing is then listed at a steady rate, not again as soon as the
-    /// previous listing commits. Zero disables the limit.
+    /// previous listing commits. Changes that settled are hinted at once: a
+    /// change after a quiet moment, and the last changes of a busy folder (see
+    /// `hint_deadline`). Zero disables the limit.
     cooldown: Duration,
     /// The least time between two restarts of a pane's worker; the first
     /// restart after a panic is immediate.
@@ -101,11 +103,12 @@ struct Timing {
 }
 
 /// Bursts settle after 150 ms of quiet, at most 500 ms after their first event;
-/// a folder that keeps changing is hinted at most once a second; polling
-/// catches missed notifications every 15 s. A folder without notifications is
-/// checked about every second while its registration is retried after 1, 2,
-/// 4, 8 and then every 15 s; only a minute of failures is reported. A worker
-/// restarts at most once a minute after its first restart.
+/// a folder that keeps changing is hinted at most once a second, and its last
+/// changes as soon as they settle; polling catches missed notifications every
+/// 15 s. A folder without notifications is checked about every second while its
+/// registration is retried after 1, 2, 4, 8 and then every 15 s; only a minute
+/// of failures is reported. A worker restarts at most once a minute after its
+/// first restart.
 const PRODUCTION_TIMING: Timing = Timing {
     quiet: Duration::from_millis(150),
     maximum: Duration::from_millis(500),
@@ -560,6 +563,35 @@ impl Debouncer {
     }
 }
 
+/// When a flat target's pending burst (`debounce`) may be hinted, given the
+/// previous hint (`hinted`) and the duration of its last check (`probe_cost`).
+///
+/// A burst that settled (no change for `Timing::quiet`) is hinted at once: a
+/// change after a quiet moment however soon it follows the previous hint, and
+/// the last changes of a folder that kept changing. A burst that goes on is
+/// hinted once it lasted `Timing::maximum`, and no sooner than the cooldown
+/// after the previous hint (twice the last check, at least `Timing::cooldown`,
+/// at most four times it): a folder that keeps changing is listed at a steady
+/// rate. The last check's duration does not delay a settled burst: a check made
+/// while the disk was busy can take seconds in a small folder, and a large
+/// folder is not listed back to back anyway, because no hint is sent while a
+/// listing of the folder is pending and a check follows the listings that
+/// changes outran (see `serve`).
+fn hint_deadline(
+    debounce: &Debouncer,
+    hinted: Option<Instant>,
+    probe_cost: Duration,
+    timing: Timing,
+) -> Option<Instant> {
+    let settled = debounce.last? + timing.quiet;
+    let lasted = debounce.first? + timing.maximum;
+    let Some(hinted) = hinted.filter(|_| !timing.cooldown.is_zero()) else {
+        return Some(settled.min(lasted));
+    };
+    let cooldown = (probe_cost * 2).clamp(timing.cooldown, timing.cooldown * 4);
+    Some(settled.min(lasted.max(hinted + cooldown)))
+}
+
 struct Target {
     revision: u64,
     pane: PaneId,
@@ -659,19 +691,9 @@ impl Target {
         status
     }
 
-    /// When the pending burst may be hinted: once it settled, and no sooner
-    /// than the cooldown after the previous hint.
+    /// When the pending burst may be hinted (see `hint_deadline`).
     fn hint_deadline(&self, timing: Timing) -> Option<Instant> {
-        let settled = self.debounce.deadline(timing.quiet, timing.maximum)?;
-        let cooldown = if timing.cooldown.is_zero() {
-            Duration::ZERO
-        } else {
-            (self.probe_cost * 2).clamp(timing.cooldown, timing.cooldown * 4)
-        };
-        Some(
-            self.hinted_at
-                .map_or(settled, |hinted| settled.max(hinted + cooldown)),
-        )
+        hint_deadline(&self.debounce, self.hinted_at, self.probe_cost, timing)
     }
 
     /// A refresh/resort of the same directory keeps its change counter: the

@@ -40,6 +40,25 @@ fn two_volumes() -> (Presenter, PathBuf, PathBuf) {
     (p, c, d)
 }
 
+/// Both panels show folders of volume C.
+fn one_volume() -> Presenter {
+    let c = test_root().join("volume-c");
+    let mut p = Presenter::new(c.join("left"), c.join("right"));
+    p.apply(Event::VolumesUpdated(vec![Volume {
+        id: "c".into(),
+        label: "C:".into(),
+        root: c.clone(),
+    }]));
+    for (pane, path) in [
+        (PaneId::Left, c.join("left")),
+        (PaneId::Right, c.join("right")),
+    ] {
+        let navigation = begin(&mut p, pane, path.to_str().unwrap());
+        finish(&mut p, pane, navigation, vec![]);
+    }
+    p
+}
+
 /// The panes, with their navigations, whose free space `event` asks the backend
 /// to read again.
 fn requested_for(p: &mut Presenter, event: Event) -> Vec<(PaneId, NavigationId)> {
@@ -132,6 +151,59 @@ fn a_delete_asks_for_the_free_space_of_the_panels_on_its_volume() {
             Event::Operation(OperationEvent::Progress(Arc::new(progress)))
         ),
         [right]
+    );
+}
+
+/// The panes, with their navigations, whose free space a watch hint for `pane`
+/// asks the backend to read again at once.
+fn requested_by_hint(p: &mut Presenter, pane: PaneId) -> Vec<(PaneId, NavigationId)> {
+    let navigation = p.panes[pane.index()].successful_generation.unwrap();
+    let sent = RefCell::new(Vec::new());
+    assert!(p.refresh_if_changed(pane, navigation, &|command| {
+        if let Command::RefreshSpace { pane, navigation } = command {
+            sent.borrow_mut().push((pane, navigation));
+        }
+        true
+    }));
+    sent.into_inner()
+}
+
+/// Commits `pane`'s pending re-read; returns the free-space reads that asks for.
+fn commit_reread(p: &mut Presenter, pane: PaneId) -> Vec<(PaneId, NavigationId)> {
+    let reread = NavigationId(p.panes[pane.index()].generation);
+    requested_for(
+        p,
+        Event::ListingFinished {
+            pane,
+            navigation: reread,
+            entries: Vec::new().into(),
+            index: Arc::new(DirectoryIndex::from_entries(&[])),
+        },
+    )
+}
+
+#[test]
+fn a_watched_change_asks_for_the_free_space_of_every_panel_on_its_volume() {
+    // Another program removed a file of the left folder. The right panel, on the
+    // same volume, reads its free space at once; the left one once its re-read
+    // committed, because the re-read's own read can precede the filesystem's
+    // release of the space.
+    let mut p = one_volume();
+    let right = shown(&p, PaneId::Right);
+    assert_eq!(requested_by_hint(&mut p, PaneId::Left), [right]);
+    let reread = NavigationId(p.panes[0].generation);
+    assert_eq!(
+        commit_reread(&mut p, PaneId::Left),
+        [(PaneId::Left, reread)]
+    );
+
+    // A panel on another volume is not asked.
+    let (mut p, _, _) = two_volumes();
+    assert!(requested_by_hint(&mut p, PaneId::Left).is_empty());
+    let reread = NavigationId(p.panes[0].generation);
+    assert_eq!(
+        commit_reread(&mut p, PaneId::Left),
+        [(PaneId::Left, reread)]
     );
 }
 

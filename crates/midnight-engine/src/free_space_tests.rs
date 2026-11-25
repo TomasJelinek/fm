@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 
 const TIMING: Timing = Timing {
     throttle: Duration::from_secs(1),
+    local_throttle: Duration::from_millis(100),
+    follow: Duration::from_millis(1_500),
     periodic: Duration::from_secs(5),
 };
 
@@ -97,6 +99,10 @@ struct Harness {
 
 impl Harness {
     fn new(kind: StorageKind) -> Self {
+        Self::with_timing(kind, TIMING)
+    }
+
+    fn with_timing(kind: StorageKind, timing: Timing) -> Self {
         let disk = Disk::new(kind);
         let (sender, events) = mpsc::channel(16);
         let mut tasks = JoinSet::new();
@@ -108,7 +114,7 @@ impl Harness {
                 wakeup: Arc::new(|| {}),
             },
             Arc::new(Semaphore::new(2)),
-            TIMING,
+            timing,
             &mut tasks,
         );
         Self {
@@ -311,5 +317,65 @@ async fn a_pane_that_leaves_native_folders_is_not_read() {
     harness.controller.refresh(PaneId::Left, NavigationId(1));
     harness.idle(TIMING.periodic * 4).await;
     assert_eq!(harness.disk.reads(), 1);
+    harness.shutdown().await;
+}
+
+/// A local disk answers from the kernel's counters at once, so a request soon after
+/// a read is served soon too: the terminal request of a Delete follows the read that
+/// its Running progress asked for by a few milliseconds.
+#[tokio::test(start_paused = true)]
+async fn a_local_disk_answers_a_request_soon_after_its_previous_read() {
+    for kind in [
+        StorageKind::LocalSsd,
+        StorageKind::Rotational,
+        StorageKind::Local,
+    ] {
+        let mut harness = Harness::with_timing(kind, PRODUCTION_TIMING);
+        harness.navigate(1);
+        assert_eq!(harness.space().await, (NavigationId(1), 100));
+        let read = Instant::now();
+
+        harness.disk.available.store(300, Ordering::SeqCst);
+        harness.controller.refresh(PaneId::Left, NavigationId(1));
+        assert_eq!(harness.space().await, (NavigationId(1), 300));
+        let waited = read.elapsed();
+        assert!(waited <= Duration::from_millis(250), "{kind:?}: {waited:?}");
+        harness.shutdown().await;
+    }
+}
+
+/// A filesystem can report the space a deletion frees only after the deletion
+/// returned: ext4 releases a large file's blocks tens of milliseconds per GiB
+/// later, more while the disk is busy. A request therefore keeps a local disk
+/// followed for a while, without waiting for the periodic read.
+#[tokio::test(start_paused = true)]
+async fn a_request_follows_a_local_disk_until_a_deletion_released_its_space() {
+    let timing = PRODUCTION_TIMING;
+    let mut harness = Harness::with_timing(StorageKind::LocalSsd, timing);
+    harness.navigate(1);
+    assert_eq!(harness.space().await, (NavigationId(1), 100));
+
+    // The Delete ended; the read its request causes still finds the old value.
+    let requested = Instant::now();
+    harness.controller.refresh(PaneId::Left, NavigationId(1));
+    harness.idle(Duration::from_millis(1_200)).await;
+    assert!(harness.disk.reads() >= 2, "the request was not read");
+    assert!(harness.spaces_sent().is_empty());
+
+    // The filesystem released the space more than a second later.
+    let released = Instant::now();
+    harness.disk.available.store(900, Ordering::SeqCst);
+    assert_eq!(harness.space().await, (NavigationId(1), 900));
+    let waited = released.elapsed();
+    assert!(waited <= Duration::from_millis(250), "{waited:?}");
+
+    // Once the request is `follow` old, only the periodic reads remain.
+    harness
+        .idle((requested + timing.follow).saturating_duration_since(Instant::now()))
+        .await;
+    let reads = harness.disk.reads();
+    harness.idle(Duration::from_millis(2_500)).await;
+    assert_eq!(harness.disk.reads(), reads);
+    assert!(harness.spaces_sent().is_empty());
     harness.shutdown().await;
 }
