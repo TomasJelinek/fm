@@ -838,6 +838,9 @@ fn differences(app: &mut App, context: &mut Context, comparing: Comparing) -> Re
     comparing.wait(app, "N to reach the first difference", STEP, |window| {
         window.get_accessible_text().contains(changed)
     })?;
+    // The changed line shows while the glide is still on its way: take the position
+    // where the content comes to rest, which P and Previous difference return to.
+    comparing.still(app)?;
     let first = window.get_position();
     input::key(comparing.slint(), Key::F7);
     comparing.wait(app, "F7 to reach the inserted line", STEP, |window| {
@@ -860,6 +863,7 @@ fn differences(app: &mut App, context: &mut Context, comparing: Comparing) -> Re
         STEP,
         |window| window.get_position() > first,
     )?;
+    comparing.still(app)?;
     let last = window.get_position();
     input::chord(comparing.slint(), &[Key::Alt], Key::Home);
     comparing.wait(
