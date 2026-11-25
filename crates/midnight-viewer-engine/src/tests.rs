@@ -225,6 +225,68 @@ fn window_slot_and_opening_fail_cleanly_when_the_resident_refuses_the_worker() {
     });
 }
 
+/// The window treats Closed as "this viewer is gone" and may open another at once, so
+/// the closed window's admission credit is already returned when Closed is delivered.
+#[test]
+fn closed_window_has_returned_its_credit_when_closed_is_delivered() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (resident_owner, resident) = midnight_work_budget::resident::Owner::start(
+        "viewer-closed-credit",
+        crate::RESIDENT_WORKERS,
+    )
+    .unwrap();
+    let service = Service::new(runtime.handle().clone(), resident);
+    let plugins = tempfile::tempdir().unwrap();
+    *service.runtime.lock().unwrap() = Some(Arc::new(Runtime::discover(plugins.path()).unwrap()));
+    *service.images.lock().unwrap() = Some(Arc::from([]));
+    *service.web.lock().unwrap() = Some(Arc::from([]));
+    let files = tempfile::tempdir().unwrap();
+    std::fs::write(files.path().join("file.txt"), "closed window\n").unwrap();
+    let session = service
+        .open(
+            launch(files.path(), &["file.txt"], true),
+            appearance(),
+            ViewerGeometry {
+                width: 200,
+                height: 100,
+                scale: 1.0,
+            },
+        )
+        .unwrap();
+    assert_eq!(service.windows.load(Ordering::Acquire), 1);
+    // Closing during preparation ends the worker with an error instead of Closed, so
+    // wait until the opening was answered (no plugin is installed) and the worker idles.
+    status(&session, &["no compatible viewer plugin"]);
+    session.close();
+    let mut seen = Vec::new();
+    await_output(&session, Duration::from_secs(10), |output| {
+        let closed = matches!(output, ViewerOutput::Closed);
+        seen.push(format!("{output:?}").chars().take(200).collect::<String>());
+        closed.then_some(())
+    })
+    .unwrap_or_else(|| panic!("the closed window publishes Closed: {seen:?}"));
+    // No waiting: a UI reacting to Closed must already be able to open another window.
+    assert_eq!(
+        service.windows.load(Ordering::Acquire),
+        0,
+        "Closed was published before the window's admission credit was returned"
+    );
+    drop(service);
+    runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            resident_owner.shutdown(runtime.handle()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    });
+}
+
 #[test]
 fn transient_catalog_failure_lets_the_same_image_policy_configure_again() {
     let runtime = tokio::runtime::Builder::new_current_thread()

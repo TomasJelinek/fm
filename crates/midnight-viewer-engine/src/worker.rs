@@ -335,6 +335,10 @@ pub(crate) struct Services {
     pub negotiate_layout: bool,
     /// The service's installed video support, discovered when an opening may route to it.
     pub video: Box<dyn FnOnce() -> Option<VideoInstallation> + Send>,
+    /// The window's admission credit. It is returned after all window work is destroyed
+    /// and before Closed is published (or by unwinding), so a window that saw Closed can
+    /// open another at once.
+    pub window: crate::WindowStart,
 }
 
 pub(crate) use crate::input_queue::Message;
@@ -360,6 +364,7 @@ pub(crate) fn run(
         palette: palette_state,
         negotiate_layout,
         video,
+        window,
     } = services;
     output.put(ViewerOutput::Status(PREPARING.into()));
     let link_capture = capture.clone();
@@ -566,10 +571,13 @@ pub(crate) fn run(
     }
     let video_cleanup = worker.finish_video();
     let web_cleanup = worker.finish_web();
-    output.put(ViewerOutput::Closed);
     let raster_budget = worker.raster_budget.clone();
     drop(worker);
     raster_budget.reap();
+    // The window opens another viewer as soon as it sees Closed; the service must no
+    // longer count this one by then.
+    drop(window);
+    output.put(ViewerOutput::Closed);
     video_cleanup.and(web_cleanup)
 }
 

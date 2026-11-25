@@ -29,13 +29,14 @@ impl Job {
     pub fn run(self) {
         let Self { work, mut start } = self;
         start.started = true;
-        let _start = start;
-        work.run();
+        work.run(start);
     }
 }
 
 impl Work {
-    fn run(self) {
+    /// `window` is dropped (returning the credit) by the worker before it publishes
+    /// Closed, or with the closure on an early error or unwinding.
+    fn run(self, window: crate::WindowStart) {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if self.service.fonts.get().is_none()
                 && let Some(names) =
@@ -59,6 +60,7 @@ impl Work {
                     negotiate_layout: self.negotiate_layout,
                     palette: self.palette_lifetime.state(),
                     video: Box::new(move || service.video_installation()),
+                    window,
                 },
                 self.launch,
                 self.appearance,
