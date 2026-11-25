@@ -311,9 +311,9 @@ on every mounted filesystem.
 - FAT/exFAT/NTFS removable media, NFS/SMB shares, sshfs and GVfs FUSE mounts (including
   shares opened from Network Neighborhood) cannot create `O_TMPFILE` files, so Copy into
   them fails with an explicit unsupported-filesystem error; copying from them works. A
-  Move from another drive needs local ext2, ext3 or ext4 on both sides: the Copy/Move
-  dialog refuses any other destination before the job starts, and the job refuses any
-  other source.
+  Move from another drive goes wherever Copy goes, so it fails on these destinations as
+  Copy does. It removes sources only from local ext2/3/4, XFS, Btrfs, F2FS or tmpfs;
+  the job leaves any other source in place and says why.
 - Rename and permanent Delete on such media need a no-replace rename (the vfat, exfat,
   ntfs3 and CIFS kernel drivers implement it; FUSE mounts such as ntfs-3g only when
   their daemon does) and a staging folder owned by you. The mount must therefore map
