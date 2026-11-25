@@ -39,8 +39,8 @@ How to read it:
   [system requirements](SYSTEM_REQUIREMENTS.md), [release build](RELEASE_BUILD.md),
   [test execution](developer/TEST_EXECUTION.md).
 - **Verified:** the last hosted CI runs recorded as passing every job on Windows and
-  Linux are at `c7ef1e5c` (the `v0.5.3` tag) and `a5e5b1a4`
-  ([release record](verification/2026-11-25-release-0.5.3.md#ci));
+  Linux are at `510d9abc` (the `v0.5.4` tag)
+  ([release record](verification/2026-11-25-release-0.5.4.md#ci));
   CI times are in the [CI time record](verification/2026-11-21-ci-time.md).
   Acceptance runs on Windows are listed in the
   [Windows acceptance record](developer/acceptance/windows.md); the area records below

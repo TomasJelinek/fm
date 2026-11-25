@@ -8,14 +8,16 @@ remain in the Git history (`git log -p -- docs/ACTIVE_WORK.md`).
 
 ## Current checkpoint
 
-Main of 25 November 2026, prepared as the [0.5.4 preview](releases/0.5.4.md): the
-installation-securing fix for junctions and symbolic links, the ordering fixes and the
-faster Find sorting below. The [0.5.3 preview](releases/0.5.3.md) was published that day
+Main of 25 November 2026, the [0.5.4 preview](releases/0.5.4.md), published that day from
+`510d9abc` (tag `v0.5.4`, with a signed `SHA256SUMS`;
+[release record](verification/2026-11-25-release-0.5.4.md)): the installation-securing fix
+for junctions and symbolic links, the ordering fixes and the faster Find sorting below.
+The [0.5.3 preview](releases/0.5.3.md) was published that day
 from `c7ef1e5c` (tag `v0.5.3`, with a signed `SHA256SUMS`;
 [release record](verification/2026-11-25-release-0.5.3.md)): scrolling glide that keeps the
 scrolling speed, Copy and Move keeping times and attributes by default, Linux SMB sign-in,
 the glowing Moon, the UI performance fixes of the 24 November review and the missing-glyph
-check. Since that tag, main has three ordering fixes (an HTML viewer's last events, a closed
+check. After that tag came three ordering fixes (an HTML viewer's last events, a closed
 viewer window's slot, an archive selection's queue slot), faster tests
 ([test speed pass](verification/2026-11-25-test-speed-pass.md)), removed unused code and the
 user documents checked against the source. The [0.5.2 preview](releases/0.5.2.md) was
@@ -29,10 +31,10 @@ the alignment polish of every window, the code review fixes of 24 November and f
 acceptance and Rust tests ([acceptance time record](verification/2026-11-24-acceptance-time.md)).
 The documents describe this source.
 
-- **Acceptance.** The last whole-suite runs are the 0.5.3 release runs at `c7ef1e5c`:
-  Windows 112 and Linux 113 of 117 passed; the one failure on each passed on rerun
-  (Windows) or with its scenario corrected in `d1fe2fa3` (Linux)
-  ([release record](verification/2026-11-25-release-0.5.3.md)). The area records list every run,
+- **Acceptance.** The last whole-suite runs are the 0.5.4 release runs at `510d9abc`:
+  Linux 114 of 117 passed with no failure; Windows 113 passed, and its one failure was the
+  first-content time budget of one HTML page in `viewers_files`
+  ([release record](verification/2026-11-25-release-0.5.4.md)). The area records list every run,
   each check's latest status, the open findings and the reruns still pending:
   [panels](developer/acceptance/panels.md), [transfers](developer/acceptance/transfers.md),
   [Find](developer/acceptance/find.md), [viewers](developer/acceptance/viewers.md),
@@ -40,8 +42,8 @@ The documents describe this source.
   [tools](developer/acceptance/tools.md), [journeys](developer/acceptance/journeys.md),
   [UI polish](developer/acceptance/ui-polish.md) and the
   [Windows run](developer/acceptance/windows.md).
-- **CI.** Hosted runs pass every job on Windows and Linux at `c7ef1e5c` (the 0.5.3 tag)
-  and `a5e5b1a4` ([release record](verification/2026-11-25-release-0.5.3.md#ci));
+- **CI.** Hosted runs pass every job on Windows and Linux at `510d9abc` (the 0.5.4 tag)
+  ([release record](verification/2026-11-25-release-0.5.4.md#ci));
   the CI time record is at `2b901122` ([CI time record](verification/2026-11-21-ci-time.md)).
 - **Not qualified.** Native and manual qualifications that automated runs cannot
   provide are listed under PLAT-02; macOS is PLAT-01.
