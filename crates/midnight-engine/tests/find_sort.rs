@@ -199,6 +199,9 @@ fn ties_fall_back_to_the_ascending_path_then_discovery_order_in_both_directions(
     // ReverseLocale orders names backwards: "same.txt" before "other.txt".
     assert_eq!(order(FindSortColumn::Name, false), [2, 1, 3, 4]);
     assert_eq!(order(FindSortColumn::Name, true), [4, 2, 1, 3]);
+    // Within one folder the file name decides, always ascending.
+    assert_eq!(order(FindSortColumn::Path, false), [1, 3, 4, 2]);
+    assert_eq!(order(FindSortColumn::Path, true), [4, 2, 1, 3]);
     // Equal extensions: the file name decides, always ascending.
     for descending in [false, true] {
         assert_eq!(order(FindSortColumn::Extension, descending), [2, 1, 3, 4]);

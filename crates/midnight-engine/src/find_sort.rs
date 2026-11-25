@@ -1,6 +1,13 @@
 //! Backend-only bounded Find ordering. Discovery-order result IDs stay authoritative.
 use midnight_core::*;
-use std::{cmp::Ordering, collections::HashMap, ffi::OsStr, io, path::Path, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    ffi::OsStr,
+    io,
+    path::{Component, Path},
+    sync::Arc,
+};
 
 const KEY_BUDGET: usize = 16 * 1024 * 1024;
 
@@ -70,7 +77,7 @@ pub(crate) fn order(
     let keys = &cache.keys[..results.len()];
     let descending = sort.descending;
     let mut indices = match sort.column {
-        FindSortColumn::Name | FindSortColumn::Path => sorted(
+        FindSortColumn::Name => sorted(
             results,
             keys,
             |entry, keys| {
@@ -80,6 +87,21 @@ pub(crate) fn order(
                 )
             },
             |a, b| compare_collated_text(a.0, a.1, b.0, b.1, descending),
+        ),
+        // Results of one folder tie on it: their names decide (`TiePath`).
+        FindSortColumn::Path => sorted(
+            results,
+            keys,
+            |entry, keys| {
+                (
+                    keys.primary.as_deref(),
+                    value(&entry.path, sort.column).unwrap_or_default(),
+                    TiePath::new(&entry.path),
+                )
+            },
+            |a, b| {
+                compare_collated_text(a.0, a.1, b.0, b.1, descending).then_with(|| a.2.cmp(&b.2))
+            },
         ),
         FindSortColumn::Extension => sorted(results, keys, ExtensionFacts::new, |a, b| {
             a.compare(b, descending)
@@ -182,6 +204,41 @@ fn sorted<'a, P>(
             .then_with(|| left.2.cmp(&right.2))
     });
     rows.into_iter().map(|(_, _, position)| position).collect()
+}
+
+/// A path ordered exactly as `Path::cmp` orders it: component by component. A path
+/// ending in a name keeps its parent's bytes and that name. Two paths with the same
+/// parent bytes have the same leading components, so their names decide without
+/// walking the parent's components again (on Windows `Path::cmp` has no byte shortcut
+/// for a `C:` prefix). Splitting costs a parse per result, so only the Path column,
+/// whose ties fall within one folder, uses it.
+struct TiePath<'a> {
+    path: &'a Path,
+    parent_and_name: Option<(&'a OsStr, &'a OsStr)>,
+}
+
+impl<'a> TiePath<'a> {
+    fn new(path: &'a Path) -> Self {
+        let mut components = path.components();
+        let parent_and_name = match components.next_back() {
+            // What `Path::parent` returns, the components left before the name.
+            Some(Component::Normal(name)) => Some((components.as_path().as_os_str(), name)),
+            _ => None,
+        };
+        Self {
+            path,
+            parent_and_name,
+        }
+    }
+
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.parent_and_name, other.parent_and_name) {
+            (Some((parent, name)), Some((other_parent, other_name))) if parent == other_parent => {
+                name.cmp(other_name)
+            }
+            _ => self.path.cmp(other.path),
+        }
+    }
 }
 
 fn filename(path: &Path) -> &OsStr {
