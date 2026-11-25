@@ -56,7 +56,7 @@ out. The newest version above the running one by semantic-version order is offer
 A release is a *preview* when GitHub marks it as a pre-release or its version has a
 pre-release part; previews are offered only with "Include preview releases".
 
-That option is on by default because every release so far (0.1.0, 0.5.0 and 0.5.1) is
+That option is on by default because every release so far (0.1.0, and 0.5.0 to 0.5.4) is
 a GitHub pre-release: with it off, no current user would be offered anything until the
 first stable release. Users who want only stable releases turn it off.
 
